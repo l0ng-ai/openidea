@@ -20,6 +20,18 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
+      agentRefreshModels: async (provider: string) => ({
+        status: "ok",
+        data: {
+          provider,
+          config: [],
+          thoughtLevels: {},
+          refreshing: false,
+          refreshedAtMs: Date.now(),
+          retryAtMs: null,
+          error: null,
+        },
+      }),
       clipboardImage: () => clipboardImage(),
       vcsBranchInfo: (root: string | null) => vcsBranchInfo(root),
       vcsBranches: (root: string | null) => vcsBranches(root),

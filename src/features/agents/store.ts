@@ -13,6 +13,7 @@ import type {
   AgentEvent,
   AgentImage,
   AgentLimit,
+  AgentModelCatalog,
   AgentProvider,
   AgentTask,
   ExternalSession,
@@ -93,6 +94,8 @@ interface AgentsState {
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
+  modelCatalogs: Map<string, AgentModelCatalog>;
+  modelRequests: Set<string>;
   /** The usage limits each agent last reported for its account, by provider. */
   limits: Map<string, AgentLimit[]>;
   draft: Draft;
@@ -171,6 +174,8 @@ export const useAgents = create<AgentsState>(() => ({
   groupedChanges: new Map(),
   providers: [],
   limits: new Map(),
+  modelCatalogs: new Map(),
+  modelRequests: new Set(),
   draft: savedDraft(load<Partial<Draft>>(DRAFT_KEY, {})),
   composers: new Map(),
   lastComposer: HOME,
@@ -191,6 +196,7 @@ export const useAgents = create<AgentsState>(() => ({
 
 export function updateDraft(patch: Partial<Draft>) {
   const current = useAgents.getState().draft;
+  if (patch.provider && patch.provider !== current.provider) draftGeneration++;
   const draft = {
     ...current,
     ...(patch.provider && patch.provider !== current.provider ? { thoughtLevels: {} } : {}),
@@ -205,27 +211,40 @@ export const providerDefaults = (provider: string | undefined): Record<string, s
   (provider && useProject.getState().settings?.agents?.defaults?.[provider]) || {};
 
 /**
- * Config for the selected model, with only supported choices applied: the draft's, else
- * the agent's defaults from Settings › Agents.
+ * New Task settings use the authoritative catalog, retaining an explicitly selected
+ * model even if it disappears so the user must choose its replacement.
  */
 export function draftConfig(
   provider: AgentProvider | undefined,
   draft: Draft,
   defaults: Record<string, string> = providerDefaults(provider?.id),
 ): AgentConfigOption[] {
-  const config = (provider?.config ?? [])
+  const catalog = provider && useAgents.getState().modelCatalogs.get(provider.id);
+  const offered = catalog?.config ?? provider?.config ?? [];
+  const priorModel = provider?.config.find((o) => o.category === "model");
+  const source =
+    priorModel && draft.config[priorModel.id] !== undefined && !offered.some((o) => o.category === "model")
+      ? [...offered, { ...priorModel, values: [] }]
+      : offered;
+  const config = source
     .filter((o) => o.category !== "thought_level")
     .map((o) => {
-      const choice = draft.config[o.id] ?? defaults[o.id];
+      const explicit = draft.config[o.id];
+      const choice = explicit ?? defaults[o.id];
       return {
         ...o,
-        current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
+        current:
+          o.category === "model" && explicit !== undefined
+            ? explicit
+            : choice !== undefined && o.values.some((v) => v.value === choice)
+              ? choice
+              : o.current,
       };
     });
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...(provider?.thoughtLevels?.[model] ?? []).map((o) => {
+      ...((catalog ?? provider)?.thoughtLevels?.[model] ?? []).map((o) => {
         const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
         return {
           ...o,
@@ -314,6 +333,84 @@ export function markVisible(task: string): () => void {
 }
 
 let generation = 0;
+let draftGeneration = 0;
+const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number }>();
+
+const selectedProvider = () => {
+  const { providers, draft } = useAgents.getState();
+  return providers.find((p) => p.id === draft.provider) ?? providers[0];
+};
+
+const launchKey = (provider: AgentProvider) =>
+  JSON.stringify([provider.program, provider.args, provider.env, provider.installed]);
+
+function applyModelCatalog(catalog: AgentModelCatalog) {
+  useAgents.setState((s) => {
+    const previous = s.modelCatalogs.get(catalog.provider);
+    const model = (previous?.config ?? s.providers.find((p) => p.id === catalog.provider)?.config)?.find(
+      (o) => o.category === "model",
+    );
+    const config =
+      model && !catalog.config.some((o) => o.category === "model")
+        ? [...catalog.config, { ...model, current: null, values: [] }]
+        : catalog.config;
+    return { modelCatalogs: new Map(s.modelCatalogs).set(catalog.provider, { ...catalog, config }) };
+  });
+}
+
+/** Refreshes only the New Task agent; discovery failures stay beside the cached choices. */
+export async function refreshModels(provider = selectedProvider()?.id, force = true): Promise<void> {
+  const selected = selectedProvider();
+  if (!provider || !selected?.installed || selected.id !== provider || useProject.getState().project?.trusted === false)
+    return;
+  const state = useAgents.getState();
+  const catalog = state.modelCatalogs.get(provider);
+  const launch = launchKey(selected);
+  const pending = modelFlights.get(provider);
+  if (
+    (pending?.launch === launch && pending.generation === generation && pending.draftGeneration === draftGeneration) ||
+    catalog?.refreshing ||
+    (force && catalog?.retryAtMs != null && catalog.retryAtMs > Date.now())
+  )
+    return;
+  const gen = generation;
+  const draftGen = draftGeneration;
+  const root = useProject.getState().project?.root;
+  const flight = { launch, generation: gen, draftGeneration: draftGen };
+  modelFlights.set(provider, flight);
+  useAgents.setState((s) => ({ modelRequests: new Set(s.modelRequests).add(provider) }));
+  const current = () =>
+    gen === generation &&
+    root === useProject.getState().project?.root &&
+    draftGen === draftGeneration &&
+    selectedProvider()?.id === provider &&
+    launchKey(selectedProvider()!) === launch;
+  try {
+    const result = await call(commands.agentRefreshModels(provider, force));
+    // A streamed status/completion is newer than the snapshot returned by the command.
+    if (current() && useAgents.getState().modelCatalogs.get(provider) === catalog) applyModelCatalog(result);
+  } catch (e) {
+    if (current() && useAgents.getState().modelCatalogs.get(provider) === catalog)
+      applyModelCatalog({
+        provider,
+        config: catalog?.config ?? selected.config,
+        thoughtLevels: catalog?.thoughtLevels ?? selected.thoughtLevels ?? {},
+        refreshedAtMs: catalog?.refreshedAtMs ?? null,
+        retryAtMs: catalog?.retryAtMs ?? null,
+        refreshing: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+  } finally {
+    if (modelFlights.get(provider) === flight) {
+      modelFlights.delete(provider);
+      useAgents.setState((s) => {
+        const modelRequests = new Set(s.modelRequests);
+        modelRequests.delete(provider);
+        return { modelRequests };
+      });
+    }
+  }
+}
 
 /** Subscribes this window to the project's agents (again after the project changed). */
 export async function connect(): Promise<void> {
@@ -403,6 +500,7 @@ export function disconnect() {
   generation++;
   arrivedWhileLoading.clear();
   streamingReply.clear();
+  modelFlights.clear();
   useAgents.setState({
     loaded: false,
     error: null,
@@ -412,6 +510,8 @@ export function disconnect() {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    modelCatalogs: new Map(),
+    modelRequests: new Set(),
     organize: EMPTY_ORGANIZE,
     organizeRoot: null,
     docked: null,
@@ -468,6 +568,10 @@ function onEvent(e: AgentEvent) {
           entries: new Map(s.entries).set(e.task, current.slice(0, e.length)),
         });
       scheduleChanges(e.task);
+      break;
+    }
+    case "modelCatalog": {
+      if (s.providers.some((p) => p.id === e.catalog.provider)) applyModelCatalog(e.catalog);
       break;
     }
     case "providers": {
@@ -637,8 +741,19 @@ export function scheduleChanges(task: string) {
 
 /** Reloads the agent list (custom and registry agents are re-read). */
 export async function refreshProviders() {
+  const gen = generation;
+  const root = useProject.getState().project?.root;
   const providers = await call(commands.agentProviders()).catch(() => null);
-  if (providers) useAgents.setState({ providers });
+  if (!providers || gen !== generation || root !== useProject.getState().project?.root) return;
+  useAgents.setState((s) => {
+    const modelCatalogs = new Map(s.modelCatalogs);
+    for (const [id] of modelCatalogs) {
+      const previous = s.providers.find((p) => p.id === id);
+      const provider = providers.find((p) => p.id === id);
+      if (!provider || (previous && launchKey(previous) !== launchKey(provider))) modelCatalogs.delete(id);
+    }
+    return { providers, modelCatalogs };
+  });
 }
 
 export const NO_COMMANDS: readonly AgentCommand[] = [];
@@ -801,6 +916,15 @@ export async function startTask(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
+  if (
+    options.some(
+      (o) =>
+        o.category === "model" &&
+        draft.config[o.id] !== undefined &&
+        !o.values.some((v) => v.value === draft.config[o.id]),
+    )
+  )
+    return;
   const askForApprovals = useProject.getState().settings?.agents?.newTaskApprovals === "ask";
   const defaults = {
     ...cursorModelDefaults(draft.provider, options),
