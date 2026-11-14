@@ -476,7 +476,9 @@ impl Shared {
             // inserted and persisted in batches. `filter` moves into the
             // parse thread; this thread keeps the outer one.
             let filter = self.filter();
-            let (tx, rx) = std::sync::mpsc::channel::<ParsedFile>();
+            // Bounded: when inserting and persisting fall behind, the parse waits instead
+            // of holding the whole project's records (and their bytes) in the channel.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<ParsedFile>(2 * SCAN_BATCH);
             let cancelled = &self.cancelled;
             let mut done = 0usize;
             let mut last_progress = Instant::now();
