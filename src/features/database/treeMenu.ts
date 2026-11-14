@@ -66,7 +66,7 @@ async function sourceFromClipboard() {
 
 /** The toolbar's "+" menu (IDEA: New). */
 export function newMenu(): MenuItem[] {
-  return [{ kind: "action", action: "db.openConsole", label: "Query Console" }, sep, ...dataSourceItems()];
+  return [{ kind: "action", action: "db.newConsole", label: "Query Console" }, sep, ...dataSourceItems()];
 }
 
 function sqlScripts(n: DbNode, table: boolean): MenuItem {
@@ -88,7 +88,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
   const driver = sourceById(id)?.driver ?? "sqlite";
   const o = objectOf(n);
   const t = tableOf(n);
-  const newConsole = act("db.openConsole", n, { label: "Query Console", icon: "db-console" });
+  const newConsole = act("db.newConsole", n, { label: "Query Console", icon: "db-console" });
   const refresh = act("db.refresh", n);
   const quickDoc = act("db.quickDoc", n);
   const rename = act("db.rename", n, { disabled: !(n.kind === "source" || (o && canRename(driver, o))) });

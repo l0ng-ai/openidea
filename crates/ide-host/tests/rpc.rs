@@ -365,6 +365,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_table_page",
         "db_apply_edits",
         "db_console_path",
+        "db_consoles",
         "ssh_test",
         "ssh_set_secret",
         "ssh_password_saved",

@@ -906,6 +906,29 @@ export async function openConsole(id: string): Promise<void> {
   }
 }
 
+/** The query console files of data source `id`: `console.sql`, then `console_1.sql`, `console_2.sql`… */
+export function consoleFiles(id: string): Promise<string[]> {
+  return call(commands.dbConsoles(id, false));
+}
+
+/** Opens one of the query consoles of data source `id`. */
+export async function openConsoleFile(id: string, path: string): Promise<void> {
+  bindConsole(path, id);
+  await editorService().openFile(path, { focus: true });
+}
+
+/** Creates and opens another query console of data source `id` (DataGrip's New › Query Console). */
+export async function newConsole(id: string): Promise<void> {
+  try {
+    const before = new Set(await consoleFiles(id));
+    const after = await call(commands.dbConsoles(id, true));
+    const path = after.find((p) => !before.has(p)) ?? after[after.length - 1];
+    if (path) await openConsoleFile(id, path);
+  } catch (e) {
+    notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
+  }
+}
+
 let nextTab = 1;
 let nextRun = 1;
 let nextLine = 1;

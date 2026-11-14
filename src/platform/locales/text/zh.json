@@ -2181,6 +2181,8 @@
   "Python interpreter": "Python 解释器",
   "Python: only your code (justMyCode). JavaScript: skips node_modules and Node.js internals.": "Python：仅您的代码 (justMyCode)。JavaScript：跳过 node_modules 和 Node.js 内部代码。",
   "Query Console": "查询控制台",
+  "New Query Console": "新建查询控制台",
+  "Query Consoles": "查询控制台",
   "Quick Documentation": "快速文档",
   "Re-check installed tools": "重新检查已安装的工具",
   "Re-reads the effective POMs and dependency trees with Maven": "使用 Maven 重新读取有效 POM 和依赖树",
