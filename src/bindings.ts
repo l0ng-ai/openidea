@@ -1255,6 +1255,8 @@ export const commands = {
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
+	/**  Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open. */
+	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
@@ -4012,6 +4014,8 @@ export type DebuggerSettings = {
 	valueTooltipDelay?: number,
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */
 	skipLibraryCode?: boolean,
+	/**  JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session. */
+	debugServerPage?: boolean,
 	python?: PythonDebuggerSettings,
 };
 

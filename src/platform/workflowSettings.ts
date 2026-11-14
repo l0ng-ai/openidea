@@ -105,6 +105,7 @@ export interface DebuggerSettingsValid {
   valueTooltipOnSelection: boolean;
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
+  debugServerPage: boolean;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
@@ -296,6 +297,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
     skipLibraryCode: true,
+    debugServerPage: false,
     python: { attachSubprocess: true, gevent: false },
   },
   run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
@@ -453,6 +455,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     valueTooltipOnSelection: bool(v.valueTooltipOnSelection, d.valueTooltipOnSelection),
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
+    debugServerPage: bool(v.debugServerPage, d.debugServerPage),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),
