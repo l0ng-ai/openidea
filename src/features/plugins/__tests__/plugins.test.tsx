@@ -856,6 +856,22 @@ describe("PluginsPage", () => {
     expect(screen.getByText("Toy (.toy)")).toBeInTheDocument();
   });
 
+  it("lists installed and marketplace plugins together, each group foldable", async () => {
+    const user = userEvent.setup();
+    render(<PluginsPage />);
+    const installed = await screen.findByRole("list", { name: "Installed plugins" });
+    await waitFor(() => expect(within(installed).getAllByRole("listitem")).toHaveLength(3));
+    expect(screen.queryByRole("tab", { name: /Available/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Available plugins" })).toBeInTheDocument();
+    const toggle = within(installed).getByRole("button", { name: /^Installed/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(within(installed).queryAllByRole("listitem")).toHaveLength(0);
+    await user.click(toggle);
+    expect(within(installed).getAllByRole("listitem")).toHaveLength(3);
+  });
+
   it("offers the IntelliJ theme imports only in a trusted project's window", async () => {
     const user = userEvent.setup();
     render(
@@ -899,7 +915,6 @@ describe("PluginsPage", () => {
       setPluginsBackend(createMemoryPluginsBackend(source === "installed" ? [entry] : [], [catalog]));
       const user = userEvent.setup();
       render(<PluginsPage initialTab="installed" />);
-      if (source === "catalog") await user.click(screen.getByRole("tab", { name: /Available/ }));
       await screen.findByRole("heading", { level: 2, name: entry.name });
       return user;
     }
@@ -1014,7 +1029,6 @@ describe("PluginsPage", () => {
     const catalog = sampleCatalog();
     setPluginsBackend(createMemoryPluginsBackend([], catalog));
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Toy Language")).toBeInTheDocument());
     await user.click(within(list).getByText("Toy Language"));
@@ -1031,9 +1045,7 @@ describe("PluginsPage", () => {
       ...createMemoryPluginsBackend([], sampleCatalog()),
       marketUrl: () => Promise.reject({ kind: "unavailable", message: "Index unreachable", data: null }),
     });
-    const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     expect(await within(list).findByText("Index unreachable")).toBeInTheDocument();
     expect(within(list).queryByText("[object Object]")).not.toBeInTheDocument();
@@ -1142,7 +1154,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("All Plugins")).toBeInTheDocument());
     expect(within(list).queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
@@ -1187,7 +1198,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Examples")).toBeInTheDocument());
     const headers = within(list)
@@ -1209,9 +1219,7 @@ describe("marketplace", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [],
     });
-    const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     expect(await screen.findByText("No plugin selected")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(NO_REPOSITORY))).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Filter plugins" })).toHaveAttribute("placeholder", "Search plugins");
@@ -1234,7 +1242,6 @@ describe("marketplace", () => {
         <InputDialogsHost />
       </>,
     );
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     expect(screen.queryByRole("textbox", { name: /Marketplace index URL/ })).not.toBeInTheDocument();
     const edit = async (value: string) => {
       await user.click(screen.getByRole("button", { name: "Manage Plugins" }));
@@ -1277,7 +1284,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Dusk")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Category" }));
@@ -1315,7 +1321,6 @@ describe("marketplace", () => {
     });
     const user = userEvent.setup();
     render(<PluginsPage initialTab="installed" />);
-    await user.click(screen.getByRole("tab", { name: /Available/ }));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("Incompatible")).toBeInTheDocument());
     await user.click(within(list).getByText("Next"));

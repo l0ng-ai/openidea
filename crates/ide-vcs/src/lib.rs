@@ -764,6 +764,24 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         status::status(self)
     }
+    /// Status of `paths` only (absolute; those outside the repository are ignored), for the
+    /// dirty-scope refresh after a watcher batch. An empty list is the full status.
+    pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
+        // with a pathspec: answer with the full gitoxide status instead.
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return status::status(self);
+        }
+        if paths.is_empty() {
+            return status::status_paths(self, &[]);
+        }
+        let rel: Vec<String> = paths.iter().filter_map(|p| self.given_rel_path(p).ok()).collect();
+        if rel.is_empty() {
+            return Ok(Vec::new());
+        }
+        status::status_paths(self, &rel)
+    }
     pub fn branch_info(&self) -> IdeResult<BranchInfo> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         refs::branch_info(self)
@@ -865,6 +883,12 @@ impl Repo {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
+    }
+    /// Adds `commit` to the list `blame.ignoreRevsFile` names, so annotate skips it; with none
+    /// configured, to `.git-blame-ignore-revs` at the worktree root, which the local config then names.
+    pub fn ignore_blame_revision(&self, commit: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::ignore_blame_revision(self, commit)
     }
     /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
     /// current text: `current_text`, or the file on disk), mapped to HEAD's lines first.
@@ -1244,10 +1268,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::rebase(self, onto)
     }
+    /// `paths` (absolute) stashes only those files; empty stashes the whole working tree.
     /// `keep_index`: changes already staged stay in the index (and the working tree).
-    pub fn stash_push(&self, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {
+    pub fn stash_push(
+        &self,
+        message: Option<&str>,
+        include_untracked: bool,
+        keep_index: bool,
+        paths: &[PathBuf],
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::stash_push(self, message, include_untracked, keep_index)
+        write::stash_push(self, message, include_untracked, keep_index, paths)
     }
     /// `reinstate_index`: also restore what was staged when the stash was made.
     pub fn stash_apply(&self, index: u32, pop: bool, reinstate_index: bool) -> IdeResult<()> {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { EditorView } from "@codemirror/view";
 import type { AgentCommand, AgentProvider } from "@/bindings";
 
 const agentCommands = vi.fn();
@@ -53,7 +54,7 @@ import type { ProjectInfo } from "@/bindings";
 import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
 import chipStyles from "./ReferenceChip.module.css";
-import { textOf, typeIn } from "./composerTesting";
+import { setCaret, textOf, typeIn } from "./composerTesting";
 import { composerDraft, HOME, updateComposer, useAgents } from "./store";
 import { emptyDraft } from "./composerModel";
 
@@ -280,18 +281,133 @@ describe("New Task composer paste", () => {
   it("attaches the clipboard's image when WebKitGTK pastes an empty clipboardData", async () => {
     render(<HomeEditor />);
     fireEvent.paste(screen.getByRole("textbox"), {
-      clipboardData: { types: [], files: [] },
+      clipboardData: { types: [], files: [], getData: () => "" },
     });
     await waitFor(() =>
       expect(composerDraft(HOME).images).toEqual([{ mimeType: "image/png", data: "iVBORw0KGgo=", name: "image" }]),
     );
+    expect(textOf(screen.getByRole("textbox"))).toBe("");
+  });
+
+  it.each([
+    { name: "part of the prompt selected", text: "keep prompt", anchor: 0, head: 4 },
+    { name: "the whole prompt selected", text: "keep prompt", anchor: 0, head: 11 },
+    { name: "a backwards selection", text: "keep prompt", anchor: 4, head: 0 },
+    { name: "a caret in the prompt", text: "keep prompt", anchor: 4, head: 4 },
+    { name: "a multiline Unicode selection", text: "保留🙂\nprompt", anchor: 0, head: 5 },
+  ])("keeps text and selection with $name when pasting a native image", async ({ text, anchor, head }) => {
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, text);
+    setCaret(box, anchor, head);
+    const allowed = fireEvent.paste(box, {
+      clipboardData: { types: [], files: [], getData: () => "" },
+    });
+    expect(textOf(box)).toBe(text);
+    expect(allowed).toBe(false);
+    await waitFor(() => expect(composerDraft(HOME).images).toHaveLength(1));
+    expect(clipboardImage).toHaveBeenCalledTimes(1);
+    expect(composerDraft(HOME).text).toBe(text);
+    expect(EditorView.findFromDOM(box)!.state.selection.main).toMatchObject({ anchor, head });
+  });
+
+  it.each([
+    { name: "no image", result: { status: "ok", data: null } },
+    { name: "an invalid image", result: { status: "ok", data: "not an image" } },
+    { name: "an error", result: { status: "error", error: { kind: "internal", message: "clipboard busy" } } },
+  ])("keeps selected text when the native clipboard returns $name", async ({ result }) => {
+    clipboardImage.mockResolvedValueOnce(result);
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "keep prompt");
+    setCaret(box, 0, 4);
+    await act(async () => {
+      fireEvent.paste(box, { clipboardData: { types: [], files: [], getData: () => "" } });
+    });
+    expect(clipboardImage).toHaveBeenCalledTimes(1);
+    expect(textOf(box)).toBe("keep prompt");
+    expect(composerDraft(HOME)).toMatchObject({ text: "keep prompt", images: [] });
+    expect(EditorView.findFromDOM(box)!.state.selection.main).toMatchObject({ anchor: 0, head: 4 });
+  });
+
+  it("keeps selected text when the native clipboard request rejects", async () => {
+    clipboardImage.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "keep prompt");
+    setCaret(box, 0, 4);
+    await act(async () => {
+      fireEvent.paste(box, { clipboardData: { types: [], files: [], getData: () => "" } });
+    });
+    expect(textOf(box)).toBe("keep prompt");
+    expect(composerDraft(HOME)).toMatchObject({ text: "keep prompt", images: [] });
+  });
+
+  it("keeps edits made while the native image is being read", async () => {
+    let finish!: (result: { status: "ok"; data: string }) => void;
+    clipboardImage.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "keep prompt");
+    setCaret(box, 0, 4);
+    fireEvent.paste(box, { clipboardData: { types: [], files: [], getData: () => "" } });
+    expect(textOf(box)).toBe("keep prompt");
+    typeIn(box, "edited while reading");
+    await act(async () => finish({ status: "ok", data: "data:image/png;base64,iVBORw0KGgo=" }));
+    expect(textOf(box)).toBe("edited while reading");
+    expect(composerDraft(HOME)).toMatchObject({ text: "edited while reading", images: [expect.anything()] });
+  });
+
+  it("attaches an image file without replacing selected text or reading the native clipboard", async () => {
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "keep prompt");
+    setCaret(box, 0, 4);
+    fireEvent.paste(box, {
+      clipboardData: {
+        types: ["Files", "text/plain"],
+        files: [new File(["image"], "shot.png", { type: "image/png" })],
+        getData: () => "image caption",
+      },
+    });
+    await waitFor(() => expect(composerDraft(HOME).images).toHaveLength(1));
+    expect(composerDraft(HOME).images[0]).toMatchObject({ name: "shot.png", mimeType: "image/png" });
+    expect(textOf(box)).toBe("keep prompt");
+    expect(clipboardImage).not.toHaveBeenCalled();
   });
 
   it("leaves a text paste to the text box", () => {
     render(<HomeEditor />);
-    fireEvent.paste(screen.getByRole("textbox"), {
-      clipboardData: { types: ["text/plain"], files: [] },
+    const box = screen.getByRole("textbox");
+    const text = "pasted text";
+    fireEvent.paste(box, {
+      clipboardData: {
+        types: ["text/plain"],
+        files: [],
+        getData: (type: string) => (type === "text/plain" ? text : ""),
+      },
     });
+    expect(clipboardImage).not.toHaveBeenCalled();
+    expect(textOf(box)).toBe(text);
+    expect(composerDraft(HOME).text).toBe(text);
+  });
+
+  it.each([
+    { name: "plain text", types: ["text/plain"], format: "text/plain", text: "new", native: true },
+    { name: "rich text", types: ["text/html", "text/plain"], format: "text/plain", text: "新的🙂", native: true },
+    { name: "a URI", types: ["text/uri-list"], format: "text/uri-list", text: "https://example.com", native: true },
+    { name: "browser text", types: ["text/plain"], format: "text/plain", text: "new", native: false },
+  ])("still replaces selected text when pasting $name", ({ types, format, text, native }) => {
+    vi.mocked(isTauri).mockReturnValue(native);
+    render(<HomeEditor />);
+    const box = screen.getByRole("textbox");
+    typeIn(box, "keep old prompt");
+    setCaret(box, 5, 8);
+    fireEvent.paste(box, {
+      clipboardData: { types, files: [], getData: (type: string) => (type === format ? text : "") },
+    });
+    expect(textOf(box)).toBe(`keep ${text} prompt`);
+    expect(composerDraft(HOME)).toMatchObject({ text: `keep ${text} prompt`, images: [] });
     expect(clipboardImage).not.toHaveBeenCalled();
   });
 });

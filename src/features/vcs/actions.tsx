@@ -59,6 +59,7 @@ import {
   showWorktrees,
 } from "./gitMenuDialogs";
 import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -612,6 +613,15 @@ export function registerVcsActions(): () => void {
         void revealCommit(id, repo);
       },
     },
+    {
+      id: "vcs.syncCommits",
+      title: "Show Incoming and Outgoing Commits",
+      category: "Git",
+      icon: "history",
+      when: VCS,
+      keywords: ["incoming", "outgoing", "ahead", "behind", "unpushed", "unpulled"],
+      run: ({ arg }) => showSyncCommitsForCurrent(arg === "incoming" || arg === "outgoing" ? arg : undefined),
+    },
     ...(["gitignore", "localExclude"] as const).map((destination): Action => ({
       id: destination === "gitignore" ? "vcs.ignoreShared" : "vcs.ignoreLocal",
       title: destination === "gitignore" ? "Add to .gitignore" : "Add to .git/info/exclude",
@@ -638,6 +648,25 @@ export function registerVcsActions(): () => void {
       icon: "stash",
       when: VCS,
       run: () => void stashChanges(),
+    },
+    {
+      id: "vcs.stashSelected",
+      title: "Stash Selected Files…",
+      category: "Git",
+      icon: "stash",
+      when: VCS,
+      run: ({ arg }) => {
+        const paths = changedPaths(arg);
+        if (!paths.length) {
+          notifications().notify({
+            group: "vcs",
+            level: "info",
+            title: tx("Select the files to stash in the Commit view first"),
+          });
+          return;
+        }
+        void stashChanges(paths);
+      },
     },
     {
       id: "vcs.unstash",

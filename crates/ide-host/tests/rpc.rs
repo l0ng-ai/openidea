@@ -341,6 +341,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_save_sources",
         "db_set_password",
         "db_test",
+        "db_test_tunnel",
         "db_set_ssh_secret",
         "db_trust_ssh_host",
         "db_connected",
@@ -364,6 +365,13 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_table_page",
         "db_apply_edits",
         "db_console_path",
+        "ssh_test",
+        "ssh_set_secret",
+        "ssh_password_saved",
+        "ssh_needs_secret",
+        "ssh_trust_host",
+        "ssh_connected",
+        "ssh_disconnect",
     ] {
         assert!(dispatcher.commands().contains(&cmd), "missing host command {cmd}");
     }
@@ -372,6 +380,12 @@ async fn local_deployment_runs_on_the_project_host() {
     tokio::spawn(rpc::serve(host, dispatcher, slot, sr, sw));
     let (cr, cw) = tokio::io::split(client_io);
     let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    // A remote window's host-key and password remedies reach the server's SSH manager,
+    // the one its deployment / database connections failed in.
+    let trust = invoke(&peer, "ssh_trust_host", json!({"id": "nothing-pending"})).await.unwrap_err();
+    assert!(trust.message.contains("no host key to trust"), "{trust:?}");
+    invoke(&peer, "ssh_set_secret", json!({"id": "deploy", "secret": "pw", "save": false})).await.unwrap();
+    assert_eq!(invoke(&peer, "ssh_connected", json!({})).await.unwrap(), json!([]));
     invoke(&peer, "project_trust_set", json!({"path": project, "trusted": true, "folder": false})).await.unwrap();
     invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
     let deployment = json!({"servers": [{"id":"local", "kind":"local", "rootPath":target}], "defaultServer":"local"});
@@ -480,4 +494,118 @@ async fn the_desktop_routes_exactly_what_a_server_of_this_build_answers() {
     assert_eq!(rpc::client_commands(), dispatcher.commands());
     assert!(rpc::client_commands().contains(&"term_spawn"));
     plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renames_a_branch_with_the_clients_argument_names() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("repo");
+    std::fs::create_dir(&root).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").args(args).current_dir(&root).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("a.txt"), "a\n").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"]);
+    git(&["branch", "feature"]);
+    let peer_slot = Arc::new(OnceLock::new());
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: tmp.path().join("config"),
+        data_dir: tmp.path().join("data"),
+        local_data_dir: tmp.path().join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, Dispatcher::standard(), peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    invoke(&peer, "open_project", json!({"path": root})).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({"path": root, "trusted": true, "folder": false})).await.unwrap();
+    // The argument names the desktop client sends (`vcsRenameBranch` in src/bindings.ts).
+    invoke(
+        &peer,
+        "vcs_rename_branch",
+        json!({"repo": null, "from": "feature", "to": "renamed", "unsetUpstream": false}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        git(&["branch", "--format=%(refname:short)", "--list"]).lines().collect::<Vec<_>>(),
+        ["main", "renamed"]
+    );
+    invoke(&peer, "close_project", json!({})).await.unwrap();
+    peer.kill();
+}
+
+/// A handler reads its arguments by the names the desktop client sends: `src/bindings.ts`
+/// passes them in camelCase, and a name the client never sends reads as `null` (an
+/// `Option` silently `None`, anything else an "invalid type: null" error).
+#[test]
+fn handlers_read_the_argument_names_the_client_sends() {
+    use std::collections::{BTreeSet, HashMap};
+    use std::path::Path;
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bindings = std::fs::read_to_string(repo.join("src/bindings.ts")).unwrap();
+    let mut sent = HashMap::<&str, BTreeSet<&str>>::new();
+    for part in bindings.split("__TAURI_INVOKE(\"").skip(1) {
+        let (command, rest) = part.split_once('"').unwrap();
+        let args = rest.strip_prefix(", {").and_then(|r| r.split_once('}')).map_or("", |(args, _)| args);
+        let names = args.split(',').map(|a| a.split(':').next().unwrap().trim()).filter(|a| !a.is_empty());
+        sent.insert(command, names.collect());
+    }
+    fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    sources(&repo.join("crates/ide-host/src"), &mut files);
+    let mut checked = 0;
+    let mut wrong = Vec::new();
+    for file in files {
+        let src = std::fs::read_to_string(&file).unwrap();
+        // `.add("name", …)`, also with the name on the next line.
+        let starts: Vec<usize> = src
+            .match_indices(".add(")
+            .map(|(i, m)| i + m.len())
+            .filter_map(|i| src[i..].trim_start().strip_prefix('"').map(|rest| src.len() - rest.len()))
+            .collect();
+        for (n, &start) in starts.iter().enumerate() {
+            let body = &src[start..starts.get(n + 1).copied().unwrap_or(src.len())];
+            let (command, body) = body.split_once('"').unwrap();
+            let Some(sent) = sent.get(command) else { continue };
+            checked += 1;
+            for reader in ["c.arg", "c.sender", "c.channel"] {
+                for (at, _) in body.match_indices(reader) {
+                    let rest = &body[at + reader.len()..];
+                    let rest = match rest.strip_prefix("::<") {
+                        Some(generic) => &generic[generic.find(">(").unwrap() + 1..],
+                        None => rest,
+                    };
+                    let Some(name) = rest.strip_prefix("(\"").and_then(|r| r.split_once('"')).map(|(n, _)| n) else {
+                        continue;
+                    };
+                    if !sent.contains(name) {
+                        wrong.push(format!("{command} reads `{name}`; the client sends {sent:?}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 400, "found only {checked} handlers with client bindings");
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

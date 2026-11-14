@@ -238,6 +238,11 @@
   align-items: center;
   min-height: 22px;
 }
+.exceptionHint {
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 0 4px 22px;
+}
 
 .attachList {
   height: 360px;

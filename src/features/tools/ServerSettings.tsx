@@ -64,7 +64,7 @@ export function languageNames(ids: readonly string[], known: readonly LanguageCh
 // Form building blocks (IDEA layout: "Label: [control]", titled separators)
 
 /** A titled separator; `collapsible` ones fold away like IDEA's hideable separators. */
-function Section({
+export function Section({
   title,
   note,
   collapsible,
@@ -358,7 +358,7 @@ export function ToolSettings({ tool }: { tool: ToolInfo }) {
  * group instead of an on/off box per server. Automatic keeps them all on, so
  * the first one available runs.
  */
-function AlternativesRow({ tool, names }: { tool: ToolInfo; names: string[] }) {
+export function AlternativesRow({ tool, names }: { tool: ToolInfo; names: string[] }) {
   const form = useSettingsForm();
   const tools = useTools((s) => s.tools);
   const servers = (form.useValue("languageServers") ?? {}) as Record<string, ServerEntry>;
@@ -387,7 +387,11 @@ function AlternativesRow({ tool, names }: { tool: ToolInfo; names: string[] }) {
     { value: "auto", label: tx("Automatic") },
     ...names.map((name, i) => {
       const t = members[i];
-      return { value: name, label: short[i]!, detail: t ? tx(STATUS_LABEL[t.status]) : undefined };
+      return {
+        value: name,
+        label: short[i]!,
+        detail: t ? tx(STATUS_LABEL[t.status]) : undefined,
+      };
     }),
     { value: "none", label: tx("None") },
   ];
@@ -413,7 +417,16 @@ function AlternativesRow({ tool, names }: { tool: ToolInfo; names: string[] }) {
 }
 
 /** A language server: on/off, executable, startup options, workspace configuration. */
-export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
+export function ServerSettings({
+  tool,
+  pending,
+  showAlternatives = true,
+}: {
+  tool: ToolInfo;
+  pending: boolean;
+  /** False where the page already shows the picker for the server's alternatives. */
+  showAlternatives?: boolean;
+}) {
   const form = useSettingsForm();
   const entry = useServerEntry(tool.name);
   const custom = (entry.languages?.length ?? 0) > 0;
@@ -442,7 +455,7 @@ export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boo
   return (
     <div className={styles.form}>
       {groups.length ? (
-        groups.map((names) => <AlternativesRow key={names.join("\n")} tool={tool} names={names} />)
+        showAlternatives && groups.map((names) => <AlternativesRow key={names.join("\n")} tool={tool} names={names} />)
       ) : (
         <Checkbox
           checked={entry.enabled !== false}
@@ -596,7 +609,13 @@ export function NewServerDialog({
       title={tx("New Language Server")}
       width={480}
       buttons={[
-        { label: "OK", role: "default", disabled: !!problem, title: problem ?? undefined, onClick: add },
+        {
+          label: "OK",
+          role: "default",
+          disabled: !!problem,
+          title: problem ?? undefined,
+          onClick: add,
+        },
         { label: "Cancel", role: "cancel" },
       ]}
     >

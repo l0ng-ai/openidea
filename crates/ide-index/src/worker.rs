@@ -1,8 +1,8 @@
 //! The background indexing thread: initial load + full scan, then incremental
 //! updates queued by the watcher.
 
-use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
-use crate::filter::{Found, PathFilter};
+use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol, safe_rel};
+use crate::filter::{Found, PathFilter, mtime_of};
 use crate::store::Store;
 use ide_core::{IdeEvent, SharedSink, TaskId};
 use ide_language::{LanguageRegistry, Syntax};
@@ -12,12 +12,16 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Files larger than this are listed but not parsed for symbols.
 pub const MAX_SYMBOL_FILE: u64 = 2 * 1024 * 1024;
 const CHUNK: usize = 512;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+#[cfg(not(test))]
+const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SNAPSHOT_DELAY: Duration = Duration::from_millis(50);
 pub(crate) const MAX_RECENT: usize = 50;
 
 pub(crate) enum Job {
@@ -55,6 +59,11 @@ pub(crate) struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
     idle: Condvar,
+    /// Coalesced post-update snapshot refresh.
+    snapshot_due: Mutex<Option<Instant>>,
+    /// Directories whose watcher events still need reconciliation before a
+    /// refreshed snapshot can be trusted.
+    pending_dirs: Mutex<HashSet<PathBuf>>,
 }
 
 impl Shared {
@@ -79,6 +88,8 @@ impl Shared {
             queue: Mutex::default(),
             wake: Condvar::new(),
             idle: Condvar::new(),
+            snapshot_due: Mutex::default(),
+            pending_dirs: Mutex::default(),
         }
     }
 
@@ -135,8 +146,39 @@ impl Shared {
             q.busy = true;
         }
         if scan {
-            self.load_persisted();
-            self.full_scan();
+            let startup_started = Instant::now();
+            // A warm start can trust the snapshot when neither the scope nor any
+            // directory/file metadata changed. Rebuilding the walk's file list is
+            // the expensive part; validate the flat manifest first.
+            let snapshot_started = Instant::now();
+            let fast = self.try_fast_start();
+            let snapshot_elapsed = snapshot_started.elapsed();
+            if !fast {
+                let snapshot_guard = SystemTime::now();
+                let walk_started = Instant::now();
+                let found = self.walk_roots(None);
+                let walk_elapsed = walk_started.elapsed();
+                let hydration_started = Instant::now();
+                self.load_persisted(&found);
+                let hydration_elapsed = hydration_started.elapsed();
+                self.full_scan(Some(found), snapshot_guard);
+                if !self.is_cancelled() {
+                    tracing::info!(
+                        mode = "fallback",
+                        snapshot_attempt_ms = snapshot_elapsed.as_millis() as u64,
+                        walk_ms = walk_elapsed.as_millis() as u64,
+                        hydration_ms = hydration_elapsed.as_millis() as u64,
+                        elapsed_ms = startup_started.elapsed().as_millis() as u64,
+                        "index startup completed"
+                    );
+                }
+            } else if !self.is_cancelled() {
+                tracing::info!(
+                    mode = "snapshot",
+                    elapsed_ms = startup_started.elapsed().as_millis() as u64,
+                    "index startup completed"
+                );
+            }
         } else {
             self.indexing.store(false, Ordering::SeqCst);
         }
@@ -147,17 +189,38 @@ impl Shared {
             self.idle.notify_all();
         }
         loop {
+            let mut save_due = false;
             let jobs: Vec<Job> = {
                 let mut q = self.queue.lock();
-                while q.jobs.is_empty() && !self.is_cancelled() {
-                    self.wake.wait(&mut q);
+                loop {
+                    if self.is_cancelled() {
+                        return;
+                    }
+                    if !q.jobs.is_empty() {
+                        break;
+                    }
+                    let due = *self.snapshot_due.lock();
+                    if let Some(due) = due {
+                        if Instant::now() >= due {
+                            save_due = true;
+                            break;
+                        }
+                        self.wake.wait_until(&mut q, due);
+                    } else {
+                        self.wake.wait(&mut q);
+                    }
                 }
-                if self.is_cancelled() {
-                    return;
+                if save_due {
+                    Vec::new()
+                } else {
+                    q.busy = true;
+                    q.jobs.drain(..).collect()
                 }
-                q.busy = true;
-                q.jobs.drain(..).collect()
             };
+            if save_due {
+                self.save_snapshot_now();
+                continue;
+            }
             self.process(jobs);
             let mut q = self.queue.lock();
             q.busy = false;
@@ -167,27 +230,123 @@ impl Shared {
         }
     }
 
-    fn load_persisted(&self) {
-        let Some(store) = &self.store else { return };
+    /// Warm start: validate the snapshot's flat directory/file manifest and hydrate
+    /// without walking the tree. A changed scope, symlink, directory mtime, file
+    /// mtime or file size falls back to the full walk.
+    fn try_fast_start(&self) -> bool {
+        let started = Instant::now();
+        let Some(store) = &self.store else { return false };
+        let load_started = Instant::now();
+        let Some(snapshot) = store.load_snapshot() else { return false };
+        let loaded = load_started.elapsed();
         let filter = self.filter();
-        let root = filter.root().to_owned();
-        match store.load() {
-            Ok(records) => {
-                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = records
-                    .into_par_iter()
-                    .filter(|(rel, _)| {
-                        let path = root.join(rel);
-                        !filter.is_excluded(&path, false) && dunce::canonicalize(&path).is_ok_and(|real| real == path)
-                    })
-                    .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
-                    .collect();
-                let mut d = self.data.write();
-                for (e, symbols) in entries {
-                    d.insert(e, symbols);
-                }
-            }
-            Err(e) => tracing::warn!("index cache load failed: {e}"),
+        if filter.has_extra_roots() || snapshot.filter() != filter.stamp() {
+            return false;
         }
+        let root = filter.root();
+        let validation_started = Instant::now();
+        for i in 0..snapshot.dirs_len() {
+            let rel = snapshot.dir(i);
+            let path = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { return false };
+            if !meta.is_dir() || mtime_of(&meta) != snapshot.dir_mtime(i) {
+                return false;
+            }
+        }
+        let external = crate::store::external_ignore_candidates(root);
+        let saved_external: Vec<&str> = (0..snapshot.ignore_len())
+            .filter(|&i| snapshot.ignore_external(i))
+            .map(|i| snapshot.ignore_path(i))
+            .collect();
+        if external.len() != saved_external.len()
+            || external.iter().zip(&saved_external).any(|(path, saved)| path.to_string_lossy() != **saved)
+        {
+            return false;
+        }
+        for i in 0..snapshot.ignore_len() {
+            let path = Path::new(snapshot.ignore_path(i));
+            let meta = std::fs::metadata(path).ok();
+            let present = meta.is_some();
+            if present != snapshot.ignore_present(i) {
+                return false;
+            }
+            if let Some(meta) = meta
+                && (mtime_of(&meta) != snapshot.ignore_mtime(i) || meta.len() != snapshot.ignore_size(i))
+            {
+                return false;
+            }
+        }
+        let validation_elapsed = validation_started.elapsed();
+        let build_started = Instant::now();
+        let entries: Vec<Option<(FileEntry, Vec<StoredSymbol>)>> = (0..snapshot.len())
+            .into_par_iter()
+            .map(|i| {
+                let path = root.join(snapshot.rel(i));
+                let meta = std::fs::symlink_metadata(&path).ok()?;
+                if !meta.is_file() || mtime_of(&meta) != snapshot.mtime(i) || meta.len() != snapshot.size(i) {
+                    return None;
+                }
+                Some(snapshot.entry(i, root))
+            })
+            .collect();
+        let built = build_started.elapsed();
+        if entries.iter().any(Option::is_none) {
+            return false;
+        }
+        let validated = entries;
+        let mut entries = Vec::with_capacity(validated.len());
+        for entry in validated {
+            entries.push(entry.expect("validated above"));
+        }
+        let dirs: Vec<(Box<str>, PathBuf, u32)> = (0..snapshot.dirs_len())
+            .filter_map(|i| {
+                let rel = snapshot.dir(i);
+                (!rel.is_empty() && snapshot.dir_count(i) > 0).then(|| {
+                    let key = format!("{rel}/");
+                    (key.into_boxed_str(), root.join(rel), snapshot.dir_count(i))
+                })
+            })
+            .collect();
+        let insert_started = Instant::now();
+        let mut d = self.data.write();
+        d.load_bulk(entries, dirs);
+        drop(d);
+        tracing::info!(
+            mode = "snapshot",
+            snapshot_hydrated = snapshot.len(),
+            discovered = 0usize,
+            symbol_extractions = 0usize,
+            load_ms = loaded.as_millis() as u64,
+            directory_validation_ms = validation_elapsed.as_millis() as u64,
+            file_validation_build_ms = built.as_millis() as u64,
+            insert_ms = insert_started.elapsed().as_millis() as u64,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "index snapshot hydrated"
+        );
+        #[cfg(test)]
+        eprintln!(
+            "index snapshot: warm start load {loaded:?}, validate/build {built:?}, insert {:?}, total {:?}",
+            insert_started.elapsed(),
+            started.elapsed()
+        );
+        self.indexing.store(false, Ordering::SeqCst);
+        self.emit_state();
+        let recent = store.load_recent_file().unwrap_or_else(|| {
+            let recent = store.load_recent();
+            let _ = store.save_recent_file(&recent);
+            recent
+        });
+        let mut r = self.recent.lock();
+        for p in recent.into_iter().map(|rel| root.join(rel)) {
+            if !r.contains(&p) {
+                r.push(p);
+            }
+        }
+        r.truncate(MAX_RECENT);
+        true
+    }
+
+    fn load_recent(&self, store: &Store, root: &Path) {
         let recent: Vec<PathBuf> = store.load_recent().into_iter().map(|rel| root.join(rel)).collect();
         let mut r = self.recent.lock();
         for p in recent {
@@ -196,6 +355,72 @@ impl Shared {
             }
         }
         r.truncate(MAX_RECENT);
+    }
+
+    fn load_persisted(&self, found: &[Found]) {
+        let Some(store) = &self.store else { return };
+        let root = self.filter().root().to_owned();
+        let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
+        let started = Instant::now();
+        match store.load_snapshot() {
+            Some(snapshot) => {
+                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = (0..snapshot.len())
+                    .into_par_iter()
+                    .filter_map(|i| {
+                        let rel = snapshot.rel(i);
+                        if !safe_rel(rel) {
+                            return None;
+                        }
+                        let path = root.join(rel);
+                        seen.contains(path.as_path()).then(|| snapshot.entry(i, &root))
+                    })
+                    .collect();
+                let mut d = self.data.write();
+                let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+                d.reserve(entries.len(), symbols, 0);
+                for (e, symbols) in entries {
+                    d.insert(e, symbols);
+                }
+                tracing::info!(
+                    "index snapshot: hydrated {} files, {} symbols in {:?}",
+                    d.file_count,
+                    d.symbol_count,
+                    started.elapsed()
+                );
+                #[cfg(test)]
+                eprintln!("index snapshot: hydrated {} files in {:?}", d.file_count, started.elapsed());
+            }
+            None => match store.load() {
+                Ok(records) => {
+                    // Fallback for an index that changed since the snapshot: redb
+                    // records are decoded one file at a time and filtered by the walk.
+                    let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = records
+                        .into_par_iter()
+                        .filter(|(rel, _)| {
+                            safe_rel(rel) && {
+                                let path = root.join(rel);
+                                seen.contains(path.as_path())
+                            }
+                        })
+                        .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
+                        .collect();
+                    let mut d = self.data.write();
+                    let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+                    d.reserve(entries.len(), symbols, 0);
+                    for (e, symbols) in entries {
+                        d.insert(e, symbols);
+                    }
+                    tracing::info!(
+                        "index cache: hydrated {} files, {} symbols in {:?}",
+                        d.file_count,
+                        d.symbol_count,
+                        started.elapsed()
+                    );
+                }
+                Err(e) => tracing::warn!("index cache load failed: {e}"),
+            },
+        }
+        self.load_recent(store, &root);
     }
 
     /// A cancelled scan (project closed) still ends its progress task and the indexing state.
@@ -212,11 +437,24 @@ impl Shared {
         self.emit_state();
     }
 
-    fn full_scan(&self) {
-        self.scan(None);
+    fn walk_roots(&self, dirs: Option<&[PathBuf]>) -> Vec<Found> {
+        let filter = self.filter();
+        let roots: Vec<&Path> = match dirs {
+            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
+            None => filter.roots().collect(),
+        };
+        let mut found = Vec::new();
+        for root in roots {
+            found.extend(filter.walk(root, &self.cancelled));
+        }
+        found
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>) -> Option<ScanCounts> {
+    fn full_scan(&self, found: Option<Vec<Found>>, guard: SystemTime) {
+        self.scan(None, found, guard);
+    }
+
+    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -231,15 +469,9 @@ impl Shared {
         });
 
         let filter = self.filter();
-        let mut found = Vec::new();
-        let roots: Vec<&Path> = match dirs {
-            Some(dirs) => dirs.iter().map(PathBuf::as_path).collect(),
-            None => filter.roots().collect(),
-        };
+        let was_prewalked = prewalked.is_some();
         let walk_started = Instant::now();
-        for root in roots {
-            found.extend(filter.walk(root, &self.cancelled));
-        }
+        let found = prewalked.unwrap_or_else(|| self.walk_roots(dirs));
         let walk_elapsed = walk_started.elapsed();
         if self.is_cancelled() {
             self.end_scan(task);
@@ -298,6 +530,19 @@ impl Shared {
         }
         self.persist(&[], &[], true);
         let update_elapsed = update_started.elapsed();
+        let snapshot_started = Instant::now();
+        if let Some(store) = &self.store {
+            let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
+            let d = self.data.read();
+            if let Err(e) = store.save_snapshot(&d, &filter, guard) {
+                tracing::warn!("index snapshot: {e}");
+            }
+            if let Err(e) = store.save_recent_file(&recent) {
+                tracing::warn!("index recent snapshot: {e}");
+            }
+        }
+        let snapshot_elapsed = snapshot_started.elapsed();
+        *self.snapshot_due.lock() = None;
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
             id: task,
@@ -327,7 +572,9 @@ impl Shared {
             unsupported = outcomes.unsupported,
             read_failed = outcomes.read_failed,
             not_processed = outcomes.not_processed,
+            prewalked = was_prewalked,
             walk_ms = walk_elapsed.as_millis() as u64,
+            snapshot_write_ms = snapshot_elapsed.as_millis() as u64,
             reconcile_ms = reconcile_elapsed.as_millis() as u64,
             update_ms = update_elapsed.as_millis() as u64,
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -381,6 +628,36 @@ impl Shared {
         }
         self.persist(&puts, &[], false);
         counts
+    }
+
+    fn schedule_snapshot(&self) {
+        if self.store.is_none() {
+            return;
+        }
+        let mut due = self.snapshot_due.lock();
+        if due.is_none() {
+            *due = Some(Instant::now() + SNAPSHOT_DELAY);
+        }
+    }
+
+    fn save_snapshot_now(&self) {
+        let dirs: Vec<PathBuf> = self.pending_dirs.lock().drain().collect();
+        if !dirs.is_empty() {
+            // Reconcile the directories touched since the last scan before
+            // recording their mtimes; otherwise a missed watcher event could be
+            // blessed into the manifest.
+            self.scan(Some(&dirs), None, SystemTime::now());
+            return;
+        }
+        if let Some(store) = &self.store {
+            let filter = self.filter();
+            let guard = SystemTime::now();
+            let d = self.data.read();
+            if let Err(e) = store.save_snapshot(&d, &filter, guard) {
+                tracing::warn!("index snapshot: {e}");
+            }
+        }
+        *self.snapshot_due.lock() = None;
     }
 
     fn persist(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) {
@@ -446,6 +723,17 @@ impl Shared {
                 Job::Reparse(before) => reparse.push(before),
             }
         }
+        {
+            let mut pending = self.pending_dirs.lock();
+            for path in changed.iter().chain(removed.iter()) {
+                let dir = if path.is_dir() {
+                    path.clone()
+                } else {
+                    path.parent().map_or_else(|| path.clone(), Path::to_owned)
+                };
+                pending.insert(dir);
+            }
+        }
         if !rule_dirs.is_empty() {
             {
                 let mut filter = self.filter.write();
@@ -460,14 +748,14 @@ impl Shared {
                 }
             }
             if !rescan {
-                self.scan(Some(&roots));
+                self.scan(Some(&roots), None, SystemTime::now());
                 changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
                 removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
         }
         if rescan {
             // The scan also picks up whatever `changed` / `removed` reported.
-            self.full_scan();
+            self.full_scan(None, SystemTime::now());
             changed.clear();
             removed.clear();
         }
@@ -562,6 +850,7 @@ impl Shared {
         if touched {
             self.persist(&[], &[], true);
             self.emit_state();
+            self.schedule_snapshot();
         }
     }
 }
@@ -664,10 +953,10 @@ mod metric_tests {
         let path = root.join("main.rs");
         std::fs::write(&path, "fn main() {}\n").unwrap();
         let shared = shared(&root);
-        let cold = shared.scan(None).unwrap();
+        let cold = shared.scan(None, None, SystemTime::now()).unwrap();
         assert_eq!((cold.discovered, cold.metadata_reused, cold.scheduled), (1, 0, 1));
         assert_eq!(cold.outcomes, ExtractionCounts { symbol_extractions: 1, ..Default::default() });
-        let hot = shared.scan(None).unwrap();
+        let hot = shared.scan(None, None, SystemTime::now()).unwrap();
         assert_eq!((hot.discovered, hot.metadata_reused, hot.scheduled), (1, 1, 0));
         assert_eq!(hot.outcomes, ExtractionCounts::default());
         // Force a metadata mismatch without a timestamp-resolution-dependent sleep.
@@ -675,7 +964,7 @@ mod metric_tests {
         rec.mtime = rec.mtime.wrapping_add(1);
         let (entry, symbols) = FileEntry::new(path.clone(), "main.rs".into(), rec);
         shared.data.write().insert(entry, symbols);
-        let touched = shared.scan(None).unwrap();
+        let touched = shared.scan(None, None, SystemTime::now()).unwrap();
         assert_eq!((touched.discovered, touched.metadata_reused, touched.scheduled), (1, 0, 1));
         assert_eq!(touched.outcomes, ExtractionCounts { hash_reused: 1, ..Default::default() });
         assert_eq!(shared.data.read().symbol_count, 1);
@@ -731,15 +1020,92 @@ mod metric_tests {
         {
             let mut index = shared(&root);
             index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
-            assert_eq!(index.scan(None).unwrap().outcomes.symbol_extractions, 1);
+            assert_eq!(index.scan(None, None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
         }
         let mut index = shared(&root);
         index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
-        index.load_persisted();
-        let counts = index.scan(None).unwrap();
+        let found = index.walk_roots(None);
+        index.load_persisted(&found);
+        let counts = index.scan(None, Some(found), SystemTime::now()).unwrap();
         assert_eq!((counts.discovered, counts.metadata_reused, counts.scheduled), (1, 1, 0));
         assert_eq!(counts.outcomes, ExtractionCounts::default());
         assert_eq!(index.data.read().symbol_count, 1);
+    }
+
+    #[test]
+    fn warm_snapshot_hydrates_without_symbol_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let cache = dir.path().join("cache");
+        {
+            let mut index = shared(&root);
+            index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+            assert_eq!(index.scan(None, None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
+        }
+        let mut index = shared(&root);
+        index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+        assert!(index.try_fast_start());
+        assert_eq!(index.parsed.load(Ordering::Relaxed), 0);
+        assert_eq!(index.data.read().file_count, 1);
+        assert_eq!(index.data.read().symbol_count, 1);
+    }
+
+    #[test]
+    fn cancelled_warm_start_does_not_log_completion() {
+        struct CompletionCounter(Arc<std::sync::atomic::AtomicUsize>);
+        impl tracing::Subscriber for CompletionCounter {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct Message(bool);
+                impl tracing::field::Visit for Message {
+                    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                        if field.name() == "message" && format!("{value:?}").contains("index startup completed") {
+                            self.0 = true;
+                        }
+                    }
+                }
+                let mut message = Message(false);
+                event.record(&mut message);
+                if message.0 {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let cache = dir.path().join("cache");
+        {
+            let mut index = shared(&root);
+            index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+            index.scan(None, None, SystemTime::now()).unwrap();
+        }
+        let mut index = shared(&root);
+        index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        index.cancel();
+        tracing::subscriber::with_default(CompletionCounter(count.clone()), || {
+            tracing::info!("index startup completed");
+            assert_eq!(count.swap(0, Ordering::Relaxed), 1);
+            index.run(true);
+        });
+        assert_eq!(index.parsed.load(Ordering::Relaxed), 0);
+        assert_eq!(index.data.read().file_count, 1);
+        assert_eq!(count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -767,7 +1133,21 @@ mod metric_tests {
         let dir = tempfile::tempdir().unwrap();
         let shared = shared(dir.path());
         shared.cancel();
-        assert!(shared.scan(None).is_none());
+        assert!(shared.scan(None, None, SystemTime::now()).is_none());
         assert!(!shared.indexing.load(Ordering::Relaxed));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::safe_rel;
+
+    #[test]
+    fn cache_keys_stay_below_the_root() {
+        assert!(safe_rel("src/main.rs"));
+        assert!(safe_rel("a/b/c.rs"));
+        for bad in ["", "/etc/passwd", "../out.rs", "a/../../b.rs", "./a.rs"] {
+            assert!(!safe_rel(bad), "{bad:?}");
+        }
     }
 }

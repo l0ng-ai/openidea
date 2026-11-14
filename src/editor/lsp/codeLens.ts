@@ -2,15 +2,21 @@
  * "N usages" code lenses above declarations (IDEA's usages inlay). Cheap by
  * construction: only declarations in (and near) the viewport are counted, one
  * debounced pass after edits / scrolling, results cached per document text
- * and symbol, and at most a few reference requests in flight. Beside each
+ * and symbol until the project's documents change, and at most a few reference
+ * requests in flight. Counts run the same references query the Find Usages
+ * panel runs (including the plugin indexers' anchors), scoped to what the
+ * server analyses: opening candidate files or the libraries for every count
+ * would trigger expensive server analysis, so only an explicit Find Usages
+ * widens the server's scope, and a widened search can find more. Beside each
  * count, the declaration's last author from VCS blame (`authorLens`).
  */
 import { Channel } from "@tauri-apps/api/core";
 import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { codeLenses, shownAgain, type CodeLens } from "@/editor/api";
+import { codeLenses, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
+import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { executeAction, getAction } from "@/platform/actions";
-import { commands, nextRequestId, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
+import { commands, nextRequestId, onIdeEvent, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { posToOffset } from "./positions";
@@ -134,6 +140,7 @@ class UsagesLensPlugin {
   private offReady: () => void;
   private offSettled: () => void;
   private offBlame: () => void;
+  private offChanges: () => void;
   private skipped = false;
 
   constructor(private view: EditorView) {
@@ -142,12 +149,7 @@ class UsagesLensPlugin {
       if (s.settings !== prev.settings) this.refresh();
     });
     // Counts computed while the server was indexing may be incomplete.
-    this.offReady = onLspRefresh("codeLens", () => {
-      this.cache.clear();
-      this.incomplete.clear();
-      this.retries.clear();
-      this.refresh();
-    });
+    this.offReady = onLspRefresh("codeLens", () => this.invalidate());
     this.offSettled = onServerSettled(() => {
       if (!this.incomplete.size) return;
       this.incomplete.clear();
@@ -155,10 +157,43 @@ class UsagesLensPlugin {
       this.refresh();
     });
     this.offBlame = onBlameInvalidated(() => this.refresh());
+    // Counts cover the whole project, so a change anywhere can outdate them
+    // while this view is hidden and skips its passes: another document's edit
+    // (the call sites) or a closed unsaved buffer, a backend patch (a
+    // refactoring), a file changed on disk, or a plugin index batch (an XML
+    // statement is indexed after its Java declaration). This view's own edits
+    // already refresh through `update`.
+    const offDocs = onEditorEvent((e) => {
+      if (e.type === "docChanged" && e.doc !== docOf(this.view)?.doc) this.invalidate();
+      else if (e.type === "docClosed") this.invalidate();
+    });
+    const offPatches = onIdeEvent("docPatched", (e) => {
+      if (e.doc !== docOf(this.view)?.doc) this.invalidate();
+    });
+    const offBackend = [
+      onIdeEvent("workspaceEditApplied", () => this.invalidate()),
+      onIdeEvent("fsChanged", () => this.invalidate()),
+      onNavigationProvidersChanged(() => this.invalidate()),
+    ];
+    this.offChanges = () => {
+      offDocs();
+      offPatches();
+      offBackend.forEach((off) => off());
+    };
+  }
+
+  /** Counts are cached until anything in the project may have changed them. */
+  private invalidate() {
+    this.cache.clear();
+    this.incomplete.clear();
+    this.retries.clear();
+    this.refresh();
   }
 
   update(u: ViewUpdate) {
-    if (u.docChanged || u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
+    // A re-shown tab ran nothing while hidden, and its counts may have been
+    // invalidated meanwhile; when they are cached the pass only redraws.
+    if (u.docChanged || u.viewportChanged || shownAgain(u)) this.refresh();
   }
 
   private cancel() {
@@ -179,9 +214,10 @@ class UsagesLensPlugin {
     const doc = docOf(view);
     if (!doc) return;
     const gen = this.generation;
-    const usages = usagesEnabled() && !usagesBackoff.active(doc.doc);
+    const usagesWanted = usagesEnabled();
+    const usages = usagesWanted && !usagesBackoff.active(doc.doc);
     const authors = authorEnabled() && !doc.virtual;
-    if (!usages && !authors) {
+    if (!usagesWanted && !authors) {
       if (view.state.field(lensField).length) view.dispatch({ effects: setLenses.of([]) });
       return;
     }
@@ -252,6 +288,15 @@ class UsagesLensPlugin {
       if (retry) this.schedule();
       const lines = await blame;
       if (!wanted()) return;
+      // Usages lenses already shown (the field keeps them on their lines through
+      // edits): reused when a target's count is still computing or came back
+      // incomplete while the server was busy, so the row doesn't blink away and
+      // shift the layout below it.
+      const shown = new Map<number, CodeLens>();
+      for (const l of view.state.facet(codeLenses)) {
+        if (l.kind === "usages") shown.set(view.state.doc.lineAt(l.pos).number - 1, l);
+      }
+      const allowNoUsages = editorPrefs().inlay.codeVisionNoUsages;
       const lenses: CodeLens[] = [];
       for (const t of visible) {
         const offset = posToOffset(text, { line: t.line, col: t.col });
@@ -267,15 +312,27 @@ class UsagesLensPlugin {
             run: showAnnotations,
           });
         const n = usages ? this.cache.get(key(t)) : undefined;
-        if (n === undefined || (n === 0 && !editorPrefs().inlay.codeVisionNoUsages)) continue;
-        lenses.push({
-          pos: offset,
-          title: usagesLabel(n),
-          tooltip: tx`Show usages of ${t.name}`,
-          order: 10,
-          kind: "usages",
-          run: (v) => openUsages(v, Math.min(offset, v.state.doc.length)),
-        });
+        if (n !== undefined) {
+          if (n === 0 && !allowNoUsages) continue;
+          const run: NonNullable<CodeLens["run"]> = (v) => {
+            const current = v.state.facet(codeLenses).find((l) => l.run === run);
+            if (current) openUsages(v, Math.min(current.pos, v.state.doc.length));
+          };
+          lenses.push({
+            pos: offset,
+            title: usagesLabel(n),
+            tooltip: tx`Show usages of ${t.name}`,
+            order: 10,
+            kind: "usages",
+            run,
+          });
+          continue;
+        }
+        // No fresh count: keep the lens already shown (with its mapped position)
+        // until a complete answer replaces it.
+        if (!usagesWanted) continue;
+        const stale = shown.get(t.line);
+        if (stale && (allowNoUsages || stale.title !== usagesLabel(0))) lenses.push(stale);
       }
       if (!sameLenses(view.state.field(lensField), lenses)) view.dispatch({ effects: setLenses.of(lenses) });
     } catch (e) {
@@ -289,6 +346,7 @@ class UsagesLensPlugin {
     this.offReady();
     this.offSettled();
     this.offBlame();
+    this.offChanges();
     this.cancel();
   }
 }

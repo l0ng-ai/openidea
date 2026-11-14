@@ -23,4 +23,9 @@ interface decorations {
     /// Replace this set's tree annotation for a file with a note shown after its name (API 1.7):
     /// one line of at most 200 characters, with an optional tooltip.
     set-file-note: func(path: string, set-id: string, note: string, tooltip: option<string>) -> result<_, error>;
+    /// Replace this set's tree icon for a file or folder with an id declared under
+    /// `[[contributes.fileIcons]]` (API 1.8), with an optional tooltip.
+    set-file-icon: func(path: string, set-id: string, icon: string, tooltip: option<string>) -> result<_, error>;
+    /// Replace all `(path, icon)` entries of a tree set at once (API 1.8; at most 10,000 entries).
+    set-file-icons: func(set-id: string, items: list<tuple<string, string>>) -> result<_, error>;
 }

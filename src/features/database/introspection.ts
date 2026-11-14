@@ -9,11 +9,12 @@ import { tx } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
 import { shownNames, splitTarget } from "./model";
 import { loadDatabases, sourceById, useDatabase } from "./store";
+import { databaseRequest } from "./requests";
 
 const ACCEPTED_KEY = "openidea.database.introspect";
 /** Data sources asked (or started) in this run, so a connect asks only once. */
-const offered = new Set<string>();
-const cancelled = new Set<string>();
+const offered = new Map<string, () => boolean>();
+const cancelled = new Map<string, () => boolean>();
 
 function accepted(): string[] {
   try {
@@ -36,7 +37,7 @@ const notice = (id: string) => `db-introspect-${id}`;
 
 /** A saved catalog older than this is read again on the next connect. */
 const STALE_MS = 24 * 60 * 60 * 1000;
-const loading = new Map<string, Promise<void>>();
+const loading = new Map<string, { current: () => boolean; promise: Promise<void> }>();
 
 /**
  * Brings what earlier introspection of data source `id` saved into the store (once per run).
@@ -46,9 +47,11 @@ export function loadSavedCatalog(id: string): Promise<void> {
   const sourceId = splitTarget(id).id;
   if (sourceById(sourceId)?.driver !== "snowflake") return Promise.resolve();
   let pending = loading.get(sourceId);
-  if (!pending) {
-    pending = call(commands.dbSavedCatalog(sourceId))
+  if (!pending?.current()) {
+    const current = databaseRequest(sourceId);
+    const promise = call(commands.dbSavedCatalog(sourceId))
       .then((saved) => {
+        if (!current()) return;
         const databases = saved?.databases ?? [];
         // An introspection started meanwhile knows better.
         if (!databases.length || useDatabase.getState().catalogs[sourceId]) return;
@@ -66,14 +69,16 @@ export function loadSavedCatalog(id: string): Promise<void> {
         }));
       })
       .catch(() => {});
+    pending = { current, promise };
     loading.set(sourceId, pending);
   }
-  return pending;
+  return pending.promise;
 }
 
 /** Stops the running introspection of data source `id` after the database it is reading. */
 export function cancelIntrospection(id: string) {
-  cancelled.add(splitTarget(id).id);
+  const sourceId = splitTarget(id).id;
+  cancelled.set(sourceId, databaseRequest(sourceId));
 }
 
 /** Reads the schemas and tables of every database data source `id` shows (see the Schemas tab). */
@@ -81,18 +86,22 @@ export async function introspectSource(id: string): Promise<void> {
   const sourceId = splitTarget(id).id;
   const source = sourceById(sourceId);
   if (source?.driver !== "snowflake" || useDatabase.getState().catalogs[sourceId]?.status === "running") return;
-  offered.add(sourceId);
+  const current = databaseRequest(sourceId);
+  offered.set(sourceId, current);
   remember(sourceId);
   cancelled.delete(sourceId);
   const name = source.name ?? "";
   const update = (patch: Partial<{ status: "running" | "done" | "cancelled"; done: number; total: number }>) =>
     useDatabase.setState((s) => {
+      if (!current()) return s;
       const old = s.catalogs[sourceId] ?? { status: "running" as const, done: 0, total: 0, databases: {} };
       return { catalogs: { ...s.catalogs, [sourceId]: { ...old, ...patch } } };
     });
   await loadSavedCatalog(sourceId);
+  if (!current()) return;
   update({ status: "running", done: 0, total: 0 });
   if (!useDatabase.getState().databases[sourceId]) await loadDatabases(sourceId);
+  if (!current()) return;
   const listed = useDatabase.getState().databases[sourceId];
   if (listed?.status !== "ok") {
     update({ status: "cancelled" });
@@ -106,7 +115,8 @@ export async function introspectSource(id: string): Promise<void> {
   const failed: string[] = [];
   let reason = "";
   for (const database of databases) {
-    if (cancelled.has(sourceId)) break;
+    if (!current()) return;
+    if (cancelled.get(sourceId)?.()) break;
     const position = done + 1;
     const count = databases.length;
     notifications().notify({
@@ -119,6 +129,7 @@ export async function introspectSource(id: string): Promise<void> {
     });
     try {
       const schemas = await call(commands.dbDatabaseCatalog(sourceId, database));
+      if (!current()) return;
       tables += schemas.reduce((n, schema) => n + schema.tables.length, 0);
       useDatabase.setState((s) => {
         const old = s.catalogs[sourceId];
@@ -128,6 +139,7 @@ export async function introspectSource(id: string): Promise<void> {
         };
       });
     } catch (error) {
+      if (!current()) return;
       // A database the role may not read: completion goes without it, and the summary says so.
       failed.push(database);
       reason ||= error instanceof Error ? error.message : String(error);
@@ -135,7 +147,9 @@ export async function introspectSource(id: string): Promise<void> {
     done += 1;
     update({ done });
   }
-  const stopped = cancelled.delete(sourceId);
+  if (!current()) return;
+  const stopped = cancelled.get(sourceId)?.() ?? false;
+  cancelled.delete(sourceId);
   const total = tables.toLocaleString("en");
   const read = done - failed.length;
   const unread = failed.length;
@@ -150,6 +164,7 @@ export async function introspectSource(id: string): Promise<void> {
       return { catalogs: { ...s.catalogs, [sourceId]: { ...old, databases: kept, readAt } } };
     });
     await call(commands.dbRetainCatalog(sourceId, databases)).catch(() => {});
+    if (!current()) return;
   }
   update({ status: stopped ? "cancelled" : "done" });
   const summary = tx`${total} tables and views in ${read} databases are ready for completion.`;
@@ -170,9 +185,11 @@ export async function introspectSource(id: string): Promise<void> {
 export async function offerIntrospection(id: string): Promise<void> {
   const sourceId = splitTarget(id).id;
   const source = sourceById(sourceId);
-  if (source?.driver !== "snowflake" || offered.has(sourceId)) return;
-  offered.add(sourceId);
+  if (source?.driver !== "snowflake" || offered.get(sourceId)?.()) return;
+  const current = databaseRequest(sourceId);
+  offered.set(sourceId, current);
   await loadSavedCatalog(sourceId);
+  if (!current()) return;
   const known = useDatabase.getState().catalogs[sourceId];
   if (known?.status === "running") return;
   if (known?.readAt !== undefined && Date.now() - known.readAt < STALE_MS) return;
@@ -187,7 +204,12 @@ export async function offerIntrospection(id: string): Promise<void> {
     title: tx`Introspect ${name}?`,
     body: tx("Reads the names of schemas, tables and views of every database, so completion works for all of them."),
     actions: [
-      { label: "Introspect", run: () => void introspectSource(sourceId) },
+      {
+        label: "Introspect",
+        run: () => {
+          if (current()) void introspectSource(sourceId);
+        },
+      },
       { label: "Not Now", run: () => {} },
     ],
     sticky: true,

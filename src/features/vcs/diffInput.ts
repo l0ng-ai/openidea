@@ -59,6 +59,8 @@ export interface DiffData {
   context?: { kind: string; [key: string]: unknown };
   /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
   embedded?: boolean;
+  /** Annotate the left (previous) side with Git Blame when the diff opens. */
+  annotateLeft?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
 }
