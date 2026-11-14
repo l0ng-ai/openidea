@@ -261,6 +261,18 @@ pub async fn fork(host: &Host, window: &str, task: String, turns: Option<u32>) -
     host.project(window)?.agents.fork(&task, turns).await
 }
 
+/// Creates a temporary side conversation of `source`: lives in memory only, never
+/// persisted, not listed.
+pub async fn create_ephemeral(
+    host: &Host,
+    window: &str,
+    request: NewAgentTask,
+    source: String,
+) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.create_ephemeral(request, &source).await
+}
+
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
 pub async fn rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
