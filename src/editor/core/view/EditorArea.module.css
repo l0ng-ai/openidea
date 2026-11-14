@@ -270,12 +270,28 @@
 }
 .tabsVertical > .tabs,
 .tabsVertical > .tabRows {
+  /* Fits the labels up to the draggable limit (SideTabsResizer); the editor keeps at least 60%. */
   width: max-content;
-  /* A narrow editor group keeps most of its width for the editor; labels truncate. */
-  min-width: min(140px, 40%);
-  max-width: min(260px, 40%);
+  max-width: min(var(--side-tabs-limit, 260px), 40%);
   border-bottom: none;
   border-right: 1px solid var(--border-editor-tabs, var(--border));
+}
+/* A zero-width handle on the column's inner border, with a wider hit area. */
+.sideTabsResizer {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 0;
+  outline: none;
+}
+.sideTabsResizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+  cursor: ew-resize;
+}
+.sideTabsResizer:focus-visible::after {
+  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
 }
 .tabsVertical .tabRows > .tabs {
   min-height: 0;
@@ -285,9 +301,12 @@
   flex: 1 1 auto;
   border-top: 1px solid var(--border-editor-tabs, var(--border));
 }
+.tabsRight > .sideTabsResizer {
+  order: 1;
+}
 .tabsRight > .tabs,
 .tabsRight > .tabRows {
-  order: 1;
+  order: 2;
   border-right: none;
   border-left: 1px solid var(--border-editor-tabs, var(--border));
 }

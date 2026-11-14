@@ -285,3 +285,38 @@ test("vertical tabs leave a narrow editor group most of its width", async ({ wor
     expect(contentBox!.width).toBeGreaterThanOrEqual(paneBox!.width * 0.6 - 1);
   }
 });
+
+test("dragging the vertical tab column's edge resizes it and the width is kept", async ({ workbench: page }) => {
+  await openFromTree(page, "settings.gradle.kts");
+  const placeLeft = () =>
+    page.evaluate(async () => {
+      const projectModule = "/src/platform/project.ts";
+      const schemaModule = "/src/features/settings/model/schema.ts";
+      const [{ useProject }, { DEFAULT_SETTINGS }] = await Promise.all([
+        import(/* @vite-ignore */ projectModule),
+        import(/* @vite-ignore */ schemaModule),
+      ]);
+      const base = useProject.getState().settings ?? DEFAULT_SETTINGS;
+      useProject.setState({
+        settings: { ...base, editor: { ...base.editor, tabs: { ...base.editor.tabs, placement: "left" } } },
+      });
+    });
+  await placeLeft();
+
+  const strip = page.getByRole("tablist", { name: "Editor tabs" });
+  const handle = page.getByRole("separator", { name: "Resize editor tabs" });
+  const before = (await strip.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 60, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await strip.boundingBox())!.width).toBeLessThan(before - 40);
+  const narrowed = (await strip.boundingBox())!.width;
+
+  // The next session starts with the dragged width.
+  await page.reload();
+  await openFromTree(page, "settings.gradle.kts");
+  await placeLeft();
+  await expect.poll(async () => Math.round((await strip.boundingBox())!.width)).toBe(Math.round(narrowed));
+});
