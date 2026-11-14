@@ -1,7 +1,7 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import type { Branch, MergeOptions, Remote, Worktree } from "@/bindings";
+import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -133,15 +133,55 @@ export function showPullDialog() {
   openDialog((close) => <PullDialog onClose={close} />);
 }
 
+/** IDEA's Git Root choice: shown only when the project holds several repositories. */
+function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+  const [roots] = useState(() => useVcs.getState().roots);
+  if (roots.length < 2) return null;
+  return (
+    <Select
+      aria-label="Repository"
+      value={repo ?? roots[0] ?? null}
+      options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
+      onChange={onChange}
+    />
+  );
+}
+
+/** The repository's branch info: the store's for the selected repository, else read from git. */
+function useBranchInfo(repo: string | null) {
+  const [initial] = useState(() => ({ repo: currentRepo(), info: useVcs.getState().branch }));
+  const [loaded, setLoaded] = useState<{ repo: string | null; info: BranchInfo | null } | null>(null);
+  useEffect(() => {
+    if (repo === initial.repo) return;
+    let live = true;
+    void call(commands.vcsBranchInfo(repo))
+      .then((info) => live && setLoaded({ repo, info }))
+      .catch(() => live && setLoaded({ repo, info: null }));
+    return () => {
+      live = false;
+    };
+  }, [repo, initial.repo]);
+  if (repo === initial.repo) return initial.info;
+  return loaded?.repo === repo ? loaded.info : null;
+}
+
 function PullDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
-  const [info] = useState(() => useVcs.getState().branch);
+  const [repo, setRepo] = useState(currentRepo);
+  const info = useBranchInfo(repo);
   const branches = useBranches(repo);
   const [remotes, setRemotes] = useState<Remote[] | null>(null);
   const [remote, setRemote] = useState<string | null>(null);
   const [chosenBranch, setBranch] = useState<string | null>(null);
   const [rebase, setRebase] = useState(false);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
+
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setRemotes(null);
+    setRemote(null);
+    setBranch(null);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -156,7 +196,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
     return () => {
       alive = false;
     };
-  }, [info?.upstream]);
+  }, [repo, info?.upstream]);
 
   const remoteBranches = useMemo(() => (remote ? remoteBranchesOf(branches, remote) : []), [branches, remote]);
   // Default: the upstream's branch, else the same name as the current branch.
@@ -199,11 +239,15 @@ function PullDialog({ onClose }: { onClose: () => void }) {
     >
       <div className={styles.form}>
         {remotes && !remotes.length ? (
-          <div className={styles.hint}>
-            <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
-          </div>
+          <>
+            <RepoPicker repo={repo} onChange={chooseRepo} />
+            <div className={styles.hint}>
+              <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
+            </div>
+          </>
         ) : (
           <div className={styles.fieldRow}>
+            <RepoPicker repo={repo} onChange={chooseRepo} />
             <Select
               aria-label="Remote"
               value={remote}

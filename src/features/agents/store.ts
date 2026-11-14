@@ -268,6 +268,15 @@ export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
   }));
 }
 
+/** An acknowledgement consumes only the submitted revision, in the same project connection. */
+function clearSubmittedComposer(key: string, submitted: ComposerDraft, started: number) {
+  useAgents.setState((s) =>
+    generation === started && s.composers.get(key) === submitted
+      ? { composers: new Map(s.composers).set(key, emptyDraft()) }
+      : s,
+  );
+}
+
 /** Session tabs on screen; a task can be shown in more than one split. */
 const visible = new Map<string, number>();
 const windowFocused = () => document.visibilityState !== "hidden" && document.hasFocus();
@@ -787,6 +796,7 @@ export async function startTask(
   const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
+  const started = generation;
   const options = draftConfig(
     providers.find((p) => p.id === draft.provider),
     draft,
@@ -821,7 +831,7 @@ export async function startTask(
   }));
   updateDraft({ projectRoot });
   remember(composer.text.trim());
-  updateComposer(HOME, emptyDraft());
+  clearSubmittedComposer(HOME, composer, started);
   if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
 }
 
@@ -927,8 +937,9 @@ function remember(text: string) {
 export async function sendMessage(task: string, now: boolean): Promise<void> {
   const composer = composerDraft(task);
   if (!canSend(composer)) return;
+  const started = generation;
   await call(commands.agentPrompt(task, toPrompt(composer), now));
-  updateComposer(task, emptyDraft());
+  clearSubmittedComposer(task, composer, started);
 }
 
 /** Moves the caret to the end of composer `key`. */
