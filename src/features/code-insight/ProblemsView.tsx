@@ -410,7 +410,7 @@ export function ProblemsView() {
     <div className={styles.view}>
       <div className={styles.body} onKeyDownCapture={onKeyDownCapture}>
         {options.preview ? (
-          <SplitGroup orientation="horizontal" id="problems-preview-split">
+          <SplitGroup orientation="horizontal" id="problems-preview-split" storageKey="openidea.problems.previewSplit">
             <SplitPanel id="problems" minSize={120} className={styles.panel}>
               {list}
             </SplitPanel>

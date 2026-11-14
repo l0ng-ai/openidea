@@ -401,7 +401,7 @@ function UsagesSplit({ preview, children }: { preview: ReactNode; children: Reac
   const show = useUsagesOptions((s) => s.preview);
   if (!show) return children;
   return (
-    <SplitGroup orientation="horizontal" id="usages-preview-split">
+    <SplitGroup orientation="horizontal" id="usages-preview-split" storageKey="openidea.usages.previewSplit">
       <SplitPanel id="usages" minSize={160} className={styles.panel}>
         {children}
       </SplitPanel>

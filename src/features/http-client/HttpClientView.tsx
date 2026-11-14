@@ -261,7 +261,7 @@ export function HttpClientView() {
     void refreshHistory();
   }, []);
   return (
-    <SplitGroup orientation="horizontal" className={styles.root}>
+    <SplitGroup orientation="horizontal" className={styles.root} storageKey="openidea.httpClient.split">
       <SplitPanel id="http-history" defaultSize="32%" minSize="160px">
         <div className={styles.list} role="list" aria-label={tx("Response history")}>
           {running && (
