@@ -1,8 +1,9 @@
-import type { BranchInfo } from "@/bindings";
+import type { BranchInfo, FileStatus } from "@/bindings";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { setFileDecorations, type DecorationSegment, type FileDecoration } from "@/workbench/contributions";
+import { rootOf } from "./model";
 import { useVcs } from "./store";
 
 const PROVIDER = "vcs-root-sync";
@@ -20,7 +21,13 @@ const styled = (attr: string, extra: Pick<DecorationSegment, "text"> & Decoratio
   ...extra,
 });
 
-export function rootSyncSuffix(info: BranchInfo): DecorationSegment[] | null {
+/** How many files of the working tree changed (staged, unstaged or untracked): nothing when clean. */
+function changedFiles(count: number): DecorationSegment[] {
+  if (count <= 0) return [];
+  return [{ text: String(count), icon: "edit", label: tx`${count} changed files`, color: "var(--vcs-modified)" }];
+}
+
+export function rootSyncSuffix(info: BranchInfo, changed = 0): DecorationSegment[] | null {
   const { head, upstream, ahead, behind } = info;
   if (!head) return null;
   const branchAttr = upstream
@@ -32,7 +39,7 @@ export function rootSyncSuffix(info: BranchInfo): DecorationSegment[] | null {
       : "local-branch";
   const branchColor = `var(--git-${branchAttr}, var(--accent))`;
   const branch: DecorationSegment = styled(branchAttr, { text: head, color: branchColor });
-  if (!upstream) return [branch];
+  if (!upstream) return [branch, ...changedFiles(changed)];
   const counts: DecorationSegment[] = [];
   if (ahead > 0)
     counts.push(
@@ -61,7 +68,23 @@ export function rootSyncSuffix(info: BranchInfo): DecorationSegment[] | null {
         color: "var(--git-head-tags, var(--accent))",
       }),
     );
-  return [branch, styled("head-tags", { text: "/", color: "var(--git-head-tags, var(--accent))" }), ...counts];
+  return [
+    branch,
+    styled("head-tags", { text: "/", color: "var(--git-head-tags, var(--accent))" }),
+    ...counts,
+    ...changedFiles(changed),
+  ];
+}
+
+/** Changed files per repository root (each file counted once, in its innermost repository). */
+export function changedByRoot(status: readonly FileStatus[], roots: readonly string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const f of status) {
+    if (f.staged === "ignored" || f.unstaged === "ignored") continue;
+    const root = rootOf(f.path, roots);
+    if (root) out.set(root, (out.get(root) ?? 0) + 1);
+  }
+  return out;
 }
 
 async function branchInfoOf(root: string): Promise<[string, BranchInfo] | null> {
@@ -83,6 +106,7 @@ export function installRootSync(): () => void {
   let running = false;
   let pending = false;
   let shown: ReadonlyMap<string, FileDecoration> = new Map();
+  let branches = new Map<string, BranchInfo>();
 
   const publish = (next: ReadonlyMap<string, FileDecoration>) => {
     if (disposed || sameDecorations(next, shown)) return;
@@ -94,12 +118,27 @@ export function installRootSync(): () => void {
     const { available, roots } = useVcs.getState();
     if (!available || !workflowSettings().vcs.git.showBranchInProjectView) return publish(new Map());
     const infos = await Promise.all(roots.map(branchInfoOf));
-    const next = new Map<string, FileDecoration>();
+    const next = new Map<string, BranchInfo>();
     roots.forEach((root, i) => {
-      const entry = infos[i];
-      const suffix = entry ? rootSyncSuffix(entry[1]) : shown.get(root)?.suffix;
-      if (suffix) next.set(root, { suffix, suffixColor: SUFFIX_COLOR });
+      // A repository whose branch can't be read now keeps what it showed.
+      const info = infos[i]?.[1] ?? branches.get(root);
+      if (info) next.set(root, info);
     });
+    branches = next;
+    render();
+  };
+
+  /** The suffixes from the branches last read and the current working tree status (no git query). */
+  const render = () => {
+    const { available, roots, status } = useVcs.getState();
+    if (!available || !workflowSettings().vcs.git.showBranchInProjectView) return publish(new Map());
+    const changed = changedByRoot(status, roots);
+    const next = new Map<string, FileDecoration>();
+    for (const root of roots) {
+      const info = branches.get(root);
+      const suffix = info ? rootSyncSuffix(info, changed.get(root) ?? 0) : null;
+      if (suffix) next.set(root, { suffix, suffixColor: SUFFIX_COLOR });
+    }
     publish(next);
   };
 
@@ -129,6 +168,8 @@ export function installRootSync(): () => void {
 
   const unsubVcs = useVcs.subscribe((s, prev) => {
     if (s.available !== prev.available || s.roots.join("\n") !== prev.roots.join("\n")) schedule();
+    // The changed-file counts follow the working tree as the status refreshes, without asking git.
+    else if (s.status !== prev.status) render();
   });
   const offGit = onIdeEvent("vcsChanged", scheduleSoon);
   const offSettings = onWorkflowSettingsChange((s) => s.vcs.git.showBranchInProjectView, schedule);

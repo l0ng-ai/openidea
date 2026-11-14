@@ -113,7 +113,7 @@ describe("installRootSync", () => {
       status: "ok",
       data: root === "/p" ? info("main", "origin/main", 1, 0) : info("dev", null),
     }));
-    useVcs.setState({ available: true, roots: ["/p", "/p/lib"] });
+    useVcs.setState({ available: true, roots: ["/p", "/p/lib"], status: [] });
   });
 
   afterEach(() => {
@@ -161,6 +161,34 @@ describe("installRootSync", () => {
     useVcs.setState((s) => ({ version: s.version + 1 }));
     emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/p/a.txt"], removed: [] } as never);
     await settle();
+    expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts the changed files of each repository and follows the status without asking git", async () => {
+    enable(true);
+    dispose = installRootSync();
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(2));
+    const file = (path: string, unstaged: string) =>
+      ({ path, relPath: path, staged: null, unstaged, renamedFrom: null }) as never;
+    useVcs.setState({
+      status: [
+        file("/p/a.ts", "modified"),
+        file("/p/b.ts", "untracked"),
+        file("/p/lib/c.ts", "added"),
+        file("/p/d.log", "ignored"),
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(getFileDecoration("/p")?.suffix?.at(-1)).toEqual({
+        text: "2",
+        icon: "edit",
+        label: "2 changed files",
+        color: "var(--vcs-modified)",
+      }),
+    );
+    expect(getFileDecoration("/p/lib")?.suffix?.map((s) => s.text)).toEqual(["dev", "1"]);
+    useVcs.setState({ status: [] });
+    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "/", "1"]));
     expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
   });
 

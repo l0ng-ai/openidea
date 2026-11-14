@@ -1775,6 +1775,7 @@
   "No Maven projects": "没有 Maven 项目",
   "No profile for '{name}'": "没有 '{name}' 的分析数据",
   "No Python found": "未找到 Python",
+  "No .NET run configuration for this project": "此项目没有 .NET 运行配置",
   "No recent repository URLs": "没有最近使用的仓库 URL",
   "No recent searches": "无最近搜索",
   "No TODO items found": "未找到 TODO 项",
