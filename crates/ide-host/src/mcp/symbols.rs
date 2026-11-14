@@ -210,6 +210,7 @@ fn leads_declaration(line: &str, line_comment: Option<&str>) -> bool {
 pub fn find_references() -> Tool {
     Tool::new("find_references", "Find references using the language service and the IDE's project index. Positions are 1-based UTF-16. Reports incomplete results when analysis is still running.", |call| async move {
         let path = call.resolve_readable(&call.str("filePath")?).await?;
+        let page = super::page::Page::of(&call, REFERENCES_LIMIT)?;
         let line = call.opt_i64("line")?.ok_or_else(|| IdeError::invalid("missing line"))?;
         let column = call.opt_i64("column")?.ok_or_else(|| IdeError::invalid("missing column"))?;
         let project = call.project.clone();
@@ -244,13 +245,27 @@ pub fn find_references() -> Tool {
             }
         }
         positions(&mut value);
+        // `classified`, when there, goes with `locations` one to one.
+        if let serde_json::Value::Object(map) = &mut value {
+            let mut list = |key: &str| match map.remove(key) { Some(serde_json::Value::Array(items)) => items, _ => Vec::new() };
+            let (locations, classified) = (list("locations"), list("classified"));
+            let classified = page.take(classified, &mut serde_json::Map::new());
+            let locations = page.take(locations, map);
+            map.insert("locations".into(), locations.into());
+            map.insert("classified".into(), classified.into());
+        }
         Output::json(value)
     })
     .param(Param::required("filePath", ParamType::String, "Path relative to the project root"))
     .param(Param::required("line", ParamType::Integer, "1-based line"))
     .param(Param::required("column", ParamType::Integer, "1-based UTF-16 column"))
     .param(Param::optional("includeDeclaration", ParamType::Boolean, "Include declarations (default true)"))
+    .param(Param::optional("limit", ParamType::Integer, "References to return at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, super::page::OFFSET))
 }
+
+/// References `find_references` lists by default.
+const REFERENCES_LIMIT: usize = 100;
 
 fn mcp_position(text: &str, line: i64, column: i64) -> IdeResult<Pos> {
     if line < 1 || line > u32::MAX as i64 || column < 1 || column > u32::MAX as i64 {
