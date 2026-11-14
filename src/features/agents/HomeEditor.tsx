@@ -221,26 +221,29 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             />
           }
         />
-        {probe && (!docked || probe.error) && (
-          <p className={probe.error ? styles.warning : styles.note}>
-            {probe.error
-              ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
-              : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
-          </p>
-        )}
-        {(error || (provider && !provider.installed) || (provider && !provider.config.length)) && (
-          <p
-            className={error || !provider?.installed ? styles.warning : styles.note}
-            role={error ? "alert" : undefined}
-          >
-            {error ??
-              (provider && !provider.installed ? (
-                txTemplate(`${provider.command} was not found on PATH`)
-              ) : (
-                <T>Models and modes appear after this agent's first task.</T>
-              ))}
-          </p>
-        )}
+        {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
+        <div className={styles.notes}>
+          {probe && (!docked || probe.error) && (
+            <p className={probe.error ? styles.warning : styles.note}>
+              {probe.error
+                ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
+                : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {(error || (provider && !provider.installed) || (provider && !provider.config.length)) && (
+            <p
+              className={error || !provider?.installed ? styles.warning : styles.note}
+              role={error ? "alert" : undefined}
+            >
+              {error ??
+                (provider && !provider.installed ? (
+                  txTemplate(`${provider.command} was not found on PATH`)
+                ) : (
+                  <T>Models and modes appear after this agent's first task.</T>
+                ))}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
