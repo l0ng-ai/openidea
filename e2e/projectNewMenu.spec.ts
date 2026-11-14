@@ -62,6 +62,7 @@ test("offers file templates for the selected workspace member", async ({ workben
   await expect(page.getByRole("menuitem", { name: "Java Class", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Tomcat Context Descriptor", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Go File", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "TypeScript File", exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("tomcat-new-menu.png"), animations: "disabled" });
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
