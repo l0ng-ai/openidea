@@ -28,6 +28,7 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  importBindings,
   markerBatches,
   markersOf,
   noteOtherChanges,
@@ -247,8 +248,13 @@ function server(
 }
 
 /** A Python project: the server answers neither implementations nor a type hierarchy. */
-function pythonServer(inheritance: ClassInheritance[], outlines: Record<string, OutlineItem[]>) {
-  const calls = { implementations: 0, inheritance: 0 };
+function pythonServer(
+  inheritance: ClassInheritance[],
+  outlines: Record<string, OutlineItem[]>,
+  files: Record<string, string[]> = {},
+  modules: Record<string, string> = {},
+) {
+  const calls = { implementations: 0, inheritance: 0, modules: [] as string[] };
   const deps = (): MarkerDeps => ({
     implementations: async () => {
       calls.implementations++;
@@ -260,7 +266,11 @@ function pythonServer(inheritance: ClassInheritance[], outlines: Record<string, 
       },
       outline: async (p) => outlines[p] ?? [],
     },
-    readFiles: async () => new Map(),
+    readFiles: async (paths) => new Map(paths.map((p) => [p, files[p] ?? null])),
+    moduleFile: async (module, from) => {
+      calls.modules.push(`${module}@${from}`);
+      return modules[`${module}@${from}`] ?? null;
+    },
     inheritance: async () => {
       calls.inheritance++;
       return inheritance;
@@ -753,6 +763,99 @@ describe("python inheritance fallback", () => {
     const cache = emptyCache();
     await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
     expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind])).toEqual([[0, "overridden"]]);
+  });
+
+  it("resolves an ambiguous base name through the subclass file's imports", async () => {
+    // Two modules declare `Config`; `from pkg.b import Config` picks one of them, so
+    // only b.py's Config is marked as subclassed.
+    const child = [item("Child", "class", 3, 4, [], 6)];
+    const parentOutline = [item("Config", "class", 0, 1, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    const files = { "/p/c.py": ["from pkg.b import Config", "", "", "class Child(Config):"] };
+    const modules = { "pkg.b@/p/c.py": "/p/b.py" };
+    const { deps, calls } = pythonServer(graph, { "/p/c.py": child, "/p/b.py": parentOutline }, files, modules);
+    const candidates = markerCandidates(parentOutline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/b.py", candidates, ALL, deps(), cache);
+    expect(calls.modules).toEqual(["pkg.b@/p/c.py"]);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.targets.map((t) => t.path)])).toEqual([
+      [0, "overridden", ["/p/c.py"]],
+    ]);
+  });
+
+  it("resolves a base through an aliased import", async () => {
+    const outline = [item("Config", "class", 0, 1, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Cfg"] },
+    ];
+    const files = { "/p/c.py": ["from pkg.b import Config as Cfg", "", "", "class Child(Cfg):"] };
+    const { deps } = pythonServer(graph, { "/p/b.py": outline }, files, { "pkg.b@/p/c.py": "/p/b.py" });
+    const cache = emptyCache();
+    await fillMarkers(
+      "/p/b.py",
+      markerCandidates(outline, () => ""),
+      ALL,
+      deps(),
+      cache,
+    );
+    expect(
+      cachedMarkers(
+        markerCandidates(outline, () => ""),
+        ALL,
+        cache,
+      ).map((m) => [m.line, m.targets.map((t) => t.path)]),
+    ).toEqual([[0, ["/p/c.py"]]]);
+  });
+
+  it("keeps ignoring a shared base name when no import names it", async () => {
+    const outline = [item("Child", "class", 0, 2, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 0, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    // No import of `Config`: the name stays ambiguous and no edge is invented.
+    const files = { "/p/c.py": ["import os", "", "class Child(Config):"] };
+    const { deps } = pythonServer(graph, { "/p/c.py": outline }, files);
+    const cache = emptyCache();
+    await fillMarkers(
+      "/p/c.py",
+      markerCandidates(outline, () => ""),
+      ALL,
+      deps(),
+      cache,
+    );
+    expect(
+      cachedMarkers(
+        markerCandidates(outline, () => ""),
+        ALL,
+        cache,
+      ),
+    ).toEqual([]);
+  });
+
+  it("reads plain, aliased and parenthesized imports", () => {
+    const bindings = importBindings([
+      "from pkg.mod import A, B as Bee",
+      "from pkg import (",
+      "    C,",
+      "    D as Dee,",
+      ")",
+      "import x.y as xy",
+      "if TYPE_CHECKING:",
+    ]);
+    expect(Object.fromEntries(bindings)).toEqual({
+      A: { module: "pkg.mod", name: "A" },
+      Bee: { module: "pkg.mod", name: "B" },
+      C: { module: "pkg", name: "C" },
+      Dee: { module: "pkg", name: "D" },
+    });
   });
 
   it("keeps the existing server path when no inheritance graph is injected", async () => {
