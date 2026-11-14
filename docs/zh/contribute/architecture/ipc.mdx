@@ -197,5 +197,5 @@ onIdeEvent("projectTrustChanged", (e) => {
 1. 逻辑放在所属的 crate 里；在其边界把错误转成 `IdeError`；使用 IPC 坐标。
 2. 如果涉及项目，把共享实现加到 `ide-host::ops::<domain>`；远程窗口需要的话，注册到远程 dispatcher。
 3. 在 `src-tauri/src/commands/<domain>.rs` 添加 `#[tauri::command] #[specta::specta]` 适配函数，并加入 `collect_commands!`。
-4. 如果它会执行任何东西，不要把它加进受限模式白名单（未受信任的项目里默认拒绝）。
-5. 运行 `pnpm gen:bindings`，然后用 `call(commands.yourCommand(...))` 调用。
+4. 决定它的信任级别：在 `restricted_command_allowed`（受限模式下也可运行）或 `projectless_command_allowed`（未打开项目时也可运行）中按完整名称列出它，或者不列出，即需要受信任的项目。没有名称前缀规则；会执行任何东西的命令不要列出。
+5. 运行 `pnpm gen:bindings`，然后用 `call(commands.yourCommand(...))` 调用。它也会重写 `src-tauri/tests/commands.snap`；检查新增的那一行是否是你想要的信任级别和运行位置。

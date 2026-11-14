@@ -98,10 +98,10 @@ jobs:
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
       - run: cargo nextest run --workspace --no-fail-fast
-      # nextest ran export_bindings, which rewrites src/bindings.ts.
-      - name: Bindings are up to date
+      # nextest ran export_bindings, which rewrites src/bindings.ts and the command snapshot.
+      - name: Bindings and command snapshot are up to date
         if: runner.os == 'Linux'
-        run: git diff --exit-code src/bindings.ts
+        run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
 
   # The remote development server ships as a static Linux binary (release-build.yml):
   # keep that build working.
