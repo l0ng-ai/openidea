@@ -3097,6 +3097,21 @@ impl LspManager {
         Ok(CallHierarchy { items: out, incomplete })
     }
 
+    /// The type at `pos` as the server's type hierarchy names it (with its `detail`, the
+    /// package for Java); `None` when there is no type there.
+    pub async fn prepare_type_hierarchy(&self, doc: DocId, pos: Pos) -> IdeResult<Option<HierarchyItem>> {
+        let (snap, targets) = self.doc_targets(doc, "type hierarchy", |c| c.has("typeHierarchyProvider")).await?;
+        let t = &targets[0];
+        let items: Option<Vec<serde_json::Value>> =
+            self.call(t, "textDocument/prepareTypeHierarchy", snap.pos_params(t, pos), None, DEFAULT_TIMEOUT).await?;
+        let conv = self.conv(t.enc());
+        Ok(items
+            .unwrap_or_default()
+            .iter()
+            .filter_map(convert::type_item_from_json)
+            .find_map(|i| convert::type_item(&conv, &i)))
+    }
+
     pub async fn type_hierarchy(
         &self,
         doc: DocId,

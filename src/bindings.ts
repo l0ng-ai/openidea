@@ -607,6 +607,19 @@ export const commands = {
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
 	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
+	lspPrepareTypeHierarchy: (doc: DocId, pos: Pos) => typedError<{
+	name: string,
+	kind: SymbolKind,
+	detail: string | null,
+	/**  File path, or the URI of a virtual document (see `uri`). */
+	path: IpcPath,
+	/**  Set for non-`file:` items (library classes). */
+	uri?: string | null,
+	range: Range,
+	selectionRange: Range,
+	/**  Call sites, for call hierarchy. */
+	fromRanges: Range[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_prepare_type_hierarchy", { doc, pos })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	lspServers: () => typedError<ServerInfo[], IdeError>(__TAURI_INVOKE("lsp_servers")),
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */

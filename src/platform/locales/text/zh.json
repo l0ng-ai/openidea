@@ -2098,8 +2098,8 @@
   "Library": "库",
   "Select Classes Directory": "选择类目录",
   "Select Library JAR": "选择库 JAR",
-  "Add JAR or Directory…": "添加 JAR 或目录…",
-  "Add Classes Folder…": "添加类文件夹…",
+  "JAR or Directory…": "JAR 或目录…",
+  "Classes Folder…": "类文件夹…",
   "Remove Library": "移除库",
   "No project libraries added.": "尚未添加项目库。",
   "Library Details": "库详情",
@@ -7009,7 +7009,7 @@
   "The check could not run: {reason}": "检查无法运行：{reason}",
   "Custom test output paths are not supported yet. Maven and Gradle manage their own test output.": "暂不支持自定义测试输出路径。测试输出由 Maven 和 Gradle 管理。",
   "Custom artifact packaging is not supported yet. Build and deploy artifacts defined by Maven or Gradle.": "暂不支持自定义制品打包。请构建和部署 Maven 或 Gradle 定义的制品。",
-  "Add Module Overrides": "添加模块覆盖设置",
+  "Add Module Overrides…": "添加模块覆盖设置…",
   "Module overrides only apply to a directory inside the opened project. To import an existing module from outside it, use Import Module from Existing Sources.": "模块覆盖设置只适用于当前打开项目内的目录。要从外部导入已有模块，请使用「导入已有模块」。",
   "Directory for production classes, relative to the project root and inside this module.": "生产类文件目录，相对于项目根目录，且必须位于当前模块内。",
   "Scope controls Run/Debug only. JARs are also available to Java code assistance.": "作用域仅控制运行和调试。JAR 库也可用于 Java 代码辅助。",
@@ -8156,5 +8156,10 @@
   "Circular inheritance: '{name}' inherits from itself": "循环继承：'{name}' 继承了自身",
   "Method '{name}' is marked @override but no base class declares it": "方法 '{name}' 标记了 @override，但没有任何基类声明该方法",
   "Class '{name}' does not implement abstract method '{method}'": "类 '{name}' 未实现抽象方法 '{method}'",
-  "Redundant override of '{name}'": "冗余的重写：'{name}'"
+  "Redundant override of '{name}'": "冗余的重写：'{name}'",
+  "Import Module from Existing Sources…": "导入已有模块…",
+  "{name} (copy)": "{name}（副本）",
+  "{name} (copy {n})": "{name}（副本 {n}）",
+  "New Project Library": "新建项目库",
+  "Copy Library": "复制库"
 }

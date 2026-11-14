@@ -39,6 +39,8 @@ export interface HierarchyRoot {
   path: string;
   line: number;
   col: number;
+  /** The server's detail for the root type (its package for Java), shown beside the name. */
+  detail?: string | null;
 }
 
 interface HierarchyState {
@@ -225,6 +227,20 @@ function setChildren(
 
 type RootResult = "loaded" | "noTarget" | "failed" | "stale";
 
+/** The root type's detail (Java: its package), like the nodes below it show theirs. */
+async function loadRootDetail(generation: number, root: HierarchyRoot) {
+  try {
+    const item = await withDocument(root.path, (doc) =>
+      call(commands.lspPrepareTypeHierarchy(doc, { line: root.line, col: root.col })),
+    );
+    const s = useHierarchy.getState();
+    if (s.generation !== generation || s.root !== root || !item?.detail) return;
+    useHierarchy.setState({ root: { ...root, detail: item.detail } });
+  } catch {
+    // Older servers (remote) and servers without type hierarchy: the name alone.
+  }
+}
+
 /** Loads the root's level. `quiet`: a position without a symbol isn't reported (the caller retries). */
 async function loadRoot(quiet = false): Promise<RootResult> {
   const s = useHierarchy.getState();
@@ -239,6 +255,7 @@ async function loadRoot(quiet = false): Promise<RootResult> {
     );
     setChildren(generation, ROOT_ID, [rootKey(root)], items, incomplete && incompleteNote(incomplete, root.name));
     prefetchLevels(useHierarchy.getState().children.get(ROOT_ID) ?? []);
+    if (s.mode === "type") void loadRootDetail(generation, root);
     return "loaded";
   } catch (e) {
     if (useHierarchy.getState().generation !== generation) return "stale";

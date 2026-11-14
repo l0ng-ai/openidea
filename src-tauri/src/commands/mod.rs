@@ -293,6 +293,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_code_lens,
         lsp::lsp_document_links,
         lsp::lsp_call_hierarchy,
+        lsp::lsp_prepare_type_hierarchy,
         lsp::lsp_type_hierarchy,
         lsp::lsp_servers,
         lsp::lsp_resend_diagnostics,
