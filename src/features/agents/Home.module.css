@@ -31,7 +31,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  /* The chips' own padding spaces them. */
+  gap: 2px;
   padding: 0 2px;
   font-size: var(--fs-small);
 }
@@ -67,7 +68,6 @@
 .docked .where {
   flex-wrap: nowrap;
   min-width: 0;
-  gap: 6px;
 }
 .docked .projectPicker,
 .docked .projectChip {

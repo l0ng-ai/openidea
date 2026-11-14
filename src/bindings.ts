@@ -623,6 +623,8 @@ export const commands = {
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
+	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
+	vcsStatusPaths: (paths: string[]) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status_paths", { paths })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
 	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
@@ -966,6 +968,11 @@ export const commands = {
 	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
 	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	/**
+	 *  Newer versions of the tools the IDE installed (release downloads and npm packages).
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	toolsUpdates: (request: RequestId) => typedError<ToolUpdate[], IdeError>(__TAURI_INVOKE("tools_updates", { request })),
 	/**  JDK distributions Download JDK offers. */
 	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
 	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
@@ -1594,6 +1601,8 @@ export const commands = {
 	sshSetSecret: (id: string, secret: string | null, save: boolean) => __TAURI_INVOKE<void>("ssh_set_secret", { id, secret, save }),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
+	/**  Whether a password is saved under `key` (an FTP deployment server's). */
+	sshPasswordSaved: (key: string) => __TAURI_INVOKE<boolean>("ssh_password_saved", { key }),
 	/**  Trusts the host key that failed the last connection of configuration `id`. */
 	sshTrustHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("ssh_trust_host", { id })),
 	/**  Ids of the configurations with an open connection. */
@@ -1623,7 +1632,7 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("deploy_info", { path, server })),
 	deployServerRoot: (server: string) => typedError<DeploymentRoot, IdeError>(__TAURI_INVOKE("deploy_server_root", { server })),
 	remoteList: (connection: FsConnection, path: string) => typedError<RemoteEntry[], IdeError>(__TAURI_INVOKE("remote_list", { connection, path })),
-	deployTestConnection: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path })),
+	deployTestConnection: (connection: FsConnection, path: string, password: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("deploy_test_connection", { connection, path, password })),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
@@ -1675,6 +1684,8 @@ export const commands = {
 	 */
 	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
+	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
@@ -2390,6 +2401,8 @@ export type AppearanceSettings_Deserialize = {
 	statusBarWidgets?: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar?: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage?: BackgroundImageSettings,
 };
 
 export type AppearanceSettings_Serialize = {
@@ -2452,6 +2465,8 @@ export type AppearanceSettings_Serialize = {
 	statusBarWidgets: { [key in string]: boolean },
 	/**  Customize Main Toolbar; `None` = the default toolbar. */
 	mainToolbar: MainToolbarSettings | null,
+	/**  Appearance › Background Image: an image shown through the IDE window. */
+	backgroundImage: BackgroundImageSettings,
 };
 
 export type ApplyOutcome = {
@@ -2530,6 +2545,20 @@ export type AutoUpload = "never" |
 "onExplicitSave" | 
 /**  Every save, including autosave and external changes. */
 "always";
+
+/**  Appearance › Background Image. An empty `path` shows no image. */
+export type BackgroundImageSettings = {
+	path?: string,
+	/**  Percent, 0–100. */
+	opacity?: number,
+	/**  `scale` (cover the window) | `plain` (original size) | `tile`. */
+	fill?: string,
+	/**
+	 *  Where the image is anchored: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+	 *  `bottom-left`, `bottom`, `bottom-right`.
+	 */
+	anchor?: string,
+};
 
 /**  A step run before a configuration launches; a failing step aborts the launch. */
 export type BeforeLaunchTask = {
@@ -4793,7 +4822,9 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | "scheduled";
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+/**  Problems of the window's files changed (a language server or a report). */
+"problems-changed" | "scheduled";
 
 /**  An exception breakpoint filter offered by an adapter (`exceptionBreakpointFilters`). */
 export type ExceptionFilter = {
@@ -4949,6 +4980,8 @@ export type FileDecoration = {
 	tooltip: string | null,
 	/**  Text shown after the name (API 1.7 `set-file-note`). */
 	note?: string | null,
+	/**  `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`). */
+	icon?: string | null,
 };
 
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 
@@ -7206,7 +7239,7 @@ export type McpServerInput = {
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
-	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
 	 *  Run the tools that change the project or start processes without asking first
@@ -7217,6 +7250,11 @@ export type McpServerSettings = {
 	agentTabLimit?: number,
 	/**  Archived agent tabs kept; older ones are closed. */
 	agentArchiveLimit?: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address?: string,
 	/**
 	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
 	 *  port forwards keep working after a restart.
@@ -7236,6 +7274,8 @@ export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
 	error: string | null,
+	/**  The address listened on (`0.0.0.0` / `::`: every address). */
+	address: string | null,
 	port: number | null,
 	/**
 	 *  Why the fixed port (`mcpServer.port`) isn't the one listened on: it was in use or
@@ -7244,7 +7284,7 @@ export type McpServerStatus = {
 	portUnavailable: string | null,
 	/**  The window's local project, which the URL and command below are for. */
 	project: IpcPath | null,
-	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	/**  `http://<address>:<port>/mcp?project=<root>`, with loopback for every address. */
 	url: string | null,
 	/**  Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on). */
 	token: string | null,
@@ -9605,6 +9645,8 @@ export type SmartKeysSettings = {
 	pairQuotes?: boolean,
 	surroundSelection?: boolean,
 	tabOutOfPair?: boolean,
+	/**  Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag. */
+	simultaneousTagEditing?: boolean,
 	/**  Reformat on paste: `none` | `indentBlock` | `indentEachLine`. */
 	reformatOnPaste?: string,
 	escapeOnPaste?: boolean,
@@ -9992,8 +10034,10 @@ export type TestCaseReport = {
 	durationMs: number | null,
 	/**  Failure / error / skip message. */
 	message: string | null,
-	/**  Failure stack trace and captured output. */
+	/**  Failure / error stack trace. */
 	output: string | null,
+	/**  What the test printed (`<system-out>`, `<system-err>`). */
+	stdout: string | null,
 };
 
 export type TestCaseStatus = "passed" | "failed" | "skipped";
@@ -10197,6 +10241,15 @@ export type ToolStatus =
 "onPath" | 
 /**  The executable chosen in settings. */
 "custom" | "missing";
+
+/**  A newer version of a tool the IDE installed, as its install source offers it now. */
+export type ToolUpdate = {
+	name: string,
+	/**  The installed version. */
+	current: string,
+	/**  The version installing the tool again would get. */
+	latest: string,
+};
 
 export type TransferError = {
 	path: string,
@@ -10536,7 +10589,9 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | { kind: "scheduled" };
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+/**  Problems of the window's files changed; plugins re-read `problems`. */
+{ kind: "problemsChanged" } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

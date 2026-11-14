@@ -44,6 +44,18 @@ pub async fn db_test(
     ide_host::ops::db::test(&state.host, window.label(), source, password, ssh_secret).await
 }
 
+/// Data Source › SSH/SSL › Test SSH Tunnel.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_test_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    source: DataSource,
+    ssh_secret: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::db::test_tunnel(&state.host, window.label(), source, ssh_secret).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn db_set_ssh_secret(

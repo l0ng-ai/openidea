@@ -148,7 +148,7 @@ impl Repo {
     }
 
     /// `path` relative to the worktree, spelled as given.
-    fn given_rel_path(&self, path: &Path) -> IdeResult<String> {
+    pub(crate) fn given_rel_path(&self, path: &Path) -> IdeResult<String> {
         let rel = if path.is_absolute() {
             self.strip_root(path)
                 .ok_or_else(|| IdeError::invalid(format!("{} is outside the repository", path.display())))?

@@ -23,6 +23,9 @@ import { useLabelMatch, useSetting } from "../components/context";
 import {
   IDLE_LIMITS,
   type Antialiasing,
+  type BackgroundImageAnchor,
+  type BackgroundImageFill,
+  type BackgroundImageValid,
   type ConcreteTheme,
   type DateFormatValid,
   type NotificationDisplay,
@@ -34,7 +37,7 @@ import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
-import { LOCALES, SUPPORTED_LOCALES, tx, useT } from "@/platform/i18n";
+import { LOCALES, SUPPORTED_LOCALES, tx, useT, useTx } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
 import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 import { themePreview } from "@/workbench/quickSwitch";
@@ -378,6 +381,113 @@ const NAV_BAR_OPTIONS: SelectOption<NavigationBarPosition>[] = [
   { value: "statusBar", label: "Status Bar" },
   { value: "hidden", label: "Don't show" },
 ];
+
+const FILL_OPTIONS: SelectOption<BackgroundImageFill>[] = [
+  { value: "scale", label: "Scale" },
+  { value: "plain", label: "Original size" },
+  { value: "tile", label: "Tile" },
+];
+
+const ANCHOR_OPTIONS: SelectOption<BackgroundImageAnchor>[] = [
+  { value: "center", label: "Center" },
+  { value: "top-left", label: "Top left" },
+  { value: "top", label: "Top" },
+  { value: "top-right", label: "Top right" },
+  { value: "left", label: "Left" },
+  { value: "right", label: "Right" },
+  { value: "bottom-left", label: "Bottom left" },
+  { value: "bottom", label: "Bottom" },
+  { value: "bottom-right", label: "Bottom right" },
+];
+
+const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif"];
+
+/** Appearance › Background Image: an image shown through the project window. */
+function BackgroundImageRows() {
+  const [bg, setBg] = useSetting<BackgroundImageValid>("appearance.backgroundImage");
+  const set = (patch: Partial<BackgroundImageValid>) => setBg({ ...bg, ...patch });
+  const id = useId();
+  const tr = useTx();
+  const [preview, setPreview] = useState<{ path: string; url?: string; error?: string } | null>(null);
+  useEffect(() => {
+    if (!bg.path || !isTauri()) return;
+    let live = true;
+    call(commands.fsReadImage(bg.path)).then(
+      (url) => live && setPreview({ path: bg.path, url }),
+      (e: unknown) => live && setPreview({ path: bg.path, error: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [bg.path]);
+  const shown = preview?.path === bg.path ? preview : null;
+  const browse = async () => {
+    const { open } = await import("@/platform/dialog");
+    const picked = await open({
+      multiple: false,
+      title: tr("Background Image"),
+      defaultPath: bg.path || undefined,
+      filters: [{ name: tr("Image files"), extensions: IMAGE_EXTENSIONS }],
+    });
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (path) set({ path });
+  };
+  const off = !bg.path;
+  return (
+    <>
+      <Row label="Image" htmlFor={id} hint={shown?.error ? tr`Cannot load the image: ${shown.error}` : undefined}>
+        <Input
+          id={id}
+          className={styles.pathInput}
+          value={bg.path}
+          placeholder={tr("None")}
+          onChange={(e) => set({ path: e.target.value })}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+        {shown?.url && <img className={styles.backgroundPreview} src={shown.url} alt="" />}
+      </Row>
+      <Indented>
+        <Row label="Opacity">
+          <NumberInput
+            value={bg.opacity}
+            min={0}
+            max={100}
+            integer
+            unit="%"
+            disabled={off}
+            aria-label="Opacity"
+            onChange={(opacity) => set({ opacity })}
+          />
+        </Row>
+        <Row label="Fill">
+          <Select
+            value={bg.fill}
+            options={FILL_OPTIONS}
+            disabled={off}
+            onChange={(fill) => set({ fill })}
+            aria-label="Fill"
+          />
+        </Row>
+        <Row label="Anchor">
+          <Select
+            value={bg.anchor}
+            options={ANCHOR_OPTIONS}
+            disabled={off}
+            onChange={(anchor) => set({ anchor })}
+            aria-label="Anchor"
+          />
+        </Row>
+      </Indented>
+    </>
+  );
+}
 
 function ToolWindowsGrid() {
   return (
@@ -747,6 +857,17 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           },
           { kind: "custom", label: "Accent color", keywords: ["accent colour", "highlight"], component: AccentRow },
           { kind: "custom", label: "Different tool window background", component: ToolWindowBackgroundRow },
+        ],
+      },
+      {
+        title: "Background Image",
+        options: [
+          {
+            kind: "custom",
+            label: "Image",
+            keywords: ["Background image", "wallpaper", "Opacity", "Fill", "Anchor", "Scale", "Tile"],
+            component: BackgroundImageRows,
+          },
         ],
       },
       {

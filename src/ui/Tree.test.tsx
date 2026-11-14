@@ -3,6 +3,8 @@ import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { Tree, type TreeHandle } from "./Tree";
 import { getContext } from "@/platform/context";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 
 interface N {
   id: string;
@@ -249,6 +251,30 @@ describe("Tree speed search", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(lead()).toBe("main");
     expect(labels(tree)).toContain("App.tsx");
+  });
+
+  it("⌘⌫ erases the query and ⌥⌫ its last word instead of running the view's ⌘⌫ action", () => {
+    const drop = vi.fn();
+    useKeymap.setState({ preset: "intellij-macos", overrides: { "test.drop": ["Meta+Backspace", "Alt+Backspace"] } });
+    const dispose = [registerAction({ id: "test.drop", title: "Drop", run: drop }), installKeyboardDispatcher()];
+    try {
+      const { tree, lead, key } = setup({ defaultExpanded: ["src", "main"] });
+      key("ArrowDown");
+      for (const c of "index.t") key(c);
+      expect(lead()).toBe("index.ts");
+      key("Backspace", { altKey: true });
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.$/);
+      key("Backspace", { metaKey: true });
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(drop).not.toHaveBeenCalled();
+      // Without a query the shortcut reaches the view again.
+      key("Backspace", { metaKey: true });
+      expect(drop).toHaveBeenCalledOnce();
+      expect(tree).toHaveFocus();
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+    }
   });
 
   it("filter mode hides non-matching rows but keeps ancestors", () => {

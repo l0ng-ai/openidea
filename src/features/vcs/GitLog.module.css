@@ -630,6 +630,10 @@
   align-items: center;
   gap: 8px;
 }
+/* A branch inside an opened Local / Remote group. */
+.branchFilterNested {
+  padding-left: var(--tree-indent, 16px);
+}
 .branchFilterIcon {
   flex: none;
   color: var(--fg-subtle);

@@ -3,7 +3,7 @@
  * simulation in plain-browser development and tests (no network, ever).
  */
 import { Channel } from "@tauri-apps/api/core";
-import type { InstallEvent, RequestId, ToolInfo } from "@/bindings";
+import type { InstallEvent, RequestId, ToolInfo, ToolUpdate } from "@/bindings";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 
 export interface LanguageChoice {
@@ -15,6 +15,8 @@ export interface ToolsBackend {
   list(): Promise<ToolInfo[]>;
   install(name: string, request: RequestId, onEvent: (e: InstallEvent) => void): Promise<ToolInfo>;
   uninstall(name: string): Promise<ToolInfo>;
+  /** Newer versions of the tools the IDE installed (release downloads and npm packages). */
+  updates(request: RequestId): Promise<ToolUpdate[]>;
   cancel(request: RequestId): void;
   /** Restarts the language servers named `name` in every open project (after an install). */
   restartServers(name: string): Promise<void>;
@@ -32,6 +34,7 @@ export const tauriToolsBackend: ToolsBackend = {
     return call(commands.toolsInstall(name, request, channel));
   },
   uninstall: (name) => call(commands.toolsUninstall(name)),
+  updates: (request) => call(commands.toolsUpdates(request)),
   cancel: (request) => void commands.cancelRequest(request).catch(() => {}),
   // Every open project: Settings belongs to one project window, but all of them run the tool.
   restartServers: async (name) => {
@@ -150,6 +153,8 @@ export class MemoryToolsBackend implements ToolsBackend {
   /** Delay between simulated steps (ms). */
   stepMs: number;
   failNext: string | null = null;
+  /** What `updates` reports, for the tools that are installed. */
+  available: ToolUpdate[] = [];
   private cancelled = new Set<RequestId>();
 
   constructor(tools: ToolInfo[] = sampleTools(), stepMs = 120) {
@@ -159,6 +164,10 @@ export class MemoryToolsBackend implements ToolsBackend {
 
   async list() {
     return this.tools.map((t) => ({ ...t }));
+  }
+
+  async updates() {
+    return this.available.filter((u) => this.tools.some((t) => t.name === u.name && t.status === "installed"));
   }
 
   private replace(next: ToolInfo) {

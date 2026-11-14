@@ -252,7 +252,7 @@ impl Shared {
             }
         }
         let build_started = Instant::now();
-        let entries: Vec<Option<FileEntry>> = (0..snapshot.len())
+        let entries: Vec<Option<(FileEntry, Vec<StoredSymbol>)>> = (0..snapshot.len())
             .into_par_iter()
             .map(|i| {
                 let path = root.join(snapshot.rel(i));
@@ -331,7 +331,7 @@ impl Shared {
         let started = Instant::now();
         match store.load_snapshot() {
             Some(snapshot) => {
-                let entries: Vec<FileEntry> = (0..snapshot.len())
+                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = (0..snapshot.len())
                     .into_par_iter()
                     .filter_map(|i| {
                         let rel = snapshot.rel(i);
@@ -343,9 +343,10 @@ impl Shared {
                     })
                     .collect();
                 let mut d = self.data.write();
-                d.reserve(entries.len());
-                for e in entries {
-                    d.insert(e);
+                let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+                d.reserve(entries.len(), symbols, 0);
+                for (e, symbols) in entries {
+                    d.insert(e, symbols);
                 }
                 tracing::info!(
                     "index snapshot: hydrated {} files, {} symbols in {:?}",
@@ -360,7 +361,7 @@ impl Shared {
                 Ok(records) => {
                     // Fallback for an index that changed since the snapshot: redb
                     // records are decoded one file at a time and filtered by the walk.
-                    let entries: Vec<FileEntry> = records
+                    let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = records
                         .into_par_iter()
                         .filter(|(rel, _)| {
                             safe_rel(rel) && {
@@ -371,9 +372,10 @@ impl Shared {
                         .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                         .collect();
                     let mut d = self.data.write();
-                    d.reserve(entries.len());
-                    for e in entries {
-                        d.insert(e);
+                    let symbols = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+                    d.reserve(entries.len(), symbols, 0);
+                    for (e, symbols) in entries {
+                        d.insert(e, symbols);
                     }
                     tracing::info!(
                         "index cache: hydrated {} files, {} symbols in {:?}",
@@ -528,8 +530,7 @@ impl Shared {
                 match self.extract(f, prev_hash) {
                     Extracted::Unchanged => {
                         // Same content, new mtime: keep the symbols, refresh metadata.
-                        let d = self.data.read();
-                        let mut rec = d.get(&f.path)?.record();
+                        let mut rec = self.data.read().record_of(&f.path)?;
                         rec.mtime = f.mtime;
                         rec.size = f.size;
                         rec.ignored = f.ignored;
@@ -545,11 +546,11 @@ impl Shared {
         let puts: Vec<(String, FileRecord)> =
             extracted.iter().filter_map(|(_, rec, path)| Some((filter.store_key(path)?, rec.clone()))).collect();
         {
-            let entries: Vec<FileEntry> =
+            let entries: Vec<(FileEntry, Vec<StoredSymbol>)> =
                 extracted.into_iter().map(|(rel, rec, path)| FileEntry::new(path, rel, rec)).collect();
             let mut d = self.data.write();
-            for e in entries {
-                d.insert(e);
+            for (e, symbols) in entries {
+                d.insert(e, symbols);
             }
         }
         self.persist(&puts, &[], false);

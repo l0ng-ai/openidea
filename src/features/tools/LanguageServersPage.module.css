@@ -124,7 +124,8 @@
   color: var(--fg-muted);
 }
 .rowName {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 60%;
   overflow: hidden;
   color: var(--fg-strong);
@@ -149,6 +150,13 @@
   color: var(--fg-muted);
   font-size: var(--fs-tiny);
   line-height: 16px;
+}
+.rowBadge {
+  flex: none;
+}
+.updateTag {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
 }
 .listEmpty {
   padding: 8px 12px;

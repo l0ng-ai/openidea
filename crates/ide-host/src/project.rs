@@ -447,6 +447,11 @@ impl Host {
                             .collect();
                         matches!(rest.as_slice(), [first, ..] if first == "worktrees" && rest.len() <= 2)
                     });
+                    // A repository folder moved or restored into the project: no `.git` event is
+                    // written inside it before the watcher sees the new directory, its creation is
+                    // the signal. A `git clone` / `git init` inside the project already arrives
+                    // through the `.git` paths above; this covers the whole tree being brought in.
+                    git_dirs |= batch.created.iter().any(|p| p.join(".git").exists());
                     if git_dirs {
                         scan_repositories(&root, &repos, &settings, &sink, &build_cache);
                     }
@@ -675,9 +680,10 @@ impl Host {
             agents.set_new_task_approvals_hook(Arc::new(move || settings.effective().agents.new_task_approvals));
         }
         let approvals = self.mcp_approvals.clone();
+        let secrets = self.agent_secrets.clone();
         let root = root.to_path_buf();
         agents.set_mcp_servers_hook(Box::new(move || {
-            crate::ops::agent::session_mcp_servers(&settings, &approvals, &root)
+            crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
         }));
         (db, http_history, agents)
     }
@@ -863,6 +869,20 @@ fn scan_repositories(
     sink: &SharedSink,
     build_cache: &Path,
 ) {
+    match discover_repositories(root, settings, build_cache) {
+        Ok(found) => {
+            if found.roots() != repos.read().roots() {
+                *repos.write() = found;
+                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
+            }
+        }
+        Err(e) => tracing::warn!("looking for git repositories: {e}"),
+    }
+}
+
+/// The repository containing `root` and those nested below it or below a content root.
+/// The project-open scan and the watcher's rescan share these skip rules.
+fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path) -> IdeResult<Repos> {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
@@ -874,15 +894,7 @@ fn scan_repositories(
     };
     let mut roots = vec![root.to_path_buf()];
     roots.extend(content_roots(&settings.effective(), root, build_cache));
-    match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => {
-            if found.roots() != repos.read().roots() {
-                *repos.write() = found;
-                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
-            }
-        }
-        Err(e) => tracing::warn!("looking for git repositories: {e}"),
-    }
+    Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {

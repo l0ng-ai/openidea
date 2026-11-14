@@ -199,12 +199,11 @@ impl ProjectIndex {
             return None;
         }
         Some(
-            file.symbols
-                .iter()
+            data.symbols_of(file)
                 .map(|s| ide_language::SymbolTag {
                     name: s.name.to_string(),
                     kind: s.kind,
-                    container: s.container.as_ref().map(ToString::to_string),
+                    container: s.container.map(ToString::to_string),
                     range: s.range,
                 })
                 .collect(),
@@ -231,7 +230,7 @@ impl ProjectIndex {
     pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_files(&d, &matching::Recents { paths: &recent }, query, limit)
+        matching::find_files(&d, &matching::Recents::new(&recent), query, limit)
     }
 
     /// All indexed files with this exact basename, for resolving printed source locations.
@@ -274,7 +273,7 @@ impl ProjectIndex {
     pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
         let recent = self.shared.recent.lock().clone();
         let d = self.shared.data.read();
-        matching::find_symbols(&d, &matching::Recents { paths: &recent }, query, filter, limit)
+        matching::find_symbols(&d, &matching::Recents::new(&recent), query, filter, limit)
     }
 
     /// Scoped symbol search with cooperative interruption, including lock waits.
@@ -303,15 +302,7 @@ impl ProjectIndex {
                 break data;
             }
         };
-        matching::find_symbols_until(
-            &data,
-            &matching::Recents { paths: &recent },
-            query,
-            filter,
-            limit,
-            include,
-            stopped,
-        )
+        matching::find_symbols_until(&data, &matching::Recents::new(&recent), query, filter, limit, include, stopped)
     }
 
     /// Symbols named exactly `name` (of `kind`, if given): `.card` selectors for `class="card"`.
@@ -523,7 +514,8 @@ pub mod bench_support {
                     })
                     .collect();
                 let record = FileRecord { symbols, ..Default::default() };
-                data.insert(FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record));
+                let (entry, symbols) = FileEntry::new(PathBuf::from("/bench").join(&rel), rel, record);
+                data.insert(entry, symbols);
             }
             let recent = data.paths().take(MAX_RECENT).cloned().collect();
             Self { data, recent }
@@ -538,7 +530,7 @@ pub mod bench_support {
         }
 
         pub fn find_files(&self, query: &str, limit: usize) -> Vec<FileMatch> {
-            matching::find_files(&self.data, &matching::Recents { paths: &self.recent }, query, limit)
+            matching::find_files(&self.data, &matching::Recents::new(&self.recent), query, limit)
         }
 
         pub fn find_dirs(&self, query: &str, limit: usize) -> Vec<FileMatch> {
@@ -546,7 +538,7 @@ pub mod bench_support {
         }
 
         pub fn find_symbols(&self, query: &str, filter: SymbolFilter, limit: usize) -> Vec<SymbolMatch> {
-            matching::find_symbols(&self.data, &matching::Recents { paths: &self.recent }, query, filter, limit)
+            matching::find_symbols(&self.data, &matching::Recents::new(&self.recent), query, filter, limit)
         }
     }
 }

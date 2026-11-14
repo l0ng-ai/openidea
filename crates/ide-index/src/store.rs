@@ -1,6 +1,6 @@
 //! Persistence of file records in redb, so a restart only re-parses changed files.
 
-use crate::data::{FileEntry, FileRecord, IndexData, Sym, char_mask};
+use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
 use crate::filter::{PathFilter, mtime_of};
 use ide_core::{Range, SymbolKind};
 use parking_lot::RwLock;
@@ -290,7 +290,7 @@ impl Snapshot {
         &self.rels[start..self.rel_ends[file] as usize]
     }
 
-    pub(crate) fn entry(&self, file: usize, root: &Path) -> FileEntry {
+    pub(crate) fn entry(&self, file: usize, root: &Path) -> (FileEntry, Vec<StoredSymbol>) {
         let meta = self.meta[file];
         let sym_start = if file == 0 { 0 } else { self.meta[file - 1].sym_end as usize };
         let symbols = (sym_start..meta.sym_end as usize)
@@ -303,18 +303,20 @@ impl Snapshot {
                     let start = s.container_start as usize;
                     &self.text[start..start + s.container_len as usize]
                 });
-                Sym {
-                    mask: char_mask(name),
-                    name: name.into(),
+                StoredSymbol {
+                    name: name.to_owned(),
                     kind: s.kind,
-                    container: container.map(Into::into),
+                    container: container.map(str::to_owned),
                     range: s.range,
                 }
             })
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .collect();
         let rel = self.rel(file);
-        FileEntry::from_flat(root.join(rel), rel.to_owned(), meta.mtime, meta.size, meta.hash, meta.ignored, symbols)
+        FileEntry::new(
+            root.join(rel),
+            rel.to_owned(),
+            FileRecord { mtime: meta.mtime, size: meta.size, hash: meta.hash, symbols, ignored: meta.ignored },
+        )
     }
 }
 
@@ -464,10 +466,10 @@ impl Store {
             dirs.insert(e.dir().trim_end_matches('/').to_owned());
             snap.rels.push_str(&e.rel);
             snap.rel_ends.push(fit(snap.rels.len())?);
-            for s in e.symbols.iter() {
+            for s in data.symbols_of(e) {
                 let name_start = fit(snap.text.len())?;
-                snap.text.push_str(&s.name);
-                let (container_start, container_len) = match s.container.as_deref() {
+                snap.text.push_str(s.name);
+                let (container_start, container_len) = match s.container {
                     Some(c) => {
                         let start = fit(snap.text.len())?;
                         snap.text.push_str(c);
@@ -676,9 +678,13 @@ mod tests {
             ..Default::default()
         };
         let mut data = IndexData::default();
-        data.insert(FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record));
+        let (entry, symbols) =
+            FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record);
+        data.insert(entry, symbols);
         // Content roots outside the project root are rescanned, not snapshotted.
-        data.insert(FileEntry::new(std::path::PathBuf::from("/elsewhere/x.rs"), "x.rs".into(), FileRecord::default()));
+        let (entry, symbols) =
+            FileEntry::new(std::path::PathBuf::from("/elsewhere/x.rs"), "x.rs".into(), FileRecord::default());
+        data.insert(entry, symbols);
         store
             .save_snapshot(&data, &PathFilter::new(Path::new("/p"), &Vec::new().into(), &[]), SystemTime::now())
             .unwrap();
@@ -686,11 +692,11 @@ mod tests {
         let snapshot = store.load_snapshot().expect("snapshot");
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot.rel(0), "src/Order.rs");
-        let entry = snapshot.entry(0, Path::new("/p"));
+        let (entry, symbols) = snapshot.entry(0, Path::new("/p"));
         assert_eq!(&*entry.rel, "src/Order.rs");
-        assert_eq!(entry.symbols.len(), 1);
-        assert_eq!(&*entry.symbols[0].name, "OrderController");
-        assert_eq!(entry.symbols[0].container.as_deref(), Some("Order"));
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "OrderController");
+        assert_eq!(symbols[0].container.as_deref(), Some("Order"));
 
         store.apply(&[], &[], false).unwrap();
         assert!(store.load_snapshot().is_none(), "a file change invalidates the snapshot");

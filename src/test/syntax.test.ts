@@ -23,6 +23,7 @@ const cases = [
   ["JSP", "<% if (ready) { %><p><%= value %></p><% } %>"],
   ["Angular Template", "@if (ready) {\n  <p>{{ value }}</p>\n}"],
   ["Django Template", "{% if ready %}\n  <p>{{ value|lower }}</p>\n{% endif %}"],
+  ["Helm Template", "{{- range .Values.apps }}\napiVersion: v1\nmetadata:\n  name: {{ .name | quote }}\n{{- end }}"],
 ];
 
 function highlights(state: EditorState) {

@@ -19,6 +19,8 @@ export interface SettingSchema {
   options?: string[] | null;
   multiline?: boolean;
   group?: string | null;
+  /** A sample drawn in the setting's own style, e.g. the message a severity produces. */
+  example?: { text: string; style: string } | null;
   items?: SettingSchema | null;
   properties?: SettingSchema[];
 }
@@ -217,20 +219,36 @@ function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema })
   const all = form.useValue("plugins") as PluginSettings | undefined;
   const stored = all?.[pluginId]?.[s.key];
   const value = accepts(s, stored) ? stored : s.default;
+  const control = (
+    <ValueControl
+      s={s}
+      value={value}
+      set={(v) => {
+        const valid = accepts(s, v);
+        setInvalid(!valid);
+        // Keep the chosen value even when it equals the default: false and ""
+        // are real plugin settings, not "remove the override".
+        if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
+      }}
+    />
+  );
+  const example = s.example ? (
+    <span className={styles.example} data-style={s.example.style}>
+      {s.example.text}
+    </span>
+  ) : null;
   return (
     <div className={styles.field}>
       {s.type !== "boolean" && <span>{s.title}</span>}
-      <ValueControl
-        s={s}
-        value={value}
-        set={(v) => {
-          const valid = accepts(s, v);
-          setInvalid(!valid);
-          // Keep the chosen value even when it equals the default: false and ""
-          // are real plugin settings, not "remove the override".
-          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
-        }}
-      />
+      {/* A sample sits in a second column, one row per setting, the way PyCharm previews a severity. */}
+      {example ? (
+        <div className={styles.exampleRow}>
+          {control}
+          {example}
+        </div>
+      ) : (
+        control
+      )}
       {s.description && <div className={styles.description}>{s.description}</div>}
       {invalid && (
         <p role="alert" className={styles.error}>

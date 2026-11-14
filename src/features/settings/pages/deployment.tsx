@@ -5,7 +5,7 @@
  */
 import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { call, commands, IpcError, type FsConnection, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, IpcError, isTauri, type FsConnection, type RemoteEntry } from "@/platform/ipc";
 import { useTx, tx, txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import {
@@ -33,7 +33,7 @@ import {
 } from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
-import { useSetting } from "../components/context";
+import { usePageContext, useSetting, useSettingsFormFor } from "../components/context";
 import {
   addMapping,
   fixDefaultServer,
@@ -291,10 +291,52 @@ function TextField({
   );
 }
 
-function FtpRows({ ftp, update }: { ftp: FtpConnectionValid; update: (patch: Partial<FtpConnectionValid>) => void }) {
+interface FtpPassword {
+  password: string;
+  save: boolean;
+}
+
+/** The FTP password, staged like a setting and written to the saved passwords on Apply. */
+function useFtpPassword(secretKey: string, ftp: boolean) {
+  const page = usePageContext();
+  const form = useSettingsFormFor(page.pageId, page.scope);
+  const [known, setKnown] = useState<{ key: string; saved: boolean } | null>(null);
+  const saved = known?.key === secretKey && known.saved;
+  useEffect(() => {
+    let live = true;
+    if (ftp && isTauri())
+      void commands.sshPasswordSaved(secretKey).then(
+        (stored) => live && setKnown({ key: secretKey, saved: stored }),
+        () => {},
+      );
+    return () => {
+      live = false;
+    };
+  }, [secretKey, ftp]);
+  const base: FtpPassword = { password: "", save: saved };
+  const value = form.useExternal<FtpPassword>(`ftpPassword.${secretKey}`, base, async ({ password, save }) => {
+    if (password) await commands.sshSetSecret(secretKey, password, save);
+    else if (!save) await commands.sshSetSecret(secretKey, null, false);
+    const stored = password ? save : save && saved;
+    setKnown({ key: secretKey, saved: stored });
+    return { password: "", save: stored };
+  });
+  return { ...value, saved };
+}
+
+function FtpRows({
+  ftp,
+  secret,
+  update,
+}: {
+  ftp: FtpConnectionValid;
+  secret: ReturnType<typeof useFtpPassword>;
+  update: (patch: Partial<FtpConnectionValid>) => void;
+}) {
   const hostId = useId();
   const portId = useId();
   const userId = useId();
+  const passwordId = useId();
   const tx = useTx();
   // What is typed (e.g. an invalid port); the editor is keyed by server.
   const [portText, setPortText] = useState(ftp.port?.toString() ?? "");
@@ -335,6 +377,24 @@ function FtpRows({ ftp, update }: { ftp: FtpConnectionValid; update: (patch: Par
           onChange={(e) => update({ user: e.target.value })}
         />
       </Row>
+      <Row label="Password" htmlFor={passwordId}>
+        <Input
+          id={passwordId}
+          type="password"
+          autoComplete="off"
+          className={styles.wide}
+          value={secret.value.password}
+          placeholder={secret.saved && !secret.value.password ? tx("Password already stored") : undefined}
+          onChange={(e) => secret.set({ ...secret.value, password: e.target.value })}
+        />
+      </Row>
+      <div className={styles.option}>
+        <Checkbox
+          checked={secret.value.save}
+          onChange={(save) => secret.set({ ...secret.value, save })}
+          label="Save password"
+        />
+      </div>
       <div className={styles.option}>
         <Checkbox checked={ftp.passive} onChange={(passive) => update({ passive })} label="Passive mode" />
       </div>
@@ -357,7 +417,11 @@ function ConnectionTab({
   const [browsing, setBrowsing] = useState(false);
   const [result, setTest] = useState<TestState | null>(null);
   const connection = deploymentConnection(server);
-  const testKey = JSON.stringify([server.kind, server.sshConfig, server.ftp, server.rootPath]);
+  const ftp = server.kind === "ftp" || server.kind === "ftps";
+  const secret = useFtpPassword(deploymentSecretKey(server), ftp);
+  // A password typed but not applied yet is what Test Connection logs in with.
+  const typedPassword = (ftp && secret.value.password) || null;
+  const testKey = JSON.stringify([server.kind, server.sshConfig, server.ftp, server.rootPath, typedPassword]);
   const test = result?.ssh === testKey ? result : null;
   const rootId = useId();
 
@@ -365,7 +429,7 @@ function ConnectionTab({
     const ssh = testKey;
     setTest({ ssh, kind: "busy" });
     try {
-      await call(commands.deployTestConnection(connection, server.rootPath.trim() || "~"));
+      await call(commands.deployTestConnection(connection, server.rootPath.trim() || "~", typedPassword));
       setTest({ ssh, kind: "ok", count: 0 });
     } catch (e) {
       setTest({ ssh, kind: "error", error: e });
@@ -396,8 +460,8 @@ function ConnectionTab({
           </PageLink>
         </Row>
       )}
-      {(server.kind === "ftp" || server.kind === "ftps") && (
-        <FtpRows ftp={server.ftp} update={(patch) => update({ ftp: { ...server.ftp, ...patch } })} />
+      {ftp && (
+        <FtpRows ftp={server.ftp} secret={secret} update={(patch) => update({ ftp: { ...server.ftp, ...patch } })} />
       )}
       <Row label="Root path" htmlFor={rootId} hint="Mappings' deployment paths are relative to this folder.">
         <span className={styles.field}>
@@ -886,6 +950,8 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
               "SSH configuration",
               "FTP",
               "Passive mode",
+              "Password",
+              "Save password",
               "Test Connection",
               "Use as Default",
               "Server Group",

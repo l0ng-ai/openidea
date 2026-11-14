@@ -9,9 +9,10 @@ import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
-import { getContext, setContext } from "@/platform/context";
+import { evaluateWhen, getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
+import { EDITOR_WHEN } from "@/editor/lsp/actions";
 
 let ctrl: EditorController | null = null;
 
@@ -462,5 +463,23 @@ describe("EditorController", () => {
     } finally {
       offWrapper();
     }
+  });
+});
+
+describe("editor action when clauses", () => {
+  const editorBehind = { textEditorActive: true, editorTextFocus: false, editorFocus: false, popupOpen: true };
+
+  it.each([
+    ["TEXT_WHEN", TEXT_WHEN],
+    ["EDITOR_WHEN", EDITOR_WHEN],
+  ])("%s runs on the editor from a popup such as Find Action", (_, when) => {
+    expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: false })).toBe(true);
+  });
+
+  it.each([
+    ["TEXT_WHEN", TEXT_WHEN],
+    ["EDITOR_WHEN", EDITOR_WHEN],
+  ])("%s leaves keys to a tool window's speed search, e.g. ⌘⌫ to Delete Line", (_, when) => {
+    expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: true })).toBe(false);
   });
 });

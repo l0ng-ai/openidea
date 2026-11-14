@@ -749,14 +749,26 @@ pub(crate) fn workspace_tsdk(root: &Path) -> Option<PathBuf> {
 
 fn typescript(root: Option<&Path>) -> Vec<Sdk> {
     let mut out = Vec::new();
-    if let Some(lib) = root.and_then(workspace_tsdk) {
+    // TypeScript 7 has no `tsserver.js`; its package directory stands for it (`native_tsdk`).
+    let native = || {
+        let package = root?.join("node_modules/typescript");
+        crate::npm::native_typescript(&package).map(|_| package.join("lib"))
+    };
+    if let Some(lib) = root.and_then(workspace_tsdk).or_else(native) {
         let version = std::fs::read_to_string(lib.parent().unwrap_or(&lib).join("package.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(str::to_owned));
         out.push(Sdk {
             path: lib.clone().into(),
-            name: format!("TypeScript {}", version.clone().unwrap_or_default()).trim().to_owned(),
+            name: format!(
+                "TypeScript {}{}",
+                version.clone().unwrap_or_default(),
+                if crate::npm::has_ts_api(&lib) { "" } else { " (native)" }
+            )
+            .replace("  ", " ")
+            .trim()
+            .to_owned(),
             version,
             source: "workspace".into(),
             home: lib.parent().map(Into::into),

@@ -1507,7 +1507,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         vcs_restore_branch(&c.host, &c.window, c.arg("repo")?, c.arg("deleted")?).await
     });
     d.add("vcs_rename_branch", |c| async move {
-        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("unset_upstream")?)
+        vcs_rename_branch(&c.host, &c.window, c.arg("repo")?, c.arg("from")?, c.arg("to")?, c.arg("unsetUpstream")?)
             .await
     });
     d.add("vcs_merge", |c| async move { vcs_merge(&c.host, &c.window, c.arg("repo")?, c.arg("branch")?).await });

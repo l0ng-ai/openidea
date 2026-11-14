@@ -48,7 +48,7 @@ openidea-server --stdio | --connect <host> <port> | --version
 
 ### 安装到远程机器
 
-桌面端根据远程的操作系统和架构（来自 `uname -sm`）选择服务端二进制：先看是否设置了 `OPENIDEA_SERVER_BINARY`，再看 `<data dir>/server/<os>-<arch>/openidea-server`，平台相同时再用应用旁边自带的那个；都没有就把该平台的 release 构建下载到数据目录（只下载一次）。之后把二进制上传到远程主机的 `~/.openidea/server/`，每个版本一个目录，按内容哈希区分，并删除同版本的其他构建。CI 会持续验证静态 Linux（musl）构建。
+桌面端根据远程的操作系统和架构（来自 `uname -sm`）选择服务端二进制：先看是否设置了 `OPENIDEA_SERVER_BINARY`，平台相同时再用应用旁边自带的那个；否则使用该平台当前版本的 release 构建，只下载一次，放在 `<data dir>/server/<版本>/<os>-<arch>/`。离线时先用主机上已装的当前版本构建，再用不带版本的 `<data dir>/server/<os>-<arch>/openidea-server`。服务端在 `initialize` 中回报版本；版本不同的服务端缺少某个命令时，错误会写明两边的版本。之后把二进制上传到远程主机的 `~/.openidea/server/`，每个版本一个目录，按内容哈希区分，并删除同版本的其他构建。CI 会持续验证静态 Linux（musl）构建。
 
 ## 协议
 

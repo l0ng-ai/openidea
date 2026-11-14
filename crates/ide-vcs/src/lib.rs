@@ -764,6 +764,24 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         status::status(self)
     }
+    /// Status of `paths` only (absolute; those outside the repository are ignored), for the
+    /// dirty-scope refresh after a watcher batch. An empty list is the full status.
+    pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
+        // with a pathspec: answer with the full gitoxide status instead.
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return status::status(self);
+        }
+        if paths.is_empty() {
+            return status::status_paths(self, &[]);
+        }
+        let rel: Vec<String> = paths.iter().filter_map(|p| self.given_rel_path(p).ok()).collect();
+        if rel.is_empty() {
+            return Ok(Vec::new());
+        }
+        status::status_paths(self, &rel)
+    }
     pub fn branch_info(&self) -> IdeResult<BranchInfo> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         refs::branch_info(self)

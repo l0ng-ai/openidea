@@ -4,6 +4,7 @@
  * session survives its tool window being hidden or its pane being re-mounted.
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
@@ -212,7 +213,7 @@ export class TerminalSession {
   private selectingSearchMatch = false;
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
-  private readonly opts: SessionOptions;
+  private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
@@ -237,6 +238,15 @@ export class TerminalSession {
   private readonly ime = new ImeCommitGate(() => {
     if (this.term.textarea) this.term.textarea.value = "";
   });
+
+  /**
+   * Hands the session to another owner (a terminal tab moved to the editor): its
+   * snapshots, focus and exit go there from now on. The PTY keeps running.
+   */
+  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit">) {
+    this.opts = { ...this.opts, ...owner, onExit: owner.onExit };
+    this.opts.onChange(this.key, this.snapshot);
+  }
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -778,9 +788,27 @@ export class TerminalSession {
     this.term.clearSelection();
   }
 
+  /** The last `max` lines down to the cursor (wrapped rows joined), for an agent's context. */
+  recentOutput(max = 80): { title: string; text: string } {
+    const buffer = this.term.buffer.active;
+    const end = buffer.baseY + buffer.cursorY;
+    const lines: string[] = [];
+    for (let y = Math.max(0, end - max + 1); y <= end; y++) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+    while (lines.length && !lines[0]!.trim()) lines.shift();
+    return { title: this.snapshot.appTitle ?? this.snapshot.title, text: lines.join("\n") };
+  }
+
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
+    noteCopySource(text, { kind: "terminal", title: this.snapshot.appTitle ?? this.snapshot.title });
     void writeClipboardText(text).catch(() => undefined);
     return true;
   }
