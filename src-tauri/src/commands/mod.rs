@@ -209,6 +209,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_set_bom,
         doc::doc_set_line_ending,
         doc::doc_outline,
+        doc::doc_python_facts,
         doc::doc_folding,
         doc::doc_highlights,
         doc::doc_selection_ranges,

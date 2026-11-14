@@ -134,6 +134,17 @@ pub async fn doc_outline(window: Window, state: State<'_, AppState>, doc: DocId)
     ide_host::ops::doc::doc_outline(&state.host, window.label(), doc).await
 }
 
+/// Python class facts for the inheritance inspections: tree-sitter, no language server.
+#[tauri::command]
+#[specta::specta]
+pub async fn doc_python_facts(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+) -> IdeResult<ide_language::PythonFacts> {
+    ide_host::ops::doc::doc_python_facts(&state.host, window.label(), doc).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn doc_folding(window: Window, state: State<'_, AppState>, doc: DocId) -> IdeResult<Vec<FoldRange>> {
