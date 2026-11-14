@@ -39,6 +39,12 @@ describe("Helm Template mode", () => {
     expect(out).toContainEqual(expect.objectContaining({ text: "end", style: "tok-keyword" }));
   });
 
+  it("reads comments with trim markers", async () => {
+    const out = await tokens("{{- /* trimmed note */ -}}\nkind: Deployment");
+    expect(out).toContainEqual(expect.objectContaining({ text: "{{- /* trimmed note */ -}}", style: "tok-comment" }));
+    expect(out).toContainEqual(expect.objectContaining({ text: "kind", style: "tok-propertyName" }));
+  });
+
   it("keeps multi-line {{/* … */}} comments across lines", async () => {
     const out = await tokens("{{/* line 1\nline 2 */}}\nreplicas: 3");
     expect(out).toContainEqual(expect.objectContaining({ text: "{{/* line 1", style: "tok-comment" }));

@@ -15,7 +15,9 @@ type HelmState<Y> = {
 
 const OPEN = /\{\{-?/;
 const CLOSE = /-?\}\}/;
-const COMMENT_CLOSE = /\*\/-?\}\}/;
+// `{{/* … */}}`, or with trim markers `{{- /* … */ -}}` (Go requires the space there).
+const COMMENT_OPEN = /^\s*\/\*/;
+const COMMENT_CLOSE = /\*\/\s*-?\}\}/;
 
 const KEYWORDS = new Set(["if", "else", "end", "range", "with", "define", "template", "block", "break", "continue"]);
 const ATOMS = new Set(["true", "false", "nil"]);
@@ -265,9 +267,9 @@ export function helmParser<Y>(yaml: StreamParser<Y>): StreamParser<HelmState<Y>>
       const rest = stream.string.slice(stream.pos);
       const open = OPEN.exec(rest);
       if (open?.index === 0) {
-        const afterOpen = stream.string.slice(stream.pos + open[0].length);
-        if (afterOpen.startsWith("/*")) {
-          stream.pos += open[0].length + 2;
+        const comment = COMMENT_OPEN.exec(stream.string.slice(stream.pos + open[0].length));
+        if (comment) {
+          stream.pos += open[0].length + comment[0].length;
           const close = COMMENT_CLOSE.exec(stream.string.slice(stream.pos));
           if (!close) {
             stream.skipToEnd();
