@@ -35,6 +35,40 @@ describe("copyMenuFor", () => {
     expect(items![0]).toMatchObject({ label: "Copy", disabled: false });
   });
 
+  it.each([
+    ["link", "none"],
+    ["nested", "link"],
+    ["text", "elsewhere"],
+  ])("copies the destination from a %s target with %s selected", async (target, selection) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const url = "https://example.com/pull/42?tab=files#diff";
+    mount(
+      `<div class="${selectableText}"><a id="link" href="${url}"><strong id="nested">Review changes</strong></a><p id="elsewhere">Other text</p></div>`,
+    );
+    if (selection !== "none") select(document.getElementById(selection)!);
+    const node = target === "text" ? document.getElementById("nested")!.firstChild : document.getElementById(target);
+    const items = copyMenuFor(node)!;
+    expect(items[0]).toMatchObject({ label: "Copy", disabled: false });
+    window.getSelection()!.removeAllRanges();
+    const item = items[0]!;
+    if ("run" in item) item.run?.();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith(url);
+  });
+
+  it("copies selected text on an anchor without a destination", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mount(`<div class="${selectableText}"><a id="anchor">Section heading</a></div>`);
+    select(document.getElementById("anchor")!);
+    const items = copyMenuFor(document.getElementById("anchor"))!;
+    const item = items[0]!;
+    if ("run" in item) item.run?.();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith("Section heading");
+  });
+
   it("offers a disabled Copy in a selectable pane with nothing selected", () => {
     mount(`<div class="${selectableText}"><p id="p">Hello</p></div>`);
     expect(copyMenuFor(document.getElementById("p"))![0]).toMatchObject({ label: "Copy", disabled: true });

@@ -24,12 +24,12 @@ function selectionCovers(sel: Selection | null, target: Node): boolean {
   return false;
 }
 
-/** The Copy menu for a right-click on `target`, or null when it is not on readable text. */
+/** Copy a link's destination, otherwise the selected readable text. */
 export function copyMenuFor(target: EventTarget | null): MenuItem[] | null {
   const el = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
   if (!el || el.closest(EDITABLE)) return null;
   const sel = window.getSelection();
-  const text = selectionCovers(sel, el) ? sel!.toString() : "";
+  const text = el.closest("a[href]")?.getAttribute("href") || (selectionCovers(sel, el) ? sel!.toString() : "");
   if (!text && !el.closest(`.${selectableText}`)) return null;
   return [
     {
