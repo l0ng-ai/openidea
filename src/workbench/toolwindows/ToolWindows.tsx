@@ -60,7 +60,7 @@ import {
 } from "./store";
 import { contentTabRegistry } from "./content";
 import styles from "./ToolWindows.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useI18n } from "@/platform/i18n";
 
 /** The window's title in the UI language; a plugin's stays as written. */
 function titleOf(tw: ToolWindowContribution): string {
@@ -756,6 +756,8 @@ function HeaderRow({
   const [titleOpen, setTitleOpen] = useState(false);
   const titleRef = useRef<HTMLButtonElement>(null);
   const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
+  // The title is translated here: show it in a language chosen while the window is open.
+  useI18n((s) => s.texts);
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);
