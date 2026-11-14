@@ -18,6 +18,7 @@ import {
   _provideNavigationHistory,
   _provideOpenEditorPaths,
   _setActiveEditor,
+  shownLine,
   type NavigationLocation,
 } from "@/editor/api";
 import {
@@ -972,7 +973,10 @@ export class EditorController implements SlotHost {
   private recordNav(slot: EditorSlot, navigation = false) {
     if (this.navSuppress > 0 || slot.disposed) return;
     const c = slot.caret();
-    this.nav.update({ path: slot.model.path, line: c.line, col: c.col }, navigation);
+    // A view standing in for the editor (Markdown Preview only) is where the reader is.
+    const shown = shownLine(slot.model.path);
+    const loc = shown === null || shown === c.line ? { line: c.line, col: c.col } : { line: shown, col: 0 };
+    this.nav.update({ path: slot.model.path, ...loc }, navigation);
   }
 
   async navigateTo(loc: NavigationLocation | null) {
@@ -1055,6 +1059,8 @@ export class EditorController implements SlotHost {
   }
 
   async openFile(path: string, o: OpenOptions = {}): Promise<void> {
+    // The place left behind, as it is now (a preview may have scrolled since it was recorded).
+    if (this.navSuppress === 0 && this.activeSlot) this.recordNav(this.activeSlot);
     return this.openFileRequest(path, o, this.openingGeneration(o));
   }
 
