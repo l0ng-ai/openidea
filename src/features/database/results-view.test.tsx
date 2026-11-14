@@ -263,6 +263,123 @@ describe("editable result grid", () => {
     expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
   });
 
+  it("blocks paging while a remounted result is applying edits", async () => {
+    let finish!: (value: { status: string; data: number }) => void;
+    const applying = new Promise((resolve) => {
+      finish = resolve;
+    });
+    backend.applyEdits.mockReturnValue(applying);
+    const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    first.outcome.result!.hasMore = true;
+    useDatabase.setState({
+      results: [
+        first,
+        {
+          ...first,
+          id: nextId++,
+          title: "Result 2",
+          outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+        },
+      ],
+    });
+    await act(async () => render(<ResultsView />));
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    const cells = screen.getAllByRole("gridcell");
+    fireEvent.mouseDown(cells[2]!, { button: 0 });
+    fireEvent.paste(screen.getByRole("grid"), { clipboardData: { getData: () => "3\tCara" } });
+    try {
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+      fireEvent.click(screen.getByRole("tab", { name: "Result 2" }));
+      fireEvent.click(screen.getByRole("tab", { name: "Result 1" }));
+      expect(screen.getByRole("gridcell", { name: "Cara" })).toBeTruthy();
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Next Page" })));
+      expect(backend.execute).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Add Row" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Rerun Query" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Last Page" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Page size" })).toBeDisabled();
+      expect(backend.applyEdits).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => finish({ status: "ok", data: 1 }));
+    }
+  });
+
+  it("finishes an apply after its result closes without refreshing another tab", async () => {
+    let finish!: (value: { status: string; data: number }) => void;
+    backend.applyEdits.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    useDatabase.setState({
+      results: [
+        first,
+        {
+          ...first,
+          id: nextId++,
+          title: "Result 2",
+          outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+        },
+      ],
+    });
+    await act(async () => render(<ResultsView />));
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Result 1" }), { key: "Delete" });
+    expect(screen.getByRole("tab", { name: "Result 2" })).toHaveAttribute("aria-selected", "true");
+    await act(async () => finish({ status: "ok", data: 1 }));
+    expect(screen.queryByRole("tab", { name: "Result 1" })).toBeNull();
+    expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
+    expect(backend.execute).not.toHaveBeenCalled();
+    expect(backend.applyEdits).toHaveBeenCalledTimes(1);
+    expect(useDatabase.getState().output.map((line) => line.text)).toContain("users: 1 row(s) changed");
+  });
+
+  it("does not offer accepted edits again when refresh fails after a remount", async () => {
+    let finish!: (value: { status: string; data: number }) => void;
+    backend.applyEdits.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    backend.execute.mockResolvedValue({
+      status: "ok",
+      data: [{ statement: first.outcome.statement, result: null, error: "Refresh denied" }],
+    });
+    useDatabase.setState({
+      results: [
+        first,
+        {
+          ...first,
+          id: nextId++,
+          title: "Result 2",
+          outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+        },
+      ],
+    });
+    await act(async () => render(<ResultsView />));
+    fireEvent.doubleClick(screen.getByRole("gridcell", { name: "Ann" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Edit name" }), { target: { value: "Cara" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit name" }), { key: "Enter" });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    fireEvent.click(screen.getByRole("tab", { name: "Result 2" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Result 1" }));
+    await act(async () => finish({ status: "ok", data: 1 }));
+    expect(backend.execute).toHaveBeenCalledTimes(1);
+    const output = useDatabase.getState().output;
+    expect(output.some((line) => line.kind === "result" && line.text === "users: 1 row(s) changed")).toBe(true);
+    expect(output.some((line) => line.kind === "error" && line.text.includes("Refresh denied"))).toBe(true);
+    fireEvent.click(screen.getByRole("tab", { name: "Result 1" }));
+    expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
+    expect(screen.queryByRole("gridcell", { name: "Cara" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(backend.applyEdits).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Rerun Query" })).toBeEnabled();
+  });
+
   it("uses the execution schema even after the console selection changes", async () => {
     const tab = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
     Object.assign(tab, { schema: "s2" });
