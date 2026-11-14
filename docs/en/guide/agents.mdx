@@ -67,6 +67,10 @@ The task tab shows the conversation: your messages, the agent's replies, its rea
 
 On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
 
+**Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either an editor tab or the tool window, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
+
+The shortcut does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. Outside the task conversation, the keys keep their usual editor or terminal behavior. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
+
 ### Permissions
 
 When an agent wants to run a command or call a tool that needs approval, the task shows the request and is listed as **Needs Input**. Choose one of the options the agent offers, such as **Allow Once**, **Allow for This Session**, **Always Allow**, **Decline**, **Always Decline** or **Decline and Stop**. Many agents also have a mode picker that approves edits or everything automatically; use it with care.

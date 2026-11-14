@@ -4078,6 +4078,8 @@
   "New Agent Task": "新建 Agent 任务",
   "Close Agent Task": "关闭 Agent 任务",
   "Close and New Agent Task": "关闭并新建 Agent 任务",
+  "Focus Agent Input": "聚焦 Agent 输入框",
+  "Focuses the message input of the current agent task without moving the caret.": "聚焦当前 Agent 任务的消息输入框，不移动光标。",
   "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.": "关闭编辑器中的 Agent 任务标签页；任务继续在 Agents 工具窗口中运行。",
   "Closes the agent task tab in the editor, then opens the New Task page.": "关闭编辑器中的 Agent 任务标签页，然后打开“新建任务”页面。",
   "No agent tasks yet": "还没有 Agent 任务",

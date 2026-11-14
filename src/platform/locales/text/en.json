@@ -1446,6 +1446,8 @@
   "too old, needs JDK {version}+ · {path}": "too old, needs JDK {version}+ · {path}",
   "Close Agent Task": "Close Agent Task",
   "Close and New Agent Task": "Close and New Agent Task",
+  "Focus Agent Input": "Focus Agent Input",
+  "Focuses the message input of the current agent task without moving the caret.": "Focuses the message input of the current agent task without moving the caret.",
   "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.": "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
   "Closes the agent task tab in the editor, then opens the New Task page.": "Closes the agent task tab in the editor, then opens the New Task page.",
   "May be incomplete: plugin indexes are still updating": "May be incomplete: plugin indexes are still updating",
