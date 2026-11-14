@@ -241,13 +241,13 @@ pub async fn vcs_add_to_ignore(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn vcs_write_blame_ignore_revs(
+pub async fn vcs_ignore_blame_revision(
     window: Window,
     state: State<'_, AppState>,
     path: PathBuf,
-    content: String,
+    commit: String,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_write_blame_ignore_revs(&state.host, window.label(), path, content).await
+    ide_host::ops::vcs::vcs_ignore_blame_revision(&state.host, window.label(), path, commit).await
 }
 
 #[tauri::command]

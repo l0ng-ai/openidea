@@ -46,34 +46,62 @@ fn run_paths(r: &Repo, args: &[&str], paths: &[String]) -> IdeResult<()> {
 /// The annotate ignore list at the worktree root: git's conventional `blame.ignoreRevsFile`.
 pub const BLAME_IGNORE_REVS_FILE: &str = ".git-blame-ignore-revs";
 
-/// Arguments for the file `blame.ignoreRevsFile` names, which git does not accept as an
-/// absent file: with a value configured but missing from disk, `--no-ignore-revs-file`
-/// clears it so annotate still works. A relative value is resolved from the worktree root,
-/// as git does. The value comes from the gitoxide config snapshot, which Restricted Mode
-/// still parses, so resolving it starts no program.
-fn ignore_revs_args(r: &Repo) -> Vec<String> {
-    let Ok(repo) = r.gix() else { return Vec::new() };
-    let Some(configured) = repo.config_snapshot().string("blame.ignoreRevsFile") else { return Vec::new() };
-    let configured = configured.to_str_lossy().into_owned();
+/// The file `blame.ignoreRevsFile` names, resolved from the worktree root as git does (it may not
+/// exist). The value comes from the gitoxide config snapshot, which Restricted Mode still parses,
+/// so resolving it starts no program.
+fn configured_ignore_revs(r: &Repo) -> Option<PathBuf> {
+    let repo = r.gix().ok()?;
+    let configured = repo.config_snapshot().string("blame.ignoreRevsFile")?;
+    let configured = configured.to_str_lossy();
     let configured = configured.trim();
     if configured.is_empty() {
-        return Vec::new();
+        return None;
     }
     let path = Path::new(configured);
-    let path = if path.is_absolute() { path.to_path_buf() } else { r.root().join(path) };
-    if path.is_file() {
-        vec!["--ignore-revs-file".to_string(), path.to_string_lossy().into_owned()]
-    } else {
-        vec!["--no-ignore-revs-file".to_string()]
+    Some(if path.is_absolute() { path.to_path_buf() } else { r.root().join(path) })
+}
+
+/// Arguments for the file `blame.ignoreRevsFile` names, which git does not accept as an
+/// absent file: with a value configured but missing from disk, `--no-ignore-revs-file`
+/// clears it so annotate still works.
+fn ignore_revs_args(r: &Repo) -> Vec<String> {
+    match configured_ignore_revs(r) {
+        Some(path) if path.is_file() => vec!["--ignore-revs-file".to_string(), path.to_string_lossy().into_owned()],
+        Some(_) => vec!["--no-ignore-revs-file".to_string()],
+        None => Vec::new(),
     }
 }
 
-/// Replaces the annotate ignore list and points `blame.ignoreRevsFile` at it unless the
-/// repository's local config already names a file. The caller decides the list's text.
-pub(crate) fn write_blame_ignore_revs(r: &Repo, content: &str) -> IdeResult<()> {
-    std::fs::write(r.root().join(BLAME_IGNORE_REVS_FILE), content)?;
-    let configured = cli::run_raw(r.root(), &["config", "--local", "--get", "blame.ignoreRevsFile"], None)?;
-    if configured.code != Some(0) || configured.stdout_str().trim().is_empty() {
+/// `existing` (an ignore list's text) with `commit` appended: lines keep their text and order, a
+/// listed commit isn't repeated, and the result ends with a newline in the list's line ending.
+fn append_revision(existing: &str, commit: &str) -> String {
+    let revision = commit.trim();
+    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<&str> = existing.lines().collect();
+    if !revision.is_empty() && !lines.iter().any(|line| line.trim() == revision) {
+        lines.push(revision);
+    }
+    if lines.is_empty() { String::new() } else { lines.join(newline) + newline }
+}
+
+/// Adds `commit` to the list `blame.ignoreRevsFile` names; with none configured, to
+/// `.git-blame-ignore-revs` at the worktree root, which the local config then names.
+pub(crate) fn ignore_blame_revision(r: &Repo, commit: &str) -> IdeResult<()> {
+    let configured = configured_ignore_revs(r);
+    let path = configured.clone().unwrap_or_else(|| r.root().join(BLAME_IGNORE_REVS_FILE));
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let updated = append_revision(&existing, commit);
+    if updated != existing {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, updated)?;
+    }
+    if configured.is_none() {
         cli::run(r.root(), &["config", "--local", "blame.ignoreRevsFile", BLAME_IGNORE_REVS_FILE], None)?;
     }
     Ok(())
@@ -1433,4 +1461,20 @@ fn decode_diff(bytes: &[u8], encoding: TextEncoding) -> String {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_revision;
+
+    #[test]
+    fn a_revision_is_appended_once_keeping_the_list() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        assert_eq!(append_revision("", &b), format!("{b}\n"));
+        assert_eq!(append_revision(&format!("{a}\n# comment\n"), &b), format!("{a}\n# comment\n{b}\n"));
+        assert_eq!(append_revision(&a, &b), format!("{a}\n{b}\n"));
+        let listed = format!("# reformat\n  {b}  \n{a}\n");
+        assert_eq!(append_revision(&listed, &b), listed);
+        assert_eq!(append_revision(&format!("{a}\r\n"), &b), format!("{a}\r\n{b}\r\n"));
+    }
 }

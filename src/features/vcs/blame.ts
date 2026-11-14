@@ -9,9 +9,8 @@ import { call, commands } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
-import { appendIgnoreRevision, BLAME_IGNORE_REVS_FILE } from "./blameIgnore";
 import { formatDate } from "./model";
-import { repoOf, useVcs } from "./store";
+import { useVcs } from "./store";
 
 const ZERO = /^0+$/;
 
@@ -331,11 +330,8 @@ function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: strin
  * the gutter (a live one shows the commit before it on those lines).
  */
 async function ignoreCommit(view: EditorView, path: string, commit: string, live: boolean) {
-  const root = repoOf(path);
   try {
-    // An open editor's unsaved text of the list is the newest.
-    const existing = root ? await call(commands.fsReadText(`${root}/${BLAME_IGNORE_REVS_FILE}`)).catch(() => "") : "";
-    await call(commands.vcsWriteBlameIgnoreRevs(path, appendIgnoreRevision(existing, commit)));
+    await call(commands.vcsIgnoreBlameRevision(path, commit));
     if (live) await refreshAnnotations(view, path);
   } catch (e) {
     notifications().notify({

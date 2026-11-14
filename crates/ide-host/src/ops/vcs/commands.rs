@@ -585,13 +585,13 @@ pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeRes
     blocking(move || per_backend(&project, &paths, None, |r, paths| r.stage(paths))).await
 }
 
-/// Writes annotate's ignore list from `path`'s repository root and points
-/// `blame.ignoreRevsFile` at it when unset; the UI composes the list's text.
-pub async fn vcs_write_blame_ignore_revs(host: &Host, window: &str, path: PathBuf, content: String) -> IdeResult<()> {
+/// Adds `commit` to annotate's ignore list in `path`'s repository (the file `blame.ignoreRevsFile`
+/// names, else `.git-blame-ignore-revs`, which the local config then names).
+pub async fn vcs_ignore_blame_revision(host: &Host, window: &str, path: PathBuf, commit: String) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     blocking(move || {
-        let result = project.with_disk_sync(|| project.with_repo_of(&path, |r| r.write_blame_ignore_revs(&content)));
+        let result = project.with_disk_sync(|| project.with_repo_of(&path, |r| r.ignore_blame_revision(&commit)));
         if result.is_ok() {
             project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
         }
@@ -1477,8 +1477,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_add_to_ignore", |c| async move {
         vcs_add_to_ignore(&c.host, &c.window, c.arg("paths")?, c.arg("destination")?).await
     });
-    d.add("vcs_write_blame_ignore_revs", |c| async move {
-        vcs_write_blame_ignore_revs(&c.host, &c.window, c.arg("path")?, c.arg("content")?).await
+    d.add("vcs_ignore_blame_revision", |c| async move {
+        vcs_ignore_blame_revision(&c.host, &c.window, c.arg("path")?, c.arg("commit")?).await
     });
     d.add("vcs_unstage", |c| async move { vcs_unstage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_stage_patch", |c| async move { vcs_stage_patch(&c.host, &c.window, c.arg("patch")?).await });

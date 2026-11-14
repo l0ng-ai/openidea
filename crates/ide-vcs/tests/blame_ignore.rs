@@ -103,15 +103,29 @@ fn a_configured_file_that_does_not_exist_is_skipped() {
 }
 
 #[test]
-fn the_ignore_list_write_configures_the_file_once_and_is_blamed() {
+fn ignoring_a_commit_starts_the_list_and_configures_it_once() {
     let (fx, first, second) = reformatted_file();
-    fx.repo().write_blame_ignore_revs(&format!("{second}\n")).unwrap();
+    fx.repo().ignore_blame_revision(&second).unwrap();
+    fx.repo().ignore_blame_revision(&second).unwrap();
     assert_eq!(std::fs::read_to_string(fx.path(".git-blame-ignore-revs")).unwrap(), format!("{second}\n"));
     assert_eq!(fx.git(&["config", "--local", "--get", "blame.ignoreRevsFile"]), ".git-blame-ignore-revs");
-    assert_eq!(commits(&fx.repo(), &fx.path("file.txt")), vec![first.clone(), first.clone()]);
+    let repo = fx.repo();
+    assert_eq!(commits(&repo, &fx.path("file.txt")), vec![first.clone(), first.clone()]);
+}
 
-    // A local value the repository already has is kept.
+#[test]
+fn ignoring_a_commit_adds_it_to_the_configured_list() {
+    let (fx, first, second) = reformatted_file();
+    fx.write("custom-revs", &format!("# formatting\r\n{first}\r\n"));
     fx.git(&["config", "--local", "blame.ignoreRevsFile", "custom-revs"]);
-    fx.repo().write_blame_ignore_revs(&format!("{first}\n")).unwrap();
+    fx.repo().ignore_blame_revision(&second).unwrap();
+    // Lines and line endings kept; the configured file is the one annotate reads.
+    assert_eq!(
+        std::fs::read_to_string(fx.path("custom-revs")).unwrap(),
+        format!("# formatting\r\n{first}\r\n{second}\r\n")
+    );
+    assert!(!fx.path(".git-blame-ignore-revs").exists());
     assert_eq!(fx.git(&["config", "--local", "--get", "blame.ignoreRevsFile"]), "custom-revs");
+    let blamed = commits(&fx.repo(), &fx.path("file.txt"));
+    assert_ne!(blamed[1], second);
 }
