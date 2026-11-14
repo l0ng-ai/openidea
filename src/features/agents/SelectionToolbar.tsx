@@ -111,8 +111,10 @@ export function SelectionToolbar({
     );
   }, [shown]);
 
-  // A side conversation works on any live task: it starts a session of its own.
-  const side = !!shown && !subagent && task.status !== "archived" && !isBusy(task.status);
+  // A side conversation works on any live task whose agent can be pushed to a mode that
+  // asks before changing things; without that it would edit the project and then vanish.
+  const side =
+    !!shown && !subagent && task.status !== "archived" && !isBusy(task.status) && !!task.capabilities?.readOnly;
 
   const startSide = () => {
     if (!shown) return;

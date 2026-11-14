@@ -47,7 +47,7 @@ const task: AgentTask = {
   commands: [],
   usage: null,
   queue: [],
-  capabilities: { fork: true, rollback: true, steer: true, images: true },
+  capabilities: { fork: true, rollback: true, steer: true, images: true, readOnly: true },
 };
 const entries: AgentEntry[] = [prompt, { type: "agent", text: "**Answer**" }];
 const run = (id: string, arg: unknown = { task: task.id, turn: 0 }) =>
@@ -124,6 +124,8 @@ it.each(["files", "steered", "earlier", "busy", "unsupported", "subagent"])(
     if (kind === "steered") backend.entries.set(task.id, [...entries, { ...prompt, steered: true }]);
     if (kind === "earlier") backend.entries.set(task.id, [...entries, prompt, entries[1]!]);
     if (kind === "busy") backend.tasks.set(task.id, { ...task, status: "running" });
+    if (kind === "no-readonly")
+      backend.tasks.set(task.id, { ...task, capabilities: { ...task.capabilities!, readOnly: false } });
     if (kind === "unsupported") backend.tasks.set(task.id, { ...task, capabilities: undefined });
     if (kind === "subagent") backend.entries.set(task.id, [{ type: "agent", text: "Child reply" }]);
     await run("regenerateReply");

@@ -45,7 +45,7 @@ const source: AgentTask = {
   commands: [],
   usage: null,
   queue: [],
-  capabilities: { fork: true, rollback: true, steer: true, images: true },
+  capabilities: { fork: true, rollback: true, steer: true, images: true, readOnly: true },
 };
 
 const side = (id: string): AgentTask => ({ ...source, id, title: `Side of ${id}`, isolation: "local" });

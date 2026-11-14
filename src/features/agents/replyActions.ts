@@ -159,7 +159,9 @@ export const replyActions: Action[] = [
       const target = arg as SideSelection | undefined;
       if (!target || typeof target.task !== "string" || typeof target.text !== "string" || !target.text.trim()) return;
       const task = useAgents.getState().tasks.get(target.task);
-      if (!task || task.status === "archived" || isBusy(task.status)) return;
+      // The host only marks a task read-only when its agent can be pushed to a mode
+      // that asks before changing things; without that it would edit and then vanish.
+      if (!task || task.status === "archived" || isBusy(task.status) || !task.capabilities?.readOnly) return;
       return runReplyOperation(task.id, "Couldn't start the side conversation", () =>
         startSideConversation(task.id, target.text),
       );

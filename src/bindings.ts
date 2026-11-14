@@ -1892,6 +1892,11 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**
+	 *  The task runs read-only: it asks before anything, and requests that would change
+	 *  the project are denied (a temporary side conversation).
+	 */
+	readOnly?: boolean,
 };
 
 /**

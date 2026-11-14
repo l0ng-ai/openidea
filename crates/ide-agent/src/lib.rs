@@ -809,6 +809,9 @@ impl AgentManager {
     /// Creates a temporary side conversation of `source`: an in-memory task that is never
     /// persisted, whose session starts with its first real message (`prompt` only names
     /// the title). `source`'s conversation rides along as the context of that message.
+    /// The task is read-only: its settings are pushed to a mode that asks before anything,
+    /// and requests that would change the project are denied regardless. Fails for an
+    /// agent that offers no way to ask.
     pub async fn create_ephemeral(&self, req: NewAgentTask, source: &str) -> IdeResult<AgentTask> {
         let spec = self
             .shared
@@ -816,11 +819,20 @@ impl AgentManager {
             .ok_or_else(|| IdeError::invalid(format!("unknown agent {}", req.provider)))?;
         let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the topic first"))?;
         let title = title_of(&prompt);
-        let config = self.merged_config(&spec.id, &req.config);
+        let mut config = self.merged_config(&spec.id, &req.config);
+        config::ask_for_approvals(&mut config);
+        if config::bypass_approvals(&config) {
+            return Err(IdeError::invalid(
+                "this agent has no mode that asks before changing things, so it can't run a side conversation",
+            ));
+        }
+        let read_only = !config::bypass_approvals(&config);
         let context = context_transcript(&self.task(source)?.state.lock().conversation.main.entries);
         let root = self.shared.paths.project_root.clone();
         let before = blocking(move || Ok(worktree::snapshot(&root).unwrap_or_default())).await?;
         let now = now_ms();
+        let mut capabilities = self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default();
+        capabilities.read_only = read_only;
         let task = AgentTask {
             project_root: Some(IpcPath(self.shared.paths.project_root.clone())),
             id: uuid::Uuid::new_v4().simple().to_string(),
@@ -839,7 +851,7 @@ impl AgentManager {
             commands: self.shared.known_commands(&spec.id),
             usage: None,
             queue: Vec::new(),
-            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            capabilities,
             resets_ms: None,
             retry: None,
             background: Box::default(),
@@ -2316,6 +2328,29 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
+        // A side conversation is read-only: deny anything that would change the project
+        // (its task is deleted when its pane closes, leaving nothing to review or revert).
+        if self.state.lock().ephemeral
+            && params
+                .pointer("/toolCall/kind")
+                .or_else(|| params.pointer("/subject/toolCall/kind"))
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "edit" | "delete" | "move" | "execute"))
+        {
+            let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
+            let _ = self.push_entry(AgentEntry::Permission {
+                id,
+                title,
+                command: None,
+                options,
+                questions: Vec::new(),
+                chosen: Some("Denied: side conversations are read-only".to_owned()),
+            });
+            return match reject {
+                Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option.id } }),
+                None => json!({ "outcome": { "outcome": "cancelled" } }),
+            };
+        }
         let asked: Vec<String> = questions
             .iter()
             .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
@@ -2517,26 +2552,64 @@ fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
 /// what was said, what was done (tool calls with their reported output), errors and the
 /// agent's reasoning — oldest parts first. Nothing is truncated: a side question is
 /// answered with the same information its asker sees.
+/// The character budget of a side conversation's context: the newest entries win, the
+/// oldest are dropped first. Leaves room for the question and the agent's answer.
+const CONTEXT_BUDGET: usize = 100_000;
+
+/// A long tool output trimmed to its first and last few lines, with the elided middle noted.
+fn trimmed_output(output: &str) -> String {
+    const KEPT: usize = 4;
+    let lines: Vec<&str> = output.lines().collect();
+    if lines.len() <= KEPT * 2 + 1 {
+        return output.to_owned();
+    }
+    let omitted = lines.len() - KEPT * 2;
+    let mut out = lines[..KEPT].join("\n");
+    out.push_str(&format!("\n… {omitted} lines omitted …\n"));
+    out.push_str(&lines[lines.len() - KEPT..].join("\n"));
+    out
+}
+
+fn context_entry(e: &AgentEntry) -> Option<String> {
+    match e {
+        AgentEntry::User { text, .. } => Some(format!("User: {text}")),
+        AgentEntry::Agent { text, .. } if !text.trim().is_empty() => Some(format!("Agent: {text}")),
+        AgentEntry::Thought { text, .. } if !text.trim().is_empty() => Some(format!("Thought: {text}")),
+        AgentEntry::Tool { title, output, .. } => match output.as_deref() {
+            Some(output) if !output.trim().is_empty() => Some(format!("Tool: {title}\n{}", trimmed_output(output))),
+            _ => Some(format!("Tool: {title}")),
+        },
+        AgentEntry::Error { message, .. } => Some(format!("Error: {message}")),
+        _ => None,
+    }
+}
+
 fn context_transcript(entries: &[AgentEntry]) -> String {
-    let lines: Vec<String> = entries
-        .iter()
-        .filter_map(|e| match e {
-            AgentEntry::User { text, .. } => Some(format!("User: {text}")),
-            AgentEntry::Agent { text, .. } if !text.trim().is_empty() => Some(format!("Agent: {text}")),
-            AgentEntry::Thought { text, .. } if !text.trim().is_empty() => Some(format!("Thought: {text}")),
-            AgentEntry::Tool { title, output, .. } => match output.as_deref() {
-                Some(output) if !output.trim().is_empty() => Some(format!("Tool: {title}\n{output}")),
-                _ => Some(format!("Tool: {title}")),
-            },
-            AgentEntry::Error { message, .. } => Some(format!("Error: {message}")),
-            _ => None,
-        })
-        .collect();
+    // Newest wins: walk back until the budget is spent, dropping the oldest entries first.
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for e in entries.iter().rev() {
+        let Some(line) = context_entry(e) else { continue };
+        if used + line.len() > CONTEXT_BUDGET {
+            if lines.is_empty() {
+                // Even the newest entry alone exceeds the budget: keep its head.
+                lines.push(line.chars().take(CONTEXT_BUDGET).collect());
+            }
+            break;
+        }
+        used += line.len();
+        lines.push(line);
+    }
+    lines.reverse();
+    let dropped = entries.iter().rev().filter_map(context_entry).count() - lines.len();
     let mut context = String::from(
         "You are answering a side question in a temporary conversation. The conversation so far is below, \
          for context only; answer the new question after the marker, and do not continue the main task \
          unless asked.\n\n<conversation>\n",
     );
+    if dropped > 0 {
+        context.push_str(&format!("(The {dropped} oldest entries are omitted.)\n\n"));
+    }
     context.push_str(&lines.join("\n\n"));
     context.push_str("\n</conversation>");
     context
@@ -2742,6 +2815,7 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         rollback: meta("/openidea/rollback"),
         steer: meta("/openidea/steer"),
         background_tasks: meta("/openidea/backgroundTasks"),
+        read_only: false,
     };
     (capabilities, init.prompt("embeddedContext"))
 }

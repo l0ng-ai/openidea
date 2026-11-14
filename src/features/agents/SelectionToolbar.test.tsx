@@ -25,7 +25,7 @@ const task: AgentTask = {
   commands: [],
   usage: null,
   queue: [],
-  capabilities: { fork: true, rollback: true, steer: true, images: true },
+  capabilities: { fork: true, rollback: true, steer: true, images: true, readOnly: true },
 };
 
 interface SetupOptions {
@@ -124,4 +124,11 @@ it("ignores a selection in an editable field", () => {
   text.remove();
   selectThenRelease(field);
   expect(view.queryByRole("button", { name: "Reply" })).toBeNull();
+});
+
+it("offers no side conversation for an agent without a read-only mode", () => {
+  const { view, row } = setup({ task: { ...task, capabilities: { ...task.capabilities!, readOnly: false } } });
+  selectThenRelease(row);
+  expect(view.getByRole("button", { name: "Reply" })).toBeInTheDocument();
+  expect(sideButton(view)).toBeNull();
 });

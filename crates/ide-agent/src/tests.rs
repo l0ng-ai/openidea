@@ -3299,3 +3299,118 @@ async fn ephemeral_tasks_stay_in_memory_only() {
     assert!(events.lock().iter().any(|e| matches!(e, AgentEvent::Removed { id } if *id == task.id)));
     mgr.shutdown();
 }
+
+/// A side conversation's context stays within its budget: long tool outputs are cut to
+/// their head and tail, and entries that no longer fit are dropped oldest first.
+#[test]
+fn side_conversation_context_is_bounded() {
+    let long_output = (0..400).map(|i| format!("line {i}")).collect::<Vec<_>>().join(
+        "
+",
+    );
+    let entries = vec![
+        AgentEntry::User {
+            text: "oldest question".into(),
+            attachments: vec![],
+            images: vec![],
+            sent_ms: None,
+            done_ms: None,
+            steered: false,
+        },
+        AgentEntry::Tool {
+            id: "t1".into(),
+            title: "grep".into(),
+            kind: "search".into(),
+            status: AgentToolStatus::Completed,
+            locations: vec![],
+            output: Some(long_output),
+            diffs: vec![],
+        },
+        AgentEntry::User {
+            text: "newest question".into(),
+            attachments: vec![],
+            images: vec![],
+            sent_ms: None,
+            done_ms: None,
+            steered: false,
+        },
+    ];
+    let transcript = context_transcript(&entries);
+    assert!(transcript.contains("newest question"), "the newest entry is always kept");
+    assert!(transcript.contains("lines omitted"), "a long tool output is trimmed");
+    assert!(transcript.contains("line 0") && transcript.contains("line 399"), "its head and tail stay");
+    assert!(!transcript.contains("oldest question"), "entries past the budget are dropped oldest first");
+    assert!(transcript.contains("oldest entries are omitted"));
+}
+
+/// An ephemeral task denies a permission request that would change the project.
+#[tokio::test(flavor = "multi_thread")]
+async fn ephemeral_tasks_deny_write_permissions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let source = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Something with a conversation to reuse"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &source.id, AgentStatus::NeedsInput).await;
+    let pending = mgr
+        .entries(&source.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no pending permission request"));
+    mgr.respond(&source.id, pending, Some("no".into())).unwrap();
+    wait_for(&mgr, &source.id, AgentStatus::Ready).await;
+
+    let task = mgr
+        .create_ephemeral(
+            NewAgentTask {
+                project_root: None,
+                prompt: text("What changed in this file?"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            },
+            &source.id,
+        )
+        .await
+        .unwrap();
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.capabilities.read_only);
+
+    let answer = mgr
+        .task(&task.id)
+        .unwrap()
+        .ask_permission(&json!({
+            "sessionId": "c1",
+            "toolCall": {"toolCallId": "c1-t2", "title": "Edit main.rs", "kind": "edit"},
+            "options": [
+                {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "no", "name": "Reject", "kind": "reject_once"}
+            ]
+        }))
+        .pointer("/outcome/optionId")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_owned();
+    assert_eq!(answer, "no", "the write request is denied");
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(chosen), .. } if chosen.contains("read-only"))),
+        "{entries:?}"
+    );
+    mgr.shutdown();
+}
