@@ -24,6 +24,7 @@ use connection::{Connection, DapError};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
+pub use js_debug::JsResponseBody;
 pub use jvm_memory::*;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -1177,6 +1178,21 @@ impl DebugManager {
             }
         }
         s.launched.send_replace(true);
+        // A page reports its requests from here on. This is the earliest js-debug takes the
+        // request (before its answer to `launch` the page has no adapter and the request is
+        // never answered), and the page is already loading: its document and first scripts
+        // are not in the list.
+        if js_debug::is_page(s) {
+            let answer = s.conn.send_request("enableNetworking", js_debug::networking_arguments())?;
+            let session = s.clone();
+            // Not waited for here: the page runs on. A refusal is told to the Network view,
+            // which would otherwise wait for requests that never come.
+            tokio::spawn(async move {
+                if matches!(answer.await, Ok(Err(_))) {
+                    session.emit(ide_core::event::DebugEvent::JsNetworkUnavailable);
+                }
+            });
+        }
         if let Some(link) = s.jdwp_link.lock().as_ref() {
             link.release();
         }

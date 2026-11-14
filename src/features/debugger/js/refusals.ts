@@ -4,7 +4,7 @@
  */
 import { create } from "zustand";
 
-export type JsTool = "eventBreakpoints";
+export type JsTool = "eventBreakpoints" | "network";
 
 /** Per session, the reason each refused tool was refused for. */
 export const useJsRefusals = create<{ refused: Record<number, Partial<Record<JsTool, string>>> }>(() => ({
@@ -40,6 +40,8 @@ export async function recordRefusal(
 }
 
 export const refusedIn = (session: number, tool: JsTool) => useJsRefusals.getState().refused[session]?.[tool];
+
+export const useRefused = (session: number, tool: JsTool) => useJsRefusals((s) => s.refused[session]?.[tool]);
 
 export function forgetRefusals(session: number) {
   const { refused } = useJsRefusals.getState();

@@ -41,6 +41,7 @@ import {
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
 import { stopNote } from "../js/eventBreakpoints";
+import { NetworkView } from "../js/NetworkView";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
@@ -101,7 +102,7 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console" | "memory";
+type Tab = "variables" | "console" | "memory" | "network";
 
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
@@ -164,8 +165,10 @@ export function DebugToolWindow() {
             : view.tab,
     });
   const hasMemory = !!active && sessionSupports("jvmMemory", active);
-  // The selected session may be one without the Memory tab.
-  const tab: Tab = view.tab === "memory" && !hasMemory ? "variables" : view.tab;
+  const hasNetwork = !!active && sessionSupports("jsPage", active);
+  // The selected session may be one without the Memory or the Network tab.
+  const tab: Tab =
+    (view.tab === "memory" && !hasMemory) || (view.tab === "network" && !hasNetwork) ? "variables" : view.tab;
 
   if (!active) {
     return (
@@ -222,6 +225,7 @@ export function DebugToolWindow() {
               ["variables", "Threads & Variables"],
               ["console", "Console"],
               ...(hasMemory ? [["memory", "Memory"] as const] : []),
+              ...(hasNetwork ? [["network", "Network"] as const] : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -244,6 +248,8 @@ export function DebugToolWindow() {
           <ThreadsAndVariables session={active} />
         ) : tab === "memory" ? (
           <MemoryView key={active.id} session={active} />
+        ) : tab === "network" ? (
+          <NetworkView key={active.id} session={active.id} />
         ) : (
           <DebugConsole key={active.id} session={active} />
         )}

@@ -839,6 +839,12 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
                 .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                 .unwrap_or_default(),
         }),
+        // js-debug, after `enableNetworking`.
+        "networkEvent" => {
+            if let Some(event) = crate::js_debug::network_event(&body) {
+                s.emit(DebugEvent::JsNetwork { event });
+            }
+        }
         _ => tracing::trace!("dap: ignored event {event}"),
     }
 }
