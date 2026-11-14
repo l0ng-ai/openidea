@@ -5,7 +5,9 @@ type Frame<S> =
   | { kind: "string"; quote: string }
   | { kind: "code"; close: string; depth: number; base: S; parameter: boolean };
 
-type State<S> = { frames: Frame<S>[]; identifier: boolean; indentUnit: number };
+type Heredoc = { delimiter: string; stripTabs: boolean };
+
+type State<S> = { frames: Frame<S>[]; heredocs: Heredoc[]; identifier: boolean; indentUnit: number };
 
 /** Keep shell expansions out of the enclosing string's token. */
 export function shellInterpolation<S>(base: StreamParser<S>): StreamParser<State<S>> {
@@ -24,6 +26,7 @@ export function shellInterpolation<S>(base: StreamParser<S>): StreamParser<State
     tokenTable: { ...base.tokenTable, templateDelimiter: tags.special(tags.brace) },
     startState: (unit) => ({
       frames: [{ kind: "code", close: "", depth: 0, base: fresh(unit), parameter: false }],
+      heredocs: [],
       identifier: false,
       indentUnit: unit,
     }),
@@ -32,8 +35,18 @@ export function shellInterpolation<S>(base: StreamParser<S>): StreamParser<State
       frames: state.frames.map((frame) =>
         frame.kind === "code" ? { ...frame, base: copy(frame.base) } : { ...frame },
       ),
+      heredocs: state.heredocs.slice(),
     }),
     token(stream, state) {
+      // Bodies start on the line after the operator, one per pending heredoc. The stock mode only ends a body on an
+      // exact delimiter line, so a `<<-` body whose delimiter is tab-indented would never end.
+      const heredoc = state.heredocs[0];
+      if (heredoc && stream.sol()) {
+        stream.skipToEnd();
+        const line = heredoc.stripTabs ? stream.string.replace(/^\t+/, "") : stream.string;
+        if (line === heredoc.delimiter) state.heredocs.shift();
+        return "string.special";
+      }
       const frame = state.frames[state.frames.length - 1]!;
       if (state.identifier) {
         state.identifier = false;
@@ -83,12 +96,23 @@ export function shellInterpolation<S>(base: StreamParser<S>): StreamParser<State
         }
         return "string";
       }
-      // Let the stock mode retain ownership of heredoc bodies and comments.
+      // Let the stock mode retain ownership of comments.
       const position = stream.pos;
       const style = base.token(stream, copy(frame.base));
       stream.pos = position;
-      if ((style === "comment" && !frame.parameter && frame.close !== "))") || style === "string.special")
-        return base.token(stream, frame.base);
+      if (style === "comment" && !frame.parameter && frame.close !== "))") return base.token(stream, frame.base);
+      // `<<` is a shift inside arithmetic, and `<<<` is a here-string.
+      const operator =
+        frame.close !== "))" &&
+        (stream.match(/^<<(?!<)(-?)[ \t]*((?:[^\s|&;()<>'"\\]|\\.|'[^']*'|"[^"]*")*)/) as RegExpMatchArray | null);
+      if (operator) {
+        const delimiter = operator[2]!.replace(
+          /\\(.)|'([^']*)'|"([^"]*)"/g,
+          (_, escaped?: string, single?: string, double?: string) => escaped ?? single ?? double ?? "",
+        );
+        if (delimiter) state.heredocs.push({ delimiter, stripTabs: operator[1] === "-" });
+        return "string.special";
+      }
       if (frame.close && frame.depth === 0 && stream.match(frame.close)) {
         state.frames.pop();
         return "templateDelimiter";

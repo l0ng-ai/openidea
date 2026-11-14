@@ -24,9 +24,38 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
         tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
         cli_status(r, &ignored)
     })?;
+    Ok(collect(r, &ignored, map, conflicts))
+}
+
+/// Status of `paths` only (repository-relative, `/`-separated): the dirty-scope refresh.
+///
+/// A watcher batch touches a few files, and the full status walks the whole tree; git's own
+/// pathspec filtering keeps that batch proportional to what changed. An empty list is the
+/// full status, so a caller that lost the paths still gets a correct answer.
+pub(crate) fn status_paths(r: &Repo, paths: &[String]) -> IdeResult<Vec<FileStatus>> {
+    // Pathspecs always take `/`, and a path that *is* the repository root names everything: both
+    // matter, because `Repo::status_paths` hands over paths as the platform spells them.
+    let patterns: Vec<String> =
+        paths.iter().map(|path| path.replace('\\', "/")).filter(|path| !path.is_empty()).collect();
+    if patterns.is_empty() {
+        return status(r);
+    }
+    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
+    // `git status` with the pathspec, for the same reason the full read falls back to it: gitoxide's
+    // in-process pathspec matched nothing for a plain relative path here, and a silent empty
+    // answer is worse than the ~40 ms a `git` process costs on Windows.
+    let (map, conflicts) = cli_status_paths(r, &ignored, &patterns)?;
+    Ok(collect(r, &ignored, map, conflicts))
+}
+
+fn collect(
+    r: &Repo,
+    ignored: &IgnoredNames,
+    map: BTreeMap<String, Entry>,
+    conflicts: HashSet<String>,
+) -> Vec<FileStatus> {
     let mut disk = r.gix().is_ok_and(|repo| crate::repo::ignores_case(&repo)).then(DiskSpelling::default);
-    Ok(map
-        .into_iter()
+    map.into_iter()
         .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
         // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
         // changes too, not just untracked hits above. Conflicts stay visible so merges
@@ -51,7 +80,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
                 renamed_from: e.renamed_from,
             }
         })
-        .collect())
+        .collect()
 }
 
 /// Spells repository paths the way a case-insensitive disk does, so that the tree, tabs and
@@ -212,6 +241,21 @@ fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     if !crate::execution_allowed() {
         args.push("--ignore-submodules=dirty");
     }
+    let out = crate::cli::run(r.root(), &args, None)?;
+    Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
+}
+
+/// `git status` for `paths` only, parsed and filtered like the full one. `--literal-pathspecs`
+/// keeps a `*` or `[` in a file name from being read as a pattern.
+fn cli_status_paths(r: &Repo, ignored: &IgnoredNames, paths: &[String]) -> IdeResult<Entries> {
+    let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
+    let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend(["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    if !crate::execution_allowed() {
+        args.push("--ignore-submodules=dirty");
+    }
+    args.push("--");
+    args.extend(paths.iter().map(String::as_str));
     let out = crate::cli::run(r.root(), &args, None)?;
     Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
 }

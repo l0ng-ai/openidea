@@ -220,3 +220,46 @@
 .external > .row {
   flex: none;
 }
+
+/* Import Sessions from Other Apps: filter above a fixed-height list, so the dialog doesn't grow. */
+.chooser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chooserList {
+  height: 312px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.chooserList > * {
+  flex: 1;
+  min-height: 0;
+}
+.chooserRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.chooserFooter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.chooserFolder {
+  flex: 0 0 auto;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+.chooserHint {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}

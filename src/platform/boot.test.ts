@@ -221,8 +221,7 @@ it("names an outdated system web engine as the cause", () => {
   window.dispatchEvent(new ErrorEvent("error", { error: new SyntaxError("Unexpected token '.'") }));
   const hint = document.querySelector("#boot-error p")?.textContent;
   expect(supports).toHaveBeenCalledWith("container-type", "inline-size");
-  expect(hint).toContain("needs Safari 16 or later");
-  expect(hint).toContain("Software Update");
+  expect(hint).toContain("needs macOS 13 Ventura or later");
   vi.unstubAllGlobals();
 });
 

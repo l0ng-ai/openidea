@@ -157,6 +157,7 @@ struct State {
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
     file_notes: BTreeMap<(String, String), (String, Option<String>)>,
+    file_icons: BTreeMap<(String, String), (String, Option<String>)>,
     revealed_ranges: Vec<Range>,
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
@@ -304,6 +305,10 @@ impl MockHost {
     /// `(set, path)` → `(note, tooltip)` set with `set_file_note`.
     pub fn file_notes(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
         self.state.borrow().file_notes.clone()
+    }
+    /// `(set, path)` → `(icon, tooltip)` set with `set_file_icon` or `set_file_icons`.
+    pub fn file_icons(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
+        self.state.borrow().file_icons.clone()
     }
     /// Ranges requested to scroll into view.
     pub fn revealed_ranges(&self) -> Vec<Range> {
@@ -1662,7 +1667,8 @@ pub mod current {
             if style(&item.style) {
                 next.insert((set.into(), path.clone()), item.clone());
             }
-            let names: BTreeSet<_> = next.keys().chain(s.file_notes.keys()).map(|(set, _)| set).collect();
+            let names: BTreeSet<_> =
+                next.keys().chain(s.file_notes.keys()).chain(s.file_icons.keys()).map(|(set, _)| set).collect();
             if set.is_empty()
                 || set.len() > 128
                 || names.len() > 50
@@ -1671,7 +1677,8 @@ pub mod current {
                 return Err(Error::Invalid("file decoration limit".into()));
             }
             s.file_decorations = next;
-            s.file_notes.remove(&(set.into(), path));
+            s.file_notes.remove(&(set.into(), path.clone()));
+            s.file_icons.remove(&(set.into(), path));
             Ok(())
         })
     }
@@ -1680,6 +1687,7 @@ pub mod current {
             require(s, "project.read")?;
             s.file_decorations.retain(|(id, _), _| id != set);
             s.file_notes.retain(|(id, _), _| id != set);
+            s.file_icons.retain(|(id, _), _| id != set);
             Ok(())
         })
     }
@@ -1688,8 +1696,14 @@ pub mod current {
             require(s, "project.read")?;
             let path = decoration_path(s, path)?;
             let key = (set.to_string(), path);
-            let names: BTreeSet<_> =
-                s.file_decorations.keys().chain(s.file_notes.keys()).chain([&key]).map(|(set, _)| set).collect();
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .chain(s.file_notes.keys())
+                .chain(s.file_icons.keys())
+                .chain([&key])
+                .map(|(set, _)| set)
+                .collect();
             if set.is_empty()
                 || set.len() > 128
                 || names.len() > 50
@@ -1700,7 +1714,71 @@ pub mod current {
                 return Err(Error::Invalid("a file note is one non-empty line of at most 200 characters".into()));
             }
             s.file_decorations.remove(&key);
+            s.file_icons.remove(&key);
             s.file_notes.insert(key, (note.into(), tooltip.map(Into::into)));
+            Ok(())
+        })
+    }
+    fn valid_icon_id(id: &str) -> bool {
+        let first = id.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        let rest = id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+        first && rest && id.len() <= 64
+    }
+    pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            if !valid_icon_id(icon) {
+                return Err(Error::Invalid(format!("invalid file icon id {icon:?}")));
+            }
+            let key = (set.to_string(), path);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .chain(s.file_notes.keys())
+                .chain(s.file_icons.keys())
+                .chain([&key])
+                .map(|(set, _)| set)
+                .collect();
+            if set.is_empty() || set.len() > 128 || names.len() > 50 {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations.remove(&key);
+            s.file_notes.remove(&key);
+            s.file_icons.insert(key, (icon.into(), tooltip.map(Into::into)));
+            Ok(())
+        })
+    }
+    pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if set.is_empty() || set.len() > 128 || items.len() > 10_000 {
+                return Err(Error::Invalid("file icon decoration limit".into()));
+            }
+            let mut next = BTreeMap::new();
+            for (path, icon) in items {
+                if !valid_icon_id(icon) {
+                    return Err(Error::Invalid(format!("invalid file icon id {icon:?}")));
+                }
+                next.insert((set.to_string(), decoration_path(s, path)?), (icon.clone(), None));
+            }
+            let mut merged = s.file_icons.clone();
+            merged.retain(|(id, _), _| id != set);
+            merged.extend(next);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .filter(|(id, _)| id != set)
+                .chain(s.file_notes.keys().filter(|(id, _)| id != set))
+                .chain(merged.keys())
+                .map(|(set, _)| set)
+                .collect();
+            if names.len() > 50 {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations.retain(|(id, _), _| id != set);
+            s.file_notes.retain(|(id, _), _| id != set);
+            s.file_icons = merged;
             Ok(())
         })
     }

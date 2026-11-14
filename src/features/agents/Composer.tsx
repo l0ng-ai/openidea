@@ -742,6 +742,8 @@ export function Composer(props: ComposerProps) {
       return true;
     }
     if (isTauri() && !data.types.length) {
+      // CodeMirror would otherwise paste empty text over the selection.
+      e.preventDefault();
       pasteClipboardImage().catch((error: unknown) =>
         notifications().notify({
           level: "error",
@@ -749,7 +751,7 @@ export function Composer(props: ComposerProps) {
           body: String(error),
         }),
       );
-      return false;
+      return true;
     }
     const plain = data.getData("text/plain");
     if (plain && pasteCopied(plain, view)) {

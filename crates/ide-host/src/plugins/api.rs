@@ -1642,6 +1642,9 @@ impl HostApi for PluginApi {
     ) -> Result<(), HostError> {
         self.set_decorations(path, set, Vec::new(), item, true)
     }
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        self.set_file_icon_decorations(set, items)
+    }
     fn vcs_log(
         &self,
         root: &Path,
@@ -3176,26 +3179,17 @@ impl PluginWorkspace for HostWorkspace {
         Ok(out)
     }
     fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        // The host records every `Diagnostics` event it emits (language servers,
+        // builds, spelling, plugin providers), so this sees a file's problems
+        // whatever window opened it — not just the ones its UI reported.
         let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
-        let root = host.project(client).map_err(failed)?.root.clone();
-        let windows = host.windows_for_root(&root);
+        host.project(client).map_err(failed)?;
         let mut out = Vec::new();
-        for file in host.mcp_reports.problems(&windows) {
-            if path.is_some_and(|p| p != file.path.0) {
+        for (file, source, diagnostics) in host.diagnostics.problems() {
+            if path.is_some_and(|p| p != file) {
                 continue;
             }
-            if ide_plugin::resolve_new_in_root(&root, &to_ipc(&file.path.0)).is_err() {
-                continue;
-            }
-            let mut sources: BTreeMap<String, Vec<ide_core::Diagnostic>> = BTreeMap::new();
-            for d in file.items {
-                sources.entry(d.server.clone().or_else(|| d.source.clone()).unwrap_or_default()).or_default().push(d);
-            }
-            out.extend(sources.into_iter().map(|(source, diagnostics)| ide_plugin::FileProblems {
-                path: to_ipc(&file.path.0),
-                source,
-                diagnostics,
-            }));
+            out.push(ide_plugin::FileProblems { path: to_ipc(&file), source, diagnostics });
         }
         Ok(out)
     }
@@ -3321,6 +3315,8 @@ impl PluginWorkspace for HostWorkspace {
         path: &Path,
         items: Vec<ide_core::Diagnostic>,
     ) -> Result<(), HostError> {
+        // Any open project may publish problems for any file: annotations follow the
+        // file, not the window (an editor can show a file outside every project root).
         let projects = HostWorkspace::projects(self);
         let project = projects
             .iter()
@@ -3332,7 +3328,8 @@ impl PluginWorkspace for HostWorkspace {
                     .iter()
                     .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
             })
-            .ok_or_else(|| HostError::Invalid(format!("{} is not in an open project", path.display())))?;
+            .or_else(|| projects.first())
+            .ok_or_else(|| HostError::NotFound("no project is open".into()))?;
         project.sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.to_path_buf().into(),
             source: format!("plugin:{source}"),
@@ -4130,25 +4127,25 @@ impl PluginApi {
         {
             return Err(HostError::Invalid("a file note is one non-empty line of at most 200 characters".into()));
         }
+        if let Some(icon) = file.as_ref().and_then(|f| f.icon.as_ref()) {
+            ide_extension::validate_item_id(icon, "file icon id").map_err(HostError::Invalid)?;
+        }
         items.retain(|d| decoration_style(&d.style));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
         }
         let replacement = if let Some(path) = path {
-            let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project open".into()))?;
-            let (root, real) = workspace
-                .projects()
-                .into_iter()
-                .filter_map(|root| ide_plugin::resolve_new_in_root(&root, &to_ipc(path)).ok().map(|real| (root, real)))
-                .max_by_key(|(root, _)| root.components().count())
-                .ok_or_else(|| HostError::Invalid("path outside open projects".into()))?;
+            // The decoration follows the file, not the window's project: editors render
+            // whatever they have open, including files outside every project root. The
+            // set's root stays the path's own (deepest open) project for tree filtering.
+            let root = self.decoration_root(path);
             Some(super::DecorationSet {
                 root: root.into(),
-                path: real.into(),
+                path: ide_core::IpcPath(path.to_path_buf()),
                 set_id: set.into(),
                 tree,
                 items,
-                file: file.filter(|f| f.note.is_some() || decoration_style(&f.style)),
+                file: file.filter(|f| f.note.is_some() || f.icon.is_some() || decoration_style(&f.style)),
             })
         } else {
             None
@@ -4176,6 +4173,60 @@ impl PluginApi {
         self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
         Ok(())
     }
+
+    fn decoration_root(&self, path: &Path) -> PathBuf {
+        self.shared
+            .workspace()
+            .map(|w| {
+                w.projects()
+                    .into_iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+            })
+            .unwrap_or_default()
+            .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()))
+    }
+
+    fn set_file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        if set.is_empty() || set.len() > 128 {
+            return Err(HostError::Invalid("set id must be 1-128 bytes".into()));
+        }
+        if items.len() > 10_000 {
+            return Err(HostError::Invalid("at most 10000 file icons per set".into()));
+        }
+        let mut by_path = BTreeMap::new();
+        for (path, icon) in items {
+            ide_extension::validate_item_id(&icon, "file icon id").map_err(HostError::Invalid)?;
+            by_path.insert(path, icon);
+        }
+        let mut all = self.shared.decorations.lock();
+        let mut sets = all.get(self.id()).cloned().unwrap_or_default();
+        sets.retain(|s| !(s.tree && s.set_id == set));
+        for (path, icon) in by_path {
+            let root = self.decoration_root(&path);
+            sets.push(super::DecorationSet {
+                root: root.into(),
+                path: ide_core::IpcPath(path),
+                set_id: set.into(),
+                tree: true,
+                items: Vec::new(),
+                file: Some(ide_plugin::FileDecoration {
+                    badge: None,
+                    style: String::new(),
+                    tooltip: None,
+                    note: None,
+                    icon: Some(icon),
+                }),
+            });
+        }
+        let names: BTreeSet<_> = sets.iter().filter(|s| s.tree).map(|s| &s.set_id).collect();
+        if names.len() > 50 || serde_json::to_vec(&sets).map_err(failed)?.len() > 4 << 20 {
+            return Err(HostError::Invalid("decoration sets exceed plugin limits".into()));
+        }
+        all.insert(self.id().into(), sets.clone());
+        self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
+        Ok(())
+    }
 }
 fn decoration_style(style: &str) -> bool {
     matches!(
@@ -4188,6 +4239,8 @@ fn decoration_style(style: &str) -> bool {
             | "warning"
             | "error"
             | "info"
+            | "typo"
+            | "weak"
             | "underline"
             | "strikethrough"
             | "muted"
@@ -4308,8 +4361,11 @@ mod workbench_tests {
         };
         api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
         assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);
-        assert!(api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).is_err());
+        // Decorations follow the file: a path outside the open project is accepted too.
+        api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).unwrap();
+        assert_eq!(api.shared.decoration_sets()["test"].len(), 2);
         api.decorations(None, "set", vec![]).unwrap();
+        assert!(api.shared.decoration_sets()["test"].is_empty());
         for i in 0..50 {
             api.decorations(Some(&path), &format!("s{i}"), vec![]).unwrap();
         }
@@ -4324,7 +4380,8 @@ mod workbench_tests {
                     badge: Some("abc".into()),
                     style: "info".into(),
                     tooltip: None,
-                    note: None
+                    note: None,
+                    icon: None,
                 })
             )
             .is_err()
@@ -4334,6 +4391,7 @@ mod workbench_tests {
             style: String::new(),
             tooltip: Some("why".into()),
             note: Some(text.into()),
+            icon: None,
         };
         api.file_decorations(Some(&path), "notes", Some(note("entry point"))).unwrap();
         let notes = |api: &PluginApi| {
@@ -4347,8 +4405,43 @@ mod workbench_tests {
         for bad in ["", "two\nlines", &"x".repeat(201)] {
             assert!(api.file_decorations(Some(&path), "notes", Some(note(bad))).is_err(), "{bad:?}");
         }
+        api.file_icon_decorations(
+            "icons",
+            vec![(path.clone(), "helm-chart".into()), (root.join("chart"), "helm-dir".into())],
+        )
+        .unwrap();
+        let icons = api.shared.decoration_sets()["test"]
+            .iter()
+            .filter(|s| s.tree && s.set_id == "icons")
+            .filter_map(|s| s.file.as_ref().and_then(|f| f.icon.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(icons.len(), 2);
+        assert!(api.file_icon_decorations("icons", vec![(path.clone(), "BAD ID".into())]).is_err());
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
+    }
+    #[test]
+    fn decoration_styles_keep_the_severity_palette_the_editor_renders() {
+        // Inspection Lens colours typos and weak warnings with their own styles; the
+        // host must keep them, not silently drop them the way an unknown style is dropped.
+        for style in [
+            "highlight",
+            "search",
+            "added",
+            "modified",
+            "removed",
+            "warning",
+            "error",
+            "info",
+            "typo",
+            "weak",
+            "underline",
+            "strikethrough",
+            "muted",
+        ] {
+            assert!(decoration_style(style), "{style} should be a known style");
+        }
+        assert!(!decoration_style("unknown"));
     }
     fn git(root: &Path, args: &[&str]) {
         let out = StdCommand::new("git").current_dir(root).args(args).output().unwrap();

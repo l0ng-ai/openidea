@@ -198,6 +198,10 @@
   font-size: var(--fs-tiny);
   line-height: 16px;
 }
+.updateTag {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
 .details {
   display: flex;
   flex-direction: column;

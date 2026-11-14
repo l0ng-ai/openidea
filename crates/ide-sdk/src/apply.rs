@@ -3,7 +3,7 @@
 
 use crate::discover::{project_venv_python, workspace_tsdk};
 use crate::exec::{path_with, search_path, which};
-use crate::npm::{has_ts_api, own_typescript};
+use crate::npm::{has_ts_api, native_typescript, own_typescript};
 use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
 use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
@@ -722,6 +722,16 @@ pub fn tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
+/// TypeScript 7's native executable when the selected TypeScript is one (see
+/// [`native_typescript`]); `None` for the bundled one and TypeScript 6 and older.
+pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
+    match s.languages.typescript.version.trim() {
+        "" | "bundled" => None,
+        "workspace" => native_typescript(&root.join("node_modules/typescript")),
+        custom => native_typescript(&setting_path(root, custom)?),
+    }
+}
+
 const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
 
 pub(crate) fn merge(base: &mut Value, layer: Value) {
@@ -957,10 +967,15 @@ pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
 }
 
 pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
+    let mut path_dirs: Vec<PathBuf> = Vec::new();
     if let Some(custom) = tool_command(root, s, &cfg.command) {
+        // An executable chosen from a Node.js installation (`~/.nvm/versions/node/v26/bin/tsc`,
+        // its `npx`) runs on that Node: its `#!/usr/bin/env node` finds the `node` beside it.
+        if let Some(bin) = custom.parent().filter(|bin| bin.join(exe("node")).is_file()) {
+            path_dirs.push(bin.to_path_buf());
+        }
         cfg.command = custom.to_string_lossy().into_owned();
     }
-    let mut path_dirs: Vec<PathBuf> = Vec::new();
     let name = cfg.name.clone();
     let name = name.as_str();
 
@@ -1134,6 +1149,16 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
             }
             _ => {}
         }
+    }
+    // TypeScript 7 serves LSP itself: it replaces the tsserver-based server.
+    if matches!(name, "vtsls" | "typescript-language-server")
+        && let Some(native) = native_tsdk(server_root, s).or_else(|| native_tsdk(root, s))
+    {
+        cfg.command = native.to_string_lossy().into_owned();
+        cfg.args = vec!["--lsp".into(), "--stdio".into()];
+        cfg.initialization_options = None;
+        cfg.tsserver_project = false;
+        return;
     }
     let vue_command = s.tool_path(vue::SERVER).and_then(|p| setting_path(root, p));
     let vue_command = vue_command.as_deref().map_or(vue::SERVER.into(), Path::to_string_lossy);

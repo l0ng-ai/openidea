@@ -5,6 +5,7 @@
 
 pub mod agent_secrets;
 pub mod data_dirs;
+pub mod diagnostics_store;
 pub mod environment;
 mod formatter;
 mod java_runtime;
@@ -58,6 +59,9 @@ pub struct HostConfig {
 pub struct Host {
     pub(crate) mcp_executable: RwLock<Option<PathBuf>>,
     plugin_host: RwLock<std::sync::Weak<plugins::PluginHost>>,
+    /// Every `Diagnostics` event the host ever emitted, per file and producer:
+    /// the snapshot plugins read (`problems`), independent of windows and reports.
+    pub diagnostics: Arc<diagnostics_store::DiagnosticsStore>,
     pub mcp_reports: mcp::Reports,
     pub mcp_requests: mcp::Requests,
     /// Commands agents run in the Run tool window (`run_command`).
@@ -135,12 +139,16 @@ impl Host {
             runtime,
             project_environment,
         } = config;
+        // Every sink the host hands out records diagnostics into the shared store first.
+        let diagnostics: Arc<diagnostics_store::DiagnosticsStore> = Arc::default();
+        let sink_for: SinkFactory = diagnostics_store::recording_sink_factory(diagnostics.clone(), sink_for);
         let global_settings = SettingsStore::load(&config_dir, None);
         let ssh = Arc::new(ide_ssh::SshManager::new(data_dir.join("ssh-passwords.json")));
         ssh.set_configs(global_settings.effective().ssh.configs);
         let host = Self {
             plugin_host: RwLock::default(),
             mcp_executable: RwLock::default(),
+            diagnostics,
             mcp_reports: Default::default(),
             mcp_requests: Default::default(),
             mcp_agent_runs: Default::default(),
@@ -288,6 +296,9 @@ impl Host {
         }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
+        // The producers will re-report when a project reopens; until then the snapshot
+        // must not answer for files whose project is gone.
+        self.diagnostics.forget_root(&project.root);
         if let Some(plugins) = plugins::editor_plugin_host() {
             plugins.invalidate_client_navigation(&project.root, Some(window), None);
             plugins.set_active_file(window, None);

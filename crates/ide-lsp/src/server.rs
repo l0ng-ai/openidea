@@ -445,8 +445,12 @@ impl Server {
             message.push_str(":\n");
             message.push_str(&tail);
         }
-        let delay = self.record_crash();
-        message.push_str(if delay.is_some() {
+        // Starting the same build again can't help: only an update can.
+        let expired = self.reported_expired_build();
+        let delay = if expired { None } else { self.record_crash() };
+        message.push_str(if expired {
+            "\nThis build has expired; update it to start it again."
+        } else if delay.is_some() {
             "\nRestarting…"
         } else {
             "\nCrashed repeatedly; restart it manually."
@@ -757,6 +761,12 @@ impl Server {
         crash_excerpt(&lines, n)
     }
 
+    /// JetBrains preview builds (kotlin-lsp) refuse to run past their expiry date and
+    /// exit with "This build of kotlin-server has expired".
+    fn reported_expired_build(&self) -> bool {
+        self.stderr.lock().iter().any(|l| is_expired_build_line(l))
+    }
+
     pub fn take_progress(&self) -> Vec<(TaskId, String)> {
         *self.loading.lock() = None;
         self.external_loading.store(0, std::sync::atomic::Ordering::Release);
@@ -909,6 +919,10 @@ fn is_error_headline(line: &str) -> bool {
     let head = l.split(':').next().unwrap_or_default();
     let named = (head.ends_with("Error") || head.ends_with("Exception")) && !head.contains(' ') && head.len() < l.len();
     named || l.starts_with("Exception in thread") || l.starts_with("thread '") && l.contains("panicked")
+}
+
+fn is_expired_build_line(line: &str) -> bool {
+    line.contains("This build of ") && line.contains(" has expired")
 }
 
 #[cfg(test)]
@@ -1069,6 +1083,31 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, Some("boom".into())));
         assert_eq!(waiter.await.unwrap(), (true, ServerStatus::Crashed));
+    }
+
+    #[test]
+    fn an_expired_build_is_not_restarted() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        s.push_stderr(generation, "idea.system.path=/tmp/idea-system".into());
+        s.push_stderr(
+            generation,
+            "This build of kotlin-server has expired. The IDE will now close. Please download a new build".into(),
+        );
+        assert_eq!(s.on_closed(generation, &sink, Some(7)), Some(None));
+        assert_eq!(s.status(), ServerStatus::Crashed);
+        assert!(s.status_message().unwrap().ends_with("This build has expired; update it to start it again."));
+        assert!(matches!(s.state.lock().conn, Conn::Failed));
+        // A manual restart (after an update) starts it again.
+        s.reset_for_restart();
+        assert!(s.begin_start().is_some());
+
+        // Any other crash is restarted.
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        s.push_stderr(generation, "Exception in thread main".into());
+        assert_eq!(s.on_closed(generation, &sink, Some(1)), Some(Some(Duration::from_millis(500))));
     }
 
     #[test]

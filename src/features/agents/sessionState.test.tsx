@@ -9,7 +9,15 @@ import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings
 import { AgentsView } from "./AgentsView";
 import { SessionEditor, conversationRows } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
-import { disconnect, useAgents } from "./store";
+import {
+  disconnect,
+  hideImportSessions,
+  importExternalSessions,
+  refreshExternalSessions,
+  showImportSessions,
+  useAgents,
+} from "./store";
+import { ImportSessionsOverlay } from "./ImportSessionsDialog";
 import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
@@ -37,6 +45,13 @@ const backend = vi.hoisted(() => ({
     updatedMs: number;
   }>,
   imported: [] as Array<[string, string]>,
+  importError: null as string | null,
+  importErrors: new Map<string, string>(),
+  importWait: null as Promise<void> | null,
+  errors: [] as Array<[string, string]>,
+  errorWait: null as Promise<void> | null,
+  externalCalls: 0,
+  externalWait: null as Promise<void> | null,
   externalError: null as string | null,
   accepted: [] as Array<[string, string[] | null]>,
   acceptedOutcome: { accepted: ["very-long-file-name.ts"], skipped: [] } as {
@@ -86,18 +101,24 @@ vi.mock("@/platform/ipc", async (original) => ({
       return { status: "ok", data: null };
     },
     agentExternalSessions: async () => {
+      backend.externalCalls += 1;
+      await backend.externalWait;
       if (backend.externalError !== null) throw new Error(backend.externalError);
       return { status: "ok", data: backend.external };
     },
     agentImportSession: async (provider: string, sessionId: string) => {
       backend.imported.push([provider, sessionId]);
+      await backend.importWait;
+      if (backend.importError !== null) throw new Error(backend.importError);
+      const failure = backend.importErrors.get(sessionId);
+      if (failure) throw new Error(failure);
       const found = backend.external.find((e) => e.provider === provider && e.sessionId === sessionId);
       if (!found) throw new Error("unknown session");
       return {
         status: "ok",
         data: {
-          ...task("imported"),
-          id: "imported",
+          ...task(`imported-${sessionId}`),
+          id: `imported-${sessionId}`,
           title: found.title,
           provider,
         },
@@ -115,6 +136,10 @@ vi.mock("@/workbench/messages", async (original) => ({
   confirm: async (options: { title: string }) => {
     backend.confirmed.push(options.title);
     return backend.confirmAnswer;
+  },
+  showError: async (title: string, message: unknown) => {
+    backend.errors.push([title, String(message)]);
+    await backend.errorWait;
   },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
@@ -202,6 +227,13 @@ beforeEach(() => {
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
   useChangesOptions.setState({ groupByCommit: false });
   backend.imported = [];
+  backend.importError = null;
+  backend.importErrors = new Map();
+  backend.importWait = null;
+  backend.errors = [];
+  backend.errorWait = null;
+  backend.externalCalls = 0;
+  backend.externalWait = null;
   backend.externalError = null;
   backend.accepted = [];
   backend.acceptedOutcome = {
@@ -1794,7 +1826,7 @@ describe("sessions from other apps", () => {
     });
     expect(backend.imported).toEqual([["claude", "abc"]]);
     const state = useAgents.getState();
-    expect(state.tasks.get("imported")?.title).toBe("Login fix");
+    expect(state.tasks.get("imported-abc")?.title).toBe("Login fix");
     expect(state.external.map((e) => e.sessionId)).toEqual(["thread-1"]);
   });
 
@@ -1803,6 +1835,518 @@ describe("sessions from other apps", () => {
     await openHistory();
     expect(screen.getByText("no home")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
+  });
+
+  const loginFix = { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: 0 };
+
+  it("keeps a session whose import fails and lets it be retried", async () => {
+    backend.external = [loginFix];
+    backend.importError = "boom";
+    await openHistory();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    expect(screen.getByText("Login fix")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import" })).toBeEnabled());
+  });
+
+  it("ignores a second click while an import is pending", async () => {
+    backend.external = [loginFix];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    await openHistory();
+    const button = screen.getByRole("button", { name: "Import" });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(button).toBeDisabled();
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(backend.imported).toHaveLength(1);
+    await act(async () => release());
+  });
+
+  const addTests = { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 };
+
+  it("leaves the import link out of the docked popup's empty list", async () => {
+    backend.external = [loginFix];
+    act(() => useAgents.setState({ tasks: new Map(), docked: "A" }));
+    render(<AgentsView />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    await waitFor(() => expect(screen.getByText("Login fix")).toBeInTheDocument());
+    expect(screen.getByText("No agent tasks yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import Sessions from Other Apps…" })).toBeNull();
+  });
+
+  it("keeps two pending imports disabled", async () => {
+    backend.external = [loginFix, addTests];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    await openHistory();
+    const [first, second] = screen.getAllByRole("button", { name: "Import" });
+    await act(async () => {
+      fireEvent.click(first!);
+    });
+    await act(async () => {
+      fireEvent.click(second!);
+    });
+    expect(first).toBeDisabled();
+    expect(second).toBeDisabled();
+    expect(backend.imported).toHaveLength(2);
+    await act(async () => release());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Import" })).toBeNull());
+  });
+
+  it("keeps a pending import disabled after closing and reopening the popup", async () => {
+    backend.external = [loginFix];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    await openHistory();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    const history = screen.getByRole("button", { name: "Agent sessions" });
+    fireEvent.click(history);
+    fireEvent.click(history);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import" })).toBeDisabled());
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toHaveLength(1);
+    await act(async () => release());
+  });
+});
+
+describe("batch import", () => {
+  const session = (sessionId: string, title: string) => ({
+    provider: "claude",
+    sessionId,
+    title,
+    cwd: null,
+    updatedMs: 0,
+  });
+  const a = session("a", "First");
+  const b = session("b", "Second");
+  beforeEach(() => {
+    backend.external = [a, b];
+    useAgents.setState({ sessionLocation: "toolWindow", docked: null });
+  });
+
+  it("opens the task when importing one session", async () => {
+    await act(() => importExternalSessions([a]));
+    expect(backend.imported).toEqual([["claude", "a"]]);
+    expect(useAgents.getState().docked).toBe("imported-a");
+  });
+
+  it("imports several in order without opening any", async () => {
+    const progress: number[] = [];
+    await act(() => importExternalSessions([b, a], (done) => progress.push(done)));
+    expect(backend.imported).toEqual([
+      ["claude", "b"],
+      ["claude", "a"],
+    ]);
+    expect(progress).toEqual([1, 2]);
+    expect(useAgents.getState().docked).toBeNull();
+    expect(useAgents.getState().tasks.has("imported-a")).toBe(true);
+    expect(useAgents.getState().tasks.has("imported-b")).toBe(true);
+    expect(useAgents.getState().importing.size).toBe(0);
+  });
+
+  it("keeps going after a failure and reports every failure once", async () => {
+    backend.importErrors.set("a", "that session is already a task");
+    await act(() => importExternalSessions([a, b]));
+    expect(useAgents.getState().tasks.has("imported-b")).toBe(true);
+    expect(backend.errors).toHaveLength(1);
+    expect(backend.errors[0]![0]).toBe("A session could not be imported");
+    expect(backend.errors[0]![1]).toContain("First: that session is already a task");
+  });
+
+  it("drops a scan that finishes after the project disconnects", async () => {
+    let release!: () => void;
+    backend.externalWait = new Promise<void>((resolve) => (release = resolve));
+    const scan = refreshExternalSessions();
+    act(() => disconnect());
+    await act(async () => release());
+    await act(() => scan);
+    expect(useAgents.getState().external).toEqual([]);
+  });
+
+  it("forgets the listed sessions on disconnect", () => {
+    act(() => useAgents.setState({ external: [a], externalError: "no home" }));
+    act(() => disconnect());
+    expect(useAgents.getState().external).toEqual([]);
+    expect(useAgents.getState().externalError).toBeNull();
+  });
+
+  it("reports all failures when every import fails", async () => {
+    backend.importError = "unknown agent";
+    await act(() => importExternalSessions([a, b]));
+    expect(useAgents.getState().docked).toBeNull();
+    expect(backend.errors).toHaveLength(1);
+    expect(backend.errors[0]![1]).toContain("First: unknown agent");
+    expect(backend.errors[0]![1]).toContain("Second: unknown agent");
+  });
+
+  it("marks the whole batch pending from the start", async () => {
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    const batch = importExternalSessions([a, b]);
+    expect([...useAgents.getState().importing]).toEqual(["claude:a", "claude:b"]);
+    await act(async () => release());
+    await act(() => batch);
+    expect(useAgents.getState().importing.size).toBe(0);
+  });
+
+  it("stops at an abort and frees the sessions it did not reach", async () => {
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    const controller = new AbortController();
+    const batch = importExternalSessions([a, b], undefined, controller.signal);
+    controller.abort();
+    await act(async () => release());
+    await act(() => batch);
+    expect(backend.imported).toEqual([["claude", "a"]]);
+    expect(useAgents.getState().importing.size).toBe(0);
+    expect(useAgents.getState().tasks.has("imported-a")).toBe(true);
+    expect(backend.errors).toEqual([]);
+  });
+
+  it("stops a batch when the project disconnects", async () => {
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    let finished = false;
+    const batch = importExternalSessions([a, b]).then(() => (finished = true));
+    act(() => disconnect());
+    await act(async () => release());
+    await act(() => batch);
+    expect(finished).toBe(true);
+    expect(backend.imported).toEqual([["claude", "a"]]);
+    expect(backend.errors).toEqual([]);
+  });
+});
+
+describe("import sessions dialog", () => {
+  const sessions = [
+    { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: 0 },
+    { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 },
+  ];
+  const third = { provider: "claude", sessionId: "c3", title: "Fix flaky test", cwd: "/work/api", updatedMs: 0 };
+  const open = () => {
+    render(<ImportSessionsOverlay />);
+    act(() => showImportSessions());
+  };
+  const row = (title: RegExp) => screen.getByRole("option", { name: title });
+  const primary = { metaKey: true, ctrlKey: true };
+  const listed = async (title: string) => waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
+
+  it("names the dialog", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    expect(screen.getByRole("dialog", { name: "Import Sessions from Other Apps" })).toBeInTheDocument();
+  });
+
+  it("imports the selected session and opens it", async () => {
+    backend.external = sessions;
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    expect(useAgents.getState().docked).toBe("imported-abc");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("imports several with ⌘-click and opens none", async () => {
+    backend.external = sessions;
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 2" }));
+    });
+    expect(backend.imported).toEqual([
+      ["claude", "abc"],
+      ["codex", "thread-1"],
+    ]);
+    expect(useAgents.getState().docked).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("imports the selection on Enter and on a double-click", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Fix flaky test/), primary);
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("listbox"), { key: "Enter" });
+    });
+    expect(backend.imported).toEqual([
+      ["claude", "abc"],
+      ["claude", "c3"],
+    ]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    backend.imported = [];
+    backend.external = [sessions[1]!];
+    act(() => showImportSessions());
+    await listed("Add tests");
+    await act(async () => {
+      fireEvent.doubleClick(row(/Add tests/));
+    });
+    expect(backend.imported).toEqual([["codex", "thread-1"]]);
+  });
+
+  it("selects a range with ⇧-click", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Fix flaky test/), { shiftKey: true });
+    expect(screen.getByRole("button", { name: "Import 3" })).toBeEnabled();
+  });
+
+  it("selects only the visible rows with ⌘A and Select All", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "fix" } });
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "a", ...primary });
+    expect(screen.getByRole("button", { name: "Import 2" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Import 2" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "fix" } });
+    fireEvent.click(row(/Login fix/));
+    expect(screen.getByRole("button", { name: "Import" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+    expect(screen.getByRole("button", { name: "Import 2" })).toBeEnabled();
+  });
+
+  it("closes before showing the batch's errors", async () => {
+    backend.external = sessions;
+    backend.importError = "boom";
+    backend.errorWait = new Promise<void>(() => {});
+    open();
+    await listed("Login fix");
+    fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 2" }));
+    });
+    await waitFor(() => expect(backend.errors).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(backend.errors[0]![0]).toBe("Some sessions could not be imported");
+  });
+
+  it("says when no session matches the filter", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "zzz" } });
+    expect(screen.getByText("No matching sessions")).toBeInTheDocument();
+    expect(screen.queryByText("No sessions from other apps")).toBeNull();
+  });
+
+  it("leaves Home and End to the filter text", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    const filter = screen.getByLabelText("Filter sessions");
+    expect(fireEvent.keyDown(filter, { key: "Home" })).toBe(true);
+    expect(fireEvent.keyDown(filter, { key: "End" })).toBe(true);
+    expect(fireEvent.keyDown(filter, { key: "ArrowDown" })).toBe(false);
+  });
+
+  it("drives the list from the filter as a combobox", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    const box = screen.getByRole("combobox", { name: "Filter sessions" });
+    expect(box.getAttribute("aria-controls")).toBe(screen.getByRole("listbox").id);
+    fireEvent.click(row(/Add tests/));
+    expect(box.getAttribute("aria-activedescendant")).toBe(row(/Add tests/).id);
+  });
+
+  it("filters by title and folder", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "work/api" } });
+    expect(screen.queryByText("Login fix")).toBeNull();
+    expect(screen.getByText("Fix flaky test")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "ADD" } });
+    expect(screen.getByText("Add tests")).toBeInTheDocument();
+    expect(screen.queryByText("Fix flaky test")).toBeNull();
+  });
+
+  it("does not import a session that the filter hides", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "login" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+  });
+
+  it("disables Import when every selected session is filtered out", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "flaky" } });
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+    expect(highlighted()).toEqual([]);
+  });
+
+  const highlighted = () =>
+    screen
+      .queryAllByRole("option")
+      .filter((o) => o.getAttribute("aria-selected") === "true")
+      .map((o) => o.textContent);
+
+  it("highlights exactly the sessions it will import after the filter narrows", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Fix flaky test/));
+    fireEvent.click(row(/Login fix/), primary);
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "test" } });
+    expect(highlighted()).toEqual([expect.stringContaining("Fix flaky test")]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "c3"]]);
+  });
+
+  it("keeps listing the batch while it imports", async () => {
+    backend.external = [...sessions, third];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    open();
+    await listed("Login fix");
+    fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 3" }));
+    });
+    expect(highlighted()).toHaveLength(3);
+    expect(screen.queryByText("No sessions from other apps")).toBeNull();
+    await act(async () => release());
+  });
+
+  it("shows progress, and Cancel stops the rest of the batch", async () => {
+    backend.external = [...sessions, third];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 2" }));
+    });
+    expect(screen.getByText("Importing 1 of 2…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => release());
+    await waitFor(() => expect(useAgents.getState().importing.size).toBe(0));
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    act(() => showImportSessions());
+    await listed("Add tests");
+  });
+
+  it("shows the full title and folder as a row tooltip", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    expect(
+      row(/Login fix/)
+        .querySelector("[title]")
+        ?.getAttribute("title"),
+    ).toBe("Login fix\n/work/app");
+  });
+
+  it("tells when only the 50 most recent are shown", async () => {
+    const many = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        provider: "claude",
+        sessionId: `s${i}`,
+        title: `Session ${i}`,
+        cwd: null,
+        updatedMs: 0,
+      }));
+    backend.external = many(50);
+    open();
+    await waitFor(() => expect(screen.getByText("Only the 50 most recent sessions are shown.")).toBeInTheDocument());
+    act(() => hideImportSessions());
+    backend.external = many(49);
+    act(() => showImportSessions());
+    await listed("Session 0");
+    expect(screen.queryByText("Only the 50 most recent sessions are shown.")).toBeNull();
+  });
+
+  it("never shows rows from before the scan", async () => {
+    act(() => useAgents.setState({ external: [{ ...third, title: "Old session" }] }));
+    let release!: () => void;
+    backend.externalWait = new Promise<void>((resolve) => (release = resolve));
+    backend.external = sessions;
+    open();
+    expect(screen.queryByText("Old session")).toBeNull();
+    await act(async () => release());
+    await listed("Login fix");
+    expect(screen.queryByText("Old session")).toBeNull();
+  });
+
+  it("scans again each time it opens", async () => {
+    open();
+    await waitFor(() => expect(backend.externalCalls).toBe(1));
+    act(() => hideImportSessions());
+    act(() => showImportSessions());
+    await waitFor(() => expect(backend.externalCalls).toBe(2));
+  });
+
+  it("says so when nothing can be imported, after the scan", async () => {
+    let release!: () => void;
+    backend.externalWait = new Promise<void>((resolve) => (release = resolve));
+    open();
+    expect(screen.queryByText("No sessions from other apps")).toBeNull();
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByText("No sessions from other apps")).toBeInTheDocument());
+  });
+
+  it("shows listing errors instead of rows", async () => {
+    backend.external = sessions;
+    backend.externalError = "no home";
+    open();
+    await waitFor(() => expect(screen.getByText("no home")).toBeInTheDocument());
+    expect(screen.queryByRole("option")).toBeNull();
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+  });
+
+  it("opens from the empty task list", () => {
+    act(() => useAgents.setState({ tasks: new Map() }));
+    render(<AgentsView />);
+    fireEvent.click(screen.getByRole("button", { name: "Import Sessions from Other Apps…" }));
+    expect(useAgents.getState().importOpen).toBe(true);
+  });
+
+  it("closes when the project disconnects", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    act(() => disconnect());
+    expect(useAgents.getState().importOpen).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 

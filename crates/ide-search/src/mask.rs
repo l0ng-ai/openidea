@@ -12,6 +12,7 @@ pub struct FileMask {
     exclude_name: GlobSet,
     exclude_path: GlobSet,
     has_include: bool,
+    exclude_dirs: GlobSet,
 }
 
 impl FileMask {
@@ -20,6 +21,7 @@ impl FileMask {
     pub fn new(include: &[String], exclude: &[String]) -> IdeResult<Self> {
         let mut inc = Lists::default();
         let mut exc = Lists::default();
+        let mut dirs = Lists::default();
         for (entries, is_include_list) in [(include, true), (exclude, false)] {
             for mask in entries.iter().flat_map(|e| e.split(',')) {
                 let mask = mask.trim();
@@ -32,15 +34,39 @@ impl FileMask {
                 }
                 let target = if is_include_list != negated { &mut inc } else { &mut exc };
                 target.push(mask)?;
+                // Only a trailing /** guarantees that every descendant is excluded.
+                // File masks and inclusion masks cannot safely prune a directory.
+                if is_include_list == negated
+                    && !mask.contains('\\')
+                    && let Some(prefix) = mask.strip_suffix("/**")
+                    && !prefix.is_empty()
+                {
+                    dirs.push(&format!("{prefix}/"))?;
+                }
             }
         }
         Ok(Self {
             has_include: inc.count > 0,
+            exclude_dirs: dirs.path.build().map_err(glob_error)?,
             include_name: inc.name.build().map_err(glob_error)?,
             include_path: inc.path.build().map_err(glob_error)?,
             exclude_name: exc.name.build().map_err(glob_error)?,
             exclude_path: exc.path.build().map_err(glob_error)?,
         })
+    }
+
+    pub(crate) fn has_directory_exclusions(&self) -> bool {
+        !self.exclude_dirs.is_empty()
+    }
+
+    /// Whether an exclusion covers every file below this directory. This is
+    /// deliberately conservative; ordinary masks still filter individual files.
+    pub(crate) fn excludes_dir(&self, rel_path: &str) -> bool {
+        if self.exclude_dirs.is_empty() {
+            return false;
+        }
+        let path = format!("{rel_path}/");
+        path.match_indices('/').any(|(i, _)| self.exclude_dirs.is_match(&path[..=i]))
     }
 
     /// `rel_path` uses `/` separators.
@@ -131,6 +157,60 @@ mod tests {
         let m = mask(&["!*.lock"], &[]);
         assert!(m.matches("a.rs"));
         assert!(!m.matches("Cargo.lock"));
+    }
+
+    #[test]
+    fn only_complete_subtree_exclusions_prune_directories() {
+        let m = mask(&["*.go"], &["**/node_modules/**", "edge/device/build/**"]);
+        for dir in [
+            "node_modules",
+            "edge/node_modules",
+            "edge/device/build",
+            "edge/device/build/deep",
+            "edge/node_modules/pkg/lib",
+        ] {
+            assert!(m.excludes_dir(dir), "{dir}");
+        }
+        for dir in ["edge", "edge/device", "internal/build", "src.go"] {
+            assert!(!m.excludes_dir(dir), "{dir}");
+        }
+        for pattern in ["*.go", "build", "build/*", "build/", "build/**/*.go"] {
+            assert!(!mask(&[], &[pattern]).excludes_dir("build"), "{pattern}");
+        }
+    }
+
+    #[test]
+    fn directory_pruning_preserves_mask_negation_semantics() {
+        assert!(mask(&["!vendor/**"], &[]).excludes_dir("vendor"));
+        assert!(!mask(&[], &["!vendor/**"]).excludes_dir("vendor"));
+        // Exclusions already win over inclusions in FileMask, irrespective of order.
+        let m = mask(&["vendor/keep.go"], &["vendor/**"]);
+        assert!(m.excludes_dir("vendor"));
+        assert!(!m.matches("vendor/keep.go"));
+        assert!(mask(&[], &["./vendor/**, **/node_modules/**"]).excludes_dir("vendor"));
+    }
+
+    #[test]
+    fn directory_pruning_uses_the_same_case_rules_as_files() {
+        let m = mask(&[], &["Vendor/**"]);
+        let case_insensitive = cfg!(any(target_os = "macos", target_os = "windows"));
+        assert_eq!(m.excludes_dir("vendor"), case_insensitive);
+        assert_eq!(m.matches("vendor/a.go"), !case_insensitive);
+    }
+
+    #[test]
+    fn pruned_directory_descendants_are_already_excluded() {
+        for pattern in ["vendor/**", "**/build/**", "modules/*/build/**", "[ab]/**", "**/**"] {
+            let m = mask(&[], &[pattern]);
+            for dir in ["vendor", "vendor/deep", "build", "a", "modules/a/build", "modules/a/src", "x/build/y"] {
+                if m.excludes_dir(dir) {
+                    for file in ["main.go", "deep/lib.go", ".hidden/config", "node_modules/a.js"] {
+                        assert!(!m.matches(&format!("{dir}/{file}")), "{pattern}: {dir}/{file}");
+                    }
+                }
+            }
+        }
+        assert!(!mask(&[], &[r"escaped\*/**"]).excludes_dir("escaped*"));
     }
 
     #[test]

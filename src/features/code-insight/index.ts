@@ -26,7 +26,7 @@ import { ServerStatus } from "./ServerStatus";
 import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
 
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 function useErrorBadge(): number | null {
   return useProblems((s) => {

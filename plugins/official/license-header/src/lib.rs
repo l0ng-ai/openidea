@@ -58,8 +58,16 @@ pub fn has_header(text: &str) -> bool {
     })
 }
 
+/// `value` on one line: a line break (or any control character, or the
+/// Unicode line separators JavaScript ends a comment at) would put the rest of
+/// the setting into the file as code.
+fn one_line(value: &str) -> String {
+    value.chars().map(|c| if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }).collect()
+}
+
 /// The header's lines, without comment markers.
 pub fn header_lines(year: i64, owner: &str, license: &str) -> Vec<String> {
+    let (owner, license) = (one_line(owner), one_line(license));
     let owner = owner.trim();
     let mut lines =
         vec![if owner.is_empty() { format!("Copyright (c) {year}") } else { format!("Copyright (c) {year} {owner}") }];
@@ -82,7 +90,8 @@ pub fn render(comment: Comment, lines: &[String]) -> String {
             out.push_str(open);
             out.push('\n');
             for l in lines {
-                out.push_str(&format!(" * {l}\n"));
+                // `*/` would end the comment early.
+                out.push_str(&format!(" * {}\n", l.replace("*/", "* /")));
             }
             out.push_str(close);
             out.push('\n');
@@ -170,8 +179,14 @@ fn project_of(path: &str) -> Option<Project> {
     host::projects()
         .ok()?
         .into_iter()
-        .filter(|p| p.root().is_ok_and(|r| path.starts_with(&r)))
+        .filter(|p| p.root().is_ok_and(|r| is_under(path, &r)))
         .max_by_key(|p| p.root().map(|r| r.len()).unwrap_or(0))
+}
+
+/// Whether `path` is `root` or inside it (`/proj-x/a` is not inside `/proj`).
+fn is_under(path: &str, root: &str) -> bool {
+    path.strip_prefix(root)
+        .is_some_and(|rest| rest.is_empty() || root.ends_with(['/', '\\']) || rest.starts_with(['/', '\\']))
 }
 
 #[derive(Default)]
@@ -306,6 +321,15 @@ mod tests {
     }
 
     #[test]
+    fn settings_cannot_add_code_to_the_file() {
+        let lines = header_lines(2026, "ACME\nimport os\r\u{2028}x", "MIT\nrm -rf");
+        assert_eq!(lines, ["Copyright (c) 2026 ACME import os  x", "SPDX-License-Identifier: MIT rm -rf"]);
+        assert_eq!(render(comment_for("a.py").unwrap(), &lines).lines().filter(|l| !l.starts_with('#')).count(), 1);
+        let css = render(comment_for("s.css").unwrap(), &header_lines(2026, "X */ body { }", ""));
+        assert_eq!(css.matches("*/").count(), 1, "{css}");
+    }
+
+    #[test]
     fn keeps_shebang_and_encoding_lines_first() {
         assert_eq!(insert_line("fn main() {}\n"), 0);
         assert_eq!(insert_line("#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\nprint()\n"), 2);
@@ -322,6 +346,12 @@ mod tests {
         assert!(has_header(&format!("{}// Copyright 2020\n", "\n".repeat(10))));
         assert!(!has_header(&format!("{}// Copyright 2020\n", "\n".repeat(20))), "only the top of the file counts");
         assert!(header_edit("a.rs", "// Copyright (c) 2020 X\n", 2026, "", "").is_none());
+    }
+
+    #[test]
+    fn a_project_contains_only_its_own_paths() {
+        assert!(is_under("/proj/a.rs", "/proj"));
+        assert!(!is_under("/proj-x/a.rs", "/proj"));
     }
 
     #[test]

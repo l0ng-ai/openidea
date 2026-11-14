@@ -104,11 +104,14 @@ export async function restartServer(id: ServerId) {
       notifications().notify({ group: "lsp", level: "warning", title: tx`${entry.name} is still not installed` });
       return;
     }
+    const message = e instanceof Error ? e.message : String(e);
+    // features/tools offers the update for a build that has expired.
+    if (/This build of .+ has expired/.test(message) && getAction("tools.install")) return;
     notifications().notify({
       group: "lsp",
       level: "error",
       title: "Failed to restart language server",
-      body: e instanceof Error ? e.message : String(e),
+      body: message,
     });
   }
 }

@@ -342,6 +342,15 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
   // Like the single-repository dialog: tags go only with plain pushes, so a retargeted repository hides them.
   const retargeted = picked.some((r) => pushOperation(choiceOf(r, null)).op === "pushBranch");
   const push = async () => {
+    // Like the single-repository dialog: each forced target is confirmed first (once, when several
+    // repositories push to the same one), and declining one pushes nothing.
+    const forced = new Set<string>();
+    for (const r of force ? picked : []) {
+      const target = targetNameOf(r);
+      const remote = shownRemoteOf(r);
+      if (!isProtectedBranch(target)) forced.add(remote ? `${remote}/${target}` : target);
+    }
+    for (const target of forced) if (!(await confirmForcePush(target))) return;
     onClose();
     // Every picked repository is pushed even when another fails; the outcome is summed up.
     const session: PushSession = { method: null };

@@ -23,6 +23,7 @@ import { registerHistoryActions, trackOperationContext } from "./historyActions"
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
@@ -38,7 +39,7 @@ import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
-import { installDiagnosticsTracking } from "./commitChecks";
+import { installCommitChecks, installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
@@ -220,6 +221,7 @@ export function activate(): () => void {
     installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
+    installCommitChecks(),
     installPreparedMessage(),
     installDraftRevision(),
     provideCommit(),
@@ -288,6 +290,7 @@ export function activate(): () => void {
       restorable: true,
     }),
     activateDiffViewer(),
+    activateRevisionAnnotations(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),

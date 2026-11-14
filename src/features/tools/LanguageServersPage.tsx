@@ -26,6 +26,7 @@ import {
 import { serverKey, type ServerEntry } from "./serverConfig";
 import {
   cancelInstall,
+  checkToolUpdates,
   installTool,
   refreshTools,
   STATUS_LABEL,
@@ -169,6 +170,7 @@ function ToolTable({
   onSelect: (name: string) => void;
 }) {
   const busy = useTools((s) => s.jobs);
+  const updates = useTools((s) => s.updates);
   return (
     <ul className={styles.table} aria-label={label}>
       {tools.map((t) => (
@@ -187,6 +189,11 @@ function ToolTable({
             {disabled(t) && (
               <span className={styles.tag}>
                 <T>Disabled</T>
+              </span>
+            )}
+            {t.status === "installed" && updates[t.name] && (
+              <span className={clsx(styles.tag, styles.updateTag)}>
+                <T>Update</T>
               </span>
             )}
             <span className={styles.toolStatus}>{statusText(t, pending.has(t.name))}</span>
@@ -212,6 +219,7 @@ function ToolTable({
 function ToolDetails({ tool, language, pending }: { tool: ToolInfo; language: string; pending: boolean }) {
   const job = useTools((s) => s.jobs[tool.name]);
   const last = useTools((s) => s.logs[tool.name]);
+  const update = useTools((s) => (tool.status === "installed" ? s.updates[tool.name] : undefined));
   const [logOpen, setLogOpen] = useState(false);
   const log = job?.lines ?? last?.lines ?? [];
   const lastError = !job && last?.error !== "Cancelled" ? last?.error : null;
@@ -238,17 +246,21 @@ function ToolDetails({ tool, language, pending }: { tool: ToolInfo; language: st
         {tool.canInstall && (
           <Button
             size="small"
-            variant={tool.status === "missing" ? "primary" : "secondary"}
+            variant={tool.status === "missing" || update ? "primary" : "secondary"}
             disabled={busy}
             title={
               tool.installMethod ? tx`Installs into the IDE's own tools folder via ${tool.installMethod}` : undefined
             }
             onClick={() => void installTool(tool.name)}
             aria-label={
-              tool.status === "installed" ? tx`Reinstall ${tool.displayName}` : tx`Install ${tool.displayName}`
+              update
+                ? tx`Update ${tool.displayName}`
+                : tool.status === "installed"
+                  ? tx`Reinstall ${tool.displayName}`
+                  : tx`Install ${tool.displayName}`
             }
           >
-            {tool.status === "installed" ? "Reinstall" : "Install"}
+            {update ? "Update" : tool.status === "installed" ? "Reinstall" : "Install"}
           </Button>
         )}
         {tool.canUninstall && (
@@ -259,6 +271,11 @@ function ToolDetails({ tool, language, pending }: { tool: ToolInfo; language: st
       </div>
       {shared.length > 0 && (
         <div className={styles.comment}>{tx`Also used for ${others}; settings apply to all of them.`}</div>
+      )}
+      {update && !job && (
+        <div className={styles.notice} role="note">
+          {tx`Version ${update.latest} is available.`}
+        </div>
       )}
       {job && <JobRow name={tool.displayName} job={job} />}
       {lastError && (
@@ -401,7 +418,7 @@ function LanguageDetails({
 }
 
 export function LanguageServersPage() {
-  const { tools, loaded, loading, error } = useTools();
+  const { tools, loaded, loading, error, checkingUpdates } = useTools();
   const form = useSettingsForm();
   const [query, setQuery] = useState("");
   const [needsSetup, setNeedsSetup] = useState(false);
@@ -415,6 +432,8 @@ export function LanguageServersPage() {
 
   useEffect(() => {
     void refreshTools();
+    // Asks each install source once per session; the refresh button asks again.
+    if (!useTools.getState().updatesChecked) void checkToolUpdates();
     // Applied paths and servers change what is found and listed.
     return onIdeEvent("settingsChanged", (e) => {
       if (!e.key || /^(tools|languageServers)(\.|$)/.test(e.key)) void refreshTools();
@@ -486,14 +505,17 @@ export function LanguageServersPage() {
               onClick={() => tool && form.set(serverKey(tool.name), null)}
             />
             <span className={styles.toolbarSep} aria-hidden />
-            {loading ? (
+            {loading || checkingUpdates ? (
               <Spinner size={14} label="Checking tools" />
             ) : (
               <IconButton
                 icon="refresh"
                 size="small"
                 title="Re-check installed tools"
-                onClick={() => void refreshTools()}
+                onClick={() => {
+                  void refreshTools();
+                  void checkToolUpdates();
+                }}
               />
             )}
             <IconButton

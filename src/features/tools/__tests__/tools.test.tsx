@@ -26,6 +26,9 @@ beforeEach(() => {
     error: null,
     jobs: {},
     logs: {},
+    updates: {},
+    checkingUpdates: false,
+    updatesChecked: false,
   });
 });
 
@@ -372,6 +375,22 @@ describe("LanguageServersPage", () => {
     // The install log can be shown afterwards.
     await user.click(screen.getByRole("button", { name: "Show install log" }));
     expect(screen.getByLabelText("gopls install log")).toHaveTextContent("Installing gopls");
+  });
+
+  it("offers an update when a newer version of an installed tool is out", async () => {
+    const user = userEvent.setup();
+    backend.available = [{ name: "rust-analyzer", current: "1.85.0", latest: "1.86.0" }];
+    renderPage();
+    const rust = await open(user, "Rust");
+    await waitFor(() => expect(toolItem("rust-analyzer")).toHaveTextContent("Update"));
+    await user.click(toolItem("rust-analyzer"));
+    const details = screen.getByLabelText("rust-analyzer details");
+    expect(details).toHaveTextContent("Version 1.86.0 is available.");
+    await user.click(within(details).getByRole("button", { name: "Update rust-analyzer" }));
+    await waitFor(() => expect(toolItem("rust-analyzer")).not.toHaveTextContent("Update"));
+    expect(within(rust).getByRole("button", { name: "Reinstall rust-analyzer" })).toBeInTheDocument();
+    await open(user, "Go");
+    expect(toolItem("gopls")).not.toHaveTextContent("Update");
   });
 
   it("installs what a language is missing in one go", async () => {

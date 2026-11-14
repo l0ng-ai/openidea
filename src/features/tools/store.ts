@@ -1,6 +1,6 @@
 /** Tool list + running installs. Installs show in the status-bar task list too. */
 import { create } from "zustand";
-import type { RequestId, ToolInfo } from "@/bindings";
+import type { RequestId, ToolInfo, ToolUpdate } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
@@ -28,6 +28,11 @@ interface ToolsState {
   jobs: Readonly<Record<string, InstallJob>>;
   /** Output of the last finished install per tool (kept for the log view). */
   logs: Readonly<Record<string, { lines: string[]; error: string | null }>>;
+  /** Newer versions of the tools the IDE installed, from the last check. */
+  updates: Readonly<Record<string, ToolUpdate>>;
+  checkingUpdates: boolean;
+  /** Whether updates were looked for in this session (the Language Servers page looks once). */
+  updatesChecked: boolean;
 }
 
 export const useTools = create<ToolsState>(() => ({
@@ -37,6 +42,9 @@ export const useTools = create<ToolsState>(() => ({
   error: null,
   jobs: {},
   logs: {},
+  updates: {},
+  checkingUpdates: false,
+  updatesChecked: false,
 }));
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -57,6 +65,25 @@ export function refreshTools(): Promise<void> {
     }
   })();
   return refreshing;
+}
+
+let checkingUpdates: Promise<void> | null = null;
+
+/** Looks for newer versions of the tools the IDE installed; offline, none are shown. */
+export function checkToolUpdates(): Promise<void> {
+  checkingUpdates ??= (async () => {
+    useTools.setState({ checkingUpdates: true });
+    try {
+      const found = await toolsBackend().updates(nextRequestId());
+      useTools.setState({ updates: Object.fromEntries(found.map((u) => [u.name, u])) });
+    } catch {
+      // A failed lookup leaves the last result.
+    } finally {
+      useTools.setState({ checkingUpdates: false, updatesChecked: true });
+      checkingUpdates = null;
+    }
+  })();
+  return checkingUpdates;
 }
 
 function upsertTool(info: ToolInfo) {
@@ -124,6 +151,10 @@ export function installTool(name: string, opts: { notificationKey?: string } = {
       });
       upsertTool(info);
       endJob(name, null);
+      useTools.setState((s) => {
+        const { [name]: _updated, ...updates } = s.updates;
+        return { updates };
+      });
       void toolsBackend()
         .restartServers(name)
         .catch(() => {});

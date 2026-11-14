@@ -173,7 +173,7 @@ impl Shared {
         let root = filter.root().to_owned();
         match store.load() {
             Ok(records) => {
-                let entries: Vec<FileEntry> = records
+                let entries: Vec<(FileEntry, Vec<StoredSymbol>)> = records
                     .into_par_iter()
                     .filter(|(rel, _)| {
                         let path = root.join(rel);
@@ -182,8 +182,8 @@ impl Shared {
                     .map(|(rel, rec)| FileEntry::new(root.join(&rel), rel, rec))
                     .collect();
                 let mut d = self.data.write();
-                for e in entries {
-                    d.insert(e);
+                for (e, symbols) in entries {
+                    d.insert(e, symbols);
                 }
             }
             Err(e) => tracing::warn!("index cache load failed: {e}"),
@@ -321,8 +321,7 @@ impl Shared {
                 match self.extract(f, prev_hash) {
                     Extracted::Unchanged => {
                         // Same content, new mtime: keep the symbols, refresh metadata.
-                        let d = self.data.read();
-                        let mut rec = d.get(&f.path)?.record();
+                        let mut rec = self.data.read().record_of(&f.path)?;
                         rec.mtime = f.mtime;
                         rec.size = f.size;
                         rec.ignored = f.ignored;
@@ -338,11 +337,11 @@ impl Shared {
         let puts: Vec<(String, FileRecord)> =
             extracted.iter().filter_map(|(_, rec, path)| Some((filter.store_key(path)?, rec.clone()))).collect();
         {
-            let entries: Vec<FileEntry> =
+            let entries: Vec<(FileEntry, Vec<StoredSymbol>)> =
                 extracted.into_iter().map(|(rel, rec, path)| FileEntry::new(path, rel, rec)).collect();
             let mut d = self.data.write();
-            for e in entries {
-                d.insert(e);
+            for (e, symbols) in entries {
+                d.insert(e, symbols);
             }
         }
         self.persist(&puts, &[], false);

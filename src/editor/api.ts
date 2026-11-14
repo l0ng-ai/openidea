@@ -70,6 +70,11 @@ export interface EditorContribution {
    * language-server document and URI (see {@link cellEditorExtensions}).
    */
   cellExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
+  /**
+   * Extensions for a diff viewer pane that shows a file's open document (the working copy,
+   * Compare Files): `ctx` is that document's (see {@link diffSideExtensions}).
+   */
+  diffExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
 }
 
 /**
@@ -184,6 +189,20 @@ export function embeddedEditorExtensions(path: string): Extension {
 }
 
 const embeddedOf = (m: Map<string, EditorContribution>) => [...m.values()].filter((c) => c.embedded);
+
+/** The `diffExtensions` of every contribution, for a diff pane showing the open document of `ctx`. */
+export function diffSideExtensions(ctx: EditorDocContext): Extension[] {
+  const out: Extension[] = [];
+  for (const c of editorContributions()) {
+    if (!c.diffExtensions) continue;
+    try {
+      out.push(c.diffExtensions(ctx));
+    } catch (e) {
+      console.error(`editor contribution ${c.id} failed`, e);
+    }
+  }
+  return out;
+}
 
 /** The `cellExtensions` of every contribution, for the editor of a notebook code cell. */
 export function cellEditorExtensions(ctx: EditorDocContext): Extension[] {
@@ -717,6 +736,8 @@ export interface DocumentAttachment {
   lineEnding(): LineEnding;
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
+  /** The document's context, as editor contributions receive it. */
+  context(): EditorDocContext;
   readOnly: boolean;
   /** Last view state, kept current while unmounted; use it when remounting this attachment. */
   editorState(): EditorState | null;
