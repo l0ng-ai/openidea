@@ -10351,6 +10351,12 @@ export type TypeScriptSettings = {
 	 *  or a path to a TypeScript `lib` directory.
 	 */
 	version?: string,
+	/**
+	 *  tsserver heap limit in MB. `0` = automatic: 8192 when vtsls hosts the Vue
+	 *  plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
+	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
+	 */
+	tsserverMaxMemory?: number,
 };
 
 /**  A misspelt word. */

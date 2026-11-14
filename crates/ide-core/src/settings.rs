@@ -1358,11 +1358,15 @@ pub struct TypeScriptSettings {
     /// `bundled` (the server's own TypeScript), `workspace` (`node_modules/typescript`),
     /// or a path to a TypeScript `lib` directory.
     pub version: String,
+    /// tsserver heap limit in MB. `0` = automatic: 8192 when vtsls hosts the Vue
+    /// plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
+    /// vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
+    pub tsserver_max_memory: u32,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into() }
+        Self { version: "bundled".into(), tsserver_max_memory: 0 }
     }
 }
 
