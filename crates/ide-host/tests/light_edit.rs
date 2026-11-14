@@ -217,3 +217,35 @@ async fn untitled_buffers_reach_the_disk_through_save_as() {
 fn untitled_edit(insert: &str) -> ChangeSet {
     ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: insert.into() }] }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn untitled_buffers_follow_the_window_into_a_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_root = dunce::canonicalize(tmp.path()).unwrap();
+    let host = host(&tmp_root.join("app"));
+
+    // A LightEdit window with an edited untitled buffer (and a clean one).
+    host.open_light_empty("main").unwrap();
+    let draft = ops::doc::open_untitled(&host, "main", None).await.unwrap();
+    ops::doc::edit(&host, "main", draft.id, draft.version, untitled_edit("{\"draft\": true}")).unwrap();
+    let clean = ops::doc::open_untitled(&host, "main", None).await.unwrap();
+
+    // The window switches to a project: the buffers follow, contents and dirty flags kept.
+    let project_root = tmp_root.join("proj");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let project = host.open_project("main", &project_root).unwrap();
+    assert!(!project.light);
+
+    let carried =
+        ops::doc::open_untitled(&host, "main", Some(draft.path.to_string_lossy().into_owned())).await.unwrap();
+    assert_eq!(carried.path, draft.path, "same key, fresh registry: a new doc id carries the content");
+    let snap = ops::doc::snapshot(&host, "main", carried.id).await.unwrap();
+    assert_eq!(snap.text, "{\"draft\": true}");
+    assert!(host.project("main").unwrap().documents.is_dirty(carried.id).unwrap());
+    assert_eq!(snap.language.as_str(), "plaintext");
+
+    let clean_carried =
+        ops::doc::open_untitled(&host, "main", Some(clean.path.to_string_lossy().into_owned())).await.unwrap();
+    assert!(!host.project("main").unwrap().documents.is_dirty(clean_carried.id).unwrap());
+    host.shutdown().await;
+}

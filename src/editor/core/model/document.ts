@@ -894,14 +894,16 @@ export class DocumentManager {
   }
 
   /** Saves dirty documents; failures are notified, and an explicit Save All also rejects with them. */
-  async saveAll(reason: "explicit" | "auto") {
+  async saveAll(reason: "explicit" | "auto", skipUntitled = false) {
     const errors: unknown[] = [];
     await Promise.all(
-      [...this.byPath.values()].map((m) =>
-        m.save(reason).catch((e) => {
-          errors.push(e);
-        }),
-      ),
+      [...this.byPath.values()]
+        .filter((m) => !(skipUntitled && isUntitledUri(m.path)))
+        .map((m) =>
+          m.save(reason).catch((e) => {
+            errors.push(e);
+          }),
+        ),
     );
     if (errors.length) {
       const e = errors[0];

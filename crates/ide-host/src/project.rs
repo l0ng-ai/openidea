@@ -88,6 +88,9 @@ impl Host {
         let root = dunce::canonicalize(root)?;
         let opening = self.opening(window);
         let _opening = opening.lock();
+        // Untitled buffers belong to the window, not a project: they follow it
+        // into the project's fresh document registry.
+        let carried = self.project(window).ok().map(|prev| prev.documents.untitled_buffers()).unwrap_or_default();
         // Reject a damaged manifest before replacing the currently open project.
         let is_workspace = ide_workspace::workspace::Workspace::load(&root)?.is_some();
         // The window reloaded (or asked again) for the project it already has: keep
@@ -621,6 +624,9 @@ impl Host {
             }));
         }
         self.insert_project(window, project.clone());
+        for (key, text, dirty) in &carried {
+            let _ = project.documents.restore_untitled_buffer(key, text, *dirty);
+        }
         project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);
@@ -718,6 +724,8 @@ impl Host {
     fn open_light_in(&self, window: &str, dir: PathBuf, watch_dir: Option<&Path>) -> IdeResult<Arc<Project>> {
         let opening = self.opening(window);
         let _opening = opening.lock();
+        // Untitled buffers belong to the window: they follow it out of a project.
+        let carried = self.project(window).ok().map(|prev| prev.documents.untitled_buffers()).unwrap_or_default();
         if let Ok(current) = self.project(window)
             && current.light
         {
@@ -799,6 +807,9 @@ impl Host {
         });
         tracing::info!("window {window} edits {} without a project", project.root.display());
         self.insert_project(window, project.clone());
+        for (key, text, dirty) in &carried {
+            let _ = project.documents.restore_untitled_buffer(key, text, *dirty);
+        }
         Ok(project)
     }
 }
