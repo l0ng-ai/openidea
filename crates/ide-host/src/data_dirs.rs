@@ -325,6 +325,20 @@ pub fn migrate(data: &Path, local: &Path) {
     if cfg!(target_os = "windows") && data != local {
         migrate_entries(data, local);
     }
+    if cfg!(target_os = "windows") {
+        relative_tool_shims(&local.join("tools"));
+    }
+}
+
+/// Wrappers written before they named their tool relative to themselves hold its absolute
+/// path, which cmd.exe can't find through a non-ASCII user directory (#3338).
+fn relative_tool_shims(tools: &Path) {
+    let Ok(entries) = fs::read_dir(tools) else { return };
+    for dir in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        if let Err(error) = relocate_shims(&dir, &dir) {
+            tracing::warn!(%error, ?dir, "cannot make the tool's wrappers relative");
+        }
+    }
 }
 
 fn migrate_entries(data: &Path, local: &Path) {
@@ -649,6 +663,22 @@ mod tests {
             assert!(resolve_local(Some(tmp.path().into()), None, "id").unwrap_err().contains("cannot write"));
         }
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn installed_tool_wrappers_become_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tmp.path().join("tools");
+        let tool = tools.join("taplo");
+        fs::create_dir_all(tool.join("bin")).unwrap();
+        let shim = tool.join("bin/taplo.cmd");
+        fs::write(&shim, format!("@echo off\r\n\"{}\\taplo.exe\" %*\r\n", tool.display())).unwrap();
+        // A wrapper the user re-saved in another encoding is left alone.
+        fs::create_dir_all(tools.join("other/bin")).unwrap();
+        fs::write(tools.join("other/bin/x.cmd"), b"@echo off\r\n\"C:\\\xd5\xc5\" %*\r\n").unwrap();
+        relative_tool_shims(&tools);
+        assert_eq!(fs::read_to_string(&shim).unwrap(), "@echo off\r\n\"%~dp0..\\taplo.exe\" %*\r\n");
+        relative_tool_shims(&tmp.path().join("missing"));
     }
 
     #[test]
