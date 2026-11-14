@@ -387,7 +387,7 @@ function SessionStatus({
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
-      {/* What changed sits above the meter, time and terminal; those keep their one row at the right. */}
+      {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
         {(!!changes?.length || !!commits.length) && (
           <span className={styles.statusChips}>

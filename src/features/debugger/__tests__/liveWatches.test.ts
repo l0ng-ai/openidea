@@ -52,6 +52,13 @@ describe("watches while the program runs", () => {
     ]);
   });
 
+  it("evaluates a multi-line watch as one expression", async () => {
+    const multiline = "items\n  .filter((i) => i.done)\n  .length";
+    renderHook(() => useLiveWatches(session(), [multiline, "b"], true));
+    await settle();
+    expect(asked.map((a) => a[2])).toEqual([multiline, "b"]);
+  });
+
   it("refreshes every second and not faster", async () => {
     expect(LIVE_WATCH_INTERVAL_MS).toBe(1000);
     renderHook(() => useLiveWatches(session(), ["a"], true));
