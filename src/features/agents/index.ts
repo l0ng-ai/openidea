@@ -201,6 +201,15 @@ export function activate(): () => void {
         run: () => focusedSession()?.openFind(),
       },
       {
+        id: "agents.focusInput",
+        title: "Focus Agent Input",
+        description: "Focuses the message input of the current agent task without moving the caret.",
+        category: "Agents",
+        when: "agentSessionFocus && agentInputAvailable",
+        keyWhen: "agentSessionFocus && !popupOpen",
+        run: () => focusedSession()?.focusInput?.(),
+      },
+      {
         id: "agents.newTask",
         title: "New Agent Task",
         description: "Opens the New Task page; a string `arg` pre-fills the task description.",

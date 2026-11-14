@@ -369,6 +369,7 @@ export const intellijWindows: Record<string, string[]> = {
   "db.revertChanges": ["Ctrl+Alt+Z"],
   "db.showToolWindow": [],
   "agents.newTask": ["Ctrl+Alt+Shift+I"],
+  "agents.focusInput": ["Ctrl+L"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
