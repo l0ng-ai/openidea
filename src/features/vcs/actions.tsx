@@ -59,6 +59,7 @@ import {
   showWorktrees,
 } from "./gitMenuDialogs";
 import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -611,6 +612,15 @@ export function registerVcsActions(): () => void {
         showGitWindow();
         void revealCommit(id, repo);
       },
+    },
+    {
+      id: "vcs.syncCommits",
+      title: "Show Incoming and Outgoing Commits",
+      category: "Git",
+      icon: "history",
+      when: VCS,
+      keywords: ["incoming", "outgoing", "ahead", "behind", "unpushed", "unpulled"],
+      run: ({ arg }) => showSyncCommitsForCurrent(arg === "incoming" || arg === "outgoing" ? arg : undefined),
     },
     ...(["gitignore", "localExclude"] as const).map((destination): Action => ({
       id: destination === "gitignore" ? "vcs.ignoreShared" : "vcs.ignoreLocal",

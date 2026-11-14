@@ -40,6 +40,8 @@ import {
 } from "./repoBranches";
 import { currentRepo, focusRepo, loadBranches, repoName, useVcs } from "./store";
 import { BranchSync } from "./BranchSync";
+import { showSyncCommits } from "./SyncCommitsPopup";
+import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -96,6 +98,15 @@ export function BranchWidget() {
   ]
     .filter(Boolean)
     .join("\n");
+  // A marker lists its commits; the rest of the widget keeps opening the branches popup.
+  const openSync = (direction: SyncDirection) => {
+    useBranchesPopup.setState({ open: false });
+    showSyncCommits({
+      repo: current,
+      branch: { branch: branch.head, upstream: branch.upstream, ahead: branch.ahead, behind: branch.behind },
+      direction,
+    });
+  };
   return (
     <>
       <BarButton
@@ -118,7 +129,7 @@ export function BranchWidget() {
           <span className={styles.operation}>{branch.operation}</span>
         )}
         {/* Like IDEA's widget: icons only; counts are in the tooltip. */}
-        <BranchSync behind={branch.behind} ahead={branch.ahead} showCounts={false} />
+        <BranchSync behind={branch.behind} ahead={branch.ahead} showCounts={false} onSelect={openSync} />
         <Icon name="chevron-down" size={14} className={styles.chevron} />
       </BarButton>
     </>
@@ -136,6 +147,7 @@ const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.update", label: "Update Project…", icon: "git-pull", group: "sync" },
   { id: "vcs.commit", label: "Commit…", icon: "commit", group: "sync" },
   { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync" },
+  { id: "vcs.syncCommits", label: "Incoming and Outgoing Commits…", icon: "history", group: "sync" },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
