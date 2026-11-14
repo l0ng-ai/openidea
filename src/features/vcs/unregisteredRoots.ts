@@ -15,8 +15,14 @@ export const UNREGISTERED_ROOTS_KEY = "vcs.unregisteredRoots";
 const OPEN_DELAY_MS = 1500;
 /** After a VCS refresh the project's repositories are up to date. */
 const VCS_DELAY_MS = 300;
-/** A repository the watcher does not see triggers no event: look again now and then. */
-const POLL_MS = 30_000;
+/**
+ * A repository the watcher does not see triggers no event, so the check polls: often just after
+ * the project opens (a folder moved in right then has no `.git` event), rarely afterwards, since
+ * every check walks the project.
+ */
+const EARLY_POLL_MS = 30_000;
+const EARLY_POLLS = 4;
+const LATE_POLL_MS = 300_000;
 /** Paths listed in the balloon; the rest become `+N more`. */
 const LISTED = 3;
 
@@ -45,16 +51,17 @@ export function unregisteredRootsNotice(paths: readonly string[], root: string |
     group: "vcs",
     level: "info",
     key: UNREGISTERED_ROOTS_KEY,
-    title: "Unregistered Git repositories",
+    title: tx("Unregistered Git repositories"),
     body: unregisteredRootsBody(paths, root),
     sticky: true,
-    actions: [{ label: "Add to Project", run: () => void addUnregisteredRoots() }],
+    actions: [{ label: tx("Add to Project"), run: () => void addUnregisteredRoots() }],
   };
 }
 
 async function addUnregisteredRoots(): Promise<void> {
   try {
     await call(commands.vcsRefreshRoots());
+    // Some roots may stay out (skipped names, a scan that still lags): let the caller re-check.
     notifications().expire?.(UNREGISTERED_ROOTS_KEY);
   } catch {
     /* the next scan registers them */
@@ -62,11 +69,15 @@ async function addUnregisteredRoots(): Promise<void> {
 }
 
 /**
- * Reports unregistered repositories while a project is open: on open, after VCS
- * refreshes and on a slow poll (a missed `.git` produces no event). Returns a disposer.
+ * Reports unregistered repositories while a project is open: on open, after VCS refreshes, and on
+ * a poll that is frequent just after the project opens and rare afterwards (every check walks the
+ * project). Returns a disposer.
  */
 export function installUnregisteredRoots(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let poll: ReturnType<typeof setTimeout> | undefined;
+  /** How many polls the project has had; the first few are the frequent ones. */
+  let polls = 0;
   /** The paths the current notification lists; empty when none is shown. */
   let shown = "";
 
@@ -87,23 +98,34 @@ export function installUnregisteredRoots(): () => void {
     notifications().notify(unregisteredRootsNotice(paths, project.root));
   };
 
-  const schedule = (delay: number) => {
+  const checkSoon = (delay: number) => {
     clearTimeout(timer);
     timer = setTimeout(() => void check(), delay);
   };
+  const pollNext = () => {
+    poll = setTimeout(
+      () => {
+        polls += 1;
+        void check();
+        pollNext();
+      },
+      polls < EARLY_POLLS ? EARLY_POLL_MS : LATE_POLL_MS,
+    );
+  };
 
-  schedule(OPEN_DELAY_MS);
+  checkSoon(OPEN_DELAY_MS);
+  pollNext();
   const unsubProject = useProject.subscribe((state, previous) => {
     if (state.project !== previous.project) {
       shown = "";
-      schedule(OPEN_DELAY_MS);
+      polls = 0;
+      checkSoon(OPEN_DELAY_MS);
     }
   });
-  const offVcs = onIdeEvent("vcsChanged", () => schedule(VCS_DELAY_MS));
-  const poll = setInterval(() => void check(), POLL_MS);
+  const offVcs = onIdeEvent("vcsChanged", () => checkSoon(VCS_DELAY_MS));
   return () => {
     clearTimeout(timer);
-    clearInterval(poll);
+    clearTimeout(poll);
     unsubProject();
     offVcs();
   };
