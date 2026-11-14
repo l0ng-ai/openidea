@@ -192,6 +192,21 @@ impl commands::Guest for Misbehave {
                 task.report(25, Some(25), Some("done"));
                 Ok(Some("still here".into()))
             }
+            "cpu-task" => {
+                let task = openidea::plugin::tasks::begin("computing", false);
+                let mut value = 0_u64;
+                for step in 0..20 {
+                    // More than one foreground budget per chunk, and more than
+                    // one background budget overall. Keep the work in Wasm.
+                    for _ in 0..20_000 {
+                        value = std::hint::black_box(value.wrapping_add(1));
+                    }
+                    if arg.as_deref() != Some("quiet") {
+                        task.report(step + 1, Some(20), None);
+                    }
+                }
+                Ok(Some(value.to_string()))
+            }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;
