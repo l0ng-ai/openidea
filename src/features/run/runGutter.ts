@@ -131,8 +131,8 @@ function showTargetMenu(view: EditorView, target: RunTarget, path: string, at: {
   showContextMenu(at, targetMenuItems(target, path, view.state.doc.toString()));
 }
 
-/** Results of frameworks that root their test tree at the file (jest/vitest, pytest) also match by file. */
-const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?)$/.test(path);
+/** Results of frameworks that root their test tree at the file (jest/vitest, pytest, Zig's module) also match by file. */
+const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?|zig)$/.test(path);
 
 /** Last test result of a gutter target (IDEA: green / red run icons after a test run). */
 export function gutterTestState(target: RunTarget, path: string): TestState | null {
