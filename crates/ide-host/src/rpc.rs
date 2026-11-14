@@ -270,7 +270,8 @@ impl Dispatcher {
         .add("run_resize", |c| async move { ops::run::resize(&c.host, c.arg("id")?, c.arg("cols")?, c.arg("rows")?) })
         .add("run_close_stdin", |c| async move { ops::run::close_stdin(&c.host, c.arg("id")?) })
         .add("run_list", |c| async move { Ok(ops::run::list(&c.host)) })
-        .add("vcs_status", |c| async move { ops::vcs::status(&c.host, &c.window).await });
+        .add("vcs_status", |c| async move { ops::vcs::status(&c.host, &c.window).await })
+        .add("vcs_status_paths", |c| async move { ops::vcs::status_paths(&c.host, &c.window, c.arg("paths")?).await });
         ops::register_all(&mut d);
         d
     }
