@@ -6,7 +6,7 @@ use crate::rpc::Dispatcher;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::Sdk;
 use ide_tools::jdk::{JdkReleases, JdkVendor};
-use ide_tools::{InstallEvent, ToolInfo, Tools};
+use ide_tools::{InstallEvent, ToolInfo, ToolUpdate, Tools};
 use std::path::PathBuf;
 
 /// The installer, reporting the executables chosen in the window's settings.
@@ -87,6 +87,16 @@ pub async fn tools_install(
     // java-debug bundle) pick the change up.
     reconfigure_servers(host);
     Ok(info)
+}
+
+/// Newer versions of the tools the IDE installed (release downloads and npm packages).
+/// Cancel with `cancel_request(request)`.
+pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<ToolUpdate>> {
+    let tools = tools(host, window)?;
+    let cancel = host.begin_request(request);
+    let result = tokio::task::spawn_blocking(move || tools.updates(&cancel)).await.map_err(join_err);
+    host.end_request(request);
+    result?
 }
 
 /// Removes a tool the IDE installed.
@@ -185,6 +195,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
         tools_install(&c.host, &c.window, c.arg("name")?, c.arg("request")?, c.sender("onEvent")?).await
     });
     d.add("tools_uninstall", |c| async move { tools_uninstall(&c.host, &c.window, c.arg("name")?).await });
+    d.add("tools_updates", |c| async move { tools_updates(&c.host, &c.window, c.arg("request")?).await });
     d.add("jdk_download_vendors", |c| async move { Ok(jdk_download_vendors(&c.host, &c.window)) });
     d.add("jdk_download_releases", |c| async move {
         jdk_download_releases(&c.host, &c.window, c.arg("vendor")?, c.arg("request")?).await

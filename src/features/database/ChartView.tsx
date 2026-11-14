@@ -6,7 +6,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconButton, Select, T } from "@/ui";
 import { isNumericColumn, type GridColumn } from "./Grid";
 import type { Cell } from "./model";
-import { chartSeries, formatNumber, niceTicks, type ChartAggregate } from "./resultView";
+import { chartSeries, niceTicks, type ChartAggregate } from "./resultView";
 import styles from "./Database.module.css";
 
 const AGGREGATES: ReadonlyArray<{ value: ChartAggregate; label: string }> = [
@@ -151,7 +151,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                     y={Math.min(yAt(p.value), yAt(0))}
                     height={Math.abs(yAt(0) - yAt(p.value))}
                   >
-                    <title>{`${p.label}: ${formatNumber(p.value)}`}</title>
+                    <title>{`${p.label}: ${p.text}`}</title>
                   </rect>
                 ))
               : [
@@ -162,7 +162,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                   />,
                   ...points.map((p, i) => (
                     <circle key={i} className={styles.chartDot} cx={xAt(i)} cy={yAt(p.value)} r={3}>
-                      <title>{`${p.label}: ${formatNumber(p.value)}`}</title>
+                      <title>{`${p.label}: ${p.text}`}</title>
                     </circle>
                   )),
                 ]}

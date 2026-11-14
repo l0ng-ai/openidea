@@ -1642,6 +1642,9 @@ impl HostApi for PluginApi {
     ) -> Result<(), HostError> {
         self.set_decorations(path, set, Vec::new(), item, true)
     }
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        self.set_file_icon_decorations(set, items)
+    }
     fn vcs_log(
         &self,
         root: &Path,
@@ -4124,6 +4127,9 @@ impl PluginApi {
         {
             return Err(HostError::Invalid("a file note is one non-empty line of at most 200 characters".into()));
         }
+        if let Some(icon) = file.as_ref().and_then(|f| f.icon.as_ref()) {
+            ide_extension::validate_item_id(icon, "file icon id").map_err(HostError::Invalid)?;
+        }
         items.retain(|d| decoration_style(&d.style));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
@@ -4132,24 +4138,14 @@ impl PluginApi {
             // The decoration follows the file, not the window's project: editors render
             // whatever they have open, including files outside every project root. The
             // set's root stays the path's own (deepest open) project for tree filtering.
-            let root = self
-                .shared
-                .workspace()
-                .map(|w| {
-                    w.projects()
-                        .into_iter()
-                        .filter(|root| path.starts_with(root))
-                        .max_by_key(|root| root.components().count())
-                })
-                .unwrap_or_default()
-                .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()));
+            let root = self.decoration_root(path);
             Some(super::DecorationSet {
                 root: root.into(),
                 path: ide_core::IpcPath(path.to_path_buf()),
                 set_id: set.into(),
                 tree,
                 items,
-                file: file.filter(|f| f.note.is_some() || decoration_style(&f.style)),
+                file: file.filter(|f| f.note.is_some() || f.icon.is_some() || decoration_style(&f.style)),
             })
         } else {
             None
@@ -4174,6 +4170,60 @@ impl PluginApi {
         }
         all.insert(self.id().into(), sets.clone());
         // Emit while holding the state lock so replacement snapshots cannot arrive out of order.
+        self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
+        Ok(())
+    }
+
+    fn decoration_root(&self, path: &Path) -> PathBuf {
+        self.shared
+            .workspace()
+            .map(|w| {
+                w.projects()
+                    .into_iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+            })
+            .unwrap_or_default()
+            .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()))
+    }
+
+    fn set_file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        if set.is_empty() || set.len() > 128 {
+            return Err(HostError::Invalid("set id must be 1-128 bytes".into()));
+        }
+        if items.len() > 10_000 {
+            return Err(HostError::Invalid("at most 10000 file icons per set".into()));
+        }
+        let mut by_path = BTreeMap::new();
+        for (path, icon) in items {
+            ide_extension::validate_item_id(&icon, "file icon id").map_err(HostError::Invalid)?;
+            by_path.insert(path, icon);
+        }
+        let mut all = self.shared.decorations.lock();
+        let mut sets = all.get(self.id()).cloned().unwrap_or_default();
+        sets.retain(|s| !(s.tree && s.set_id == set));
+        for (path, icon) in by_path {
+            let root = self.decoration_root(&path);
+            sets.push(super::DecorationSet {
+                root: root.into(),
+                path: ide_core::IpcPath(path),
+                set_id: set.into(),
+                tree: true,
+                items: Vec::new(),
+                file: Some(ide_plugin::FileDecoration {
+                    badge: None,
+                    style: String::new(),
+                    tooltip: None,
+                    note: None,
+                    icon: Some(icon),
+                }),
+            });
+        }
+        let names: BTreeSet<_> = sets.iter().filter(|s| s.tree).map(|s| &s.set_id).collect();
+        if names.len() > 50 || serde_json::to_vec(&sets).map_err(failed)?.len() > 4 << 20 {
+            return Err(HostError::Invalid("decoration sets exceed plugin limits".into()));
+        }
+        all.insert(self.id().into(), sets.clone());
         self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
         Ok(())
     }
@@ -4330,7 +4380,8 @@ mod workbench_tests {
                     badge: Some("abc".into()),
                     style: "info".into(),
                     tooltip: None,
-                    note: None
+                    note: None,
+                    icon: None,
                 })
             )
             .is_err()
@@ -4340,6 +4391,7 @@ mod workbench_tests {
             style: String::new(),
             tooltip: Some("why".into()),
             note: Some(text.into()),
+            icon: None,
         };
         api.file_decorations(Some(&path), "notes", Some(note("entry point"))).unwrap();
         let notes = |api: &PluginApi| {
@@ -4353,6 +4405,18 @@ mod workbench_tests {
         for bad in ["", "two\nlines", &"x".repeat(201)] {
             assert!(api.file_decorations(Some(&path), "notes", Some(note(bad))).is_err(), "{bad:?}");
         }
+        api.file_icon_decorations(
+            "icons",
+            vec![(path.clone(), "helm-chart".into()), (root.join("chart"), "helm-dir".into())],
+        )
+        .unwrap();
+        let icons = api.shared.decoration_sets()["test"]
+            .iter()
+            .filter(|s| s.tree && s.set_id == "icons")
+            .filter_map(|s| s.file.as_ref().and_then(|f| f.icon.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(icons.len(), 2);
+        assert!(api.file_icon_decorations("icons", vec![(path.clone(), "BAD ID".into())]).is_err());
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
     }

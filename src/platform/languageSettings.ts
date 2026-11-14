@@ -168,7 +168,12 @@ export interface LanguagesValid {
     showInterpreterPaths: boolean;
   };
   ruby: { interpreter: string };
-  node: { runTarget: string; interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  node: {
+    runTarget: string;
+    interpreter: string;
+    packageManager: "" | "npm" | "pnpm" | "yarn" | "bun";
+    runtime: "" | "node" | "bun" | "deno";
+  };
   php: {
     runTarget: string;
     interpreter: string;
@@ -279,7 +284,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     showInterpreterPaths: true,
   },
   ruby: { interpreter: "" },
-  node: { runTarget: "", interpreter: "", packageManager: "" },
+  node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
@@ -418,6 +423,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
       runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
+      runtime: oneOf(node.runtime, ["", "node", "bun", "deno"] as const, d.node.runtime),
     },
     php: {
       runTarget: text(php.runTarget, ""),

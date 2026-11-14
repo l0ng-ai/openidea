@@ -1,6 +1,6 @@
 import { instance } from "@viz-js/viz";
 import { describe, expect, it } from "vitest";
-import { ENGINES, exportName, graphvizColor, problemsOf, renderOptions } from "./render";
+import { ENGINES, exportName, graphvizColor, problemsOf, renderOptions, withoutLinks } from "./render";
 
 describe("the preview's rendering", () => {
   it("renders with the theme's colour as a default the graph can override", async () => {
@@ -41,5 +41,23 @@ describe("the preview's rendering", () => {
     expect(exportName("flow.dot", "svg")).toBe("flow.svg");
     expect(exportName("Flow.GV", "png")).toBe("Flow.png");
     expect(exportName("", "svg")).toBe("graph.svg");
+  });
+
+  it("previews a graph's links without them", async () => {
+    const viz = await instance();
+    const js = "javascript:alert(1)";
+    const graph = `digraph {
+      URL="${js}"; target="_top"
+      a [URL="${js}" href="https://example.com" label="a href=\\"x\\""]
+      a -> b [URL="${js}" edgeURL="${js}" headURL="${js}" tailURL="${js}" labelURL="${js}" label="e" headlabel="h" taillabel="t"]
+      subgraph cluster_x { URL="${js}"; c }
+    }`;
+    const result = viz.render(graph, renderOptions("dot", null));
+    const svg = result.status === "success" ? result.output : "";
+    expect(svg).toContain(js);
+    const preview = withoutLinks(svg);
+    expect(preview).not.toMatch(/\s(xlink:)?(href|target)="|javascript:/);
+    expect(preview).toContain("a href=&quot;x&quot;");
+    expect(preview.match(/<g id="node\d+"/g)).toHaveLength(3);
   });
 });

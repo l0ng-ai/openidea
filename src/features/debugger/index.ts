@@ -38,6 +38,7 @@ import {
 } from "./state";
 import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+import { jsBrowserType } from "./browser";
 import { forgetInstances } from "./memory/instancesState";
 import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
@@ -57,7 +58,7 @@ export function activate(): () => void {
   useDebugRunSessions.setState({
     Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
   });
-  loadWatches();
+  loadWatches(useProject.getState().project?.root ?? null);
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
@@ -67,6 +68,7 @@ export function activate(): () => void {
     registerDebugActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
+    registerRunConfigType(jsBrowserType),
     registerToolWindow({
       id: "debug",
       title: "Debug",
@@ -136,6 +138,7 @@ export function activate(): () => void {
       const root = s.project?.root ?? null;
       if (root !== (prev.project?.root ?? null) || s.project?.trusted !== prev.project?.trusted) {
         resetSessions();
+        loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);

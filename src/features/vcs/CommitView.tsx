@@ -82,6 +82,7 @@ import {
   DIFF_KIND,
   changeNodeDiff,
   changeNodeDiffData,
+  changeTreeDiffData,
   diffInput,
   openDiff,
   openVcsDiff,
@@ -205,7 +206,8 @@ const bottomLeft = (el: HTMLElement) => {
 
 /**
  * Activates a change (Enter, double-click, Show Diff); F7 continues through the other
- * files of its group, in tree order. Enter and double-click follow IDEA's Show on
+ * files of its group, in tree order (Enter and double-click: of the whole tree, on into the
+ * unversioned files, as IDEA's Commit diff preview). Enter and double-click follow IDEA's Show on
  * Double-Click (opensDiffOnActivate): the source file, or the diff where the commit
  * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
  * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
@@ -217,7 +219,7 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false
     void editorService().openFile(n.path, { focus: true });
     return;
   }
-  void openVcsDiff(changeNodeDiffData(roots, n), { preview: true });
+  void openVcsDiff((forceDiff ? changeNodeDiffData : changeTreeDiffData)(roots, n), { preview: true });
 }
 
 /** The setting behind Show on Double-Click (`None` follows the commit interface). */
@@ -630,7 +632,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     const active = maybeEditorService()?.activeInput?.();
     if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
     if (diffInput(changeNodeDiff(node)).key === active.key) return;
-    void openDiff(changeNodeDiffData(roots, node), { preview: true, focus: false });
+    void openDiff(changeTreeDiffData(roots, node), { preview: true, focus: false });
   };
 
   // Reveal only after the ancestors have expanded, without moving keyboard focus.

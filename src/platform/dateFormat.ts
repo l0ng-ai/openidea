@@ -74,7 +74,18 @@ export function formatDay(d: Date, o: DateFormatOptions = dateFormatOptions(), s
     : formatter(undefined, { year: "numeric", month: "short", day: "numeric" }).format(d);
 }
 
-/** Timestamp for lists: pretty ("Today 10:42", "5 min ago") when enabled, else date + time. */
+/** Numeric date and time (`2026/11/11 22:43`), IDEA's `formatDateTime`. */
+export function formatDateTime(d: Date, o: DateFormatOptions = dateFormatOptions()): string {
+  const day = o.overrideSystem
+    ? formatPattern(d, o.pattern)
+    : formatter(undefined, { year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+  return `${day} ${formatClock(d, o)}`;
+}
+
+/**
+ * Timestamp for lists: pretty ("Today 10:42", "5 min ago") when enabled, else date + time;
+ * older dates keep their time, as IDEA's `formatPrettyDateTime` does.
+ */
 export function formatTimestamp(ms: number, now = Date.now(), o: DateFormatOptions = dateFormatOptions()): string {
   const d = new Date(ms);
   if (o.pretty) {
@@ -85,7 +96,6 @@ export function formatTimestamp(ms: number, now = Date.now(), o: DateFormatOptio
     const today = new Date(now);
     if (d.toDateString() === today.toDateString()) return tx`Today ${formatClock(d, o)}`;
     if (d.toDateString() === new Date(now - 86_400_000).toDateString()) return tx`Yesterday ${formatClock(d, o)}`;
-    return formatDay(d, o);
   }
-  return `${formatDay(d, o)} ${formatClock(d, o)}`;
+  return formatDateTime(d, o);
 }

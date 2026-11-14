@@ -623,6 +623,8 @@ export const commands = {
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
+	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
+	vcsStatusPaths: (paths: string[]) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status_paths", { paths })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
 	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
@@ -966,6 +968,11 @@ export const commands = {
 	toolsInstall: (name: string, request: RequestId, onEvent: Channel<InstallEvent>) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_install", { name, request, onEvent })),
 	/**  Removes a tool the IDE installed. */
 	toolsUninstall: (name: string) => typedError<ToolInfo, IdeError>(__TAURI_INVOKE("tools_uninstall", { name })),
+	/**
+	 *  Newer versions of the tools the IDE installed (release downloads and npm packages).
+	 *  Cancel with `cancel_request(request)`.
+	 */
+	toolsUpdates: (request: RequestId) => typedError<ToolUpdate[], IdeError>(__TAURI_INVOKE("tools_updates", { request })),
 	/**  JDK distributions Download JDK offers. */
 	jdkDownloadVendors: () => __TAURI_INVOKE<JdkVendor[]>("jdk_download_vendors"),
 	/**  Java versions `vendor` publishes; cancellable with `cancel_request(request)`. */
@@ -1677,6 +1684,8 @@ export const commands = {
 	 */
 	envReload: () => typedError<EnvReloaded, IdeError>(__TAURI_INVOKE("env_reload")),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
+	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	dbConnected: () => typedError<string[], IdeError>(__TAURI_INVOKE("db_connected")),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
@@ -4971,6 +4980,8 @@ export type FileDecoration = {
 	tooltip: string | null,
 	/**  Text shown after the name (API 1.7 `set-file-note`). */
 	note?: string | null,
+	/**  `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`). */
+	icon?: string | null,
 };
 
 export type FileEdit = { kind: "edit"; path: IpcPath; edits: TextEdit[]; 
@@ -7228,7 +7239,7 @@ export type McpServerInput = {
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
-	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
 	 *  Run the tools that change the project or start processes without asking first
@@ -7239,6 +7250,11 @@ export type McpServerSettings = {
 	agentTabLimit?: number,
 	/**  Archived agent tabs kept; older ones are closed. */
 	agentArchiveLimit?: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address?: string,
 	/**
 	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
 	 *  port forwards keep working after a restart.
@@ -7258,6 +7274,8 @@ export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
 	error: string | null,
+	/**  The address listened on (`0.0.0.0` / `::`: every address). */
+	address: string | null,
 	port: number | null,
 	/**
 	 *  Why the fixed port (`mcpServer.port`) isn't the one listened on: it was in use or
@@ -7266,7 +7284,7 @@ export type McpServerStatus = {
 	portUnavailable: string | null,
 	/**  The window's local project, which the URL and command below are for. */
 	project: IpcPath | null,
-	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	/**  `http://<address>:<port>/mcp?project=<root>`, with loopback for every address. */
 	url: string | null,
 	/**  Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on). */
 	token: string | null,
@@ -7459,6 +7477,11 @@ export type NodeSettings = {
 	runTarget?: string,
 	/**  `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`. */
 	packageManager?: string,
+	/**
+	 *  Runtime for running JavaScript / TypeScript files: `node` | `bun` | `deno`; empty = from the
+	 *  project (`deno.json` → Deno, `bun.lock` → Bun, else Node.js).
+	 */
+	runtime?: string,
 };
 
 /**  Why an identifier is not treated as a local. */
@@ -10016,8 +10039,10 @@ export type TestCaseReport = {
 	durationMs: number | null,
 	/**  Failure / error / skip message. */
 	message: string | null,
-	/**  Failure stack trace and captured output. */
+	/**  Failure / error stack trace. */
 	output: string | null,
+	/**  What the test printed (`<system-out>`, `<system-err>`). */
+	stdout: string | null,
 };
 
 export type TestCaseStatus = "passed" | "failed" | "skipped";
@@ -10221,6 +10246,15 @@ export type ToolStatus =
 "onPath" | 
 /**  The executable chosen in settings. */
 "custom" | "missing";
+
+/**  A newer version of a tool the IDE installed, as its install source offers it now. */
+export type ToolUpdate = {
+	name: string,
+	/**  The installed version. */
+	current: string,
+	/**  The version installing the tool again would get. */
+	latest: string,
+};
 
 export type TransferError = {
 	path: string,

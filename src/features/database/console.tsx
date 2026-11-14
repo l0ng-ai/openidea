@@ -83,6 +83,7 @@ import {
 } from "./store";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest, projectRequest } from "./requests";
 
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
@@ -608,12 +609,14 @@ function catalogOf(id: string): SqlCatalog | undefined {
 
 /** Loads what `database.` / `database.schema.` at the caret needs before it is completed. */
 async function loadQualified(id: string, qualifier: readonly string[]): Promise<void> {
+  const current = databaseRequest(id);
   const sourceId = splitTarget(id).id;
   // Introspection has it: nothing to load (and no reason to connect for it).
   const wanted = (qualifier[0] ?? "").toLowerCase();
   const read = useDatabase.getState().catalogs[sourceId]?.databases ?? {};
   if (Object.keys(read).some((d) => d.toLowerCase() === wanted)) return;
   if (!useDatabase.getState().databases[sourceId]) await loadDatabases(sourceId);
+  if (!current()) return;
   const dbs = useDatabase.getState().databases[sourceId];
   if (dbs?.status !== "ok") return;
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
@@ -622,6 +625,7 @@ async function loadQualified(id: string, qualifier: readonly string[]): Promise<
   if (useDatabase.getState().catalogs[sourceId]?.databases[database]) return;
   const target = targetOf(sourceId, database, dbs.value.current);
   if (!useDatabase.getState().schemas[target]) await loadSchemas(target);
+  if (!current()) return;
   if (qualifier.length < 2) return;
   const list = useDatabase.getState().schemas[target];
   const schema = list?.status === "ok" ? list.value.find((s) => same(s, qualifier[1]!)) : undefined;
@@ -631,6 +635,7 @@ async function loadQualified(id: string, qualifier: readonly string[]): Promise<
 function completionSource(path: string): CompletionSource {
   return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
     const id = consoleSource(path);
+    const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
     const driver: DbDriver = source?.driver ?? "sqlite";
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
@@ -649,7 +654,7 @@ function completionSource(path: string): CompletionSource {
     const cataloged = driver === "snowflake" && !!id;
     if (cataloged && analysis.qualifier?.length) {
       await loadQualified(id, analysis.qualifier).catch(() => {});
-      if (ctx.aborted) return null;
+      if (ctx.aborted || !current()) return null;
     }
     const candidates = sqlCandidates({
       model: scoped,

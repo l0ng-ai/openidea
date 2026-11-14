@@ -223,7 +223,7 @@ it("renames in the project view although the preset shares Alt+Shift+R with the 
   const dbRename = vi.fn();
   const refactorRename = vi.fn();
   // The claimants as they ship: `when` + `keyWhen` exactly as registered.
-  const EDITOR = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+  const EDITOR = "textEditorActive && (editorFocus || !toolWindowFocus)";
   const disposers = [
     registerAction({
       id: "project.rename",

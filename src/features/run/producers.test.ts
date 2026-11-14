@@ -71,6 +71,7 @@ const ALL = env({
   "clang++": null,
   dart: null,
   elixir: null,
+  escript: null,
   "scala-cli": null,
   deno: "2.1.0",
   bun: "1.1.0",
@@ -141,6 +142,18 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(input, { ...ALL, bun: true })!.config!.debugAdapter).toBe("bun-dap");
     // Not for scratches outside the project.
     expect(run(scratch("x.ts"), { ...ALL, deno: true })).toMatchObject({ command: "/bin/node" });
+  });
+
+  it("a preferred runtime runs scratches too, and a missing one is reported, not replaced", () => {
+    expect(run(scratch("x.ts"), { ...ALL, bun: true, preferred: true })).toMatchObject({
+      command: "/bin/bun",
+      args: ["run", "x.ts"],
+    });
+    const noBun = env({ node: "24.11.0" }, { bun: true, preferred: true });
+    expect(produceContext(scratch("x.ts"), noBun)!.missing!.body).toContain("Bun was not found");
+    // From project markers only, a missing runtime still falls back to Node.js.
+    const input: ContextInput = { path: `${ROOT}/scripts/x.js`, root: ROOT, configs: [] };
+    expect(run(input, env({ node: "24.11.0" }, { deno: true }))).toMatchObject({ command: "/bin/node" });
   });
 
   it("Python: the interpreter from settings, then the project's, then python3", () => {
@@ -245,6 +258,10 @@ describe("single-file producers (scratches)", () => {
     expect(run(scratch("a.swift"))).toMatchObject({ command: "/bin/swift", args: ["a.swift"] });
     expect(run(scratch("a.dart"))).toMatchObject({ command: "/bin/dart", args: ["run", "a.dart"] });
     expect(run(scratch("a.exs"))).toMatchObject({ command: "/bin/elixir", args: ["a.exs"] });
+    expect(run(scratch("tool.escript"))).toMatchObject({
+      command: "/bin/escript",
+      args: ["tool.escript"],
+    });
     expect(run(scratch("a.sc"))).toMatchObject({ command: "/bin/scala-cli", args: ["run", "a.sc"] });
     expect(run(scratch("a.kts"))).toMatchObject({ command: "/bin/kotlin", args: ["a.kts"] });
     expect(run(scratch("a.kts"), env({ kotlinc: null }))).toMatchObject({
@@ -386,6 +403,77 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(scratch("calc.rs", src, 2), ALL)!.config!.command).toMatch(/-test tests::$/);
     // Outside: the file (main).
     expect(produceContext(scratch("calc.rs", src, 0), ALL)!.name).toBe("calc.rs");
+  });
+
+  it("Zig: zig run a main, zig test one test with --test-filter; debugging builds the binary first", () => {
+    const src = [
+      'const std = @import("std");',
+      "pub fn main() !void {}",
+      'test "adds two numbers" {',
+      "    try std.testing.expect(true);",
+      "}",
+      "const S = struct {",
+      "    test named {}",
+      "};",
+    ].join("\n");
+    const e = env({ zig: "0.17.1" });
+    const main = produceContext(scratch("calc.zig", src, 1), e)!;
+    expect(main).toMatchObject({ name: "calc.zig", scope: "element" });
+    expect(main.config).toMatchObject({ kind: "zig", command: "/bin/zig", args: ["run", "calc.zig"], cwd: SCRATCH });
+    expect(main.debug!.build.command).toMatch(
+      /^mkdir -p \/tmp\/openidea-run && \/bin\/zig build-exe calc\.zig -femit-bin=\/tmp\/openidea-run\/calc-\w+$/,
+    );
+    expect(main.debug!.config).toMatchObject({ kind: "native", debugAdapter: "codelldb", args: [] });
+
+    const test = produceContext(scratch("calc.zig", src, 3), e)!;
+    expect(test).toMatchObject({ name: "adds two numbers", scope: "element" });
+    expect(test.config).toMatchObject({
+      args: ["test", "calc.zig", "--test-filter", "adds two numbers"],
+      isTest: true,
+    });
+    expect(test.debug!.build.command).toMatch(
+      /zig test calc\.zig --test-filter 'adds two numbers' --test-no-exec -femit-bin=\S+-test$/,
+    );
+    expect(produceContext(scratch("calc.zig", src, 6), e)!.config!.args).toEqual([
+      "test",
+      "calc.zig",
+      "--test-filter",
+      "named",
+    ]);
+    expect(fileTargets(scratch("calc.zig"), src).map((t) => [t.kind, t.name, t.line])).toEqual([
+      ["main", "main", 1],
+      ["test", "adds two numbers", 2],
+      ["test", "named", 6],
+    ]);
+    // A file with tests only runs them all; without Zig, how to install it.
+    expect(produceFile(scratch("lib.zig", 'test "x" {}'), e)!.config!.args).toEqual(["test", "lib.zig"]);
+    expect(produceContext(scratch("calc.zig", src, 1), env({}))!.missing!.body).toMatch(/ziglang\.org/);
+  });
+
+  it("Zig in a build.zig project: a file's main runs its executable, built first", () => {
+    const configs = [
+      cfg({ id: "zig:build", kind: "zig", command: "zig", args: ["build"] }),
+      cfg({
+        id: "zig:exe:app",
+        name: "app",
+        kind: "zig-application",
+        command: "./zig-out/bin/app",
+        debugAdapter: "codelldb",
+        params: { source: "src/main.zig" },
+      }),
+    ];
+    const input = (path: string): ContextInput => ({
+      path: `${ROOT}/${path}`,
+      root: ROOT,
+      configs,
+      content: "pub fn main() void {}",
+    });
+    expect(produceFile(input("src/main.zig"), env({ zig: null }))!.config!.id).toBe("zig:exe:app");
+    // Not an executable's root: the file on its own.
+    expect(produceFile(input("tools/gen.zig"), env({ zig: null }))!.config).toMatchObject({
+      args: ["run", "tools/gen.zig"],
+      cwd: null,
+    });
   });
 
   it("Rust in a Cargo project: cargo run --bin / --example, not rustc", () => {

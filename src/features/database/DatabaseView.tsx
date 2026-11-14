@@ -5,8 +5,8 @@
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
-import { useEffect, useMemo, useRef, type CSSProperties } from "react";
-import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
+import { useEffect, useMemo, useRef } from "react";
+import type { DbColor, DbDatabases, DbTableDetails } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -23,7 +23,6 @@ import {
   T,
 } from "@/ui";
 import {
-  colorVar,
   databaseKey,
   passesObjectFilter,
   passesTreeFilter,
@@ -62,6 +61,16 @@ import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest } from "./requests";
+
+const ROW_TINTS: Record<DbColor, string | undefined> = {
+  red: styles.tintRed,
+  orange: styles.tintOrange,
+  yellow: styles.tintYellow,
+  green: styles.tintGreen,
+  blue: styles.tintBlue,
+  violet: styles.tintViolet,
+};
 
 const GROUP_LABELS: Record<Group, string> = {
   columns: "columns",
@@ -143,12 +152,12 @@ export function DatabaseView() {
   useEffect(() => {
     if (!st.loaded) void loadSources();
   }, [st.loaded]);
-  // Go to Declaration from a console: the rows exist once the expanded nodes render.
+  // Go to Declaration from a console, Select Opened File: the rows exist once the expanded nodes render.
   useEffect(() => {
     if (!st.treeReveal) return;
-    const key = st.treeReveal.key;
+    const path = st.treeReveal.path;
     const frame = requestAnimationFrame(() => {
-      tree.current?.reveal(key);
+      path.toReversed().some((key) => tree.current?.reveal(key));
       tree.current?.focus();
     });
     return () => cancelAnimationFrame(frame);
@@ -346,7 +355,10 @@ export function DatabaseView() {
   const load = async (n: Node) => {
     if (n.kind === "source") {
       const id = n.source.id ?? "";
-      if (!(await connect(id))) {
+      const current = databaseRequest(id);
+      const connected = await connect(id);
+      if (!current()) return;
+      if (!connected) {
         const err = { status: "error" as const, message: tx("Cannot connect") };
         if (listsDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
         else useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: err } }));
@@ -355,7 +367,10 @@ export function DatabaseView() {
       if (listsDatabases(n.source)) await loadDatabases(id);
       else await loadSchemas(id);
     } else if (n.kind === "database") {
-      if (!(await connect(n.id))) {
+      const current = databaseRequest(n.id);
+      const connected = await connect(n.id);
+      if (!current()) return;
+      if (!connected) {
         useDatabase.setState((s) => ({
           schemas: { ...s.schemas, [n.id]: { status: "error", message: tx("Cannot connect") } },
         }));
@@ -542,6 +557,12 @@ export function DatabaseView() {
           getIcon={(n) => icon(n)}
           getDetail={detail}
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
+          rowClassName={(n) => {
+            // IDEA tints every row of a coloured data source across its full width and height.
+            const target = nodeTarget(n);
+            const color = target ? sourceOf(target)?.color : null;
+            return color ? `${styles.tintedRow} ${ROW_TINTS[color]}` : undefined;
+          }}
           renderNode={(n: Node) => {
             const i = icon(n);
             const d = detail(n);
@@ -553,13 +574,9 @@ export function DatabaseView() {
                   ? styles.keyLabel
                   : styles.nodeLabel;
             const live = n.kind === "source" && [...st.connected].some((t) => splitTarget(t).id === n.source.id);
-            const target = nodeTarget(n);
-            // IDEA tints every row of a coloured data source.
-            const tint = colorVar(target ? sourceOf(target)?.color : null);
             return (
               <span
-                className={tint ? `${styles.nodeRow} ${styles.tinted}` : styles.nodeRow}
-                style={tint ? ({ "--db-tint": tint } as CSSProperties) : undefined}
+                className={styles.nodeRow}
                 title={n.kind === "source" && n.source.comment ? n.source.comment : undefined}
               >
                 {i && (
@@ -683,10 +700,11 @@ function DatabaseToolbar() {
   );
 }
 
-/** Header controls (shown on hover, like IDEA's): Expand All, Collapse All. */
+/** Header controls (shown on hover, like IDEA's): Select Opened File, Expand All, Collapse All. */
 export function DatabaseHeaderActions() {
   return (
     <>
+      <IconButton icon="locate" action="db.selectOpened" size="small" iconSize={16} />
       <IconButton icon="expand-all" action="db.expandAll" size="small" iconSize={16} />
       <IconButton icon="collapse-all" action="db.collapseAll" size="small" iconSize={16} />
     </>

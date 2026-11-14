@@ -16,6 +16,16 @@ use tauri::{AppHandle, Manager, State, Window};
 pub async fn vcs_status(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<FileStatus>> {
     ide_host::ops::vcs::status(&state.host, window.label()).await
 }
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_status_paths(
+    window: Window,
+    paths: Vec<PathBuf>,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::status_paths(&state.host, window.label(), paths).await
+}
 /// The project's repositories, the primary one first.
 #[tauri::command]
 #[specta::specta]

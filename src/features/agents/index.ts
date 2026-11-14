@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { call, commands } from "@/platform/ipc";
 import {
@@ -15,6 +15,7 @@ import {
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerOverlay,
   registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
@@ -128,6 +129,13 @@ export function activate(): () => void {
         );
         return n || null;
       },
+    }),
+    registerOverlay({
+      id: "agents.importSessions",
+      component: lazyWhen(
+        () => useAgents((s) => s.importOpen),
+        () => import("./ImportSessionsDialog").then((m) => m.ImportSessionsOverlay),
+      ),
     }),
     registerEditorKind({
       kind: SESSION_KIND,

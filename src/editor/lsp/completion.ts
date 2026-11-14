@@ -432,7 +432,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (completionBackoff.active(doc.doc)) return fallback(ctx);
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -445,6 +445,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       () => commands.lspCompletion(id, doc.doc, offsetToPos(ctx.state.doc, ctx.pos), trigger),
       () => inflight === id,
     );
+    completionBackoff.clear(doc.doc);
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
@@ -757,8 +758,15 @@ const completionFooter = ViewPlugin.fromClass(
             ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
           ];
           for (const t of tooltips) {
-            if (t.querySelector(":scope > .cm-lsp-completion-footer")) continue;
-            const footer = document.createElement("div");
+            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+            if (footer) {
+              // CodeMirror rebuilds the option list by appending a fresh <ul>,
+              // which would leave an existing footer above the list.
+              const list = t.querySelector(":scope > ul");
+              if (list && list.nextElementSibling !== footer) list.after(footer);
+              continue;
+            }
+            footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");

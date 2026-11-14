@@ -38,8 +38,11 @@ import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { flashTaskbarForBreakpoint, stopTaskbarFlash } from "./taskbarFlash";
+import { isBrowserLaunch, launchedBrowser, launchedUrl } from "./browser";
 import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
+import { evaluateWithImports, forgetImports } from "./classImports";
+import { JAVA_ADAPTER } from "./java";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
 
@@ -476,6 +479,45 @@ function flushConsoleOutput() {
   republishForPorts();
 }
 
+/**
+ * A browser launch shows as its page (`sessionTabs`), so a selected launch passes the selection
+ * to its page. Either may exist first: the page's `started` event can precede the launch's result.
+ */
+function selectBrowserPage(launch: DebugSessionId) {
+  const st = useDebug.getState();
+  if (st.active !== launch || !isBrowserLaunch(st.sessions[launch]?.launch ?? null)) return;
+  const page = Object.values(st.sessions).find((s) => s.parent === launch);
+  if (!page) return;
+  useDebug.setState({ active: page.id });
+  publishContext();
+}
+
+/**
+ * Debugs the page `launch` opens. A project has one browser of a kind under the debugger (a
+ * second one can't share its profile), so when it is already running its page goes to the URL
+ * instead and becomes the selected session.
+ */
+export async function startBrowserSession(
+  launch: LaunchConfig,
+  options: Parameters<typeof startSession>[1] = {},
+): Promise<DebugSessionId | null> {
+  const { sessions } = useDebug.getState();
+  const browser = launchedBrowser(launch);
+  const running = Object.values(sessions).find(
+    (s) => s.parent == null && isLive(s) && s.launch?.cwd === launch.cwd && launchedBrowser(s.launch) === browser,
+  );
+  if (!running) return startSession(launch, options);
+  const page = Object.values(sessions).find((s) => s.parent === running.id && isLive(s));
+  if (!page) return running.id;
+  selectSession(page.id);
+  const url = launchedUrl(launch);
+  if (url && url !== launchedUrl(running.launch!)) {
+    const go = `location.assign(${JSON.stringify(url)})`;
+    await call(commands.debugEvaluateIn(page.id, null, go, "repl")).catch(() => undefined);
+  }
+  return running.id;
+}
+
 /** Split styled output at real line breaks, retaining partial lines across events. */
 function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
   const last = lines.at(-1);
@@ -652,6 +694,7 @@ export async function startSession(
     });
     settleStart(id);
     if (options.process != null) followProcessOutput(id, options.process);
+    selectBrowserPage(id);
     publishContext();
     void refreshExceptionFilters();
     void loadCapabilities(id);
@@ -826,6 +869,7 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 
 function markTerminated(id: DebugSessionId) {
   stopTaskbarFlash();
+  forgetImports(id);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
   if (st.active === id) {
@@ -1022,23 +1066,38 @@ export function removeWatch(expression: string) {
   persistWatches();
 }
 
-const WATCH_KEY = "openidea.debugger.watches";
+/** Watches used to be one list for every project; it is only read now, as a project's first list. */
+const SHARED_WATCH_KEY = "openidea.debugger.watches";
+const watchKey = (root: string) => `${SHARED_WATCH_KEY}:${root}`;
+
+/** The project whose watches are loaded; without one they aren't stored. */
+let watchRoot: string | null = null;
 
 function persistWatches() {
+  if (watchRoot == null) return;
   try {
-    localStorage.setItem(WATCH_KEY, JSON.stringify(useDebug.getState().watches));
+    localStorage.setItem(watchKey(watchRoot), JSON.stringify(useDebug.getState().watches));
   } catch {
     // ignore
   }
 }
 
-export function loadWatches() {
+function storedWatches(key: string): string[] | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(WATCH_KEY) ?? "[]") as unknown;
-    if (Array.isArray(raw)) useDebug.setState({ watches: raw.filter((w): w is string => typeof w === "string") });
+    const stored = localStorage.getItem(key);
+    const raw = stored == null ? null : (JSON.parse(stored) as unknown);
+    return Array.isArray(raw) ? raw.filter((w): w is string => typeof w === "string") : null;
   } catch {
-    // ignore
+    return null;
   }
+}
+
+/** The watches of the project at `root`. */
+export function loadWatches(root: string | null) {
+  watchRoot = root;
+  const own = root == null ? [] : storedWatches(watchKey(root));
+  useDebug.setState({ watches: own ?? storedWatches(SHARED_WATCH_KEY) ?? [] });
+  if (own == null) persistWatches();
 }
 
 /**
@@ -1082,7 +1141,8 @@ export async function evaluate(
   session: DebugSession | null = activeSession(),
 ): Promise<Variable> {
   if (!session || !isLive(session)) throw new Error("No active debug session");
-  return call(commands.debugEvaluateIn(session.id, session.selectedFrame, expression, context));
+  const run = (expr: string) => call(commands.debugEvaluateIn(session.id, session.selectedFrame, expr, context));
+  return session.adapter === JAVA_ADAPTER ? evaluateWithImports(session.id, expression, run) : run(expression);
 }
 
 /** Settings › Debugger › Focus application on breakpoint. */
@@ -1103,9 +1163,11 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
   const s = ownSession(id, event);
   if (!s) return;
   switch (event.kind) {
-    case "started":
+    case "started": {
       if (!s.launch) patch(id, { name: event.name, adapter: event.adapter, parent: event.parent });
+      if (event.parent != null) selectBrowserPage(event.parent);
       break;
+    }
     case "initialized":
       if (s.status === "starting") patch(id, { status: "running" });
       break;

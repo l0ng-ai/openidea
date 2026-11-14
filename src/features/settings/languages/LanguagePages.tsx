@@ -93,7 +93,15 @@ function RunTargetRow({ language }: { language: "php" | "node" }) {
   );
 }
 
+const RUNTIME_OPTIONS: SelectOption[] = [
+  { value: "", label: "Auto", detail: "deno.json → Deno, bun.lock → Bun, else Node.js" },
+  { value: "node", label: "Node.js" },
+  { value: "bun", label: "Bun" },
+  { value: "deno", label: "Deno" },
+];
+
 export function NodePage() {
+  const [runtime, setRuntime] = useSetting<string>("languages.node.runtime");
   const [pm, setPm] = useSetting<string>("languages.node.packageManager");
   const { list } = useDetected("packageManager");
   const pmOptions = useMemo<SelectOption[]>(
@@ -113,6 +121,17 @@ export function NodePage() {
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Preferred runtime"
+          hint="Runs JavaScript and TypeScript files from the gutter and the editor's Run action."
+        >
+          <Select value={runtime} options={RUNTIME_OPTIONS} onChange={setRuntime} aria-label="Preferred runtime" />
+        </Row>
+        <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
+          <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
+        </Row>
+      </Section>
+      <Section title="Node.js">
         <SdkRow
           k="languages.node.interpreter"
           label="Node interpreter"
@@ -124,9 +143,6 @@ export function NodePage() {
           hint="Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…)."
         />
         <RunTargetRow language="node" />
-        <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
-          <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
-        </Row>
       </Section>
     </div>
   );

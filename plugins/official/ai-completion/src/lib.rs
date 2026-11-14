@@ -31,10 +31,19 @@ struct Config {
     enabled: bool,
 }
 
+/// Whether `endpoint` is OpenAI's API host itself, so the key may go to it:
+/// `https`, exactly `api.openai.com` (or `:443`), and no `user@` before the host
+/// (`https://api.openai.com@localhost` is localhost).
+pub fn is_openai(endpoint: &str) -> bool {
+    let Some(rest) = endpoint.strip_prefix("https://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    matches!(authority, "api.openai.com" | "api.openai.com:443")
+}
+
 fn config() -> Config {
     let get = |k: &str| storage::get(k).ok().flatten();
     let endpoint = get("endpoint").unwrap_or_else(|| LOCAL.into());
-    let openai = endpoint.starts_with(OPENAI);
+    let openai = is_openai(&endpoint);
     let model = get("model").unwrap_or_else(|| (if openai { OPENAI_MODEL } else { LOCAL_MODEL }).into());
     Config { endpoint, model, openai, enabled: get("enabled").as_deref() != Some("false") }
 }
@@ -193,6 +202,29 @@ mod tests {
         assert!(p.inline_completion(&doc("let x = "), Position::new(0, 8)).is_some());
         let sent = &host.requests()[0];
         assert!(sent.headers.contains(&("Authorization".into(), "Bearer sk-test".into())));
+    }
+
+    #[test]
+    fn the_key_goes_to_openai_only() {
+        assert!(is_openai(OPENAI));
+        assert!(is_openai("https://api.openai.com/"));
+        assert!(is_openai("https://api.openai.com:443/v1"));
+        for other in [
+            "https://api.openai.com@localhost:9999",
+            "https://api.openai.com:x@localhost",
+            "https://api.openai.com.example.com",
+            "https://api.openai.com\\@localhost",
+            "http://api.openai.com",
+            "http://localhost:11434",
+        ] {
+            assert!(!is_openai(other), "{other}");
+        }
+
+        let host = MockHost::install().with_capabilities(&["storage"]);
+        AiCompletion::default()
+            .run_command("set-endpoint", &host.invocation(), Some("https://api.openai.com@localhost:9999"))
+            .unwrap();
+        assert!(!config().openai, "no key for a look-alike endpoint");
     }
 
     #[test]
