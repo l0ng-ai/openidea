@@ -113,9 +113,17 @@ export function hierarchyTitle(mode: HierarchyMode, direction: HierarchyDirectio
   return direction === "incoming" ? tx`Supertypes of ${name}` : tx`Subtypes of ${name}`;
 }
 
+/** `first`, then the items of `more` no item of `first` already names. */
+function mergeItems(first: readonly HierarchyItem[], more: readonly HierarchyItem[]): HierarchyItem[] {
+  const seen = new Set(first.map(itemKey));
+  return [...first, ...more.filter((item) => !seen.has(itemKey(item)))];
+}
+
 /**
- * Type hierarchy items of the type at `pos`: the server's, or, for Python (whose servers
- * declare no `typeHierarchyProvider`), those of the IDE's inheritance graph.
+ * Type hierarchy items of the type at `pos`. A Python server's answer is merged with the
+ * IDE's inheritance graph rather than trusted: pyrefly answers only what it resolved in
+ * its own root (`object` for a class whose base lives in an attached project), so a
+ * non-empty answer still misses the attached project's supertypes.
  */
 async function typeHierarchyItems(
   path: string,
@@ -123,17 +131,25 @@ async function typeHierarchyItems(
   pos: Pos,
   direction: HierarchyDirection,
 ): Promise<HierarchyItem[]> {
+  const python = isPythonPath(path);
+  let served: HierarchyItem[] = [];
+  let unavailable = false;
   try {
-    return await lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
+    served = await lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
   } catch (e) {
-    if (!isPythonPath(path) || !isUnavailable(e)) throw e;
+    if (!python || !isUnavailable(e)) throw e;
+    unavailable = true;
   }
+  if (!python) return served;
   const hierarchy = await projectPythonHierarchy();
   const cls = classAt(hierarchy, path, pos);
-  if (!cls) throw new IpcError({ kind: "notFound", message: "No type at the caret" });
+  if (!cls) {
+    if (unavailable) throw new IpcError({ kind: "notFound", message: "No type at the caret" });
+    return served;
+  }
   // Supertypes are the whole chain, subtypes only the direct ones: each node expands lazily.
-  const found = direction === "incoming" ? await pythonAncestors(hierarchy, cls) : await pythonSubtypes(hierarchy, cls);
-  return found.map(classItem);
+  const graph = direction === "incoming" ? await pythonAncestors(hierarchy, cls) : await pythonSubtypes(hierarchy, cls);
+  return mergeItems(served, graph.map(classItem));
 }
 
 async function request(

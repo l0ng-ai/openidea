@@ -90,6 +90,8 @@ vi.mock("@/editor/navigation/inheritanceGraph", async (orig) => {
   };
 });
 let serverUnavailable = false;
+/** A partial answer a Python server gives (it resolved only its own root). */
+let servedOverride: HierarchyItem[] | null = null;
 let caret = { doc: 1, path: "/p/Orders.java", line: 4, col: 10, word: "x", view: null };
 
 vi.mock("@/platform/ipc", async (orig) => {
@@ -103,7 +105,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       cancelRequest,
       lspTypeHierarchy: async (_doc: number, pos: { line: number; col: number }) => {
         if (serverUnavailable) throw new real.IpcError({ kind: "unavailable", message: "no type hierarchy" });
-        return typeHierarchy(pos);
+        return servedOverride ?? typeHierarchy(pos);
       },
       lspCallHierarchy: async (_request: number, _doc: number, pos: { line: number; col: number }) => {
         // The server prepares a hierarchy only on the method name.
@@ -250,6 +252,23 @@ describe("Python type hierarchy", () => {
       expect(s.notes.size).toBe(0);
       expect(hint).not.toHaveBeenCalled();
     } finally {
+      restore();
+    }
+  });
+
+  it("merges a Python server's partial answer with the graph (attached project)", async () => {
+    // pyrefly answers only what it resolved in its own root: `object`. The base class of
+    // this demo lives in an attached project, so only the graph knows it.
+    servedOverride = [typeItem("object", 114)];
+    caret = pythonCaret("/p/leaf.py", "Leaf");
+    try {
+      useHierarchy.setState({ mode: "type", direction: "incoming" });
+      await showHierarchy("type");
+      const top = useHierarchy.getState().children.get(ROOT_ID) ?? [];
+      expect(top.map((n) => n.item.name)).toEqual(["object", "Middle", "Base"]);
+      expect(useHierarchy.getState().failed.size).toBe(0);
+    } finally {
+      servedOverride = null;
       restore();
     }
   });
