@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
-import { call, commands, type Scope, type Variable } from "@/platform/ipc";
+import { call, commands, isTauri, type Scope, type Variable } from "@/platform/ipc";
 import {
   EmptyState,
   Icon,
@@ -109,6 +109,14 @@ type Tab = "variables" | "console" | "memory" | "network";
 /** The view the user last picked; the tool window opens on it again (Console until one is picked). */
 let chosenTab: Tab = "console";
 
+/** Threads & Variables › Focus On Breakpoint: whether a breakpoint hit selects that tab. */
+async function setVariablesOnBreakpoint(on: boolean) {
+  if (!isTauri()) return;
+  useProject.setState({
+    settings: await call(commands.settingsSet("global", "debugger.variablesOnBreakpoint", JSON.stringify(on))),
+  });
+}
+
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
   if (s.status === "starting") return "Starting…";
@@ -160,12 +168,16 @@ export function DebugToolWindow() {
     setView({
       session: active.startedAt,
       status: active.status,
-      // A breakpoint or exception brings Threads & Variables to the front; finishing a step keeps
-      // the tab the user is on (e.g. Console, to watch the output while stepping), and so does Memory.
+      // A breakpoint or exception brings Threads & Variables to the front unless its Focus On Breakpoint
+      // is off; finishing a step keeps the tab the user is on (e.g. Console, to watch the output while
+      // stepping), and so does Memory.
       tab:
         active.status === "starting"
           ? "console"
-          : active.status === "paused" && view.tab !== "memory" && active.stopReason !== "step"
+          : active.status === "paused" &&
+              view.tab !== "memory" &&
+              active.stopReason !== "step" &&
+              workflowSettings().debugger.variablesOnBreakpoint
             ? "variables"
             : view.tab,
     });
@@ -247,6 +259,20 @@ export function DebugToolWindow() {
                 chosenTab = id;
                 setView({ session: active.startedAt, status: active.status, tab: id });
               }}
+              onContextMenu={
+                id === "variables"
+                  ? (e) => {
+                      e.preventDefault();
+                      showContextMenu(e, [
+                        {
+                          label: "Focus On Breakpoint",
+                          checked: workflowSettings().debugger.variablesOnBreakpoint,
+                          run: () => void setVariablesOnBreakpoint(!workflowSettings().debugger.variablesOnBreakpoint),
+                        },
+                      ]);
+                    }
+                  : undefined
+              }
             >
               {tx(label)}
             </button>

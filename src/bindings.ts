@@ -4059,6 +4059,8 @@ export type DebuggerSettings = {
 	showOnBreakpoint?: boolean,
 	focusAppOnBreakpoint?: boolean,
 	hideOnTermination?: boolean,
+	/**  A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front. */
+	variablesOnBreakpoint?: boolean,
 	breakpointsAnyFile?: boolean,
 	/**  While suspended, hovering the start of a line shows a Run to Cursor button. */
 	runToCursorInlay?: boolean,

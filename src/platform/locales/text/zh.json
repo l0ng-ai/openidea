@@ -7529,6 +7529,7 @@
   "Current file": "当前文件",
   "Uncommitted files": "未提交的文件",
   "Threads & Variables": "线程和变量",
+  "Focus On Breakpoint": "命中断点时聚焦",
   "Usage Limit": "用量上限",
   "Dev Containers": "开发容器",
   "Containers": "容器",
