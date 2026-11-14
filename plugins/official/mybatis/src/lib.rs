@@ -12,7 +12,7 @@ use openidea_plugin::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-/// How long a namespace → XML file lookup is trusted.
+/// How long a namespace without an XML file is not looked up again.
 const INDEX_TTL: Duration = Duration::from_secs(30);
 /// Lookups kept per project before the expired ones are dropped.
 const MAX_INDEXED: usize = 1024;
@@ -732,26 +732,44 @@ pub struct Navigator {
 }
 
 impl Navigator {
-    /// The XML mapping `namespace`: the cached path while it still maps it, else a
-    /// search for its `namespace="…"`, so the cost doesn't grow with the project's XML files.
+    /// The XML mapping `namespace`: the cached path while it still maps it
+    /// (reading it tells), else the XML named like the interface
+    /// (`UserMapper.xml`, which the project index answers), else a search for
+    /// its `namespace="…"`. The search reads the project's XML files and can
+    /// outlast an editor call's deadline in a large project, so it is the last
+    /// resort, and only a miss is looked up again after [`INDEX_TTL`].
     fn xml_for(&mut self, project: &Project, namespace: &str) -> Option<(String, MapperXml)> {
         let root = project.root().ok()?;
         let read = |path: &str| {
             let xml = parse_xml(&project.read_file(path).ok()?);
             xml.namespace.as_ref().is_some_and(|n| n.name == namespace).then_some(xml)
         };
-        if let Some((at, path)) = self.xml_index.get(&root).and_then(|m| m.get(namespace))
-            && at.elapsed() < INDEX_TTL
-        {
-            let path = path.as_ref()?;
-            if let Some(xml) = read(path) {
-                return Some((path.clone(), xml));
+        match self.xml_index.get(&root).and_then(|m| m.get(namespace)) {
+            Some((_, Some(path))) => {
+                if let Some(xml) = read(path) {
+                    return Some((path.clone(), xml));
+                }
             }
+            Some((at, None)) if at.elapsed() < INDEX_TTL => return None,
+            _ => {}
         }
-        let found = project.search_text(&namespace_query(namespace), MAX_MAPPERS).ok()?;
-        let mut paths: Vec<&str> = found.matches.iter().map(|m| m.location.path.as_str()).collect();
-        paths.dedup();
-        let hit = paths.into_iter().find_map(|path| Some((path.to_owned(), read(path)?)));
+        let simple = namespace.rsplit('.').next().unwrap_or(namespace);
+        // A Java name only: anything else would be read as a glob.
+        let named = if !simple.is_empty() && simple.chars().all(ident) {
+            project.find_files(&format!("**/{simple}.xml"), MAX_MAPPERS).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut hit = named.into_iter().find_map(|path| {
+            let xml = read(&path)?;
+            Some((path, xml))
+        });
+        if hit.is_none() {
+            let found = project.search_text(&namespace_query(namespace), MAX_MAPPERS).ok()?;
+            let mut paths: Vec<&str> = found.matches.iter().map(|m| m.location.path.as_str()).collect();
+            paths.dedup();
+            hit = paths.into_iter().find_map(|path| Some((path.to_owned(), read(path)?)));
+        }
         let index = self.xml_index.entry(root).or_default();
         if index.len() >= MAX_INDEXED {
             index.retain(|_, (at, _)| at.elapsed() < INDEX_TTL);
@@ -1260,6 +1278,48 @@ mod tests {
         let markers = n.line_markers(&xml);
         assert_eq!(markers[0].tooltip, "Go to interface UserMapper");
         assert_eq!(markers[1].tooltip, "Go to UserMapper.findById()");
+    }
+
+    /// The XML named like the interface is found by its file name, which the
+    /// project index answers: no text search through the project's XML files.
+    #[test]
+    fn finds_the_xml_named_like_the_interface_without_searching() {
+        let host = MockHost::install();
+        host.add_file("src/main/java/com/acme/UserMapper.java", JAVA);
+        host.add_file("src/main/resources/mapper/UserMapper.xml", XML);
+        // The same file name mapping another interface is passed over.
+        host.add_file("other/mapper/UserMapper.xml", "<mapper namespace=\"com.other.UserMapper\">\n</mapper>\n");
+        host.on_search(|query, _| panic!("searched: {query:?}"));
+        let mut n = Navigator::default();
+        let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", JAVA);
+        let markers = n.line_markers(&java);
+        assert_eq!(markers.iter().map(|m| m.line).collect::<Vec<_>>(), [5, 7]);
+        assert_eq!(markers[0].target.as_ref().unwrap().path, "/project/src/main/resources/mapper/UserMapper.xml");
+    }
+
+    /// An XML named otherwise is found by its namespace, once: the path is kept.
+    #[test]
+    fn searches_for_an_xml_named_differently_and_keeps_it() {
+        let host = MockHost::install();
+        host.add_file("src/main/java/com/acme/UserMapper.java", JAVA);
+        host.add_file("src/main/resources/sql/users.xml", XML);
+        let searches = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = searches.clone();
+        host.on_search(move |_, _| {
+            count.set(count.get() + 1);
+            let location = Location {
+                path: "/project/src/main/resources/sql/users.xml".into(),
+                range: Range::new(Position::new(1, 0), Position::new(1, 0)),
+            };
+            Ok(TextSearch { matches: vec![TextMatch { location, line: String::new() }], limit_hit: false })
+        });
+        let mut n = Navigator::default();
+        let java = doc("/project/src/main/java/com/acme/UserMapper.java", "java", JAVA);
+        for _ in 0..2 {
+            let markers = n.line_markers(&java);
+            assert_eq!(markers[0].tooltip, "Go to users.xml: findById");
+        }
+        assert_eq!(searches.get(), 1);
     }
 
     #[test]
