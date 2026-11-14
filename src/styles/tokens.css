@@ -114,6 +114,7 @@ html {
   --syn-type: #bcbec4;
   --syn-function: #56a8f5;
   --syn-function-call: #bcbec4;
+  --syn-shell-command: #c57633;
   --syn-comment: #7a7e85;
   --syn-comment-style: normal;
   --syn-doc-comment: #5f826b;
@@ -558,6 +559,7 @@ html {
   --syn-type: #000000;
   --syn-function: #00627a;
   --syn-function-call: #080808;
+  --syn-shell-command: #0073bf;
   --syn-comment: #8c8c8c;
   --syn-comment-style: italic;
   --syn-doc-comment: #8c8c8c;
@@ -856,6 +858,7 @@ html {
   --syn-type: #e3e4e8;
   --syn-function: #7cc0ff;
   --syn-function-call: #e3e4e8;
+  --syn-shell-command: #c57633;
   --syn-comment: #a5a9b0;
   --syn-doc-comment: #8fb89c;
   --syn-doc-comment-tag: #8fcca3;
@@ -1244,6 +1247,7 @@ html {
   --syn-type: var(--palette-type);
   --syn-function: var(--palette-blue);
   --syn-function-call: var(--palette-blue);
+  --syn-shell-command: var(--syn-function-call);
   --syn-comment: var(--palette-comment);
   --syn-doc-comment: var(--palette-comment);
   --syn-doc-comment-tag: var(--palette-keyword);
