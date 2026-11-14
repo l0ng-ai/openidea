@@ -33,6 +33,11 @@ export interface TabItem {
   text?: string;
   icon?: IconName | (string & {});
   closable?: boolean;
+  /**
+   * Pinned (IDEA's content tabs): with `onTogglePin`, an Unpin button takes the close
+   * button's place, and the strip's close gestures leave the tab alone.
+   */
+  pinned?: boolean;
   /** Unsaved changes marker. */
   modified?: boolean;
   /** CSS colour for the label (VCS status etc.), e.g. `var(--vcs-modified)`. */
@@ -40,6 +45,8 @@ export interface TabItem {
   /** CSS colour the tab background is tinted with (IDEA's data source / file colours). */
   tint?: string;
   italic?: boolean;
+  /** Greyed out, e.g. a run tab whose process has ended. */
+  dimmed?: boolean;
   tooltip?: string;
   /** Trailing content (counts, badges). */
   trailing?: ReactNode;
@@ -92,9 +99,10 @@ function previewOrder(ids: readonly string[], id: string, index: number): Map<st
   return new Map(order.map((it, i) => [it, i]));
 }
 
-/** A tab strip as seen from its container: close the selected tab if it can be closed. */
+/** A tab strip as seen from its container: close or pin the selected tab when it can be. */
 export interface TabStripHandle {
   closeSelected(): boolean;
+  togglePinSelected(): boolean;
 }
 
 /**
@@ -110,6 +118,8 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
+  /** Pin / Unpin Tab on the selected tab, from the container (a tool window's content tabs). */
+  onTogglePin?: (id: string) => void;
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
   closeOnShiftClick?: boolean;
   onDoubleClick?: (id: string) => void;
@@ -122,6 +132,11 @@ export interface TabsProps {
   "aria-label"?: string;
   /** Tabpanel id prefix for `aria-controls`. */
   panelIdPrefix?: string;
+  /**
+   * Tab from a tab moves focus into the selected tab's content (IDEA's table, list or tree)
+   * instead of the next control; returns false when there is nothing to focus.
+   */
+  focusContent?: () => boolean;
   /** Enables drag & drop reordering (and moving between strips of the same type). */
   dnd?: TabsDnd;
   /** Tabs that don't fit: `scroll` the strip (default), `squeeze` them, or `wrap` into rows. */
@@ -138,6 +153,7 @@ export function Tabs({
   onSelect,
   onClose,
   onCloseOthers,
+  onTogglePin,
   closeOnShiftClick,
   onDoubleClick,
   onContextMenu,
@@ -145,6 +161,7 @@ export function Tabs({
   trailing,
   className,
   panelIdPrefix,
+  focusContent,
   dnd,
   layout = "scroll",
   closePosition = "right",
@@ -162,18 +179,24 @@ export function Tabs({
   const [dragging, setDragging] = useState<string | null>(null);
 
   const register = useContext(TabStripRegistry);
-  const latest = useRef({ items, activeId, onClose });
+  const latest = useRef({ items, activeId, onClose, onTogglePin });
   useLayoutEffect(() => {
-    latest.current = { items, activeId, onClose };
+    latest.current = { items, activeId, onClose, onTogglePin };
   });
   useEffect(
     () =>
       register?.({
         closeSelected: () => {
-          const { items, activeId, onClose } = latest.current;
+          const { items, activeId, onClose, onTogglePin } = latest.current;
           const item = items.find((it) => it.id === activeId);
-          if (!item || !onClose || item.closable === false) return false;
+          if (!item || !onClose || item.closable === false || (item.pinned && onTogglePin)) return false;
           onClose(item.id);
+          return true;
+        },
+        togglePinSelected: () => {
+          const { items, activeId, onTogglePin } = latest.current;
+          if (!onTogglePin || !items.some((it) => it.id === activeId)) return false;
+          onTogglePin(activeId!);
           return true;
         },
       }),
@@ -298,8 +321,11 @@ export function Tabs({
         break;
       case "Delete":
       case "Backspace":
-        if (onClose && item.closable !== false) onClose(item.id);
+        if (onClose && item.closable !== false && !(item.pinned && onTogglePin)) onClose(item.id);
         else return;
+        break;
+      case "Tab":
+        if (e.shiftKey || !focusContent?.()) return;
         break;
       default:
         return;
@@ -352,14 +378,15 @@ export function Tabs({
       >
         {items.map((item, index) => {
           const selected = item.id === activeId;
-          const closable = !!onClose && item.closable !== false;
+          const pinned = !!onTogglePin && !!item.pinned;
+          const closable = !!onClose && item.closable !== false && !pinned;
           return (
             <div
               key={item.id}
               className={clsx(
                 styles.tab,
                 selected && styles.selected,
-                closable && styles.closable,
+                (closable || pinned) && styles.closable,
                 dragging === item.id && styles.dragging,
                 marker === index && styles.dropBefore,
                 marker === items.length && index === items.length - 1 && styles.dropAfter,
@@ -421,7 +448,7 @@ export function Tabs({
                 aria-controls={panelIdPrefix ? `${panelIdPrefix}-panel-${item.id}` : undefined}
                 aria-selected={selected}
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
-                className={styles.tabButton}
+                className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
@@ -446,6 +473,22 @@ export function Tabs({
                 {item.trailing}
                 {item.modified && !closable && <span className={styles.modified} aria-label={tx("Modified")} />}
               </button>
+              {pinned && (
+                <span className={styles.closeSlot} data-tab-close>
+                  <IconButton
+                    icon="pin"
+                    title="Unpin Tab"
+                    size="small"
+                    iconSize={14}
+                    tabIndex={-1}
+                    className={styles.unpin}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin!(item.id);
+                    }}
+                  />
+                </span>
+              )}
               {closable && (
                 <span className={styles.closeSlot} data-tab-close>
                   {item.modified && <span className={styles.modified} aria-label={tx("Modified")} />}

@@ -11,6 +11,10 @@ export const TASK_DRAG = "application/x-openidea-agent-task";
 export const REGISTRY_PAGE = "agents.list";
 /** The Settings folder holding the agent pages. */
 export const AGENTS_GROUP = "Agents";
+/** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
+export const MCP_PAGE = "agents.mcpServers";
+/** Settings › Agents › Command Permissions. */
+export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
@@ -51,11 +55,14 @@ const PROVIDER_ICONS = new Set([
   "cursor",
   "opencode",
   "qwen",
+  "qoder",
+  "qodercn",
   "kimi",
   "goose",
   "auggie",
   "kiro",
   "vibe",
+  "omp",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */
@@ -77,6 +84,17 @@ const GROUPS: Array<[TaskGroup["status"], string, AgentStatus[]]> = [
   ["ready", "Ready to Review", ["ready"]],
   ["archived", "Archived", ["archived"]],
 ];
+
+const ATTENTION_RANK = new Map<AgentStatus, number>(
+  GROUPS.flatMap(([, , members], rank) => members.map((status): [AgentStatus, number] => [status, rank])),
+);
+
+/** Where a task sits in the panel by status: what waits for the user comes first. */
+export const attentionRank = (status: AgentStatus) => ATTENTION_RANK.get(status) ?? GROUPS.length;
+
+/** The group a status is shown in (`starting` runs). */
+export const groupStatus = (status: AgentStatus): TaskGroup["status"] =>
+  GROUPS.find(([, , members]) => members.includes(status))?.[0] ?? "ready";
 
 export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
   const sorted = [...tasks].sort((a, b) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));

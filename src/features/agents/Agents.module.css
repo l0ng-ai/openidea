@@ -43,6 +43,12 @@
   color: var(--fg-subtle);
   font-size: var(--fs-tiny);
 }
+/* A task is being dragged over this group: dropping it puts the task there. */
+.dropOver {
+  background: var(--bg-hover);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
 .title {
   flex: 0 1 auto;
   min-width: 0;
@@ -174,6 +180,21 @@
   display: flex;
   flex-direction: column;
 }
+/* Sits in the list like a tree row: no frame at rest, a fill on hover and a ring while typing. */
+.taskSearch {
+  flex: none;
+  height: var(--h-list-row);
+  margin: 2px var(--tree-inset, 6px) 2px;
+  border-radius: var(--radius-selection, 5px);
+  transition: background var(--dur-fast) var(--ease);
+}
+.taskSearch:hover {
+  background: var(--bg-hover);
+}
+.taskSearch:focus-within {
+  background: var(--bg-field, var(--bg-button));
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+}
 .history {
   display: flex;
   flex-direction: column;
@@ -186,4 +207,59 @@
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   font-weight: 600;
+}
+/* Imported sessions below the task list: compact rows, not growing space. */
+.external {
+  flex: none;
+  overflow-y: auto;
+  padding: 4px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.external > .row {
+  flex: none;
+}
+
+/* Import Sessions from Other Apps: filter above a fixed-height list, so the dialog doesn't grow. */
+.chooser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chooserList {
+  height: 312px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.chooserList > * {
+  flex: 1;
+  min-height: 0;
+}
+.chooserRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.chooserFooter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.chooserFolder {
+  flex: 0 0 auto;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-subtle);
+}
+.chooserHint {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }

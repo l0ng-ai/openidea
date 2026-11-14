@@ -19,7 +19,7 @@ description: "插件系统的内部实现：扩展内核、每个插件一个 ac
 
 ## 接口
 
-API 用 WIT 定义，位于 `wit/`（包名 `openidea:plugin@1.5.0`）。插件是面向 `plugin` world（或 `plugin-syntax`）的组件。插件端 SDK `sdk/rust/openidea-plugin` 把它封装成类型化的 Rust API，并带有一份 `wit/` 副本；`crates/ide-plugin/tests/api_compat.rs` 检查两份是否一致。
+API 用 WIT 定义，位于 `wit/`（包名 `openidea:plugin@1.7.0`）。插件是面向 `plugin` world（或 `plugin-syntax`）的组件。插件端 SDK `sdk/rust/openidea-plugin` 把它封装成类型化的 Rust API，并带有一份 `wit/` 副本；`crates/ide-plugin/tests/api_compat.rs` 检查两份是否一致。
 
 已发布的 API 版本是冻结的。wasmtime 按 semver 解析接口名，但函数类型必须完全一致，所以已发布的 1.x 只能增加：新的接口和新的可选导出，不能修改已有的 record 或 variant。改 `wit/` 之前请先读 `plugins/README.md` 里的 _Evolving the plugin API_。
 

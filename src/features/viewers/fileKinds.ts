@@ -1,6 +1,8 @@
 /** Which files open in which viewer, and the editor inputs of the viewers. */
 import type { EditorInput } from "@/workbench/contributions";
+import { wildcardMatch } from "@/platform/fileTypes";
 import type { FileProbe } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 
 export const IMAGE_KIND = "image";
 export const BINARY_KIND = "binary";
@@ -17,6 +19,18 @@ function extension(path: string): string {
 export const isImagePath = (path: string) => IMAGE_EXTENSIONS.has(extension(path));
 export const isSvgPath = (path: string) => extension(path) === "svg";
 export const isMarkdownPath = (path: string) => MARKDOWN_EXTENSIONS.has(extension(path));
+
+/** Whether the file's name matches one of `patterns` (`*.xlsx`); Windows/macOS match case-insensitively. */
+export function associatedApplication(
+  path: string,
+  patterns: readonly string[],
+  os = usePlatform.getState().os,
+): boolean {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const fold = os === "linux" ? (s: string) => s : (s: string) => s.toLowerCase();
+  const folded = fold(name);
+  return patterns.some((pattern) => wildcardMatch(fold(pattern), folded));
+}
 
 export const imageInput = (path: string): EditorInput => ({ kind: IMAGE_KIND, key: `image:${path}`, path });
 

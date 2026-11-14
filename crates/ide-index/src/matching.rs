@@ -4,14 +4,19 @@
 //! (bit-mask pre-filter, nucleo score, exact/prefix boosts) and keeps the best
 //! few; the survivors then get match indices, CamelHump and recency boosts and
 //! are re-sorted.
+//!
+//! The scan streams the compact tables in `data` (`HotFiles`/`HotDirs`/`SymTable`):
+//! only the hot fields per candidate and strings from contiguous arenas, with the
+//! thread-local matcher and one UTF-32 buffer per scan rather than per candidate.
 
-use crate::data::{FileEntry, IndexData, char_mask};
+use crate::data::{DirRow, FileEntry, FileRow, IndexData, SymTable, char_mask};
 use crate::{FileMatch, SymbolFilter, SymbolMatch};
 use ide_core::SymbolKind;
 use nucleo_matcher::{Config, Matcher, Utf32Str, Utf32String};
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const TIER_NAME: u32 = 1 << 20;
@@ -52,6 +57,11 @@ impl Needle {
 
     fn score(&self, m: &mut Matcher, hay: &str, buf: &mut Vec<char>) -> Option<u32> {
         m.fuzzy_match(Utf32Str::new(hay, buf), self.utf32.slice(..)).map(u32::from)
+    }
+
+    /// `hay` is pure ASCII: skip `Utf32Str::new`'s check and UTF-32 conversion.
+    fn score_ascii(&self, m: &mut Matcher, hay: &str) -> Option<u32> {
+        m.fuzzy_match(Utf32Str::Ascii(hay.as_bytes()), self.utf32.slice(..)).map(u32::from)
     }
 
     fn indices(&self, m: &mut Matcher, hay: &str, buf: &mut Vec<char>, out: &mut Vec<u32>) -> Option<u32> {
@@ -105,6 +115,9 @@ struct Cand {
     slot: u32,
     sym: u32,
     score: u32,
+    /// Candidate name/rel length: the first tie-break key, cached so ranking a pool
+    /// does not chase it through the tables.
+    len: u32,
 }
 
 fn keep_best(mut v: Vec<Cand>, k: usize, tiebreak: &impl Fn(&Cand, &Cand) -> Ordering) -> Vec<Cand> {
@@ -119,7 +132,7 @@ fn scan(
     data: &IndexData,
     pool: usize,
     tiebreak: &(impl Fn(&Cand, &Cand) -> Ordering + Sync),
-    per_file: impl Fn(u32, &FileEntry, &mut Vec<Cand>) + Sync,
+    per_file: impl Fn(u32, &FileRow, &mut Matcher, &mut Vec<Cand>) + Sync,
 ) -> Vec<Cand> {
     scan_until(data, pool, tiebreak, &|| false, per_file).unwrap_or_default()
 }
@@ -129,18 +142,22 @@ fn scan_until(
     pool: usize,
     tiebreak: &(impl Fn(&Cand, &Cand) -> Ordering + Sync),
     stopped: &(impl Fn() -> bool + Sync),
-    per_file: impl Fn(u32, &FileEntry, &mut Vec<Cand>) + Sync,
+    per_file: impl Fn(u32, &FileRow, &mut Matcher, &mut Vec<Cand>) + Sync,
 ) -> Option<Vec<Cand>> {
-    data.files
+    // One row per slot, so this is exactly the old scan over `files`: same item
+    // order and count, and free slots are skipped exactly like `None` was, keeping
+    // the pruning boundaries (and therefore the candidate pool) unchanged.
+    data.hot
+        .rows
         .par_iter()
         .enumerate()
         .with_min_len(256)
-        .try_fold(Vec::new, |mut acc, (slot, e)| {
+        .try_fold(Vec::new, |mut acc, (slot, row)| {
             if stopped() {
                 return None;
             }
-            if let Some(e) = e {
-                per_file(slot as u32, e, &mut acc);
+            if row.live {
+                with_matcher(|m| per_file(slot as u32, row, m, &mut acc));
                 if acc.len() >= pool * 2 {
                     acc = keep_best(acc, pool, tiebreak);
                 }
@@ -155,15 +172,22 @@ fn scan_until(
 
 pub(crate) struct Recents<'a> {
     pub paths: &'a [PathBuf],
+    /// Position of each path, so ranking a survivor does not scan the list.
+    /// Duplicates keep their first position, like `position`.
+    ranks: HashMap<&'a Path, usize>,
 }
 
-impl Recents<'_> {
-    fn rank(&self, path: &std::path::Path) -> Option<usize> {
-        self.paths.iter().position(|p| p == path)
+impl<'a> Recents<'a> {
+    pub(crate) fn new(paths: &'a [PathBuf]) -> Self {
+        let mut ranks = HashMap::with_capacity(paths.len());
+        for (i, p) in paths.iter().enumerate() {
+            ranks.entry(p.as_path()).or_insert(i);
+        }
+        Self { paths, ranks }
     }
 
-    fn bonus(&self, path: &std::path::Path) -> u32 {
-        self.rank(path).map_or(0, |r| RECENT_MAX.saturating_sub(r as u32 * 12))
+    fn bonus(&self, path: &Path) -> u32 {
+        self.ranks.get(path).map_or(0, |&r| RECENT_MAX.saturating_sub(r as u32 * 12))
     }
 }
 
@@ -209,29 +233,31 @@ pub(crate) fn find_files(data: &IndexData, recents: &Recents, query: &str, limit
         Some((dir, name)) => FileQuery::Path { dir: Needle::new(dir), name: Needle::new(name) },
         None => FileQuery::Name(Needle::new(&q)),
     };
-    let tiebreak = |a: &Cand, b: &Cand| {
-        let (ea, eb) = (file(data, a.slot), file(data, b.slot));
-        ea.rel.len().cmp(&eb.rel.len()).then_with(|| ea.rel.cmp(&eb.rel))
-    };
+    let tiebreak = |a: &Cand, b: &Cand| a.len.cmp(&b.len).then_with(|| data.hot.rel(a.slot).cmp(data.hot.rel(b.slot)));
     let pool = limit * 4 + 64;
-    let mut cands = scan(data, pool, &tiebreak, |slot, e, acc| {
+    let mut cands = scan(data, pool, &tiebreak, |slot, row, m, acc| {
         let mut buf = Vec::new();
-        if let Some(score) = with_matcher(|m| base_file_score(m, &fq, e, &mut buf)) {
-            acc.push(Cand { slot, sym: u32::MAX, score });
+        if let Some(score) = base_file_score(m, &fq, row, data.hot.text(), &mut buf) {
+            acc.push(Cand { slot, sym: u32::MAX, score, len: row.rel.len });
         }
     });
     // Recent files always compete for the final ranking.
-    for p in recents.paths {
-        if let Some(e) = data.get(p) {
+    with_matcher(|m| {
+        let mut buf = Vec::new();
+        for p in recents.paths {
+            if data.get(p).is_none() {
+                continue;
+            }
             let Some(slot) = data.slot(p) else { continue };
-            if !cands.iter().any(|c| c.slot == slot) {
-                let mut buf = Vec::new();
-                if let Some(score) = with_matcher(|m| base_file_score(m, &fq, e, &mut buf)) {
-                    cands.push(Cand { slot, sym: u32::MAX, score });
-                }
+            if cands.iter().any(|c| c.slot == slot) {
+                continue;
+            }
+            let Some(row) = data.hot.row_of_slot(slot) else { continue };
+            if let Some(score) = base_file_score(m, &fq, row, data.hot.text(), &mut buf) {
+                cands.push(Cand { slot, sym: u32::MAX, score, len: row.rel.len });
             }
         }
-    }
+    });
     let mut out: Vec<(u32, &FileEntry, Vec<u32>)> = with_matcher(|m| {
         let mut buf = Vec::new();
         cands
@@ -273,30 +299,46 @@ pub(crate) fn find_dirs(data: &IndexData, query: &str, limit: usize) -> Vec<File
     }
     let by_path = q.contains('/');
     let needle = Needle::new(q.trim_end_matches('/'));
+    let text = data.dirs_hot.text();
     // (score, rel without the trailing `/`, char offset of the name when it matched by name)
-    let score = |m: &mut Matcher, buf: &mut Vec<char>, rel: &str| -> Option<(u32, Option<u32>)> {
-        let trimmed = &rel[..rel.len() - 1];
-        let start = trimmed.rfind('/').map_or(0, |i| i + 1);
-        let name = &trimmed[start..];
-        if !by_path
-            && needle.mask & char_mask(name) == needle.mask
-            && let Some(s) = needle.score(m, name, buf)
-        {
-            return Some((TIER_NAME + s * 4 + needle.name_boost(name), Some(trimmed[..start].chars().count() as u32)));
-        }
-        if needle.mask & char_mask(trimmed) != needle.mask {
-            return None;
-        }
-        needle.score(m, trimmed, buf).map(|s| (s, None))
-    };
-    let mut best: Vec<(u32, &str, &Path, Option<u32>)> = data
-        .dirs
+    let (mut best, _): (Vec<_>, Vec<char>) = data
+        .dirs_hot
+        .rows
         .par_iter()
-        .filter_map(|(rel, (path, _))| {
-            let mut buf = Vec::new();
-            with_matcher(|m| score(m, &mut buf, rel)).map(|(s, at)| (s, &**rel, path.as_path(), at))
-        })
-        .collect();
+        .fold(
+            || (Vec::new(), Vec::new()),
+            |(mut found, mut buf), row: &DirRow| {
+                let rel = row.rel(text);
+                let trimmed = &rel[..rel.len() - 1];
+                let name = &trimmed[row.name_start as usize..];
+                with_matcher(|m| {
+                    let hit = if !by_path
+                        && needle.mask & row.name_mask == needle.mask
+                        && let Some(s) = needle.score(m, name, &mut buf)
+                    {
+                        Some((
+                            TIER_NAME + s * 4 + needle.name_boost(name),
+                            Some(trimmed[..row.name_start as usize].chars().count() as u32),
+                        ))
+                    } else if needle.mask & row.rel_mask != needle.mask {
+                        None
+                    } else {
+                        needle.score(m, trimmed, &mut buf).map(|s| (s, None))
+                    };
+                    if let Some((s, at)) = hit {
+                        found.push((s, rel, row.path.as_path(), at));
+                    }
+                });
+                (found, buf)
+            },
+        )
+        .reduce(
+            || (Vec::new(), Vec::new()),
+            |mut a, b| {
+                a.0.extend(b.0);
+                a
+            },
+        );
     let order = |a: &(u32, &str, &Path, Option<u32>), b: &(u32, &str, &Path, Option<u32>)| {
         b.0.cmp(&a.0).then_with(|| a.1.len().cmp(&b.1.len())).then_with(|| a.1.cmp(b.1))
     };
@@ -338,33 +380,39 @@ fn file(data: &IndexData, slot: u32) -> &FileEntry {
     data.files[slot as usize].as_ref().expect("candidate slots are live")
 }
 
-fn base_file_score(m: &mut Matcher, q: &FileQuery, e: &FileEntry, buf: &mut Vec<char>) -> Option<u32> {
+fn base_file_score(m: &mut Matcher, q: &FileQuery, row: &FileRow, text: &str, buf: &mut Vec<char>) -> Option<u32> {
+    // Strings are sliced only once their mask passes, so a rejected row costs two masks.
     match q {
         FileQuery::Name(n) => {
-            if n.mask & e.name_mask == n.mask
-                && let Some(s) = n.score(m, e.name(), buf)
-            {
-                return Some(TIER_NAME + s * 4 + n.name_boost(e.name()));
+            if n.mask & row.name_mask == n.mask {
+                let name = row.name(text);
+                let s = if row.ascii { n.score_ascii(m, name) } else { n.score(m, name, buf) };
+                if let Some(s) = s {
+                    return Some(TIER_NAME + s * 4 + n.name_boost(name));
+                }
             }
-            if n.mask & e.rel_mask == n.mask {
-                return n.score(m, &e.rel, buf);
+            if n.mask & row.rel_mask == n.mask {
+                let rel = row.rel(text);
+                return if row.ascii { n.score_ascii(m, rel) } else { n.score(m, rel, buf) };
             }
             None
         }
-        FileQuery::Path { dir, name } => {
-            let name_score = if name.is_empty() {
+        FileQuery::Path { dir, name: n } => {
+            let name_score = if n.is_empty() {
                 0
             } else {
-                if name.mask & e.name_mask != name.mask {
+                if n.mask & row.name_mask != n.mask {
                     return None;
                 }
-                name.score(m, e.name(), buf)? * 4 + name.name_boost(e.name())
+                let name = row.name(text);
+                let s = if row.ascii { n.score_ascii(m, name) } else { n.score(m, name, buf) }?;
+                s * 4 + n.name_boost(name)
             };
-            let dir_str = e.dir();
-            if dir.mask & char_mask(dir_str) != dir.mask {
+            if dir.mask & row.dir_mask != dir.mask {
                 return None;
             }
-            let dir_score = dir.score(m, dir_str, buf)?;
+            let dir_str = row.dir(text);
+            let dir_score = if row.ascii { dir.score_ascii(m, dir_str) } else { dir.score(m, dir_str, buf) }?;
             Some(TIER_NAME + name_score + dir_score)
         }
     }
@@ -396,22 +444,21 @@ fn symbol_score(
     m: &mut Matcher,
     name: &Needle,
     container: Option<&Needle>,
-    s: &crate::data::Sym,
+    syms: &SymTable,
+    i: u32,
     buf: &mut Vec<char>,
 ) -> Option<u32> {
-    if name.mask & s.mask != name.mask {
-        return None;
-    }
-    let mut score = if name.is_empty() { 0 } else { name.score(m, &s.name, buf)? * 4 };
-    score += name.name_boost(&s.name);
+    let symbol = syms.name(i);
+    let mut score = if name.is_empty() { 0 } else { name.score(m, symbol, buf)? * 4 };
+    score += name.name_boost(symbol);
     if let Some(cq) = container {
-        let c = s.container.as_deref()?;
+        let c = syms.container(i)?;
         if cq.mask & char_mask(c) != cq.mask {
             return None;
         }
         score += cq.score(m, c, buf)? + cq.name_boost(c) / 4;
     }
-    if s.kind.is_type_like() {
+    if syms.kind(i).is_type_like() {
         score += TYPE_LIKE;
     }
     Some(score)
@@ -455,30 +502,35 @@ pub(crate) fn find_symbols_until(
     let (container_q, name_q) = split_symbol_query(&q);
     let name = Needle::new(name_q);
     let container = container_q.map(Needle::new);
-    let sym = |c: &Cand| &file(data, c.slot).symbols[c.sym as usize];
-    let tiebreak = |a: &Cand, b: &Cand| {
-        let (sa, sb) = (sym(a), sym(b));
-        sa.name.len().cmp(&sb.name.len()).then_with(|| file(data, a.slot).rel.cmp(&file(data, b.slot).rel))
-    };
+    let syms = &data.syms;
+    let tiebreak = |a: &Cand, b: &Cand| a.len.cmp(&b.len).then_with(|| data.hot.rel(a.slot).cmp(data.hot.rel(b.slot)));
     let pool = limit * 4 + 64;
-    let cands = scan_until(data, pool, &tiebreak, stopped, |slot, e, acc| {
-        if e.symbols.is_empty() || !include(&e.path) {
+    let cands = scan_until(data, pool, &tiebreak, stopped, |slot, row, m, acc| {
+        // Whole-file pre-filter: when the union of the file's symbol masks
+        // already misses a query character, no symbol can match.
+        if row.sym_len == 0 || name.mask & row.sym_mask != name.mask {
             return;
         }
-        with_matcher(|m| {
-            let mut buf = Vec::new();
-            for (i, s) in e.symbols.iter().enumerate() {
-                if stopped() {
-                    break;
-                }
-                if filter == SymbolFilter::Types && !s.kind.is_type_like() {
-                    continue;
-                }
-                if let Some(score) = symbol_score(m, &name, container.as_ref(), s, &mut buf) {
-                    acc.push(Cand { slot, sym: i as u32, score });
-                }
+        let e = file(data, slot);
+        if !include(&e.path) {
+            return;
+        }
+        let mut buf = Vec::new();
+        for (k, head) in syms.heads(row.sym_start, row.sym_len).iter().enumerate() {
+            if stopped() {
+                break;
             }
-        });
+            if filter == SymbolFilter::Types && !syms.kind(row.sym_start + k as u32).is_type_like() {
+                continue;
+            }
+            if name.mask & head.mask != name.mask {
+                continue;
+            }
+            let i = row.sym_start + k as u32;
+            if let Some(score) = symbol_score(m, &name, container.as_ref(), syms, i, &mut buf) {
+                acc.push(Cand { slot, sym: i, score, len: head.name.len });
+            }
+        }
     })?;
     if stopped() {
         return None;
@@ -489,33 +541,32 @@ pub(crate) fn find_symbols_until(
             .into_iter()
             .take_while(|_| !stopped())
             .filter_map(|c| {
-                let s = sym(&c);
+                let symbol = syms.name(c.sym);
                 let e = file(data, c.slot);
                 let mut idx = Vec::new();
                 if !name.is_empty() {
-                    name.indices(m, &s.name, &mut buf, &mut idx)?;
+                    name.indices(m, symbol, &mut buf, &mut idx)?;
                 }
-                let bonus = hump_bonus(&s.name, &idx) + recents.bonus(&e.path) / 4;
+                let bonus = hump_bonus(symbol, &idx) + recents.bonus(&e.path) / 4;
                 Some((c.score + bonus, c, idx))
             })
             .collect()
     });
     out.sort_by(|a, b| {
-        b.0.cmp(&a.0).then_with(|| tiebreak(&a.1, &b.1)).then_with(|| sym(&a.1).range.cmp(&sym(&b.1).range))
+        b.0.cmp(&a.0).then_with(|| tiebreak(&a.1, &b.1)).then_with(|| syms.range(a.1.sym).cmp(&syms.range(b.1.sym)))
     });
     out.truncate(limit);
     let results = out
         .into_iter()
         .map(|(score, c, indices)| {
             let e = file(data, c.slot);
-            let s = &e.symbols[c.sym as usize];
             SymbolMatch {
-                name: s.name.to_string(),
-                kind: s.kind,
-                container: s.container.as_deref().map(str::to_owned),
+                name: syms.name(c.sym).to_string(),
+                kind: syms.kind(c.sym),
+                container: syms.container(c.sym).map(str::to_owned),
                 path: e.path.clone().into(),
                 rel_path: e.rel.to_string(),
-                range: s.range,
+                range: syms.range(c.sym),
                 score,
                 indices,
             }
@@ -526,24 +577,40 @@ pub(crate) fn find_symbols_until(
 
 /// Symbols named exactly `name` (and of `kind`, when given), by path then position.
 pub(crate) fn symbols_named(data: &IndexData, name: &str, kind: Option<SymbolKind>, limit: usize) -> Vec<SymbolMatch> {
+    symbols_named_within(data, name, kind, &[], limit)
+}
+
+/// Symbols named exactly `name` (and of `kind`, when given) whose file is inside one of
+/// `roots` (empty = every indexed file), by path then position. Filtering while walking
+/// entries keeps symbols outside the roots from materialising or filling the cap.
+pub(crate) fn symbols_named_within(
+    data: &IndexData,
+    name: &str,
+    kind: Option<SymbolKind>,
+    roots: &[PathBuf],
+    limit: usize,
+) -> Vec<SymbolMatch> {
     let mask = char_mask(name);
+    let within = |e: &FileEntry| roots.is_empty() || roots.iter().any(|root| e.path.starts_with(root));
+    let syms = &data.syms;
     let mut out: Vec<SymbolMatch> = data
         .files
         .iter()
         .flatten()
+        .filter(|e| within(e))
         .flat_map(|e| {
-            e.symbols.iter().filter(|s| s.mask == mask && &*s.name == name && kind.is_none_or(|k| s.kind == k)).map(
-                move |s| SymbolMatch {
-                    name: s.name.to_string(),
-                    kind: s.kind,
-                    container: s.container.as_deref().map(str::to_owned),
+            (e.sym_start..e.sym_start + e.sym_len)
+                .filter(|&i| syms.mask(i) == mask && syms.name(i) == name && kind.is_none_or(|k| syms.kind(i) == k))
+                .map(move |i| SymbolMatch {
+                    name: syms.name(i).to_string(),
+                    kind: syms.kind(i),
+                    container: syms.container(i).map(str::to_owned),
                     path: e.path.clone().into(),
                     rel_path: e.rel.to_string(),
-                    range: s.range,
+                    range: syms.range(i),
                     score: 0,
                     indices: Vec::new(),
-                },
-            )
+                })
         })
         .collect();
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path).then_with(|| a.range.cmp(&b.range)));

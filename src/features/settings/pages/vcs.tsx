@@ -494,6 +494,11 @@ export const VCS_PAGES: PageSpec[] = [
             component: GitExecutableRow,
           },
           { kind: "toggle", key: "vcs.git.inlineBlame", label: "Show inline blame for the current line" },
+          {
+            kind: "toggle",
+            key: "vcs.git.showBranchInProjectView",
+            label: "Show branch and incoming/outgoing commits in the Project view",
+          },
         ],
       },
       {

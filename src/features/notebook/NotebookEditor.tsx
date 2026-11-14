@@ -8,7 +8,7 @@ import {
   type CSSProperties,
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { NotebookCell } from "@/bindings";
+import type { NotebookCell, NotebookCellDoc } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
 import { useProject } from "@/platform/project";
@@ -16,7 +16,7 @@ import { Button, Dialog, EmptyState, IconButton, Select, Spinner } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { CellEditor } from "./CellEditor";
 import { CellOutputs, MarkdownCell } from "./OutputView";
-import { notebookSession, type NotebookSession } from "./session";
+import { notebookSession, type CellReveal, type NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
 export function NotebookEditor({ input }: { input: EditorInput }) {
@@ -53,6 +53,16 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
   useEffect(() => {
     invoke(session.load());
   }, [session, invoke]);
+  const reveal = state.reveal;
+  useEffect(() => {
+    if (!reveal) return;
+    const index = session.cells().findIndex((cell) => cell.id === reveal.cell);
+    if (index < 0) return;
+    session.selectedCell = reveal.cell;
+    select(reveal.cell);
+    virtualizer.scrollToIndex(index, { align: "start" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per request; the virtualizer is a new object each render
+  }, [reveal, session]);
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
@@ -263,6 +273,8 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
                       selected={active?.id === cell.id}
                       frozen={disabled}
                       running={state.running}
+                      doc={state.cellDocs.get(cell.id)}
+                      reveal={reveal?.cell === cell.id ? reveal : null}
                       onSelect={() => choose(cell.id)}
                     />
                   </div>
@@ -323,6 +335,8 @@ function NotebookCellView({
   selected,
   frozen,
   running,
+  doc,
+  reveal,
   onSelect,
 }: {
   session: NotebookSession;
@@ -332,6 +346,8 @@ function NotebookCellView({
   selected: boolean;
   frozen: boolean;
   running: boolean;
+  doc?: NotebookCellDoc;
+  reveal: CellReveal | null;
   onSelect: () => void;
 }) {
   const [editing, setEditing] = useState(session.markdownEditing.has(cell.id));
@@ -447,7 +463,15 @@ function NotebookCellView({
           )}
         </div>
       ) : (
-        <CellEditor session={session} id={cell.id} source={cell.source} type={cell.cellType} frozen={frozen} />
+        <CellEditor
+          session={session}
+          id={cell.id}
+          source={cell.source}
+          type={cell.cellType}
+          frozen={frozen}
+          doc={doc}
+          reveal={reveal}
+        />
       )}
       {cell.cellType === "code" && <CellOutputs outputs={cell.outputs} />}
     </section>

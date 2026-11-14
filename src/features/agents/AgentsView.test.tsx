@@ -4,10 +4,11 @@ import type { AgentTask } from "@/bindings";
 import * as actions from "@/platform/actions";
 import { registerActions } from "@/platform/actions";
 import { EDITOR_TAB_MIME, type EditorInput } from "@/workbench/contributions";
-import { confirmChecked, showError } from "@/workbench/messages";
+import { confirm, confirmChecked, showError } from "@/workbench/messages";
+import { promptInput } from "@/workbench/inputDialogs";
 import { ContextMenuHost, dragSession, hideContextMenu } from "@/ui";
 import { AgentsHeaderActions, AgentsView } from "./AgentsView";
-import { SESSION_KIND } from "./model";
+import { SESSION_KIND, TASK_DRAG } from "./model";
 import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, useAgents } from "./store";
 import { taskActions, taskMenu, useAgentsHeaderMenu } from "./taskActions";
 import styles from "./Agents.module.css";
@@ -45,9 +46,12 @@ vi.mock("./store", async (original) => ({
 vi.mock("./SessionEditor", () => ({ SessionEditor: () => <div data-testid="docked-session" /> }));
 
 vi.mock("@/workbench/messages", () => ({
+  confirm: vi.fn(async () => true),
   confirmChecked: vi.fn(async () => ({ checked: false })),
   showError: vi.fn(async () => {}),
 }));
+
+vi.mock("@/workbench/inputDialogs", () => ({ promptInput: vi.fn(async () => null) }));
 
 function task(
   id: string,
@@ -90,6 +94,15 @@ const context = (id: string) => {
   fireEvent.mouseDown(row(id), { button: 2 });
   fireEvent.contextMenu(row(id));
 };
+const treeRows = () => screen.getAllByRole("treeitem").map((item) => item.textContent ?? "");
+// jsdom has no elementFromPoint; the drop target is found through it.
+const pointAt = (el: Element) => {
+  const original = document.elementFromPoint;
+  document.elementFromPoint = () => el;
+  return () => {
+    document.elementFromPoint = original;
+  };
+};
 
 let dispose: () => void;
 beforeEach(() => {
@@ -102,6 +115,8 @@ beforeEach(() => {
     loaded: true,
     error: null,
     tasks: new Map([task("one"), task("two"), task("three"), task("four")].map((t) => [t.id, t])),
+    organize: { groups: [], groupOf: {}, pinned: [] },
+    organizeRoot: null,
     docked: null,
     homeOpen: false,
     sessionLocation: "editor",
@@ -213,7 +228,19 @@ describe("Agents docked view", () => {
     expect(result.current).toEqual([
       { kind: "action", action: "agents.useToolWindow", icon: "", checked: true },
       { kind: "action", action: "agents.useEditor", icon: "", checked: false },
+      { kind: "separator" },
+      { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
+      { kind: "action", action: "agents.importSessions", icon: "download" },
     ]);
+  });
+
+  it("lists Import Sessions from Other Apps in Find Action", () => {
+    const action = taskActions.find((a) => a.id === "agents.importSessions");
+    expect(action?.hidden).toBeFalsy();
+    expect(action?.when).toBe("projectOpen");
+    act(() => void action?.run({} as never));
+    expect(useAgents.getState().importOpen).toBe(true);
+    act(() => useAgents.setState({ importOpen: false }));
   });
 
   it("opens tabs as usual without a docked conversation", () => {
@@ -318,15 +345,6 @@ describe("Agents task menu", () => {
 });
 
 describe("Agents drag & drop", () => {
-  // jsdom has no elementFromPoint; the drop target is found through it.
-  const pointAt = (el: Element) => {
-    const original = document.elementFromPoint;
-    document.elementFromPoint = () => el;
-    return () => {
-      document.elementFromPoint = original;
-    };
-  };
-
   it("docks a session editor tab dropped on the tool window and highlights while it hovers", () => {
     editor.tabInput = (paneId, tabId) =>
       paneId === "p" && tabId === "t" ? { kind: SESSION_KIND, key: "agent:one", data: { task: "one" } } : null;
@@ -357,6 +375,152 @@ describe("Agents drag & drop", () => {
       expect(view.className).not.toContain(styles.dropTarget);
       act(() => session.drop(10, 10));
       expect(dockTask).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("Agents pinned and grouped tasks", () => {
+  const frontend = { id: "g1", name: "Frontend" };
+
+  it("pins a task above the groups, and unpins it from the same menu", async () => {
+    setup();
+    context("two");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
+    await waitFor(() => expect(useAgents.getState().organize.pinned).toEqual(["two"]));
+    const rows = treeRows();
+    expect(rows[0]).toContain("Pinned");
+    expect(rows[1]).toContain("two");
+    // Pinned tasks are out of their status group.
+    expect(rows.filter((text) => text.includes("two"))).toHaveLength(1);
+
+    context("two");
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
+    await waitFor(() => expect(useAgents.getState().organize.pinned).toEqual([]));
+    expect(treeRows().some((text) => text.includes("Pinned"))).toBe(false);
+  });
+
+  it("filters every section by the search, archived ones included, and highlights the match", () => {
+    const tasks = useAgents.getState().tasks;
+    const rename = (id: string, title: string, status: AgentTask["status"] = "ready") =>
+      tasks.set(id, { ...tasks.get(id)!, title, status });
+    rename("one", "Fix the lexer");
+    rename("two", "Refactor parser");
+    rename("three", "Lexer cleanup", "archived");
+    useAgents.setState({ tasks: new Map(tasks), organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
+    setup();
+    const field = screen.getByLabelText("Search tasks");
+    fireEvent.change(field, { target: { value: "lxr" } });
+    const rows = treeRows();
+    expect(rows.some((text) => text.includes("Fix the lexer"))).toBe(true);
+    // Archived is collapsed by default; a search looks inside it.
+    expect(rows.some((text) => text.includes("Lexer cleanup"))).toBe(true);
+    // The user group has no match: it goes.
+    expect(rows.some((text) => text.includes("Frontend") || text.includes("Refactor parser"))).toBe(false);
+    const lexer = screen.getAllByRole("treeitem").find((item) => item.textContent?.includes("Fix the lexer"))!;
+    expect([...lexer.querySelectorAll("mark")].map((m) => m.textContent).join("")).toBe("lxr");
+
+    fireEvent.change(field, { target: { value: "nothing like it" } });
+    expect(screen.getByText("No matching tasks")).toBeInTheDocument();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(treeRows().some((text) => text.includes("Frontend"))).toBe(true);
+  });
+
+  it("shows a user group above the status groups, without its tasks in them too", () => {
+    useAgents.setState({ organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
+    setup();
+    const rows = treeRows();
+    expect(rows[0]).toContain("Frontend");
+    expect(rows[1]).toContain("two");
+    expect(rows.filter((text) => text.includes("two"))).toHaveLength(1);
+    // The others stay under their status group.
+    expect(rows.some((text) => text.includes("one"))).toBe(true);
+  });
+
+  it("offers the groups, a new one and a way out in Move to Group", () => {
+    useAgents.setState({ organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
+    const menu = taskMenu([useAgents.getState().tasks.get("two")!]);
+    const move = menu.find((item) => "label" in item && item.label === "Move to Group");
+    expect(move).toBeDefined();
+    const submenu = (move as { submenu: { label?: string; checked?: boolean }[] }).submenu;
+    expect(submenu.map((item) => item.label ?? "separator")).toEqual([
+      "Frontend",
+      "separator",
+      "New Group…",
+      "Remove from Group",
+    ]);
+    expect(submenu[0]).toMatchObject({ checked: true });
+  });
+
+  it("moves a pinned task into a group, out of the pinned section", () => {
+    useAgents.setState({ organize: { groups: [frontend], groupOf: {}, pinned: ["two"] } });
+    const menu = taskMenu([useAgents.getState().tasks.get("two")!]);
+    const move = menu.find((item) => "label" in item && item.label === "Move to Group") as {
+      submenu: { label?: string; run?: () => void }[];
+    };
+    act(() => move.submenu.find((item) => item.label === "Frontend")!.run!());
+    expect(useAgents.getState().organize.groupOf.two).toBe("g1");
+    expect(useAgents.getState().organize.pinned).toEqual([]);
+  });
+
+  it("creates a group with the selected tasks", async () => {
+    vi.mocked(promptInput).mockResolvedValueOnce("Docs");
+    await taskActions.find((action) => action.id === "agents.newTaskGroup")!.run({ ctx: {}, arg: ["two"] });
+    const { organize } = useAgents.getState();
+    expect(organize.groups.map((group) => group.name)).toEqual(["Docs"]);
+    expect(organize.groupOf.two).toBe(organize.groups[0]!.id);
+    expect(promptInput).toHaveBeenCalledWith(expect.objectContaining({ title: "New Group" }));
+  });
+
+  it("removes a group from its row menu, returning its tasks to the status groups", async () => {
+    useAgents.setState({ organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
+    setup();
+    const groupRow = screen.getByText("Frontend").closest('[role="treeitem"]')!;
+    fireEvent.mouseDown(groupRow, { button: 2 });
+    fireEvent.contextMenu(groupRow);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove Group" }));
+    await waitFor(() => expect(useAgents.getState().organize.groups).toEqual([]));
+    expect(useAgents.getState().organize.groupOf).toEqual({});
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: "Remove Group" }));
+    await waitFor(() => expect(screen.queryByText("Frontend")).toBeNull());
+  });
+
+  it("renames a group from its row menu, trimming the name given", async () => {
+    useAgents.setState({ organize: { groups: [frontend], groupOf: {}, pinned: [] } });
+    setup();
+    vi.mocked(promptInput).mockResolvedValueOnce(" Web ");
+    const groupRow = screen.getByText("Frontend").closest('[role="treeitem"]')!;
+    fireEvent.mouseDown(groupRow, { button: 2 });
+    fireEvent.contextMenu(groupRow);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename Group…" }));
+    await waitFor(() => expect(useAgents.getState().organize.groups[0]!.name).toBe("Web"));
+    expect(screen.getByText("Web")).toBeTruthy();
+  });
+
+  it("puts a task dropped on a group header into that group", () => {
+    useAgents.setState({ organize: { groups: [frontend], groupOf: {}, pinned: [] } });
+    setup();
+    const restore = pointAt(screen.getByText("Frontend"));
+    try {
+      const session = dragSession({ type: TASK_DRAG, payload: "two" });
+      act(() => session.move(10, 10));
+      act(() => session.drop(10, 10));
+      expect(useAgents.getState().organize.groupOf.two).toBe("g1");
+    } finally {
+      restore();
+    }
+  });
+
+  it("pins a task dropped on the pinned header", () => {
+    useAgents.setState({ organize: { groups: [], groupOf: {}, pinned: ["one"] } });
+    setup();
+    const restore = pointAt(screen.getByText("Pinned"));
+    try {
+      const session = dragSession({ type: TASK_DRAG, payload: "two" });
+      act(() => session.move(10, 10));
+      act(() => session.drop(10, 10));
+      expect(useAgents.getState().organize.pinned).toEqual(["one", "two"]);
     } finally {
       restore();
     }

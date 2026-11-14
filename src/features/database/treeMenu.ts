@@ -6,6 +6,7 @@ import { VENDORS, vendorPreset } from "./vendors";
 import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
 import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 const act = (
   action: string,
@@ -21,7 +22,7 @@ const act = (
 const sep: MenuItem = { kind: "separator" };
 
 async function sqliteFromFile() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const file = await open({ multiple: false, directory: false, title: "SQLite Database File" });
   if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
 }
@@ -48,7 +49,7 @@ function dataSourceItems(): MenuItem[] {
 async function sourceFromClipboard() {
   let text = "";
   try {
-    text = (await navigator.clipboard?.readText()) ?? "";
+    text = await readClipboardPlainText();
   } catch {
     // Unreadable clipboard: reported below like an unknown one.
   }
@@ -107,6 +108,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         { label: "New", icon: "plus", submenu: [newConsole, sep, ...dataSourceItems()] },
         { label: "Copy/Paste", submenu: [copyRef, act("db.duplicateSource", n)] },
         refresh,
+        ...(n.source.driver === "snowflake" ? [act("db.introspect", n)] : []),
         act("db.disconnect", n, { disabled: !connected }),
         sep,
         rename,
@@ -195,6 +197,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
     case "foreignKey":
       return [refresh, sep, { label: "Navigation", submenu: [act("db.goToReferencedTable", n), act("db.goToDdl", n)] }];
     case "routine":
+    case "package":
     case "sequence":
     case "trigger":
       return [

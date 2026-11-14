@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSql } from "./format";
+import { formatSql, formatted } from "./format";
 
 const fmt = (sql: string) => {
   let out = sql;
@@ -69,5 +69,21 @@ describe("formatSql", () => {
     expect(fmt(sql)).toBe("-- head\nselect a, -- why\n       b\nfrom t;\n\n\nselect 1;");
     const edits = formatSql(sql, "sqlite", { from: sql.length - 2, to: sql.length - 1 });
     expect(edits).toEqual([{ from: sql.lastIndexOf("select"), to: sql.length, insert: "select 1;" }]);
+  });
+
+  it("keeps Snowflake dollar strings, comments, casts, variant paths and stages", () => {
+    const sf = (sql: string) => formatted(sql, "snowflake");
+    expect(sf("select src:customer.name::string,src['k'].v[0] from t where x=$$ a  b $$ // why\n;")).toBe(
+      "select src:customer.name::string,\n       src['k'].v[0]\nfrom t\nwhere x = $$ a  b $$ // why\n;",
+    );
+    expect(sf("select $1 from @my_stage/path/f.csv (file_format=>'ff') t where y='it\\'s; ok';")).toBe(
+      "select $1\nfrom @my_stage/path/f.csv (file_format => 'ff') t\nwhere y = 'it\\'s; ok';",
+    );
+    expect(sf("select a from t qualify row_number() over (order by a)=1 and a>0;")).toBe(
+      "select a\nfrom t\nqualify row_number() over(order by a) = 1\n  and a > 0;",
+    );
+    expect(sf("show tables ->> select $1 from $1;")).toBe("show tables ->>\nselect $1\nfrom $1;");
+    const body = "create procedure p() returns int language sql as $$ begin  return 1; end $$;";
+    expect(sf(body)).toContain("$$ begin  return 1; end $$;");
   });
 });

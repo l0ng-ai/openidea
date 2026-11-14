@@ -111,10 +111,8 @@ pub fn create_host(app: &AppHandle, data_dir: &Path, project_host: &Arc<ide_host
     ide_language::set_external_syntax(Some(host.syntax_provider()));
     ide_run::set_external_detection(Some(host.run_detection()));
     host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(project_host)))));
-    // Released builds list the official plugins (published with each release) until the user picks another index.
-    if !cfg!(debug_assertions) {
-        host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
-    }
+    // The official plugins (published with each release) are listed until the user picks another index.
+    host.set_default_market_url(Some(ide_host::plugins::OFFICIAL_MARKET_INDEX.into()));
     #[cfg(target_os = "macos")]
     host.set_secret_store(Arc::new(KeychainSecrets));
     ide_host::plugins::set_editor_providers(Some(&host));
@@ -348,6 +346,7 @@ pub async fn plugin_run_command(
     paths: Option<Vec<PathBuf>>,
     settings_scope: Option<SettingsScope>,
     command_chain: Option<Vec<String>>,
+    request: Option<ide_core::RequestId>,
 ) -> IdeResult<Option<String>> {
     let host = state.plugins.clone();
     let project = state.project(window.label()).ok();
@@ -359,7 +358,7 @@ pub async fn plugin_run_command(
         selected_paths: paths.unwrap_or_default(),
         global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
     };
-    blocking(move || host.run_command(&plugin_id, &command_id, arg.as_deref(), invocation)).await
+    ide_host::plugins::commands::run_command(&state.host, host, plugin_id, command_id, arg, invocation, request).await
 }
 
 /// Workbench events from this window (only the kinds of `plugin_event_kinds`).

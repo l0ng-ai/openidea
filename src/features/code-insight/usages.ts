@@ -3,12 +3,15 @@ import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
 import { clearLineTokens } from "@/editor/lineTokens";
+import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
 import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { synchronizeDocumentIndexes, toolWindowService } from "@/workbench/contributions";
 import {
   caretContext,
+  caretSynced,
   caretPoint,
   hint,
   lspRequest,
@@ -227,7 +230,8 @@ export async function fetchUsages(
   let classified: ClassifiedReference[] = [];
   let note: string | null = null;
   let librariesSkipped = false;
-  await synchronizeDocumentIndexes(c.path);
+  await caretSynced(c);
+  const indexed = await synchronizeDocumentIndexes(c.path, "usages");
   if (c.view && c.view.state.doc !== before) throw new IpcError({ kind: "cancelled", message: "", data: null });
   let settled = false;
   const channel = new Channel<References>();
@@ -265,6 +269,7 @@ export async function fetchUsages(
     locs = fb.locs;
     note = fb.note;
   }
+  if (!indexed) note ??= tx("May be incomplete: plugin indexes are still updating");
   const files = await readManyFileLines(pathsToRead(locs, classified));
   return { groups: groupUsages(locs, files, classified), note, librariesSkipped };
 }
@@ -416,8 +421,11 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
   let early = false;
   let found: FetchedUsages | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // Until the popup or the answer shows (a reopened popup has its own spinner).
+  const pending = !reopened && c.view ? showPendingHint(c.view, "Searching for usages…") : () => {};
   const openEarly = () => {
     if (popupRequest !== request || !found) return;
+    pending();
     if (!early && !reopened) useUsagesPopup.setState({ open: true, anchor: caretPoint(), symbol: c.word });
     early = true;
     useUsagesPopup.setState({ ...found, loading: true, scope: widenable ? "libraries" : null });
@@ -434,7 +442,10 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
         else timer ??= setTimeout(openEarly, EARLY_POPUP_DELAY_MS);
       },
       libraries,
-    ).finally(() => clearTimeout(timer));
+    ).finally(() => {
+      clearTimeout(timer);
+      pending();
+    });
     if (popupRequest !== request) return;
     const scope = searchedScope(libraries, librariesSkipped, widenable);
     popupTarget = { c, widenable: widenable || scope !== null, hintUntil: 0 };
@@ -447,21 +458,33 @@ async function searchPopup(c: CaretContext, libraries: boolean, widenable: boole
     // As in IDEA, the hint offers to widen the search, which Show Usages does while it shows.
     const widen = scope === "project" && again !== "";
     if (widen) popupTarget.hintUntil = Date.now() + HINT_MS;
+    // The count and scope, for tests: the hint is the whole answer.
+    const counted: Record<string, string> = scope ? { usages: String(total), scope } : { usages: String(total) };
     if (!total) {
-      if (widen) hint(`No usages found in Project Files. Press ${again} again to search in 'Project and Libraries'`);
-      else if (scope === "project") hint("No usages found in Project Files");
+      if (widen)
+        hint(
+          `No usages found in Project Files. Press ${again} again to search in 'Project and Libraries'`,
+          "info",
+          counted,
+        );
+      else if (scope === "project") hint("No usages found in Project Files", "info", counted);
       else {
         const none = c.word ? `No usages of '${c.word}' found` : "No usages found";
-        hint(note ? `${none}. ${note}` : none);
+        hint(note ? `${none}. ${note}` : none, "info", counted);
       }
       return;
     }
     // IDEA jumps to the only usage and says so in the target editor.
     const u = groups[0]!.usages[0]!;
     await openLocation(u.path, u.line, u.col);
-    if (widen) hint(`Only one usage in Project Files. Press ${again} again to search in 'Project and Libraries'`);
-    else if (scope === "libraries") hint("Only one usage in Project and Libraries");
-    else hint("Only one usage in Project Files");
+    if (widen)
+      hint(
+        `Only one usage in Project Files. Press ${again} again to search in 'Project and Libraries'`,
+        "info",
+        counted,
+      );
+    else if (scope === "libraries") hint("Only one usage in Project and Libraries", "info", counted);
+    else hint("Only one usage in Project Files", "info", counted);
   } catch (e) {
     if (popupRequest !== request || isCancelled(e)) return;
     if (early || reopened) useUsagesPopup.setState({ loading: false });

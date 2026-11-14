@@ -409,7 +409,14 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     sub("statusBarWidgets", "Status Bar Widgets", vec![Entry::Dynamic(DYNAMIC_STATUS_BAR_WIDGETS)]),
                 ],
             ),
-            sub("activeEditor", "Active Editor", vec![act("editor.toggleSoftWrap", "Soft-Wrap")]),
+            sub(
+                "activeEditor",
+                "Active Editor",
+                vec![
+                    act("editor.toggleSoftWrap", "Soft-Wrap"),
+                    act("editor.toggleRenderedDocs", "Render Documentation Comments"),
+                ],
+            ),
             SEP,
             act("code.quickDefinition", "Quick Definition"),
             act("code.quickTypeDefinition", "Quick Type Definition"),
@@ -865,6 +872,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("navigate.findAction", "Find Action…"),
         act("help.keymapReference", "Keymap Reference"),
         SEP,
+        act("app.whatsNew", "What's New"),
         act("help.showLog", show_log),
     ];
     if !mac {

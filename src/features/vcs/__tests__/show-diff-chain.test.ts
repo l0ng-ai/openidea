@@ -9,7 +9,7 @@ import { useCommit } from "../commitStore";
 import { initialChangelists, useChangelists } from "../changelists";
 import { useGitLog } from "../logStore";
 import { compareChangeWithLocal } from "../logChanges";
-import { chainNeighbour, openVcsDiff } from "../diffInput";
+import { chainNeighbour, openVcsDiff, type DiffData } from "../diffInput";
 
 const opened = vi.hoisted(() => vi.fn());
 const diffWindow = vi.hoisted(() => vi.fn());
@@ -222,4 +222,13 @@ it("chains the selected files in the front window", async () => {
   const data = diffWindow.mock.calls[0]![0];
   expect(data.path).toBe("/repo/z.ts");
   expect(data.chain.map((d: { path: string }) => d.path)).toEqual(["/repo/z.ts", "/repo/other.ts"]);
+});
+
+it.each<DiffData>([
+  { path: "/repo/b.ts", left: { type: "rev", rev: "HEAD" }, right: { type: "rev", rev: ":0" } },
+  { path: "/repo/b.ts", left: { type: "rev", rev: ":0" }, right: { type: "worktree" } },
+  { path: "/repo/b.ts", left: { type: "rev", rev: "parent" }, right: { type: "rev", rev: "commit" } },
+])("keeps the requested diff sides when opening a separate window: %j", async (data) => {
+  await getAction("vcs.showDiffInNewWindow")!.run({ arg: data, ctx: { vcsAvailable: true } });
+  expect(opened.mock.calls[0]![0].data).toBe(data);
 });

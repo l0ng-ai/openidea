@@ -108,6 +108,7 @@ pub fn project_libraries_stream(
             })
             .collect();
         let rust = s.spawn(|| {
+            let project = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
             let mut seen = std::collections::HashSet::new();
             let mut groups = Vec::new();
             for dir in &roots {
@@ -136,7 +137,11 @@ pub fn project_libraries_stream(
                 if !seen.insert(workspace.clone()) {
                     continue;
                 }
-                let batch = rust_groups(&workspace, &settings, cancel);
+                // Resolving writes a Cargo.lock. A crate outside the project's workspace (one in its
+                // `exclude`) without its own keeps none, as RustRover leaves crates it doesn't attach.
+                let locked = workspace.canonicalize().unwrap_or_else(|_| workspace.clone()) != project
+                    && !workspace.join("Cargo.lock").is_file();
+                let batch = rust_groups(&workspace, &settings, locked, cancel);
                 if !cancel.is_cancelled() && !batch.is_empty() {
                     on_groups(batch.clone());
                     groups.extend(batch);
@@ -441,7 +446,7 @@ fn jdk_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Libr
         Some(files) => files,
         None => {
             let java = [".classpath", ".project"].iter().any(|f| root.join(f).is_file())
-                || root.join(".idea").is_dir()
+                || idea_java_project(root)
                 || !s.languages.java.jdk.trim().is_empty()
                 || !s.project_structure.source_roots.is_empty();
             if !java {
@@ -561,6 +566,27 @@ pub(crate) fn classpath_entries(dir: &Path, text: &str) -> Vec<PathBuf> {
 }
 
 /// The JDK home and its sources (`lib/src.zip`, `src.zip` in JDK 8) as library roots.
+/// An IntelliJ project (`.idea`) that is a Java one: a Java SDK or language level in
+/// `misc.xml`, or a Java module file. GoLand, PyCharm and WebStorm write `.idea` too, so the
+/// folder alone doesn't make a project need the JDK.
+fn idea_java_project(root: &Path) -> bool {
+    let idea = root.join(".idea");
+    if !idea.is_dir() {
+        return false;
+    }
+    let misc = std::fs::read_to_string(idea.join("misc.xml")).unwrap_or_default();
+    if misc.contains("JavaSDK") || misc.contains("languageLevel=\"JDK_") {
+        return true;
+    }
+    let java_module = |dir: &Path| {
+        std::fs::read_dir(dir).into_iter().flatten().flatten().any(|e| {
+            e.path().extension().is_some_and(|x| x == "iml")
+                && std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("JAVA_MODULE"))
+        })
+    };
+    java_module(root) || java_module(&idea)
+}
+
 pub(crate) fn jdk_library(jdk: &crate::java::Jdk) -> Option<LibraryGroup> {
     let name = jdk_name(&jdk.home).unwrap_or_else(|| format!("JDK {}", jdk.major));
     let mut roots = named_roots(vec![(name.clone(), jdk.home.clone())]);
@@ -583,8 +609,9 @@ pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) ->
     if deps.is_empty() {
         return Vec::new();
     }
-    let maven_repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository);
-    let gradle_home = gradle_user_home();
+    let maven_repo = crate::apply::maven_local_repository(root, s).or_else(crate::apply::default_maven_repository);
+    // The home Gradle runs with, not just the one this process inherited.
+    let gradle_home = crate::apply::setting_path(root, &s.languages.java.gradle.user_home).or_else(gradle_user_home);
     let files: Vec<PathBuf> = JAVA_MANIFESTS.iter().map(|n| root.join(n)).collect();
     let key = format!("{maven_repo:?}\n{gradle_home:?}\n{deps:?}");
     cached(root, "buildDependencies", key, &files, || {
@@ -592,12 +619,8 @@ pub fn dependency_groups(root: &Path, s: &Settings, deps: &[BuildDependency]) ->
     })
 }
 
-/// `~/.m2/repository` (Settings › Maven › Local repository overrides it).
-fn default_maven_repository() -> Option<PathBuf> {
-    Some(crate::home_dir()?.join(".m2/repository"))
-}
-
-/// `$GRADLE_USER_HOME`, else `~/.gradle`.
+/// `$GRADLE_USER_HOME`, else `~/.gradle`: what Gradle uses when Settings › Gradle ›
+/// user home is empty.
 fn gradle_user_home() -> Option<PathBuf> {
     std::env::var_os("GRADLE_USER_HOME").map(PathBuf::from).or_else(|| Some(crate::home_dir()?.join(".gradle")))
 }
@@ -652,7 +675,7 @@ pub fn published_version_catalog(root: &Path, s: &Settings, coordinates: &str) -
         found.into_iter().next()
     });
     cached.or_else(|| {
-        let repo = crate::apply::maven_local_repository(root, s).or_else(default_maven_repository)?;
+        let repo = crate::apply::maven_local_repository(root, s).or_else(crate::apply::default_maven_repository)?;
         let path = repo.join(d.group.replace('.', "/")).join(&d.artifact).join(&d.version).join(&file);
         path.is_file().then_some(path)
     })
@@ -750,7 +773,8 @@ pub(crate) fn package_dependencies(package_json: &str) -> Vec<String> {
 
 // ------------------------------------------------------------------ rust
 
-fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<LibraryGroup> {
+/// `locked`: `cargo metadata --locked`, which fails instead of writing a Cargo.lock.
+fn rust_groups(root: &Path, s: &Settings, locked: bool, cancel: &CancellationToken) -> Vec<LibraryGroup> {
     let Some(files) = manifests(root, CARGO_MANIFESTS) else { return Vec::new() };
     if !root.join("Cargo.toml").is_file() {
         return Vec::new();
@@ -775,14 +799,11 @@ fn rust_groups(root: &Path, s: &Settings, cancel: &CancellationToken) -> Vec<Lib
     });
     if let Some(cargo) = tool(bin, "cargo") {
         let graph = cached_optional(root, "cargo", r.toolchain.clone(), &files, || {
-            let json = query_in_cancellable(
-                &cargo,
-                &["metadata", "--format-version", "1", "--offline"],
-                root,
-                &[],
-                GRAPH_TIMEOUT,
-                cancel,
-            )?;
+            let mut args = vec!["metadata", "--format-version", "1", "--offline"];
+            if locked {
+                args.push("--locked");
+            }
+            let json = query_in_cancellable(&cargo, &args, root, &[], GRAPH_TIMEOUT, cancel)?;
             let roots = parse_cargo_metadata(&json)?;
             Some(group("Cargo dependencies", "cargo", named_roots(roots)).into_iter().collect())
         });
@@ -1090,6 +1111,50 @@ mod go_cache_tests {
 
     #[cfg(unix)]
     #[test]
+    fn cargo_metadata_writes_no_lock_file_for_a_crate_outside_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['app']\nexclude=['vendored']\n").unwrap();
+        for name in ["app", "vendored"] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::write(root.join(name).join("Cargo.toml"), format!("[package]\nname='{name}'\nversion='0.1.0'\n"))
+                .unwrap();
+        }
+        let bin = root.join("tools");
+        std::fs::create_dir(&bin).unwrap();
+        let calls = root.join("metadata-calls");
+        // Like cargo: an excluded crate is its own workspace.
+        let cargo = format!(
+            "#!/bin/sh\nif [ \"$1\" = locate-project ]; then case \"$(pwd -P)\" in */vendored) echo \"$(pwd -P)/Cargo.toml\";; *) echo '{}';; esac; exit; fi\necho \"$(pwd -P) $*\" >> '{}'\nexit 1\n",
+            root.join("Cargo.toml").display(),
+            calls.display()
+        );
+        for (name, script) in [("cargo", cargo.as_str()), ("rustc", "#!/bin/sh\nexit 1\n")] {
+            std::fs::write(bin.join(name), script).unwrap();
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut settings = Settings::default();
+        settings.languages.rust.toolchain = "tools".into();
+        let metadata = |dir: &Path| {
+            let prefix = format!("{} metadata ", dir.display());
+            let calls = std::fs::read_to_string(&calls).unwrap();
+            calls.lines().rev().find_map(|l| l.strip_prefix(&prefix).map(str::to_owned))
+        };
+
+        project_libraries(&root, &settings, &[]);
+        // The project's own workspace resolves as before, writing its Cargo.lock if it has none.
+        assert_eq!(metadata(&root).as_deref(), Some("--format-version 1 --offline"));
+        assert_eq!(metadata(&root.join("vendored")).as_deref(), Some("--format-version 1 --offline --locked"));
+
+        // A crate with its own Cargo.lock keeps resolving with it.
+        std::fs::write(root.join("vendored/Cargo.lock"), "version = 4\n").unwrap();
+        project_libraries(&root, &settings, &[]);
+        assert_eq!(metadata(&root.join("vendored")).as_deref(), Some("--format-version 1 --offline"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn libraries_publish_node_and_maven_while_cargo_is_running_and_cancel_it() {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::mpsc;
@@ -1172,6 +1237,25 @@ mod go_cache_tests {
             assert_eq!(published_version_catalog(root, &s, missing), None, "{missing}");
         }
     }
+
+    #[test]
+    fn dependency_jars_come_from_the_configured_gradle_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut s = Settings::default();
+        s.languages.java.gradle.user_home = root.join("gradle").to_string_lossy().into_owned();
+        // Only in the home Gradle runs with, not in `$GRADLE_USER_HOME` / `~/.gradle`.
+        let jar = root.join("gradle/caches/modules-2/files-2.1/com.acme/lib/1.0/abc123/lib-1.0.jar");
+        std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+        std::fs::write(&jar, b"jar").unwrap();
+
+        let deps =
+            [BuildDependency { gradle: true, group: "com.acme".into(), artifact: "lib".into(), version: "1.0".into() }];
+        let groups = dependency_groups(root, &s, &deps);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups[0].name, "Gradle: com.acme:lib:1.0");
+        assert_eq!(groups[0].roots[0].name, "lib-1.0.jar");
+    }
     #[test]
     fn vendor_roots_include_local_replacements_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -1245,5 +1329,34 @@ mod go_cache_tests {
         assert_eq!(groups[0].roots.len(), 1);
         assert!(groups[0].roots[0].path.to_string_lossy().ends_with("a.jar!"));
         assert_eq!(groups[1].roots.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod idea_project_tests {
+    use super::*;
+
+    #[test]
+    fn an_idea_folder_marks_a_java_project_only_when_it_declares_java() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        assert!(!idea_java_project(root));
+        // GoLand / PyCharm write `.idea` without any Java in it.
+        std::fs::create_dir_all(root.join(".idea")).unwrap();
+        std::fs::write(root.join(".idea/misc.xml"), r#"<project version="4"><component name="GOROOT" /></project>"#)
+            .unwrap();
+        std::fs::write(root.join(".idea/demo.iml"), r#"<module type="WEB_MODULE" version="4" />"#).unwrap();
+        assert!(!idea_java_project(root));
+        // A Java module file, at the root or in `.idea`.
+        std::fs::write(root.join("app.iml"), r#"<module type="JAVA_MODULE" version="4" />"#).unwrap();
+        assert!(idea_java_project(root));
+        std::fs::remove_file(root.join("app.iml")).unwrap();
+        // The project JDK in misc.xml.
+        std::fs::write(
+            root.join(".idea/misc.xml"),
+            r#"<project version="4"><component name="ProjectRootManager" languageLevel="JDK_17" project-jdk-name="17" project-jdk-type="JavaSDK" /></project>"#,
+        )
+        .unwrap();
+        assert!(idea_java_project(root));
     }
 }

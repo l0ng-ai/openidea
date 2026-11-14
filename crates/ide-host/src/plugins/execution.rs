@@ -72,14 +72,19 @@ pub(super) fn validate_reply(reply: &ContentTabReply) -> Result<(), HostError> {
         return Err(HostError::Invalid("content status or error too long".into()));
     }
     if let Some(diff) = &reply.diff {
-        body(&diff.left)?;
-        body(&diff.right)?;
-        for value in [&diff.left_label, &diff.right_label].into_iter().flatten() {
-            label(value, 128)?;
-        }
-        if let Some(title) = &diff.title {
-            label(title, 256)?;
-        }
+        validate_diff(diff)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_diff(diff: &ide_plugin::ContentDiff) -> Result<(), HostError> {
+    body(&diff.left)?;
+    body(&diff.right)?;
+    for value in [&diff.left_label, &diff.right_label].into_iter().flatten() {
+        label(value, 128)?;
+    }
+    if let Some(title) = &diff.title {
+        label(title, 256)?;
     }
     Ok(())
 }

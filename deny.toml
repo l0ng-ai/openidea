@@ -24,6 +24,7 @@ multiple-versions = "warn"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# SQLx's unreleased SQLite dependency ceiling fix, pinned in Cargo.toml.
-allow-git = ["https://github.com/transact-rs/sqlx"]
+# SQLx at a pinned rev: upstream's unreleased SQLite dependency ceiling fix plus the MySQL
+# `deprecate_eof` option (transact-rs/sqlx#4507), until a release carries both.
+allow-git = ["https://github.com/l0ng-ai/sqlx"]
 required-git-spec = "rev"

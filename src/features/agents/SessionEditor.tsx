@@ -20,6 +20,7 @@ import clsx from "clsx";
 import { useShallow } from "zustand/react/shallow";
 import type {
   AgentChange,
+  AgentCommit,
   AgentEntry,
   AgentImage,
   AgentLimit,
@@ -30,16 +31,18 @@ import type {
 } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { isSameOrInside } from "@/platform/paths";
 import { basename, relativeDir, useProject } from "@/platform/project";
-import { editorService, notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { notifications, useEditorShown, type EditorInput } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
 import {
   Button,
   Checkbox,
+  Chip,
   EmptyState,
   Icon,
   IconButton,
   Input,
-  InlineTag,
   Radio,
   SearchField,
   Spinner,
@@ -56,7 +59,12 @@ import {
 } from "@/ui";
 import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
+import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
+import { repositoryPath } from "@/features/vcs/repositoryPaths";
+import { setChangesOptions, useChangesOptions } from "./changesOptions";
 import { Composer } from "./Composer";
+import { ReferencedText } from "./ReferenceChip";
+import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -64,6 +72,7 @@ import {
   emptyDraft,
   limitLabel,
   messageTokens,
+  parseMention,
   retryParts,
   usageLabel,
   workTime,
@@ -72,7 +81,7 @@ import { ConfigPickers } from "./ConfigPickers";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
-import { currentTool, foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
+import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
@@ -102,11 +111,14 @@ import {
   type SubagentEntry,
 } from "./model";
 import {
+  acceptChanges,
   cancelTask,
   stopBackgroundTask,
   loadEntries,
   markVisible,
   refreshChanges,
+  rollbackChanges,
+  scheduleChanges,
   editQueued,
   forkTask,
   rerunFrom,
@@ -131,7 +143,13 @@ export function SessionEditor({ input, docked = false }: { input: EditorInput; d
 function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const task = useAgents((s) => s.tasks.get(id));
   const entries = useAgents((s) => s.entries.get(id));
-  const changes = useAgents((s) => s.changes.get(id));
+  // Grouping needs commits of the task's own: local checkouts keep the flat list.
+  const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
+  const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
+  const sinceStart = useAgents((s) => s.changes.get(id));
+  const review = useAgents((s) => s.groupedChanges.get(id));
+  const changes = grouped ? (review?.uncommitted ?? null) : (sinceStart ?? null);
+  const commits = grouped ? (review?.commits ?? []) : [];
   const project = useProject((s) => s.project);
   const head = useLocalHead(
     task?.isolation === "local" ? task.status : null,
@@ -147,21 +165,39 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const cards = useAgents(
     useShallow((s) => path.map((sub, i) => findSubagent(s.entries.get(entriesKey(id, path[i - 1] ?? null)), sub))),
   );
+  // Connecting to the project's agents clears what was loaded before: a tab restored with the
+  // project reads its conversation once that is done, not before (#2414).
+  const connected = useAgents((s) => s.loaded);
   useEffect(() => {
+    if (!connected) return;
     // Loaded entries are kept current by the task's events: reopening the tab needn't fetch them again.
     if (!useAgents.getState().entries.has(id)) void loadEntries(id).catch(() => undefined);
     void refreshChanges(id);
-  }, [id]);
+  }, [id, connected]);
+  // A commit in the task's checkout moves its HEAD: pick it up without waiting for the agent.
+  // The watcher reports every repository under the project, so the main checkout and other
+  // tasks' worktrees would otherwise re-read this task's changes for nothing. A worktree's
+  // gitdir is `<project>/.git/worktrees/<slug>`, outside the worktree itself: the watcher only
+  // reports the project there, so that is the root its events match.
+  const refreshRoot =
+    task?.isolation === "worktree" ? (task.projectRoot ?? project?.root ?? null) : (task?.cwd ?? null);
+  useEffect(() => {
+    if (!connected) return;
+    return onIdeEvent("vcsChanged", (e) => {
+      if (!refreshRoot || !isSameOrInside(refreshRoot, e.root)) return;
+      scheduleChanges(id);
+    });
+  }, [id, connected, refreshRoot]);
   // A kept-alive tab stays mounted behind the shown one: it isn't read there, nor searched.
   const shown = useEditorShown();
   useEffect(() => {
     if (shown && (!docked || !changesOpen)) return markVisible(id);
   }, [id, docked, changesOpen, shown]);
   useEffect(() => {
-    if (view && !useAgents.getState().entries.has(entriesKey(id, view))) {
+    if (connected && view && !useAgents.getState().entries.has(entriesKey(id, view))) {
       void loadEntries(id, view).catch(() => undefined);
     }
-  }, [id, view]);
+  }, [id, view, connected]);
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
@@ -215,6 +251,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
+              commits={commits}
               changesOpen={changesOpen}
               onToggleChanges={() => setChangesOpen(!changesOpen)}
               onOpenSubagent={openSubagent}
@@ -226,6 +263,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         <ChangesPane
           task={task}
           changes={changes ?? null}
+          commits={commits}
+          grouped={grouped}
           head={head}
           docked={docked}
           onHide={() => setChangesOpen(false)}
@@ -264,20 +303,8 @@ function useLocalHead(status: AgentTask["status"] | null, root: string | null): 
   return local ? head : null;
 }
 
-/** The task's terminal and changes, at the end of its status line. */
-function StatusActions({
-  task,
-  changes,
-  changesOpen,
-  onToggleChanges,
-}: {
-  task: AgentTask;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-}) {
-  const tx = useTx();
-  const count = changes?.length ?? 0;
+/** The task's terminal, at the end of its status line. */
+function StatusActions({ task }: { task: AgentTask }) {
   return (
     <span className={styles.statusActions}>
       <IconButton
@@ -286,18 +313,6 @@ function StatusActions({
         title="Terminal"
         onClick={() => void executeAction("terminal.openAt", task.cwd)}
       />
-      <button
-        type="button"
-        className={styles.changesToggle}
-        aria-pressed={changesOpen}
-        disabled={count === 0 && !changesOpen}
-        aria-label={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        title={changesOpen ? tx("Hide changes") : tx("Show changes")}
-        onClick={onToggleChanges}
-      >
-        <Icon name="toolwindow-changes" size={14} />
-        {count > 0 && <span>{count}</span>}
-      </button>
     </span>
   );
 }
@@ -308,6 +323,7 @@ function SessionStatus({
   entries,
   head,
   changes,
+  commits,
   changesOpen,
   onToggleChanges,
 }: {
@@ -315,14 +331,19 @@ function SessionStatus({
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
   changesOpen: boolean;
   onToggleChanges: () => void;
 }) {
   const tx = useTx();
   const project = useProject((s) => s.project);
-  const projectName = project?.workspace ? basename(task.projectRoot ?? project.root) : null;
-  const where = task.isolation === "worktree" ? branchLabel(task.branch) : null;
+  const projectRoot = task.projectRoot ?? project?.root ?? null;
+  const projectName = project?.workspace && projectRoot ? basename(projectRoot) : project?.name;
+  const local = task.isolation !== "worktree";
+  const branch = local ? head : branchLabel(task.branch) || null;
   const pickedModel = task.status !== "archived" && task.config.some((o) => o.category === "model");
+  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
+  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
   return (
     <div
       className={styles.statusBar}
@@ -331,25 +352,74 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
-      <span className={styles.statusText} title={task.cwd}>
-        {providerName(task.provider)}
-        {/* The composer's model picker shows the model when the agent offers one. */}
-        {task.model && !pickedModel ? ` · ${task.model}` : ""}
-        {projectName ? ` · ${projectName}` : ""}
-        {" · "}
-        {where ?? (
+      <span className={styles.agent} title={`${providerName(task.provider)} · ${task.cwd}`}>
+        <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
+        <span className={styles.agentName}>
+          {providerName(task.provider)}
+          {/* The composer's model picker shows the model when the agent offers one. */}
+          {task.model && !pickedModel ? ` · ${task.model}` : ""}
+        </span>
+      </span>
+      {/* The same three facts as the new-task composer: project, checkout, branch. */}
+      <span className={styles.where}>
+        {projectName && (
+          <Chip icon="folder" title={projectRoot ?? undefined}>
+            {projectName}
+          </Chip>
+        )}
+        <Chip icon={local ? "folder" : "branch"}>
+          <T>{local ? "Local checkout" : "New worktree"}</T>
+        </Chip>
+        {branch && (
           <>
-            <T>Local checkout</T>
-            {head ? ` · ${head}` : ""}
+            {local && (
+              <span className={styles.note}>
+                <T>on</T>
+              </span>
+            )}
+            <Chip icon="branch" title={branch}>
+              {branch}
+            </Chip>
           </>
         )}
-        {" · "}
+      </span>
+      <span className={styles.state}>
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
-      <Meters task={task} entries={entries} />
-      <StatusActions task={task} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges} />
+      {/* What changed sits above the meter, time and terminal; those keep their one row at the right. */}
+      <span className={styles.statusEnd}>
+        {(!!changes?.length || !!commits.length) && (
+          <span className={styles.statusChips}>
+            {!!changes?.length && (
+              <button type="button" className={styles.statusChip} aria-expanded={changesOpen} onClick={onToggleChanges}>
+                <Icon name="edit" size={12} />
+                {/* The counts are the chip's own items, so its gap spaces them and the label can still truncate. */}
+                <span className={styles.statusChipLabel}>
+                  {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
+                    "{count}",
+                    String(changes.length),
+                  )}
+                </span>
+                {added > 0 && <span className={styles.added}>+{added}</span>}
+                {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+              </button>
+            )}
+            {!!commits.length && (
+              <button type="button" className={styles.statusChip} aria-expanded={changesOpen} onClick={onToggleChanges}>
+                <Icon name="commit" size={12} />
+                <span className={styles.statusChipLabel}>
+                  {tx(commits.length === 1 ? "1 commit" : "{count} commits").replace("{count}", String(commits.length))}
+                </span>
+              </button>
+            )}
+          </span>
+        )}
+        <span className={styles.statusMeters}>
+          <Meters task={task} entries={entries} />
+          <StatusActions task={task} />
+        </span>
+      </span>
     </div>
   );
 }
@@ -393,13 +463,13 @@ function Limit({ limit, now }: { limit: AgentLimit; now: number }) {
   );
 }
 
-/** Context window use: "12%", the numbers in the tooltip. */
+/** Context window use: "167k/1M (17%)", the exact counts in the tooltip. */
 function Usage({ usage }: { usage: AgentUsage }) {
   const label = usageLabel(usage);
   return (
     <span className={styles.meter} title={label.detail} aria-label={`Context ${label.short}, ${label.detail}`}>
       <span className={styles.usageBar} aria-hidden>
-        <span style={{ width: label.short }} />
+        <span style={{ width: `${label.percent}%` }} />
       </span>
       {label.short}
     </span>
@@ -542,9 +612,19 @@ interface StreamProps {
 /** Entries rendered at a time when a conversation opens at its end. */
 const ENTRY_BATCH = 40;
 
+function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
+    if (el.scrollTop <= 0) continue;
+    const overflow = getComputedStyle(el).overflowY;
+    if (overflow === "auto" || overflow === "scroll") return true;
+  }
+  return false;
+}
+
 function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
+  const [openFolds] = useState(() => new Map<string, boolean>());
   const key = entriesKey(task.id, subagent?.id ?? null);
   const positions = useAgents.getState().scrollPositions;
   const position = useRef(positions.get(key) ?? { top: 0, stick: true });
@@ -561,13 +641,29 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const dragging = useRef(false);
   // When the user last scrolled the conversation (wheel, touch, keys, the scrollbar, Find):
   // that leaves the end. WebKit also moves the offset back on its own while rows lay out,
-  // which comes with a change of the content height; a scroll without one is meant too (the
+  // which comes with a change of the content height, and pulls it back to the end when the view
+  // grows taller (the composer shrinks after a send); a scroll without either is meant too (the
   // scrollbar thumb, a jump), whatever moved it.
   const userScrolled = useRef(-Infinity);
-  const seenHeight = useRef(0);
+  const seenHeight = useRef({ content: 0, view: 0 });
   const markUserScroll = useCallback(() => {
     userScrolled.current = performance.now();
   }, []);
+  const touchY = useRef<number | null>(null);
+  const scrollingUp = useRef(false);
+  // Release before the browser scrolls: a streamed chunk can arrive before its scroll event.
+  const stopFollowing = useCallback(
+    (target: EventTarget | null) => {
+      const el = ref.current;
+      if (!el || el.scrollHeight <= el.clientHeight || scrollsInside(target, el)) return;
+      scrollingUp.current = true;
+      if (!position.current.stick) return;
+      position.current = { top: el.scrollTop, stick: false };
+      positions.set(key, position.current);
+      setAway(true);
+    },
+    [key, positions],
+  );
   // Earlier entries are prepended above the view: remember where the first painted row is
   // so the content stays put and the scrollbar doesn't jump under the pointer.
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -623,14 +719,24 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
-    if (el && position.current.stick) el.scrollTop = el.scrollHeight;
+    if (el && position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
   }, []);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
     const truncated = entries.length < previousLength.current;
+    // A message the user just sent: back to the end, where it shows, wherever they had scrolled.
+    const sent = previousLength.current > 0 && entries.slice(previousLength.current).some((e) => e.type === "user");
     previousLength.current = entries.length;
+    if (sent && !position.current.stick) {
+      scrollingUp.current = false;
+      position.current = { top: el.scrollTop, stick: true };
+      positions.set(key, position.current);
+      setAway(false);
+      return;
+    }
     if ((truncated || entries.length === 0) && el.scrollHeight - el.scrollTop - el.clientHeight < 40) {
+      scrollingUp.current = false;
       position.current = { top: el.scrollTop, stick: true };
       positions.set(key, position.current);
       setAway(false);
@@ -639,8 +745,9 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || entries === null || !visible) return;
-    if (position.current.stick) el.scrollTop = el.scrollHeight;
-    else if (!restored.current) el.scrollTop = position.current.top;
+    if (position.current.stick) {
+      if (!dragging.current) el.scrollTop = el.scrollHeight;
+    } else if (!restored.current) el.scrollTop = position.current.top;
     restored.current = true;
   });
   useLayoutEffect(() => {
@@ -657,7 +764,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
     const el = ref.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (position.current.stick) el.scrollTop = el.scrollHeight;
+      if (position.current.stick && !dragging.current) el.scrollTop = el.scrollHeight;
     });
     observer.observe(el);
     return () => {
@@ -665,11 +772,46 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
       if (restored.current) positions.set(key, { ...position.current, top: el.scrollTop });
     };
   }, [key, positions]);
+  // How far the end was below the view when a section was toggled, before its content renders.
+  const gapAtToggle = useRef(Infinity);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const toggled = () => {
+      gapAtToggle.current = el.scrollHeight - el.scrollTop - el.clientHeight;
+    };
+    el.addEventListener("toggle", toggled, true);
+    return () => el.removeEventListener("toggle", toggled, true);
+  }, []);
+  /**
+   * An opened section grew the conversation below its header: with the end in view, stay at
+   * it; otherwise bring what it shows into view. Either way its header stays on screen, and
+   * following stops when that leaves the end out of view.
+   */
+  const revealFold = useCallback(
+    (fold: HTMLElement) => {
+      const el = ref.current;
+      if (!el || dragging.current) return;
+      const view = el.getBoundingClientRect();
+      const box = fold.getBoundingClientRect();
+      const atEnd = position.current.stick || gapAtToggle.current < 40;
+      gapAtToggle.current = Infinity;
+      const below = atEnd ? el.scrollHeight - el.scrollTop - el.clientHeight : box.bottom - view.bottom;
+      if (below > 0) el.scrollTop += Math.max(0, Math.min(below, box.top - view.top));
+      if (atEnd && el.scrollHeight - el.scrollTop - el.clientHeight >= 40) {
+        position.current = { top: el.scrollTop, stick: false };
+        positions.set(key, position.current);
+        setAway(true);
+      }
+    },
+    [key, positions],
+  );
   /** Back to the end of the stream; following resumes from there. */
   const jumpToLatest = useCallback(() => {
     const el = ref.current;
     if (!el) return;
-    position.current = { top: el.scrollHeight, stick: true };
+    scrollingUp.current = false;
+    position.current = { top: el.scrollTop, stick: true };
     if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     else el.scrollTop = el.scrollHeight;
     setAway(false);
@@ -728,134 +870,148 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
         ))}
       </TurnFold>
     ) : row.kind === "process" ? (
-      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} renderRow={renderRow} />
+      <ProcessRun row={row} task={task} lastIndex={lastIndex} busy={busy} onDiagramDrawn={onDiagramDrawn} />
     ) : (
       renderRow(row)
     );
   return (
-    <div
-      className={styles.streamArea}
-      onWheel={markUserScroll}
-      onTouchMove={markUserScroll}
-      onKeyDown={markUserScroll}
-      onPointerDown={markUserScroll}
-    >
-      {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
-      <div
-        ref={ref}
-        // The conversation is read and copied like a document; focusable so ⌘F reaches it.
-        className={clsx(styles.stream, selectableText)}
-        tabIndex={-1}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-          const laidOut = el.scrollHeight !== seenHeight.current;
-          seenHeight.current = el.scrollHeight;
-          const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
-          const stick = atEnd || (position.current.stick && !byUser);
-          // Still following: back to the end the offset was moved away from.
-          if (stick && !atEnd) el.scrollTop = el.scrollHeight;
-          position.current = { top: el.scrollTop, stick };
-          positions.set(key, position.current);
-          setAway(!position.current.stick);
-          // Reached the top of what is painted: fetch the earlier entries, but only
-          // once the drag has settled.
-          if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
-          if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
-        }}
-        // Copy, plus Quote for a selection: replies to it in the composer.
-        onContextMenu={(e) => {
-          const text = selectionIn(e.currentTarget);
-          const items = copyMenuFor(e.target) ?? [];
-          if (text.trim() && task.status !== "archived") {
-            items.push({
-              kind: "action",
-              action: "agents.quoteReply",
-              label: "Quote",
-              arg: { task: task.id, text },
-            });
-          }
-          if (!items.length) return;
-          e.preventDefault();
-          showContextMenu(e, items);
-        }}
-      >
-        {loadError && (
-          <div role="alert">
-            <EmptyState
-              title={tx`Couldn't load the conversation: ${loadError}`}
-              actions={
-                <Button
-                  onClick={() =>
-                    void executeAction("agents.retryConversation", {
-                      task: task.id,
-                      subagent: subagent?.id ?? null,
-                    })
+    <OpenFolds.Provider value={openFolds}>
+      <RevealFold.Provider value={revealFold}>
+        <div className={styles.streamArea}>
+          {finding && <FindBar streamRef={ref} focus={findFocus} onClose={onCloseFind} />}
+          <div
+            ref={ref}
+            // The conversation is read and copied like a document; focusable so ⌘F reaches it.
+            className={clsx(styles.stream, selectableText)}
+            tabIndex={-1}
+            onWheel={(e) => {
+              markUserScroll();
+              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+            }}
+            onTouchStart={(e) => {
+              touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+            }}
+            onTouchMove={(e) => {
+              markUserScroll();
+              const y = e.touches.length === 1 ? e.touches[0]!.clientY : null;
+              if (y !== null && touchY.current !== null && y > touchY.current) stopFollowing(e.target);
+              else if (y !== null && touchY.current !== null && y < touchY.current) scrollingUp.current = false;
+              touchY.current = y;
+            }}
+            onKeyDown={(e) => {
+              markUserScroll();
+              if (e.defaultPrevented || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+              if (e.key === "ArrowUp" || e.key === "PageUp" || e.key === "Home" || (e.key === " " && e.shiftKey))
+                stopFollowing(e.target);
+              else if (
+                e.key === "ArrowDown" ||
+                e.key === "PageDown" ||
+                e.key === "End" ||
+                (e.key === " " && !e.shiftKey)
+              )
+                scrollingUp.current = false;
+            }}
+            onPointerDown={() => {
+              markUserScroll();
+              scrollingUp.current = false;
+            }}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+              const laidOut =
+                el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
+              seenHeight.current = {
+                content: el.scrollHeight,
+                view: el.clientHeight,
+              };
+              const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
+              const movedDown = el.scrollTop > position.current.top;
+              const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
+              const stick =
+                (atEnd && !scrollingUp.current && (movedDown || stayedAtEnd)) || (position.current.stick && !byUser);
+              // Still following: back to the end the offset was moved away from.
+              if (stick && !atEnd && !dragging.current) el.scrollTop = el.scrollHeight;
+              position.current = { top: el.scrollTop, stick };
+              positions.set(key, position.current);
+              setAway(!position.current.stick);
+              // Reached the top of what is painted: fetch the earlier entries, but only
+              // once the drag has settled.
+              if (loadTimer.current !== null) window.clearTimeout(loadTimer.current);
+              if (!position.current.stick && el.scrollTop < 120 && !dragging.current) loadWhenStill();
+            }}
+            // Copy, plus Quote for a selection: replies to it in the composer.
+            onContextMenu={(e) => {
+              const text = selectionIn(e.currentTarget);
+              const items = copyMenuFor(e.target) ?? [];
+              if (text.trim() && task.status !== "archived") {
+                items.push({
+                  kind: "action",
+                  action: "agents.quoteReply",
+                  label: "Quote",
+                  arg: { task: task.id, text },
+                });
+              }
+              if (!items.length) return;
+              e.preventDefault();
+              showContextMenu(e, items);
+            }}
+          >
+            {loadError && (
+              <div role="alert">
+                <EmptyState
+                  title={tx`Couldn't load the conversation: ${loadError}`}
+                  actions={
+                    <Button
+                      onClick={() =>
+                        void executeAction("agents.retryConversation", {
+                          task: task.id,
+                          subagent: subagent?.id ?? null,
+                        })
+                      }
+                    >
+                      Retry
+                    </Button>
                   }
+                />
+              </div>
+            )}
+            {entries === null ? (
+              !loadError && <Spinner />
+            ) : entries.length === 0 && !busy && !loadError ? (
+              <EmptyState title="No conversation history" />
+            ) : (
+              rows.map((row) => (
+                <div
+                  key={row.index}
+                  className={styles.conversationRow}
+                  data-message={
+                    (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
+                  }
+                  data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
                 >
-                  Retry
-                </Button>
-              }
-            />
-          </div>
-        )}
-        {entries === null ? (
-          !loadError && <Spinner />
-        ) : entries.length === 0 && !busy && !loadError ? (
-          <EmptyState title="No conversation history" />
-        ) : (
-          rows.map((row) => (
-            <div
-              key={row.index}
-              className={styles.conversationRow}
-              data-message={
-                (row.kind === "entry" && (row.entry.type === "user" || row.entry.type === "agent")) || undefined
-              }
-              data-process={row.kind !== "entry" || row.entry.type !== "user" || undefined}
-            >
-              {authorHeaders.has(row.index) && (
-                <div className={styles.agentAuthor}>
-                  <div className={styles.role}>
-                    <Icon name={providerIcon(task.provider)} size={13} />
-                    <span>{providerName(task.provider)}</span>
-                  </div>
+                  {authorHeaders.has(row.index) && (
+                    <div className={styles.agentAuthor}>
+                      <div className={styles.role}>
+                        <Icon name={providerIcon(task.provider)} size={13} />
+                        <span>{providerName(task.provider)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {renderConversationRow(row)}
                 </div>
-              )}
-              {renderConversationRow(row)}
-            </div>
-          ))
-        )}
-        {subagent && subagentWorking(subagent.status) && (
-          <div className={styles.working}>
-            <Spinner size={12} />
-            <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
-            {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
+              ))
+            )}
+            <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
-        )}
-      </div>
-      {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-    </div>
+          {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
+        </div>
+      </RevealFold.Provider>
+    </OpenFolds.Provider>
   );
 }
 
 type UserEntry = Extract<AgentEntry, { type: "user" }>;
-
-/** Message text with file references and skills as tags, distinct from prose. */
-function MessageText({ text }: { text: string }) {
-  return (
-    <>
-      {messageTokens(text).map((token, i) =>
-        token.kind === "text" ? (
-          <Fragment key={i}>{token.value}</Fragment>
-        ) : (
-          <InlineTag key={i} accent={token.kind === "command"}>
-            {token.value}
-          </InlineTag>
-        ),
-      )}
-    </>
-  );
-}
 
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
 function MessageTime({
@@ -908,13 +1064,6 @@ function Retrying({ retry }: { retry: AgentRetry }) {
 function Elapsed({ since }: { since: number }) {
   const now = useNow(1000);
   return <span className={styles.muted}>{formatDuration(now - since)}</span>;
-}
-
-/** Text selected in `stream`, or "" when the selection is elsewhere. */
-function selectionIn(stream: HTMLElement): string {
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
-  return stream.contains(sel.getRangeAt(0).commonAncestorContainer) ? sel.toString() : "";
 }
 
 interface RangeSet {
@@ -1139,6 +1288,15 @@ function AgentMessage({
   );
 }
 
+/** The first line of reasoning, without its Markdown emphasis: what a folded thought was about. */
+export function thoughtPreview(text: string): string {
+  const line = text.split("\n").find((l) => l.trim()) ?? "";
+  return line
+    .replace(/^\s*(#+\s*|[-*]\s+)?/, "")
+    .replace(/[*_`]+/g, "")
+    .trim();
+}
+
 /** The agent's reasoning: open while it streams, folded after, as Settings › Agents › Chat says. */
 function ThoughtEntry({
   task,
@@ -1151,8 +1309,13 @@ function ThoughtEntry({
   working: boolean;
   onDiagramDrawn: () => void;
 }) {
-  const { thinking } = useAgentSettings();
+  const { thinking, smoothText } = useAgentSettings();
   const open = thinking === "expanded" || (thinking === "auto" && working);
+  // Streaming reasoning in view is revealed at the reply's pace; folded, nothing is painted.
+  const shown = useRevealedText(text, working && smoothText && open);
+  useLayoutEffect(() => {
+    if (working && open) onDiagramDrawn();
+  }, [shown, working, open, onDiagramDrawn]);
   return (
     <div className={styles.process}>
       <Fold
@@ -1160,17 +1323,19 @@ function ThoughtEntry({
         open={open}
         summary={
           <summary>
+            <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
             {working ? (
-              <Spinner size={12} />
+              <span className={styles.shimmer}>
+                <T>Thinking</T>
+              </span>
             ) : (
-              <Icon name="chevron-right" size={12} className={styles.thoughtChevron} />
+              <span className={styles.thoughtPreview}>{thoughtPreview(text) || <T>Reasoning</T>}</span>
             )}
-            <T>{working ? "Thinking" : "Reasoning"}</T>
           </summary>
         }
       >
         <div className={styles.thoughtBody}>
-          <Markdown text={text} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
+          <Markdown text={shown} cwd={task.cwd} onDiagramDrawn={onDiagramDrawn} />
         </div>
       </Fold>
     </div>
@@ -1252,7 +1417,7 @@ const Entry = memo(function Entry({
             <T>Task from the parent agent</T>
           </div>
           <div className={styles.user}>
-            <MessageText text={entry.text} />
+            <ReferencedText text={entry.text} cwd={task.cwd} />
           </div>
         </div>
       ) : (
@@ -1316,7 +1481,14 @@ function UserMessage({
   }
   const images = entry.images ?? [];
   // Images are listed after the files in `attachments` and shown as thumbnails instead.
-  const files = entry.attachments.slice(0, entry.attachments.length - images.length);
+  // Files mentioned in the text are chips there already.
+  const mentioned = new Set(
+    messageTokens(entry.text).flatMap((t) => {
+      const m = t.kind === "file" ? parseMention(t.value) : null;
+      return m ? [basename(m.rel.replace(/\/$/, ""))] : [];
+    }),
+  );
+  const files = entry.attachments.slice(0, entry.attachments.length - images.length).filter((a) => !mentioned.has(a));
   return (
     <div className={clsx(styles.message, styles.userMessage)}>
       {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
@@ -1363,7 +1535,7 @@ function UserMessage({
         </span>
       </div>
       <div className={styles.user}>
-        <MessageText text={entry.text} />
+        <ReferencedText text={entry.text} cwd={task.cwd} />
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
@@ -1523,8 +1695,11 @@ type EntryRow = Extract<ConversationRow, { kind: "entry" }>;
 const liveTool = (entry: AgentEntry) =>
   entry.type === "tool" && (entry.status === "running" || entry.status === "pending");
 
-/** Reasoning and finished tool calls fold together; a running tool stays visible on its own. */
-const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || (entry.type === "tool" && !liveTool(entry));
+/**
+ * Reasoning and tool calls fold together, running ones included: the run keeps its place while
+ * a call finishes, and its summary line says what is running.
+ */
+const isProcessEntry = (entry: AgentEntry) => entry.type === "thought" || entry.type === "tool";
 
 /**
  * The conversation's rows from `from`: a run of reasoning and finished tool calls becomes
@@ -1571,11 +1746,11 @@ export function foldTurnRows(rows: ConversationRow[], turns: ReadonlyMap<number,
   return out;
 }
 
-/** "Reasoning · Edited 2 files · Read 4 files": what a run of work did. */
+/** "Edited 2 files · Read 4 files": what a run of work did; "Reasoning" when it only thought. */
 function workSummaryText(work: WorkSummary, tx: ReturnType<typeof useTx>, toolCalls: number): string[] {
   const parts = workParts(work).map((p) => tx(p.text).replace("{count}", String(p.count)));
   if (!parts.length && toolCalls) parts.push(`${toolCalls} ${tx(toolCalls === 1 ? "tool call" : "tool calls")}`);
-  if (work.thoughts) parts.unshift(tx("Reasoning"));
+  if (!parts.length && work.thoughts) parts.push(tx("Reasoning"));
   return parts;
 }
 
@@ -1598,11 +1773,12 @@ function TurnFold({
   const took = turn.sentMs != null && turn.doneMs != null ? formatDuration(turn.doneMs - turn.sentMs) : null;
   return (
     <Fold
+      id={`turn:${turn.user}`}
       className={clsx(styles.turnFold, styles.process)}
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          <span>{parts.join(" · ")}</span>
+          <span className={styles.processParts}>{parts.join(" · ")}</span>
           {work.added > 0 && <span className={styles.added}>+{work.added}</span>}
           {work.removed > 0 && <span className={styles.removed}>−{work.removed}</span>}
           {took && <span className={styles.muted}>{took}</span>}
@@ -1620,14 +1796,13 @@ const ProcessRun = memo(function ProcessRun({
   task,
   lastIndex,
   busy,
-  renderRow,
+  onDiagramDrawn,
 }: {
   row: Extract<ConversationRow, { kind: "process" }>;
   task: AgentTask;
   lastIndex: number;
   busy: boolean;
-  /** Renders one non-folded row (a reasoning entry). */
-  renderRow: (row: EntryRow) => ReactElement;
+  onDiagramDrawn: () => void;
 }) {
   const tx = useTx();
   const tools = row.entries.filter(
@@ -1637,26 +1812,55 @@ const ProcessRun = memo(function ProcessRun({
   const { added, removed } = work;
   const working = busy && row.entries.some(({ index }) => index === lastIndex);
   const parts = workSummaryText(work, tx, tools.length);
+  // What the run is doing now: the call still running, or the reasoning it ends with.
+  const live = [...tools].reverse().find(({ entry }) => liveTool(entry))?.entry;
+  const last = row.entries.at(-1)!.entry;
+  const current = live
+    ? shortTitle(task, live.title || live.kind)
+    : working && last.type === "thought"
+      ? tx("Thinking")
+      : null;
+  // While the run grows, its open body follows the latest call unless scrolled up.
+  const body = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  useLayoutEffect(() => {
+    const el = body.current;
+    if (el && working && following.current) el.scrollTop = el.scrollHeight;
+  });
   return (
     <Fold
+      id={`run:${row.index}`}
       className={clsx(styles.processRun, styles.process)}
       summary={
         <summary className={styles.processSummary}>
           <Icon name="chevron-right" size={12} className={styles.processChevron} />
-          {working && <Spinner size={12} />}
-          <span>{parts.join(" · ")}</span>
+          <span className={clsx(styles.processParts, (working || live) && styles.shimmer)}>{parts.join(" · ")}</span>
           {added > 0 && <span className={styles.added}>+{added}</span>}
           {removed > 0 && <span className={styles.removed}>−{removed}</span>}
+          {current && <span className={clsx(styles.processCurrent, styles.shimmer)}>{current}</span>}
         </summary>
       }
     >
-      <div className={styles.processBody}>
+      <div
+        ref={body}
+        className={styles.processBody}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        }}
+      >
         {row.entries.map(({ index, entry }) =>
           entry.type === "tool" ? (
             <ToolEntry key={index} task={task} entry={entry} />
-          ) : (
-            renderRow({ kind: "entry", index, entry })
-          ),
+          ) : entry.type === "thought" ? (
+            <ThoughtEntry
+              key={index}
+              task={task}
+              text={entry.text}
+              working={busy && index === lastIndex}
+              onDiagramDrawn={onDiagramDrawn}
+            />
+          ) : null,
         )}
       </div>
     </Fold>
@@ -1667,24 +1871,59 @@ const ProcessRun = memo(function ProcessRun({
 const FoldedContent = createContext(false);
 
 /**
+ * Which keyed folds of a conversation the reader opened. A fold's row can remount (a run
+ * grows from one call to two, a finished turn folds its work away); this keeps it as it was.
+ */
+const OpenFolds = createContext<Map<string, boolean> | null>(null);
+
+/** Scrolls a section the reader just opened into view (`Stream`). */
+const RevealFold = createContext<((el: HTMLElement) => void) | null>(null);
+
+/**
  * A collapsed section that renders its content only once opened: most of a long conversation
  * stays folded, and keeping it out of the DOM keeps showing and restyling the tab cheap.
  */
 function Fold({
+  id,
   className,
   open,
   summary,
   children,
 }: {
+  /** Remembers whether the reader opened it across remounts (`OpenFolds`). */
+  id?: string;
   className?: string;
   open?: boolean;
   summary: ReactElement;
   children: ReactNode;
 }) {
   const always = useContext(FoldedContent);
-  const [expanded, setExpanded] = useState(!!open);
+  const remembered = useContext(OpenFolds);
+  const reveal = useContext(RevealFold);
+  const [expanded, setExpanded] = useState(() => !!open || (!!id && !!remembered?.get(id)));
+  const ref = useRef<HTMLDetailsElement>(null);
+  const opened = useRef(false);
+  // Once its content is laid out, so its height is known.
+  useLayoutEffect(() => {
+    if (!expanded || !opened.current) return;
+    opened.current = false;
+    if (ref.current) reveal?.(ref.current);
+  }, [expanded, reveal]);
   return (
-    <details className={className} open={open || undefined} onToggle={(e) => setExpanded(e.currentTarget.open)}>
+    <details
+      ref={ref}
+      className={className}
+      open={open || (!!id && expanded) || undefined}
+      onToggle={(e) => {
+        const now = e.currentTarget.open;
+        opened.current = now;
+        setExpanded(now);
+        if (id && remembered) {
+          if (now) remembered.set(id, true);
+          else remembered.delete(id);
+        }
+      }}
+    >
       {summary}
       {(expanded || open || always) && children}
     </details>
@@ -1702,7 +1941,7 @@ const ToolEntry = memo(function ToolEntry({
   const head = (
     <>
       <Icon name={TOOL_ICONS[entry.kind] ?? "run"} size={14} />
-      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+      <span className={clsx(styles.toolTitle, liveTool(entry) && styles.shimmer)} title={entry.title || entry.kind}>
         {shortTitle(task, entry.title || entry.kind)}
       </span>
       {entry.diffs.map((d) => (
@@ -1719,7 +1958,6 @@ const ToolEntry = memo(function ToolEntry({
           <span className={styles.added}>+{d.added}</span> <span className={styles.removed}>−{d.removed}</span>
         </button>
       ))}
-      {(entry.status === "running" || entry.status === "pending") && <Spinner size={12} />}
       {entry.status === "failed" && <Icon name="error" size={12} />}
     </>
   );
@@ -2306,24 +2544,10 @@ function QuestionForm({
 
 /**
  * What needs the user or tells where the agent is, above the composer: an approval it
- * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan, the
- * task's changes, then what runs and what is queued, and a line saying what it does now.
+ * waits for (answered with 1, 2, 3… when the focus isn't in a text field), the plan,
+ * then what runs and what is queued, and a line saying what it does now.
  */
-function Tray({
-  task,
-  entries,
-  changes,
-  changesOpen,
-  onToggleChanges,
-  children,
-}: {
-  task: AgentTask;
-  entries: AgentEntry[] | null;
-  changes: AgentChange[] | null;
-  changesOpen: boolean;
-  onToggleChanges: () => void;
-  children: ReactNode;
-}) {
+function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
   const pending = entries?.find(
     (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
@@ -2332,38 +2556,20 @@ function Tray({
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
   const planShown = plan && plan.items.length > 0 && done < plan.items.length;
-  const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
-  const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
-  const busy = task.status === "running" || task.status === "starting";
-  const tool = entries && busy ? currentTool(entries) : null;
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
   return (
     <div className={styles.tray}>
       {pending && <PendingPermission task={task} entry={pending} />}
-      {(planShown || !!changes?.length) && (
+      {planShown && (
         <div className={styles.trayStrip}>
-          {planShown && (
-            <button
-              type="button"
-              className={styles.trayChip}
-              aria-expanded={planOpen}
-              onClick={() => setPlanOpen(!planOpen)}
-            >
-              <Icon name="todo" size={13} />
-              {tx`Plan ${done}/${plan.items.length}`}
-            </button>
-          )}
-          {!!changes?.length && (
-            <button type="button" className={styles.trayChip} aria-pressed={changesOpen} onClick={onToggleChanges}>
-              <Icon name="edit" size={13} />
-              {tx(changes.length === 1 ? "1 changed file" : "{count} changed files").replace(
-                "{count}",
-                String(changes.length),
-              )}
-              {added > 0 && <span className={styles.added}>+{added}</span>}
-              {removed > 0 && <span className={styles.removed}>−{removed}</span>}
-            </button>
-          )}
+          <button
+            type="button"
+            className={styles.trayChip}
+            aria-expanded={planOpen}
+            onClick={() => setPlanOpen(!planOpen)}
+          >
+            <Icon name="todo" size={13} />
+            {tx`Plan ${done}/${plan.items.length}`}
+          </button>
         </div>
       )}
       {planShown && planOpen && (
@@ -2387,21 +2593,45 @@ function Tray({
         </div>
       )}
       {children}
-      {busy && !pending && (
-        <div className={styles.working} role="status">
-          <Spinner size={12} />
-          {task.retry ? (
-            <Retrying retry={task.retry} />
-          ) : tool ? (
-            <span className={styles.trayActivity} title={tool.title}>
-              {shortTitle(task, tool.title || tool.kind)}
-            </span>
-          ) : (
-            <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
-          )}
-          {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
-        </div>
+    </div>
+  );
+}
+
+/**
+ * The end of the conversation while the agent works on it: what it is doing (starting, working,
+ * retrying the API) and for how long. Hidden while it waits for an approval, which says so itself.
+ */
+function WorkingRow({
+  task,
+  entries,
+  subagent,
+}: {
+  task: AgentTask;
+  entries: AgentEntry[] | null;
+  subagent: SubagentEntry | null;
+}) {
+  if (subagent) {
+    if (!subagentWorking(subagent.status)) return null;
+    return (
+      <div className={styles.working} role="status">
+        <Spinner size={12} />
+        <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+        {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
+      </div>
+    );
+  }
+  if (task.status !== "running" && task.status !== "starting") return null;
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
+  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  return (
+    <div className={styles.working} role="status">
+      <Spinner size={12} />
+      {task.retry ? (
+        <Retrying retry={task.retry} />
+      ) : (
+        <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
       )}
+      {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
     </div>
   );
 }
@@ -2437,7 +2667,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
       if (!el?.contains(document.activeElement) && document.activeElement !== document.body) return;
       requestAnimationFrame(() => {
         if (document.activeElement === document.body || !document.activeElement?.isConnected)
-          area?.querySelector<HTMLElement>("textarea")?.focus({ preventScroll: true });
+          area?.querySelector<HTMLElement>(".cm-content")?.focus({ preventScroll: true });
       });
     };
   }, []);
@@ -2453,6 +2683,7 @@ function SessionComposer({
   entries,
   head,
   changes,
+  commits,
   changesOpen,
   onToggleChanges,
   onOpenSubagent,
@@ -2461,6 +2692,7 @@ function SessionComposer({
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
   changesOpen: boolean;
   onToggleChanges: () => void;
   onOpenSubagent: (id: string) => void;
@@ -2511,6 +2743,7 @@ function SessionComposer({
         entries={entries}
         head={head}
         changes={changes}
+        commits={commits}
         changesOpen={changesOpen}
         onToggleChanges={onToggleChanges}
       />
@@ -2526,7 +2759,7 @@ function SessionComposer({
           />
         </div>
       )}
-      <Tray task={task} entries={entries} changes={changes} changesOpen={changesOpen} onToggleChanges={onToggleChanges}>
+      <Tray task={task} entries={entries}>
         <WorkingSubagents entries={entries} onOpen={onOpenSubagent} />
         <BackgroundTasks task={task} />
         {task.queue.length > 0 && <Queue task={task} />}
@@ -2685,22 +2918,217 @@ function useChangesOpen(
   return [chosen ?? (changes?.length ?? 0) > 0, set];
 }
 
+const NO_SELECTION: ReadonlySet<string> = new Set();
+
+/** A row of the Changes pane: a group, a commit, or a file. */
+type ChangeRow =
+  | {
+      key: string;
+      type: "group";
+      label: "Uncommitted" | "Committed";
+      count: number;
+      added: number;
+      removed: number;
+      children: ChangeRow[];
+    }
+  | { key: string; type: "commit"; commit: AgentCommit; children: ChangeRow[] }
+  | { key: string; type: "file"; change: AgentChange; commit?: AgentCommit };
+
+function statsOf(changes: readonly AgentChange[]) {
+  return changes.reduce((n, c) => ({ added: n.added + c.added, removed: n.removed + c.removed }), {
+    added: 0,
+    removed: 0,
+  });
+}
+
+function changeRows(
+  uncommitted: readonly AgentChange[],
+  commits: readonly AgentCommit[],
+  grouped: boolean,
+): ChangeRow[] {
+  if (!grouped)
+    return uncommitted.map((change) => ({
+      key: change.path,
+      type: "file" as const,
+      change,
+    }));
+  const roots: ChangeRow[] = [];
+  if (uncommitted.length) {
+    roots.push({
+      key: "group:uncommitted",
+      type: "group",
+      label: "Uncommitted",
+      count: uncommitted.length,
+      ...statsOf(uncommitted),
+      children: uncommitted.map((change) => ({
+        key: `uncommitted:${change.path}`,
+        type: "file",
+        change,
+      })),
+    });
+  }
+  if (commits.length) {
+    const files = commits.flatMap((commit) => commit.files);
+    roots.push({
+      key: "group:committed",
+      type: "group",
+      label: "Committed",
+      count: commits.length,
+      ...statsOf(files),
+      children: commits.map((commit) => ({
+        key: `commit:${commit.id}`,
+        type: "commit",
+        commit,
+        children: commit.files.map((change) => ({
+          key: `commit:${commit.id}:${change.path}`,
+          type: "file",
+          change,
+          commit,
+        })),
+      })),
+    });
+  }
+  return roots;
+}
+
 function ChangesPane({
   task,
   changes,
+  commits,
+  grouped,
   head,
   docked,
   onHide,
 }: {
   task: AgentTask;
   changes: AgentChange[] | null;
+  commits: readonly AgentCommit[];
+  grouped: boolean;
   head: string | null;
   docked: boolean;
   onHide: () => void;
 }) {
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  // The two views key their rows differently: a selection doesn't carry over.
+  const [selection, setSelection] = useState<{
+    grouped: boolean;
+    keys: ReadonlySet<string>;
+  }>(() => ({
+    grouped,
+    keys: NO_SELECTION,
+  }));
+  const selected = selection.grouped === grouped ? selection.keys : NO_SELECTION;
+  const setSelected = (keys: ReadonlySet<string>) => setSelection({ grouped, keys });
+  const rows = useMemo(() => changeRows(changes ?? [], commits, grouped), [changes, commits, grouped]);
+  // Only the working files roll back; a commit's files are history.
+  const rollbackable = useMemo(() => {
+    const out = new Map<string, AgentChange>();
+    for (const root of rows) {
+      if (root.type === "file") {
+        if (!root.commit) out.set(root.key, root.change);
+        continue;
+      }
+      for (const child of root.children) {
+        if (child.type === "file" && !child.commit) out.set(child.key, child.change);
+      }
+    }
+    return out;
+  }, [rows]);
+  // Selection keys that no longer name a working file (a commit's file, a stale row) don't count.
+  const picked = [...selected].flatMap((key) => rollbackable.get(key) ?? []);
   const added = changes?.reduce((n, c) => n + c.added, 0) ?? 0;
   const removed = changes?.reduce((n, c) => n + c.removed, 0) ?? 0;
+  const rollback = async () => {
+    const count = picked.length || changes?.length || 0;
+    if (!count) return;
+    const ok = await confirm({
+      title: "Rollback Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Roll back the changes to ${basename((picked[0] ?? changes![0]!).path)}?`
+              : tx`Roll back the changes to ${count} files?`}
+          </p>
+          <p>
+            {grouped
+              ? tx("They go back to the last commit; changes made after it are lost.")
+              : task.isolation === "worktree"
+                ? tx("They go back to how they were when the task started, in the task's worktree.")
+                : tx(
+                    "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
+                  )}
+          </p>
+        </>
+      ),
+      ok: "Rollback",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      await rollbackChanges(
+        task.id,
+        picked.length ? picked.map((c) => c.relPath) : null,
+        grouped ? "group" : "sinceStart",
+      );
+      setSelected(new Set());
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot roll back the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  const accept = async () => {
+    // Accepting brings over the task's whole work, committed or not: grouping only changes the listing.
+    const all =
+      grouped && !picked.length
+        ? await call(commands.agentChanges(task.id)).catch(() => changes ?? [])
+        : (changes ?? []);
+    const targets = picked.length ? picked : all;
+    const count = targets.length;
+    if (!count) return;
+    const name = basename(targets[0]!.path);
+    const ok = await confirm({
+      title: "Accept Changes",
+      message: (
+        <>
+          <p>
+            {count === 1
+              ? tx`Copy the changes to ${name} into the local checkout?`
+              : tx`Copy the changes to ${count} files into the local checkout?`}
+          </p>
+          <p>{tx("They land uncommitted. Files you changed yourself since the task started are left alone.")}</p>
+        </>
+      ),
+      ok: "Accept",
+      icon: "warning",
+    });
+    if (!ok) return;
+    try {
+      const outcome = await acceptChanges(task.id, picked.length ? picked.map((c) => c.relPath) : null);
+      setSelected(new Set());
+      if (outcome.skipped.length) {
+        const skippedNames = outcome.skipped.map((s) => s.path).join(", ");
+        notifications().notify({
+          level: "warning",
+          title: tx("Changes accepted, some files kept"),
+          body: tx`You changed them yourself, accept them by hand: ${skippedNames}.`,
+        });
+      } else {
+        notifications().notify({
+          level: "info",
+          title: tx("Changes accepted"),
+        });
+      }
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot accept the changes"),
+        body: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
       <div className={styles.changesHeader}>
@@ -2714,12 +3142,47 @@ function ChangesPane({
           </span>
         )}
         <span className={styles.bannerSpacer} />
+        {task.isolation === "worktree" && (
+          <IconButton
+            icon="check"
+            title={picked.length ? "Accept Selected Changes…" : "Accept All Changes…"}
+            disabled={(!changes?.length && !commits.length) || task.status === "starting" || task.status === "running"}
+            onClick={() => void accept()}
+          />
+        )}
+        <IconButton
+          icon="revert"
+          title={picked.length ? "Rollback Selected Changes…" : "Rollback All Changes…"}
+          disabled={!changes?.length || task.status === "starting" || task.status === "running"}
+          onClick={() => void rollback()}
+        />
         <IconButton icon="refresh" title="Refresh" onClick={() => void refreshChanges(task.id)} />
+        {task.isolation === "worktree" && (
+          <IconButton
+            icon="eye"
+            title="View Options"
+            aria-haspopup="menu"
+            onClick={(e) =>
+              showContextMenu(e, [
+                { kind: "header", label: "Group By" },
+                {
+                  id: "groupByCommit",
+                  label: "Commit",
+                  checked: grouped,
+                  run: () => {
+                    setChangesOptions({ groupByCommit: !grouped });
+                    void refreshChanges(task.id);
+                  },
+                },
+              ])
+            }
+          />
+        )}
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
-      {(head ?? task.base) && (
+      {(grouped || head || task.base) && (
         <div className={styles.changesSummary}>
-          <T>vs</T> {head ?? task.base}
+          <T>vs</T> {grouped ? "HEAD" : (head ?? task.base)}
           {changes && changes.length > 0 && (
             <>
               {"  "}
@@ -2732,28 +3195,81 @@ function ChangesPane({
         {changes === null ? (
           <Spinner />
         ) : (
-          <Tree<AgentChange>
+          <Tree<ChangeRow>
+            key={grouped ? "grouped" : "flat"}
             aria-label="Changed files"
-            roots={changes}
-            getKey={(c) => c.path}
-            getLabel={(c) => basename(c.path)}
-            getChildren={() => undefined}
-            isExpandable={() => false}
+            roots={rows}
+            getKey={(n) => n.key}
+            getLabel={(n) =>
+              n.type === "file" ? basename(n.change.path) : n.type === "commit" ? n.commit.summary : n.label
+            }
+            getChildren={(n) => (n.type === "file" ? undefined : n.children)}
+            isExpandable={(n) => n.type !== "file" && n.children.length > 0}
+            defaultExpanded={grouped ? ["group:uncommitted", "group:committed"] : undefined}
+            activateExpandable={(n) => n.type === "commit"}
             selected={selected}
-            onSelectionChange={(sel) => setSelected(sel)}
-            onActivate={(c) => void openChangeDiff(task, c.path)}
-            renderNode={(c) => (
-              <span className={styles.change} title={c.relPath}>
-                <Icon name={fileIconName(basename(c.path), c.path)} size={16} />
-                <span className={styles.changeName} style={{ color: KIND_COLOR[c.kind] }}>
-                  {basename(c.path)}
+            onSelectionChange={(sel, lead) => {
+              if (lead?.type === "file" && !lead.commit) setSelected(sel);
+            }}
+            onActivate={(n) => {
+              if (n.type === "file") {
+                if (n.commit) void openCommitDiff(task, n.commit, n.change.path);
+                else if (grouped) void openUncommittedDiff(task, n.change.path);
+                else void openChangeDiff(task, n.change.path);
+              } else if (n.type === "commit") {
+                void openCommitDiff(task, n.commit, n.commit.files[0]?.path ?? "");
+              }
+            }}
+            renderNode={(n) => {
+              if (n.type === "group") {
+                return (
+                  <span className={styles.changeGroup}>
+                    <span className={styles.changeGroupName}>
+                      {n.label === "Uncommitted" ? <T>Uncommitted</T> : <T>Committed</T>}
+                    </span>
+                    <span className={styles.muted}>
+                      {n.label === "Committed"
+                        ? tx(n.count === 1 ? "1 commit" : "{count} commits").replace("{count}", String(n.count))
+                        : `${n.count} ${tx(n.count === 1 ? "file" : "files")}`}
+                    </span>
+                    <span className={styles.changeStat}>
+                      {n.added > 0 && <span className={styles.added}>+{n.added}</span>}{" "}
+                      {n.removed > 0 && <span className={styles.removed}>−{n.removed}</span>}
+                    </span>
+                  </span>
+                );
+              }
+              if (n.type === "commit") {
+                const stats = statsOf(n.commit.files);
+                return (
+                  <span className={styles.changeCommit} title={n.commit.message}>
+                    <Icon name="commit" size={14} />
+                    <span className={styles.changeCommitHash}>{n.commit.shortId}</span>
+                    <span className={styles.changeCommitSummary}>{n.commit.summary}</span>
+                    {n.commit.timeMs != null && (
+                      <span className={styles.changeCommitTime}>{formatSentAt(n.commit.timeMs)}</span>
+                    )}
+                    <span className={styles.changeStat}>
+                      {stats.added > 0 && <span className={styles.added}>+{stats.added}</span>}{" "}
+                      {stats.removed > 0 && <span className={styles.removed}>−{stats.removed}</span>}
+                    </span>
+                  </span>
+                );
+              }
+              return (
+                <span className={styles.change} title={n.change.relPath}>
+                  <Icon name={fileIconName(basename(n.change.path), n.change.path)} size={16} />
+                  <span className={styles.changeName} style={{ color: KIND_COLOR[n.change.kind] }}>
+                    {basename(n.change.path)}
+                  </span>
+                  <span className={styles.changeDir}>{relativeDir(task.cwd, n.change.path)}</span>
+                  <span className={styles.changeStat}>
+                    {n.change.added > 0 && <span className={styles.added}>+{n.change.added}</span>}{" "}
+                    {n.change.removed > 0 && <span className={styles.removed}>−{n.change.removed}</span>}
+                  </span>
                 </span>
-                <span className={styles.changeDir}>{relativeDir(task.cwd, c.path)}</span>
-                <span className={styles.changeStat}>
-                  <span className={styles.added}>+{c.added}</span> <span className={styles.removed}>−{c.removed}</span>
-                </span>
-              </span>
-            )}
+              );
+            }}
             empty={
               <div className={styles.changesEmpty}>
                 <T>No changes yet</T>
@@ -2768,21 +3284,81 @@ function ChangesPane({
 
 /** Opens the diff of `path` between the task's start and now. */
 export async function openChangeDiff(task: AgentTask, path: string) {
-  const base = await call(commands.agentBaseText(task.id, path)).catch(() => null);
+  const changed = (useAgents.getState().changes.get(task.id) ?? []).map((change) => change.path);
+  const paths = changed.includes(path) ? changed : [path];
   const baseLabel = task.base ?? "Base";
   const right = task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree";
-  await editorService().openInput(
-    {
-      kind: "diff",
-      key: `diff:agent:${task.id}:${path}`,
-      path,
-      data: {
-        path,
+  const diffs = await Promise.all(
+    paths.map(async (file): Promise<DiffData> => {
+      const base = await call(commands.agentBaseText(task.id, file)).catch(() => null);
+      return {
+        path: file,
         left: { type: "text", text: base ?? "", label: baseLabel },
-        right: { type: "file", path, label: right },
-        title: `${basename(path)} (${baseLabel} ↔ ${right})`,
-      },
-    },
-    { focus: true },
+        right: { type: "file", path: file, label: right },
+        title: `${basename(file)} (${baseLabel} ↔ ${right})`,
+      };
+    }),
   );
+  await openDiff(withChain(diffs, paths.indexOf(path)));
+}
+
+/** Diff of `path` in the grouped view: `HEAD` ↔ the working file. */
+function uncommittedDiffData(task: AgentTask, change: AgentChange): DiffData {
+  const left: DiffData["left"] =
+    change.kind === "added" || change.kind === "untracked"
+      ? { type: "text", text: "", label: "(does not exist)", absent: true }
+      : {
+          type: "rev",
+          rev: "HEAD",
+          path: change.oldPath ? repositoryPath(task.cwd, change.oldPath) : undefined,
+          label: "HEAD",
+        };
+  const right: DiffData["right"] =
+    change.kind === "deleted"
+      ? { type: "text", text: "", label: "(deleted)", absent: true }
+      : {
+          type: "worktree",
+          label: task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree",
+        };
+  return { path: change.path, left, right };
+}
+
+/** Registration needed before a diff reads revisions inside the task's own worktree. */
+async function ensureTaskRepo(task: AgentTask) {
+  // A worktree is its own repository, outside the project's: `vcs_file_at` reads it only once
+  // it is registered as an external log for this window.
+  if (task.isolation === "worktree") await call(commands.vcsOpenExternalLog(task.cwd)).catch(() => undefined);
+}
+
+/** Opens the diff of `path` among the task's uncommitted files (grouped view). */
+async function openUncommittedDiff(task: AgentTask, path: string) {
+  const changes = useAgents.getState().groupedChanges.get(task.id)?.uncommitted ?? [];
+  const paths = changes.map((change) => change.path);
+  if (!paths.includes(path)) return;
+  await ensureTaskRepo(task);
+  await openDiff(
+    withChain(
+      changes.map((change) => uncommittedDiffData(task, change)),
+      paths.indexOf(path),
+    ),
+  );
+}
+
+/** Opens the diff of one commit (`parent ↔ commit`), starting at `path`. */
+async function openCommitDiff(task: AgentTask, commit: AgentCommit, path: string) {
+  const diffs = commit.files.map((file) =>
+    commitFileDiffData(
+      {
+        id: commit.id,
+        shortId: commit.shortId,
+        parents: commit.parent ? [commit.parent] : [],
+        repo: task.cwd,
+      },
+      { path: file.relPath, kind: file.kind, oldPath: file.oldPath },
+    ),
+  );
+  if (!diffs.length) return;
+  await ensureTaskRepo(task);
+  const index = commit.files.findIndex((file) => file.path === path);
+  await openDiff(withChain(diffs, index < 0 ? 0 : index));
 }

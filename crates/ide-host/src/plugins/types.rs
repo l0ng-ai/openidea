@@ -43,6 +43,9 @@ pub enum PluginStatus {
     NeedsConsent,
     /// Failed to load, or failed repeatedly and was stopped for this session (see `error`).
     Failed,
+    /// A plugin it requires is missing, disabled, the wrong version or cannot run
+    /// (`error` says which); it starts when that is resolved.
+    Blocked,
 }
 
 impl PluginStatus {
@@ -87,6 +90,45 @@ pub struct PluginInfo {
     pub publisher: Option<String>,
     /// The version an update replaced, to roll back to.
     pub previous_version: Option<String>,
+    /// `[[depends]]`, each with how it stands now.
+    pub depends: Vec<DependencyInfo>,
+    /// Plugins that need this one, directly or through others.
+    pub dependents: Vec<DependentInfo>,
+    /// `[[extension-points]]` this plugin declares while it is live.
+    pub extension_points: Vec<ExtensionPointInfo>,
+}
+
+/// A plugin another one requires.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyInfo {
+    pub id: String,
+    /// The installed plugin's name, when it is installed.
+    pub name: Option<String>,
+    /// The requirement as written (`^0.2`).
+    pub version: Option<String>,
+    pub optional: bool,
+    pub state: ide_extension::DependencyState,
+}
+
+/// A plugin that needs another one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DependentInfo {
+    pub id: String,
+    pub name: String,
+    /// Switched off by the user: disabling the plugin it needs changes nothing for it.
+    pub enabled: bool,
+}
+
+/// An extension point a plugin declared.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionPointInfo {
+    pub id: String,
+    pub description: String,
+    /// Plugin ids contributing to it now.
+    pub contributors: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, Type)]
@@ -176,6 +218,9 @@ pub enum PluginEvent {
     /// Reply to a content action in this window.
     #[serde(rename_all = "camelCase")]
     ContentTabReply { plugin_id: String, request_id: String, reply: ide_plugin::ContentTabReply },
+    /// Open two texts in this window's diff viewer.
+    #[serde(rename_all = "camelCase")]
+    OpenDiff { plugin_id: String, diff: ide_plugin::ContentDiff, file_name: Option<String> },
 
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
@@ -233,6 +278,9 @@ pub enum PluginEvent {
     /// The kinds of workbench events plugins want changed: re-fetch
     /// `plugin_event_kinds` (the UI reports only those).
     SubscriptionsChanged,
+    /// A background WebSocket has messages ready for its owning plugin.
+    #[serde(rename_all = "camelCase")]
+    WebsocketReady { plugin_id: String, connection: u64 },
     #[serde(rename_all = "camelCase")]
     ThemeChanged { theme: Option<ActiveTheme> },
     /// A plugin needs capabilities the user has not granted yet (first use
@@ -279,6 +327,10 @@ pub enum PluginEvent {
     /// The call that asked gave up (cancelled, or its plugin stopped): close the prompt.
     #[serde(rename_all = "camelCase")]
     PromptClosed { prompt_id: String },
+    /// A command of this window's prompting plugin was run from another window and refused
+    /// while the plugin waits for the answer here: bring this window to the front.
+    #[serde(rename_all = "camelCase")]
+    PromptWaiting { plugin_id: String },
     /// Bring the tool window of the plugin's view `view` to the front.
     #[serde(rename_all = "camelCase")]
     RevealView { plugin_id: String, view: String },

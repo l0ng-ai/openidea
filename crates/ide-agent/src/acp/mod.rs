@@ -14,6 +14,7 @@
 //! - Agent → client ([`Dialect`]): `session/update`s are normalized ([`normalize`]) and
 //!   permission requests get the v1 `toolCall`.
 
+pub(crate) mod discover;
 mod normalize;
 
 use ide_jsonrpc::{Handler, Peer, RpcError, codes};
@@ -57,6 +58,9 @@ fn client_capabilities() -> Value {
         "terminal": false,
         // Subagents as sessions of their own (ACP subagents RFD; v2 baseline).
         "subagents": {},
+        // Cursor exposes model parameters (e.g. Composer `fast`) as separate config options
+        // only when the client advertises this flag (undocumented Cursor ACP extension).
+        "_meta": { "parameterizedModelPicker": true },
     })
 }
 
@@ -164,6 +168,11 @@ impl Negotiated {
         self.capabilities.pointer(&format!("/promptCapabilities/{name}")).and_then(Value::as_bool) == Some(true)
     }
 
+    /// `mcpCapabilities.<name>` (`http`, `sse`).
+    pub fn mcp(&self, name: &str) -> bool {
+        self.capabilities.pointer(&format!("/mcpCapabilities/{name}")).and_then(Value::as_bool) == Some(true)
+    }
+
     /// `sessionCapabilities.<name>` (`fork`, `resume`, `close`, `list`, `delete`).
     pub fn session(&self, name: &str) -> bool {
         self.capabilities.pointer(&format!("/sessionCapabilities/{name}")).is_some_and(|v| !v.is_null())
@@ -172,6 +181,17 @@ impl Negotiated {
     /// `agentCapabilities._meta` at `pointer` (e.g. `/openidea/rollback`).
     pub fn meta(&self, pointer: &str) -> Option<&Value> {
         self.capabilities.get("_meta")?.pointer(pointer)
+    }
+
+    /// First authentication method the agent can run over ACP (`type` absent or `"agent"`).
+    pub fn agent_auth_method(&self) -> Option<&str> {
+        self.auth_methods.iter().find_map(|m| {
+            let kind = m.get("type").and_then(Value::as_str).unwrap_or("agent");
+            (kind == "agent" && m.pointer("/_meta/terminal-auth").is_none())
+                .then(|| m.get("id").and_then(Value::as_str))
+                .flatten()
+                .filter(|id| !id.is_empty())
+        })
     }
 }
 

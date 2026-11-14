@@ -31,6 +31,9 @@ export interface AttributeDef {
   token?: string;
   /** A semantic modifier whose only configurable attribute is italic. */
   italicOnly?: boolean;
+  /** The attribute's renderer applies font style and effects (tokens, the Git surfaces,
+   * Errors and Warnings): overrides land on `--<fg|effect>-*`. */
+  fontStyle?: true;
   defaultBold?: boolean;
   defaultItalic?: boolean;
   defaultEffect?: TextAttributesOverride["effect"];
@@ -49,18 +52,32 @@ const syn = (
   name,
   path,
   token,
+  fontStyle: true,
   fg: `--syn-${token}`,
   ...defaults,
 });
 
 const LD = "Language Defaults";
 
+/** A Python page attribute: language-scoped, so its overrides apply to Python editors only. */
+const py = (
+  id: string,
+  name: string,
+  token: string,
+  defaults: Pick<AttributeDef, "defaultBold" | "defaultItalic" | "defaultEffect"> = {},
+): AttributeDef => ({ ...syn(id, name, ["Python"], token, defaults), language: "Python" });
+
 /** IDEA-style attribute tree: General, Language Defaults, then languages. */
 const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   { id: "text", name: "Default text", path: ["General", "Text"], fg: "--fg-editor", bg: "--bg-editor" },
   { id: "caret", name: "Caret", path: ["General", "Editor"], fg: "--caret" },
   { id: "caretRow", name: "Caret row", path: ["General", "Editor"], bg: "--bg-current-line" },
-  { id: "selection", name: "Selection background", path: ["General", "Editor"], bg: "--bg-editor-selection" },
+  {
+    id: "selection",
+    name: "Selection background",
+    path: ["General", "Editor"],
+    bg: "--bg-editor-selection",
+  },
   {
     id: "selectionForeground",
     name: "Selection foreground",
@@ -111,21 +128,144 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     fg: "--fg-fold-placeholder",
     bg: "--bg-fold-placeholder",
   },
-  { id: "searchResult", name: "Search result", path: ["General", "Search Results"], bg: "--bg-search-match" },
+  {
+    id: "searchResult",
+    name: "Search result",
+    path: ["General", "Search Results"],
+    bg: "--bg-search-match",
+  },
   {
     id: "searchResultCurrent",
     name: "Current search result",
     path: ["General", "Search Results"],
     bg: "--bg-search-match-current",
   },
-  { id: "error", name: "Error", path: ["General", "Errors and Warnings"], effect: "--wave-error" },
-  { id: "warning", name: "Warning", path: ["General", "Errors and Warnings"], effect: "--wave-warning" },
+  {
+    id: "error",
+    name: "Error",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-error",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "warning",
+    name: "Warning",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-warning",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
   { id: "weakWarning", name: "Weak warning", path: ["General", "Errors and Warnings"], fg: "--fg-weak-warning" },
-  { id: "unused", name: "Unused symbol", path: ["General", "Errors and Warnings"], fg: "--fg-unused" },
+  {
+    id: "typo",
+    name: "Typo",
+    path: ["General", "Errors and Warnings"],
+    effect: "--wave-typo",
+    defaultEffect: "wave",
+    fontStyle: true,
+  },
+  {
+    id: "unused",
+    name: "Unused symbol",
+    path: ["General", "Errors and Warnings"],
+    fg: "--fg-unused",
+    fontStyle: true,
+  },
+  {
+    id: "deprecated",
+    name: "Deprecated symbol",
+    path: ["General", "Errors and Warnings"],
+    effect: "--fg-deprecated",
+    defaultEffect: "strikeout",
+    fontStyle: true,
+  },
   syn("invalid", "Bad character", ["General", "Errors and Warnings"], "invalid"),
   syn("todo", "TODO defaults", ["General", "Code"], "todo"),
   { id: "inlineValue", name: "Inline debugger values", path: ["Debugger"], fg: "--syn-inline-value" },
   { id: "breakpointLine", name: "Breakpoint line", path: ["Debugger"], bg: "--bg-breakpoint-line" },
+
+  // Console / terminal: IDEA's Console Colors (background + 16 ANSI). `--ansi-*` is mirrored
+  // to `--terminal-ansi-*` in overrideDeclarations so the terminal picks up edits.
+  {
+    id: "consoleBackground",
+    name: "Console background",
+    path: ["Console Colors"],
+    bg: "--bg-console",
+  },
+  { id: "ansiBlack", name: "Black", path: ["Console Colors"], fg: "--ansi-black" },
+  { id: "ansiRed", name: "Red", path: ["Console Colors"], fg: "--ansi-red" },
+  { id: "ansiGreen", name: "Green", path: ["Console Colors"], fg: "--ansi-green" },
+  { id: "ansiYellow", name: "Yellow", path: ["Console Colors"], fg: "--ansi-yellow" },
+  { id: "ansiBlue", name: "Blue", path: ["Console Colors"], fg: "--ansi-blue" },
+  { id: "ansiMagenta", name: "Magenta", path: ["Console Colors"], fg: "--ansi-magenta" },
+  { id: "ansiCyan", name: "Cyan", path: ["Console Colors"], fg: "--ansi-cyan" },
+  { id: "ansiWhite", name: "White", path: ["Console Colors"], fg: "--ansi-white" },
+  { id: "ansiBrightBlack", name: "Dark gray", path: ["Console Colors"], fg: "--ansi-bright-black" },
+  { id: "ansiBrightRed", name: "Bright red", path: ["Console Colors"], fg: "--ansi-bright-red" },
+  { id: "ansiBrightGreen", name: "Bright green", path: ["Console Colors"], fg: "--ansi-bright-green" },
+  { id: "ansiBrightYellow", name: "Bright yellow", path: ["Console Colors"], fg: "--ansi-bright-yellow" },
+  { id: "ansiBrightBlue", name: "Bright blue", path: ["Console Colors"], fg: "--ansi-bright-blue" },
+  { id: "ansiBrightMagenta", name: "Bright magenta", path: ["Console Colors"], fg: "--ansi-bright-magenta" },
+  { id: "ansiBrightCyan", name: "Bright cyan", path: ["Console Colors"], fg: "--ansi-bright-cyan" },
+  { id: "ansiBrightWhite", name: "Bright white", path: ["Console Colors"], fg: "--ansi-bright-white" },
+
+  // Color Scheme › Git: inline blame segments and project view branch decorations.
+  // The inline blame widget and the project root suffix read these variables directly;
+  // only the blame segments render font style, so the branch decorations opt out.
+  {
+    id: "gitBlameAuthor",
+    name: "Editor inline blame › Author",
+    path: ["Git"],
+    fg: "--git-blame-author",
+    bg: "--git-blame-author-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameDate",
+    name: "Editor inline blame › Date time",
+    path: ["Git"],
+    fg: "--git-blame-date",
+    bg: "--git-blame-date-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameIssue",
+    name: "Editor inline blame › Issue link",
+    path: ["Git"],
+    fg: "--git-blame-issue",
+    bg: "--git-blame-issue-bg",
+    fontStyle: true,
+  },
+  {
+    id: "gitBlameSubject",
+    name: "Editor inline blame › Subject",
+    path: ["Git"],
+    fg: "--git-blame-subject",
+    bg: "--git-blame-subject-bg",
+    fontStyle: true,
+  },
+  { id: "gitBranchChanged", name: "Project View › Changed decoration", path: ["Git"], fg: "--git-branch-changed" },
+  { id: "gitHeadTags", name: "Project View › HEAD tags decoration", path: ["Git"], fg: "--git-head-tags" },
+  { id: "gitLocalBranch", name: "Project View › Local branch decoration", path: ["Git"], fg: "--git-local-branch" },
+  {
+    id: "gitMasterWithRemote",
+    name: "Project View › master/main with remote",
+    path: ["Git"],
+    fg: "--git-master-with-remote",
+  },
+  {
+    id: "gitMasterWithoutRemote",
+    name: "Project View › master/main without remote",
+    path: ["Git"],
+    fg: "--git-master-without-remote",
+  },
+  {
+    id: "gitTrackingBranch",
+    name: "Project View › Tracking branch decoration",
+    path: ["Git"],
+    fg: "--git-tracking-branch",
+  },
 
   syn("keyword", "Keyword", [LD], "keyword"),
   syn("identifier", "Identifiers › Local variable", [LD], "variable"),
@@ -154,46 +294,64 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
   ...[1, 2, 3, 4, 5].map((n) => syn(`semantic${n}`, `Semantic highlighting › Color ${n}`, [LD], `rainbow-${n}`)),
   ...[1, 2, 3].map((n) => syn(`bracket${n}`, `Rainbow brackets › Level ${n}`, [LD], `bracket-${n}`)),
 
-  syn("pyMethodCall", "Method call", ["Python"], "python-method-call"),
-  syn("pyAnnotation", "Type annotation", ["Python"], "python-annotation"),
-  syn("pyParentheses", "Parentheses", ["Python"], "python-parentheses"),
-  syn("pyBrackets", "Brackets", ["Python"], "python-brackets"),
-  syn("pyBraces", "Braces", ["Python"], "python-braces"),
-  syn("pyNestedFunction", "Nested function definition", ["Python"], "python-nested-function"),
-  syn("pyBytes", "Byte string", ["Python"], "python-bytes"),
-  syn("pyFString", "F-string", ["Python"], "python-fstring"),
-  syn("pyPredefinedDefinition", "Predefined function definition", ["Python"], "python-predefined-definition"),
-  syn("pyPredefinedUsage", "Predefined name usage", ["Python"], "python-predefined-usage"),
-  syn("pyFormat", "Format specifier", ["Python"], "python-format"),
-  syn("pySelf", "Self parameter", ["Python"], "self"),
+  // Python's tree mirrors PyCharm's colour page (PythonColorsPage.java): every key the editor can
+  // restyle, in the page's order. Language-scoped like java.*: shared-token attributes reuse the
+  // Language Defaults token, so an override shadows it inside Python editors only and unset values
+  // keep falling back to the scheme default, as JetBrains' fallback keys do.
+  py("pyNumber", "Number", "number"),
+  py("pyKeyword", "Keyword", "keyword"),
+  py("pyLineComment", "Line comment", "comment"),
+  py("pyBytes", "String › Binary (bytes)", "python-bytes"),
+  py("pyString", "String › Text (unicode)", "string"),
+  py("pyValidEscape", "String › Escape sequence › Valid", "escape"),
+  py("pyInvalidEscape", "String › Escape sequence › Invalid", "invalid"),
+  py("pyFString", "String › f-string › Expression braces", "python-fstring"),
+  py("pyFormat", "String › f-string › Format spec number", "python-format"),
+  py("pyDocstring", "Docstring › Text", "docstring", { defaultItalic: true }),
+  py("pyDocstringTag", "Docstring › Tag", "python-docstring-tag"),
+  py("pyDocstringKeyword", "Docstring › Keyword", "python-docstring-keyword"),
+  py("pyOperationSign", "Braces and Operators › Operation sign", "punct"),
+  py("pyParentheses", "Braces and Operators › Parentheses", "python-parentheses"),
+  py("pyBrackets", "Braces and Operators › Brackets", "python-brackets"),
+  py("pyBraces", "Braces and Operators › Braces", "python-braces"),
+  py("pyFunctionDeclaration", "Functions › Function definition", "function"),
+  py("pyNestedFunction", "Functions › Nested function definition", "python-nested-function"),
+  py("pyFunctionCall", "Functions › Function call", "function-call"),
+  py("pyMethodCall", "Functions › Method call", "python-method-call"),
+  py("pyParameter", "Parameters › Parameter", "param"),
+  py("pySelf", "Parameters › 'self' parameter", "self"),
+  py("pyKeywordArg", "Keyword argument", "keyword-arg"),
+  py("pyPredefinedDefinition", "Special names › Definition", "python-predefined-definition"),
+  py("pyPredefinedUsage", "Special names › Usage", "python-predefined-usage"),
+  py("pyBuiltin", "Special names › Built-in name", "python-builtin"),
+  py("pyDecorator", "Special names › Decorator", "annotation"),
+  py("pyClassDefinition", "Classes › Class definition", "type"),
+  py("pyAnnotation", "Type annotation", "python-annotation"),
+  py("pyLocalVariable", "Identifiers › Local variables", "python-local-variable"),
+  py("pyTypeParameter", "Identifiers › Type parameters", "python-type-parameter"),
+  py("pyGlobalVariable", "Identifiers › Global variable", "python-global-variable"),
+  py("pyInstanceAttribute", "Identifiers › Instance attribute", "python-instance-attribute"),
+  py("pyClassAttribute", "Identifiers › Class attribute", "python-class-attribute"),
+  py("pyConstant", "Identifiers › Constant", "python-constant"),
+  py("pyProperty", "Identifiers › Property", "python-property"),
   {
     id: "pyStaticSymbol",
-    name: "Static symbol",
+    name: "Identifiers › Static symbol",
     path: ["Python"],
+    language: "Python",
     token: "python-static",
     italicOnly: true,
     defaultItalic: false,
   },
-  syn("pyKeywordArg", "Keyword argument", ["Python"], "keyword-arg"),
-  syn("pyDocstring", "Docstring", ["Python"], "docstring", { defaultItalic: true }),
-  syn("pyDocstringTag", "Docstring › Tag", ["Python"], "python-docstring-tag"),
-  syn("pyDocstringKeyword", "Docstring › Keyword", ["Python"], "python-docstring-keyword"),
-  syn("pyBuiltin", "Built-in name", ["Python"], "python-builtin"),
-  syn("pyDecorator", "Decorator", ["Python"], "annotation"),
-  syn("pyLocalVariable", "Local variable", ["Python"], "python-local-variable"),
-  syn("pyGlobalVariable", "Global variable", ["Python"], "python-global-variable"),
-  syn("pyInstanceAttribute", "Instance attribute", ["Python"], "python-instance-attribute"),
-  syn("pyClassAttribute", "Class attribute", ["Python"], "python-class-attribute"),
-  syn("pyConstant", "Constant", ["Python"], "python-constant"),
-  syn("pyProperty", "Property", ["Python"], "python-property"),
-  syn("pyTypeParameter", "Type parameter", ["Python"], "python-type-parameter"),
   syn("mdHeading", "Heading", ["Markdown"], "markup-heading", { defaultBold: true }),
   syn("mdCode", "Code span", ["Markdown"], "markup-code"),
   syn("mdLink", "Link", ["Markdown"], "link", { defaultEffect: "underline" }),
   syn("regexp", "Regular expression", ["RegExp"], "regexp"),
 ];
 
-const SCHEME_LANGUAGES = { go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+const SCHEME_LANGUAGES = { csharp: "C#", go: "Go", java: "Java", kotlin: "Kotlin", php: "PHP" } as const;
+/** Languages that scope their overrides into a per-language editor block; Python ships its own attributes. */
+const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as const;
 
 export const ATTRIBUTES: readonly AttributeDef[] = [
   ...BASE_ATTRIBUTES,
@@ -218,6 +376,11 @@ export const ATTRIBUTES: readonly AttributeDef[] = [
 /** Variables a scheme sets: every attribute variable plus the editor tokens derived from them. */
 const SCHEME_VARS = new Set<string>([
   ...ATTRIBUTES.flatMap((a) => [a.fg, a.bg, a.effect].filter((v): v is string => !!v)),
+  // Font style of token-less attributes (`overrideDeclarations` writes them for custom schemes too).
+  ...ATTRIBUTES.flatMap((a) => {
+    const base = a.fg ?? a.effect;
+    return !a.token && a.fontStyle && base ? [`${base}-bold`, `${base}-italic`, `${a.effect ?? base}-effect`] : [];
+  }),
   "--syn-comment-style",
   "--syn-doc-comment-tag-effect",
   "--editor-error-decoration",
@@ -356,7 +519,7 @@ export function boldWeight(bold: boolean): string {
   return bold ? "var(--fw-code-bold, 700)" : "var(--fw-code, 400)";
 }
 
-const EFFECT_CSS: Record<string, (c: string) => string> = {
+export const EFFECT_CSS: Record<string, (c: string) => string> = {
   underline: (c) => `underline ${c}`,
   wave: (c) => `underline wavy ${c}`,
   strikeout: (c) => `line-through ${c}`,
@@ -379,12 +542,19 @@ export function overrideDeclarations(
     if (attr.language !== language) continue;
     const o = overrides[attr.id];
     if (!o) continue;
-    if (setOrCleared(o.foreground) && attr.fg) out.push([attr.fg, o.foreground]);
+    if (setOrCleared(o.foreground) && attr.fg) {
+      out.push([attr.fg, o.foreground]);
+      // Terminal prefers `--terminal-ansi-*`; keep it in sync with console `--ansi-*`.
+      if (attr.fg.startsWith("--ansi-")) out.push([`--terminal-ansi-${attr.fg.slice("--ansi-".length)}`, o.foreground]);
+    }
     if (setOrCleared(o.background) && attr.bg) out.push([attr.bg, o.background]);
     if (setOrCleared(o.effectColor) && attr.effect) out.push([attr.effect, o.effectColor]);
-    if (attr.effect && setOrCleared(o.effectColor)) {
-      if (attr.id === "error") out.push(["--editor-error-decoration", `underline wavy ${o.effectColor}`]);
-      if (attr.id === "warning") out.push(["--editor-warning-decoration", `underline wavy ${o.effectColor}`]);
+    if (attr.effect && (setOrCleared(o.effectColor) || o.effect)) {
+      const style = o.effect ?? attr.defaultEffect ?? "wave";
+      const color = setOrCleared(o.effectColor) ? o.effectColor! : `var(${attr.effect})`;
+      const decoration = EFFECT_CSS[style]?.(color) ?? "none";
+      if (attr.id === "error") out.push(["--editor-error-decoration", decoration]);
+      if (attr.id === "warning") out.push(["--editor-warning-decoration", decoration]);
     }
     if (attr.token) {
       const t = attr.token;
@@ -399,6 +569,21 @@ export function overrideDeclarations(
           `--syn-${t}-effect`,
           EFFECT_CSS[o.effect]?.(setOrCleared(o.effectColor) ? o.effectColor! : "currentColor") ?? "none",
         ]);
+    } else if (attr.fontStyle) {
+      // Token-less attributes whose renderer applies font style (the Git blame segments)
+      // carry it on `--<fg>-*`, mirroring the token scheme's `--syn-<token>-*` family.
+      const base = attr.fg ?? attr.effect;
+      if (base) {
+        if (o.bold !== undefined) out.push([`${base}-bold`, boldWeight(o.bold)]);
+        if (o.italic !== undefined) out.push([`${base}-italic`, o.italic ? "italic" : "normal"]);
+        if (o.effect)
+          out.push([
+            `${attr.effect ?? base}-effect`,
+            EFFECT_CSS[o.effect]?.(
+              setOrCleared(o.effectColor) ? o.effectColor! : attr.effect ? `var(${attr.effect})` : "currentColor",
+            ) ?? "none",
+          ]);
+      }
     }
   }
   return out;
@@ -508,8 +693,20 @@ export function resolvedAttribute(
     const italicCss =
       vars.get(`--syn-${token}-italic`) ?? (token === "comment" ? vars.get("--syn-comment-style") : undefined);
     out.italic = own?.italic ?? italicFromCss(italicCss) ?? attr.defaultItalic ?? false;
-  } else if (effect) out.effect = effect;
-  if (token && effect) out.effect = effect;
+    if (effect) out.effect = effect;
+  } else {
+    // Token-less attributes whose renderer applies font style (the Git segments, Errors and
+    // Warnings) carry their overrides on `--<fg|effect>-*`, the same declarations
+    // `overrideDeclarations` emits.
+    if (attr.fontStyle) {
+      const base = attr.fg ?? attr.effect;
+      const bold = base ? vars.get(`${base}-bold`) : undefined;
+      const italic = base ? vars.get(`${base}-italic`) : undefined;
+      out.bold = boldFromCss(bold) ?? attr.defaultBold ?? false;
+      out.italic = italicFromCss(italic) ?? attr.defaultItalic ?? false;
+    }
+    if (effect) out.effect = effect;
+  }
   return out;
 }
 
@@ -530,7 +727,12 @@ export function schemeCss(
   const pluginTheme = !!el?.dataset.pluginTheme && id === setting;
   if (id !== themeScheme(root) || pluginTheme) {
     const tokens = resolvedSchemeTokens(id, valid);
-    for (const [k, v] of tokens) if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) decls.push([k, v]);
+    for (const [k, v] of tokens)
+      if (SCHEME_VARS.has(k) || k.startsWith("--syn-")) {
+        decls.push([k, v]);
+        // Terminal reads `--terminal-ansi-*`; keep it aligned with console `--ansi-*`.
+        if (k.startsWith("--ansi-")) decls.push([`--terminal-ansi-${k.slice("--ansi-".length)}`, v]);
+      }
     // The editor surface follows the scheme, not the island colour of the UI theme.
     const bg = tokens.get("--bg-editor") ?? tokens.get("--bg-island");
     if (bg) decls.push(["--bg-editor", bg], ["--bg-editor-gutter", tokens.get("--bg-editor-gutter") ?? bg]);
@@ -540,7 +742,7 @@ export function schemeCss(
     .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
     .map(([k, v]) => `  ${k}: ${v} !important;`);
   let css = body.length ? `:root {\n${body.join("\n")}\n}\n` : "";
-  for (const language of Object.values(SCHEME_LANGUAGES)) {
+  for (const language of Object.values(SCHEME_LANGUAGE_SCOPES)) {
     const languageBody = [
       ...overrideDeclarations(valid[id]?.attributes, language),
       ...overrideDeclarations(overrides?.[id], language),

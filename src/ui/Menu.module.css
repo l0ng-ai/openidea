@@ -43,6 +43,15 @@
   justify-content: center;
   color: var(--fg-muted);
 }
+/* Numeric mnemonics (IDEA Select In): a fixed column left of the icon. */
+.mnemonic {
+  width: 10px;
+  flex: none;
+  font-family: var(--font-keys);
+  font-size: var(--fs-ui);
+  color: var(--fg-subtle);
+  text-align: right;
+}
 .label {
   flex: 1;
   min-width: 0;

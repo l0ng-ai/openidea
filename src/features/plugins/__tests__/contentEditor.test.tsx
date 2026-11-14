@@ -20,6 +20,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   registerContentTabSender,
 } from "../views/contentTab";
 
@@ -217,13 +218,52 @@ describe("plugin-backed content editor tabs", () => {
       });
       await waitFor(() => expect(diffs).toHaveLength(1));
       expect(diffs[0]).toEqual({
-        path: "service.toml",
+        path: "plugin-diff:/service.toml",
         title: "Diff: service.toml",
         left: { type: "text", text: 'name = "demo"\nreplicas = 2\n', label: "Live" },
         right: { type: "text", text: 'name = "demo"\nreplicas = 5\n', label: "Edited" },
       });
     } finally {
       f.offSender();
+      unregisterDiff();
+    }
+  });
+
+  it("opens a plugin's open-diff request in the IDE diff viewer and rejects invalid ones", () => {
+    const diffs: unknown[] = [];
+    const unregisterDiff = registerActions([
+      { id: "vcs.openDiff", title: "Open Diff", run: ({ arg }) => void diffs.push(arg) },
+    ]);
+    try {
+      openPluginDiffRequest({ left: "a\n", right: "b\n", fileName: "src/review.ts", leftLabel: "Target" }, 10);
+      openPluginDiffRequest({ left: "", right: "b\n", title: "MR !12" }, 10);
+      expect(diffs).toEqual([
+        {
+          path: "plugin-diff:/review.ts",
+          title: "src/review.ts",
+          left: { type: "text", text: "a\n", label: "Target" },
+          right: { type: "text", text: "b\n", label: "After" },
+        },
+        {
+          path: "plugin-diff:/MR !12",
+          title: "MR !12",
+          left: { type: "text", text: "", label: "Before" },
+          right: { type: "text", text: "b\n", label: "After" },
+        },
+      ]);
+      // A file name only names the syntax: never a path on disk (a UNC share, say).
+      openPluginDiffRequest({ left: "a", right: "b", fileName: "\\\\attacker\\share\\x.rs" }, 10);
+      openPluginDiffRequest({ left: "a", right: "b", title: "C:\\Users\\x\\y.ts" }, 10);
+      expect(diffs.slice(2).map((d) => (d as { path: string }).path)).toEqual([
+        "plugin-diff:/x.rs",
+        "plugin-diff:/y.ts",
+      ]);
+      diffs.splice(2);
+      expect(() => openPluginDiffRequest({ left: "a", right: 1 }, 10)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b", fileName: "x\ny" }, 10)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b" }, 4 << 20)).toThrow();
+      expect(diffs).toHaveLength(2);
+    } finally {
       unregisterDiff();
     }
   });

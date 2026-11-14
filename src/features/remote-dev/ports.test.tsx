@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-const forwarded: Array<{ remotePort: number; localPort: number }> = [];
+const forwarded: Array<{ remotePort: number; localPort: number; host: string | null }> = [];
 const ipc = vi.hoisted(() => ({
   remoteForwardedPorts: vi.fn(),
   remoteForwardPort: vi.fn(),
@@ -19,13 +19,13 @@ import { forwardPort, parsePort, usePorts } from "./ports";
 ipc.remoteForwardedPorts.mockImplementation(async () => [...forwarded]);
 ipc.remoteForwardPort.mockImplementation(async (remotePort: number) => {
   // 3000 is taken here: another local port.
-  const port = { remotePort, localPort: remotePort === 3000 ? 53000 : remotePort };
+  const port = { remotePort, localPort: remotePort === 3000 ? 53000 : remotePort, host: null };
   forwarded.push(port);
   return { status: "ok", data: port };
 });
-ipc.remoteStopForwarding.mockImplementation(async (remotePort: number) => {
+ipc.remoteStopForwarding.mockImplementation(async (remotePort: number, host: string | null) => {
   forwarded.splice(
-    forwarded.findIndex((p) => p.remotePort === remotePort),
+    forwarded.findIndex((p) => p.remotePort === remotePort && p.host === host),
     1,
   );
   return { status: "ok", data: null };
@@ -60,6 +60,34 @@ describe("Ports tool window", () => {
   });
 });
 
+it("shows a port of a Compose service by its service, stops it alone and doesn't remember it", async () => {
+  const { useRemote } = await import("@/platform/remote");
+  const { savedPorts } = await import("./ports");
+  useRemote.setState({
+    session: {
+      target: { kind: "devContainer", folder: "/w/app", config: "" },
+      root: "/workspaces/app",
+      host: "app",
+      os: "linux",
+      commands: [],
+    },
+  });
+  // From `forwardPorts`: [4444, "selenium:4444"]; the service's port found 4444 taken here.
+  forwarded.push(
+    { remotePort: 4444, localPort: 4444, host: null },
+    { remotePort: 4444, localPort: 54444, host: "selenium" },
+  );
+  render(<PortsView />);
+  await screen.findByText("selenium:4444");
+  expect(screen.getByText("localhost:54444")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Stop Forwarding Port selenium:4444" }));
+  await waitFor(() => expect(screen.queryByText("selenium:4444")).not.toBeInTheDocument());
+  expect(ipc.remoteStopForwarding).toHaveBeenCalledWith(4444, "selenium");
+  expect(screen.getByText("localhost:4444")).toBeInTheDocument();
+  expect(savedPorts()).toEqual([4444]);
+  useRemote.setState({ session: null });
+});
+
 describe("restoring forwarded ports", () => {
   it("forwards the ports of this host and folder again after reconnecting", async () => {
     const { useRemote } = await import("@/platform/remote");
@@ -74,7 +102,7 @@ describe("restoring forwarded ports", () => {
     ipc.remoteForwardPort.mockClear();
     await restorePorts();
     expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8080);
-    expect(usePorts.getState().ports).toEqual([{ remotePort: 8080, localPort: 8080 }]);
+    expect(usePorts.getState().ports).toEqual([{ remotePort: 8080, localPort: 8080, host: null }]);
     // Another folder on the same host has its own list.
     useRemote.setState({
       session: { target: { kind: "ssh", config: "lh" }, root: "/srv/other", host: "h", os: "linux", commands: [] },
@@ -100,7 +128,7 @@ it("forwards and remembers ports of a dev container, per folder and configuratio
   });
   ipc.remoteForwardPort.mockClear();
   useRemote.setState({ session: container("") });
-  expect(await forwardPort(8000)).toEqual({ remotePort: 8000, localPort: 8000 });
+  expect(await forwardPort(8000)).toEqual({ remotePort: 8000, localPort: 8000, host: null });
   expect(ipc.remoteForwardPort).toHaveBeenCalledWith(8000);
   expect(savedPorts()).toEqual([8000]);
   useRemote.setState({ session: { ...container(""), root: "/another-workspace" } });
@@ -134,11 +162,11 @@ it("restores manually forwarded container ports alongside configured ports", asy
   useRemote.setState({ session });
   await forwardPort(9000);
   expect(savedPorts()).toEqual([9000]);
-  forwarded.splice(0, forwarded.length, { remotePort: 8000, localPort: 8000 });
+  forwarded.splice(0, forwarded.length, { remotePort: 8000, localPort: 8000, host: null });
   await restorePorts();
   expect(usePorts.getState().ports).toEqual([
-    { remotePort: 8000, localPort: 8000 },
-    { remotePort: 9000, localPort: 9000 },
+    { remotePort: 8000, localPort: 8000, host: null },
+    { remotePort: 9000, localPort: 9000, host: null },
   ]);
   useRemote.setState({ session: { ...session, target: { ...session.target, folder: "/w/other" } } });
   expect(savedPorts()).toEqual([]);
@@ -165,7 +193,7 @@ it("does not display a previous session's delayed port response", async () => {
       commands: [],
     },
   });
-  resolve([{ remotePort: 8000, localPort: 8000 }]);
+  resolve([{ remotePort: 8000, localPort: 8000, host: null }]);
   await pending;
   expect(usePorts.getState().ports).toEqual([]);
   useRemote.setState({ session: null });
@@ -182,13 +210,13 @@ it("reloads ports when switching directly between connected sessions", async () 
     commands: [],
   });
   useRemote.setState({ session: session("/first") });
-  forwarded.push({ remotePort: 8000, localPort: 8000 });
+  forwarded.push({ remotePort: 8000, localPort: 8000, host: null });
   const dispose = activate();
   try {
-    await waitFor(() => expect(usePorts.getState().ports).toEqual([{ remotePort: 8000, localPort: 8000 }]));
-    forwarded.splice(0, forwarded.length, { remotePort: 9000, localPort: 9000 });
+    await waitFor(() => expect(usePorts.getState().ports).toEqual([{ remotePort: 8000, localPort: 8000, host: null }]));
+    forwarded.splice(0, forwarded.length, { remotePort: 9000, localPort: 9000, host: null });
     useRemote.setState({ session: session("/second") });
-    await waitFor(() => expect(usePorts.getState().ports).toEqual([{ remotePort: 9000, localPort: 9000 }]));
+    await waitFor(() => expect(usePorts.getState().ports).toEqual([{ remotePort: 9000, localPort: 9000, host: null }]));
   } finally {
     dispose();
     useRemote.setState({ session: null });

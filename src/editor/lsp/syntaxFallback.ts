@@ -63,6 +63,14 @@ export function usageRole(at: NodeAt | null): UsageRole {
   return "other";
 }
 
+const DECLARATION = /(declaration|definition|declarator)$/;
+
+/** Whether the syntax tree puts the identifier at `at` as the name of a declaration (`int f()`'s `f`). */
+export function isDeclarationName(at: NodeAt | null): boolean {
+  const parent = at?.ancestors[0];
+  return !!parent && at.node.field === "name" && DECLARATION.test(parent.kind);
+}
+
 /** Index symbols that may be the declaration of `name` used in `role`. */
 export function filterSymbols(matches: readonly SymbolMatch[], name: string, role: UsageRole): SymbolMatch[] {
   return matches.filter((m) => {
@@ -130,6 +138,21 @@ export function localTargets(path: string, symbol: LocalSymbol): { targets: Decl
 }
 
 const SYMBOL_LIMIT = 500;
+
+/**
+ * Index definitions named `name` — what the project index knows beyond the language
+ * server's scope: only the roots `path` may navigate into (its own root plus its
+ * configured dependencies; see Project Structure › Dependencies). No local-variable
+ * heuristics: an empty server answer stays authoritative about the code it analyses.
+ */
+export async function indexDefinitions(path: string, name: string): Promise<DeclarationTarget[]> {
+  const matches = await call(commands.navIndexDefinitions(name, path));
+  const symbols = filterSymbols(matches, name, "other").filter((s) => compatibleFiles(path, s.path));
+  return rankTargets(
+    symbols.map((s) => ({ path: s.path, range: s.range, name: s.name, kind: s.kind, container: s.container })),
+    path,
+  );
+}
 
 /**
  * Go to Declaration without a language server: a certain local definition,

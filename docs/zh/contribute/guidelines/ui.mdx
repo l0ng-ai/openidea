@@ -41,7 +41,7 @@ description: "前端 UI 代码的规则：设计 token、CSS Modules、图标、
 
 ## WebKit 兼容性
 
-在 macOS 和 Linux 上应用运行于 WebKit，最低支持 Safari 16（macOS 11 可以升级到这个版本）。`pnpm build` 会对产物运行 `scripts/check-webkit.ts`，`src/platform/webkitCompatibility.test.ts` 会检查应用中的正则。请避免：
+在 macOS 和 Linux 上应用运行于 WebKit，最低支持 Safari 16，即 macOS 13 的引擎（macOS 11、12 上更新 Safari 不会更新其他应用使用的引擎）。`pnpm build` 会对产物运行 `scripts/check-webkit.ts`，`src/platform/webkitCompatibility.test.ts` 会检查应用中的正则。请避免：
 
 - 正则后行断言（`(?<=…)`、`(?<!…)`，需要 Safari 16.4）和正则 `v` 标志；
 - import attributes；

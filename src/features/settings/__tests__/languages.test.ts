@@ -39,7 +39,7 @@ describe("languages settings", () => {
         },
       },
     });
-    expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
+    expect(v.python).toEqual({ ...DEFAULT_LANGUAGES.python, interpreter: "/usr/bin/python3" });
     expect(v.node.packageManager).toBe("");
     expect(v.rust.checkCommand).toBe("clippy");
     expect(v.rust.checkOnSave).toBe(false);
@@ -59,6 +59,7 @@ describe("languages settings", () => {
       mvndHome: "/opt/mvnd",
       threads: "2C",
       activeProfiles: "",
+      delegateBuild: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -66,9 +67,33 @@ describe("languages settings", () => {
 
   it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
     expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
+    expect(validateSettings({}).languages.java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
+    expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
+    expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
+  });
+
+  it("keeps the IDE-wide interpreter list and its view options, defaulting them", () => {
+    expect(validateLanguages({}).python).toMatchObject({
+      interpreters: [],
+      hiddenInterpreters: [],
+      hideOtherProjectInterpreters: false,
+      showInterpreterPaths: true,
+    });
+    const v = validateLanguages({
+      python: {
+        interpreters: [" /envs/a/bin/python ", "", "/envs/a/bin/python", 3],
+        hiddenInterpreters: [" /usr/bin/python3.9 "],
+        hideOtherProjectInterpreters: "yes",
+        showInterpreterPaths: false,
+      },
+    });
+    expect(v.python.interpreters).toEqual(["/envs/a/bin/python"]);
+    expect(v.python.hiddenInterpreters).toEqual(["/usr/bin/python3.9"]);
+    expect(v.python.hideOtherProjectInterpreters).toBe(false);
+    expect(v.python.showInterpreterPaths).toBe(false);
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
@@ -205,12 +230,15 @@ describe("languages settings", () => {
     expect(validateLanguages({}).java.languageLevel).toBe("");
     expect(validateLanguages({ java: { languageLevel: "8" } }).java.languageLevel).toBe("8");
     expect(validateLanguages({ java: { languageLevel: "21" } }).java.languageLevel).toBe("21");
-    for (const invalid of ["6", "26", 17, null]) {
+    expect(validateLanguages({ java: { languageLevel: "6" } }).java.languageLevel).toBe("6");
+    for (const invalid of ["4", "1.6", "26", 17, null]) {
       expect(validateLanguages({ java: { languageLevel: invalid } }).java.languageLevel).toBe("");
     }
     expect(JAVA_LANGUAGE_LEVELS[0]).toBe("");
     expect(JAVA_LANGUAGE_LEVELS).toContain("8");
     expect(JAVA_LANGUAGE_LEVELS).toContain("25");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("5");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("14");
   });
 
   it("normalizes project structure modules, libraries, facets, and artifacts", () => {
@@ -300,23 +328,36 @@ describe("languages settings", () => {
 describe("language pages", () => {
   it("keeps every language under Languages & Frameworks, as in IntelliJ IDEA", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
-    expect(tree.map((n) => n.title)).toEqual(["Project Structure", "Languages & Frameworks"]);
+    expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
       "Markdown",
       "Node.js",
-      "Python Interpreter",
+      "Python",
       "PHP",
       "Prettier",
       "oxfmt",
-      "Ruff",
       "Ruby",
       "Rust",
       "TypeScript",
-      "Plugin Formatters",
     ]);
+  });
+
+  it("puts the Python pages in a Python folder, in PyCharm's order", () => {
+    const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
+    const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
+    const python = langs.children.find((n) => n.title === "Python")!;
+    expect(python.children.map((n) => n.title)).toEqual(["All Interpreters", "Dependencies", "Docstrings", "Ruff"]);
+    expect(python.children.map((n) => n.key)).toEqual([
+      "python.interpreters",
+      "python.interpreter",
+      "python.docstrings",
+      "python.ruff",
+    ]);
+    // The folder itself has no page body: it links to the pages below it.
+    expect(python.page?.component).toBeUndefined();
   });
 
   it("filters packages and shortens home paths", () => {

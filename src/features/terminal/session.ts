@@ -4,10 +4,12 @@
  * session survives its tool window being hidden or its pane being re-mounted.
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { Terminal, type IDisposable, type ILink, type ILinkHandler } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon, type ISearchOptions } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
+import "./xtermInput.css";
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
@@ -16,6 +18,7 @@ import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
+import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -91,6 +94,7 @@ export interface SessionOptions {
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
 
 let audio: AudioContext | null = null;
 
@@ -206,7 +210,10 @@ export class TerminalSession {
   private readonly searchAddon = new SearchAddon({ highlightLimit: 2000 });
   private searchDecorations: ISearchOptions["decorations"] | null = null;
   private readonly searchListeners = new Set<(r: TerminalSearchResult) => void>();
-  private readonly opts: SessionOptions;
+  private selectingSearchMatch = false;
+  private searchSelection = false;
+  private readonly selectionHighlights: SelectionHighlightController;
+  private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
   private opened = false;
@@ -221,6 +228,7 @@ export class TerminalSession {
   private readonly ptyResize = settledResize((cols, rows) => this.resizePty(cols, rows));
   /** Keystrokes typed while the PTY is still starting; sent as soon as it exists. */
   private pendingInput = "";
+  private outputTail = "";
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
@@ -230,6 +238,15 @@ export class TerminalSession {
   private readonly ime = new ImeCommitGate(() => {
     if (this.term.textarea) this.term.textarea.value = "";
   });
+
+  /**
+   * Hands the session to another owner (a terminal tab moved to the editor): its
+   * snapshots, focus and exit go there from now on. The PTY keeps running.
+   */
+  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit">) {
+    this.opts = { ...this.opts, ...owner, onExit: owner.onExit };
+    this.opts.onChange(this.key, this.snapshot);
+  }
 
   constructor(opts: SessionOptions) {
     this.opts = opts;
@@ -277,6 +294,34 @@ export class TerminalSession {
     });
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.searchAddon);
+    // Promote active search decorations to the top layer so xterm's DOM renderer
+    // keeps activeMatchBackground above `.xterm-selection` when FindBar holds focus.
+    const registerDecoration = this.term.registerDecoration.bind(this.term);
+    this.term.registerDecoration = (options) => {
+      const active = this.searchDecorations?.activeMatchBackground;
+      const isActive = !!active && options.backgroundColor?.toLowerCase() === active.toLowerCase();
+      const d = registerDecoration(isActive ? { ...options, layer: "top" } : options);
+      if (d && isActive) d.onRender((el) => el.classList.add("xterm-find-active-result-decoration"));
+      return d;
+    };
+    const runSearch =
+      <T extends unknown[]>(fn: (...args: T) => boolean) =>
+      (...args: T) => {
+        this.selectingSearchMatch = true;
+        try {
+          const found = fn(...args);
+          if (found) {
+            this.searchSelection = this.term.hasSelection();
+            this.selectionHighlights.clear();
+          }
+          return found;
+        } finally {
+          this.selectingSearchMatch = false;
+          if (this.term.rows > 0) this.term.refresh(0, this.term.rows - 1);
+        }
+      };
+    this.searchAddon.findNext = runSearch(this.searchAddon.findNext.bind(this.searchAddon));
+    this.searchAddon.findPrevious = runSearch(this.searchAddon.findPrevious.bind(this.searchAddon));
 
     this.disposables.push(
       watchWindowsPty(this.term),
@@ -309,7 +354,9 @@ export class TerminalSession {
         if (workflowSettings().terminal.audibleBell) beep();
       }),
       this.term.onSelectionChange(() => {
-        if (workflowSettings().terminal.copyOnSelection && this.term.hasSelection()) this.copySelection();
+        this.searchSelection = this.selectingSearchMatch && this.term.hasSelection();
+        if (!this.searchSelection && workflowSettings().terminal.copyOnSelection && this.term.hasSelection())
+          this.copySelection();
       }),
       // Mouse reporting off: ignore the application's requests to enable mouse tracking.
       this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
@@ -318,13 +365,25 @@ export class TerminalSession {
         return modes.length > 0 && modes.every((m) => MOUSE_MODES.has(m));
       }),
     );
+    this.selectionHighlights = installSelectionHighlights(this.term, {
+      isSearchSelection: () => this.searchSelection,
+    });
+    this.disposables.push(this.selectionHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
+    this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });
     this.disposables.push({ dispose: registerFontZoomSurface(this.host, (delta) => this.stepFontSize(delta)) });
   }
+
+  private onWheelZoom = (e: WheelEvent) => {
+    if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.stepFontSize(e.deltaY < 0 ? 1 : -1);
+  };
 
   private onMiddleClick = (e: MouseEvent) => {
     if (e.button !== 1 || !workflowSettings().terminal.pasteOnMiddleClick) return;
@@ -377,6 +436,7 @@ export class TerminalSession {
     o.cursorStyle = CURSOR[t.cursorShape];
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
+    this.selectionHighlights.refresh();
     this.scheduleFit();
   }
 
@@ -402,6 +462,10 @@ export class TerminalSession {
 
   get hasSelection(): boolean {
     return this.term.hasSelection();
+  }
+
+  get isSearchSelection(): boolean {
+    return this.searchSelection;
   }
 
   private update(patch: Partial<SessionSnapshot>) {
@@ -525,6 +589,21 @@ export class TerminalSession {
     if (this.ime.accept(data)) this.input(data);
   }
 
+  private writePtyOutput(chunk: string) {
+    const data = this.outputTail + chunk;
+    let output = data.replaceAll(CLEAR_SCROLLBACK_MARKER, "\x1b[2J\x1b[3J");
+    let held = 0;
+    for (let n = Math.min(CLEAR_SCROLLBACK_MARKER.length - 1, output.length); n > 0; n--) {
+      if (output.endsWith(CLEAR_SCROLLBACK_MARKER.slice(0, n))) {
+        held = n;
+        break;
+      }
+    }
+    this.outputTail = output.slice(output.length - held);
+    output = output.slice(0, output.length - held);
+    if (output) this.term.write(output);
+  }
+
   private doFit() {
     if (this.disposed || !this.host.isConnected) return;
     // The grid row is still 0 on the first layout pass (the track is set by a
@@ -561,6 +640,7 @@ export class TerminalSession {
   async start() {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
+    this.outputTail = "";
     const custom = this.opts.command;
     this.update({ status: "starting", exitCode: null, appTitle: null, commandRunning: !!custom && !custom.shell });
     if (!isTauri()) {
@@ -573,7 +653,7 @@ export class TerminalSession {
     this.lastSize = { cols, rows };
     const channel = new Channel<string>();
     channel.onmessage = (chunk) => {
-      if (generation === this.generation && !this.disposed) this.term.write(chunk);
+      if (generation === this.generation && !this.disposed) this.writePtyOutput(chunk);
     };
     try {
       const t = workflowSettings().terminal;
@@ -708,9 +788,27 @@ export class TerminalSession {
     this.term.clearSelection();
   }
 
+  /** The last `max` lines down to the cursor (wrapped rows joined), for an agent's context. */
+  recentOutput(max = 80): { title: string; text: string } {
+    const buffer = this.term.buffer.active;
+    const end = buffer.baseY + buffer.cursorY;
+    const lines: string[] = [];
+    for (let y = Math.max(0, end - max + 1); y <= end; y++) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      const text = line.translateToString(true);
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+    while (lines.length && !lines[0]!.trim()) lines.shift();
+    return { title: this.snapshot.appTitle ?? this.snapshot.title, text: lines.join("\n") };
+  }
+
   copySelection(): boolean {
     const text = this.term.getSelection();
     if (!text) return false;
+    noteCopySource(text, { kind: "terminal", title: this.snapshot.appTitle ?? this.snapshot.title });
     void writeClipboardText(text).catch(() => undefined);
     return true;
   }
@@ -748,6 +846,7 @@ export class TerminalSession {
       this.clearSearch();
       return false;
     }
+    this.selectionHighlights.clear();
     this.searchDecorations ??= readSearchDecorations();
     const options: ISearchOptions = {
       ...opts,
@@ -768,6 +867,8 @@ export class TerminalSession {
   clearSearch() {
     this.searchAddon.clearDecorations();
     this.term.clearSelection();
+    this.searchSelection = false;
+    this.selectionHighlights.clear();
     for (const l of this.searchListeners) l({ index: -1, count: 0 });
   }
 
@@ -786,7 +887,9 @@ export class TerminalSession {
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
-    if (this.ptyId !== null && !this.opts.command?.spawn) void commands.termKill(this.ptyId);
+    this.host.removeEventListener("wheel", this.onWheelZoom, { capture: true });
+    // A session with an owner (`onExit`) is ended by that owner.
+    if (this.ptyId !== null && !this.opts.command?.onExit) void commands.termKill(this.ptyId);
     this.ptyId = null;
     this.disposables.forEach((d) => d.dispose());
     this.term.dispose();

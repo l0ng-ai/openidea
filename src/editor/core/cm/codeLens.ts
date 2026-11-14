@@ -1,13 +1,23 @@
 /**
  * Renders `codeLenses` (editor/api) as one small hint row above the target
- * line, indented like the line (IDEA "3 usages | Run test" inlays).
+ * line, indented like the line (IDEA "3 usages   Run test" inlays), and those
+ * whose kind is set to "right" (`codeLensPositions`) after the end of that line.
  */
-import { EditorState, RangeSetBuilder, type Extension } from "@codemirror/state";
+import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
-import { guideVars } from "./indentGuides";
+import { guideVars, rainbowGuides } from "./indentGuides";
 import { LINE_INSET } from "./lineInset";
+
+/**
+ * Where code lenses of each kind (`CodeLens.kind`) go: a row above the declaration (IDEA's default, also for
+ * kinds not listed) or after the end of its line.
+ */
+export const codeLensPositions = Facet.define<
+  Readonly<Record<string, "top" | "right">>,
+  Readonly<Record<string, "top" | "right">>
+>({ combine: (v) => Object.assign({}, ...v) });
 
 /** Groups lenses by line start, ordered by line then `order`. Exported for tests. */
 export function groupLenses(
@@ -70,15 +80,21 @@ class LensWidget extends WidgetType {
     readonly lenses: CodeLens[],
     readonly indent: number,
     readonly indentUnit: number,
+    readonly rainbow: boolean,
+    /** After the end of the line instead of a row above it. */
+    readonly inline = false,
   ) {
     super();
   }
 
   private get key(): string {
     return (
+      (this.inline ? "inline\u0000" : "") +
       this.indent +
       "\u0000" +
       this.indentUnit +
+      "\u0000" +
+      (this.rainbow ? 1 : 0) +
       "\u0000" +
       this.lenses.map((l) => `${l.icon ?? ""}|${l.title}|${l.tooltip ?? ""}|${l.run ? 1 : 0}`).join("\u0001")
     );
@@ -89,22 +105,36 @@ class LensWidget extends WidgetType {
   }
 
   override toDOM(view: EditorView): HTMLElement {
-    const dom = document.createElement("div");
-    dom.className = "cm-openidea-lens";
-    this.fill(dom, view);
+    // The inline one shares no class with the row, so none of the row's block styles reach into the line.
+    const dom = document.createElement(this.inline ? "span" : "div");
+    dom.className = this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens";
+    // The line-end hint draws from a zero-width anchor in an absolutely positioned inner box: an
+    // in-flow box would wrap to the next line when the line is soft-wrapped and there is no room.
+    const host = this.inline ? document.createElement("span") : dom;
+    if (this.inline) {
+      host.className = "cm-openidea-lensInlineInner";
+      dom.appendChild(host);
+    }
+    this.fill(host, view);
     return dom;
   }
 
   override updateDOM(dom: HTMLElement, view: EditorView): boolean {
-    this.fill(dom, view);
+    // A row and a line-end hint have different structures: a position change rebuilds the DOM.
+    if (dom.className !== (this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens")) return false;
+    const host = this.inline ? (dom.firstElementChild as HTMLElement | null) : dom;
+    if (!host) return false;
+    this.fill(host, view);
     return true;
   }
 
   private fill(dom: HTMLElement, view: EditorView) {
     dom.textContent = "";
-    dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
     // The guides of the annotated line continue through this row while indent guides are on.
-    const guides = guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit);
+    const guides = this.inline
+      ? null
+      : guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
+    if (!this.inline) dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
     if (guides) {
       dom.style.setProperty("--openidea-guide-images", guides.images);
       dom.style.setProperty("--openidea-guide-positions", guides.positions);
@@ -114,14 +144,7 @@ class LensWidget extends WidgetType {
     }
     dom.setAttribute("role", "group");
     dom.setAttribute("aria-label", "Code lens");
-    this.lenses.forEach((lens, i) => {
-      if (i > 0) {
-        const sep = document.createElement("span");
-        sep.className = "cm-openidea-lensSep";
-        sep.textContent = "|";
-        sep.setAttribute("aria-hidden", "true");
-        dom.appendChild(sep);
-      }
+    for (const lens of this.lenses) {
       const el = document.createElement(lens.run ? "button" : "span");
       el.className = lens.run ? "cm-openidea-lensItem cm-openidea-lensAction" : "cm-openidea-lensItem";
       if (lens.tooltip) el.title = lens.tooltip;
@@ -151,11 +174,11 @@ class LensWidget extends WidgetType {
         });
       }
       dom.appendChild(el);
-    });
+    }
   }
 
   override get estimatedHeight(): number {
-    return 16;
+    return this.inline ? -1 : 16;
   }
 
   override ignoreEvent(): boolean {
@@ -166,51 +189,96 @@ class LensWidget extends WidgetType {
 function buildDecorations(state: EditorState): DecorationSet {
   const lenses = state.facet(codeLenses);
   if (!lenses.length) return Decoration.none;
+  const positions = state.facet(codeLensPositions);
+  const right = (l: CodeLens) => !!l.kind && positions[l.kind] === "right";
   const builder = new RangeSetBuilder<Decoration>();
   for (const group of groupLenses(state, lenses)) {
     const line = state.doc.lineAt(group.lineFrom);
-    const widget = new LensWidget(
-      group.lenses,
-      indentColumns(line.text, state.tabSize),
-      Math.max(1, getIndentUnit(state)),
-    );
-    builder.add(line.from, line.from, Decoration.widget({ widget, block: true, side: -1 }));
+    const indent = indentColumns(line.text, state.tabSize);
+    const unit = Math.max(1, getIndentUnit(state));
+    const rainbow = state.facet(rainbowGuides);
+    const above = group.lenses.filter((l) => !right(l));
+    const after = group.lenses.filter(right);
+    if (above.length)
+      builder.add(
+        line.from,
+        line.from,
+        Decoration.widget({ widget: new LensWidget(above, indent, unit, rainbow), block: true, side: -1 }),
+      );
+    if (after.length)
+      builder.add(
+        line.to,
+        line.to,
+        Decoration.widget({ widget: new LensWidget(after, indent, unit, rainbow, true), side: 1 }),
+      );
   }
   return builder.finish();
 }
 
 const lensTheme = EditorView.theme({
+  // IDEA paints code vision with the colour scheme's Inline hints attribute.
   ".cm-openidea-lens": {
     display: "flex",
     alignItems: "center",
-    gap: "6px",
+    gap: "12px",
     height: "16px",
-    color: "var(--fg-muted)",
+    color: "var(--fg-inlay, var(--fg-muted))",
     WebkitUserSelect: "none",
     userSelect: "none",
     whiteSpace: "nowrap",
     overflow: "hidden",
   },
+  // "right": a zero-width anchor at the end of the line, with the hint drawn from an absolutely
+  // positioned inner box, the way IDEA paints line-end inlays. Nothing here takes part in the
+  // line's flow: the hint can neither wrap to the next line (a soft-wrapped line has no room for
+  // it) nor stretch the line's height, and it overflows past the editor edge instead.
+  // The anchor's own offset is a custom property: the blame and plugin messages step past the
+  // hint by measuring this inner box plus that offset (inlineBlame.ts, decorations.ts).
+  ".cm-openidea-lensInline": {
+    "--openidea-hint-offset": "12px",
+    display: "inline-block",
+    width: "0",
+    position: "relative",
+    lineHeight: "1",
+    color: "var(--fg-inlay, var(--fg-muted))",
+    WebkitUserSelect: "none",
+    userSelect: "none",
+  },
+  ".cm-openidea-lensInlineInner": {
+    position: "absolute",
+    left: "var(--openidea-hint-offset)",
+    bottom: "-2px",
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    whiteSpace: "nowrap",
+    // Pinned to the line, the hint may run past the editor's edge (IDEA clips it there); cap it so a
+    // long one cannot stretch across the whole window first.
+    maxWidth: "min(60ch, 50vw)",
+    overflow: "hidden",
+    pointerEvents: "auto",
+  },
   ".cm-openidea-lensItem": {
     display: "inline-flex",
     alignItems: "center",
-    gap: "3px",
+    gap: "4px",
     padding: "0",
     border: "none",
     background: "none",
     font: "inherit",
     color: "inherit",
-  },
-  // The row keeps the editor font so its `ch`-based indent guides line up with the code.
-  ".cm-openidea-lensItem, .cm-openidea-lensSep": {
+    // The items take the UI font (IDEA's label font) at the editor's size minus 1 (HintUtil.getSize),
+    // so hints scale with the editor font; the row keeps the editor's, so its `ch`-based indent guides line up with the code.
     fontFamily: "var(--font-ui)",
-    fontSize: "var(--fs-tiny)",
+    fontSize: "calc(1em - 1px)",
   },
   ".cm-openidea-lensAction": { cursor: "pointer" },
   ".cm-openidea-lensAction:hover": { color: "var(--accent)", textDecoration: "underline" },
-  ".cm-openidea-lensSep": { color: "var(--fg-faint)" },
   ".cm-openidea-lensIcon-run": { color: "var(--success)" },
 });
 
 /** Base extension (always installed): no cost until a provider contributes lenses. */
-export const codeLensExtension: Extension = [EditorView.decorations.compute([codeLenses], buildDecorations), lensTheme];
+export const codeLensExtension: Extension = [
+  EditorView.decorations.compute([codeLenses, rainbowGuides, codeLensPositions], buildDecorations),
+  lensTheme,
+];

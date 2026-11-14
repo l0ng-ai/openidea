@@ -140,6 +140,8 @@ export function dockerItems(
       icon: snap?.availability.kind === "ready" ? "docker-connected" : "file-docker",
       detail: connectionDetail(state),
       dim: snap?.availability.kind !== "ready",
+      // A connection the user just added opens once, so its groups are in sight.
+      expanded: true,
       children: children(root)?.map(convert) ?? [],
     };
   });

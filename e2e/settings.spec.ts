@@ -6,7 +6,7 @@ test("Add Python Interpreter keeps environment labels and fields inside their ro
   await settings.getByRole("textbox", { name: "Search settings" }).fill("Python Interpreter");
   await settings
     .getByRole("tree", { name: "Settings pages" })
-    .getByRole("treeitem", { name: "Python Interpreter", exact: true })
+    .getByRole("treeitem", { name: "Dependencies", exact: true })
     .click();
   await settings.getByRole("button", { name: "Add Interpreter…", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Add Python Interpreter", exact: true });
@@ -53,8 +53,8 @@ test("Project Structure keeps edits across repeated shortcuts and applies them",
   await page.keyboard.press("Meta+;");
   await expect(dialog.getByLabel("Compiler output", { exact: true })).toHaveValue("out/classes");
   await dialog.getByRole("button", { name: "Modules", exact: true }).click();
-  await dialog.getByRole("tab", { name: "Dependencies", exact: true }).click();
-  await expect(dialog.getByRole("button", { name: "Add Library", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Dependencies", exact: true }).click();
+  await expect(dialog.getByRole("group", { name: "The project depends on these projects" })).toBeVisible();
   await dialog.getByRole("button", { name: "Artifacts", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "JAR", exact: true })).toBeDisabled();
   await page.keyboard.press("Escape");

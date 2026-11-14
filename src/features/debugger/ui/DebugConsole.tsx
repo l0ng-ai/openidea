@@ -15,8 +15,9 @@ import { EmptyState, IconButton, showContextMenu, T, type MenuItem } from "@/ui"
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { spanStyle } from "@/ui/ansi";
-import ansi from "@/ui/ansi.module.css";
+import { logLineColor } from "@/ui/logColors";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
@@ -36,6 +37,7 @@ import { findOutputLinks, type OutputLink } from "@/features/run/links";
 import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
+import { WidestColumns } from "@/platform/consoleColumns";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
 
@@ -118,10 +120,17 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const [follow, setFollow] = useState(true);
   const stick = useRef(true);
   stick.current = follow;
+  // The debug console uses the same font as the Run console.
+  const consoleFont = useConsoleFont();
+  const { rowHeight } = consoleFont;
+  const fontStyle = { fontFamily: consoleFont.family, fontSize: `${consoleFont.size}px` };
   // Settings › Console › Use soft wraps is the default; the toggle overrides it for this console.
   const defaultWrap = useWorkflowSettings((s) => s.console.softWrap);
+  const logColors = useWorkflowSettings((s) => s.console.logColors);
   const [wrapOverride, setWrapOverride] = useState<boolean | null>(null);
   const softWrap = wrapOverride ?? defaultWrap;
+  const [widest] = useState(() => new WidestColumns());
+  const columns = useMemo(() => widest.measure(lines ?? []), [widest, lines]);
   const programmatic = useRef(false);
   const [input, setInput] = useState("");
   const history = useRef<string[]>(readHistory("console"));
@@ -141,13 +150,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
   const virtualizer = useVirtualizer({
     count: lines?.length ?? 0,
     getScrollElement: () => scroller.current,
-    estimateSize: () => 18,
+    estimateSize: () => rowHeight,
     overscan: 30,
     getItemKey: (i) => lines?.[i]?.id ?? i,
   });
 
   // Wrapping changes every row's height; the end is pinned again below.
-  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, virtualizer]);
+  useLayoutEffect(() => virtualizer.measure?.(), [softWrap, rowHeight, virtualizer]);
 
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -429,7 +438,8 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         )}
         <div
           ref={scroller}
-          className={clsx(styles.consoleOutput, ansi.palette, !softWrap && styles.noWrap)}
+          className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}
+          style={{ ...fontStyle, lineHeight: `${rowHeight}px` }}
           onScroll={(e) => {
             if (programmatic.current) return;
             const el = e.currentTarget;
@@ -445,17 +455,23 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
           {!lines?.length && session.launch?.request === "attach" && (
             <T>The attached process may not provide standard output to the debugger.</T>
           )}
-          <div ref={inner} className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+          <div
+            ref={inner}
+            className={styles.consoleInner}
+            style={{ height: virtualizer.getTotalSize(), minWidth: softWrap ? undefined : `${columns}ch` }}
+          >
             {virtualizer.getVirtualItems().map((item) => {
               const l = lines?.[item.index];
               if (!l) return null;
+              // The level colour is the inherited fallback; spans with their own ANSI colour win.
+              const color = logLineColor(l.text, l.category, logColors);
               return (
                 <span
                   key={item.key}
                   data-index={item.index}
                   ref={virtualizer.measureElement}
                   className={clsx(styles.out, styles[`cat-${l.category}`])}
-                  style={{ transform: `translateY(${item.start}px)` }}
+                  style={{ transform: `translateY(${item.start}px)`, color }}
                 >
                   <DebugLine line={l} marks={marksByLine.get(item.index)} length={l.text.length} cwd={cwd} />
                 </span>
@@ -466,12 +482,13 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
         <div className={styles.repl}>
           {interactive && (
             <>
-              <span className={styles.prompt} aria-hidden>
+              <span className={styles.prompt} style={fontStyle} aria-hidden>
                 ›
               </span>
               <input
                 ref={inputRef}
                 className={styles.evalInput}
+                style={fontStyle}
                 onFocus={() => setConsoleHistoryBrowser(browseHistory)}
                 onBlur={() => {
                   setConsoleHistoryBrowser(null);

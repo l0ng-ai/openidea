@@ -31,6 +31,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   registerContentTabSender,
 } from "./contentTab";
 import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
@@ -56,6 +57,8 @@ export interface DocumentState {
 export interface FrameDocument {
   /** `name` is the file's name, without its directory. */
   read(): DocumentState & { readOnly: boolean; name: string };
+  /** The bytes of the file on disk, for binary documents (read-only, so the disk is current). */
+  bytes(): Promise<Uint8Array>;
   /** Applies the frame's edits as one change; throws `stale` when not at `version`. Returns the new version. */
   edit(version: number, changes: readonly TextChange[]): number;
   /** Changes made other than through `edit` (the text editor, Undo, other windows). */
@@ -204,6 +207,22 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       }
       return true;
     };
+    const handleDiffMessage = (rawText: string): boolean => {
+      if (!rawText.includes('"open-diff"')) return false;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-diff") return false;
+      try {
+        openPluginDiffRequest(parsed, rawText.length);
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "diff-error", error: errorText(err) }) });
+      }
+      return true;
+    };
     const handleContentTabMessage = (rawText: string): boolean => {
       if (handleContentTabReplyText(pluginId, rawText)) return true;
       let parsed: unknown;
@@ -261,6 +280,11 @@ export function WebView({ pluginId, view, label, header = "default", document = 
         case "document.get": {
           if (!document) throw new Error("this view shows no document");
           return [document.read()];
+        }
+        case "document.bytes": {
+          if (!document) throw new Error("this view shows no document");
+          const bytes = await document.bytes();
+          return [bytes, [bytes.buffer]];
         }
         case "document.edit":
         case "document.replace": {
@@ -325,6 +349,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       } else if (typeof m.text === "string") {
         if (handleLogTabMessage(m.text)) return;
         if (handleContentTabMessage(m.text)) return;
+        if (handleDiffMessage(m.text)) return;
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()

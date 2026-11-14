@@ -1,12 +1,13 @@
 /**
  * Color preview gutter: a swatch on each line with a color literal (the first one), as IDEA's
- * color gutter icons. Clicking it in an editable file opens the system color picker; the picked
- * color replaces the literal in its own format (alpha kept, the picker has none).
+ * color gutter icons. Picking a color replaces the literal in its own format.
  */
 import type { Extension } from "@codemirror/state";
 import { GutterMarker, gutter, type EditorView } from "@codemirror/view";
+import { syntaxTree } from "@codemirror/language";
 import type { EditorDocContext } from "@/editor/api";
-import { findColors, formatColor, fromHex6, parseComputed, toHex6, type ColorMatch, type Rgba } from "./colors";
+import { findColors, formatColor, isMarkupLanguage, parseComputed, type ColorMatch, type Rgba } from "./colors";
+import { openColorPicker } from "./ColorPicker";
 import styles from "./ColorPreview.module.css";
 
 /** Longer lines (minified style sheets) are not scanned. */
@@ -64,44 +65,36 @@ class Swatch extends GutterMarker {
 function lineColor(view: EditorView, pos: number, language: string): ColorMatch | null {
   const line = view.state.doc.lineAt(pos);
   if (line.length > MAX_LINE) return null;
-  return findColors(line.text, language, isColorName)[0] ?? null;
+  const matches = findColors(line.text, language, isColorName);
+  if (!isMarkupLanguage(language)) return matches[0] ?? null;
+  const tree = syntaxTree(view.state);
+  return (
+    matches.find((color) => {
+      let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
+      for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
+      return false;
+    }) ?? null
+  );
 }
 
-let picker: HTMLInputElement | null = null;
-
-/** Opens the system color picker for `color` at `from`; each pick replaces the literal. */
+/** Opens the color picker for `color` at `from`; each valid pick replaces the literal. */
 function pickColor(view: EditorView, from: number, color: ColorMatch, at: { x: number; y: number }) {
   const rgba = rgbaOf(color.text);
   if (!rgba) return;
-  picker?.remove();
-  const input = document.createElement("input");
-  picker = input;
-  input.type = "color";
-  input.className = `${styles.picker}`;
-  input.style.left = `${at.x}px`;
-  input.style.top = `${at.y}px`;
-  input.value = toHex6(rgba);
-  document.body.append(input);
   let current = color.text;
-  const apply = () => {
-    const next = fromHex6(input.value, rgba[3]);
-    // The literal changed meanwhile: leave it alone.
-    if (!next || view.state.sliceDoc(from, from + current.length) !== current) return;
-    const text = formatColor(next, color);
-    if (text === current) return;
-    view.dispatch({ changes: { from, to: from + current.length, insert: text }, userEvent: "input.color" });
-    current = text;
-  };
-  input.addEventListener("input", apply);
-  input.addEventListener("change", () => {
-    apply();
-    input.remove();
+  openColorPicker({
+    view,
+    anchor: at,
+    value: rgba,
+    onChange: (next) => {
+      if (!view.dom.isConnected || view.state.readOnly || view.state.sliceDoc(from, from + current.length) !== current)
+        return;
+      const text = formatColor(next, color);
+      if (text === current) return;
+      view.dispatch({ changes: { from, to: from + current.length, insert: text }, userEvent: "input.color" });
+      current = text;
+    },
   });
-  try {
-    input.showPicker();
-  } catch {
-    input.click();
-  }
 }
 
 export function colorPreviewGutter(ctx: EditorDocContext): Extension {
@@ -122,7 +115,7 @@ export function colorPreviewGutter(ctx: EditorDocContext): Extension {
         if (!color) return false;
         e.preventDefault();
         const rect = swatch.getBoundingClientRect();
-        pickColor(view, line.from + color.from, color, { x: rect.left, y: rect.bottom + 2 });
+        pickColor(view, line.from + color.from, color, { x: rect.left, y: rect.bottom });
         return true;
       },
     },

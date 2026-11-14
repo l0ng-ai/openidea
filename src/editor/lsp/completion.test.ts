@@ -25,6 +25,7 @@ import {
 } from "./completion";
 import {
   acceptCompletion,
+  closeCompletion,
   currentCompletions,
   snippet,
   startCompletion,
@@ -32,6 +33,8 @@ import {
 } from "@codemirror/autocomplete";
 import { useProject } from "@/platform/project";
 import type { Settings } from "@/platform/ipc";
+import { setInvokeRoute } from "@/platform/tauriCore";
+import { clearBackoffs } from "./availability";
 
 function item(over: Partial<CompletionItem> = {}): CompletionItem {
   return {
@@ -318,6 +321,44 @@ describe("applying completions", () => {
   });
 
   for (const mode of ["insert", "replace"] as const) {
+    for (const prefix of ["", "v"]) {
+      it(`${mode} leaves the caret after a field snippet accepted at root.${prefix}`, () => {
+        const { view, req, pos } = setup(`int a = root.${prefix}|Suffix`);
+        const start = "int a = root.".length;
+        const c = makeCompletion(
+          item({
+            label: "val",
+            kind: "field",
+            insertText: "val",
+            isSnippet: true,
+            replaceRange: { start: { line: 0, col: start }, end: { line: 0, col: pos } },
+          }),
+          req,
+        );
+        applyLspCompletion(view, c, start, pos, mode);
+        expect(view.state.doc.toString()).toBe(`int a = root.val${mode === "insert" ? "Suffix" : ""}`);
+        expect(view.state.selection.main.head).toBe(start + 3);
+      });
+    }
+
+    it(`${mode} places a fieldless snippet after imports and a cached UTF-16 prefix`, () => {
+      const { view, req, pos } = setup("\n/* 😀 */ root.|Suffix", "v");
+      const c = makeCompletion(
+        item({
+          label: "val",
+          kind: "field",
+          insertText: "val",
+          isSnippet: true,
+          replaceRange: { start: { line: 1, col: pos - 1 }, end: { line: 1, col: pos - 1 } },
+          additionalEdits: [{ range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }, new_text: "import X;" }],
+        }),
+        req,
+      );
+      applyLspCompletion(view, c, pos, pos + 1, mode);
+      expect(view.state.doc.toString()).toBe(`import X;\n/* 😀 */ root.val${mode === "insert" ? "Suffix" : ""}`);
+      expect(view.state.selection.main.head).toBe(pos + "import X;val".length);
+    });
+
     for (const shape of ["textEdit", "insertReplace", "noEdit"] as const) {
       for (const isSnippet of [false, true]) {
         it(`${mode} replaces a mixed-case prefix typed after a ${shape} request (snippet: ${isSnippet})`, () => {
@@ -561,6 +602,45 @@ describe("explicit completion", () => {
   });
 });
 
+describe("completion footer", () => {
+  let view: EditorView | null = null;
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+  });
+
+  it("stays below the list after CodeMirror rebuilds the options", async () => {
+    const source: CompletionSource = (ctx) => ({
+      from: ctx.pos,
+      options: [{ label: "println" }, { label: "print" }],
+    });
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "pri",
+        selection: { anchor: 3 },
+        extensions: [completionExtension(), EditorState.languageData.of(() => [{ openideaCompletion: source }])],
+      }),
+      parent: document.body,
+    });
+    startCompletion(view);
+    await vi.waitFor(() =>
+      expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull(),
+    );
+    const tooltip = document.querySelector<HTMLElement>(".cm-tooltip-autocomplete")!;
+    const footer = tooltip.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer")!;
+    expect(footer.previousElementSibling?.tagName).toBe("UL");
+
+    // CodeMirror removes the <ul> and appends a fresh one when the results change.
+    tooltip.querySelector(":scope > ul")!.remove();
+    tooltip.appendChild(document.createElement("ul"));
+    expect(footer.previousElementSibling).toBeNull();
+
+    view.dispatch({});
+    await vi.waitFor(() => expect(footer.previousElementSibling?.tagName).toBe("UL"));
+    expect(tooltip.querySelectorAll(":scope > .cm-lsp-completion-footer")).toHaveLength(1);
+  });
+});
+
 describe("typeColumnText", () => {
   const edit = (new_text: string) => [{ range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }, new_text }];
 
@@ -619,5 +699,73 @@ describe("typeColumnText", () => {
       typeColumnText({ detail: "java.util.ArrayList", additionalEdits: edit("import java.util.ArrayList;\n") }),
     ).toBe("java.util.ArrayList");
     expect(typeColumnText({ detail: "fn()  ", additionalEdits: [] })).toBe("fn() ");
+  });
+});
+
+describe("completionBackoff", () => {
+  afterEach(() => {
+    setInvokeRoute(null);
+    clearBackoffs();
+  });
+
+  it("backs off automatic typing after unavailable, but lets explicit completion retry and clear backoff", async () => {
+    let available = false;
+    let completionCalls = 0;
+    setInvokeRoute((cmd) => {
+      if (cmd === "cancel_request") return Promise.resolve(null);
+      if (cmd === "lsp_completion") {
+        completionCalls++;
+        if (!available) return Promise.reject({ kind: "unavailable", message: "no running language server" });
+        return Promise.resolve({
+          isIncomplete: false,
+          items: [
+            item({ label: "volumes", insertText: "volumes" }),
+            item({ label: "volumeMounts", insertText: "volumeMounts" }),
+          ],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const ctx: EditorDocContext = {
+      doc: 901,
+      path: "/p/deployment.yaml",
+      language: "yaml",
+      uiMode: "YAML",
+      readOnly: false,
+    };
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "v",
+        selection: { anchor: 1 },
+        extensions: [lspDoc.of(ctx), completionExtension()],
+      }),
+      parent: document.body,
+    });
+
+    // 1. Typing 'o' triggers automatic completion -> backend unavailable -> marks backoff
+    view.dispatch({ changes: { from: 1, insert: "o" }, selection: { anchor: 2 }, userEvent: "input.type" });
+    await vi.waitFor(() => expect(completionCalls).toBe(1), { timeout: 2000 });
+
+    // 2. Typing 'l' while backed off does not hit `lsp_completion` again
+    view.dispatch({ changes: { from: 2, insert: "l" }, selection: { anchor: 3 }, userEvent: "input.type" });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(completionCalls).toBe(1);
+
+    // 3. Backend/plugin becomes available; explicit completion (Ctrl+Space) bypasses backoff and clears it
+    available = true;
+    startCompletion(view);
+    await vi.waitFor(() => expect(completionCalls).toBe(2), { timeout: 2000 });
+    await vi.waitFor(() => expect(currentCompletions(view.state).map((c) => c.label)).toContain("volumes"), {
+      timeout: 2000,
+    });
+
+    // 4. Close the active popup and start typing a new word: automatic completion queries `lsp_completion` again
+    closeCompletion(view);
+    view.dispatch({ changes: { from: 3, insert: "\n" }, selection: { anchor: 4 }, userEvent: "input.type" });
+    view.dispatch({ changes: { from: 4, insert: "v" }, selection: { anchor: 5 }, userEvent: "input.type" });
+    await vi.waitFor(() => expect(completionCalls).toBeGreaterThanOrEqual(3), { timeout: 2000 });
+
+    view.destroy();
   });
 });

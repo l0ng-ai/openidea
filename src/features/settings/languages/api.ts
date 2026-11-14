@@ -10,12 +10,13 @@ import {
   isTauri,
   nextRequestId,
   type PhpLanguageLevels,
+  type ProjectInterpreter,
   type PythonPackage,
   type Sdk,
   type SdkKind,
 } from "@/platform/ipc";
 
-export type { PythonPackage, Sdk, SdkKind };
+export type { ProjectInterpreter, PythonPackage, Sdk, SdkKind };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -102,6 +103,11 @@ export function pythonInterpreter(path: string): Promise<Sdk | null> {
   return isTauri() ? call(commands.sdkPythonInterpreter(path)) : Promise.resolve(null);
 }
 
+/** Interpreters of the other recently opened projects, each with the project it belongs to. */
+export function pythonProjectInterpreters(): Promise<ProjectInterpreter[]> {
+  return isTauri() ? call(commands.sdkPythonProjectInterpreters()) : Promise.resolve([]);
+}
+
 export function listPackages(python: string): Promise<PythonPackage[]> {
   return call(commands.sdkPythonPackages(python, nextRequestId()));
 }
@@ -118,9 +124,9 @@ export function pip(
   );
 }
 
-/** Interpreter the project uses when none is configured (its virtualenv). */
-export function effectivePython(): Promise<string | null> {
-  return isTauri() ? call(commands.sdkPythonEffective(null)) : Promise.resolve(null);
+/** Interpreter the project uses when none is configured (its virtualenv); `near` picks the workspace member. */
+export function effectivePython(near: string | null = null): Promise<string | null> {
+  return isTauri() ? call(commands.sdkPythonEffective(near)) : Promise.resolve(null);
 }
 
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */
@@ -135,7 +141,7 @@ export async function choosePath(opts: {
   defaultPath?: string;
 }): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: opts.directory,
     multiple: false,

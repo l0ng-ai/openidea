@@ -181,7 +181,7 @@ Right-click a commit for **Copy Revision Number** (`⌥⇧⌘C` / `Ctrl+Alt+Shif
 
 ### Rewrite history
 
-From the log you can **Edit Commit Message…**, **Fixup…**, **Squash Into…**, **Drop Commit**, **Squash Commits…** and **Interactively Rebase from Here…**. The interactive rebase dialog lets you pick, reword, edit, squash, fixup, drop and reorder commits. These actions are disabled for commits that are already pushed.
+From the log you can **Edit Commit Message…**, **Fixup…**, **Squash Into…**, **Drop Commit**, **Squash Commits…** and **Interactively Rebase from Here…**. The interactive rebase dialog lets you pick, reword, edit, squash, fixup, drop and reorder commits. These actions also work for commits that are already pushed: rewriting them is confirmed first, and pushing afterwards needs a force push. Commits already pushed from a protected branch cannot be rewritten.
 
 Limits: interactive rebase doesn't support ranges with merge commits, and **Undo Commit…** works only on the latest commit (its changes go back to a changelist).
 
@@ -212,6 +212,8 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 ## Blame and history
 
 - **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line.
+- **Annotate Previous Revision** in an annotated line's menu opens the file as it was before that commit, annotated, next to the commit's version.
+- **Annotate at Revision…** picks any revision the file has and shows it annotated next to the working copy.
 - **Show History** opens the file's history in a tab of the Git tool window.
 - **Show History for Selection** shows the commits that changed the selected lines.
 - **Show Current Revision** reveals the commit of the caret line in the log.

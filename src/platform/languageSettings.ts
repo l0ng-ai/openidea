@@ -79,8 +79,32 @@ export const PHP_LANGUAGE_LEVELS = [
   "5.6",
 ] as const;
 
-/** `languages.java.languageLevel` values; `""` = SDK default (Auto). */
-export const JAVA_LANGUAGE_LEVELS = ["", "8", "11", "17", "21", "25"] as const;
+/** `languages.java.languageLevel` values; `""` = SDK default (Auto). Levels before 8 need a jdtls
+ *  that still compiles them (Settings › Languages & Frameworks › Language Servers). */
+export const JAVA_LANGUAGE_LEVELS = [
+  "",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "15",
+  "16",
+  "17",
+  "18",
+  "19",
+  "20",
+  "21",
+  "22",
+  "23",
+  "24",
+  "25",
+] as const;
 
 export type DependencyScopeValid = "compile" | "test" | "runtime" | "provided";
 
@@ -131,7 +155,18 @@ export interface ArtifactConfigValid {
 
 export interface LanguagesValid {
   pluginFormatters: Record<string, string>;
-  python: { interpreter: string; activateVirtualenv: boolean };
+  python: {
+    interpreter: string;
+    activateVirtualenv: boolean;
+    /** Interpreters added to the IDE-wide list (Settings › Python › All Interpreters). */
+    interpreters: string[];
+    /** Interpreters removed from that list: detection does not show them again. */
+    hiddenInterpreters: string[];
+    /** Hide interpreters that belong to another project. */
+    hideOtherProjectInterpreters: boolean;
+    /** Show each interpreter's path under its name on the interpreters page. */
+    showInterpreterPaths: boolean;
+  };
   ruby: { interpreter: string };
   node: { runTarget: string; interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
   php: {
@@ -188,6 +223,8 @@ export interface LanguagesValid {
       threads: string;
       /** Comma-separated `-P` profiles; empty = POM/settings defaults. */
       activeProfiles: string;
+      /** Delegate IDE build/run actions to Maven (`javac`) instead of jdtls (ECJ). */
+      delegateBuild: boolean;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -204,6 +241,10 @@ export interface ProjectStructureValid {
   unmarked: string[];
   /** Content roots besides the project folder (absolute paths). */
   contentRoots: string[];
+  /** Other projects (absolute paths) this project depends on; indexed and navigable with it. */
+  dependencies: string[];
+  /** Per-workspace-member dependencies: member path → the roots it depends on. */
+  memberDependencies: Record<string, string[]>;
   /** "Exclude files": `;`-separated name patterns. */
   excludeFiles: string;
   /** Project compiler output directory; empty = default. */
@@ -229,7 +270,14 @@ export type FolderListKey =
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   pluginFormatters: {},
-  python: { interpreter: "", activateVirtualenv: true },
+  python: {
+    interpreter: "",
+    activateVirtualenv: true,
+    interpreters: [],
+    hiddenInterpreters: [],
+    hideOtherProjectInterpreters: false,
+    showInterpreterPaths: true,
+  },
   ruby: { interpreter: "" },
   node: { runTarget: "", interpreter: "", packageManager: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
@@ -258,6 +306,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
       mvndHome: "",
       threads: "",
       activeProfiles: "",
+      delegateBuild: false,
     },
   },
   markdown: { previewFontSize: null },
@@ -271,6 +320,8 @@ export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
   excluded: [],
   unmarked: [],
   contentRoots: [],
+  dependencies: [],
+  memberDependencies: {},
   excludeFiles: "",
   compilerOutput: "",
   modules: {},
@@ -357,6 +408,10 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),
+      interpreters: strings(py.interpreters),
+      hiddenInterpreters: strings(py.hiddenInterpreters),
+      hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
+      showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {
@@ -426,6 +481,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
         threads: text(maven.threads, d.java.maven.threads),
         activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
+        delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
@@ -554,6 +610,17 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
     contentRoots: Array.isArray(p.contentRoots)
       ? [...new Set(p.contentRoots.filter((x): x is string => typeof x === "string" && !!x.trim()))]
       : [],
+    dependencies: Array.isArray(p.dependencies)
+      ? [...new Set(p.dependencies.filter((x): x is string => typeof x === "string" && !!x.trim()))]
+      : [],
+    memberDependencies: Object.fromEntries(
+      Object.entries(obj(p.memberDependencies))
+        .map(([member, deps]) => [
+          member,
+          Array.isArray(deps) ? [...new Set(deps.filter((x): x is string => typeof x === "string" && !!x.trim()))] : [],
+        ])
+        .filter(([member, deps]) => !!member && (deps as string[]).length > 0),
+    ),
     excludeFiles: typeof p.excludeFiles === "string" ? p.excludeFiles : "",
     compilerOutput: text(p.compilerOutput, ""),
     modules: validateModulesMap(p.modules),
@@ -561,6 +628,11 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
     facets: validateFacetsList(p.facets),
     artifacts: validateArtifactsList(p.artifacts),
   };
+}
+
+/** Content roots plus dependency projects, deduplicated (what the Project view, index and run see). */
+export function effectiveContentRoots(ps: ProjectStructureValid): string[] {
+  return [...new Set([...ps.contentRoots, ...ps.dependencies])];
 }
 
 /** Root kinds, as in IDEA's Project Structure (`ide-workspace::roots::RootKind`). */

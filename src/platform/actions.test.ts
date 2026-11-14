@@ -1,5 +1,13 @@
 import { expect, it, vi } from "vitest";
-import { executeAction, executeActionOrThrow, registerAction, useRunningActions } from "./actions";
+import {
+  executeAction,
+  executeActionOrThrow,
+  getAction,
+  registerAction,
+  registerActions,
+  useActions,
+  useRunningActions,
+} from "./actions";
 
 const running = (id: string) => useRunningActions.getState().running.get(id) ?? 0;
 
@@ -90,4 +98,23 @@ it("checks argument-specific enablement before dispatch", async () => {
   } finally {
     dispose();
   }
+});
+
+it("registers a batch with one store update and disposes every action", () => {
+  const updates: number[] = [];
+  const off = useActions.subscribe((s) => updates.push(s.actions.size));
+  const dispose = registerActions([
+    { id: "test.batch.one", title: "One", run: () => {} },
+    { id: "test.batch.two", title: "Two", run: () => {} },
+  ]);
+  try {
+    expect(updates).toHaveLength(1);
+    expect(getAction("test.batch.one")?.title).toBe("One");
+    expect(getAction("test.batch.two")?.title).toBe("Two");
+  } finally {
+    dispose();
+    off();
+  }
+  expect(getAction("test.batch.one")).toBeUndefined();
+  expect(getAction("test.batch.two")).toBeUndefined();
 });

@@ -26,9 +26,17 @@ import {
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { useBuildModel } from "@/platform/buildModel";
 import { useProject } from "@/platform/project";
+import { hostOs } from "@/platform/remote";
 import { editorService, notifications } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { gradleRoots, profileKey, profilesList, type GradleRunOptions, type MavenRunOptions } from "./model";
+import {
+  gradleRoots,
+  mavenGoalConfig,
+  profileKey,
+  profilesList,
+  type GradleRunOptions,
+  type MavenRunOptions,
+} from "./model";
 
 export interface BuildSettings {
   maven: MavenRunOptions;
@@ -37,7 +45,7 @@ export interface BuildSettings {
 
 export const DEFAULT_SETTINGS: BuildSettings = {
   maven: { offline: false, skipTests: false, profiles: {} },
-  gradle: { offline: false },
+  gradle: { offline: false, skipTests: false },
 };
 
 interface SyncState {
@@ -123,6 +131,8 @@ export const toggleSkipTests = () =>
   updateSettings((s) => ({ ...s, maven: { ...s.maven, skipTests: !s.maven.skipTests } }));
 export const toggleGradleOffline = () =>
   updateSettings((s) => ({ ...s, gradle: { ...s.gradle, offline: !s.gradle.offline } }));
+export const toggleGradleSkipTests = () =>
+  updateSettings((s) => ({ ...s, gradle: { ...s.gradle, skipTests: !s.gradle.skipTests } }));
 
 /** Delay before reloading Maven after a profile toggle, so a few toggles in a row reload once. */
 export const PROFILE_RELOAD_DELAY_MS = 800;
@@ -287,31 +297,170 @@ export async function unlinkProjects(pom: string | null) {
   await setLinked(root, [pom], false);
 }
 
-/** Project-relative `pom.xml` paths of `picked` inside `root`; others are skipped. */
-function projectPoms(root: string, picked: readonly string[]): string[] {
-  const base = root.replace(/\\/g, "/").replace(/\/$/, "");
-  return picked.flatMap((p) => {
-    const path = p.replace(/\\/g, "/");
-    if (!path.startsWith(`${base}/`)) return [];
-    const pom = path.slice(base.length + 1);
-    const parts = pom.split("/");
-    return parts.some((part) => part === ".." || part === ".") || parts.pop() !== "pom.xml" ? [] : [pom];
-  });
+/** A picked path in one comparable form: slashes unified, `\\?\` prefixes stripped. */
+function comparablePath(p: string) {
+  const slashes = p.replace(/\\/g, "/");
+  const unc = /^\/\/\?\/UNC\//i.exec(slashes);
+  if (unc) return `//${slashes.slice(unc[0].length)}`;
+  return slashes.replace(/^\/\/\?\//, "");
 }
 
-export async function addProjects() {
+function isPomFileName(path: string): boolean {
+  const name = path.split("/").pop() ?? "";
+  return hostOs() === "windows" ? name.toLowerCase() === "pom.xml" : name === "pom.xml";
+}
+
+/** Lexical `.` / `..` collapse. A drive letter stays the first component. */
+function lexicalPath(path: string): string {
+  const unc = path.startsWith("//");
+  const rooted = path.startsWith("/");
+  const drive = /^[A-Za-z]:\//.test(path);
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      const top = parts[parts.length - 1];
+      if (top && top !== ".." && !(drive && parts.length === 1)) parts.pop();
+      else if (!rooted && !drive) parts.push("..");
+      continue;
+    }
+    parts.push(part);
+  }
+  if (unc) return `//${parts.join("/")}`;
+  if (rooted) return `/${parts.join("/")}`;
+  return parts.join("/");
+}
+
+function isInsideRoot(root: string, path: string): boolean {
+  const prefix = `${root}/`;
+  return hostOs() === "windows" ? path.toLowerCase().startsWith(prefix.toLowerCase()) : path.startsWith(prefix);
+}
+
+/**
+ * POMs to link, and picks to reject. Inside the opened project the link is
+ * project-relative; outside it the link is the absolute `pom.xml`. `.` and `..`
+ * collapse first, so `root/a/../b/pom.xml` is `b/pom.xml` and `root/../B/pom.xml`
+ * is that sibling. The backend canonicalizes spellings of the same file. A pick
+ * that is not a `pom.xml` is rejected. Drive-letter case and `\\?\` prefixes must
+ * not matter on Windows (#2626).
+ */
+export function classifyPickedPoms(root: string, picked: readonly string[]): { link: string[]; rejected: string[] } {
+  const base = lexicalPath(comparablePath(root).replace(/\/$/, ""));
+  const link: string[] = [];
+  const rejected: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of picked) {
+    const path = lexicalPath(comparablePath(raw));
+    const absolute = path.startsWith("/") || path.startsWith("//") || /^[A-Za-z]:\//.test(path);
+    if (!isPomFileName(path) || (!isInsideRoot(base, path) && !absolute)) {
+      rejected.push(raw);
+      continue;
+    }
+    const key = isInsideRoot(base, path) ? path.slice(base.length + 1) : path;
+    const id = hostOs() === "windows" ? key.toLowerCase() : key;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    link.push(key);
+  }
+  return { link, rejected };
+}
+
+/** Choose `pom.xml` files and link them. `dialogTitle` is already translated. */
+export async function addProjects(dialogTitle?: string) {
   const root = useProject.getState().project?.root;
   if (!root || useProject.getState().project?.workspace || !isTauri()) return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
-    title: tx`Add Maven Projects`,
+    title: dialogTitle ?? tx`Add Maven Projects`,
     directory: false,
     multiple: true,
     defaultPath: root,
     filters: [{ name: "pom.xml", extensions: ["xml"] }],
   });
-  const poms = projectPoms(root, typeof picked === "string" ? [picked] : (picked ?? []));
-  if (poms.length) await setLinked(root, poms, true);
+  const paths = typeof picked === "string" ? [picked] : (picked ?? []);
+  if (!paths.length) return;
+  const { link, rejected } = classifyPickedPoms(root, paths);
+  if (link.length) await setLinked(root, link, true);
+  // Dropping every pick silently looks exactly like the button doing nothing (#2626).
+  if (rejected.length)
+    notifications().notify({
+      group: "tools",
+      level: "warning",
+      title: tx`Some Maven projects were not added`,
+      body: tx`These files are not named pom.xml, so they were not added: ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? ` (+${rejected.length - 3} more)` : ""}`,
+      key: "maven-add-outside-root",
+    });
+}
+
+/** `pom.xml` for a module directory, or the path itself when it already names that file. */
+export function mavenPomForImport(picked: string): string {
+  const path = lexicalPath(comparablePath(picked)).replace(/\/$/, "");
+  return isPomFileName(path) ? path : `${path}/pom.xml`;
+}
+
+/**
+ * Project Structure › Modules › Import Module from Existing Sources.
+ * A directory is the module folder; a `pom.xml` is that file. Either way the
+ * opened folder stays the project root and the existing link pipeline stores the POM.
+ */
+export async function importModuleFromExistingSources() {
+  const root = useProject.getState().project?.root;
+  if (!root || useProject.getState().project?.workspace || !isTauri()) return;
+  try {
+    const { toolWindowService } = await import("@/workbench/contributions");
+    toolWindowService().show("maven");
+  } catch {
+    /* Tests and hosts without the tool-window service still link the POM. */
+  }
+  const { open } = await import("@/platform/dialog");
+  const picked = await open({
+    title: tx`Import Module from Existing Sources`,
+    directory: true,
+    multiple: false,
+    defaultPath: root,
+  });
+  const path = typeof picked === "string" ? picked : picked?.[0];
+  if (!path) return;
+  const pom = mavenPomForImport(path);
+  if (!(await directoryListsPom(pom))) {
+    notifications().notify({
+      group: "tools",
+      level: "warning",
+      title: tx`Maven project was not imported`,
+      body: tx`This directory has no pom.xml, so it was not imported.`,
+      key: "maven-import-no-pom",
+    });
+    return;
+  }
+  const { link, rejected } = classifyPickedPoms(root, [pom]);
+  if (link.length) await setLinked(root, link, true);
+  if (rejected.length)
+    notifications().notify({
+      group: "tools",
+      level: "warning",
+      title: tx`Some Maven projects were not added`,
+      body: tx`These files are not named pom.xml, so they were not added: ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? ` (+${rejected.length - 3} more)` : ""}`,
+      key: "maven-add-outside-root",
+    });
+}
+
+/** One directory listing: the selection's own `pom.xml`, not a scan of its children. */
+async function directoryListsPom(pom: string): Promise<boolean> {
+  const slash = pom.lastIndexOf("/");
+  const dir = slash > 0 ? pom.slice(0, slash) : slash === 0 ? "/" : "";
+  const name = pom.slice(slash + 1);
+  if (!dir) return false;
+  try {
+    const { call, commands } = await import("@/platform/ipc");
+    const entries = await call(commands.fsReadDir(dir));
+    return entries.some(
+      (entry) =>
+        (hostOs() === "windows" ? entry.name.toLowerCase() === name.toLowerCase() : entry.name === name) &&
+        (entry.kind === "file" || (entry.kind === "symlink" && entry.targetKind === "file")),
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Links independent Gradle builds without changing their files or build scripts. */
@@ -325,7 +474,7 @@ export async function linkGradleProjects() {
     !isTauri()
   )
     return;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: tx`Link Gradle Projects`,
     directory: false,
@@ -519,6 +668,35 @@ export function resetBuild() {
 
 export function runConfig(config: RunConfig, mode: "run" | "debug") {
   void executeAction(mode === "debug" ? "run.debugConfig" : "run.runConfig", { config, temporary: true });
+}
+
+/** Runs `config` in the Run tool window; resolves with its exit code (`null` when it didn't start or was stopped). */
+function runToExit(config: RunConfig): Promise<number | null> {
+  return new Promise((resolve) => {
+    const onExit = (code: number | null, stopped: boolean) => resolve(stopped ? null : code);
+    void executeAction("run.runConfig", { config, temporary: true, onExit }).then((ran) => {
+      if (!ran) resolve(null);
+    });
+  });
+}
+
+/**
+ * Generate Sources and Update Folders: runs `generate-sources` for the Maven project at `pom`, or
+ * for every top-level project, then reloads the Maven projects so folders created by the build
+ * (`target/generated-sources/...`) become source folders.
+ */
+export async function generateSources(pom?: string | null): Promise<void> {
+  const { model, settings } = useBuild.getState();
+  const maven = model?.maven;
+  if (!maven) return;
+  const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
+  let ran = false;
+  for (const project of projects) {
+    const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
+    if (code === null) return;
+    ran ||= code === 0;
+  }
+  if (ran) await syncTool("maven");
 }
 
 export async function createRunConfig(config: RunConfig) {

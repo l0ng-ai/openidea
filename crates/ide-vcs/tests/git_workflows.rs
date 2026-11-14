@@ -103,8 +103,11 @@ impl Fixture {
     fn subjects(&self) -> Vec<String> {
         self.git(&["log", "--format=%s"]).lines().map(str::to_string).collect()
     }
+    /// The repository of a trusted project.
     fn repo(&self) -> Repo {
-        Repo::discover(&self.dir).unwrap().expect("repository found")
+        let repo = Repo::discover(&self.dir).unwrap().expect("repository found");
+        repo.set_execution_allowed(true);
+        repo
     }
     fn path(&self, rel: &str) -> PathBuf {
         self.dir.join(rel)
@@ -981,15 +984,41 @@ fn branch_overwrite_preserves_the_ref_if_checkout_fails() {
 }
 
 #[test]
-fn new_branch_from_remote_branch_tracks_it() {
-    let (fx, _bare) = Fixture::with_origin();
+fn new_branch_from_remote_branch_tracks_it_only_under_the_same_name() {
+    let (fx, bare) = Fixture::with_origin();
     fx.git(&["push", "-q", "origin", "main:release"]);
     fx.git(&["fetch", "-q"]);
     let repo = fx.repo();
+    let upstream = |name: &str| {
+        repo.branches().unwrap().into_iter().find(|b| b.name == name && !b.remote).and_then(|b| b.upstream)
+    };
+
+    repo.create_branch("release", Some("origin/release"), false).unwrap();
+    assert_eq!(upstream("release").as_deref(), Some("origin/release"));
+
+    // Another name: no upstream, whether switched to or not, created plainly or overwritten.
+    repo.create_branch("other", Some("origin/release"), false).unwrap();
+    assert_eq!(upstream("other"), None);
+    repo.create_branch_with_overwrite("other", Some("origin/main"), false, true).unwrap();
+    assert_eq!(upstream("other"), None);
     repo.create_branch("my-release", Some("origin/release"), true).unwrap();
     let info = repo.branch_info().unwrap();
     assert_eq!(info.head.as_deref(), Some("my-release"));
-    assert_eq!(info.upstream.as_deref(), Some("origin/release"));
+    assert_eq!(info.upstream, None);
+
+    // The first push then goes to a branch of its own name and tracks it.
+    fx.write("a.txt", "mine\n");
+    let tip = fx.commit_all("mine");
+    let (cancel, out) = quiet();
+    repo.push(false, true, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "my-release"]), tip);
+    assert_ne!(git_in(&bare, &["rev-parse", "release"]), tip);
+    assert_eq!(fx.git(&["config", "branch.my-release.merge"]), "refs/heads/my-release");
+
+    // New worktree on a new branch from a remote branch: the same rule.
+    let wt = fx.tmp.path().join("wt");
+    repo.add_worktree(&wt, "origin/release", Some("wt-branch")).unwrap();
+    assert_eq!(upstream("wt-branch"), None);
 }
 
 #[test]

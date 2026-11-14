@@ -115,7 +115,7 @@ const GENERAL = editorPage({
     {
       title: "Mouse Control",
       items: [
-        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Command+Mouse Wheel" },
+        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Ctrl/Command+Mouse Wheel" },
         { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
@@ -262,7 +262,20 @@ const APPEARANCE = editorPage({
           key: `${P}.appearance.hardWrapGuides`,
           label: "Show hard wrap and visual guides (configured in Code Style options)",
         },
-        { t: "check", key: `${P}.appearance.lineNumbers`, label: "Show line numbers" },
+        {
+          t: "check",
+          key: `${P}.appearance.lineNumbers`,
+          label: "Show line numbers",
+          inline: {
+            kind: "select",
+            key: `${P}.appearance.lineNumberMode`,
+            options: [
+              { value: "absolute", label: "Absolute" },
+              { value: "relative", label: "Relative" },
+              { value: "hybrid", label: "Hybrid" },
+            ],
+          },
+        },
         { t: "check", key: `${P}.appearance.methodSeparators`, label: "Show method separators" },
         {
           t: "check",
@@ -274,8 +287,18 @@ const APPEARANCE = editorPage({
             { t: "check", key: `${P}.appearance.whitespaceTrailing`, label: "Trailing" },
           ],
         },
-        { t: "check", key: `${P}.appearance.indentGuides`, label: "Show indent guides" },
+        {
+          t: "check",
+          key: `${P}.appearance.indentGuides`,
+          label: "Show indent guides",
+          children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
+        },
         { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
+        {
+          t: "check",
+          key: `${P}.appearance.renderDocComments`,
+          label: "Render documentation comments",
+        },
         {
           t: "number",
           key: `${P}.appearance.distractionFreeWidth`,
@@ -669,10 +692,16 @@ const SMART_KEYS = editorPage({
           label: 'Use "CamelHumps" words',
           hint: "⌥← / ⌥→ and ⌥⌫ stop at humps of camelCase names.",
         },
-        { t: "check", key: `${P}.smartKeys.pairBrackets`, label: "Insert paired brackets (), [], {}" },
+        {
+          t: "check",
+          key: `${P}.smartKeys.pairBrackets`,
+          label: "Insert paired brackets (), [], {}",
+          hint: "Also pairs <> for generics where the syntax says a type starts.",
+        },
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
+        { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
         {
           t: "select",
           key: `${P}.smartKeys.reformatOnPaste`,
@@ -830,6 +859,11 @@ const INLAY: Item[] = [
   },
 ];
 
+const CODE_VISION_POSITIONS = [
+  { value: "top", label: "Top" },
+  { value: "right", label: "Right" },
+];
+
 const INLAY_HINTS = editorPage({
   id: "editor.inlayHints",
   title: "Inlay Hints",
@@ -840,8 +874,33 @@ const INLAY_HINTS = editorPage({
     {
       title: "Code Vision",
       items: [
-        { t: "check", key: `${P}.inlay.codeVisionUsages`, label: "Usages" },
-        { t: "check", key: `${P}.inlay.codeVisionAuthor`, label: "Code author" },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionUsages`,
+          label: "Usages",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionUsagesPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+            { t: "check", key: `${P}.inlay.codeVisionNoUsages`, label: "Show “no usages”" },
+          ],
+        },
+        {
+          t: "check",
+          key: `${P}.inlay.codeVisionAuthor`,
+          label: "Code author",
+          children: [
+            {
+              t: "select",
+              key: `${P}.inlay.codeVisionAuthorPosition`,
+              label: "Position",
+              options: CODE_VISION_POSITIONS,
+            },
+          ],
+        },
       ],
     },
     { title: "Languages", items: [{ t: "custom", label: "Show inlay hints for:", component: InlayLanguages }] },

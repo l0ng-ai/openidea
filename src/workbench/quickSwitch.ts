@@ -22,14 +22,10 @@ async function setGlobal(key: string, value: unknown, what: string) {
 
 export const selectKeymap = (id: string) => setGlobal("keymap", id, "keymap");
 
-/** How long a theme stays under the pointer or keyboard before Quick Switch shows it (IDEA's delay). */
-export const THEME_PREVIEW_DELAY = 500;
-
 /**
- * IDEA's instant theme switch (`ide.instant.theme.switch`): in Quick Switch
- * the active theme shows after a moment, in this window only; choosing one
- * selects it, and closing the menu without a choice brings the selected
- * theme back.
+ * Instant theme switch: in Quick Switch the active theme shows right away, in
+ * this window only; choosing one selects it, and closing the menu without a
+ * choice brings the selected theme back.
  */
 export interface ThemePreview {
   preview(id: ThemeChoiceId): void;
@@ -41,25 +37,20 @@ export interface ThemePreview {
 }
 
 export function themePreview(): ThemePreview {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   let shown: ThemeChoiceId | null = null;
   let chosen = false;
   const restore = () => {
-    clearTimeout(timer);
     if (shown !== null && !chosen) previewTheme(null);
     shown = null;
   };
   return {
     preview(id) {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        shown = id;
-        previewTheme(id);
-      }, THEME_PREVIEW_DELAY);
+      if (shown === id) return;
+      shown = id;
+      previewTheme(id);
     },
     restore,
     choose(id) {
-      clearTimeout(timer);
       chosen = true;
       // Shown right away; selecting it then changes nothing visible.
       if (shown !== id) previewTheme(id);

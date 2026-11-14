@@ -73,6 +73,21 @@ public class Task implements Runnable {
     }
 }
 ''',
+    'Anon.java': '''package zoo;
+
+public class Anon {
+    Repo<Double> make() {
+        class Local implements Repo<Double> {
+            public void save(Double item) {
+            }
+        }
+        return new Repo<Double>() {
+            public void save(Double item) {
+            }
+        };
+    }
+}
+''',
     'Use.java': '''package zoo;
 
 public class Use {
@@ -174,11 +189,11 @@ try:
     request('java/buildWorkspace', True)
     # (implementations in the sources, whether they are all there are)
     cases = {
-        # Classes, abstract ones too, and those of the bridged Kotlin output; not the sub-interface.
-        ('Repo.java', 'Repo<T>'): (['Base.java:2', 'Longs.java:0', 'Numbers.java:2', 'Words.java:2'], True),
+        # Classes, abstract, local and anonymous ones too, and those of the bridged Kotlin output; not the sub-interface.
+        ('Repo.java', 'Repo<T>'): (['Anon.java:4', 'Anon.java:8', 'Base.java:2', 'Longs.java:0', 'Numbers.java:2', 'Words.java:2'], True),
         # Through the type arguments; not the abstract re-declaration.
-        ('Repo.java', 'save(T'): (['Longs.java:0', 'Numbers.java:3', 'Words.java:3'], True),
-        ('Use.java', 'save("x")'): (['Longs.java:0', 'Numbers.java:3', 'Words.java:3'], True),
+        ('Repo.java', 'save(T'): (['Anon.java:5', 'Anon.java:9', 'Longs.java:0', 'Numbers.java:3', 'Words.java:3'], True),
+        ('Use.java', 'save("x")'): (['Anon.java:5', 'Anon.java:9', 'Longs.java:0', 'Numbers.java:3', 'Words.java:3'], True),
         ('Repo.java', 'name()'): (['Words.java:6'], True),
         # A library type's implementations in the sources; the library has more.
         ('Use.java', 'Runnable task'): (['Task.java:2'], False),

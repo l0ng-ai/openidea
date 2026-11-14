@@ -21,6 +21,7 @@ export type Rgba = [number, number, number, number];
 const STYLE_SHEETS = new Set(["css", "scss", "sass", "less", "stylus", "postcss"]);
 /** Markup that embeds style sheets (`<style>`, `style="…"`): unquoted hex values too. */
 const MARKUP = new Set(["html", "vue", "svelte", "astro", "xml", "xhtml"]);
+export const isMarkupLanguage = (language: string): boolean => MARKUP.has(language);
 /** Prose: `#123` is an issue, `#fab` a heading or a tag. */
 const PROSE = new Set(["markdown", "plaintext", "text", "restructuredtext", "asciidoc", "git-commit"]);
 
@@ -82,10 +83,21 @@ export function toHex6([r, g, b]: Rgba): string {
   return `#${hex2(r)}${hex2(g)}${hex2(b)}`;
 }
 
-/** `#rrggbb` → its components with `alpha`. */
-export function fromHex6(hex: string, alpha: number): Rgba | null {
-  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
-  return m ? [Number.parseInt(m[1]!, 16), Number.parseInt(m[2]!, 16), Number.parseInt(m[3]!, 16), alpha] : null;
+export function toHex8(rgba: Rgba): string {
+  return `${toHex6(rgba)}${hex2(rgba[3] * 255)}`;
+}
+
+/** Six-digit hex is opaque; eight-digit hex carries its own alpha. */
+export function fromHex(hex: string): Rgba | null {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})?$/i.exec(hex);
+  return m
+    ? [
+        Number.parseInt(m[1]!, 16),
+        Number.parseInt(m[2]!, 16),
+        Number.parseInt(m[3]!, 16),
+        m[4] ? Number.parseInt(m[4], 16) / 255 : 1,
+      ]
+    : null;
 }
 
 /** Components of the browser's computed color (`rgb(1, 2, 3)` / `rgba(1, 2, 3, 0.5)`), null for other spaces. */

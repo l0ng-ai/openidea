@@ -5,11 +5,12 @@
  * `editor.colorOverrides[scheme][attribute]`; `editor/core` injects them.
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Button, Checkbox, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
+import { Button, Checkbox, Icon, Input, Tree, type SelectOption, type TreeHandle, T } from "@/ui";
 import { fontWeightVars, type CustomColorSchemes, type TextAttributesOverride } from "@/platform/editorSettings";
 import {
   ATTRIBUTES,
   SCHEMES,
+  EFFECT_CSS,
   overrideDeclarations,
   effectiveScheme,
   resolvedSchemeTokens,
@@ -28,7 +29,7 @@ import styles from "./Editor.module.css";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { ask, confirm, showError } from "@/workbench/messages";
-import { parseIcls, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
+import { parseIcls, SchemeParseError, importScheme, deleteScheme, exportIcls } from "@/platform/icls";
 import { tx, useTx } from "@/platform/i18n";
 import { selectPage } from "../../model/staging";
 
@@ -97,9 +98,7 @@ function treeIds(nodes: readonly Node[], out = new Set<string>()): Set<string> {
 
 /** Settings sub-page that owns an attribute, for preview clicks that cross pages. */
 function attrPageId(attr: AttributeDef): string {
-  return `editor.colorScheme.${
-    attr.path[0] === "Language Defaults" ? "language-defaults" : attr.path[0]!.toLowerCase()
-  }`;
+  return languagePageId(attr.path[0]!);
 }
 
 /** Preview click on another sub-page: the target page selects and reveals the attribute. */
@@ -123,6 +122,10 @@ function previewVars(
       k.startsWith("--fg-") ||
       k.startsWith("--bg-") ||
       k.startsWith("--border-") ||
+      k.startsWith("--ansi-") ||
+      k.startsWith("--git-") ||
+      k.startsWith("--wave-") ||
+      k.startsWith("--editor-") ||
       k === "--caret"
     )
       vars[k] = v;
@@ -137,11 +140,32 @@ function previewVars(
 
 /** Text styled like an attribute in the preview. */
 function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
-  if (!attr?.token)
-    return {
+  const base = attr?.fg ?? attr?.effect;
+  if (!attr?.token) {
+    const colour: CSSProperties = {
       ...(attr?.fg ? { color: `var(${attr.fg})` } : null),
       ...(attr?.bg ? { backgroundColor: `var(${attr.bg})` } : null),
     };
+    // Token-less attributes with a font-style renderer carry it on `--<fg|effect>-*`, the same
+    // declarations `overrideDeclarations` emits for their overrides.
+    if (!attr?.fontStyle || !base) return colour;
+    const effectColor = `var(${attr.effect ?? attr.fg ?? "--fg-muted"})`;
+    const effect: TextAttributesOverride["effect"] = attr.defaultEffect ?? (attr.effect ? "wave" : undefined);
+    const decoration =
+      effect && effect !== "none"
+        ? `var(${attr.effect ?? base}-effect, ${EFFECT_CSS[effect]?.(effectColor) ?? "none"})`
+        : undefined;
+    return {
+      ...colour,
+      fontWeight: `var(${base}-bold, ${
+        attr.defaultBold ? "var(--fw-code-bold, 700)" : "inherit"
+      })` as CSSProperties["fontWeight"],
+      fontStyle: `var(${base}-italic, ${attr.defaultItalic ? "italic" : "inherit"})`,
+      ...(decoration
+        ? { textDecoration: decoration, ...({ WebkitTextDecoration: decoration } as CSSProperties) }
+        : null),
+    };
+  }
   if (attr.italicOnly)
     return { fontStyle: `var(--syn-${attr.token}-italic, ${attr.defaultItalic === false ? "normal" : "italic"})` };
   const t = attr.token;
@@ -160,6 +184,17 @@ function tokenStyle(attr: AttributeDef | undefined): CSSProperties {
 }
 
 const A = (id: string) => ATTRIBUTES.find((a) => a.id === id);
+
+/** Preview click: reveal in this page, or switch to the attribute's own page. */
+function revealPreviewAttr(attrId: string, ids: Set<string>, reveal: (id: string) => void): void {
+  const attr = A(attrId);
+  if (!attr) return;
+  if (ids.has(attrId)) reveal(attrId);
+  else {
+    crossPageReveal = attrId;
+    selectPage(attrPageId(attr));
+  }
+}
 
 type Seg = [string, string?];
 interface CodeSample {
@@ -185,6 +220,11 @@ const SAMPLES: Record<string, CodeSample> = {
         ["could be const", "weakWarning"],
         ["   ", "text"],
         ["legacyCall", "unused"],
+      ],
+      [
+        ["typo", "typo"],
+        ["   ", "text"],
+        ["deprecatedCall", "deprecated"],
       ],
       [
         ["bad\u203dchar", "invalid"],
@@ -235,6 +275,34 @@ const SAMPLES: Record<string, CodeSample> = {
       ],
     ],
     caret: 2,
+  },
+  "Console Colors": {
+    code: [
+      [
+        ["black ", "ansiBlack"],
+        ["red ", "ansiRed"],
+        ["green ", "ansiGreen"],
+        ["yellow", "ansiYellow"],
+      ],
+      [
+        ["blue ", "ansiBlue"],
+        ["magenta ", "ansiMagenta"],
+        ["cyan ", "ansiCyan"],
+        ["white", "ansiWhite"],
+      ],
+      [
+        ["dark ", "ansiBrightBlack"],
+        ["bright-red ", "ansiBrightRed"],
+        ["bright-green ", "ansiBrightGreen"],
+        ["bright-yellow", "ansiBrightYellow"],
+      ],
+      [
+        ["bright-blue ", "ansiBrightBlue"],
+        ["bright-magenta ", "ansiBrightMagenta"],
+        ["bright-cyan ", "ansiBrightCyan"],
+        ["bright-white", "ansiBrightWhite"],
+      ],
+    ],
   },
   "Language Defaults": {
     code: [
@@ -334,30 +402,30 @@ const SAMPLES: Record<string, CodeSample> = {
     caret: 4,
     code: [
       [
-        ["import ", "keyword"],
+        ["import ", "pyKeyword"],
         ["os", "pyStaticSymbol"],
       ],
       [
         ["MAX_RETRIES", "pyConstant"],
-        [" = ", "operator"],
-        ["3", "number"],
+        [" = ", "pyOperationSign"],
+        ["3", "pyNumber"],
       ],
       [],
       [
         ["@decorator", "pyDecorator"],
         ["(", "pyParentheses"],
         ["param", "pyKeywordArg"],
-        ["=", "operator"],
-        ["1", "number"],
+        ["=", "pyOperationSign"],
+        ["1", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [
-        ["def ", "keyword"],
-        ["f", "functionDeclaration"],
+        ["def ", "pyKeyword"],
+        ["f", "pyFunctionDeclaration"],
         ["(", "pyParentheses"],
-        ["x", "parameter"],
+        ["x", "pyParameter"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [['    """', "pyDocstring"]],
       [["    Syntax Highlighting Demo", "pyDocstring"]],
@@ -390,199 +458,199 @@ const SAMPLES: Record<string, CodeSample> = {
       [['    """', "pyDocstring"]],
       [],
       [
-        ["    def ", "keyword"],
+        ["    def ", "pyKeyword"],
         ["nested_func", "pyNestedFunction"],
         ["(", "pyParentheses"],
-        ["y", "parameter"],
+        ["y", "pyParameter"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
         ["        ", "text"],
-        ["print", "pyPredefinedUsage"],
+        ["print", "pyBuiltin"],
         ["(", "pyParentheses"],
-        ["y", "identifier"],
-        [" + ", "operator"],
-        ["1", "number"],
+        ["y", "pyLocalVariable"],
+        [" + ", "pyOperationSign"],
+        ["1", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [],
       [
         ["    s", "pyLocalVariable"],
-        [" = ", "operator"],
+        [" = ", "pyOperationSign"],
         ["(", "pyParentheses"],
-        ['"Test"', "string"],
-        [", ", "operator"],
-        ["2", "number"],
-        ["+", "operator"],
-        ["3", "number"],
-        [", ", "operator"],
+        ['"Test"', "pyString"],
+        [", ", "pyOperationSign"],
+        ["2", "pyNumber"],
+        ["+", "pyOperationSign"],
+        ["3", "pyNumber"],
+        [", ", "pyOperationSign"],
         ["{", "pyBraces"],
-        ["'a'", "string"],
-        [": ", "operator"],
-        ["'b'", "string"],
+        ["'a'", "pyString"],
+        [": ", "pyOperationSign"],
+        ["'b'", "pyString"],
         ["}", "pyBraces"],
-        [",", "operator"],
+        [",", "pyOperationSign"],
       ],
       [
         ["         ", "text"],
         ["f", "pyFString"],
         ["'{", "pyFString"],
-        ["x", "parameter"],
+        ["x", "pyParameter"],
         ["!s:", "pyFormat"],
         ["{", "pyFormat"],
-        ['"^10"', "string"],
+        ['"^10"', "pyString"],
         ["}", "pyFormat"],
         ["}'", "pyFString"],
-        [", ", "operator"],
+        [", ", "pyOperationSign"],
         ["f", "pyFString"],
         ['"{', "pyFString"],
-        ["1", "number"],
+        ["1", "pyNumber"],
         [":", "pyFString"],
         ["01d", "pyFormat"],
         ['}"', "pyFString"],
         [")", "pyParentheses"],
         ["  ", "text"],
-        ["# Comment", "lineComment"],
+        ["# Comment", "pyLineComment"],
       ],
       [
         ["    ", "text"],
-        ["f", "functionCall"],
+        ["f", "pyFunctionCall"],
         ["(", "pyParentheses"],
         ["s", "pyLocalVariable"],
         ["[", "pyBrackets"],
-        ["0", "number"],
+        ["0", "pyNumber"],
         ["]", "pyBrackets"],
-        [".", "operator"],
-        ["lower", "pyPredefinedUsage"],
+        [".", "pyOperationSign"],
+        ["lower", "pyMethodCall"],
         ["(", "pyParentheses"],
         [")", "pyParentheses"],
         [")", "pyParentheses"],
       ],
       [
         ["    ", "text"],
-        ["nested_func", "functionCall"],
+        ["nested_func", "pyFunctionCall"],
         ["(", "pyParentheses"],
-        ["42", "number"],
+        ["42", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [],
       [
-        ["class ", "keyword"],
-        ["Foo", "className"],
-        [":", "operator"],
+        ["class ", "pyKeyword"],
+        ["Foo", "pyClassDefinition"],
+        [":", "pyOperationSign"],
       ],
       [
         ["    tags", "pyClassAttribute"],
         [": ", "text"],
         ["List", "pyAnnotation"],
         ["[", "pyBrackets"],
-        ["str", "pyAnnotation"],
+        ["str", "pyBuiltin"],
         ["]", "pyBrackets"],
       ],
       [],
       [
-        ["    def ", "keyword"],
+        ["    def ", "pyKeyword"],
         ["__init__", "pyPredefinedDefinition"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
         [": ", "text"],
         ["Foo", "pyAnnotation"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
         ["        byte_string", "pyLocalVariable"],
         [": ", "text"],
-        ["bytes", "pyAnnotation"],
-        [" = ", "operator"],
+        ["bytes", "pyBuiltin"],
+        [" = ", "pyOperationSign"],
         ["b'newline:", "pyBytes"],
-        ["\\n", "escape"],
+        ["\\n", "pyValidEscape"],
         [" also newline:", "pyBytes"],
-        ["\\x0a", "escape"],
+        ["\\x0a", "pyValidEscape"],
         ["'", "pyBytes"],
       ],
       [
         ["        text_string", "pyLocalVariable"],
-        [" = ", "operator"],
-        ['u"Cyrillic Я is ', "string"],
-        ["\\u042f", "escape"],
-        [". Oops: ", "string"],
-        ["\\u042g", "weakWarning"],
-        ['"', "string"],
+        [" = ", "pyOperationSign"],
+        ['u"Cyrillic Я is ', "pyString"],
+        ["\\u042f", "pyValidEscape"],
+        [". Oops: ", "pyString"],
+        ["\\u042g", "pyInvalidEscape"],
+        ['"', "pyString"],
       ],
       [
         ["        ", "text"],
         ["self", "pySelf"],
-        [".", "operator"],
+        [".", "pyOperationSign"],
         ["make_sense", "pyMethodCall"],
         ["(", "pyParentheses"],
         ["whatever", "pyKeywordArg"],
-        ["=", "operator"],
-        ["1", "number"],
+        ["=", "pyOperationSign"],
+        ["1", "pyNumber"],
         [")", "pyParentheses"],
       ],
       [],
       [["@property", "pyDecorator"]],
       [
-        ["    def ", "keyword"],
+        ["    def ", "pyKeyword"],
         ["alias", "pyProperty"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
-        ["        return ", "keyword"],
+        ["        return ", "pyKeyword"],
         ["self", "pySelf"],
-        [".", "operator"],
+        [".", "pyOperationSign"],
         ["sense", "pyInstanceAttribute"],
       ],
       [],
       [
-        ["    def ", "keyword"],
-        ["make_sense", "functionDeclaration"],
+        ["    def ", "pyKeyword"],
+        ["make_sense", "pyFunctionDeclaration"],
         ["[", "pyBrackets"],
         ["T", "pyTypeParameter"],
         ["]", "pyBrackets"],
         ["(", "pyParentheses"],
         ["self", "pySelf"],
-        [", ", "operator"],
-        ["whatever", "parameter"],
+        [", ", "pyOperationSign"],
+        ["whatever", "pyParameter"],
         [": ", "text"],
         ["T", "pyAnnotation"],
         [")", "pyParentheses"],
-        [":", "operator"],
+        [":", "pyOperationSign"],
       ],
       [
         ["        ", "text"],
         ["self", "pySelf"],
-        [".", "operator"],
+        [".", "pyOperationSign"],
         ["sense", "pyInstanceAttribute"],
-        [" = ", "operator"],
-        ["whatever", "parameter"],
+        [" = ", "pyOperationSign"],
+        ["whatever", "pyParameter"],
       ],
       [],
       [
         ["x", "pyGlobalVariable"],
-        [" = ", "operator"],
-        ["len", "pyPredefinedUsage"],
+        [" = ", "pyOperationSign"],
+        ["len", "pyBuiltin"],
         ["(", "pyParentheses"],
-        ['"abc"', "string"],
+        ['"abc"', "pyString"],
         [")", "pyParentheses"],
       ],
       [
-        ["type ", "keyword"],
+        ["type ", "pyKeyword"],
         ["my_int", "pyGlobalVariable"],
-        [" = ", "operator"],
+        [" = ", "pyOperationSign"],
         ["int", "pyBuiltin"],
       ],
       [
-        ["print", "pyPredefinedUsage"],
+        ["print", "pyBuiltin"],
         ["(", "pyParentheses"],
-        ["f", "functionCall"],
-        [".", "operator"],
-        ["__doc__", "pyInstanceAttribute"],
+        ["f", "pyFunctionCall"],
+        [".", "pyOperationSign"],
+        ["__doc__", "pyPredefinedUsage"],
         [")", "pyParentheses"],
       ],
     ],
@@ -816,6 +884,72 @@ const SAMPLES: Record<string, CodeSample> = {
       [["}", "kotlin.operator"]],
     ],
   },
+  "C#": {
+    code: [
+      [["// Greets the user", "csharp.lineComment"]],
+      [
+        ["using ", "csharp.keyword"],
+        ["System", "csharp.packageReference"],
+        [";", "csharp.operator"],
+      ],
+      [["/// <summary>Says hello.</summary>", "csharp.docComment"]],
+      [
+        ["[", "csharp.operator"],
+        ["Serializable", "csharp.metadata"],
+        ["]", "csharp.operator"],
+      ],
+      [
+        ["public class ", "csharp.keyword"],
+        ["Greeter", "csharp.className"],
+      ],
+      [["{", "csharp.operator"]],
+      [
+        ["    private const int ", "csharp.keyword"],
+        ["MaxRetries", "csharp.constant"],
+        [" = ", "csharp.operator"],
+        ["3", "csharp.number"],
+        [";", "csharp.operator"],
+      ],
+      [
+        ["    public string ", "csharp.keyword"],
+        ["Name", "csharp.field"],
+        [" { ", "csharp.operator"],
+        ["get", "csharp.keyword"],
+        ["; }", "csharp.operator"],
+      ],
+      [
+        ["    public string ", "csharp.keyword"],
+        ["Greet", "csharp.functionDeclaration"],
+        ["(", "csharp.operator"],
+        ["int ", "csharp.keyword"],
+        ["count", "csharp.parameter"],
+        [")", "csharp.operator"],
+      ],
+      [["    {", "csharp.operator"]],
+      [
+        ["        var ", "csharp.keyword"],
+        ["message", "csharp.identifier"],
+        [" = ", "csharp.operator"],
+        ['$"Hello, {Name}', "csharp.string"],
+        ["\\n", "csharp.escape"],
+        ['"', "csharp.string"],
+        [";", "csharp.operator"],
+      ],
+      [
+        ["        return ", "csharp.keyword"],
+        ["string", "csharp.keyword"],
+        [".", "csharp.operator"],
+        ["Format", "csharp.functionCall"],
+        ["(", "csharp.operator"],
+        ["message", "csharp.identifier"],
+        [", ", "csharp.operator"],
+        ["count", "csharp.parameter"],
+        [");", "csharp.operator"],
+      ],
+      [["    }", "csharp.operator"]],
+      [["}", "csharp.operator"]],
+    ],
+  },
   PHP: {
     code: [
       [["<?php", "php.scriptTag"]],
@@ -882,8 +1016,27 @@ function AttributeEditor({
       if (next[k] === undefined || next[k] === inherited[k]) delete next[k];
     onChange(Object.keys(next).length ? next : undefined);
   };
+  // IDEA's panel is fixed: every channel renders for every attribute, disabled when the
+  // attribute cannot carry it (ColorAndFontDescriptionPanel.kt). Capability is declared,
+  // not inferred: `fontStyle` marks attributes whose renderer applies font style/effects.
   return (
     <div className={styles.attrEditor} aria-label={`${attr.name} attributes`}>
+      {!attr.italicOnly && (
+        <div className={styles.attrRow}>
+          <Checkbox
+            checked={v.bold ?? inherited.bold ?? false}
+            disabled={!attr.fontStyle}
+            onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
+            label="Bold"
+          />
+          <Checkbox
+            checked={v.italic ?? inherited.italic ?? false}
+            disabled={!attr.fontStyle}
+            onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
+            label="Italic"
+          />
+        </div>
+      )}
       {attr.italicOnly && (
         <div className={styles.attrRow}>
           <Checkbox
@@ -893,50 +1046,29 @@ function AttributeEditor({
           />
         </div>
       )}
-      {attr.token && !attr.italicOnly && (
+      <ColorRow
+        label="Foreground"
+        value={v.foreground}
+        inherited={inherited.foreground}
+        onChange={attr.fg ? (c) => set({ foreground: c }) : undefined}
+      />
+      <ColorRow
+        label="Background"
+        value={v.background}
+        inherited={inherited.background}
+        onChange={attr.bg || (attr.token && !attr.italicOnly) ? (c) => set({ background: c }) : undefined}
+      />
+      {!attr.italicOnly && (
         <>
+          <ColorRow
+            label="Effects"
+            value={v.effectColor}
+            inherited={inherited.effectColor}
+            onChange={attr.effect || attr.fontStyle ? (c) => set({ effectColor: c }) : undefined}
+          />
           <div className={styles.attrRow}>
             <Checkbox
-              checked={v.bold ?? inherited.bold ?? false}
-              onChange={(b) => set({ bold: b === (inherited.bold ?? false) ? undefined : b })}
-              label="Bold"
-            />
-            <Checkbox
-              checked={v.italic ?? inherited.italic ?? false}
-              onChange={(b) => set({ italic: b === (inherited.italic ?? false) ? undefined : b })}
-              label="Italic"
-            />
-          </div>
-        </>
-      )}
-      {attr.fg && (
-        <ColorRow
-          label="Foreground"
-          value={v.foreground}
-          inherited={inherited.foreground}
-          onChange={(c) => set({ foreground: c })}
-        />
-      )}
-      {(attr.bg || (attr.token && !attr.italicOnly)) && (
-        <ColorRow
-          label="Background"
-          value={v.background}
-          inherited={inherited.background}
-          onChange={(c) => set({ background: c })}
-        />
-      )}
-      {attr.effect && (
-        <ColorRow
-          label="Effects"
-          value={v.effectColor}
-          inherited={inherited.effectColor}
-          onChange={(c) => set({ effectColor: c })}
-        />
-      )}
-      {attr.token && !attr.italicOnly && (
-        <>
-          <div className={styles.attrRow}>
-            <Checkbox
+              disabled={!attr.effect && !attr.fontStyle}
               checked={!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none"}
               onChange={(b) =>
                 set({
@@ -950,36 +1082,27 @@ function AttributeEditor({
                   effectColor: b ? v.effectColor : undefined,
                 })
               }
-              label="Effects"
+              label="Effect style"
             />
             {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
-              <ColorInput
-                value={v.effectColor ?? inherited.effectColor ?? "#808080"}
-                onChange={(c) => set({ effectColor: c ?? "#808080" })}
-                label="Effect color"
+              <Select
+                value={(v.effect ?? inherited.effect)!}
+                options={[
+                  { value: "underline", label: "Underscored" },
+                  { value: "wave", label: "Underwaved" },
+                  { value: "strikeout", label: "Strikeout" },
+                ]}
+                onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
+                className={styles.effectSelect}
+                aria-label="Effect"
               />
             )}
           </div>
-          {!!(v.effect ?? inherited.effect) && (v.effect ?? inherited.effect) !== "none" && (
-            <Select
-              value={(v.effect ?? inherited.effect)!}
-              options={[
-                { value: "underline", label: "Underscored" },
-                { value: "wave", label: "Underwaved" },
-                { value: "strikeout", label: "Strikeout" },
-              ]}
-              onChange={(e) => set({ effect: e as TextAttributesOverride["effect"] })}
-              className={styles.effectSelect}
-              aria-label="Effect"
-            />
-          )}
         </>
       )}
-      {!attr.italicOnly && (
-        <div className={styles.inherited}>
-          <T>The controls show the scheme's actual appearance; changes override it.</T>
-        </div>
-      )}
+      <div className={styles.inherited}>
+        <T>The controls show the scheme's actual appearance; changes override it.</T>
+      </div>
     </div>
   );
 }
@@ -1029,7 +1152,8 @@ function ColorRow({
   label: string;
   value: string | undefined;
   inherited: string | undefined;
-  onChange: (c: string | undefined) => void;
+  /** Undefined disables the row for attributes that cannot carry this channel. */
+  onChange: ((c: string | undefined) => void) | undefined;
 }) {
   const cleared = value === CLEAR_COLOR;
   const shown = cleared ? undefined : (value ?? inherited);
@@ -1037,8 +1161,9 @@ function ColorRow({
     <div className={styles.attrRow}>
       <Checkbox
         checked={shown !== undefined}
+        disabled={!onChange}
         onChange={(on) =>
-          onChange(
+          onChange?.(
             on
               ? cleared
                 ? (inherited ?? "#808080")
@@ -1050,7 +1175,162 @@ function ColorRow({
         }
         label={label}
       />
-      {shown !== undefined && <ColorInput value={shown} onChange={onChange} label={label} />}
+      {shown !== undefined && <ColorInput value={shown} onChange={onChange ?? (() => undefined)} label={label} />}
+    </div>
+  );
+}
+
+/** Git preview sample: an editor caret line carrying the inline blame widget. */
+const GIT_EDITOR_LINES: { segs: Seg[]; blame?: boolean }[] = [
+  { segs: [["function", "keyword"], [" "], ["syncRoot", "functionCall"], ["("], ["info", "parameter"], [") {"]] },
+  {
+    segs: [
+      ["  "],
+      ["const", "keyword"],
+      [" "],
+      ["branch", "identifier"],
+      [" = "],
+      ["info", "parameter"],
+      ["."],
+      ["head", "identifier"],
+      [";"],
+    ],
+    blame: true,
+  },
+  { segs: [["}"]] },
+];
+
+/** A project tree root in the Git preview; its suffix mirrors rootSyncSuffix. */
+interface GitPreviewRoot {
+  name: string;
+  branch: string;
+  branchAttr: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+}
+const GIT_PREVIEW_ROOTS: GitPreviewRoot[] = [
+  { name: "openidea", branch: "main", branchAttr: "gitMasterWithRemote", upstream: "origin/main", ahead: 2, behind: 1 },
+  { name: "legacy-app", branch: "master", branchAttr: "gitMasterWithoutRemote" },
+  { name: "web-client", branch: "feature/login", branchAttr: "gitLocalBranch" },
+  { name: "api-server", branch: "release/2.0", branchAttr: "gitTrackingBranch", upstream: "origin/release/2.0" },
+];
+interface GitPreviewSuffixSeg {
+  text: string;
+  attr: string;
+  icon?: "vcs-outgoing" | "vcs-incoming";
+  label?: string;
+  strike?: boolean;
+}
+
+/** The Git page shows the two real surfaces instead of a code sample: the editor
+ *  inline blame widget and the project tree root branch suffix. Each coloured
+ *  segment selects its attribute, as the shared preview does. */
+function GitPreview({
+  vars,
+  ids,
+  reveal,
+}: {
+  vars: CSSProperties;
+  ids: Set<string>;
+  reveal: (attrId: string) => void;
+}) {
+  const click = (attrId: string) => revealPreviewAttr(attrId, ids, reveal);
+  const blameSeg = (text: string, attrId: string, key: string) => (
+    <span key={key} style={tokenStyle(A(attrId))} className={styles.clickable} onClick={() => click(attrId)}>
+      {text}
+    </span>
+  );
+  // Mirrors rootSyncSuffix: branch, "/" separator, then ahead/behind counts or a struck zero.
+  const suffixOf = (root: GitPreviewRoot): GitPreviewSuffixSeg[] => {
+    const { branch, branchAttr, upstream, ahead, behind } = root;
+    const head: GitPreviewSuffixSeg = { text: branch, attr: branchAttr };
+    if (!upstream) return [head];
+    const counts: GitPreviewSuffixSeg[] = [];
+    if (ahead)
+      counts.push({
+        text: String(ahead),
+        attr: "gitBranchChanged",
+        icon: "vcs-outgoing",
+        label: tx`${ahead} outgoing commits`,
+      });
+    if (behind)
+      counts.push({
+        text: String(behind),
+        attr: "gitBranchChanged",
+        icon: "vcs-incoming",
+        label: tx`${behind} incoming commits`,
+      });
+    if (!counts.length)
+      counts.push({ text: "0", attr: "gitHeadTags", strike: true, label: tx`Up to date with ${upstream}` });
+    return [head, { text: "/", attr: "gitHeadTags" }, ...counts];
+  };
+  return (
+    <div className={styles.gitPreview} style={vars} aria-label={tx("Color scheme preview")}>
+      <div className={styles.gitSection}>
+        <div className={styles.gitSectionTitle}>{tx("Editor inline blame")}</div>
+        <div className={styles.gitEditor}>
+          {GIT_EDITOR_LINES.map((line, i) => (
+            <div key={i} className={`${styles.previewLine} ${line.blame ? styles.previewCaretLine : ""}`}>
+              <span className={styles.previewGutter}>{i + 1}</span>
+              <code>
+                {line.segs.map(([text, attrId], j) => (
+                  <span
+                    key={j}
+                    style={tokenStyle(attrId ? A(attrId) : undefined)}
+                    className={attrId ? styles.clickable : undefined}
+                    onClick={attrId ? () => click(attrId) : undefined}
+                  >
+                    {text}
+                  </span>
+                ))}
+                {line.blame && (
+                  <span className={styles.gitBlame}>
+                    {blameSeg("Kitov, ", "gitBlameAuthor", "author")}
+                    {blameSeg("3 days ago · ", "gitBlameDate", "date")}
+                    {blameSeg("Add branch colours", "gitBlameSubject", "subject")}
+                    {blameSeg(" (#123)", "gitBlameIssue", "issue")}
+                  </span>
+                )}
+              </code>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className={styles.gitSection}>
+        <div className={styles.gitSectionTitle}>{tx("Project View")}</div>
+        <div className={styles.gitTree}>
+          {GIT_PREVIEW_ROOTS.map((root) => (
+            <div key={root.name} className={styles.gitRow}>
+              <span className={styles.gitChevron}>
+                <Icon name="chevron-down" size={16} />
+              </span>
+              <span className={styles.gitContent}>
+                <span className={styles.gitIconStack}>
+                  <Icon name="folder" size={16} className={styles.gitFolderIcon} />
+                </span>
+                <span className={styles.gitRootLabel}>{root.name}</span>
+                <span className={styles.gitSuffix}>
+                  {suffixOf(root).map((s, j) => (
+                    <span
+                      key={j}
+                      className={`${styles.gitSuffixSegment} ${styles.clickable}`}
+                      style={tokenStyle(A(s.attr))}
+                      role={s.label ? "img" : undefined}
+                      aria-label={s.label}
+                      title={s.label}
+                      onClick={() => click(s.attr)}
+                    >
+                      {s.strike ? <s>{s.text}</s> : s.text}
+                      {s.icon && <Icon name={s.icon} size={12} />}
+                    </span>
+                  ))}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1125,10 +1405,15 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   const attr = ATTRIBUTES.find((a) => a.id === selected);
   const language = attr?.language;
   const inherited = useMemo(() => (attr ? resolvedAttribute(id, attr.id, customs) : {}), [id, attr, customs]);
-  const vars = useMemo(
-    () => ({ ...previewVars(id, mine, customs, language), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
-    [id, mine, customs, language, weight, boldFontWeight],
-  );
+  const vars = useMemo(() => {
+    const next = {
+      ...previewVars(id, mine, customs, language),
+      ...fontWeightVars(weight, boldFontWeight),
+    } as CSSProperties & Record<string, string>;
+    // Console preview sits on the console background, not the editor surface.
+    if (scopes[0] === "Console Colors" && next["--bg-console"]) next["--bg-editor"] = next["--bg-console"];
+    return next;
+  }, [id, mine, customs, language, weight, boldFontWeight, scopes]);
   const baseVars = useMemo(
     () => ({ ...previewVars(id, mine, customs), ...fontWeightVars(weight, boldFontWeight) }) as CSSProperties,
     [id, mine, customs, weight, boldFontWeight],
@@ -1153,15 +1438,22 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
   useEffect(() => {
     handlers.current = {
       import: async (file) => {
-        const { open } = await import("@tauri-apps/plugin-dialog");
+        const { open } = await import("@/platform/dialog");
         const path =
           file ??
           (await open({
             multiple: false,
-            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls"] }],
+            // IDEA schemes ship as .icls, but the ones people download are frequently .xml.
+            filters: [{ name: tx("IntelliJ Color Scheme"), extensions: ["icls", "xml"] }],
           }));
         if (!path) return;
-        const parsed = parseIcls(await call(commands.fsReadText(path)));
+        // A scheme element without a name is named after its file, as IntelliJ does.
+        const fallbackName =
+          path
+            .split(/[\\/]/)
+            .at(-1)
+            ?.replace(/\.[^.]+$/, "") || "Imported scheme";
+        const parsed = parseIcls(await call(commands.fsReadText(path)), fallbackName);
         let overwrite = false;
         if (schemes.some((s) => s.name === parsed.scheme.name)) {
           const canOverwrite = Object.values(customs).some((s) => s.name === parsed.scheme.name);
@@ -1184,7 +1476,7 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
         setReport(tx`Applied ${parsed.applied} values; skipped ${parsed.skipped} unsupported or invalid values.`);
       },
       export: async (file) => {
-        const { save } = await import("@tauri-apps/plugin-dialog");
+        const { save } = await import("@/platform/dialog");
         const path =
           file ??
           (await save({
@@ -1232,9 +1524,9 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
               await handlers.current[name]!(typeof arg === "string" ? arg : undefined);
             } catch (error) {
               await showError(
-                tx("Color Scheme"),
-                error instanceof Error && error.message === "Invalid .icls color scheme"
-                  ? tx("Invalid .icls color scheme")
+                tx("Import Scheme"),
+                error instanceof SchemeParseError
+                  ? `${tx("Invalid .icls color scheme")}: ${error.message}`
                   : String(error),
               );
             } finally {
@@ -1330,39 +1622,43 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
               <div />
             )}
           </div>
-          <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
-            {sample.code.map((line, i) => (
-              <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
-                <span className={styles.previewGutter}>{i + 1}</span>
-                <code>
-                  {line.map(([text, attrId], j) => {
-                    const attr = attrId !== undefined ? A(attrId) : undefined;
-                    const inPage = attr !== undefined && ids.has(attrId!);
-                    return (
-                      <span
-                        key={j}
-                        style={tokenStyle(attr)}
-                        className={attr ? styles.clickable : undefined}
-                        onClick={
-                          attr
-                            ? () => {
-                                if (inPage) reveal(attrId!);
-                                else {
-                                  crossPageReveal = attrId!;
-                                  selectPage(attrPageId(attr));
+          {scopes[0] === "Git" ? (
+            <GitPreview vars={vars} ids={ids} reveal={reveal} />
+          ) : (
+            <pre className={styles.schemePreview} style={vars} aria-label={tx("Color scheme preview")}>
+              {sample.code.map((line, i) => (
+                <div key={i} className={`${styles.previewLine} ${i === sample.caret ? styles.previewCaretLine : ""}`}>
+                  <span className={styles.previewGutter}>{i + 1}</span>
+                  <code>
+                    {line.map(([text, attrId], j) => {
+                      const attr = attrId !== undefined ? A(attrId) : undefined;
+                      const inPage = attr !== undefined && ids.has(attrId!);
+                      return (
+                        <span
+                          key={j}
+                          style={tokenStyle(attr)}
+                          className={attr ? styles.clickable : undefined}
+                          onClick={
+                            attr
+                              ? () => {
+                                  if (inPage) reveal(attrId!);
+                                  else {
+                                    crossPageReveal = attrId!;
+                                    selectPage(attrPageId(attr));
+                                  }
                                 }
-                              }
-                            : undefined
-                        }
-                      >
-                        {text}
-                      </span>
-                    );
-                  })}
-                </code>
-              </div>
-            ))}
-          </pre>
+                              : undefined
+                          }
+                        >
+                          {text}
+                        </span>
+                      );
+                    })}
+                  </code>
+                </div>
+              ))}
+            </pre>
+          )}
         </>
       )}
     </div>
@@ -1370,15 +1666,20 @@ function ColorSchemePage({ scopes, landing }: { scopes: readonly string[]; landi
 }
 
 const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
-  (s) => !["General", "Debugger", "Language Defaults"].includes(s),
+  (s) => !["General", "Debugger", "Language Defaults", "Console Colors", "Git"].includes(s),
 );
+/** A sub-page id: `C#` → `csharp`, `Console Colors` → `console-colors` (`#` would end a settings link). */
+const languagePageId = (language: string) =>
+  `editor.colorScheme.${language.toLowerCase().replace(/#/g, "sharp").replace(/\s+/g, "-")}`;
 
 /** Sub-pages linked from the Color Scheme landing page, in sidebar order. */
 const SCHEME_SUBPAGES = [
   { id: "editor.colorScheme.general", title: "General" },
   { id: "editor.colorScheme.language-defaults", title: "Language Defaults" },
   { id: "editor.colorScheme.debugger", title: "Debugger" },
-  ...LANGUAGES.map((l) => ({ id: `editor.colorScheme.${l.toLowerCase()}`, title: l })),
+  { id: "editor.colorScheme.console-colors", title: "Console Colors" },
+  { id: "editor.colorScheme.git", title: "Git" },
+  ...LANGUAGES.map((l) => ({ id: languagePageId(l), title: l })),
 ];
 
 /** The scope chooser, import/export buttons and preview are identical on every sub-page. */
@@ -1470,11 +1771,27 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
     keywords: ["breakpoint", "inline values"],
     sections: [colorSchemeSection(["Debugger"])],
   }),
+  editorPage({
+    id: "editor.colorScheme.console-colors",
+    title: "Console Colors",
+    order: 4,
+    projectScope: false,
+    keywords: ["terminal", "ansi", "console", "background"],
+    sections: [colorSchemeSection(["Console Colors"])],
+  }),
+  editorPage({
+    id: "editor.colorScheme.git",
+    title: "Git",
+    order: 5,
+    projectScope: false,
+    keywords: ["git", "blame", "branch", "inline blame", "project view", "decoration"],
+    sections: [colorSchemeSection(["Git"])],
+  }),
   ...LANGUAGES.map((language, i) =>
     editorPage({
-      id: `editor.colorScheme.${language.toLowerCase()}`,
+      id: languagePageId(language),
       title: language,
-      order: 4 + i,
+      order: 6 + i,
       projectScope: false,
       keywords: ATTRIBUTES.filter((a) => a.path[0] === language).map((a) => a.name),
       sections: [colorSchemeSection([language])],

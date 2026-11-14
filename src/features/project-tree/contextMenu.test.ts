@@ -1,3 +1,4 @@
+import { clearContext, setContext } from "@/platform/context";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
@@ -86,6 +87,17 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("offers Git for repositories found below a non-Git project root", () => {
+    useProject.setState({ project: { name: "p", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toBeUndefined();
+    setContext("vcsAvailable", true);
+    try {
+      expect(sub(contextMenuItems([node("/p/a.py")]), "Git")).toContain("Commit File…");
+    } finally {
+      clearContext("vcsAvailable");
+    }
   });
 
   it("follows IDEA's order for a file", () => {
@@ -201,6 +213,20 @@ describe("project view context menu", () => {
       expect(l).not.toContain(fileOnly);
   });
 
+  it("offers Import Module from Existing Sources on the project root only", () => {
+    const off = registerActions([
+      { id: "maven.importExternal", title: "Import Module from Existing Sources", run: () => undefined },
+    ]);
+    try {
+      expect(labels(contextMenuItems([node(ROOT, true, true)]))).toContain("Import Module from Existing Sources");
+      expect(labels(contextMenuItems([node(`${ROOT}/src`, true)]))).not.toContain(
+        "Import Module from Existing Sources",
+      );
+    } finally {
+      off();
+    }
+  });
+
   it("keeps the project root menu short and disables what cannot apply", () => {
     const items = contextMenuItems([node(ROOT, true, true)]);
     const l = labels(items);
@@ -273,6 +299,32 @@ it("offers workspace removal for every member root", () => {
   expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
     expect.objectContaining({ action: "workspace.removeProject" }),
   );
+});
+
+it("offers Git and Find Usages in workspace members outside the workspace folder", () => {
+  useProject.setState({
+    project: {
+      root: "/work/workspaces/demo",
+      name: "demo",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "demo", projects: ["/work/repos/a", "/work/repos/b"] },
+    },
+  });
+  setContext("vcsAvailable", true);
+  try {
+    for (const target of [node("/work/repos/a", true, true), node("/work/repos/a/src", true)])
+      expect(sub(contextMenuItems([target]), "Git")).toContain("Commit…");
+    expect(sub(contextMenuItems([node("/work/repos/a/x.py")]), "Git")).toContain("Annotate with Git Blame");
+    expect(labels(contextMenuItems([node("/work/repos/a/x.py")]))).toContain("Find Usages");
+    // Project structure is the workspace folder's: its roots can't name a folder outside it.
+    expect(labels(contextMenuItems([node("/work/repos/a/src", true)]))).not.toContain("Mark Directory as");
+    // Scratches stay outside.
+    expect(sub(contextMenuItems([node("/config/scratches/s.py")]), "Git")).toBeUndefined();
+  } finally {
+    clearContext("vcsAvailable");
+  }
 });
 
 it("does not offer removal on the attached primary", () => {

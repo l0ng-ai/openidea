@@ -800,14 +800,39 @@ pub(crate) fn create_branch(
         let repo = r.gix()?;
         resolve(&repo, s)?;
     }
+    let no_track = start.is_some_and(|s| renamed_remote_start(r, name, s));
     let mut args = match (checkout, overwrite) {
         (true, false) => vec!["switch", "-c", name],
         (true, true) => vec!["switch", "-C", name],
-        (false, false) => vec!["branch", "--", name],
-        (false, true) => vec!["branch", "--force", "--", name],
+        (false, false) => vec!["branch"],
+        (false, true) => vec!["branch", "--force"],
     };
+    if no_track {
+        args.push("--no-track");
+    }
+    if !checkout {
+        args.extend(["--", name]);
+    }
     args.extend(start);
     run(r.root(), &args, None).map(|_| ())
+}
+
+/// Whether `start` is a remote-tracking branch with another name than the new branch
+/// `name`. Git would make it the upstream, so pushing the new branch would go to the
+/// start branch (`feature` from `origin/main` pushes to `main`); such a branch is left
+/// without upstream and gets its own one on the first push. A remote branch under the
+/// same name stays tracked.
+pub(crate) fn renamed_remote_start(r: &Repo, name: &str, start: &str) -> bool {
+    let Ok(out) = cli::run_raw(r.root(), &["rev-parse", "--verify", "--quiet", "--symbolic-full-name", start], None)
+    else {
+        return false;
+    };
+    let full = out.stdout_str().trim().to_string();
+    let Some(rest) = full.strip_prefix("refs/remotes/").filter(|_| out.code == Some(0)) else { return false };
+    let Ok(repo) = r.gix() else { return false };
+    let names = repo.remote_names();
+    let branch = names.iter().find_map(|remote| rest.strip_prefix(&format!("{remote}/")));
+    branch.is_some_and(|b| b != name)
 }
 
 /// Undo Commit: moves the current branch back to the parent of `commit` (which must be

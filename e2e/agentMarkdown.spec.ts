@@ -71,7 +71,14 @@ async function openReply(page: Page, text: string, imageData?: string, theme?: "
           [
             task.id,
             [
-              { type: "user", text: "Show Markdown", attachments: [], sentMs: 0, doneMs: 1, steered: false },
+              {
+                type: "user",
+                text: "Show Markdown",
+                attachments: [],
+                sentMs: 0,
+                doneMs: 1,
+                steered: false,
+              },
               { type: "agent", text },
             ],
           ],
@@ -111,7 +118,11 @@ test("scrolls a wide table inside the reply", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   const sizes = await reply.evaluate((el) => {
     const table = el.querySelector("table")!;
-    return { reply: el.clientWidth, table: table.clientWidth, content: table.scrollWidth };
+    return {
+      reply: el.clientWidth,
+      table: table.clientWidth,
+      content: table.scrollWidth,
+    };
   });
   expect(sizes.table).toBeLessThanOrEqual(sizes.reply);
   expect(sizes.content).toBeGreaterThan(sizes.table);
@@ -144,20 +155,31 @@ test("styles quotes, rules, images and task lists", async ({ page }) => {
   expect(await css(reply, "li:has(> input)", "list-style-type")).toBe("none");
 });
 
-test("loads local and web reply images", async ({ page }) => {
-  await page.route("https://images.example.com/code.gif", (route) =>
-    route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") }),
-  );
+test("loads local reply images, and web ones when asked", async ({ page }) => {
+  let fetched = 0;
+  await page.route("https://images.example.com/code.gif", (route) => {
+    fetched++;
+    return route.fulfill({
+      contentType: "image/gif",
+      body: Buffer.from(PIXEL.split(",")[1]!, "base64"),
+    });
+  });
   const reply = await openReply(
     page,
     "![Local QR](/tmp/code.png)\n\n![Web QR](https://images.example.com/code.gif)",
     PIXEL,
   );
-  for (const name of ["Local QR", "Web QR"]) {
-    await expect
-      .poll(() => reply.getByRole("img", { name }).evaluate((img: HTMLImageElement) => img.naturalWidth))
-      .toBe(1);
-  }
+  const width = (name: string) =>
+    reply.getByRole("img", { name, includeHidden: true }).evaluate((img: HTMLImageElement) => img.naturalWidth);
+  await expect.poll(() => width("Local QR")).toBe(1);
+  const load = reply.getByRole("button", {
+    name: "Load image from images.example.com",
+  });
+  await expect(load).toBeVisible();
+  expect(fetched).toBe(0);
+  await load.click();
+  await expect.poll(() => width("Web QR")).toBe(1);
+  expect(fetched).toBe(1);
 });
 
 test("copies reply Markdown with the keyboard and keeps code copying separate", async ({ page, context }) => {
@@ -197,12 +219,23 @@ test("keeps latest reply actions visible and quotes into the draft without shift
   await page.getByRole("button", { name: "Quote Reply", exact: true }).click();
   const draft = page.getByRole("textbox", { name: "Message", exact: true });
   await expect(draft).toBeFocused();
-  await expect(draft).toHaveValue(
-    REPLY.trimEnd()
-      .split("\n")
-      .map((line) => (line ? `> ${line}` : ">"))
-      .join("\n") + "\n\n",
-  );
+  // Quoted as `> ` lines, drawn as a block without their markers, an empty line to type in after it.
+  const quoted = REPLY.trimEnd().split("\n");
+  await expect(draft.locator(".cm-line")).toHaveText([...quoted, "", ""]);
+  await expect(draft.locator(".cm-line[class*='_quoteLine_']")).toHaveCount(quoted.length);
+});
+
+test("copies a mouse selection with Ctrl+C and pops up no Quote button", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const reply = await openReply(page, "Selectable answer");
+  const box = (await reply.locator("p").first().boundingBox())!;
+  await page.mouse.move(box.x + 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 2, box.y + box.height / 2);
+  await page.mouse.up();
+  await page.keyboard.press("ControlOrMeta+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("Selectable answer");
+  await expect(page.getByRole("button", { name: "Quote", exact: true })).toHaveCount(0);
 });
 
 test("keeps chat history readable and selections free of timestamps and status labels", async ({ page, context }) => {
@@ -212,7 +245,14 @@ test("keeps chat history readable and selections free of timestamps and status l
   await page.evaluate(async (task) => {
     const path = "/src/features/agents/store.ts";
     const store = await import(path);
-    const user = (text: string) => ({ type: "user", text, attachments: [], sentMs: 1, doneMs: 5001, steered: false });
+    const user = (text: string) => ({
+      type: "user",
+      text,
+      attachments: [],
+      sentMs: 1,
+      doneMs: 5001,
+      steered: false,
+    });
     store.useAgents.setState({
       entries: new Map([
         [
@@ -281,7 +321,7 @@ test("keeps chat history readable and selections free of timestamps and status l
   // The finished turn's reasoning is folded with its work.
   await stream.locator("[class*='_turnFold_'] > summary").click();
   await stream.locator("[class*='_thought_'] > summary").click();
-  await expect(stream.getByText("Requesting task context", { exact: true })).toBeVisible();
+  await expect(stream.locator("[class*='_thoughtPreview_']")).toHaveText("Requesting task context");
   await expect(stream.locator("[class*='_thoughtBody_'] strong")).toHaveText("Requesting task context");
   await page.evaluate(async (id) => {
     const path = "/src/features/agents/store.ts";
@@ -307,7 +347,9 @@ test("keeps hover actions reachable when the pointer leaves the message body", a
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
   await reply.hover();
   const box = await copy.boundingBox();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, { steps: 20 });
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, {
+    steps: 20,
+  });
   await expect(copy.locator("..")).toHaveCSS("opacity", "1");
   await copy.click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("A short answer.");
@@ -362,6 +404,14 @@ test("keeps mermaid `<style>` rules scoped to the rendered svg after id rewritin
   await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toBeVisible();
   expect(await css(reply, ".cluster rect", "fill")).not.toBe("rgb(0, 0, 0)");
   expect(await css(reply, ".flowchart-link", "fill")).toBe("none");
+});
+
+test("renders KaTeX math in mermaid labels", async ({ page }) => {
+  const diagram = ["```mermaid", "flowchart LR", '  A["$$x^2 + \\frac{a}{b}$$"] --> B', "```"].join("\n");
+  const reply = await openReply(page, `Diagram:\n\n${diagram}`);
+  const svg = reply.locator("[data-mermaid-state='ok'] .mermaid-output svg");
+  await expect(svg).toBeVisible();
+  await expect(svg.locator("math mfrac")).toHaveCount(1);
 });
 
 test("keeps mermaid flowchart nodes and sequence control blocks off solid black", async ({ page }) => {
@@ -441,10 +491,58 @@ for (const theme of ["dark", "light"] as const) {
           const bar = document.getElementById(el.id.replace(/-text$/, ""))!;
           const fg = luminance(getComputedStyle(el).fill);
           const bg = luminance(getComputedStyle(bar).fill);
-          return { text: el.textContent, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+          return {
+            text: el.textContent,
+            ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+          };
         });
       });
     expect(contrasts).toHaveLength(4);
     for (const { text, ratio } of contrasts) expect(ratio, `${theme}: ${text}`).toBeGreaterThanOrEqual(4.5);
   });
 }
+
+test("draws a diagram without reaching the hosts its configuration names", async ({ page }) => {
+  const asked: string[] = [];
+  await page.route(/^https:\/\/([a-z\d-]+\.)*example\.com\//, (route) => {
+    asked.push(new URL(route.request().url()).pathname);
+    return route.fulfill({
+      contentType: "image/gif",
+      body: Buffer.from(PIXEL.split(",")[1]!, "base64"),
+    });
+  });
+  const at = (name: string) => `https://images.example.com/${name}`;
+  const fence = (...lines: string[]) => ["```mermaid", ...lines, "```"].join("\n");
+  const diagrams = [
+    fence(
+      `%%{init: {"themeCSS": ".nodeLabel{background-image:url(${at("theme-css")})} svg{background-image:url(${at("theme-css-root")})}"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      `%%{init: {"fontFamily": "x;background-image:url(${at("font-family")})"}}%%`,
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+    fence(
+      "---",
+      "config:",
+      `  themeCSS: ".nodeLabel{background-image:url(${at("front-matter")})}"`,
+      "---",
+      "flowchart TD",
+      "    A[One]-->B[Two]",
+    ),
+  ];
+  const reply = await openReply(page, `Diagrams:\n\n${diagrams.join("\n\n")}`);
+  await expect(reply.locator("[data-mermaid-state='ok'] .mermaid-output svg")).toHaveCount(diagrams.length);
+  await page.evaluate(
+    (src) =>
+      new Promise<void>((done) => {
+        const img = new Image();
+        img.onload = img.onerror = () => done();
+        img.src = src;
+      }),
+    "https://example.com/after",
+  );
+  expect(asked).toEqual(["/after"]);
+});

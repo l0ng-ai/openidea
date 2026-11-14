@@ -22,10 +22,36 @@ pub async fn status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
     .await
 }
 
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch. `paths` that belong
+/// to no repository are ignored, and an empty list is the full status.
+pub async fn status_paths(host: &Host, window: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<Vec<FileStatus>> {
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        if project.is_trusted() {
+            apply_git_executable(&settings);
+        }
+        let repos = project.repos();
+        if repos.is_empty() {
+            return Err(ide_core::IdeError::unavailable("project is not a git repository"));
+        }
+        for r in repos.all() {
+            r.set_ignored_names(settings.ignored_names());
+        }
+        repos.status_paths(&paths)
+    })
+    .await
+}
+
 mod commands;
 pub use commands::*;
 
-fn check_worktree_removal(project_root: &std::path::Path, path: &std::path::Path) -> IdeResult<()> {
+/// Refuses (with `refusal`) to remove or move the worktree that holds the open project.
+fn check_worktree_away_from_project(
+    project_root: &std::path::Path,
+    path: &std::path::Path,
+    refusal: &str,
+) -> IdeResult<()> {
     fn canonical_path(path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
         let mut existing = path.to_path_buf();
         let mut tail = Vec::new();
@@ -54,7 +80,7 @@ fn check_worktree_removal(project_root: &std::path::Path, path: &std::path::Path
     }
 
     if canonical_path(project_root)?.starts_with(canonical_path(path)?) {
-        return Err(ide_core::IdeError::invalid("Cannot remove a worktree containing the open project."));
+        return Err(ide_core::IdeError::invalid(refusal));
     }
     Ok(())
 }

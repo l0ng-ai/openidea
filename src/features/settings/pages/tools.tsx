@@ -35,6 +35,10 @@ const WHILE_RUNNING_OPTIONS = [
   { value: "queue", label: "Queues the message for after the turn" },
   { value: "steer", label: "Sends it into the turn" },
 ];
+const NEW_TASK_APPROVAL_OPTIONS = [
+  { value: "bypass", label: "Without asking for approval" },
+  { value: "ask", label: "Asking for approval" },
+];
 const TOOL_CALL_OPTIONS = [
   { value: "grouped", label: "Grouped by what they did" },
   { value: "each", label: "One per line" },
@@ -127,7 +131,7 @@ function ShellPathRow() {
     void commands.termAvailableShells().then(setShells, () => undefined);
   }, []);
   const browse = async () => {
-    const { open: pick } = await import("@tauri-apps/plugin-dialog");
+    const { open: pick } = await import("@/platform/dialog");
     const picked = await pick({ multiple: false, title: "Shell Path" });
     const path = Array.isArray(picked) ? picked[0] : picked;
     if (path) set(quotePath(path));
@@ -238,6 +242,7 @@ function TerminalOptions() {
           />
           <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
           <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
+          <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
           {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
         </>
       }
@@ -664,8 +669,23 @@ export const TOOLS_PAGES: PageSpec[] = [
       "meter",
       "send",
       "reasoning",
+      "approval",
+      "permission",
+      "bypass",
     ],
     sections: [
+      {
+        title: "New Tasks",
+        options: [
+          {
+            kind: "select",
+            key: "agents.newTaskApprovals",
+            label: "New tasks start",
+            options: NEW_TASK_APPROVAL_OPTIONS,
+            hint: "Without asking means the agent's bypass or full-access mode, where command permissions don't apply",
+          },
+        ],
+      },
       {
         title: "Sending",
         options: [

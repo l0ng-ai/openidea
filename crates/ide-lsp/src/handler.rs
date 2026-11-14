@@ -10,10 +10,30 @@ use ide_core::{IdeEvent, TaskId};
 use ide_jsonrpc::{Handler, codes};
 use lsp_types as lsp;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 /// Progress token standing for `angular/projectLoadingStart` … `Finish`.
 const ANGULAR_LOADING: &str = "angular/projectLoading";
+
+/// How often a running progress token's silence is checked.
+const PROGRESS_SWEEP: Duration = Duration::from_secs(15);
+/// A token that reports nothing this long is marked stuck: jdtls's `Importing Maven
+/// project(s)` waits minutes on one repository that never answers (`DefaultMetadataResolver`
+/// awaits its whole batch), and a task frozen at one percent is not progress. It stays
+/// visible, but stops holding the server busy while the work behind it keeps running.
+const PROGRESS_STALE: Duration = Duration::from_secs(180);
+
+/// Task message after [`PROGRESS_STALE`] of silence: keep the server's last message and
+/// say how long nothing happened.
+fn stalled_message(message: Option<&str>) -> String {
+    let secs = PROGRESS_STALE.as_secs();
+    match message.filter(|m| !m.is_empty()) {
+        Some(message) => format!("{message} — no progress for {secs} s"),
+        None => format!("No progress for {secs} s"),
+    }
+}
 
 pub struct ClientHandler {
     mgr: Weak<LspManager>,
@@ -48,13 +68,14 @@ impl ClientHandler {
             other => other.to_string(),
         };
         let value = &params["value"];
+        let kind = value.get("kind").and_then(Value::as_str);
         let message = value.get("message").and_then(Value::as_str).map(str::to_owned);
         let fraction = value.get("percentage").and_then(Value::as_f64).map(|p| (p / 100.0).clamp(0.0, 1.0) as f32);
         let cancellable = value.get("cancellable").and_then(Value::as_bool);
         let mut replaced = None;
         let event = {
             let mut progress = self.server.progress.lock();
-            match value.get("kind").and_then(Value::as_str) {
+            match kind {
                 Some("begin") => {
                     let title = value
                         .get("title")
@@ -69,7 +90,18 @@ impl ClientHandler {
                     // (PHPantom: begin, begin, end, end). The task it replaces ends now, or no
                     // `end` would ever reach it.
                     replaced = progress
-                        .insert(token, Progress { task, title: title.clone(), message: message.clone(), cancel })
+                        .insert(
+                            token.clone(),
+                            Progress {
+                                task,
+                                title: title.clone(),
+                                message: message.clone(),
+                                cancel,
+                                last: tokio::time::Instant::now(),
+                                stalled: false,
+                                fraction,
+                            },
+                        )
                         .map(|p| IdeEvent::Task {
                             id: p.task,
                             title: p.title,
@@ -82,8 +114,13 @@ impl ClientHandler {
                 }
                 Some("report") => {
                     let Some(p) = progress.get_mut(&token) else { return };
+                    p.last = tokio::time::Instant::now();
+                    p.stalled = false;
                     if message.is_some() {
                         p.message = message;
+                    }
+                    if fraction.is_some() {
+                        p.fraction = fraction;
                     }
                     match cancellable {
                         Some(true) if p.cancel.is_none() => {
@@ -123,7 +160,62 @@ impl ClientHandler {
         self.server.refresh_busy_status(mgr.sink());
         if ended {
             self.server.progress_ended();
+        } else if kind == Some("begin") {
+            self.watch_progress(mgr, token);
         }
+    }
+
+    /// A task that reports nothing for [`PROGRESS_STALE`] is stuck: the work behind it is
+    /// blocked on something that never answers, and a bar frozen at one percent is not
+    /// progress. Keep its task visible but mark it, and stop counting it as busy: a slow
+    /// import can resume and finish in the same task, while the IDE stays usable.
+    fn watch_progress(&self, mgr: &LspManager, token: String) {
+        let (weak, server, generation) = (self.mgr.clone(), self.server.clone(), self.generation);
+        // The notification runs on a reader thread, not inside a runtime.
+        mgr.runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(PROGRESS_SWEEP).await;
+                let Some(mgr) = weak.upgrade() else { return };
+                if server.running_gen(generation).is_none() || !server.has_progress(&token) {
+                    return; // the instance is gone, or the task ended normally
+                }
+                if server.progress_silent(&token, PROGRESS_STALE) {
+                    let handler = ClientHandler::new(Arc::downgrade(&mgr), server.clone(), generation);
+                    if handler.mark_progress_stalled(&mgr, &token) {
+                        tracing::warn!(
+                            "{}: progress '{token}' reported nothing for {} s; marking it stuck",
+                            server.name,
+                            PROGRESS_STALE.as_secs()
+                        );
+                    }
+                }
+            }
+        });
+    }
+
+    /// Marks a silent task as possibly stuck without ending it. Returns whether it was
+    /// newly marked; a later `report` clears the mark and makes the server busy again.
+    fn mark_progress_stalled(&self, mgr: &LspManager, token: &str) -> bool {
+        let event = {
+            let mut progress = self.server.progress.lock();
+            let Some(p) = progress.get_mut(token) else { return false };
+            if p.stalled || !p.silent(PROGRESS_STALE) {
+                return false;
+            }
+            p.stalled = true;
+            IdeEvent::Task {
+                id: p.task,
+                title: p.title.clone(),
+                message: Some(stalled_message(p.message.as_deref())),
+                fraction: p.fraction,
+                done: false,
+                cancellable: p.cancel.is_some(),
+            }
+        };
+        self.server.emit(mgr.sink(), event);
+        self.server.refresh_busy_status(mgr.sink());
+        self.server.progress_ended();
+        true
     }
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
@@ -131,6 +223,8 @@ impl ClientHandler {
         if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
             return;
         }
+        let mut params = params;
+        crate::virtual_doc::normalize_uris(&mut params);
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -138,7 +232,16 @@ impl ClientHandler {
                 return;
             }
         };
-        let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        let Some(path) = uri_to_path(params.uri.as_str())
+            .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
+        else {
+            return;
+        };
+        if self.server.name == "jdtls"
+            && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
+        {
+            self.build_plan_failure(mgr, failure);
+        }
         if !mgr.accepts_injected_diagnostics(&path, params.version) {
             return;
         }
@@ -149,8 +252,26 @@ impl ClientHandler {
         {
             return;
         }
-        let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
+        // A late answer for an older version of the text is shown, but isn't fresh (`check_files`).
+        let obsolete =
+            params.version.is_some_and(|v| mgr.docs.lock().values().any(|d| d.path == path && d.version > v));
+        let shown = if obsolete {
+            self.server.set_obsolete_diagnostics(path.clone(), params.diagnostics)
+        } else {
+            self.server.set_diagnostics(path.clone(), params.diagnostics)
+        };
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
+    }
+
+    /// Once per unresolved plugin, whether m2e marked a `pom.xml` or only logged it.
+    fn build_plan_failure(&self, mgr: &LspManager, (plugin, body): (String, String)) {
+        if mgr.first_message(&self.server.name, &format!("build plan: {plugin}")) {
+            mgr.sink().emit(ide_core::IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Error,
+                title: "Maven project could not be configured".into(),
+                body: Some(body),
+            });
+        }
     }
 
     fn show_message(&self, mgr: &LspManager, params: &Value) {
@@ -203,11 +324,13 @@ impl ClientHandler {
     }
 
     fn apply_edit(&self, mgr: &LspManager, params: Value) -> Result<Value, (i64, String)> {
-        let edit: lsp::WorkspaceEdit = params
-            .get("edit")
-            .cloned()
-            .ok_or_else(|| (codes::INVALID_PARAMS, "missing edit".to_owned()))
-            .and_then(|e| serde_json::from_value(e).map_err(|e| (codes::INVALID_PARAMS, e.to_string())))?;
+        let edit: lsp::WorkspaceEdit =
+            params.get("edit").cloned().ok_or_else(|| (codes::INVALID_PARAMS, "missing edit".to_owned())).and_then(
+                |mut e| {
+                    crate::virtual_doc::normalize_uris(&mut e);
+                    serde_json::from_value(e).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))
+                },
+            )?;
         // Convert before calling the hook: it re-enters document sync.
         let edit = convert::workspace_edit(&mgr.conv(self.encoding()), edit);
         let applied = match mgr.apply_edit_hook() {
@@ -254,7 +377,24 @@ impl ClientHandler {
     }
 }
 
+/// Shown once per session when tsserver keeps aborting at its heap limit; the UI adds a
+/// button that opens the language server settings.
+const TSSERVER_OUT_OF_MEMORY: &str = "tsserver stopped because it reached its memory limit and is restarted, so code intelligence may pause or miss results. Raise typescript.tsserver.maxTsServerMemory (in MB) in the server's Workspace Configuration.";
+
+/// Whether a vtsls log line reports tsserver aborting, which is how Node exits at its heap
+/// limit: exit code 134 on Windows, `SIGABRT` elsewhere.
+fn tsserver_ran_out_of_memory(text: &str) -> bool {
+    text.split_once("TSServer exited. ").is_some_and(|(_, rest)| {
+        let rest = rest.trim_end();
+        rest.starts_with("Code: 134.") || rest.ends_with("Signal: SIGABRT")
+    })
+}
+
 impl Handler for ClientHandler {
+    fn normalize_incoming(&self, message: &mut Value) {
+        crate::uri::encode_loose_file_uris(message);
+    }
+
     fn on_notification(&self, method: &str, params: Value) {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
@@ -268,11 +408,27 @@ impl Handler for ClientHandler {
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
+                if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
+                    tracing::warn!("[{}] {text}", self.server.name);
+                    if mgr.first_message(&self.server.name, TSSERVER_OUT_OF_MEMORY) {
+                        mgr.sink().emit(IdeEvent::Notify {
+                            level: NotifyLevel::Error,
+                            title: "TypeScript server ran out of memory".into(),
+                            body: Some(TSSERVER_OUT_OF_MEMORY.into()),
+                        });
+                    }
+                }
                 if self.server.name == "jdtls"
                     && text.contains("Can't use Java ")
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && params.get("type").and_then(Value::as_u64) == Some(1)
+                    && let Some(failure) = crate::jdtls::logged_build_plan_failure(text)
+                {
+                    self.build_plan_failure(&mgr, failure);
                 }
                 match params.get("type").and_then(Value::as_u64) {
                     Some(1) if self.server.name == "jdtls" && text.contains(crate::jdtls::reserved_names::IMPORT_FAILURE) => {
@@ -285,7 +441,13 @@ impl Handler for ClientHandler {
                 }
             }
             "tsserver/request" => mgr.forward_tsserver_requests(self.server.clone(), self.generation, params),
+            "intellij/workspaceImportState" if self.server.name == crate::kotlin_lsp::KOTLIN_LSP => {
+                crate::kotlin_lsp::record_import_state(&self.server, self.generation, &params)
+            }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
+                if self.server.running_gen(self.generation).is_some() {
+                    self.server.set_java_ready();
+                }
                 mgr.java_import_ready(self.server.clone(), self.generation);
             }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ProjectStatus" => {
@@ -303,6 +465,7 @@ impl Handler for ClientHandler {
                 self.progress(&mgr, json!({ "token": ANGULAR_LOADING, "value": { "kind": "end" } }))
             }
             "telemetry/event" | "$/logTrace" | "$/cancelRequest" => {}
+            "eslint/status" | "eslint/probeFailed" | "eslint/exitCalled" => {}
             other => tracing::trace!("[{}] unhandled notification {other}", self.server.name),
         }
     }
@@ -343,6 +506,10 @@ impl Handler for ClientHandler {
                 Ok(Value::Null)
             }
             "workspace/inlineValue/refresh" => Ok(Value::Null),
+            // vscode-eslint asks its client before using the project's eslint (approved: 4) and
+            // reports a missing library or configuration; diagnostics already say what's wrong.
+            "eslint/confirmESLintExecution" => Ok(json!(4)),
+            "eslint/noLibrary" | "eslint/noConfig" | "eslint/openDoc" => Ok(json!({})),
             other => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {other}"))),
         }
     }
@@ -395,5 +562,21 @@ fn merge(base: &mut Value, layer: Value) {
             }
         }
         (base, layer) => *base = layer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tsserver_ran_out_of_memory;
+
+    #[test]
+    fn tsserver_aborts_are_out_of_memory() {
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: 134. Signal: null"));
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGABRT"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 0. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGTERM"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 1340. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("Code: 134."));
+        assert!(tsserver_ran_out_of_memory("[error] TSServer exited. Code: 134. Signal: null\n"));
     }
 }

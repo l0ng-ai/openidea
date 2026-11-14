@@ -1,6 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, configure_server, jdtls_jdk, maven_command, maven_options, project_jdk, python_interpreter,
-    ruff_configuration, terminal_activation, tool_install_environment, tsdk, without_derived,
+    apply_to_run_configs, apply_to_run_configs_in, configure_server, jdtls_jdk, maven_command, maven_options,
+    project_jdk, python_interpreter, ruff_configuration, terminal_activation, tool_install_environment, tsdk,
+    without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -26,6 +27,7 @@ fn server(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: BTreeMap::new(),
+        requires_env: Vec::new(),
         root_markers: vec![],
         require_root_marker: false,
         initialization_options: None,
@@ -61,6 +63,14 @@ fn run(kind: &str, command: &str, args: &[&str]) -> RunConfig {
     }
 }
 
+/// An interpreter executable at `rel` under `root` (resolution skips paths that don't exist).
+fn fake_interpreter(root: &Path, rel: &str) -> std::path::PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "").unwrap();
+    path
+}
+
 #[test]
 fn project_venv_is_the_default_interpreter() {
     if cfg!(windows) {
@@ -73,8 +83,10 @@ fn project_venv_is_the_default_interpreter() {
     assert_eq!(python_interpreter(tmp.path(), &s), Some(py.clone()));
     assert_eq!(venv_of(&py), Some(tmp.path().join(".venv")));
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
-    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), Path::new("/opt/py/bin/python3"));
+    // A configured interpreter wins over the virtualenv while its executable exists.
+    let configured = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    s.languages.python.interpreter = configured.to_string_lossy().into_owned();
+    assert_eq!(python_interpreter(tmp.path(), &s).unwrap(), configured);
 }
 
 #[test]
@@ -303,7 +315,9 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let mut s = Settings::default();
-    s.languages.python.interpreter = "/opt/py/bin/python3".into();
+    let python = fake_interpreter(tmp.path(), "opt/py/bin/python3");
+    let python = python.to_string_lossy().into_owned();
+    s.languages.python.interpreter = python.clone();
     s.languages.node.package_manager = "pnpm".into();
     let mut configs = vec![
         run("python", "uv", &["run", "python", "-m", "app"]),
@@ -315,17 +329,17 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
-    assert_eq!(configs[0].command, "/opt/py/bin/python3");
+    assert_eq!(configs[0].command, python);
     assert_eq!(configs[0].args, ["-m", "app"]);
-    assert_eq!(configs[1].command, "/opt/py/bin/python3");
+    assert_eq!(configs[1].command, python);
     assert_eq!(configs[1].args, ["-m", "pytest"]);
     assert_eq!(configs[2].args, ["-m", "pytest", "-x"]);
     assert_eq!(configs[3].command, "pnpm");
     assert_eq!(configs[4].command, "python3", "shell configs are left alone");
     // Django tests run on the selected interpreter, like `manage.py runserver`.
-    assert_eq!(configs[5].command, "/opt/py/bin/python3");
+    assert_eq!(configs[5].command, python);
     assert_eq!(configs[5].args, ["manage.py", "test"]);
-    assert_eq!(configs[6].command, "/opt/py/bin/python3");
+    assert_eq!(configs[6].command, python);
     assert_eq!(configs[6].args, ["manage.py", "test", "polls"]);
 }
 
@@ -370,6 +384,30 @@ fn fake_jdk(dir: &Path) {
 }
 
 #[test]
+fn jar_application_runs_on_the_project_jdk_unless_a_jre_is_chosen() {
+    let tmp = tempfile::tempdir().unwrap();
+    let jdk = tmp.path().join("jbr");
+    fake_jdk(&jdk);
+    let mut s = Settings::default();
+    let mut configs = vec![run("jar-application", "java", &["-jar", "app.jar"])];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].command, "java", "java on PATH without a project JDK");
+
+    s.languages.java.jdk = jdk.to_string_lossy().into_owned();
+    let chosen = tmp.path().join("other/bin/java").to_string_lossy().into_owned();
+    let mut configs = vec![
+        run("jar-application", "java", &["-jar", "app.jar"]),
+        run("jar-application", &chosen, &["-jar", "app.jar"]),
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    let java = crate::java::java_executable(&project_jdk(tmp.path(), &s).unwrap().home).to_string_lossy().into_owned();
+    assert_eq!(configs[0].command, java);
+    assert_eq!(configs[1].command, chosen, "an explicit JRE stays");
+    // Saved as the default, so it follows a later Project JDK change.
+    assert_eq!(without_derived(&configs[0], tmp.path(), &s).command, "java");
+}
+
+#[test]
 fn project_jdk_and_maven_settings() {
     if cfg!(windows) {
         return; // Unix paths and shells
@@ -409,6 +447,19 @@ fn project_jdk_and_maven_settings() {
     );
     assert_eq!(configs[0].env["JAVA_HOME"], home);
     assert_eq!(configs[1].env["JAVA_HOME"], home);
+    // JUnit runs the build's own command line: the build's JDK, its command and arguments unchanged.
+    let mut junit = vec![
+        run("junit", "./mvnw", &["test", "-Dtest=a.T"]),
+        run("junit", "./gradlew", &[":api:test", "--tests", "a.T"]),
+    ];
+    apply_to_run_configs(&mut junit, tmp.path(), &s);
+    assert_eq!(
+        (junit[0].command.as_str(), junit[0].args.as_slice()),
+        ("./mvnw", &["test".to_owned(), "-Dtest=a.T".to_owned()][..])
+    );
+    assert_eq!(junit[0].env["JAVA_HOME"], home);
+    assert_eq!(junit[1].command, "./gradlew");
+    assert_eq!(junit[1].env["JAVA_HOME"], home);
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].args.len(), 6, "applied once");
 
@@ -474,6 +525,85 @@ fn maven_runner_jre_overrides_the_project_jdk() {
         let expected = crate::java::pick_jdk(&installed, Some(release));
         assert_eq!(crate::apply::maven_jdk(&root, &settings, Some(release)).as_ref(), expected);
     }
+}
+
+/// #2433: a `JAVA_HOME` an IDE-generated build-tool configuration carries came from Settings, so
+/// a corrected setting reaches the next run — also when an older version baked the value into a
+/// temporary configuration (and persisted it). A configuration of the user's own keeps its
+/// `JAVA_HOME`. Table-driven over the build-tool kinds and the state of the carried value.
+#[test]
+fn settings_win_over_a_generated_configurations_java_home() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(tmp.path()).unwrap();
+    for name in ["old-jdk", "new-jdk", "user-jdk", "runner-jdk"] {
+        fake_jdk(&root.join(name));
+    }
+    let old = root.join("old-jdk").to_string_lossy().into_owned();
+    let new = root.join("new-jdk").to_string_lossy().into_owned();
+    let user = root.join("user-jdk").to_string_lossy().into_owned();
+    let runner = root.join("runner-jdk").to_string_lossy().into_owned();
+    let gone = root.join("removed-jdk").to_string_lossy().into_owned(); // never created
+
+    let mut settings = Settings::default();
+    settings.languages.java.jdk = "new-jdk".into();
+    assert_eq!(crate::apply::maven_build_env(&root, &settings, None)["JAVA_HOME"], new);
+
+    let launch = |config: &RunConfig| {
+        let mut c = config.clone();
+        if c.kind == "maven" {
+            // The Maven launcher's own path (`run_start`).
+            crate::apply::prepare_maven_run(&mut c, &root, &settings);
+        } else {
+            apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
+        }
+        c
+    };
+
+    // (kind, id, carried JAVA_HOME, what it runs with, whether a save keeps it)
+    for (kind, id, carried, runs_with, kept) in [
+        // A Maven goal from the tool window: Settings win, whether the carried JDK still exists.
+        ("maven", "maven:goal:pom.xml:compile", Some(old.as_str()), new.as_str(), false),
+        ("maven", "maven:goal:pom.xml:compile", Some(gone.as_str()), new.as_str(), false),
+        ("maven", "maven:goal:pom.xml:compile", None, new.as_str(), false),
+        // A saved Maven configuration keeps the JDK it carries.
+        ("maven", "maven:test", Some(user.as_str()), user.as_str(), true),
+        ("maven", "my-goal", Some(user.as_str()), user.as_str(), true),
+        // A Gradle task from the tool window: the Gradle JVM / Project JDK decides.
+        ("gradle", "gradle:task:[\":\",\":app\"]:test", Some(user.as_str()), new.as_str(), false),
+        ("gradle", "gradle:task:[\":\",\":app\"]:test", Some(gone.as_str()), new.as_str(), false),
+        // A Gradle task of the user's own keeps its JDK.
+        ("gradle", "my-task", Some(user.as_str()), user.as_str(), true),
+        // Tomcat keeps the JDK it carries: it is a field of that configuration.
+        ("tomcat", "tomcat:local", Some(user.as_str()), user.as_str(), true),
+    ] {
+        let command = if kind == "tomcat" { "catalina" } else { "mvn" };
+        let mut config = run(kind, command, &["compile"]);
+        config.id = id.into();
+        config.detected = false;
+        if let Some(home) = carried {
+            config.env.insert("JAVA_HOME".into(), home.to_owned());
+        }
+        let case = format!("{kind} {id} carried={carried:?}");
+        assert_eq!(launch(&config).env.get("JAVA_HOME").map(String::as_str), Some(runs_with), "{case}");
+        // Saved: a derived value is dropped so a later settings change still reaches it; the
+        // user's own value survives the round trip.
+        let saved = without_derived(&config, &root, &settings);
+        assert_eq!(saved.env.contains_key("JAVA_HOME"), kept, "{case} (saved={saved:?})");
+        assert_eq!(launch(&saved).env.get("JAVA_HOME").map(String::as_str), Some(runs_with), "{case} (after a save)");
+    }
+    // A corrected setting reaches a goal configuration that was saved with the old JDK baked in,
+    // without reopening the project: the Maven runner JRE (the reporter's field, #2433) wins.
+    let mut goal = run("maven", "mvn", &["compile"]);
+    goal.id = "maven:goal:pom.xml:compile".into();
+    goal.detected = false;
+    goal.env.insert("JAVA_HOME".into(), old.clone());
+    let saved = without_derived(&goal, &root, &settings);
+    assert!(!saved.env.contains_key("JAVA_HOME"));
+    let mut moved = settings.clone();
+    moved.languages.java.maven.runner_jre = "runner-jdk".into();
+    let mut next = saved;
+    crate::apply::prepare_maven_run(&mut next, &root, &moved);
+    assert_eq!(next.env["JAVA_HOME"], runner);
 }
 
 #[test]
@@ -1195,6 +1325,85 @@ fn custom_tool_path_replaces_the_command() {
     assert_eq!(cfg.command, "zls");
 }
 
+/// A server picked from a Node.js installation (nvm's `bin/tsc`, `bin/npx`) is a
+/// `#!/usr/bin/env node` script: it runs on that installation's Node, ahead of the
+/// project's Node.js interpreter.
+#[test]
+fn a_server_chosen_from_a_node_installation_runs_on_that_node() {
+    let tmp = tempfile::tempdir().unwrap();
+    let v26 = tmp.path().join("nvm/versions/node/v26.4.0/bin");
+    let v20 = tmp.path().join("node20/bin");
+    for dir in [&v26, &v20] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(exe("node")), "").unwrap();
+    }
+    std::fs::write(v26.join("tsc"), "#!/usr/bin/env node\n").unwrap();
+    let mut s = Settings::default();
+    s.languages.node.interpreter = v20.join(exe("node")).to_string_lossy().into_owned();
+    s.tools.insert(
+        "typescript-language-server".into(),
+        ide_core::settings::ToolSettings { path: v26.join("tsc").to_string_lossy().into_owned() },
+    );
+    let mut cfg = server("typescript-language-server");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let path: Vec<std::path::PathBuf> = std::env::split_paths(&cfg.env["PATH"]).collect();
+    assert_eq!(path[..2], [v26.clone(), v20.clone()]);
+
+    // Elsewhere, the project's Node.js interpreter comes first.
+    s.tools.insert(
+        "typescript-language-server".into(),
+        ide_core::settings::ToolSettings { path: tmp.path().join("tools/tsc").to_string_lossy().into_owned() },
+    );
+    let mut cfg = server("typescript-language-server");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(std::env::split_paths(&cfg.env["PATH"]).next(), Some(v20));
+}
+
+/// TypeScript 7 (`typescript` 7+, `@typescript/native-preview`) has no tsserver: choosing it
+/// runs its native executable's own language server instead of vtsls / typescript-language-server.
+#[test]
+fn typescript_7_runs_its_own_language_server() {
+    let tmp = tempfile::tempdir().unwrap();
+    let modules = tmp.path().join("node_modules");
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        os => os,
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        arch => arch,
+    };
+    std::fs::create_dir_all(modules.join("typescript/lib")).unwrap();
+    std::fs::write(modules.join("typescript/package.json"), r#"{"name":"typescript","version":"7.0.2"}"#).unwrap();
+    let native = modules.join(format!("@typescript/typescript-{os}-{arch}/lib")).join(exe("tsc"));
+    std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+    std::fs::write(&native, "").unwrap();
+    let mut s = Settings::default();
+    s.languages.typescript.version = "workspace".into();
+    for name in ["vtsls", "typescript-language-server"] {
+        let mut cfg = server(name);
+        configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+        assert_eq!(Path::new(&cfg.command), native, "{name}");
+        assert_eq!(cfg.args, ["--lsp", "--stdio"]);
+        assert!(cfg.initialization_options.is_none());
+    }
+    // Picked as a directory (its `lib`, as for older versions), too.
+    s.languages.typescript.version = modules.join("typescript/lib").to_string_lossy().into_owned();
+    let mut cfg = server("vtsls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(Path::new(&cfg.command), native);
+
+    // TypeScript 6 keeps the tsserver-based server, pointed at it.
+    std::fs::write(modules.join("typescript/lib/typescript.js"), "").unwrap();
+    std::fs::write(modules.join("typescript/lib/tsserver.js"), "").unwrap();
+    s.languages.typescript.version = "workspace".into();
+    let mut cfg = server("vtsls");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    assert_eq!(cfg.command, "vtsls");
+}
+
 #[test]
 fn the_godot_setting_applies_to_server_debugger_and_run_configurations() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1736,6 +1945,37 @@ fn max_java_picks_an_older_jdk() {
     assert_eq!(free.env["JAVA_HOME"], j25.home.to_string_lossy());
 }
 
+/// #3086: `gradle-wrapper.jar` excluded by a `*.jar` rule in `.gitignore`: `gradlew` can't
+/// start, so the distribution the wrapper already unpacked runs instead.
+#[test]
+fn gradle_wrapper_without_its_jar_runs_the_unpacked_distribution() {
+    use crate::apply::gradle_command;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let plain = if cfg!(windows) { "gradle.bat" } else { "gradle" };
+    let wrapper = root.join(if cfg!(windows) { "gradlew.bat" } else { "gradlew" });
+    std::fs::write(&wrapper, "").unwrap();
+    std::fs::create_dir_all(root.join("gradle/wrapper")).unwrap();
+    std::fs::write(
+        root.join("gradle/wrapper/gradle-wrapper.properties"),
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-4.10-bin.zip\n",
+    )
+    .unwrap();
+    let mut settings = Settings::default();
+    settings.languages.java.gradle.user_home = "user-home".into();
+    let hash = root.join("user-home/wrapper/dists/gradle-4.10-bin/7ddd1b3f");
+    let gradle = hash.join("gradle-4.10/bin").join(plain);
+    std::fs::create_dir_all(gradle.parent().unwrap()).unwrap();
+    std::fs::write(&gradle, "").unwrap();
+    // Not marked complete: possibly half unpacked.
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+    std::fs::write(hash.join("gradle-4.10-bin.zip.ok"), "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), gradle);
+    // With its jar the wrapper runs as usual.
+    std::fs::write(root.join("gradle/wrapper/gradle-wrapper.jar"), "").unwrap();
+    assert_eq!(gradle_command(root, root, &settings), wrapper);
+}
+
 #[test]
 fn gradle_settings_precedence() {
     use crate::apply::{gradle_command, gradle_env};
@@ -2138,11 +2378,13 @@ fn nested_python_configs_get_their_own_virtualenv_but_explicit_settings_stay_pro
     apply_to_run_configs(std::slice::from_mut(&mut member), root, &Settings::default());
     assert_eq!(member.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
     let mut settings = Settings::default();
-    settings.languages.python.interpreter = "custom/bin/python".into();
+    settings.languages.python.interpreter = root.join("custom/bin").join(exe("python")).to_string_lossy().into_owned();
+    std::fs::create_dir_all(root.join("custom/bin")).unwrap();
+    std::fs::write(root.join("custom/bin").join(exe("python")), "").unwrap();
     let mut config = run("python", "python3", &["main.py"]);
     config.extras.module = Some("apps/python".into());
     apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
-    assert_eq!(config.command, root.join("custom/bin/python").to_string_lossy());
+    assert_eq!(config.command, root.join("custom/bin").join(exe("python")).to_string_lossy());
 }
 
 #[test]
@@ -2152,11 +2394,97 @@ fn file_runtime_uses_nearest_virtualenv_and_explicit_project_settings_win() {
     let outer = fake_venv(root, ".venv");
     let inner = fake_venv(&root.join("apps/api"), ".venv");
     let near = root.join("apps/api/src/package");
-    let mut settings = Settings::default();
+    let settings = Settings::default();
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(inner));
     assert_eq!(crate::apply::python_interpreter_near(root, Some(&root.join("apps/other")), &settings), Some(outer));
-    settings.languages.python.interpreter = "selected/python".into();
-    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(root.join("selected/python")));
+    let mut settings = Settings::default();
+    let selected = root.join("selected").join(exe("python"));
+    std::fs::create_dir_all(root.join("selected")).unwrap();
+    std::fs::write(&selected, "").unwrap();
+    settings.languages.python.interpreter = selected.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::python_interpreter_near(root, Some(&near), &settings), Some(selected));
+}
+
+#[test]
+fn an_interpreter_that_no_longer_exists_falls_back_to_the_project_virtualenv() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let venv = fake_venv(root, ".venv");
+    let mut settings = Settings::default();
+    settings.languages.python.interpreter = root.join("gone/python").to_string_lossy().into_owned();
+    // Resolution skips the missing executable like PyCharm's "Invalid" SDKs.
+    assert_eq!(crate::apply::python_interpreter(root, &settings), Some(venv.clone()));
+    assert_eq!(crate::apply::python_interpreter_near(root, None, &settings), Some(venv.clone()));
+    // Run configurations use the fallback instead of the dead path.
+    let mut config = run("python", "python3", &["main.py"]);
+    apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+    assert_eq!(config.command, venv.to_string_lossy());
+    assert_eq!(config.env["VIRTUAL_ENV"], venv.parent().unwrap().parent().unwrap().to_string_lossy());
+    // A configured interpreter that still exists keeps winning over the venv.
+    let real = root.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let real_python = real.join(exe("python"));
+    std::fs::write(&real_python, "").unwrap();
+    settings.languages.python.interpreter = real_python.to_string_lossy().into_owned();
+    assert_eq!(crate::apply::python_interpreter(root, &settings), Some(real_python));
+}
+
+#[test]
+fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let primary = root.join("primary");
+    let bare = root.join("bare");
+    let outer = fake_venv(&primary, ".venv");
+    // An attached member with a venv of its own uses it.
+    let own = fake_venv(&root.join("own"), ".venv");
+    let settings = Settings::default();
+    assert_eq!(crate::apply::python_interpreter_near(&root.join("own"), Some(&own), &settings), Some(own));
+
+    // A run configuration of the bare member runs on the primary project's venv.
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &settings);
+    assert_eq!(config.command, outer.to_string_lossy());
+    assert_eq!(config.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
+    // Saving strips what settings derived, so the fallback keeps following settings.
+    let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
+    assert_eq!(stored.command, exe("python"));
+    assert!(!stored.env.contains_key("VIRTUAL_ENV"));
+
+    // The member's explicit interpreter wins over the primary project's venv —
+    // when it exists (bare names stay bare; a missing path falls back).
+    let mut chosen = Settings::default();
+    chosen.languages.python.interpreter = root.join("bare/python").to_string_lossy().into_owned();
+    std::fs::create_dir_all(&bare).unwrap();
+    let bare_python = bare.join(exe("python"));
+    std::fs::write(&bare_python, "").unwrap();
+    chosen.languages.python.interpreter = bare_python.to_string_lossy().into_owned();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &chosen);
+    assert_eq!(config.command, bare_python.to_string_lossy());
+    assert!(!config.env.contains_key("VIRTUAL_ENV"));
+
+    // An interpreter inherited from the primary follows a later change of its setting
+    // (the paths are created here: resolution skips missing executables).
+    let mut inherited = Settings::default();
+    for dir in ["primary", "moved"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+        std::fs::write(root.join(dir).join(exe("python")), "").unwrap();
+    }
+    let primary_python = root.join("primary").join(exe("python"));
+    let moved_python = root.join("moved").join(exe("python"));
+    inherited.languages.python.interpreter = primary_python.to_string_lossy().into_owned();
+    let mut config = run("python", "python3", &["main.py"]);
+    config.extras.module = Some("src".into());
+    apply_to_run_configs_in(std::slice::from_mut(&mut config), &bare, Some(&primary), &inherited);
+    assert_eq!(config.command, primary_python.to_string_lossy());
+    let stored = without_derived_in(&config, &bare, Some(&primary), &inherited);
+    inherited.languages.python.interpreter = moved_python.to_string_lossy().into_owned();
+    let mut reloaded = stored;
+    apply_to_run_configs_in(std::slice::from_mut(&mut reloaded), &bare, Some(&primary), &inherited);
+    assert_eq!(reloaded.command, moved_python.to_string_lossy());
 }
 
 #[test]
@@ -2257,12 +2585,17 @@ fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigu
     assert!(!defaults.env.contains_key("GOROOT"));
     s.languages.go.goroot = "go-sdk".into();
     s.languages.node.interpreter = "node-sdk/bin/node".into();
-    s.languages.python.interpreter = "python-sdk/bin/python3.14".into();
     s.languages.ruby.interpreter = "ruby-sdk/bin/ruby".into();
     let runtime = tool_install_environment(root, &s);
     assert_eq!(runtime.commands["go"], root.join("go-sdk/bin").join(if cfg!(windows) { "go.exe" } else { "go" }));
     assert_eq!(runtime.env["GOROOT"], root.join("go-sdk").to_string_lossy());
     assert_eq!(runtime.commands["node"], root.join("node-sdk/bin/node"));
-    assert_eq!(runtime.commands["python"], root.join("python-sdk/bin/python3.14"));
     assert_eq!(runtime.commands["ruby"], root.join("ruby-sdk/bin/ruby"));
+    // A configured interpreter whose executable is missing is skipped here too:
+    // the tool install environment only names Pythons that can actually run.
+    std::fs::create_dir_all(root.join("python-sdk/bin")).unwrap();
+    let real = root.join("python-sdk/bin").join(exe("python3.14"));
+    std::fs::write(&real, "").unwrap();
+    s.languages.python.interpreter = real.to_string_lossy().into_owned();
+    assert_eq!(tool_install_environment(root, &s).commands["python"], real);
 }

@@ -17,7 +17,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, SearchQuery, RunConfig } from "@/bindings";
+import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
+import { notifyEach } from "@/platform/listeners";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -75,6 +76,11 @@ export interface ToolWindowContribution {
    * or "onUse" — listed under the stripe's "…" until first opened (Find, Run…).
    */
   stripe?: "shown" | "onUse";
+  /**
+   * Its content lasts only while the project is open (run and debug sessions, search results),
+   * so it isn't reopened with the project.
+   */
+  sessionContent?: boolean;
 }
 
 export type StatusAlign = "left" | "right";
@@ -136,6 +142,12 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /**
+   * Whether the tab is busy (a process is running, like a terminal session's):
+   * closing its last tab asks first, and tab-limit eviction skips it. May be
+   * async; both the close confirmation and the eviction await the answer.
+   */
+  isBusy?(input: EditorInput): boolean | Promise<boolean>;
   /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
@@ -446,6 +458,30 @@ export function registerFileEditorProvider(p: FileEditorProvider): () => void {
   };
 }
 
+/**
+ * Opens locations under a URI scheme a feature owns (a notebook cell's
+ * `vscode-notebook-cell:` URI): the editor hands them over instead of opening
+ * them as a server-provided virtual document.
+ */
+export interface UriOpener {
+  scheme: string;
+  open(uri: string, options: OpenOptions): Promise<void>;
+}
+
+const uriOpeners = new Map<string, UriOpener>();
+
+export function registerUriOpener(o: UriOpener): () => void {
+  uriOpeners.set(o.scheme, o);
+  return () => {
+    if (uriOpeners.get(o.scheme) === o) uriOpeners.delete(o.scheme);
+  };
+}
+
+export function uriOpenerFor(uri: string): UriOpener | undefined {
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]+):/.exec(uri)?.[1];
+  return scheme ? uriOpeners.get(scheme.toLowerCase()) : undefined;
+}
+
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
 export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
   const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
@@ -482,6 +518,44 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
     await rollback();
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Files opened with another application (IDEA's "Files opened in associated
+// applications"): asked before the file editors above, so an explicit
+// association wins over the built-in viewers.
+
+/** Hands a file to another application instead of opening an editor tab. */
+export interface ExternalFileOpenHandler {
+  id: string;
+  /** Lower asks first. Default 100. */
+  order?: number;
+  /** Opens `path` outside the IDE; true when it was handed over. */
+  open(path: string): boolean | Promise<boolean>;
+}
+
+const externalFileOpenHandlers = new Map<string, ExternalFileOpenHandler>();
+
+export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler): () => void {
+  externalFileOpenHandlers.set(handler.id, handler);
+  return () => {
+    if (externalFileOpenHandlers.get(handler.id) === handler) externalFileOpenHandlers.delete(handler.id);
+  };
+}
+
+/** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
+export async function openFileExternally(path: string): Promise<boolean> {
+  const handlers = [...externalFileOpenHandlers.values()].sort(
+    (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
+  );
+  for (const handler of handlers) {
+    try {
+      if (await handler.open(path)) return true;
+    } catch (e) {
+      console.warn(`external file opener ${handler.id} failed`, e);
+    }
+  }
+  return false;
 }
 
 /**
@@ -677,11 +751,25 @@ export type EmbeddedTerminalFactory = (
   options: EmbeddedTerminalOptions,
 ) => Promise<EmbeddedTerminal>;
 
+/**
+ * The output of Run sessions, by process: lets the Debug console of a debugger
+ * attached to a process the Run feature started (Maven, Gradle, Spring Boot…)
+ * show that process's output. Provided by the run feature.
+ */
+export interface RunOutputService {
+  /**
+   * Calls `listener` with the output so far, then with each new chunk, until the
+   * returned function is called. A process no Run session owns gets nothing.
+   */
+  subscribe(process: RunId, listener: (kind: "stdout" | "stderr" | "system", text: string) => void): () => void;
+}
+
 const services: {
   editor?: EditorService;
   toolWindows?: ToolWindowService;
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
+  runOutput?: RunOutputService;
 } = {};
 
 function need<T>(s: T | undefined, name: string): T {
@@ -693,6 +781,7 @@ export const provideEditorService = (s: EditorService) => void (services.editor 
 export const provideToolWindowService = (s: ToolWindowService) => void (services.toolWindows = s);
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
+export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
 
 export const editorService = (): EditorService => need(services.editor, "editor");
 export const toolWindowService = (): ToolWindowService => need(services.toolWindows, "toolWindows");
@@ -702,6 +791,8 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+/** Run output by process; provided by the run feature. */
+export const runOutput = (): RunOutputService | undefined => services.runOutput;
 
 /**
  * The commit being prepared (the Commit tool window or dialog), for plugins:
@@ -720,6 +811,35 @@ export interface CommitService {
 let commitServiceImpl: CommitService | undefined;
 export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
 export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/**
+ * Context a feature offers the agent composer's `@` menu (`@problems`, `@terminal`): what
+ * choosing it inserts, a ``` block (`info` names its kind: `problems`, `terminal <title>`)
+ * or references to files.
+ */
+export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
+
+export interface AgentContextSource {
+  /** Typed after `@`. */
+  id: string;
+  /** English: shown through the text catalog. */
+  title: string;
+  description: string;
+  icon: string;
+  /** What to insert now; null when there is nothing (no problems, no terminal). */
+  resolve(): Promise<AgentContext | null>;
+}
+
+const agentContextSources = new Map<string, AgentContextSource>();
+
+export function registerAgentContextSource(source: AgentContextSource): () => void {
+  agentContextSources.set(source.id, source);
+  return () => {
+    if (agentContextSources.get(source.id) === source) agentContextSources.delete(source.id);
+  };
+}
+
+export const getAgentContextSources = (): AgentContextSource[] => [...agentContextSources.values()];
 
 /** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
 export interface ContributedCommitCheck {
@@ -809,9 +929,24 @@ export function showFindResults(source: FindResultsSource) {
 // tree, editor tabs, Search Everywhere, etc. Providers (VCS status, problems)
 // push decorations into this store; consumers read with `useFileDecoration`.
 
+export interface DecorationSegment {
+  text: string;
+  icon?: string;
+  strike?: boolean;
+  label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
+  /** CSS values for the segment's font style / effect, e.g. scheme-driven bold or wavy underline. */
+  fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
+}
+
 export interface FileDecoration {
   /** CSS colour, normally a token like `var(--vcs-modified)`. */
   color?: string;
+  suffix?: readonly DecorationSegment[];
+  suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
   /** Short badge text, e.g. a problem count. */
@@ -1202,6 +1337,11 @@ export interface ExecutorLaunch {
   launch: RunConfig;
   /** The process exited (not called when it failed to start). */
   finished(result: { exitCode: number | null; stopped: boolean }): void;
+  /**
+   * The user stopped the run: called before the stop signal, which waits for it (at most
+   * `BEFORE_STOP_TIMEOUT_MS`). A second Stop does not wait.
+   */
+  beforeStop?(runId: RunId): Promise<void>;
 }
 
 export interface RunExecutorContribution {
@@ -1559,7 +1699,7 @@ export function onEndpointsChanged(listener: () => void): () => void {
 }
 /** Endpoints a provider reports may have changed: `onEndpointsChanged` listeners ask again. */
 export function endpointsChanged() {
-  for (const listener of endpointListeners) listener();
+  notifyEach(endpointListeners, (listener) => listener(), "endpoints changed");
 }
 
 export function registerEndpointProvider(p: EndpointProvider): () => void {
@@ -1631,6 +1771,12 @@ export const useDebugRunSessions = create<{
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+
+/**
+ * The Services tool window's badge: how many of its listed services are running.
+ * The run provider (another feature) keeps it current; `null` hides the badge.
+ */
+export const useServicesRunningCount = create<{ count: number | null }>(() => ({ count: null }));
 
 // ---------------------------------------------------------------------------
 // Processes a closing window or project would terminate. Features that own
@@ -1731,16 +1877,23 @@ export function addContributedFileTemplate(t: import("@/platform/fileTemplates")
   return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
 }
 
-/** Flush contributed document indexes before workspace usages or refactoring. */
-const documentIndexSync = new Set<(path: string) => Promise<void>>();
-export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+/**
+ * Flush contributed document indexes before workspace usages or refactoring. A refactoring
+ * refuses (throws) while an index is incomplete; usages go ahead and resolve `false`, so the
+ * results can say they may be incomplete.
+ */
+export type DocumentIndexPurpose = "usages" | "refactor";
+type DocumentIndexSync = (path: string, purpose: DocumentIndexPurpose) => Promise<boolean | void>;
+const documentIndexSync = new Set<DocumentIndexSync>();
+export function registerDocumentIndexSync(sync: DocumentIndexSync): () => void {
   documentIndexSync.add(sync);
   return () => {
     documentIndexSync.delete(sync);
   };
 }
-export async function synchronizeDocumentIndexes(path: string): Promise<void> {
-  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
+export async function synchronizeDocumentIndexes(path: string, purpose: DocumentIndexPurpose): Promise<boolean> {
+  const complete = await Promise.all([...documentIndexSync].map((sync) => sync(path, purpose)));
+  return complete.every((c) => c !== false);
 }
 
 /** Font zoom for non-CodeMirror surfaces, owned and released by their features. */

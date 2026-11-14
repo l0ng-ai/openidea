@@ -7,8 +7,12 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu } from "@/ui";
+import { emptyGutterSpacer, gutterSpacer } from "@/editor/api";
 import { notifications, onEndpointsChanged, searchEndpoints, type EndpointEntry } from "@/workbench/contributions";
 import { appendGeneratedRequests } from "./generatedRequests";
+import { headerCompletion } from "./headers";
+import { sourceReader } from "./spring/editor";
+import { findHost } from "./spring/request";
 import { METHODS } from "./language";
 import styles from "./HttpClient.module.css";
 
@@ -16,13 +20,15 @@ export const OPEN_ENDPOINT = "http.openEndpoint";
 
 export const endpointUrl = (path: string) => path.replace(/\{(?!\{)([\w.-]+)\}(?!\})/g, "{{$1}}");
 
-export function renderEndpoint(e: EndpointEntry): string {
-  return `### ${e.handler ?? `${e.method} ${e.url}`}\n${e.method === "*" ? "GET" : e.method} http://localhost:8080${endpointUrl(e.url)}\n`;
+export function renderEndpoint(e: EndpointEntry, host = "http://localhost:8080"): string {
+  return `### ${e.handler ?? `${e.method} ${e.url}`}\n${e.method === "*" ? "GET" : e.method} ${host}${endpointUrl(e.url)}\n`;
 }
 
 export async function openEndpoint(endpoint: EndpointEntry): Promise<void> {
   try {
-    await appendGeneratedRequests([renderEndpoint(endpoint)]);
+    // The server address of the endpoint's module (`server.port`, context path), as for Spring mappings.
+    const host = await findHost(endpoint.path, useProject.getState().project?.root ?? null, sourceReader);
+    await appendGeneratedRequests([renderEndpoint(endpoint, host)]);
   } catch (e) {
     notifications().notify({ level: "error", title: tx("Cannot generate the HTTP request"), body: String(e) });
   }
@@ -90,8 +96,14 @@ class EndpointMarker extends GutterMarker {
   }
 }
 
+const endpointSpacer = gutterSpacer(styles.runMarker ?? "");
+
 export function endpointEditorExtension(ctx: EditorDocContext): Extension {
-  if (ctx.language === "http") return EditorState.languageData.of(() => [{ openideaCompletion: endpointCompletion }]);
+  if (ctx.language === "http")
+    return EditorState.languageData.of(() => [
+      { openideaCompletion: endpointCompletion },
+      { openideaCompletion: headerCompletion },
+    ]);
   if (ctx.virtual) return [];
   return [
     marks,
@@ -137,6 +149,9 @@ export function endpointEditorExtension(ctx: EditorDocContext): Extension {
           view.state.field(marks).map((m) => new EndpointMarker().range(m.pos)),
           true,
         ),
+      // One icon of width only while the file has endpoints; other files keep a narrow gutter.
+      initialSpacer: () => emptyGutterSpacer,
+      updateSpacer: (_spacer, update) => (update.state.field(marks).length ? endpointSpacer : emptyGutterSpacer),
       domEventHandlers: {
         mousedown: (view, line, event) => {
           if ((event as MouseEvent).button !== 0) return false;

@@ -1,32 +1,48 @@
-/** Agents tool window: tasks grouped by what they need from the user. */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+/** Agents tool window: tasks pinned above the user's groups, then by what they need from the user. */
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import type { AgentStatus as Status, AgentTask } from "@/bindings";
 import { EDITOR_TAB_MIME, maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
+  HighlightedText,
   Icon,
   IconButton,
   Popup,
+  SearchField,
   Spinner,
   T,
   Tree,
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
+  type IconName,
+  type TreeHandle,
 } from "@/ui";
 import {
   SESSION_KIND,
   TASK_DRAG,
   age,
   branchLabel,
+  groupStatus,
   groupTasks,
   providerIcon,
   sessionKey,
   type TaskGroup,
 } from "./model";
-import { openHome, useAgents } from "./store";
-import { taskMenu } from "./taskActions";
+import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
+import {
+  externalKey,
+  importExternalSession,
+  moveTasksToGroup,
+  openHome,
+  pinTasks,
+  refreshExternalSessions,
+  showImportSessions,
+  useAgents,
+} from "./store";
+import { groupMenu, taskMenu } from "./taskActions";
+import { matchTask } from "./taskSearch";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
 import styles from "./Agents.module.css";
@@ -35,12 +51,82 @@ import { useTx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 
 export function AgentsHeaderActions() {
-  return <IconButton icon="plus" action="agents.newTask" />;
+  return (
+    <>
+      <IconButton icon="plus" action="agents.newTask" />
+      <IconButton icon="settings" action="agents.mcpServers" />
+    </>
+  );
 }
 
-type Node = { kind: "group"; group: TaskGroup } | { kind: "task"; task: AgentTask };
+/** Key of the pinned section, above the groups. */
+const PINNED_KEY = "pinned";
+/** Key of a group the user made. */
+const customKey = (group: string) => `ug:${group}`;
 
-const nodeKey = (n: Node) => (n.kind === "group" ? `g:${n.group.status}` : n.task.id);
+type Node =
+  | { kind: "pinned"; tasks: AgentTask[] }
+  | { kind: "custom"; group: OrganizeGroup; tasks: AgentTask[] }
+  | { kind: "group"; group: TaskGroup }
+  | { kind: "task"; task: AgentTask };
+
+function nodeKey(n: Node): string {
+  switch (n.kind) {
+    case "pinned":
+      return PINNED_KEY;
+    case "custom":
+      return customKey(n.group.id);
+    case "group":
+      return `g:${n.group.status}`;
+    case "task":
+      return n.task.id;
+  }
+}
+
+/** Where a task shows: the pinned section first, else its group, else its status group. */
+function keysOf(task: AgentTask): string[] {
+  const organize = useAgents.getState().organize;
+  if (organize.pinned.includes(task.id)) return [PINNED_KEY];
+  const group = organize.groupOf[task.id];
+  if (group && organize.groups.some((g) => g.id === group)) return [customKey(group)];
+  return [`g:${groupStatus(task.status)}`];
+}
+
+/** A group header; tasks dropped on it go into the group (or into the pinned section). */
+function GroupRow({
+  label,
+  count,
+  icon,
+  onDropTask,
+}: {
+  label: ReactNode;
+  count: number;
+  icon?: IconName;
+  onDropTask?: (task: string) => void;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !onDropTask) return;
+    return registerDropTarget(el, {
+      accepts: (type) => type === TASK_DRAG,
+      over: () => setOver(true),
+      leave: () => setOver(false),
+      drop: (data) => {
+        setOver(false);
+        onDropTask(data.payload);
+      },
+    });
+  }, [onDropTask]);
+  return (
+    <span ref={ref} className={clsx(styles.row, over && styles.dropOver)}>
+      {icon && <Icon name={icon} size={12} />}
+      <span className={styles.groupLabel}>{label}</span>
+      <span className={styles.count}>{count}</span>
+    </span>
+  );
+}
 
 const sessionTask = (input: EditorInput | null | undefined) =>
   input?.kind === SESSION_KIND ? (input.data as { task?: string } | undefined)?.task : undefined;
@@ -88,11 +174,21 @@ export function AgentsView() {
   const inline = docked !== null || homeOpen;
   const historyRef = useRef<HTMLButtonElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const external = useAgents((s) => s.external);
+  const externalError = useAgents((s) => s.externalError);
+  const importing = useAgents((s) => s.importing);
+  // Sessions started elsewhere (a terminal, another editor) list on demand (#312).
+  useEffect(() => {
+    if (historyOpen) void refreshExternalSessions();
+  }, [historyOpen]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
     return new Set(task ? [task] : []);
   });
+  const organize = useAgents((s) => s.organize);
+  const [query, setQuery] = useState("");
+  const treeRef = useRef<TreeHandle>(null);
   // Follow the active session tab.
   useEffect(
     () =>
@@ -100,14 +196,39 @@ export function AgentsView() {
         const task = sessionTask(input);
         if (!task) return;
         setSelected((current) => (current.has(task) ? current : new Set([task])));
-        const group = groupTasks(useAgents.getState().tasks.values()).find((g) => g.tasks.some((t) => t.id === task));
-        const key = group && `g:${group.status}`;
-        if (key) setCollapsed((c) => (c.has(key) ? new Set([...c].filter((k) => k !== key)) : c));
+        const known = useAgents.getState().tasks.get(task);
+        const keys = known ? keysOf(known) : [];
+        if (keys.length)
+          setCollapsed((c) => (keys.some((k) => c.has(k)) ? new Set([...c].filter((k) => !keys.includes(k))) : c));
       }),
     [],
   );
-  const roots = useMemo<Node[]>(() => groupTasks(tasks.values()).map((group) => ({ kind: "group", group })), [tasks]);
-  const expanded = useMemo(() => new Set(roots.map(nodeKey).filter((k) => !collapsed.has(k))), [roots, collapsed]);
+  // While searching: the matching tasks of every section, collapsed ones included; empty sections go.
+  const matches = useMemo(() => {
+    if (!query.trim()) return null;
+    const found = new Map<string, number[]>();
+    for (const task of tasks.values()) {
+      const hit = matchTask(task, query);
+      if (hit) found.set(task.id, hit);
+    }
+    return found;
+  }, [tasks, query]);
+  const roots = useMemo<Node[]>(() => {
+    const all = [...tasks.values()].filter((t) => !matches || matches.has(t.id));
+    const pinned = pinnedMembers(all, organize);
+    return [
+      ...(pinned.length ? [{ kind: "pinned", tasks: pinned } as Node] : []),
+      ...organize.groups.flatMap((group): Node[] => {
+        const members = groupMembers(all, organize, group.id);
+        return matches && !members.length ? [] : [{ kind: "custom", group, tasks: members }];
+      }),
+      ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
+    ];
+  }, [tasks, organize, matches]);
+  const expanded = useMemo(
+    () => new Set(roots.map(nodeKey).filter((k) => matches || !collapsed.has(k))),
+    [roots, collapsed, matches],
+  );
   // Dropping a session editor tab anywhere on the tool window docks it.
   const viewRef = useRef<HTMLDivElement>(null);
   const [tabOver, setTabOver] = useState(false);
@@ -144,15 +265,53 @@ export function AgentsView() {
 
   const taskList = (
     <div className={styles.tasks}>
+      {tasks.size > 0 && (
+        <SearchField
+          className={styles.taskSearch}
+          variant="bare"
+          value={query}
+          onChange={setQuery}
+          clearable
+          placeholder={tx("Search tasks")}
+          aria-label={tx("Search tasks")}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              treeRef.current?.moveSelection(e.key === "ArrowDown" ? 1 : -1);
+            } else if (e.key === "Enter") {
+              const lead = treeRef.current?.leadKey();
+              if (lead && tasks.has(lead)) {
+                e.preventDefault();
+                showTask(lead);
+              }
+            } else if (e.key === "Escape" && query) {
+              e.preventDefault();
+              e.stopPropagation();
+              setQuery("");
+            }
+          }}
+        />
+      )}
       <Tree<Node>
         aria-label="Agent tasks"
+        handleRef={treeRef}
         roots={roots}
         getKey={nodeKey}
-        getLabel={(n) => (n.kind === "group" ? n.group.label : n.task.title)}
-        getChildren={(n) =>
-          n.kind === "group" ? n.group.tasks.map((task) => ({ kind: "task", task }) as Node) : undefined
+        getLabel={(n) =>
+          n.kind === "task"
+            ? n.task.title
+            : n.kind === "pinned"
+              ? "Pinned"
+              : n.kind === "custom"
+                ? n.group.name
+                : n.group.label
         }
-        isExpandable={(n) => n.kind === "group"}
+        getChildren={(n) =>
+          n.kind === "task"
+            ? undefined
+            : (n.kind === "group" ? n.group.tasks : n.tasks).map((task) => ({ kind: "task", task }) as Node)
+        }
+        isExpandable={(n) => n.kind !== "task"}
         expanded={expanded}
         onExpandedChange={(_next, node, open) =>
           setCollapsed((c) => {
@@ -169,56 +328,94 @@ export function AgentsView() {
         }}
         onActivate={(n) => n.kind === "task" && showTask(n.task.id)}
         onContextMenu={(n, sel, e) => {
-          if (n?.kind !== "task") return;
+          if (!n) return;
+          if (n.kind === "custom") {
+            showContextMenu(e, groupMenu(n.group));
+            return;
+          }
+          if (n.kind !== "task") return;
           const selection = [...sel].flatMap((id) => {
             const task = tasks.get(id);
             return task ? [task] : [];
           });
           showContextMenu(e, taskMenu(selection));
         }}
-        renderNode={(n) =>
-          n.kind === "group" ? (
-            <span className={styles.row}>
-              <span className={styles.groupLabel}>
-                <T>{n.group.label}</T>
-              </span>
-              <span className={styles.count}>{n.group.tasks.length}</span>
-            </span>
-          ) : (
-            <span
-              className={styles.row}
-              title={n.task.error ?? n.task.title}
-              onPointerDown={(e) => dragTask(e, n.task.id)}
-              onClick={(e) => {
-                if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
-              }}
-            >
-              <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
-              <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
-                {n.task.title}
-              </span>
-              {/* Ready tasks say so by their group; the others show what they're doing. */}
-              {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
-              {unread.has(n.task.id) && (
-                <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
-              )}
-              {project?.workspace && (
-                <span className={styles.taskProject} title={n.task.projectRoot ?? project.root}>
-                  {basename(n.task.projectRoot ?? project.root)}
+        renderNode={(n) => {
+          switch (n.kind) {
+            case "pinned":
+              return (
+                <GroupRow
+                  icon="pin"
+                  label={<T>Pinned</T>}
+                  count={n.tasks.length}
+                  onDropTask={(task) => pinTasks([task], true)}
+                />
+              );
+            case "custom":
+              return (
+                <GroupRow
+                  label={n.group.name}
+                  count={n.tasks.length}
+                  onDropTask={(task) => moveTasksToGroup([task], n.group.id)}
+                />
+              );
+            case "group":
+              return <GroupRow label={<T>{n.group.label}</T>} count={n.group.tasks.length} />;
+            case "task":
+              return (
+                <span
+                  className={styles.row}
+                  title={n.task.error ?? n.task.title}
+                  onPointerDown={(e) => dragTask(e, n.task.id)}
+                  onClick={(e) => {
+                    if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
+                  }}
+                >
+                  <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
+                  <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
+                    {matches?.get(n.task.id)?.length ? (
+                      <HighlightedText text={n.task.title} indices={matches.get(n.task.id)!} />
+                    ) : (
+                      n.task.title
+                    )}
+                  </span>
+                  {/* Ready tasks say so by their group; the others show what they're doing. */}
+                  {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
+                  {unread.has(n.task.id) && (
+                    <span className={styles.unreadDot} role="img" aria-label={tx("Unread")} title={tx("Unread")} />
+                  )}
+                  {project?.workspace && (
+                    <span className={styles.taskProject} title={n.task.projectRoot ?? project.root}>
+                      {basename(n.task.projectRoot ?? project.root)}
+                    </span>
+                  )}
+                  {n.task.isolation === "worktree" && (
+                    <span className={styles.detail}>{branchLabel(n.task.branch)}</span>
+                  )}
+                  <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
                 </span>
-              )}
-              {n.task.isolation === "worktree" && <span className={styles.detail}>{branchLabel(n.task.branch)}</span>}
-              <span className={styles.age}>{age(n.task.updatedMs ?? 0)}</span>
-            </span>
-          )
-        }
+              );
+          }
+        }}
         empty={
-          <div className={styles.empty}>
-            <T>No agent tasks yet</T>
-            <button type="button" className={styles.link} onClick={() => openHome()}>
-              <T>New Task…</T>
-            </button>
-          </div>
+          matches ? (
+            <div className={styles.empty}>
+              <T>No matching tasks</T>
+            </div>
+          ) : (
+            <div className={styles.empty}>
+              <T>No agent tasks yet</T>
+              <button type="button" className={styles.link} onClick={() => openHome()}>
+                <T>New Task…</T>
+              </button>
+              {/* Docked, the list shows in the history popup, which lists the sessions itself. */}
+              {!inline && (
+                <button type="button" className={styles.link} onClick={showImportSessions}>
+                  <T>Import Sessions from Other Apps…</T>
+                </button>
+              )}
+            </div>
+          )
         }
       />
     </div>
@@ -280,6 +477,37 @@ export function AgentsView() {
               <T>Agent sessions</T>
             </div>
             {taskList}
+            {(external.length > 0 || externalError) && (
+              <>
+                <div className={styles.historyTitle}>
+                  <T>Sessions from other apps</T>
+                </div>
+                {externalError ? (
+                  <div className={styles.empty}>{externalError}</div>
+                ) : (
+                  <div className={styles.external}>
+                    {external.map((s) => {
+                      const key = externalKey(s.provider, s.sessionId);
+                      return (
+                        <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
+                          <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
+                          <span className={styles.title}>{s.title}</span>
+                          <span className={styles.age}>{age(s.updatedMs ?? 0)}</span>
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={importing.has(key)}
+                            onClick={() => void importExternalSession(s.provider, s.sessionId).catch(() => {})}
+                          >
+                            <T>Import</T>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
           </Popup>
         )}
       </div>

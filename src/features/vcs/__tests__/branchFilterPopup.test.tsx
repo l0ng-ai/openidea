@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Branch } from "@/bindings";
 import { BranchFilterPopup } from "../BranchFilterPopup";
+import { useFavoriteBranches } from "../branchOps";
 
 const branch = (name: string, extra: Partial<Branch> = {}) =>
   ({ name, remote: false, current: false, ...extra }) as Branch;
@@ -27,13 +28,44 @@ function renderPopup(onSelect = vi.fn()) {
   return { input: screen.getByRole("textbox", { name: "Search branches" }), onSelect };
 }
 
+const rowTexts = () => screen.getAllByRole("option").map((o) => o.textContent);
+
+afterEach(() => {
+  localStorage.clear();
+  useFavoriteBranches.setState({ key: "", names: null });
+});
+
 describe("branch filter popup", () => {
-  it("groups HEAD, local and remote branches and leaves out the remote HEAD", () => {
+  it("lists HEAD and the favorites, with Local and Remote collapsed until opened; no remote HEAD", () => {
     renderPopup();
-    expect(screen.getByText("Local")).toBeTruthy();
-    expect(screen.getByText("Remote")).toBeTruthy();
+    // `main` is a favorite by default.
+    expect(screen.getByText("Favorites")).toBeTruthy();
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "main", "Local", "Remote"]);
+    fireEvent.click(screen.getByText("Remote"));
+    expect(screen.getByText("Remote").closest("[aria-expanded]")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("origin/develop")).toBeTruthy();
     expect(screen.queryByText("origin/HEAD")).toBeNull();
+  });
+
+  it("shows the user's favorite branches, local and remote, under Favorites by name", () => {
+    localStorage.setItem("openidea.vcs.favoriteBranches:", JSON.stringify(["origin/develop", "feature/demo"]));
+    renderPopup();
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "feature/demo", "origin/develop", "Local", "Remote"]);
+    const input = screen.getByRole("textbox", { name: "Search branches" });
+    // Right opens a group on the keyboard, Left closes it. Inside, the current branch, then favorites.
+    for (let i = 0; i < 3; i++) fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "ArrowRight" });
+    expect(rowTexts()).toEqual([
+      "HEAD (Current Branch)",
+      "feature/demo",
+      "origin/develop",
+      "Local",
+      "main",
+      "feature/demo",
+      "Remote",
+    ]);
+    fireEvent.keyDown(input, { key: "ArrowLeft" });
+    expect(rowTexts()).toEqual(["HEAD (Current Branch)", "feature/demo", "origin/develop", "Local", "Remote"]);
   });
 
   it("searches case-insensitively and hides groups without a match", () => {
@@ -48,7 +80,7 @@ describe("branch filter popup", () => {
 
   it("moves over section headers with the arrow keys", () => {
     const { input, onSelect } = renderPopup();
-    // HEAD → (Local header skipped) → main
+    // HEAD → (Favorites header skipped) → main
     fireEvent.keyDown(input, { key: "ArrowDown" });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onSelect).toHaveBeenLastCalledWith("main");

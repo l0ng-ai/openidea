@@ -5,6 +5,7 @@
 
 pub(crate) mod cmake;
 mod dotnet;
+mod zig;
 
 use crate::RunConfig;
 use ide_core::project_roots::expand_members;
@@ -43,7 +44,7 @@ pub(crate) fn detect_with_profiles(
                     .iter()
                     .any(|name| dir.join(name).join(PyEnv::bin_dir()).join(PyEnv::python_exe()).is_file())
         },
-        detect_python,
+        |dir, out| detect_python(root, dir, out),
         &mut out,
     );
     detect_projects(
@@ -53,6 +54,8 @@ pub(crate) fn detect_with_profiles(
         &mut out,
     );
     detect_projects_matching(root, ruby_project, detect_ruby, &mut out);
+    detect_projects(root, &["rebar.config"], detect_rebar, &mut out);
+    detect_projects(root, &["mix.exs"], detect_mix, &mut out);
     for dir in ide_core::project_roots::discover(root, &["CMakeLists.txt"]) {
         let start = out.len();
         cmake::detect(&dir, if dir == root { profiles } else { None }, &mut out);
@@ -70,6 +73,7 @@ pub(crate) fn detect_with_profiles(
             }
         }
     }
+    detect_projects(root, &["build.zig"], zig::detect, &mut out);
     dotnet::detect(root, &mut out);
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
@@ -808,6 +812,25 @@ impl PyEnv {
         Self::System
     }
 
+    /// [`PyEnv::detect`] of `dir`, else of the first of its parents up to `top` that has an
+    /// environment: a Django project in `src/` uses the virtualenv or lock file next to it.
+    /// Paths stay relative to `dir`.
+    fn detect_within(top: &Path, dir: &Path) -> Self {
+        for (up, base) in dir.ancestors().enumerate() {
+            if !base.starts_with(top) {
+                break;
+            }
+            let parent = "../".repeat(up);
+            match Self::detect(base) {
+                Self::System => {}
+                Self::Venv(v) => return Self::Venv(format!("{parent}{v}")),
+                Self::Pixi(v) => return Self::Pixi(format!("{parent}{v}")),
+                runner => return runner,
+            }
+        }
+        Self::System
+    }
+
     /// The first pixi environment `.pixi/envs/<env>` holding a Python, relative
     /// to the root, in name order.
     fn pixi_env(root: &Path) -> Option<String> {
@@ -929,9 +952,10 @@ fn uses_pytest(root: &Path) -> bool {
         .any(|f| read(&root.join(f)).is_some_and(|s| s.contains("pytest")))
 }
 
-fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
+/// Python configurations of the project at `root`, a folder of the opened project `top`.
+fn detect_python(top: &Path, root: &Path, out: &mut Vec<RunConfig>) {
     let markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini", "manage.py"];
-    let env = PyEnv::detect(root);
+    let env = PyEnv::detect_within(top, root);
     // A project virtualenv or pixi environment marks a Python project too
     // (scripts + tests without packaging files).
     let venv = matches!(env, PyEnv::Venv(_) | PyEnv::Pixi(_));
@@ -968,7 +992,10 @@ fn detect_python(root: &Path, out: &mut Vec<RunConfig>) {
             &["-m", &m],
         ));
     }
-    if uses_pytest(root) || env.has_tool(root, "pytest") {
+    // Only an environment of the folder itself makes it a pytest project: one borrowed from a
+    // parent would give every folder with a `requirements.txt` its own pytest run.
+    let own_pytest = matches!(env, PyEnv::Venv(ref v) if !v.starts_with("../")) && env.has_tool(root, "pytest");
+    if uses_pytest(root) || own_pytest {
         out.push(py_config("pytest".into(), "pytest".into(), "pytest", env.tool(root, "pytest"), &[]).test());
     }
     // After pytest: a project set up for pytest (pytest-django) keeps it as the default test runner.
@@ -1302,6 +1329,38 @@ pub(crate) fn just_recipes(src: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------- godot
+
+// ---------------------------------------------------------------- rebar3 / mix
+
+/// rebar3 (Erlang): the shell with the applications started, the EUnit tests and, with
+/// `*_SUITE.erl` suites, Common Test. A `rebar3` script in the project wins over the PATH.
+fn detect_rebar(root: &Path, out: &mut Vec<RunConfig>) {
+    let rebar = wrapper(root, "rebar3", "rebar3.cmd", "rebar3");
+    out.push(config("rebar3:shell", "rebar3 shell", "rebar3", &rebar, &["shell"]));
+    out.push(config("rebar3:eunit", "rebar3 eunit", "rebar3", &rebar, &["eunit"]).test());
+    let suites = |dir: &Path| {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with("_SUITE.erl"))
+    };
+    let mut apps = subdirs(&root.join("apps")).into_iter().chain(subdirs(&root.join("lib")));
+    if suites(&root.join("test")) || apps.any(|app| suites(&app.join("test"))) {
+        out.push(config("rebar3:ct", "rebar3 ct", "rebar3", &rebar, &["ct"]).test());
+    }
+}
+
+/// Mix (Elixir): the application in IEx (`phx.server` for Phoenix) and its ExUnit tests.
+fn detect_mix(root: &Path, out: &mut Vec<RunConfig>) {
+    let phoenix = read(&root.join("mix.exs")).is_some_and(|src| src.contains("{:phoenix,"));
+    if phoenix {
+        out.push(config("mix:phx.server", "iex -S mix phx.server", "mix", "iex", &["-S", "mix", "phx.server"]));
+    } else {
+        out.push(config("mix:iex", "iex -S mix", "mix", "iex", &["-S", "mix"]));
+    }
+    out.push(config("mix:test", "mix test", "mix", "mix", &["test"]).test());
+}
 
 /// Godot projects (`project.godot`) at the root or one level down: "Godot Project"
 /// runs the main scene (`godot --path .`), debuggable through the editor's adapter.

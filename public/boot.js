@@ -12,6 +12,10 @@
         manual: "无法复制。请选择下方详情并手动复制。",
         details: "启动错误详情",
         timeout: "启动未在 30 秒内完成。",
+        outdatedMac:
+          "这台 Mac 的系统网页引擎过旧：OpenIDEA 的界面运行在 macOS 自带的 WebKit 引擎上，需要 macOS 13 Ventura 或更高版本。在 macOS 11、12 上更新 Safari 不会更新其他应用使用的引擎，需要升级 macOS。",
+        outdated:
+          "系统的 WebKitGTK 版本过旧：OpenIDEA 需要较新的 WebKitGTK（webkit2gtk-4.1）。请通过系统的包管理器更新后重新打开 OpenIDEA。",
       }
     : {
         title: "OpenIDEA could not start",
@@ -22,7 +26,21 @@
         manual: "Could not copy. Select the details below and copy them.",
         details: "Startup error details",
         timeout: "Startup did not finish within 30 seconds.",
+        outdatedMac:
+          "The system web engine on this Mac is too old: OpenIDEA's interface runs on macOS's built-in WebKit and needs macOS 13 Ventura or later. On macOS 11 and 12 a Safari update doesn't update the engine other apps use, so macOS itself needs upgrading.",
+        outdated:
+          "The system's WebKitGTK is too old: OpenIDEA needs a recent WebKitGTK (webkit2gtk-4.1). Update it with your package manager, then open OpenIDEA again.",
       };
+  // The bundle targets Safari 16 (vite.config.ts); an older system web engine can't even
+  // parse it. Container queries came with Safari 16, and WebKit's user agent doesn't name
+  // its version. Unknown (no CSS.supports) counts as current.
+  const outdated = () => {
+    try {
+      return typeof window.CSS?.supports === "function" && !window.CSS.supports("container-type", "inline-size");
+    } catch {
+      return false;
+    }
+  };
   let failed = false;
   let ready = false;
   const describe = (reason) => {
@@ -31,7 +49,13 @@
         const message = String(reason);
         return reason.stack.includes(message) ? reason.stack : `${message}\n${reason.stack}`;
       }
-      return (typeof reason === "string" ? reason : JSON.stringify(reason)) || String(reason);
+      if (typeof reason === "string") return reason;
+      // WebKit's fetch / network TypeErrors carry no stack and serialise to "{}".
+      if (reason instanceof Error || typeof reason?.message === "string") {
+        const name = typeof reason.name === "string" ? reason.name : "Error";
+        return `${name}: ${reason.message}`;
+      }
+      return JSON.stringify(reason) || String(reason);
     } catch {
       return "Unknown startup error";
     }
@@ -49,7 +73,9 @@
       const title = document.createElement("h1");
       title.textContent = text.title;
       const hint = document.createElement("p");
-      hint.textContent = text.report;
+      hint.textContent = outdated()
+        ? `${/Mac/.test(navigator.userAgent) ? text.outdatedMac : text.outdated} ${text.report}`
+        : text.report;
       const details = document.createElement("textarea");
       details.readOnly = true;
       details.setAttribute("aria-label", text.details);
@@ -102,7 +128,12 @@
       show(event.error || `${event.message}\n${event.filename || ""}:${event.lineno || 0}:${event.colno || 0}`);
     }
   };
-  const onRejection = (event) => show(event.reason);
+  // An unhandled rejection doesn't stop startup by itself (a failed background request
+  // rejects too); keep the first one for the timeout report instead of failing on it.
+  let rejection;
+  const onRejection = (event) => {
+    if (rejection === undefined) rejection = describe(event.reason);
+  };
   const onBootError = (event) => show(event.detail);
   const onReady = () => {
     ready = true;
@@ -111,8 +142,30 @@
     window.removeEventListener("unhandledrejection", onRejection);
     window.removeEventListener("openidea:boot-error", onBootError);
     window.removeEventListener("openidea:boot-ready", onReady);
+    document.removeEventListener("visibilitychange", onVisibility);
   };
-  const timer = window.setTimeout(() => show(text.timeout), 30_000);
+  // The timeout counts only while the window shows: a hidden or covered window gets no
+  // animation frames, and the splash waits for those to finish startup.
+  let remaining = 30_000;
+  let armedAt = 0;
+  let timer;
+  const arm = () => {
+    if (failed || ready || timer !== undefined || document.hidden) return;
+    armedAt = Date.now();
+    timer = window.setTimeout(
+      () => show(rejection === undefined ? text.timeout : `${text.timeout}\n\nUnhandled rejection: ${rejection}`),
+      remaining,
+    );
+  };
+  const onVisibility = () => {
+    if (!document.hidden) return arm();
+    if (timer === undefined) return;
+    window.clearTimeout(timer);
+    timer = undefined;
+    remaining -= Date.now() - armedAt;
+  };
+  arm();
+  document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("error", onError, true);
   window.addEventListener("unhandledrejection", onRejection);
   window.addEventListener("openidea:boot-error", onBootError);

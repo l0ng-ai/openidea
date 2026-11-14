@@ -200,6 +200,7 @@ pub(crate) fn unshelve(r: &Repo, shelf: &Path, id: &str, remove: bool) -> IdeRes
 }
 
 pub fn unshelve_path(r: &Repo, shelf: &Path, id: &str, remove: bool, path: Option<&str>) -> IdeResult<ApplyOutcome> {
+    let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
     let patch = selected_patch(shelf, id, path)?;
     let outcome = crate::patch::apply(r, &patch)?;
     if remove && outcome.conflicts.is_empty() {
@@ -291,6 +292,7 @@ pub fn delete_path(shelf: &Path, id: &str, path: Option<&str>) -> IdeResult<()> 
 
 /// Reconstruct each side in a throwaway index; neither HEAD nor the working files are used.
 pub fn diff_files(r: &Repo, shelf: &Path, id: &str) -> IdeResult<Vec<ShelfDiffFile>> {
+    let _scope = crate::ExecutionScope::enter(r.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
     let patch = patch_of(shelf, id)?;
     let mut out = Vec::new();
     for (section, file) in sections(&patch) {

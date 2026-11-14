@@ -27,6 +27,7 @@ import {
 import { setAmend, useCommit } from "./commitStore";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
+import { showDiffWindow } from "./DiffWindow";
 import {
   changeNodeDiff,
   changeNodeDiffData,
@@ -43,11 +44,12 @@ import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
-import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
+import { commitFromContext, isModalCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
-import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
+import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
+import { createRepository } from "./createRepository";
 import {
   showManageRemotes,
   showMergeDialog,
@@ -211,7 +213,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "commit",
       when: VCS,
-      run: openCommit,
+      run: commitFromContext,
     },
     {
       id: "vcs.commitAndPush",
@@ -222,7 +224,7 @@ export function registerVcsActions(): () => void {
       run: async () => {
         const { message, amend } = useCommit.getState();
         // Nothing to commit with yet (or the modal interface): IDEA shows where the message is typed.
-        if (isModalCommit() || (!message.trim() && !amend)) return openCommit();
+        if (isModalCommit() || (!message.trim() && !amend)) return commitFromContext();
         const id = await commitChanges();
         if (id !== undefined) await pushAfterCommit();
       },
@@ -244,6 +246,15 @@ export function registerVcsActions(): () => void {
       when: VCS,
       keyWhen: IN_COMMIT_WINDOW,
       run: () => useCommit.setState((s) => ({ historyTick: s.historyTick + 1 })),
+    },
+    {
+      id: "vcs.createRepository",
+      title: "Create Git Repository…",
+      category: "Git",
+      icon: "branch",
+      when: "projectOpen && projectLocal",
+      keywords: ["init", "git", "enable version control"],
+      run: () => createRepository(),
     },
     {
       id: "vcs.clone",
@@ -268,7 +279,7 @@ export function registerVcsActions(): () => void {
       icon: "git-pull",
       when: VCS,
       keywords: ["pull"],
-      run: showUpdateDialog,
+      run: ({ arg }) => showUpdateDialog(arg && typeof arg === "object" ? (arg as UpdateTarget) : {}),
     },
     {
       id: "vcs.pull",
@@ -372,7 +383,8 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
-      keyWhen: "!editorTextFocus",
+      // In the Git Log's changed files it shows the commit's diff instead.
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
@@ -412,6 +424,24 @@ export function registerVcsActions(): () => void {
         for (const path of paths.slice(0, 5)) {
           await openDiff({ ...groupDiffData(tree, path), line }, { preview: paths.length === 1 });
         }
+      },
+    },
+    {
+      id: "vcs.showDiffInNewWindow",
+      title: "Show Diff in New Window",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      keyWhen: "!editorTextFocus",
+      run: ({ arg }) => {
+        const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
+        const path = selectedPaths(arg)[0];
+        const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
+        if (!data) {
+          notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
+          return;
+        }
+        showDiffWindow(data, () => void openDiff(data, { preview: true }));
       },
     },
     {

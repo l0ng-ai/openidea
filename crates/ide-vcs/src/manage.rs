@@ -281,11 +281,29 @@ impl Repo {
         let commitish = arg(commitish, "revision")?;
         let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
         if let Some(b) = new_branch.map(str::trim).filter(|b| !b.is_empty()) {
+            if crate::write::renamed_remote_start(self, b, &commitish) {
+                args.push("--no-track".into());
+            }
             args.extend(["-b".into(), arg(b, "branch name")?]);
         }
         args.extend(["--".into(), path, commitish]);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         run(self.root(), &args, None).map(|_| ())
+    }
+
+    /// Move Worktree…: moves a linked worktree's folder to exactly `to`. An empty folder there
+    /// is replaced (Git would move the worktree inside it); any other existing `to` is refused.
+    pub fn move_worktree(&self, path: &Path, to: &Path) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        if std::fs::symlink_metadata(to).is_ok() {
+            let empty_dir = to.is_dir() && std::fs::read_dir(to).is_ok_and(|mut d| d.next().is_none());
+            if !empty_dir {
+                return Err(IdeError::invalid(format!("{} already exists", to.display())));
+            }
+            std::fs::remove_dir(to)?;
+        }
+        let (path, to) = (path.to_string_lossy().into_owned(), to.to_string_lossy().into_owned());
+        run(self.root(), &["worktree", "move", "--", &path, &to], None).map(|_| ())
     }
 
     pub fn remove_worktree(&self, path: &Path, force: bool) -> IdeResult<()> {

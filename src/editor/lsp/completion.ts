@@ -13,6 +13,7 @@ import {
   completeFromList,
   completionStatus,
   currentCompletions,
+  moveCompletionSelection,
   pickedCompletion,
   selectedCompletion,
   snippet,
@@ -431,7 +432,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (completionBackoff.active(doc.doc)) return fallback(ctx);
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -444,6 +445,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       () => commands.lspCompletion(id, doc.doc, offsetToPos(ctx.state.doc, ctx.pos), trigger),
       () => inflight === id,
     );
+    completionBackoff.clear(doc.doc);
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
@@ -630,6 +632,12 @@ const lookupKeys = Prec.highest(
   }),
 );
 
+function moveLookup(view: EditorView, forward: boolean): boolean {
+  if (completionStatus(view.state) !== "active") return false;
+  focusedLookups.add(view);
+  return moveCompletionSelection(forward)(view);
+}
+
 /** IDEA inserts a sole candidate right away on explicit invocation (Code Completion › Automatically insert single suggestions). */
 const AUTO_INSERT_DELAY = 80; // past CodeMirror's interactionDelay
 
@@ -750,8 +758,15 @@ const completionFooter = ViewPlugin.fromClass(
             ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
           ];
           for (const t of tooltips) {
-            if (t.querySelector(":scope > .cm-lsp-completion-footer")) continue;
-            const footer = document.createElement("div");
+            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+            if (footer) {
+              // CodeMirror rebuilds the option list by appending a fresh <ul>,
+              // which would leave an existing footer above the list.
+              const list = t.querySelector(":scope > ul");
+              if (list && list.nextElementSibling !== footer) list.after(footer);
+              continue;
+            }
+            footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
@@ -815,6 +830,9 @@ export function completionExtension() {
     lookupTracker,
     Prec.highest(
       keymap.of([
+        // macOS: ⌃N / ⌃P are line down / up in text, so they move through the lookup as ↓ / ↑ do.
+        { mac: "Ctrl-n", run: (view) => moveLookup(view, true) },
+        { mac: "Ctrl-p", run: (view) => moveLookup(view, false) },
         {
           key: "Tab",
           run: (view) => {

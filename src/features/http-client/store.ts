@@ -10,7 +10,8 @@ import {
   type HttpRequestBlock,
   type RequestId,
 } from "@/platform/ipc";
-import { notifications, showServiceView } from "@/workbench/contributions";
+import { writeClipboardText } from "@/platform/clipboard";
+import { editorService, notifications, showServiceView, showStatusInfo } from "@/workbench/contributions";
 
 export const SERVICE_VIEW = "httpClient";
 const ENV_KEY = "openidea.httpClient.environments";
@@ -28,6 +29,9 @@ interface Running {
   path: string | null;
   index: number;
   request: RequestId;
+  /** The request line as written, once parsed. */
+  method?: string;
+  url?: string;
 }
 
 interface HttpClientState {
@@ -134,6 +138,16 @@ export async function runRequest(path: string | null, text: string, index: numbe
   if (busy) void commands.cancelRequest(busy.request);
   const request = nextRequestId();
   useHttpClient.setState({ running: { path, index, request } });
+  // The tool window shows the request as it is sent, not only once it has answered.
+  showServiceView(SERVICE_VIEW, false);
+  void parseRequests(text)
+    .then((blocks) => {
+      const block = blocks.find((b) => b.index === index);
+      const running = useHttpClient.getState().running;
+      if (block && running?.request === request)
+        useHttpClient.setState({ running: { ...running, method: block.method, url: block.url } });
+    })
+    .catch(() => {});
   try {
     if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
     const ex = await call(commands.httpExecute(request, path, text, index, effectiveEnvironment(path)));
@@ -142,7 +156,6 @@ export async function runRequest(path: string | null, text: string, index: numbe
       exchanges: { ...s.exchanges, [ex.entry.id]: ex },
       selected: ex.entry.id,
     }));
-    showServiceView(SERVICE_VIEW, false);
     return true;
   } catch (e) {
     if (!isCancelled(e))
@@ -155,6 +168,43 @@ export async function runRequest(path: string | null, text: string, index: numbe
     return false;
   } finally {
     if (useHttpClient.getState().running?.request === request) useHttpClient.setState({ running: null });
+  }
+}
+
+/** Convert to cURL and Copy: request `index` of `text`, with the file's environment applied. */
+export async function copyAsCurl(path: string | null, text: string, index: number): Promise<void> {
+  try {
+    if (path && !useHttpClient.getState().environments[path]) await loadEnvironments(path);
+    await writeClipboardText(await call(commands.httpCurl(path, text, index, effectiveEnvironment(path))));
+    showStatusInfo("The request was copied as a cURL command");
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot convert the request to cURL",
+      body: e instanceof Error ? e.message : String(e),
+      key: "http-curl",
+    });
+  }
+}
+
+/** A pasted `curl …` command as request text; null when it isn't one. */
+export function requestFromCurl(command: string): Promise<string | null> {
+  return commands.httpFromCurl(command);
+}
+
+/** Add Environment to Public / Private File: opens the env file that applies to `path`, created if missing. */
+export async function openEnvironmentFile(path: string, isPrivate: boolean): Promise<void> {
+  try {
+    const file = await call(commands.httpEnvironmentFile(path, isPrivate));
+    await editorService().openFile(file, { focus: true });
+    void loadEnvironments(path);
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot create the environment file",
+      body: e instanceof Error ? e.message : String(e),
+      key: "http-env-file",
+    });
   }
 }
 

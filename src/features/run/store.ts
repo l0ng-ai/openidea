@@ -58,8 +58,8 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { agentName } from "./agentConfig";
 import { loadRunTemplates } from "./runTemplates";
-import { recordRun } from "./services";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
@@ -116,8 +116,19 @@ interface SessionRuntime {
   generation: number;
   /** Called with every complete output line (e.g. waiting for a JDWP agent). */
   lineListeners: Array<(text: string) => void>;
+  /** Called with output as shown (the Debug console of a debugger attached to this process). */
+  outputListeners: Set<OutputListener>;
   /** Called once the process exited (run executors: collect a coverage report…). */
   onExit?: (exitCode: number | null, stopped: boolean) => void;
+  /** Run executors: acts before the stop signal (see `ExecutorLaunch.beforeStop`). */
+  beforeStop?: (runId: RunId) => Promise<void>;
+  /** A first Stop is waiting for `beforeStop`. */
+  hookPending?: boolean;
+  /**
+   * `runStop` was sent. Every later one is the backend's "kill" (a second `runStop` on a stopping
+   * process becomes SIGKILL, which writes no profile), so the first Stop's continuation checks it.
+   */
+  stopSent?: boolean;
   /** User input typed into the console, not yet sent (IDEA: Enter sends the line). */
   input: string;
   /** Output of a run that emulates a terminal (instead of `console`). */
@@ -542,7 +553,9 @@ function flush(sessionId: string) {
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
     const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
-    if (text) rt.console.append({ ...c, text });
+    if (!text) continue;
+    rt.console.append({ ...c, text });
+    for (const l of rt.outputListeners) l(c.kind, text);
   }
   bump(sessionId);
 }
@@ -552,6 +565,7 @@ function enqueue(sessionId: string, chunk: OutputChunk) {
   if (!rt) return;
   if (rt.terminal) {
     rt.terminal.append(chunk);
+    for (const l of rt.outputListeners) l(chunk.kind, chunk.text);
     return;
   }
   rt.queue.push(chunk);
@@ -664,6 +678,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
     flushedAt: -Infinity,
     generation: 0,
     lineListeners: [],
+    outputListeners: new Set(),
     input: "",
     terminal: null,
     terminalSize: null,
@@ -727,6 +742,8 @@ export async function startRun(
     prepared?: boolean;
     /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
     chain?: readonly string[];
+    /** Runs before the stop signal when the user stops this run (run executors). */
+    beforeStop?: (runId: RunId) => Promise<void>;
   } = {},
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
@@ -826,8 +843,6 @@ export async function startRun(
     useRun.setState((s) => ({ sessions: [...s.sessions, created], activeSession: created.id }));
   }
   bump(session.id);
-  // The Services tool window lists the configuration again after a restart.
-  recordRun(config.id);
   const sessionId = session.id;
   const rt = runtimes.get(sessionId)!;
   const generation = rt.generation;
@@ -846,6 +861,7 @@ export async function startRun(
       patchSession(sessionId, { httpPort: port });
   });
   rt.onExit = options.onExit;
+  rt.beforeStop = options.beforeStop;
   try {
     if (options.show !== false && config.focusToolWindow) toolWindowService().show("run", true);
     else if (options.show ?? config.openToolWindow ?? workflowSettings().run.showOnStart)
@@ -1060,9 +1076,7 @@ function finishSession(sessionId: string, code: number | null) {
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);
-          const tests = rt.tests;
-          // Tests the run reported already (Gradle's init script, Surefire failures) keep their output.
-          tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+          applyTestReports(rt.tests, reports);
           moveToReportedClasses(
             rt.tests,
             reports.map((r) => r.className),
@@ -1094,13 +1108,32 @@ async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   }
 }
 
-/** JUnit XML report cases → test tree events (`[class, method]`, failure output and source line). */
+/**
+ * Adds the reports' results to the run's tree. Tests the run reported already (Gradle's init script,
+ * Surefire failures) keep their result and output, but Surefire's console shows a failure without
+ * what the test printed before it.
+ */
+export function applyTestReports(tests: TestResults, reports: readonly TestCaseReport[]) {
+  const reported = reports.filter((r) => tests.hasResult([r.className, r.name]));
+  tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+  for (const r of reported) {
+    const path = [r.className, r.name];
+    const printed = printedLines(r);
+    const shown = new Set(tests.node(path).output);
+    if (printed.length && !printed.every((l) => shown.has(l))) tests.prependOutput(path, printed);
+  }
+}
+
+const printedLines = (r: TestCaseReport) => (r.stdout ? r.stdout.split("\n").slice(0, 200) : []);
+
+/** JUnit XML report cases → test tree events (`[class, method]`, printed and failure output, source line). */
 export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[] {
   const events: TestEvent[] = [];
   for (const r of reports) {
     if (!r.className || !r.name) continue;
     const path = [r.className, r.name];
     events.push({ type: "result", path, status: r.status, durationMs: r.durationMs ?? undefined });
+    for (const line of printedLines(r)) events.push({ type: "output", path, line });
     if (r.status !== "failed") continue;
     const text = [r.message, r.output].filter(Boolean).join("\n");
     for (const line of text.split("\n").slice(0, 200)) events.push({ type: "output", path, line });
@@ -1159,6 +1192,22 @@ function notifyExit(sessionId: string, code: number | null) {
   });
 }
 
+type OutputListener = (kind: OutputChunk["kind"], text: string) => void;
+
+/**
+ * Follows the output of the session running `process`: the output so far, then
+ * each chunk as it is shown, until the returned function is called.
+ */
+export function subscribeOutput(process: RunId, listener: OutputListener): () => void {
+  const session = useRun.getState().sessions.find((s) => s.runId === process);
+  const rt = session && runtimes.get(session.id);
+  if (!rt) return () => {};
+  flush(session.id);
+  if (!rt.terminal) for (const c of rt.console.textChunks()) listener(c.kind, c.text);
+  rt.outputListeners.add(listener);
+  return () => void rt.outputListeners.delete(listener);
+}
+
 /** Handles the `runExited` backend event. */
 export function onRunExited(runId: RunId, code: number | null) {
   const session = useRun.getState().sessions.find((s) => s.runId === runId);
@@ -1169,6 +1218,26 @@ export function onRunExited(runId: RunId, code: number | null) {
     return;
   }
   finishSession(session.id, code);
+}
+
+/** The longest a Stop waits for an executor's `beforeStop` before it sends the stop signal. */
+export const BEFORE_STOP_TIMEOUT_MS = 12_000;
+
+/** Runs the hook, never throwing; returns once it settled or `BEFORE_STOP_TIMEOUT_MS` passed. */
+async function runBeforeStop(hook: (runId: RunId) => Promise<void>, runId: RunId): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const hooked = (async () => {
+    try {
+      await hook(runId);
+    } catch {
+      /* the stop goes ahead without it */
+    }
+  })();
+  try {
+    await Promise.race([hooked, new Promise<void>((resolve) => (timer = setTimeout(resolve, BEFORE_STOP_TIMEOUT_MS)))]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function stopSession(sessionId: string): Promise<void> {
@@ -1185,10 +1254,29 @@ export async function stopSession(sessionId: string): Promise<void> {
   // Stopping keeps the process live (IDEA: the Stop button stays until the process is gone);
   // a second Stop meanwhile skips the grace period and kills it.
   patchSession(sessionId, { stopped: true, status: "stopping" });
+  const runId = session.runId;
+  const rt = runtimes.get(sessionId);
+  if (rt) {
+    if (rt.beforeStop && !rt.hookPending && !rt.stopSent) {
+      rt.hookPending = true;
+      try {
+        await runBeforeStop(rt.beforeStop, runId);
+      } finally {
+        rt.hookPending = false;
+      }
+      // The program may have exited, or the tab been rerun, during the wait; a second Stop may
+      // have sent the signal already, and sending again would make the backend kill it. A tab
+      // closed meanwhile (`closeSession`) is gone, but its process still needs the signal.
+      const current = getSession(sessionId);
+      if (rt.stopSent || (current && (!isLive(current) || current.runId !== runId))) return;
+    }
+    rt.stopSent = true;
+  }
   try {
-    await call(commands.runStop(session.runId));
+    await call(commands.runStop(runId));
   } catch (e) {
-    patchSession(sessionId, { status: "running" });
+    const current = getSession(sessionId);
+    if (current && isLive(current) && current.runId === runId) patchSession(sessionId, { status: "running" });
     notifications().notify({
       group: "run",
       level: "error",
@@ -1403,10 +1491,17 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
   return true;
 }
 
-export function closeSession(sessionId: string) {
+/**
+ * Removes a session's tab (stopping its process). An agent tab's closing is told to the MCP
+ * server for the agent unless `agentTabClosed` is false (the archive dropping its oldest).
+ */
+export function closeSession(sessionId: string, options: { agentTabClosed?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) return;
   if (isLive(session)) void stopSession(sessionId);
+  const agent = agentName(session.config);
+  if (agent !== null && options.agentTabClosed !== false && isTauri())
+    void call(commands.mcpAgentRunClosed(agent)).catch(() => {});
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);

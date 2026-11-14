@@ -1,16 +1,25 @@
 /**
  * Integrated terminal: xterm.js sessions on backend PTYs in the bottom
- * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts).
+ * "Terminal" tool window (tabs, split tab groups, links, IDEA-style shortcuts),
+ * plus the CLI editor tabs (#2202): full-size agent CLIs as editor-area tabs.
  */
 import { registerActions } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
-import { provideEmbeddedTerminal, registerToolWindow, toolWindowService } from "@/workbench/contributions";
+import {
+  provideEmbeddedTerminal,
+  registerAgentContextSource,
+  registerEditorKind,
+  registerToolWindow,
+  toolWindowService,
+} from "@/workbench/contributions";
 import { lazyComponent } from "@/ui";
+import { CLI_KIND, cliData, moveTerminalToEditor } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
 import { SAMPLE_TUI_END, SAMPLE_TUI_START, sampleTuiFrame } from "./sampleTui";
+import type { SessionOptions } from "./session";
 
 const WINDOW = "terminal";
 
@@ -94,6 +103,16 @@ export function activate(): () => void {
           },
         ])
       : () => {},
+    registerAgentContextSource({
+      id: "terminal",
+      title: "Terminal",
+      description: "The active terminal's recent output",
+      icon: "terminal",
+      resolve: async () => {
+        const output = terminalRuntime()?.activeSession()?.recentOutput();
+        return output?.text ? { kind: "block", info: `terminal ${output.title}`.trim(), text: output.text } : null;
+      },
+    }),
     registerToolWindow({
       id: WINDOW,
       title: "Terminal",
@@ -103,7 +122,28 @@ export function activate(): () => void {
       component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalView)),
       headerContent: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.TerminalTabs)),
     }),
+    // Terminal sessions moved to the editor (#2202): saved with the editor session, kept alive while hidden.
+    registerEditorKind({
+      kind: CLI_KIND,
+      component: lazyComponent(() => loadTerminalRuntime().then((rt) => rt.CliEditor)),
+      title: (input) => cliData(input)?.name ?? "Terminal",
+      icon: () => "terminal",
+      // A reopened tab shows Start: nothing runs on its own.
+      restorable: true,
+      keepAlive: true,
+      onClose: (input) => terminalRuntime()?.disposeCli(input.key),
+      isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
+    }),
     registerActions([
+      {
+        id: "terminal.moveToEditor",
+        title: "Move to Editor",
+        description: "Moves a terminal tab, with its running session, into the editor area (arg: tab id).",
+        category: "Terminal",
+        when: "projectOpen",
+        keywords: ["terminal", "editor", "cli", "claude", "codex"],
+        run: (arg) => moveTerminalToEditor(typeof arg === "string" ? arg : undefined),
+      },
       {
         id: "terminal.new",
         title: "New Terminal Tab",
@@ -163,13 +203,18 @@ export function activate(): () => void {
         when: "projectOpen",
         hidden: true,
         run: async ({ arg }) => {
-          const a = arg as { program?: unknown; args?: unknown; name?: unknown; cwd?: unknown } | undefined;
-          if (!a || typeof a.program !== "string" || !a.program) return;
+          const a = arg as
+            | { program?: unknown; args?: unknown; name?: unknown; cwd?: unknown; spawn?: unknown }
+            | undefined;
+          const spawn =
+            typeof a?.spawn === "function" ? (a.spawn as NonNullable<SessionOptions["command"]>["spawn"]) : undefined;
+          if (!a || ((typeof a.program !== "string" || !a.program) && !spawn)) return;
           const args = Array.isArray(a.args) ? a.args.filter((x): x is string => typeof x === "string") : [];
           const cwd = (typeof a.cwd === "string" && a.cwd) || projectRoot();
           if (!cwd) return;
           const rt = await loadTerminalRuntime();
-          rt.newTab(cwd, typeof a.name === "string" && a.name ? a.name : undefined, { program: a.program, args });
+          const program = typeof a.program === "string" ? a.program : "";
+          rt.newTab(cwd, typeof a.name === "string" && a.name ? a.name : undefined, { program, args, spawn });
           toolWindowService().show(WINDOW, true);
           focusActiveSoon();
         },
@@ -260,19 +305,30 @@ export function activate(): () => void {
     installTerminalKeys(),
     onWorkflowSettingsChange(
       (s) => s.terminal,
-      () => terminalRuntime()?.applySettingsToAll(),
+      () => {
+        terminalRuntime()?.applySettingsToAll();
+        terminalRuntime()?.applySettingsToClis();
+      },
     ),
     // Font "same as editor" follows Editor › Font.
     useProject.subscribe((s, prev) => {
-      if (s.settings?.editor !== prev.settings?.editor) terminalRuntime()?.applySettingsToAll();
+      if (s.settings?.editor !== prev.settings?.editor) {
+        terminalRuntime()?.applySettingsToAll();
+        terminalRuntime()?.applySettingsToClis();
+      }
     }),
-    onIdeEvent("terminalExited", (e) => terminalRuntime()?.sessionForTerminalId(e.terminal)?.exited(e.code)),
+    onIdeEvent("terminalExited", (e) => {
+      const rt = terminalRuntime();
+      (rt?.sessionForTerminalId(e.terminal) ?? rt?.cliSessionForTerminalId(e.terminal))?.exited(e.code);
+    }),
     // Sessions belong to the project. Remember this project's tabs, then open the next one's.
     useProject.subscribe((s, prev) => {
       const rt = terminalRuntime();
       if (rt && s.project?.root !== prev.project?.root) {
         if (rt.useTerminalFind.getState().open) rt.closeTerminalFind();
         rt.syncTerminalProject(s.project?.root ?? null);
+        // The editor drops the old project's tabs without `onClose`; their CLIs end with it.
+        rt.disposeAllClis();
       }
     }),
   ];
@@ -280,6 +336,7 @@ export function activate(): () => void {
   if (typeof MutationObserver !== "undefined" && typeof document !== "undefined") {
     const observer = new MutationObserver(() => {
       terminalRuntime()?.applyThemeToAll();
+      terminalRuntime()?.applyThemeToClis();
       terminalRuntime()?.applyThemeToEmbedded();
     });
     // A palette or plugin theme switch keeps data-theme when both themes share a light / dark base.

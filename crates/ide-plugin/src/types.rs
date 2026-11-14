@@ -104,52 +104,65 @@ pub enum Prompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum EventKind {
+    DocumentChanged,
+    WebsocketReady,
     FileClosed,
     SettingsChanged,
     InputModeChanged,
     RunExited,
     TerminalExited,
     ContentTabAction,
+    ExtensionsChanged,
     FileOpened,
     FileSaved,
     FilesChanged,
     EditorFocused,
     ActionPerformed,
     VcsChanged,
+    /// Problems of the window's files changed (a language server or a report).
+    ProblemsChanged,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 17] = [
+        Self::DocumentChanged,
+        Self::WebsocketReady,
         Self::FileClosed,
         Self::SettingsChanged,
         Self::InputModeChanged,
         Self::RunExited,
         Self::TerminalExited,
         Self::ContentTabAction,
+        Self::ExtensionsChanged,
         Self::FileOpened,
         Self::FileSaved,
         Self::FilesChanged,
         Self::EditorFocused,
         Self::ActionPerformed,
         Self::VcsChanged,
+        Self::ProblemsChanged,
         Self::Scheduled,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::DocumentChanged => "document-changed",
+            Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
             Self::RunExited => "run-exited",
             Self::TerminalExited => "terminal-exited",
             Self::ContentTabAction => "content-tab-action",
+            Self::ExtensionsChanged => "extensions-changed",
             Self::FileOpened => "file-opened",
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
+            Self::ProblemsChanged => "problems-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -163,7 +176,11 @@ impl EventKind {
     pub fn capability(self) -> Option<ide_extension::Capability> {
         match self {
             Self::ActionPerformed | Self::InputModeChanged => Some(ide_extension::Capability::InputEvents),
-            Self::Scheduled | Self::RunExited | Self::TerminalExited | Self::ContentTabAction => None,
+            Self::Scheduled
+            | Self::RunExited
+            | Self::TerminalExited
+            | Self::ContentTabAction
+            | Self::ExtensionsChanged => None,
             _ => Some(ide_extension::Capability::Events),
         }
     }
@@ -220,15 +237,60 @@ pub struct InputMode {
     pub sub: Option<String>,
 }
 
+/// One UTF-16 replacement in a locally edited editor document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct DocumentTextChange {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
+}
+
+/// Local changes accepted by the editor's shared document model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChanged {
+    pub path: String,
+    pub base_version: u64,
+    pub version: u64,
+    pub changes: Vec<DocumentTextChange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WebsocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
+}
+
+/// A host-owned background WebSocket request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+/// Frames received from a host-owned WebSocket and its transport state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
 /// A workbench event delivered to plugins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "kind", content = "value")]
 pub enum WorkbenchEvent {
+    DocumentChanged(DocumentChanged),
+    WebsocketReady(WebsocketReady),
     RunExited(crate::RunExited),
     TerminalExited(crate::TerminalExited),
     ContentTabAction(crate::ContentTabAction),
     FileClosed(String),
     SettingsChanged(Vec<String>),
+    /// Ids of extension points the receiving plugin declares whose contributions changed.
+    ExtensionsChanged(Vec<String>),
     InputModeChanged(InputMode),
     FileOpened(String),
     FileSaved(String),
@@ -236,17 +298,22 @@ pub enum WorkbenchEvent {
     EditorFocused(Option<String>),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
+    /// Problems of the window's files changed; plugins re-read `problems`.
+    ProblemsChanged,
     Scheduled,
 }
 
 impl WorkbenchEvent {
     pub fn kind(&self) -> EventKind {
         match self {
+            Self::DocumentChanged(_) => EventKind::DocumentChanged,
+            Self::WebsocketReady(_) => EventKind::WebsocketReady,
             Self::RunExited(_) => EventKind::RunExited,
             Self::TerminalExited(_) => EventKind::TerminalExited,
             Self::ContentTabAction(_) => EventKind::ContentTabAction,
             Self::FileClosed(_) => EventKind::FileClosed,
             Self::SettingsChanged(_) => EventKind::SettingsChanged,
+            Self::ExtensionsChanged(_) => EventKind::ExtensionsChanged,
             Self::InputModeChanged(_) => EventKind::InputModeChanged,
             Self::FileOpened(_) => EventKind::FileOpened,
             Self::FileSaved(_) => EventKind::FileSaved,
@@ -254,6 +321,7 @@ impl WorkbenchEvent {
             Self::EditorFocused(_) => EventKind::EditorFocused,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
+            Self::ProblemsChanged => EventKind::ProblemsChanged,
             Self::Scheduled => EventKind::Scheduled,
         }
     }
@@ -466,6 +534,18 @@ pub fn net_capability(url: &str) -> Result<ide_extension::Capability, String> {
     }
 }
 
+/// The grant a WebSocket URL requires: the same as its `https`/`http` counterpart.
+pub fn websocket_capability(url: &str) -> Result<ide_extension::Capability, String> {
+    let mut parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
+    let scheme = match parsed.scheme() {
+        "wss" => "https",
+        "ws" => "http",
+        other => return Err(format!("unsupported WebSocket scheme {other:?}")),
+    };
+    parsed.set_scheme(scheme).map_err(|()| "invalid WebSocket URL".to_owned())?;
+    net_capability(parsed.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -500,6 +580,15 @@ mod tests {
             assert_eq!(net_host(url).unwrap(), host);
         }
         assert_ne!(net_host("https://аpi.example/").unwrap(), net_host("https://api.example/").unwrap());
+        assert_eq!(
+            websocket_capability("wss://Collab.example.com/socket?room=1").unwrap(),
+            ide_extension::Capability::Net("collab.example.com".into())
+        );
+        assert_eq!(
+            websocket_capability("ws://localhost:9000/").unwrap(),
+            ide_extension::Capability::Net("localhost".into())
+        );
+        assert!(websocket_capability("https://example.com/").is_err());
         assert!(net_host("file:///etc/passwd").is_err());
         assert!(net_host("example.com").is_err());
         assert!(net_host("https://*.example.com/").is_err());
@@ -840,6 +929,12 @@ pub struct FileDecoration {
     pub badge: Option<String>,
     pub style: String,
     pub tooltip: Option<String>,
+    /// Text shown after the name (API 1.7 `set-file-note`).
+    #[serde(default)]
+    pub note: Option<String>,
+    /// `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`).
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 /// Commit metadata, date in Unix seconds.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

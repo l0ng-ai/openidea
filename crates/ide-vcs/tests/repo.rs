@@ -65,8 +65,11 @@ impl Fixture {
         self.git(&["commit", "-q", "-m", msg]);
         self.git(&["rev-parse", "HEAD"])
     }
+    /// The repository of a trusted project.
     fn repo(&self) -> Repo {
-        Repo::discover(&self.dir).unwrap().expect("repository found")
+        let repo = Repo::discover(&self.dir).unwrap().expect("repository found");
+        repo.set_execution_allowed(true);
+        repo
     }
     fn path(&self, rel: &str) -> PathBuf {
         self.dir.join(rel)
@@ -724,6 +727,7 @@ fn file_at_in_a_blobless_clone() {
     let url = format!("file://{}", fx.dir.display());
     git_in(fx.dir.parent().unwrap(), &["clone", "-q", "--filter=blob:none", &url, "clone"]);
     let repo = Repo::discover(&clone).unwrap().unwrap();
+    repo.set_execution_allowed(true);
     // v1's blob was never fetched; reading it fetches it on demand.
     assert_eq!(repo.file_at(&clone.join("f.txt"), Some(&c1), encoding_rs::UTF_8).unwrap().as_deref(), Some("v1\n"));
 }
@@ -2010,4 +2014,99 @@ fn reword_refuses_commits_outside_the_current_branch() {
     let side = fx.commit_all("side");
     fx.git(&["checkout", "-q", "main"]);
     assert!(fx.repo().reword(&side, "other").is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn status_skips_a_directory_it_cannot_read() {
+    // `git status` warns "could not open directory: Permission denied" and lists the rest.
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.commit_all("init");
+    fx.write("a.txt", "b\n");
+    fx.write("new.txt", "n\n");
+    let locked = fx.path("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("inside.txt"), "x").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let st = fx.repo().status();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let st = st.unwrap();
+    assert_eq!(status_of(&st, "a.txt").unstaged, Some(ChangeKind::Modified));
+    assert_eq!(status_of(&st, "new.txt").unstaged, Some(ChangeKind::Untracked));
+}
+
+#[test]
+fn a_case_only_directory_rename_keeps_status_and_head_content() {
+    let fx = Fixture::new();
+    fx.write("src/financial/table/index.vue", "<template/>\n");
+    fx.commit_all("initial");
+    std::fs::rename(fx.path("src/financial"), fx.path("src/tmp")).unwrap();
+    std::fs::rename(fx.path("src/tmp"), fx.path("src/Financial")).unwrap();
+    if !fx.path("src/financial/table/index.vue").exists() {
+        return; // A case-sensitive file system: these are different directories.
+    }
+    fx.git(&["config", "core.ignorecase", "true"]);
+    fx.write("src/Financial/table/index.vue", "<template>x</template>\n");
+    fx.write("src/Financial/added/index.vue", "new\n");
+    let repo = fx.repo();
+    let st = repo.status().unwrap();
+    let modified = status_of(&st, "src/financial/table/index.vue");
+    assert_eq!(modified.unstaged, Some(ChangeKind::Modified));
+    // Tabs and the project tree name the file as the disk does.
+    assert_eq!(modified.path.0, fx.path("src/Financial/table/index.vue"));
+    assert_eq!(status_of(&st, "src/Financial/added/index.vue").path.0, fx.path("src/Financial/added/index.vue"));
+
+    let on_disk = fx.path("src/Financial/table/index.vue");
+    assert_eq!(repo.file_at(&on_disk, None, encoding_rs::UTF_8).unwrap().as_deref(), Some("<template/>\n"));
+    repo.stage(&[on_disk]).unwrap();
+    let st = repo.status().unwrap();
+    assert_eq!(status_of(&st, "src/financial/table/index.vue").staged, Some(ChangeKind::Modified));
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "src/financial/table/index.vue");
+}
+
+#[test]
+fn status_paths_reads_only_the_named_paths() {
+    // The dirty-scope refresh: a watcher batch names a few paths, and git's pathspec
+    // filtering keeps the answer proportional to the batch instead of the whole tree.
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\n");
+    fx.write("b.txt", "a\n");
+    fx.write("dir/c.txt", "a\n");
+    fx.commit_all("base");
+    fx.write("a.txt", "b\n");
+    fx.write("b.txt", "b\n");
+    fx.write("dir/c.txt", "b\n");
+    fx.write("new.txt", "n\n");
+    let repo = fx.repo();
+    repo.set_ignored_names(ide_core::settings::Settings::default().ignored_names());
+
+    let one = repo.status_paths(&[fx.path("a.txt")]).unwrap();
+    assert_eq!(one.len(), 1, "{one:#?}");
+    assert_eq!(one[0].rel_path, "a.txt");
+    assert_eq!(one[0].unstaged, Some(ChangeKind::Modified));
+
+    // A directory stands for everything below it, as the watcher reports a removed one.
+    let dir = repo.status_paths(&[fx.path("dir")]).unwrap();
+    assert_eq!(dir.iter().map(|s| s.rel_path.as_str()).collect::<Vec<_>>(), ["dir/c.txt"]);
+
+    // A nested file: the path a watcher hands over is spelled by the platform, and the pathspec
+    // needs `/` whatever the platform's separator is.
+    let nested = repo.status_paths(&[fx.path("dir").join("c.txt")]).unwrap();
+    assert_eq!(nested.iter().map(|s| s.rel_path.as_str()).collect::<Vec<_>>(), ["dir/c.txt"]);
+
+    // The repository root itself names everything, not a path called "".
+    assert_eq!(repo.status_paths(&[fx.path("")]).unwrap().len(), 4);
+
+    // A new file the batch names is reported as untracked, not as a directory entry.
+    let new = repo.status_paths(&[fx.path("new.txt")]).unwrap();
+    assert_eq!((new[0].rel_path.as_str(), new[0].unstaged), ("new.txt", Some(ChangeKind::Untracked)));
+
+    // Paths outside the repository are ignored rather than an error; nothing named is nothing read.
+    let outside = if cfg!(windows) { PathBuf::from("C:/elsewhere/x.txt") } else { PathBuf::from("/elsewhere/x.txt") };
+    assert!(repo.status_paths(&[outside]).unwrap().is_empty());
+
+    // An empty list is the full status, so a caller that lost the paths stays correct.
+    assert_eq!(repo.status_paths(&[]).unwrap().len(), 4);
 }

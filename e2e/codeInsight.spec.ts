@@ -4,6 +4,7 @@
  * by `crates/ide-lsp/tests`.
  */
 import type { Locator, Page } from "@playwright/test";
+import type { CompletionItem } from "../src/bindings";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 const ROOT = "/dev/acme-api";
@@ -72,11 +73,64 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await expect(method.locator(".cm-lsp-type")).toHaveText("OrderDto");
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
+  // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
+  const footerBelowList = await popup.evaluate((t) => {
+    const list = t.querySelector(":scope > ul")!;
+    const footer = t.querySelector(":scope > .cm-lsp-completion-footer")!;
+    return footer.getBoundingClientRect().top >= list.getBoundingClientRect().bottom - 1;
+  });
+  expect(footerBelowList).toBe(true);
   await page.keyboard.press("Enter");
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
 });
+
+for (const key of ["Enter", "Tab"]) {
+  for (const prefix of ["", "v"]) {
+    test(`${key} leaves the caret after a field snippet at root.${prefix}`, async ({ workbench: page }, info) => {
+      const editor = await openSample(page);
+      await page.evaluate(() => {
+        const item = (label: string): CompletionItem => ({
+          label,
+          labelDetail: null,
+          labelDescription: "int",
+          detail: "int",
+          kind: "field",
+          documentation: null,
+          sortText: null,
+          filterText: null,
+          preselect: label === "val",
+          deprecated: false,
+          insertText: label,
+          isSnippet: true,
+          replaceRange: null,
+          replaceRangeTab: null,
+          additionalEdits: [],
+          commitCharacters: [],
+          command: null,
+          data: null,
+          server: 1,
+        });
+        window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item("val"), item("value")] });
+      });
+      await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+      await page.keyboard.press("End");
+      await page.keyboard.press("Enter");
+      await page.keyboard.type(`int a = root.${prefix}`);
+      await page.keyboard.press("Control+Space");
+      const popup = page.locator(".cm-tooltip-autocomplete");
+      await expect(popup.getByText("val", { exact: true })).toBeVisible();
+      // CodeMirror ignores acceptance during its 75 ms lookup interaction delay.
+      await page.waitForTimeout(100);
+      await page.keyboard.press(key);
+      await expect(popup).toBeHidden();
+      await page.screenshot({ path: info.outputPath("accepted-completion.png"), animations: "disabled" });
+      await page.keyboard.type(";");
+      await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*int a = root\.val;$/);
+    });
+  }
+}
 
 test("⌘B goes to the declaration in another file", async ({ workbench: page }) => {
   const editor = await openSample(page);

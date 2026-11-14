@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
 import type { DockerContainer, DockerSnapshot } from "@/platform/ipc";
+import type { SshConfigValid } from "@/platform/remoteSettings";
 import { fileIconName } from "@/ui/icons";
 import {
   composeFileIcon,
@@ -14,6 +16,7 @@ import {
   isDockerfile,
   useComposeFiles,
 } from "./compose";
+import { composeCompletionsAt, parseComposeDocument, resolveComposeReferenceAt } from "./composeEditor";
 import {
   DOCKERFILE,
   DOCKER_COMPOSE,
@@ -52,7 +55,7 @@ import {
   splitLayerInstruction,
   unitsToBytes,
 } from "./dashboard";
-import { endpointFrom } from "./dialogs";
+import { endpointFrom, sshConfigForUrl, sshConfigUrl } from "./dialogs";
 import { dockerItems } from "./docker";
 import { setDockerFilters, useServices } from "./store";
 import { addServiceMenu, expandableKeys, indexTree, setProviderRoots, useServicesTree } from "./tree";
@@ -206,6 +209,36 @@ describe("services tree host", () => {
     expect(endpointFrom("context", { ...f, context: "--evil" })).toBeNull();
     expect(endpointFrom("context", { ...f, context: "orbstack" })).toEqual({ kind: "context", name: "orbstack" });
     expect(endpointFrom("default", f)).toEqual({ kind: "default" });
+  });
+
+  it("fills the Engine API URL from an OpenSSH-config SSH configuration and shows the selection", () => {
+    const box: SshConfigValid = {
+      id: "ssh1",
+      name: "Build server",
+      host: "build-server",
+      port: 2222,
+      user: "ops",
+      auth: "openSsh",
+      keyFile: "",
+      saveSecret: false,
+    };
+    const bare: SshConfigValid = { ...box, id: "ssh2", name: "", host: "bare", port: null, user: "", auth: "openSsh" };
+    const password: SshConfigValid = { ...box, id: "ssh3", host: "vault", user: "root", port: null, auth: "password" };
+    const configs = [box, bare, password];
+    expect(sshConfigUrl(box)).toBe("ssh://ops@build-server:2222");
+    expect(sshConfigUrl(bare)).toBe("ssh://bare");
+    // The selection follows the URL the field holds; only OpenSSH-config configurations match.
+    expect(sshConfigForUrl("ssh://ops@build-server:2222", configs)).toBe("ssh1");
+    expect(sshConfigForUrl(" ssh://build-server:2222 ", configs)).toBe("ssh1");
+    expect(sshConfigForUrl("ssh://build-server", configs)).toBe("ssh1");
+    expect(sshConfigForUrl("ssh://bare", configs)).toBe("ssh2");
+    // Another user or port than the configuration's, a tcp URL or a password configuration is not a selection.
+    expect(sshConfigForUrl("ssh://root@build-server", configs)).toBe("");
+    expect(sshConfigForUrl("ssh://build-server:22", configs)).toBe("");
+    expect(sshConfigForUrl("ssh://root@vault", configs)).toBe("");
+    expect(sshConfigForUrl("tcp://build-host:2376", configs)).toBe("");
+    expect(sshConfigForUrl("ssh://", configs)).toBe("");
+    expect(sshConfigForUrl("", configs)).toBe("");
   });
 });
 
@@ -394,6 +427,8 @@ describe("phase 1: filters, cross-references and dashboard parsers", () => {
     expect(nodeDetail(groups[3]!)).toBe("2");
     const imageNodes = filtered(groups[3]!)!;
     expect(imageNodes.map(nodeLabel)).toEqual(["postgres:16", "postgres:latest"]);
+    // Both tags share one image id; the tree needs distinct keys for them.
+    expect(new Set(imageNodes.map((n) => n.key)).size).toBe(imageNodes.length);
     expect(isUntaggedImage(richSnapshot.images[2]!)).toBe(true);
     expect(isUntaggedImage(richSnapshot.images[0]!)).toBe(false);
 
@@ -662,5 +697,30 @@ describe("docker compose detection and targets", () => {
       line: 24,
       service: "minio",
     });
+  });
+
+  it("completes and resolves internal service, network, volume, config and secret references", () => {
+    const depPos = playgroundCompose.indexOf("      - starrocks") + "      - star".length;
+    const depRes = composeCompletionsAt(playgroundCompose, depPos, false)!;
+    expect(depRes.options.map((o) => o.label)).toEqual(["starrocks"]);
+
+    const netPos = playgroundCompose.indexOf("      playground-network:") + "      play".length;
+    const netRes = composeCompletionsAt(playgroundCompose, netPos, false)!;
+    expect(netRes.options.map((o) => o.label)).toContain("playground-network");
+
+    const state = EditorState.create({ doc: playgroundCompose });
+    const model = parseComposeDocument(playgroundCompose);
+    expect([...model.services.keys()]).toEqual(["starrocks", "minio"]);
+    expect([...model.networks.keys()]).toEqual(["playground-network"]);
+
+    const netRefOffset = playgroundCompose.indexOf("      playground-network:") + 8;
+    const netDecl = resolveComposeReferenceAt(state, netRefOffset);
+    expect(netDecl?.name).toBe("playground-network");
+    expect(netDecl?.line).toBe(4);
+
+    const svcRefOffset = playgroundCompose.indexOf("      - starrocks") + 10;
+    const svcDecl = resolveComposeReferenceAt(state, svcRefOffset);
+    expect(svcDecl?.name).toBe("starrocks");
+    expect(svcDecl?.line).toBe(8);
   });
 });

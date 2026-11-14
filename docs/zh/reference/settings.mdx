@@ -18,7 +18,9 @@ description: "OpenIDEA 的设置保存在哪里、全局文件与项目文件如
 
 每个文件只保存与下层不同的值。表（table）按键逐个合并；而单个值或数组会整个替换下层的值（例如在项目中设置 `files.exclude`，会替换全局的整个列表）。
 
-有些设置在项目文件中会被忽略：`mcpServer` 和导入的配色方案（`editor.customSchemes`）只能全局配置。项目信任状态永远不会从设置文件中读取。
+有些设置在项目文件中会被忽略：`mcpServer`、导入的配色方案（`editor.customSchemes`）和 `agents.newTaskApprovals` 只能全局配置。项目信任状态永远不会从设置文件中读取。
+
+项目文件不能放宽编码智能体的权限：`agentSecurity.allowedCommands` 和 `agents.defaults` 只能全局配置；项目中的 `agentSecurity.blockedCommands` 会追加到全局列表中，而不是替换它。项目 `agents.mcpServers` 中的 MCP 服务器会保持关闭，直到你在 **设置 › 智能体 › 外部 MCP 服务器** 中将其开启；服务器定义改变后也需要重新开启。
 
 ## 文件格式
 
@@ -52,9 +54,8 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | 编辑器           | 常规（自动导入、外观、痕迹导航、代码补全、代码折叠、编辑器标签页、装订区域图标、内联补全、后缀补全、富文本复制、智能键、粘滞行）；代码编辑；字体；配色方案；代码样式；检查；自然语言（拼写）；文件和代码模板；文件编码；实时模板；文件类型；嵌入提示；TODO；Vim |
 | 插件             | 插件                                                                                                                                                                                                                                                            |
 | 版本控制         | 提交；确认；目录映射；问题导航；日志；搁置；Git；GitHub                                                                                                                                                                                                         |
-| 项目结构         | 项目结构                                                                                                                                                                                                                                                        |
 | 构建、执行、部署 | CMake；Gradle；Maven；控制台；调试器（数据视图、单步执行）；Python 调试器；运行/调试；运行目标；部署（选项）                                                                                                                                                    |
-| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Ruff；Ruby；Rust；TypeScript；插件格式化工具                                                                                                                 |
+| 语言和框架       | 语言服务器；Go（构建标签、Go 模块）；Java；Markdown；Node.js；PHP；Python 解释器；Prettier；oxfmt；Ruff；Ruby；Rust；TypeScript                                                                                                                                 |
 | 工具             | 智能体（聊天）；终端；保存时操作；外部工具；SSH 配置；MCP 服务器                                                                                                                                                                                                |
 | 安全             | 项目信任                                                                                                                                                                                                                                                        |
 
@@ -95,25 +96,26 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 
 除特别说明外，对应 设置 › 外观与行为 › 外观。
 
-| 键                                           | 默认值               | 说明                                                                                                                                                                                        |
-| -------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `theme`                                      | `"light"`            | `light`（Islands 浅色）、`dark`（Islands 深色）、`dark-hc`（高对比度）、`solarized-light`、`solarized-dark`、`one-light`、`one-dark`，或以 `plugin:<plugin-id>/<theme-id>` 表示的插件主题。 |
-| `syncWithOs`                                 | `false`              | **与操作系统同步**。                                                                                                                                                                        |
-| `preferredLightTheme` / `preferredDarkTheme` | `"light"` / `"dark"` | 与操作系统同步时使用的主题。                                                                                                                                                                |
-| `accent`                                     | `"#3871e1"`          | **强调色**。                                                                                                                                                                                |
-| `fileIconTheme`                              | `""`                 | 插件提供的文件图标主题，写作 `<plugin-id>/<theme-id>`；为空时使用内置图标。                                                                                                                 |
-| `zoom`                                       | `100`                | **缩放**，百分比（50 到 300）。                                                                                                                                                             |
-| `useCustomFont`                              | `false`              | **使用自定义字体：**，启用 `uiFontFamily` 和 `uiFontSize`。                                                                                                                                 |
-| `uiFontFamily` / `uiFontSize`                | `"Inter"` / `13`     | 界面字体。                                                                                                                                                                                  |
-| `uiFontFallback`                             | `""`                 | **UI 备用字体**。                                                                                                                                                                           |
-| `contrastScrollbars`                         | `false`              | **使用对比度滚动条**。                                                                                                                                                                      |
-| `redGreenVision`                             | `false`              | **针对红绿色觉缺陷调整颜色**。                                                                                                                                                              |
-| `compactMode`                                | `false`              | **紧凑模式**。                                                                                                                                                                              |
-| `showMainToolbar` / `showStatusBar`          | `true` / `true`      | **显示主工具栏**、**显示状态栏**。                                                                                                                                                          |
-| `navigationBar`                              | `"statusBar"`        | **导航栏**：`top`、`statusBar` 或 `hidden`。                                                                                                                                                |
-| `mainMenuStyle`                              | `"hamburger"`        | **主菜单**：`hamburger`（汉堡按钮）或 `merged`（与主工具栏合并）。                                                                                                                          |
-| `ideAntialiasing` / `editorAntialiasing`     | `"greyscale"`        | `subpixel`、`greyscale` 或 `none`。                                                                                                                                                         |
-| `locale`                                     | `"en"`               | **语言**（语言和地区页）：`en`、`zh`、`ko`、`fr`、`pl`、`pt`、`es`。                                                                                                                        |
+| 键                                           | 默认值               | 说明                                                                                                                                                               |
+| -------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `theme`                                      | `"light"`            | `light`（Islands 浅色）、`dark`（Islands 深色）、`dark-hc`（高对比度）、`solarized-light`、`solarized-dark`，或以 `plugin:<plugin-id>/<theme-id>` 表示的插件主题。 |
+| `syncWithOs`                                 | `false`              | **与操作系统同步**。                                                                                                                                               |
+| `preferredLightTheme` / `preferredDarkTheme` | `"light"` / `"dark"` | 与操作系统同步时使用的主题。                                                                                                                                       |
+| `accent`                                     | `"#3871e1"`          | **强调色**。                                                                                                                                                       |
+| `fileIconTheme`                              | `""`                 | 插件提供的文件图标主题，写作 `<plugin-id>/<theme-id>`；为空时使用内置图标。                                                                                        |
+| `zoom`                                       | `100`                | **缩放**，百分比（50 到 300）。                                                                                                                                    |
+| `useCustomFont`                              | `false`              | **使用自定义字体：**，启用 `uiFontFamily` 和 `uiFontSize`。                                                                                                        |
+| `uiFontFamily` / `uiFontSize`                | `"Inter"` / `13`     | 界面字体。                                                                                                                                                         |
+| `uiFontFallback`                             | `""`                 | **UI 备用字体**。                                                                                                                                                  |
+| `contrastScrollbars`                         | `false`              | **使用对比度滚动条**。                                                                                                                                             |
+| `redGreenVision`                             | `false`              | **针对红绿色觉缺陷调整颜色**。                                                                                                                                     |
+| `backgroundImage`                            | `opacity: 15`        | **背景图像**：`path`（空为不显示）、`opacity`（0–100）、`fill`（`scale` / `plain` / `tile`）、`anchor`（`center`、`top-left` 等）。                                |
+| `compactMode`                                | `false`              | **紧凑模式**。                                                                                                                                                     |
+| `showMainToolbar` / `showStatusBar`          | `true` / `true`      | **显示主工具栏**、**显示状态栏**。                                                                                                                                 |
+| `navigationBar`                              | `"statusBar"`        | **导航栏**：`top`、`statusBar` 或 `hidden`。                                                                                                                       |
+| `mainMenuStyle`                              | `"hamburger"`        | **主菜单**：`hamburger`（汉堡按钮）或 `merged`（与主工具栏合并）。                                                                                                 |
+| `ideAntialiasing` / `editorAntialiasing`     | `"greyscale"`        | `subpixel`、`greyscale` 或 `none`。                                                                                                                                |
+| `locale`                                     | `"en"`               | **语言**（语言和地区页）：`en`、`zh`、`ko`、`fr`、`pl`、`pt`、`es`。                                                                                               |
 
 ### `[editor]`
 
@@ -188,19 +190,19 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 
 ### 其他配置节
 
-| 键                                               | 说明                                                                                                                 |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `[actionsOnSave]`                                | `optimizeImports`、`cleanup`（工具 › 保存时操作）。                                                                  |
-| `[mcpServer]`                                    | `enabled`：在 127.0.0.1 上把 IDE 的工具提供给智能体（工具 › MCP 服务器，仅全局）。参见 [MCP Server](/zh/guide/mcp)。 |
-| `[agents]`                                       | 智能体任务标题栏显示哪些信息（工具 › 智能体 › 聊天）。                                                               |
-| `[languages]`                                    | 各语言的解释器、SDK 和选项，例如 `[languages.java]`、`[languages.python]`、`[languages.go]`。                        |
-| `[languageServers]`                              | 按名称配置各语言服务器的启动和协议选项，或在这里定义新的服务器。                                                     |
-| `[tools]`                                        | 放在自定义位置的语言服务器和调试适配器，按命令名配置。                                                               |
-| `[vcs]`、`[console]`、`[debugger]`、`[run]`      | 版本控制、控制台、调试器和运行/调试页面。                                                                            |
-| `[inspections]`、`[spelling]`                    | 编辑器 › 检查、编辑器 › 自然语言 › 拼写。                                                                            |
-| `[ssh]`、`[deployment]`、`runTargets`、`[cmake]` | SSH 配置、部署、运行目标、CMake。                                                                                    |
-| `[projectStructure]`                             | 源代码、测试、资源和排除文件夹（项目结构）。                                                                         |
-| `externalTools`                                  | 工具 › 外部工具中的条目。                                                                                            |
-| `[plugins.<plugin-id>]`                          | 插件声明的设置。                                                                                                     |
+| 键                                               | 说明                                                                                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `[actionsOnSave]`                                | `optimizeImports`、`cleanup`（工具 › 保存时操作）。                                                                        |
+| `[mcpServer]`                                    | `enabled`：在 127.0.0.1 上把 IDE 的工具提供给智能体（智能体 › IDE MCP 服务器，仅全局）。参见 [MCP Server](/zh/guide/mcp)。 |
+| `[agents]`                                       | 智能体任务标题栏显示哪些信息（工具 › 智能体 › 聊天）。                                                                     |
+| `[languages]`                                    | 各语言的解释器、SDK 和选项，例如 `[languages.java]`、`[languages.python]`、`[languages.go]`。                              |
+| `[languageServers]`                              | 按名称配置各语言服务器的启动和协议选项，或在这里定义新的服务器。                                                           |
+| `[tools]`                                        | 放在自定义位置的语言服务器和调试适配器，按命令名配置。                                                                     |
+| `[vcs]`、`[console]`、`[debugger]`、`[run]`      | 版本控制、控制台、调试器和运行/调试页面。                                                                                  |
+| `[inspections]`、`[spelling]`                    | 编辑器 › 检查、编辑器 › 自然语言 › 拼写。                                                                                  |
+| `[ssh]`、`[deployment]`、`runTargets`、`[cmake]` | SSH 配置、部署、运行目标、CMake。                                                                                          |
+| `[projectStructure]`                             | 源代码、测试、资源和排除文件夹（项目结构）。                                                                               |
+| `externalTools`                                  | 工具 › 外部工具中的条目。                                                                                                  |
+| `[plugins.<plugin-id>]`                          | 插件声明的设置。                                                                                                           |
 
 完整的配置键和默认值见源码：[`crates/ide-core/src/settings.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-core/src/settings.rs) 及同目录下的其他 `*_settings.rs` 文件。

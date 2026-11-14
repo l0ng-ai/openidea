@@ -66,6 +66,79 @@ async function openHistory(page: Page) {
   return stream;
 }
 
+for (const placement of ["editor", "toolWindow"] as const) {
+  test(`lets small upward wheel steps leave the end while replies stream in the ${placement}`, async ({ page }) => {
+    // Streams into an 80-turn conversation for several seconds: close to 30 s on CI runners.
+    test.slow();
+    const stream = await openHistory(page);
+    await page.evaluate(
+      async ({ id, placement }) => {
+        const path = "/src/features/agents/store.ts";
+        const store = await import(path);
+        const state = store.useAgents.getState();
+        store.useAgents.setState({
+          tasks: new Map(state.tasks).set(id, { ...state.tasks.get(id)!, status: "running" }),
+        });
+        if (placement === "toolWindow") store.dockTask(id);
+      },
+      { id: task.id, placement },
+    );
+    // The working indicator ends the conversation, after its rows.
+    await expect(stream.getByRole("status").getByText("Working…", { exact: true })).toBeVisible();
+    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3 + 1);
+    await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
+    const timer = await page.evaluate(async (id) => {
+      const path = "/src/features/agents/store.ts";
+      const store = await import(path);
+      const el = [...document.querySelectorAll<HTMLElement>("[class*='_stream_']")].find((el) => el.offsetHeight)!;
+      el.addEventListener(
+        "wheel",
+        () => {
+          el.dataset.streamWheelStart = String(el.scrollTop);
+        },
+        { capture: true, once: true },
+      );
+      let chunks = 0;
+      return window.setInterval(() => {
+        const state = store.useAgents.getState();
+        const entries = state.entries.get(id)!.slice();
+        const last = entries.at(-1)!;
+        if (last.type !== "agent") throw new Error("Expected a streaming reply");
+        entries[entries.length - 1] = { ...last, text: `${last.text}\n\nStreaming chunk ${++chunks}` };
+        store.useAgents.setState({ entries: new Map(state.entries).set(id, entries) });
+        el.dataset.streamChunks = String(chunks);
+      }, 40);
+    }, task.id);
+    const chunks = async () => Number(await stream.getAttribute("data-stream-chunks"));
+    try {
+      await stream.hover();
+      for (let i = 0; i < 8; i++) {
+        const previous = await chunks();
+        await page.mouse.wheel(0, -12);
+        await expect.poll(chunks).toBeGreaterThan(previous);
+      }
+      const top = await stream.evaluate((el) => el.scrollTop);
+      expect(Number(await stream.getAttribute("data-stream-wheel-start")) - top).toBeGreaterThan(80);
+      const previous = await chunks();
+      await expect.poll(chunks).toBeGreaterThan(previous + 3);
+      expect(Math.abs((await stream.evaluate((el) => el.scrollTop)) - top)).toBeLessThanOrEqual(1);
+      const jump = page.getByRole("button", { name: "Jump to Latest" });
+      await expect(jump).toBeVisible();
+      await jump.click();
+      await expect
+        .poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(2);
+      const resumed = await chunks();
+      await expect.poll(chunks).toBeGreaterThan(resumed + 3);
+      await expect
+        .poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop))
+        .toBeLessThan(2);
+    } finally {
+      await page.evaluate((timer) => window.clearInterval(timer), timer);
+    }
+  });
+}
+
 for (const selected of [false, true]) {
   test(`keeps long-chat scroll geometry stable while jumping through history (selected: ${selected})`, async ({
     page,

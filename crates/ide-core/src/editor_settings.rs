@@ -67,15 +67,23 @@ pub struct EditorAppearanceSettings {
     /// Smooth caret movement curve: `snappy` | `gliding`.
     pub caret_movement_style: String,
     pub line_numbers: bool,
+    /// Gutter numbering: `absolute` | `relative` | `hybrid` (absolute on the caret line, distances elsewhere).
+    pub line_number_mode: String,
     pub method_separators: bool,
     /// Sub-options of `editor.showWhitespace`.
     pub whitespace_leading: bool,
     pub whitespace_inner: bool,
     pub whitespace_trailing: bool,
     pub indent_guides: bool,
+    /// Colour indent guides by depth (`--syn-rainbow-*`), while `indent_guides` is on.
+    pub rainbow_indent_guides: bool,
     /// Right margin and visual guides from Code Style.
     pub hard_wrap_guides: bool,
     pub intention_bulb: bool,
+    /// Draw doc comments (Javadoc, KDoc, JSDoc, rustdoc) as rendered documentation
+    /// instead of their source, as IDEA's option of the same name. View › Active
+    /// Editor › Render Documentation Comments overrides this for one editor.
+    pub render_doc_comments: bool,
     /// Distraction Free Mode: width of the centred text column, in characters.
     pub distraction_free_width: u32,
 }
@@ -90,13 +98,16 @@ impl Default for EditorAppearanceSettings {
             smooth_caret_movement: false,
             caret_movement_style: "snappy".into(),
             line_numbers: true,
+            line_number_mode: "absolute".into(),
             method_separators: false,
             whitespace_leading: true,
             whitespace_inner: true,
             whitespace_trailing: true,
             indent_guides: true,
+            rainbow_indent_guides: false,
             hard_wrap_guides: true,
             intention_bulb: true,
+            render_doc_comments: false,
             distraction_free_width: 80,
         }
     }
@@ -259,6 +270,8 @@ pub struct SmartKeysSettings {
     pub pair_quotes: bool,
     pub surround_selection: bool,
     pub tab_out_of_pair: bool,
+    /// Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag.
+    pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
     pub escape_on_paste: bool,
@@ -278,6 +291,7 @@ impl Default for SmartKeysSettings {
             pair_quotes: true,
             surround_selection: true,
             tab_out_of_pair: true,
+            simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
             escape_on_paste: true,
             smart_indent: true,
@@ -330,6 +344,23 @@ pub struct InlayHintsSettings {
     pub code_vision_usages: bool,
     /// Code vision: last author of a declaration (VCS blame) beside its usages.
     pub code_vision_author: bool,
+    /// Code vision: "no usages" on declarations nothing uses (IDEA shows it; clicking searches everywhere).
+    pub code_vision_no_usages: bool,
+    /// Code vision: where the usages go, above the declaration or at the end of its line.
+    pub code_vision_usages_position: CodeVisionPosition,
+    /// Code vision: where the author goes, above the declaration or at the end of its line.
+    pub code_vision_author_position: CodeVisionPosition,
+}
+
+/// Editor › Inlay Hints › Code Vision position (IDEA's "Default position for metrics").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CodeVisionPosition {
+    /// A row of its own above the declaration.
+    #[default]
+    Top,
+    /// After the end of the declaration's first line.
+    Right,
 }
 
 impl Default for InlayHintsSettings {
@@ -341,6 +372,9 @@ impl Default for InlayHintsSettings {
             disabled_languages: Vec::new(),
             code_vision_usages: true,
             code_vision_author: true,
+            code_vision_no_usages: true,
+            code_vision_usages_position: CodeVisionPosition::Top,
+            code_vision_author_position: CodeVisionPosition::Top,
         }
     }
 }

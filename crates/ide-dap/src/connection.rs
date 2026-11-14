@@ -246,13 +246,7 @@ impl Connection {
 
 fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_dap::wire", "<-- {}", String::from_utf8_lossy(body));
-    let msg: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("dap: unparsable message: {e}");
-            return;
-        }
-    };
+    let Some(msg) = parse_message(body) else { return };
     match msg.get("type").and_then(Value::as_str) {
         Some("response") => {
             let Some(request_seq) = msg.get("request_seq").and_then(Value::as_i64) else {
@@ -285,6 +279,25 @@ fn dispatch(inner: &Inner, incoming: &mpsc::UnboundedSender<Incoming>, body: &[u
     }
 }
 
+/// A message body as JSON. Some adapters pass the debuggee's output through as it was
+/// written: netcoredbg on Windows embeds console output in the ANSI code page (GBK on a
+/// Chinese system), which isn't valid UTF-8 and made the whole `output` event unparsable,
+/// so every line with non-ASCII text went missing. Such a body is decoded like other tool
+/// output (UTF-8, else the system code page) before parsing.
+fn parse_message(body: &[u8]) -> Option<Value> {
+    let error = match serde_json::from_slice(body) {
+        Ok(v) => return Some(v),
+        Err(e) => e,
+    };
+    if std::str::from_utf8(body).is_err()
+        && let Ok(v) = serde_json::from_str(&ide_core::output_encoding::decode_tool_output(body))
+    {
+        return Some(v);
+    }
+    tracing::warn!("dap: unparsable message: {error}");
+    None
+}
+
 /// `message`, or the formatted `body.error` (`{format, variables}`) when present.
 fn error_message(msg: &Value) -> String {
     if let Some(err) = msg.pointer("/body/error")
@@ -307,10 +320,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_output_events_with_non_utf8_text() {
+        // "中文" in GBK inside an output event, as netcoredbg sends it on a Chinese Windows.
+        let mut body = br#"{"seq":5,"type":"event","event":"output","body":{"category":"stdout","output":""#.to_vec();
+        body.extend_from_slice(&[0xd6, 0xd0, 0xce, 0xc4]);
+        body.extend_from_slice(br#"\n"}}"#);
+        let msg = parse_message(&body).expect("parsed");
+        assert_eq!(msg["event"], "output");
+        let output = msg["body"]["output"].as_str().unwrap();
+        assert!(output.ends_with('\n'));
+        // Off Windows (UTF-8 code page) the bytes decode lossily; the line still arrives.
+        #[cfg(not(windows))]
+        assert!(output.starts_with(char::REPLACEMENT_CHARACTER));
+        assert!(parse_message(b"{not json").is_none());
+    }
+
+    #[test]
     fn formats_structured_errors() {
         let msg =
             json!({"message": "x", "body": {"error": {"format": "cannot find {file}", "variables": {"file": "a.py"}}}});
         assert_eq!(error_message(&msg), "cannot find a.py");
         assert_eq!(error_message(&json!({"message": "nope"})), "nope");
+    }
+
+    #[test]
+    fn a_failed_launch_response_keeps_delves_too_old_error_verbatim() {
+        // The UI's repair offer keys off this exact wording (`missingAdapter`), so the
+        // conversion to the IPC error must not fold it into a generic message.
+        let message = "Failed to launch /p/api: Version of Delve is too old for Go version go1.27.0 \
+                       (maximum supported version 1.26, suppress this error with --check-go-version=false)";
+        let e = ide_core::IdeError::from(DapError::Failed { command: "launch".into(), message: message.into() });
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+        assert_eq!(e.message, format!("launch failed: {message}"));
+        assert!(e.message.contains("Version of Delve is too old for Go version go1.27.0"));
     }
 }

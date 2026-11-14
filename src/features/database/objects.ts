@@ -4,6 +4,7 @@
  * Pure functions.
  */
 import type { DbColumnInfo, DbDriver } from "@/platform/ipc";
+import { isReserved } from "./sql/dialect";
 
 export function quoteIdent(driver: DbDriver, name: string): string {
   if (driver === "clickhouse") return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -12,18 +13,19 @@ export function quoteIdent(driver: DbDriver, name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-/** Quotes only when needed: lower-case (PostgreSQL) / UPPER-case (Oracle) / plain words stay bare, like IDEA's SQL. */
+/** Quotes only when needed: lower-case (PostgreSQL) / UPPER-case (Oracle, Snowflake) / plain words stay bare, like IDEA's SQL. */
 export function ident(driver: DbDriver, name: string): string {
   const plain =
     driver === "postgres"
       ? /^[a-z_][a-z0-9_$]*$/
-      : // Oracle folds unquoted names to upper case.
-        driver === "oracle"
+      : // Oracle and Snowflake fold unquoted names to upper case.
+        driver === "oracle" || driver === "snowflake"
         ? /^[A-Z_][A-Z0-9_$]*$/
         : driver === "clickhouse"
           ? /^[A-Za-z_][A-Za-z0-9_]*$/
           : /^[A-Za-z_][A-Za-z0-9_$]*$/;
-  return plain.test(name) && !RESERVED.has(name.toUpperCase()) ? name : quoteIdent(driver, name);
+  const reserved = RESERVED.has(name.toUpperCase()) || (driver === "snowflake" && isReserved(name, driver));
+  return plain.test(name) && !reserved ? name : quoteIdent(driver, name);
 }
 
 const RESERVED = new Set(
@@ -50,6 +52,7 @@ export type DbObjectKind =
   | "schema"
   | "function"
   | "procedure"
+  | "package"
   | "trigger"
   | "sequence";
 
@@ -74,6 +77,10 @@ export function reference(driver: DbDriver, o: DbObjectRef): string {
   return o.kind === "column" && o.column ? `${q}.${ident(driver, o.column)}` : q;
 }
 
+/** Snowflake has no indexes or triggers. */
+const exists = (driver: DbDriver, o: DbObjectRef) =>
+  driver !== "snowflake" || (o.kind !== "index" && o.kind !== "trigger");
+
 export const canRename = (driver: DbDriver, o: DbObjectRef) =>
   o.kind === "table" ||
   o.kind === "column" ||
@@ -89,12 +96,15 @@ export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string 
     case "index":
       return `alter index ${q} rename to ${ident(driver, to)};`;
     case "view":
+      // Snowflake resolves an unqualified new name in the session's schema: a rename could move the object.
+      if (driver === "snowflake") return `alter view ${q} rename to ${qualifiedName(driver, o.schema, to)};`;
       if (driver === "postgres") return `alter view ${q} rename to ${ident(driver, to)};`;
       if (driver === "oracle") return `rename ${q} to ${ident(driver, to)};`;
       return `rename table ${q} to ${qualifiedName(driver, o.schema, to)};`;
     default:
       if (driver === "mysql" || driver === "clickhouse")
         return `rename table ${q} to ${qualifiedName(driver, o.schema, to)};`;
+      if (driver === "snowflake") return `alter table ${q} rename to ${qualifiedName(driver, o.schema, to)};`;
       return `alter table ${q} rename to ${ident(driver, to)};`;
   }
 }
@@ -108,7 +118,7 @@ export interface DropOptions {
 export const canDrop = (driver: DbDriver, o: DbObjectRef) =>
   driver === "clickhouse"
     ? ["table", "view", "materializedView", "column", "schema"].includes(o.kind)
-    : !(o.kind === "schema" && driver === "sqlite");
+    : !(o.kind === "schema" && driver === "sqlite") && exists(driver, o);
 
 export const canModifyTable = (driver: DbDriver) => driver !== "clickhouse";
 
@@ -133,9 +143,14 @@ export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): st
       return `drop materialized view ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
     case "function":
     case "procedure": {
-      const args = driver === "postgres" ? `(${o.arguments ?? ""})` : "";
+      // Snowflake, like PostgreSQL, identifies a routine by its argument types.
+      const args = driver === "postgres" || driver === "snowflake" ? `(${o.arguments ?? ""})` : "";
       return `drop ${o.kind} ${ifExists}${qualifiedName(driver, o.schema, o.name)}${args}${cascade};`;
     }
+    // Oracle has no DROP PACKAGE IF EXISTS before 23ai, and dropping the
+    // specification drops the body with it.
+    case "package":
+      return `drop package ${qualifiedName(driver, o.schema, o.name)};`;
     case "trigger":
       if (driver === "postgres")
         return `drop trigger ${ifExists}${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")}${cascade};`;
@@ -154,7 +169,13 @@ export function truncateSql(
 ): string {
   const q = qualifiedName(driver, schema, table);
   if (driver === "sqlite") return `delete from ${q};`;
-  if (driver === "mysql" || driver === "sqlServer" || driver === "clickhouse" || driver === "oracle")
+  if (
+    driver === "mysql" ||
+    driver === "sqlServer" ||
+    driver === "clickhouse" ||
+    driver === "oracle" ||
+    driver === "snowflake"
+  )
     return `truncate table ${q};`;
   return `truncate table ${q}${opts.restartIdentity ? " restart identity" : ""}${opts.cascade ? " cascade" : ""};`;
 }
@@ -234,7 +255,15 @@ export function draftOf(c: DbColumnInfo, key: number): ColumnDraft {
 
 function columnDefinition(driver: DbDriver, c: ColumnDraft): string {
   const fallback =
-    driver === "clickhouse" ? "String" : driver === "sqlite" ? "TEXT" : driver === "oracle" ? "VARCHAR2(255)" : "text";
+    driver === "clickhouse"
+      ? "String"
+      : driver === "sqlite"
+        ? "TEXT"
+        : driver === "oracle"
+          ? "VARCHAR2(255)"
+          : driver === "snowflake"
+            ? "VARCHAR"
+            : "text";
   let s = `${ident(driver, c.name)} ${c.dataType.trim() || fallback}`;
   if (c.default.trim()) s += ` default ${c.default.trim()}`;
   if (c.notNull && driver !== "clickhouse") s += " not null";
@@ -262,8 +291,8 @@ export function canAlterColumn(driver: DbDriver, c: ColumnDraft): boolean {
 
 /**
  * The statements turning the table `table` into `name` with `columns`
- * (Modify Table): renames, added / dropped columns, and — PostgreSQL / MySQL —
- * type, nullability and default changes.
+ * (Modify Table): renames, added / dropped columns, and — PostgreSQL / MySQL /
+ * Oracle / Snowflake — type, nullability and default changes.
  */
 export function alterTableSql(
   driver: DbDriver,
@@ -320,6 +349,17 @@ export function alterTableSql(
       continue;
     }
     if (renamed) out.push(`alter table ${q()} rename column ${ident(driver, o.name)} to ${ident(driver, c.name)};`);
+    if (driver === "snowflake") {
+      const col = ident(driver, c.name.trim() || o.name);
+      if (c.dataType.trim() && c.dataType.trim() !== o.dataType)
+        out.push(`alter table ${q()} alter column ${col} set data type ${c.dataType.trim()};`);
+      if (c.notNull !== !o.nullable)
+        out.push(`alter table ${q()} alter column ${col} ${c.notNull ? "set" : "drop"} not null;`);
+      // An existing column's default can only be dropped.
+      if (!c.default.trim() && (o.default ?? "").trim())
+        out.push(`alter table ${q()} alter column ${col} drop default;`);
+      continue;
+    }
     if (driver !== "postgres") continue;
     const col = ident(driver, renamed ? c.name : o.name);
     if (c.dataType.trim() && c.dataType.trim() !== o.dataType)

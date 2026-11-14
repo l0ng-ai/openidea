@@ -4,6 +4,8 @@ import {
   applyCompletion,
   atEdgeLine,
   bypassDefaults,
+  cursorModelDefaults,
+  modelConfigOptions,
   canSend,
   completionAt,
   isPathQuery,
@@ -17,6 +19,13 @@ import {
   recall,
   toPrompt,
   mergeMatches,
+  messageTokens,
+  fenced,
+  fencedBlocks,
+  fenceLabel,
+  pastedPaths,
+  looksLikeTrace,
+  placesInText,
   retryParts,
   usageLabel,
   limitLabel,
@@ -70,6 +79,53 @@ const option = (category: string, values: string[], current: string | null): Age
   via: "option",
 });
 
+describe("fenced blocks", () => {
+  it("finds closed blocks, a longer fence holding backticks", () => {
+    const text = fenced("a ``` b\n```", "terminal zsh");
+    expect(text).toBe("````terminal zsh\na ``` b\n```\n````");
+    expect(fencedBlocks(["x", ...text.split("\n"), "```ts", "open"])).toEqual([
+      { open: 1, close: 4, info: "terminal zsh" },
+    ]);
+    expect(fenceLabel("terminal zsh")).toEqual({ kind: "terminal", label: "zsh", language: null });
+    expect(fenceLabel("trace")).toEqual({ kind: "trace", label: "", language: null });
+    expect(fenceLabel("ts")).toEqual({ kind: "code", label: "ts", language: "ts" });
+  });
+});
+
+describe("pasted traces", () => {
+  const node =
+    "TypeError: x is undefined\n    at fetchUser (/p/src/api/client.ts:12:5)\n    at node_modules/lib/x.js:3:1";
+  const python =
+    'Traceback (most recent call last):\n  File "/p/app/main.py", line 7, in <module>\n    run()\nValueError: bad';
+  const rust = "thread 'main' panicked at src/main.rs:4:5:\nboom";
+  it("recognises stack traces, not prose", () => {
+    expect([node, python, rust].map(looksLikeTrace)).toEqual([true, true, true]);
+    expect(looksLikeTrace("see src/a.ts:3\nand more")).toBe(false);
+    expect(looksLikeTrace("Error: one line")).toBe(false);
+  });
+  it("finds the places a trace names, leaving dependencies out", () => {
+    expect(placesInText(node)).toEqual([{ path: "/p/src/api/client.ts", line: 12 }]);
+    expect(placesInText(python)).toEqual([{ path: "/p/app/main.py", line: 7 }]);
+    expect(placesInText(rust)).toEqual([{ path: "src/main.rs", line: 4 }]);
+    expect(placesInText("a.ts:1 a.ts:1 b.ts:2", 1)).toEqual([{ path: "a.ts", line: 1 }]);
+  });
+});
+
+describe("pastedPaths", () => {
+  it("reads absolute paths with lines, quotes and file URLs, one per line", () => {
+    expect(pastedPaths("/a/b.ts:10-20\n  '/a/c d.ts' \nfile:///a/%E4%B8%AD.ts\n/a/dir/\n/a/e.ts:3:7")).toEqual([
+      { path: "/a/b.ts", lines: { from: 10, to: 20 } },
+      { path: "/a/c d.ts" },
+      { path: "/a/中.ts" },
+      { path: "/a/dir" },
+      { path: "/a/e.ts", lines: { from: 3, to: 3 } },
+    ]);
+    expect(pastedPaths("C:\\work\\a.ts:4")).toEqual([{ path: "C:\\work\\a.ts", lines: { from: 4, to: 4 } }]);
+    expect(pastedPaths("/a/b.ts\nnot a path")).toBeNull();
+    expect(pastedPaths("see /a/b.ts")).toBeNull();
+  });
+});
+
 describe("mergeMatches", () => {
   it("ranks folders among files by score, files first on a tie", () => {
     const merged = mergeMatches(
@@ -84,14 +140,38 @@ describe("mergeMatches", () => {
       3,
     );
     expect(merged).toEqual([
-      { path: "/p/docs", rel: "docs", dir: true, score: 70 },
-      { path: "/p/src/agents.ts", rel: "src/agents.ts", dir: false, score: 50 },
-      { path: "/p/src/agents", rel: "src/agents", dir: true, score: 50 },
+      { path: "/p/docs", rel: "docs", dir: true, score: 70, indices: [] },
+      {
+        path: "/p/src/agents.ts",
+        rel: "src/agents.ts",
+        dir: false,
+        score: 50,
+        indices: [],
+      },
+      {
+        path: "/p/src/agents",
+        rel: "src/agents",
+        dir: true,
+        score: 50,
+        indices: [],
+      },
     ]);
   });
 });
 
 describe("agent composer", () => {
+  it("leaves punctuation after a reference or command to the text", () => {
+    expect(messageTokens("in @src/a.ts:3-8, keep @src/retry/。then /review.")).toEqual([
+      { kind: "text", value: "in " },
+      { kind: "file", value: "@src/a.ts:3-8" },
+      { kind: "text", value: ", keep " },
+      { kind: "file", value: "@src/retry/" },
+      { kind: "text", value: "。then " },
+      { kind: "command", value: "/review" },
+      { kind: "text", value: "." },
+    ]);
+  });
+
   it("completes @files and /commands anywhere at a word boundary", () => {
     expect(completionAt("fix @src/le", 11)).toEqual({
       kind: "file",
@@ -184,6 +264,13 @@ describe("agent composer", () => {
     expect(toPrompt({ text: "explain @src/", files: [folder], images: [] }).files).toEqual(["/w/src"]);
     expect(toPrompt({ text: "explain @src/a.rs", files: [folder], images: [] }).files).toEqual([]);
     expect(canSend({ text: " ", files: [], images: [] })).toBe(false);
+    const video = {
+      path: "/home/me/clip.mov",
+      rel: "clip.mov",
+      attached: true,
+    };
+    expect(toPrompt({ text: "what happens here?", files: [video], images: [] }).files).toEqual(["/home/me/clip.mov"]);
+    expect(canSend({ text: " ", files: [video], images: [] })).toBe(true);
   });
 
   it("recalls history from the edge lines only", () => {
@@ -198,13 +285,29 @@ describe("agent composer", () => {
     expect(atEdgeLine("a\nb", 1, 1)).toBe(false);
   });
 
+  it("defaults Cursor fast mode off when available", () => {
+    const fast = option("model_config", ["false", "true"], "true");
+    fast.id = "fast";
+    fast.name = "Fast";
+    expect(cursorModelDefaults("cursor", [fast])).toEqual({ fast: "false" });
+    expect(cursorModelDefaults("claude", [fast])).toEqual({});
+    expect(modelConfigOptions([fast]).map((o) => o.id)).toEqual(["fast"]);
+  });
+
   it("picks the main settings and cycles the mode", () => {
     const config = [option("fast", ["on"], null), option("mode", ["ask", "code"], "code"), option("model", ["m"], "m")];
-    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode"]);
+    expect(mainOptions(config).map((o) => o.id)).toEqual(["model", "mode", "fast"]);
     expect(nextValue(config[1]!)).toBe("ask");
     const permissions = option("allow_all", ["off", "on"], "off");
     permissions.category = "permissions";
-    expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id]);
+    expect(mainOptions([...config, permissions]).map((o) => o.id)).toEqual(["model", "mode", permissions.id, "fast"]);
+    const collaboration = option("collaboration_mode", ["default", "plan"], "default");
+    expect(mainOptions([...config, collaboration]).map((o) => o.id)).toEqual([
+      "model",
+      "mode",
+      collaboration.id,
+      "fast",
+    ]);
     const approvals = {
       ...option("openidea.cursor.approval", ["ask", "bypass"], "ask"),
       category: "approval",
@@ -214,6 +317,7 @@ describe("agent composer", () => {
       "mode",
       permissions.id,
       approvals.id,
+      "fast",
     ]);
     expect(
       [
@@ -233,7 +337,8 @@ describe("agent composer", () => {
       allow_all: "on",
     });
     expect(usageLabel({ used: 24_000, size: 200_000 })).toEqual({
-      short: "12%",
+      short: "24k/200k (12%)",
+      percent: 12,
       detail: "24k / 200k tokens",
     });
     expect(imageFromDataUrl("data:image/png;base64,AAA", "a.png")).toEqual({
@@ -464,16 +569,23 @@ describe("new task defaults", () => {
         description: null,
         category: id,
         current,
-        values: values.map((value) => ({ value, name: value, description: null })),
+        values: values.map((value) => ({
+          value,
+          name: value,
+          description: null,
+        })),
         via: "option",
       }) as AgentConfigOption;
     const provider = {
       id: "claude",
       config: [option("model", "sonnet", ["sonnet", "opus"]), option("mode", "default", ["default", "plan"])],
     } as unknown as Parameters<typeof draftConfig>[0];
-    const draft = { provider: "claude", config: {}, isolation: "local", base: null } as unknown as Parameters<
-      typeof draftConfig
-    >[1];
+    const draft = {
+      provider: "claude",
+      config: {},
+      isolation: "local",
+      base: null,
+    } as unknown as Parameters<typeof draftConfig>[1];
     const current = (d: typeof draft, defaults: Record<string, string>) =>
       draftConfig(provider, d, defaults).map((o) => o.current);
     expect(current(draft, { model: "opus", mode: "nope" })).toEqual(["opus", "default"]);

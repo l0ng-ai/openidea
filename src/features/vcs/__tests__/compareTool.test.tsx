@@ -114,6 +114,16 @@ describe("CompareToolWindow", () => {
     expect(mocks.openFile).toHaveBeenCalledWith("/workspace/client/src/app.ts", { focus: true });
   });
 
+  it("lists files without an inline diff and opens a file's diff in the editor", async () => {
+    mocks.openDiff.mockResolvedValue(undefined);
+    render(<CompareToolWindow />);
+    const file = await screen.findByText("app.ts");
+    fireEvent.mouseDown(file, { button: 0 });
+    expect(screen.queryByTestId("diff")).toBeNull();
+    fireEvent.doubleClick(file);
+    expect(mocks.openDiff).toHaveBeenLastCalledWith(expect.objectContaining({ path: "/workspace/client/src/app.ts" }));
+  });
+
   it("has no Jump to Source for a file deleted from the working tree", async () => {
     render(<CompareToolWindow />);
     fireEvent.mouseDown(await screen.findByText("old.ts"), { button: 0 });

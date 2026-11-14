@@ -4,6 +4,7 @@ import {
   ATTRIBUTES,
   CLEAR_COLOR,
   _setSchemeSource,
+  overrideDeclarations,
   resolvedAttribute,
   schemeAfterThemeChange,
   schemeCss,
@@ -56,6 +57,58 @@ describe("color schemes", () => {
     const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
     expect(css).toContain('.cm-editor[data-language="Go"]');
     expect(css).toContain("--syn-constant: #224466 !important");
+  });
+
+  it("offers a C# scheme page and scopes its overrides to C# editors", () => {
+    expect(ATTRIBUTES.find((a) => a.id === "csharp.className")?.path).toEqual(["C#"]);
+    const css = schemeCss("dark", { dark: { "csharp.keyword": { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="C#"]');
+    expect(css).toContain("--syn-keyword: #224466 !important");
+  });
+
+  it("groups Python attributes as PyCharm's color settings page does", () => {
+    const python = (name: string) => ATTRIBUTES.find((a) => a.id === `py${name}`)!;
+    expect(python("Number").name).toBe("Number");
+    expect(python("Keyword").name).toBe("Keyword");
+    expect(python("LineComment").name).toBe("Line comment");
+    expect(python("String").name).toBe("String › Text (unicode)");
+    expect(python("ValidEscape").name).toBe("String › Escape sequence › Valid");
+    expect(python("InvalidEscape").name).toBe("String › Escape sequence › Invalid");
+    expect(python("FString").name).toBe("String › f-string › Expression braces");
+    expect(python("Bytes").name).toBe("String › Binary (bytes)");
+    expect(python("Docstring").name).toBe("Docstring › Text");
+    expect(python("OperationSign").name).toBe("Braces and Operators › Operation sign");
+    expect(python("Parentheses").name).toBe("Braces and Operators › Parentheses");
+    expect(python("FunctionDeclaration").name).toBe("Functions › Function definition");
+    expect(python("FunctionCall").name).toBe("Functions › Function call");
+    expect(python("MethodCall").name).toBe("Functions › Method call");
+    expect(python("NestedFunction").name).toBe("Functions › Nested function definition");
+    expect(python("Parameter").name).toBe("Parameters › Parameter");
+    expect(python("Self").name).toBe("Parameters › 'self' parameter");
+    expect(python("KeywordArg").name).toBe("Keyword argument");
+    expect(python("PredefinedDefinition").name).toBe("Special names › Definition");
+    expect(python("PredefinedUsage").name).toBe("Special names › Usage");
+    expect(python("Builtin").name).toBe("Special names › Built-in name");
+    expect(python("Decorator").name).toBe("Special names › Decorator");
+    expect(python("ClassDefinition").name).toBe("Classes › Class definition");
+    expect(python("LocalVariable").name).toBe("Identifiers › Local variables");
+    expect(python("GlobalVariable").name).toBe("Identifiers › Global variable");
+    // Attribute ids (the override and .icls keys) keep their old, stable names.
+    for (const a of ATTRIBUTES.filter((a) => a.path[0] === "Python")) {
+      expect(a.id).toMatch(/^py[A-Z]/);
+      expect(a.language).toBe("Python");
+    }
+  });
+
+  it("scopes Python overrides to Python editors and falls back to the shared token like JetBrains", () => {
+    // Shared token: a Python override lands in the language block, not on :root.
+    expect(ATTRIBUTES.find((a) => a.id === "pyKeyword")?.token).toBe("keyword");
+    const css = schemeCss("dark", { dark: { pyKeyword: { foreground: "#224466" } } });
+    expect(css).toContain('.cm-editor[data-language="Python"]');
+    expect(css).toContain("--syn-keyword: #224466 !important");
+    expect(css.indexOf('.cm-editor[data-language="Python"]')).toBeGreaterThan(css.indexOf(":root"));
+    // Unset values resolve through the shared scheme token, as JetBrains' fallback keys do.
+    expect(resolvedAttribute("dark", "pyKeyword")).toMatchObject({ foreground: "#cf8e6d" });
   });
 
   it("resolves scheme attribute state and editor defaults", () => {
@@ -114,6 +167,25 @@ describe("color schemes", () => {
     expect(upright).toContain("--syn-static-italic: normal !important");
     const pythonItalic = schemeCss("theme-default", { light: { pyStaticSymbol: { italic: true } } }, root);
     expect(pythonItalic).toContain("--syn-python-static-italic: italic !important");
+  });
+
+  it("mirrors Console Colors ANSI overrides to the terminal palette (#2698)", () => {
+    expect(ATTRIBUTES.filter((a) => a.path[0] === "Console Colors")).toHaveLength(17);
+    const root = document.documentElement;
+    root.dataset.theme = "light";
+    const css = schemeCss(
+      "theme-default",
+      {
+        light: {
+          ansiRed: { foreground: "#aa0000" },
+          consoleBackground: { background: "#101010" },
+        },
+      },
+      root,
+    );
+    expect(css).toContain("--ansi-red: #aa0000 !important");
+    expect(css).toContain("--terminal-ansi-red: #aa0000 !important");
+    expect(css).toContain("--bg-console: #101010 !important");
   });
 
   it("leaves selected text in syntax colours until a selection foreground is set (#2446)", () => {
@@ -175,7 +247,7 @@ describe("color schemes", () => {
   });
 
   it("switches a chosen scheme of the other kind back to the theme's own when the theme turns light or dark", async () => {
-    expect(schemeAfterThemeChange("one-dark", "light")).toBe("theme-default");
+    expect(schemeAfterThemeChange("solarized-dark", "light")).toBe("theme-default");
     expect(schemeAfterThemeChange("solarized-light", "light")).toBeNull();
     expect(schemeAfterThemeChange("theme-default", "light")).toBeNull();
     const customs = { "custom-night": { name: "Night", parent: "dark" as const, attributes: {} } };
@@ -186,7 +258,7 @@ describe("color schemes", () => {
     root.dataset.theme = "dark";
     const previous = useProject.getState().settings;
     const scheme = () => useProject.getState().settings?.editor?.colorScheme;
-    useProject.setState({ settings: { editor: { colorScheme: "one-dark" } } as unknown as Settings });
+    useProject.setState({ settings: { editor: { colorScheme: "solarized-dark" } } as unknown as Settings });
     const dispose = installColorScheme();
     try {
       root.dataset.theme = "light";
@@ -269,5 +341,44 @@ describe("color schemes", () => {
     expect(v.tabs.placement).toBe("none");
     expect(v.codeStyle.languages.go).toEqual({ useTab: true });
     expect(v.general.softWrapFiles).toContain("*.md");
+  });
+
+  it("styles Errors and Warnings attributes beyond colour", () => {
+    const decls = overrideDeclarations({
+      error: { bold: true, italic: true, effect: "strikeout", effectColor: "#ff0000" },
+      unused: { italic: true },
+    });
+    const map = new Map(decls);
+    expect(map.get("--wave-error-bold")).toBe("var(--fw-code-bold, 700)");
+    expect(map.get("--wave-error-italic")).toBe("italic");
+    expect(map.get("--wave-error-effect")).toBe("line-through #ff0000");
+    expect(map.get("--editor-error-decoration")).toBe("line-through #ff0000");
+    expect(map.get("--wave-error")).toBe("#ff0000");
+    expect(map.get("--fg-unused-italic")).toBe("italic");
+    const none = new Map(overrideDeclarations({ warning: { effect: "none" }, deprecated: { effect: "underline" } }));
+    expect(none.get("--editor-warning-decoration")).toBe("none");
+    expect(none.get("--fg-deprecated-effect")).toBe("underline var(--fg-deprecated)");
+  });
+
+  it("keeps the font style of Errors and Warnings in custom schemes", () => {
+    const customs = {
+      "custom-x": {
+        name: "X",
+        parent: "dark" as const,
+        attributes: { error: { bold: true }, deprecated: { effect: "underline" as const } },
+      },
+    };
+    const css = schemeCss("custom-x", undefined, null, customs);
+    expect(css).toContain("--wave-error-bold: var(--fw-code-bold, 700)");
+    expect(css).toContain("--fg-deprecated-effect: underline var(--fg-deprecated)");
+  });
+
+  it("lists typo and deprecated symbol under Errors and Warnings", () => {
+    const ids = ATTRIBUTES.filter((a) => a.path.join("/") === "General/Errors and Warnings").map((a) => a.id);
+    expect(ids).toEqual(["error", "warning", "weakWarning", "typo", "unused", "deprecated", "invalid"]);
+    expect(resolvedAttribute("dark", "typo")).toMatchObject({ effect: "wave" });
+    expect(resolvedAttribute("dark", "deprecated")).toMatchObject({ effect: "strikeout", effectColor: "#8c8f95" });
+    expect(resolvedAttribute("dark", "deprecated").foreground).toBeUndefined();
+    expect(resolvedAttribute("dark", "error")).toMatchObject({ effect: "wave", bold: false, italic: false });
   });
 });

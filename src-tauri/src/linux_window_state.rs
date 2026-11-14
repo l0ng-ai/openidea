@@ -124,9 +124,6 @@ mod runtime {
     }
 
     pub fn prepare(app: &AppHandle, config: &mut WindowConfig) -> bool {
-        let hint_monitor = app.primary_monitor().ok().flatten();
-        let hint_scale = hint_monitor.as_ref().map_or(1.0, |m| m.scale_factor());
-        let hint_area = hint_monitor.map(|m| Size(m.work_area().size.width, m.work_area().size.height));
         let cache = app.state::<Mutex<Cache>>();
         let mut cache = cache.lock();
         let saved = cache.saved.get(key(&config.label)).cloned().unwrap_or_else(|| Geometry {
@@ -149,15 +146,38 @@ mod runtime {
         };
         if pending.saved.width > 0 && pending.saved.height > 0 {
             // This only reduces the first-frame jump; mapped geometry is authoritative.
-            let size = restore_size(pending.normal, hint_scale, pending.limits.in_work_area(hint_area, hint_scale));
-            config.width = f64::from(size.0) / hint_scale;
-            config.height = f64::from(size.1) / hint_scale;
+            if let Some((hint, scale)) = first_map_hint(app, pending.limits, pending.normal) {
+                config.width = f64::from(hint.0) / scale;
+                config.height = f64::from(hint.1) / scale;
+            }
         }
         cache.windows.insert(config.label.clone(), pending);
         // Establish a normal window before asking GTK to maximize or fullscreen it.
         config.maximized = false;
         config.fullscreen = false;
         build_hidden(config)
+    }
+
+    /// The first-map size hint and its scale. X11 has a primary monitor to convert the
+    /// saved physical size up front; Wayland has none — the compositor picks the output
+    /// and its scale after mapping — so the hint stays below Mutter's auto-maximize
+    /// threshold on every output.
+    fn first_map_hint(app: &AppHandle, limits: Limits, saved: Size) -> Option<(Size, f64)> {
+        if !is_wayland() {
+            let monitor = app.primary_monitor().ok().flatten();
+            let scale = monitor.as_ref().map_or(1.0, |m| m.scale_factor());
+            let area = monitor.map(|m| Size(m.work_area().size.width, m.work_area().size.height));
+            return Some((restore_size(saved, scale, limits.in_work_area(area, scale)), scale));
+        }
+        let outputs: Vec<(f64, Size)> = app
+            .available_monitors()
+            .unwrap_or_default()
+            .iter()
+            .map(|monitor| {
+                (monitor.scale_factor(), Size(monitor.work_area().size.width, monitor.work_area().size.height))
+            })
+            .collect();
+        compositor_first_map_hint(saved, limits, &outputs)
     }
 
     fn sample(window: &Window, allow_restore: bool, accept_constrained_size: bool) {
@@ -399,7 +419,7 @@ mod runtime {
 
     fn persist(app: &AppHandle) {
         let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let dir = app.path().app_config_dir()?;
+            let dir = ide_host::data_dirs::config_dir(&app.config().identifier)?;
             std::fs::create_dir_all(&dir)?;
             let cache = app.state::<Mutex<Cache>>();
             let data = serde_json::to_vec_pretty(&cache.lock().saved)?;
@@ -419,9 +439,7 @@ mod runtime {
                 // Plugins are set up on the main thread once GTK is initialised, before any window exists.
                 use gtk::gdk::prelude::DisplayExtManual;
                 let _ = WAYLAND.set(gtk::gdk::Display::default().is_some_and(|d| d.backend().is_wayland()));
-                let saved = app
-                    .path()
-                    .app_config_dir()
+                let saved = ide_host::data_dirs::config_dir(&app.config().identifier)
                     .ok()
                     .and_then(|dir| std::fs::read(dir.join(FILE)).ok())
                     .and_then(|data| serde_json::from_slice(&data).ok())

@@ -31,11 +31,11 @@ pub(super) fn transcript(config_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
 }
 
 /// The project directory name Claude Code uses for `cwd`.
-pub(super) fn escape(cwd: &Path) -> String {
+pub(crate) fn escape(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
-pub(super) fn read(path: &Path) -> std::io::Result<Vec<Value>> {
+pub(crate) fn read(path: &Path) -> std::io::Result<Vec<Value>> {
     let text = std::fs::read_to_string(path)?;
     Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
 }
@@ -111,7 +111,7 @@ fn block_ids<'a>(e: &'a Value, ty: &'a str, key: &'a str) -> impl Iterator<Item 
 
 /// Whether `e` is a message that started a turn: the user's own, not a tool result, a
 /// steer, or text Claude Code added.
-pub(super) fn is_turn_start(e: &Value) -> bool {
+pub(crate) fn is_turn_start(e: &Value) -> bool {
     if kind(e) != "user" || e.get("isMeta").and_then(Value::as_bool) == Some(true) {
         return false;
     }
@@ -149,13 +149,49 @@ pub(super) fn cut(chain: &[&Value], turns: usize) -> Result<Option<String>, Stri
 }
 
 /// The newest title Claude Code gave the session.
-pub(super) fn title(entries: &[Value]) -> Option<String> {
+pub(crate) fn title(entries: &[Value]) -> Option<String> {
     entries
         .iter()
         .rev()
         .find(|e| kind(e) == "ai-title" || kind(e) == "custom-title")
         .and_then(|e| e.get("aiTitle").or_else(|| e.get("customTitle")).and_then(Value::as_str))
         .map(str::to_owned)
+}
+
+/// Claude Code titles a session from the last 1000 characters of its text.
+const TITLE_SOURCE_CHARS: usize = 1000;
+/// Below this Claude Code gives no title without asking the model.
+const TITLE_SOURCE_MIN_CHARS: usize = 10;
+
+/// The conversation's own text to title the session after: the prompts and the replies,
+/// without the files attached to the prompts. `None` while there is too little.
+pub(super) fn title_source(entries: &[Value]) -> Option<String> {
+    let mut text = String::new();
+    for e in chain(entries, None) {
+        if !(is_turn_start(e) || kind(e) == "assistant") {
+            continue;
+        }
+        let blocks = match e.pointer("/message/content") {
+            Some(Value::String(s)) => vec![s.as_str()],
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .filter(|t| !t.starts_with("\n<context ref="))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for block in blocks {
+            text.push_str(block);
+            text.push('\n');
+        }
+    }
+    let text = text.trim();
+    let len = text.chars().count();
+    if len < TITLE_SOURCE_MIN_CHARS {
+        return None;
+    }
+    Some(text.chars().skip(len.saturating_sub(TITLE_SOURCE_CHARS)).collect())
 }
 
 #[cfg(test)]
@@ -217,6 +253,29 @@ mod tests {
         assert_eq!(ids, ["u1", "a1", "r2", "r1", steer.as_str(), "i"]);
         assert_eq!(c.iter().filter(|e| is_turn_start(e)).count(), 1);
         assert_eq!(cut(&c, 1), Ok(None));
+    }
+
+    #[test]
+    fn titles_come_from_prompts_and_replies() {
+        let mut prompt = user("u1", None, "Fix the login form");
+        prompt["message"]["content"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type": "text", "text": "\n<context ref=\"file:///p/a.rs\">\nfn a() {}\n</context>"}));
+        let entries = vec![
+            prompt,
+            assistant(
+                "a1",
+                "u1",
+                json!([{"type": "thinking", "thinking": "hm"}, {"type": "text", "text": "Done."},
+                    {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]),
+            ),
+            json!({"type": "user", "uuid": "r1", "parentUuid": "a1", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "out"}]}}),
+        ];
+        assert_eq!(title_source(&entries).as_deref(), Some("Fix the login form\nDone."));
+        assert_eq!(title_source(&[user("u1", None, "hi")]), None);
+        let long = "x".repeat(TITLE_SOURCE_CHARS + 5);
+        assert_eq!(title_source(&[user("u1", None, &long)]).map(|t| t.chars().count()), Some(TITLE_SOURCE_CHARS));
     }
 
     #[test]

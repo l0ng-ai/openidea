@@ -7,15 +7,17 @@ import { executeAction, executeActionOrThrow, getAction, registerActions } from 
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
+import { agentRunSettings, onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import { showContextMenu, lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import {
   menuGroupItems,
   useDebugRunSessions,
   notifications,
+  provideRunOutput,
   registerMenuGroup,
   registerOverlay,
   registerRunAnythingProvider,
+  registerRunConfigType,
   registerRunningProcessesProvider,
   registerServiceProvider,
   registerTitleItem,
@@ -42,7 +44,12 @@ import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
 import { runConfigsRunAnything } from "./runAnything";
-import { cleanupRemovedProject, recordRun, registerRunServiceActions, runServiceProvider } from "./services";
+import {
+  cleanupRemovedProject,
+  registerRunServiceActions,
+  runServiceProvider,
+  watchServiceRunningCount,
+} from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
 import { cmakeBuildId } from "./cmake";
@@ -51,6 +58,7 @@ import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
 import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
 import { runGutter } from "./runGutter";
@@ -80,11 +88,13 @@ import {
   startRun,
   startSampleOutput,
   stopSession,
+  subscribeOutput,
   trackRecentConfigurations,
   useRun,
   isLive,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
+import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
 
@@ -154,7 +164,6 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   }
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain, show))) return;
-  recordRun(config.id);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
@@ -372,6 +381,7 @@ export function activate(): () => void {
       icon: "toolwindow-run",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 5,
       component: lazyComponent(() => import("./RunView").then((m) => m.RunView)),
       headerContent: lazyComponent(() => import("./RunView").then((m) => m.RunTabs)),
@@ -380,6 +390,7 @@ export function activate(): () => void {
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
     registerBuiltinTypes(),
+    registerRunConfigType(junitType),
     registerGoActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
@@ -392,6 +403,7 @@ export function activate(): () => void {
     registerOverlay({ id: "run.serviceImport", component: ServiceImportHost }),
     registerServiceProvider(runServiceProvider),
     registerRunServiceActions(),
+    watchServiceRunningCount(),
     registerRunningProcessesProvider({
       id: "run",
       running: () =>
@@ -627,6 +639,16 @@ export function activate(): () => void {
         },
       },
       {
+        id: "run.agentStart",
+        title: "Run Agent Command",
+        description:
+          "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.",
+        category: "Run",
+        hidden: true,
+        when: "projectOpen",
+        run: ({ arg }) => startAgentRun(arg as AgentRunRequest),
+      },
+      {
         id: "run.pluginStart",
         title: "Run Plugin Configuration",
         category: "Run",
@@ -657,7 +679,16 @@ export function activate(): () => void {
         run: async ({ arg }) => {
           await ensureConfigs();
           const config = configFromArg(arg);
-          if (config) await startRun(config);
+          if (!config) return;
+          // `{ config, onExit }`: told when the process exits, or right away when it didn't start.
+          const onExit = (arg as { onExit?: (code: number | null, stopped: boolean) => void } | null)?.onExit;
+          if (typeof onExit !== "function") {
+            await startRun(config);
+            return;
+          }
+          const session = await startRun(config, undefined, undefined, { onExit });
+          if (!session || session.status === "failed") onExit(null, false);
+          else if (session.runId === null && session.status === "finished") onExit(session.exitCode, !!session.stopped);
         },
       },
       {
@@ -717,6 +748,11 @@ export function activate(): () => void {
       setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
       setContext("run.updatableRunning", updatableSessions().length > 0);
     }),
+    // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
+    useRun.subscribe((s, prev) => {
+      if (s.sessions !== prev.sessions) trimAgentArchive();
+    }),
+    onWorkflowSettingsChange(() => agentRunSettings(), trimAgentArchive),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root && s.project?.trusted === prev.project?.trusted) return;
       resetRuns();
@@ -727,6 +763,8 @@ export function activate(): () => void {
 
   setBeforeLaunchRunner(runBeforeLaunch);
   disposers.push(() => setBeforeLaunchRunner(null));
+  provideRunOutput({ subscribe: subscribeOutput });
+  disposers.push(() => provideRunOutput(undefined));
   if (hasProject()) void loadConfigs();
 
   // Reload when run.toml or build files change on disk (cheap; detection is fast).

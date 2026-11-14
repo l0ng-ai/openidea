@@ -78,6 +78,18 @@ impl Plugin for Execution {
                 })?;
                 Ok(None)
             }
+            "diff" => {
+                host::open_diff(
+                    &ContentDiff {
+                        left: "before\n".into(),
+                        right: "after\n".into(),
+                        title: Some("Review".into()),
+                        ..Default::default()
+                    },
+                    Some("src/review.rs"),
+                )?;
+                Ok(None)
+            }
             "events" => host::storage::get("events"),
             "validation" => host::storage::get("validation"),
             _ => Err(Error::NotFound(id.into())),

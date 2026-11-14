@@ -95,6 +95,36 @@ describe("Language Servers page settings", () => {
     expect(within(details("gopls")).queryByRole("button", { name: /^Language server for/ })).toBeNull();
   });
 
+  it("shows a picker for each language a shared alternative serves", async () => {
+    const base = backend.tools.find((t) => t.name === "gopls")!;
+    const server = (name: string, languages: string[], alternatives: string[]) => ({
+      ...base,
+      name,
+      displayName: name,
+      command: name,
+      languages,
+      alternatives,
+    });
+    backend.tools.push(
+      server("jdtls", ["Java"], ["jdtls", "kmp-lsp"]),
+      server("kotlin-lsp", ["Kotlin"], ["kotlin-lsp", "kmp-lsp"]),
+      server("kmp-lsp", ["Java", "Kotlin"], ["jdtls", "kmp-lsp"]),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(listItem("kmp-lsp")).not.toBeNull());
+    await user.click(listItem("kmp-lsp")!);
+    const kmp = within(details("kmp-lsp"));
+    expect(kmp.getByRole("button", { name: "Language server for Java" })).toHaveTextContent("Automatic");
+    expect(kmp.getByRole("button", { name: "Language server for Kotlin" })).toHaveTextContent("Automatic");
+    await user.click(listItem("kotlin-lsp")!);
+    await waitFor(() =>
+      expect(
+        within(details("Kotlin LSP (JetBrains)")).getAllByRole("button", { name: /^Language server for/ }),
+      ).toHaveLength(1),
+    );
+  });
+
   it("selects exactly one Python analyzer and restores automatic fallback without writing defaults", async () => {
     const user = userEvent.setup();
     renderPage();

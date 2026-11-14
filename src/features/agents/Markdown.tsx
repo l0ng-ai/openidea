@@ -11,7 +11,6 @@ import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { iconNode } from "@/editor/lsp/iconMarkup";
-import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
@@ -19,7 +18,8 @@ import { editorService } from "@/workbench/contributions";
 import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { fileHref, pathLink, type PathLink } from "./conversation";
-import { loadImages } from "./markdownImages";
+import { loadImages, type MessageImages } from "./markdownImages";
+import { fileExists } from "./ReferenceChip";
 import styles from "./Session.module.css";
 
 const escapeHtml = (s: string) =>
@@ -42,9 +42,20 @@ const RENDERED_MAX = 500;
 
 let purifier: ReturnType<typeof DOMPurify> | null = null;
 
+/** Whether the webview would read `value` as an address on another host: it drops blanks and takes `\` for `/`. */
+const namesHost = (value: string) =>
+  /^(https?:|[\\/]{2})/i.test([...value].filter((c) => c.charCodeAt(0) > 32).join(""));
+
 function purify(): ReturnType<typeof DOMPurify> {
   if (purifier) return purifier;
   const p = DOMPurify(window);
+  // A reply reaches another host only when the user asks: a link they click, an image `loadImages` holds.
+  // `poster`, `background` and the `src` of other tags would fetch as soon as the reply renders.
+  p.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName === "alt" || data.attrName === "title") return;
+    if (data.attrName === "href" && node.tagName === "A") return;
+    if (namesHost(data.attrValue)) data.keepAttr = false;
+  });
   const sources = new WeakMap<Node, string>();
   // Preserve image-only file URLs without relaxing URI sanitizing for links or other tags.
   p.addHook("beforeSanitizeAttributes", (node) => {
@@ -156,27 +167,13 @@ function wrapLooseText(li: Element) {
   flush();
 }
 
-/** Whether a path names an existing file, per path (agents name the same files again and again). */
-const existing = new Map<string, Promise<boolean>>();
-function fileExists(path: string): Promise<boolean> {
-  let known = existing.get(path);
-  if (!known) {
-    known = call(commands.fsProbe(path)).then(
-      () => true,
-      () => false,
-    );
-    existing.set(path, known);
-  }
-  return known;
-}
-
 export function openPathLink(link: PathLink) {
   const selection = link.line === undefined ? undefined : { line: link.line, col: link.col ?? 0 };
   void editorService().openFile(link.path, { selection, focus: true });
 }
 
 /** Highlighting, Copy buttons and file links over freshly rendered `root`. */
-function enhance(root: HTMLElement, cwd: string, images: Map<string, Promise<string>>): () => void {
+function enhance(root: HTMLElement, cwd: string, images: MessageImages): () => void {
   let alive = true;
   const disposeImages = loadImages(root, cwd, images);
   const copies: HTMLButtonElement[] = [];
@@ -243,7 +240,7 @@ function paintBlocks(
   painted: PaintedBlock[],
   sources: string[],
   cwd: string,
-  images: Map<string, Promise<string>>,
+  images: MessageImages,
 ) {
   let same = 0;
   while (same < painted.length && same < sources.length && painted[same]!.source === sources[same]) same++;
@@ -271,7 +268,7 @@ export function Markdown({
   onDiagramDrawn?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const images = useRef(new Map<string, Promise<string>>());
+  const images = useRef<MessageImages>({ reads: new Map(), asked: new Set() });
   /** The blocks on screen, so a streamed chunk repaints only the blocks it changed. */
   const painted = useRef<PaintedBlock[]>([]);
   const paintedCwd = useRef(cwd);

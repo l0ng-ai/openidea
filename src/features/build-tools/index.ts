@@ -20,6 +20,7 @@ import {
 import { lazyComponent } from "@/ui";
 import { GradleView, MavenView } from "./BuildToolView";
 import { ExecutePopupHost } from "./ExecutePopup";
+import { pomCompletionExtension } from "./pomCompletion";
 import { pomNavigationExtension } from "./pomNavigation";
 import { buildToolsRunAnything } from "./runAnything";
 import { versionCatalogExtension } from "./versionCatalog";
@@ -35,6 +36,7 @@ import {
 import {
   ANALYZER_KIND,
   addProjects,
+  importModuleFromExistingSources,
   linkGradleProjects,
   unlinkGradleProjects,
   requestSync,
@@ -48,8 +50,10 @@ import {
   resetBuild,
   setExpanded,
   setCurrentProject,
+  generateSources,
   syncTool,
   toggleGradleOffline,
+  toggleGradleSkipTests,
   toggleMavenOffline,
   toggleSkipTests,
   useBuild,
@@ -190,6 +194,7 @@ export function activate(): () => void {
     registerOverlay({ id: "build-tools.execute", component: ExecutePopupHost }),
     registerEditorContribution({ id: "build-tools.versionCatalog", extensions: versionCatalogExtension }),
     registerEditorContribution({ id: "build-tools.pomNavigation", extensions: pomNavigationExtension }),
+    registerEditorContribution({ id: "build-tools.pomCompletion", extensions: pomCompletionExtension }),
     registerRunAnythingProvider(buildToolsRunAnything),
     registerEditorKind({
       kind: ANALYZER_KIND,
@@ -278,10 +283,23 @@ export function activate(): () => void {
       {
         id: "maven.addProjects",
         title: "Add Maven Projects",
+        description:
+          "Choose one or more pom.xml files inside or outside the opened project. The opened folder stays the project root.",
         category: "Maven",
         icon: "plus",
         when: "projectOpen && !workspaceOpen",
         run: () => addProjects(),
+      },
+      {
+        id: "maven.importExternal",
+        title: "Import Module from Existing Sources",
+        description:
+          "Choose a module directory outside the opened project. If it contains pom.xml, that Maven project is attached. The opened folder stays the project root, and neither POM is edited.",
+        category: "Maven",
+        icon: "plus",
+        when: "projectOpen && !workspaceOpen",
+        keywords: ["import", "module", "existing", "sources", "external", "maven", "pom"],
+        run: () => importModuleFromExistingSources(),
       },
       {
         id: "maven.unlinkProjects",
@@ -300,6 +318,20 @@ export function activate(): () => void {
         when: MAVEN_WHEN,
         keywords: ["maven", "sync", "reimport", "refresh"],
         run: () => syncTool("maven"),
+      },
+      {
+        id: "maven.generateSources",
+        title: "Generate Sources and Update Folders For All Projects",
+        description:
+          "Runs generate-sources, then reloads the Maven projects so generated folders become source folders",
+        category: "Maven",
+        icon: "folder-generated-source",
+        when: MAVEN_WHEN,
+        keywords: ["maven", "generate", "sources", "generated", "update folders"],
+        run: ({ arg }) => {
+          const pom = (arg as { pom?: unknown } | null | undefined)?.pom;
+          return generateSources(typeof pom === "string" ? pom : null);
+        },
       },
       {
         id: "maven.cancelReload",
@@ -435,6 +467,17 @@ export function activate(): () => void {
         keywords: ["gradle", "offline"],
         toggled: () => useBuild.getState().settings.gradle.offline,
         run: () => toggleGradleOffline(),
+      },
+      {
+        id: "gradle.toggleSkipTests",
+        title: "Toggle 'Skip Tests' Mode",
+        description: "Runs Gradle with -x test",
+        category: "Gradle",
+        icon: "skip-tests",
+        when: GRADLE_WHEN,
+        keywords: ["gradle", "skip tests"],
+        toggled: () => useBuild.getState().settings.gradle.skipTests,
+        run: () => toggleGradleSkipTests(),
       },
       {
         id: "gradle.expandAll",

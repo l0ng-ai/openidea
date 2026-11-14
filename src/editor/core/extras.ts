@@ -1,5 +1,5 @@
 /** Edit › Paste from History and Code › Unwrap/Remove: the parts that need popups or the backend. */
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { structure } from "@/editor/structure";
@@ -103,7 +103,7 @@ export async function pasteAsPlainText(view: EditorView) {
   if (view.state.readOnly) return;
   let text: string;
   try {
-    text = (await navigator.clipboard?.readText()) ?? "";
+    text = await readClipboardPlainText();
   } catch {
     hint("Cannot read the clipboard");
     return;

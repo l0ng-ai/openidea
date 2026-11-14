@@ -31,22 +31,18 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  /* The chips' own padding spaces them. */
   gap: 2px;
   padding: 0 2px;
   font-size: var(--fs-small);
 }
 /* The current branch, read-only: same height and colour as the pickers beside it. */
 .branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: var(--h-control);
-  padding: 0 6px;
-  color: var(--fg-secondary);
+  min-width: 0;
 }
-.project {
-  margin-right: 6px;
-  color: var(--fg-muted);
+/* The row's own gaps space "on" and "from"; the note's padding is for the lines below. */
+.where .note {
+  padding: 0;
 }
 
 .note,
@@ -72,24 +68,18 @@
 .docked .where {
   flex-wrap: nowrap;
   min-width: 0;
-  gap: 6px;
 }
-.docked .project,
-.docked .projectPicker {
+.docked .projectPicker,
+.docked .projectChip {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 30%;
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .docked .branch,
 .docked .basePicker {
   order: 1;
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
-  padding: 0;
 }
 .docked .isolation {
   order: 2;
@@ -97,10 +87,4 @@
   min-width: 0;
   max-width: 45%;
   margin-left: auto;
-}
-.branchName {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

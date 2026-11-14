@@ -31,7 +31,7 @@ import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
-import { detectRunTargets, targetConfig, targetLanguage, type RunTarget } from "./targets";
+import { detectRunTargets, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
 import { tx } from "@/platform/i18n";
 
 export interface LocatedTool {
@@ -220,7 +220,9 @@ export type ScriptLanguage =
   | "cpp"
   | "dart"
   | "elixir"
+  | "escript"
   | "scala"
+  | "zig"
   | "shebang";
 
 /** `#!/usr/bin/env -S deno run` → `["deno", "run"]`; `#!/bin/zsh -f` → `["/bin/zsh", "-f"]`. */
@@ -259,7 +261,9 @@ export function scriptLanguage(path: string, content?: string): ScriptLanguage |
   if (/\.(cpp|cc|cxx|c\+\+)$/.test(name)) return "cpp";
   if (/\.dart$/.test(name)) return "dart";
   if (/\.exs$/.test(name)) return "elixir";
+  if (/\.escript$/.test(name)) return "escript";
   if (/\.(scala|sc)$/.test(name)) return "scala";
+  if (/\.zig$/.test(name)) return "zig";
   if (!name.includes(".") && shebang(content)) return "shebang";
   return null;
 }
@@ -313,8 +317,12 @@ export function toolsFor(lang: ScriptLanguage, content?: string): string[] {
       return ["dart"];
     case "elixir":
       return ["elixir"];
+    case "escript":
+      return ["escript"];
     case "scala":
       return ["scala-cli"];
+    case "zig":
+      return ["zig"];
   }
 }
 
@@ -338,7 +346,9 @@ const INSTALL: Record<string, string> = {
   cpp: "Install a C++ compiler: `xcode-select --install` (clang++) or `brew install gcc`.",
   dart: "Install the Dart SDK (`brew install dart-sdk`).",
   elixir: "Install Elixir (`brew install elixir`).",
+  escript: "Install Erlang/OTP (`brew install erlang`).",
   scala: "Install Scala CLI (`brew install Virtuslab/scala-cli/scala-cli`).",
+  zig: "Install Zig from https://ziglang.org/download (or `brew install zig`).",
   shell: "Install the shell named in the script's #! line.",
   shebang: "Install the interpreter named in the script's #! line.",
 };
@@ -356,6 +366,7 @@ const LANGUAGE_NAMES: Partial<Record<ScriptLanguage, string>> = {
   c: "A C compiler",
   cpp: "A C++ compiler",
   scala: "Scala CLI",
+  zig: "Zig",
 };
 
 function missing(lang: ScriptLanguage, file: string, tools: string[]): Missing {
@@ -424,6 +435,7 @@ function site(input: ContextInput): FileSite {
     python: ["python", "pytest", "django-test"],
     ruby: ["ruby", "rake", "rspec"],
     php: ["php", "phpunit", "composer"],
+    zig: ["zig", "zig-application"],
   };
   const owner =
     inside && language
@@ -520,7 +532,7 @@ function jsRuntime(lang: "js" | "ts", env: ToolEnv, s: FileSite): Produced {
   }
   if (s.inProject && env.bun) {
     const bun = pick(env, ["bun"]);
-    if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg]));
+    if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg], "bun-dap"));
   }
   const node = env.tool("node");
   const nodeCmd = node === undefined ? "node" : (node?.path ?? null);
@@ -601,6 +613,51 @@ function compiled(
   const binary: RunConfig = { ...config, kind: "native", command: out, args: runArgs, isTest: false };
   return { name, scope, config, debug: { build: buildConfig, config: binary } };
 }
+
+/**
+ * A Zig file: `zig run` its `main`, `zig test` its tests (one of them with `--test-filter`). Debugging
+ * builds the same file into a binary (`build-exe`, or `test --test-no-exec`) and launches that.
+ */
+function zigFile(input: ContextInput, env: ToolEnv, s: FileSite, test?: { name: string; filter?: string }): Produced {
+  const win = !!env.windows;
+  const name = test?.name ?? s.file;
+  const scope = test?.filter !== undefined ? "element" : "file";
+  const zig = pick(env, toolsFor("zig"));
+  if (!zig) return { name, scope, missing: missing("zig", s.file, toolsFor("zig")) };
+  const filter = test?.filter !== undefined ? ["--test-filter", test.filter] : [];
+  const idPath = test?.filter !== undefined ? `${s.idPath}#${test.filter}` : s.idPath;
+  const dir = env.compileDir.replace(/\\/g, "/").replace(/(.)\/+$/, "$1");
+  const out = nativePath(
+    `${dir}/${stemOf(s.file)}-${hash(input.path + (test?.filter ?? ""))}${test ? "-test" : ""}${win ? ".exe" : ""}`,
+    win,
+  );
+  const config: RunConfig = {
+    ...fileConfig(s, "zig", zig.command, test ? ["test", s.arg, ...filter] : ["run", s.arg], "codelldb"),
+    id: `context:file:${idPath}`,
+    name,
+    isTest: !!test,
+  };
+  const compile = test ? ["test", s.arg, ...filter, "--test-no-exec"] : ["build-exe", s.arg];
+  const buildConfig: RunConfig = {
+    ...config,
+    id: `context:build:${idPath}`,
+    name: `Build ${s.file}`,
+    command: `${mkdirLine(dir, win)} && ${shellLine([zig.command, ...compile, `-femit-bin=${out}`], win)}`,
+    args: [],
+    isTest: false,
+    debugAdapter: null,
+  };
+  const binary: RunConfig = { ...config, kind: "native", command: out, args: [], isTest: false };
+  return { name, scope, config, debug: { build: buildConfig, config: binary } };
+}
+
+/** The executable of the file's `build.zig` whose root source file it is. */
+function zigExecutable(rel: string, configs: readonly RunConfig[]): RunConfig | undefined {
+  return buildOwners(rel, configs, ["zig-application"]).find((c) => c.params?.source === relativeToCwd(rel, c));
+}
+
+const hasZigMain = (content?: string) => content === undefined || /^pub\s+fn\s+main\s*\(/m.test(content);
+const hasZigTests = (content?: string) => content !== undefined && /^\s*test\s+("|[A-Za-z_])/m.test(content);
 
 /**
  * A single Java file. The source launcher (`java Hi.java`, JEP 330) runs the file's first
@@ -781,6 +838,11 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
       const main = contextConfig(rel, configs, input.content);
       return main ? { name: main.name, scope: "file", config: main } : null;
     }
+    if (lang === "zig" && hasZigMain(input.content)) {
+      // A `build.zig` executable built from this file: its installed binary, built first.
+      const exe = zigExecutable(rel, configs);
+      if (exe) return { name: exe.name, scope: "file", config: exe };
+    }
     if (lang === "go" && hasBuildTool(rel, configs, ["go"])) {
       if (!hasGoMain(input.content)) return null;
       const main = contextConfig(rel, configs, input.content ?? "package main");
@@ -905,6 +967,7 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "lua":
     case "swift":
     case "elixir":
+    case "escript":
       return simple(lang, s, env, lang, () => [s.arg]);
     case "r":
       return simple(lang, s, env, "r", () => [s.arg]);
@@ -934,6 +997,10 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
     case "c":
     case "cpp":
       return hasCMain(input.content) ? compiled(input, env, s, lang) : null;
+    case "zig":
+      if (hasZigMain(input.content)) return zigFile(input, env, s);
+      // A file with tests only: run them all.
+      return hasZigTests(input.content) ? zigFile(input, env, s, { name: s.file }) : null;
   }
   return null;
 }
@@ -1016,6 +1083,7 @@ export function fileTargets(
   const s = { inProject: isProjectPath(input), rel: relTo(input.path, input.root) };
   const rust = /\.rs$/.test(input.path);
   if (/\.(c|cpp|cc|cxx)$/.test(input.path)) return standaloneTargets(content, input.path);
+  if (/\.zig$/.test(input.path)) return zigTargets(content);
   const cargo =
     s.inProject && (cargoOwner(s.rel, input.configs).length > 0 || /(^|\/)(src|tests|examples|benches)\//.test(s.rel));
   if (rust && !cargo) return standaloneTargets(content, input.path);
@@ -1048,6 +1116,10 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
       return { ...javaFile(input, env, s, target.className), scope: "element" };
     const file = produceFile(input, env);
     return file ? { ...file, scope: "element" } : null;
+  }
+  if (/\.zig$/.test(input.path)) {
+    // `--test-filter` matches a substring of the test's full name.
+    return zigFile(input, env, s, { name: target.name, filter: target.name.replace(/\\(.)/g, "$1") });
   }
   const rust = /\.rs$/.test(input.path);
   if (rust && !(s.inProject && cargoOwner(rel, input.configs).length)) {

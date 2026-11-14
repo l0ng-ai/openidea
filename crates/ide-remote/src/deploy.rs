@@ -10,6 +10,9 @@ use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Remote folders listed (or files checked) at the same time.
+pub(crate) const LIST_CONCURRENCY: usize = 16;
+
 /// Mapping eligibility uses a common synthetic server root: mapping and exclusion
 /// paths are both relative to that root, so checking never opens a connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -69,7 +72,7 @@ pub struct TransferError {
 }
 
 impl TransferReport {
-    fn fail(&mut self, path: impl Into<String>, e: IdeError) {
+    pub(crate) fn fail(&mut self, path: impl Into<String>, e: IdeError) {
         self.errors.push(TransferError { path: path.into(), message: e.message });
     }
 }
@@ -153,6 +156,24 @@ impl Deployment<'_> {
         self.exclude.local(local.strip_prefix(self.map.project_root()).unwrap_or(local))
     }
 
+    /// Fails when writing or deleting `local` would go through a symbolic link that
+    /// leaves its mapped folder.
+    async fn confined(&self, local: &Path) -> IdeResult<()> {
+        let Some(root) = self.map.local_root(local) else {
+            return Err(IdeError::invalid(format!("{} is not under a mapped folder", local.display())));
+        };
+        // A missing mapped folder has nothing inside it to follow.
+        let Ok(root) = tokio::fs::canonicalize(root).await else { return Ok(()) };
+        if crate::service::stays_inside(&root, local).await {
+            Ok(())
+        } else {
+            Err(IdeError::invalid(format!(
+                "{} leads outside the mapped folder through a symbolic link",
+                local.display()
+            )))
+        }
+    }
+
     /// Local files under `paths` (folders recursively), excluded names left out.
     fn local_files(&self, paths: &[PathBuf], report: &mut TransferReport) -> Vec<PathBuf> {
         let mut out = Vec::new();
@@ -181,20 +202,49 @@ impl Deployment<'_> {
     }
 
     /// Remote files under `dir` (recursively), excluded ones left out.
+    /// Files under `dir`, by path. Lists [`LIST_CONCURRENCY`] folders at a time: one round trip
+    /// per folder after another made large trees take minutes.
     async fn remote_files(&self, dir: &str, out: &mut Vec<ide_ssh::RemoteEntry>) -> IdeResult<()> {
-        for e in self.fs.list(dir).await? {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let start = out.len();
+        // One `find` over SSH instead of a listing per folder (thousands of round trips on a
+        // big project); the same entries the walk below would keep.
+        if let Some(entries) = self.fs.tree(dir, self.exclude.prunable_names()).await {
             if self.cancel.is_cancelled() {
                 return Err(IdeError::cancelled());
             }
-            if self.exclude.remote(&e.path) {
-                continue;
+            let base = dir.trim_end_matches('/');
+            out.extend(entries.into_iter().filter(|e| {
+                let rel = e.path.strip_prefix(base).unwrap_or(&e.path);
+                !self.exclude.remote(&e.path) && !rel.split('/').any(|name| !name.is_empty() && self.exclude.name(name))
+            }));
+            out[start..].sort_by(|a, b| a.path.cmp(&b.path));
+            return Ok(());
+        }
+        let mut pending = vec![dir.to_owned()];
+        let mut listing = FuturesUnordered::new();
+        loop {
+            while listing.len() < LIST_CONCURRENCY
+                && let Some(dir) = pending.pop()
+            {
+                listing.push(async move { self.fs.list(&dir).await });
             }
-            if e.is_dir && !e.is_symlink {
-                Box::pin(self.remote_files(&e.path, out)).await?;
-            } else if !e.is_dir {
-                out.push(e);
+            let Some(entries) = listing.next().await else { break };
+            if self.cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            for e in entries? {
+                if self.exclude.remote(&e.path) {
+                    continue;
+                }
+                if e.is_dir && !e.is_symlink {
+                    pending.push(e.path);
+                } else if !e.is_dir {
+                    out.push(e);
+                }
             }
         }
+        out[start..].sort_by(|a, b| a.path.cmp(&b.path));
         Ok(())
     }
 
@@ -265,6 +315,10 @@ impl Deployment<'_> {
             }
             let rel = self.rel(local);
             progress(&rel, i, jobs.len());
+            if let Err(e) = self.confined(local).await {
+                report.fail(rel, e);
+                continue;
+            }
             match self.fs.download(remote, local).await {
                 Ok(()) => report.files += 1,
                 Err(e) => report.fail(rel, e),
@@ -365,9 +419,15 @@ impl Deployment<'_> {
             progress(&step.path, i, steps.len());
             let r = match step.action {
                 SyncAction::Upload => self.fs.upload(&local, &remote, self.preserve_time).await,
-                SyncAction::Download => self.fs.download(&remote, &local).await,
+                SyncAction::Download => match self.confined(&local).await {
+                    Ok(()) => self.fs.download(&remote, &local).await,
+                    Err(e) => Err(e),
+                },
                 SyncAction::DeleteRemote => self.fs.remove(&remote).await,
-                SyncAction::DeleteLocal => std::fs::remove_file(&local).map_err(IdeError::from),
+                SyncAction::DeleteLocal => match self.confined(&local).await {
+                    Ok(()) => tokio::fs::remove_file(&local).await.map_err(IdeError::from),
+                    Err(e) => Err(e),
+                },
             };
             match r {
                 Ok(()) => report.files += 1,

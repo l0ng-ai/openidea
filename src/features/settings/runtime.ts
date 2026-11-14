@@ -12,14 +12,18 @@ import { LOCALES } from "@/platform/i18n";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { applyKeymapSettings } from "@/platform/keymap";
 import { loadSettings, useProject } from "@/platform/project";
-import { applyAppearanceOptions, installAltDragGuard, installIdleSave } from "./appearanceRuntime";
+import { applyAppearanceOptions, applyLigatures, installAltDragGuard, installIdleSave } from "./appearanceRuntime";
+import { maybeWarnSystemHotkeys } from "./keymap/systemHotkeys";
 import { validateSettings } from "./model/schema";
 
 export function applyRuntimeSettings(raw: unknown, root: HTMLElement = document.documentElement): void {
   const s = validateSettings(raw);
   applyKeymapSettings(s.keymap, s.keymapOverrides, s.customKeymaps);
+  // The keymap just took effect: probe it once for OS-grabbed shortcuts.
+  void maybeWarnSystemHotkeys();
 
   applyAppearanceOptions(s, root);
+  applyLigatures(raw, root);
 
   root.lang = LOCALES[s.appearance.locale].tag;
 }

@@ -37,18 +37,46 @@ describe("External Libraries", () => {
         }),
       ),
     )!;
-    expect(root.children?.map((g) => g.icon)).toEqual([
-      "file-java",
-      "file-js",
-      "file-npm",
-      "file-rust",
-      "file-cargo",
-      "file-go",
-      "file-gomod",
-      "maven-project",
-      "file-gradle",
-      "library",
+    expect(Object.fromEntries(root.children!.map((g) => [g.label, g.icon]))).toEqual({
+      "< jdk >": "file-java",
+      nodeCore: "file-js",
+      nodeModules: "file-npm",
+      "< rust >": "file-rust",
+      cargo: "file-cargo",
+      "< go >": "file-go",
+      goModules: "file-gomod",
+      maven: "maven-project",
+      gradle: "file-gradle",
+      other: "library",
+    });
+  });
+
+  it("lists SDKs first, then libraries by name, whatever order they were detected in", () => {
+    const group = (name: string, kind: string) => ({ name, kind, roots: [{ name: "r", path: `/libs/${name}` }] });
+    const detected = [
+      group("Maven: org.junit:junit:4.13", "maven"),
+      group("temurin-21", "jdk"),
+      group("node_modules", "nodeModules"),
+      group("Python 3.14", "python"),
+      group("Cargo dependencies", "cargo"),
+      group("Gradle: com.acme:lib:1.0", "gradle"),
+      group("Go SDK 1.27.4", "go"),
+      group("Maven: com.acme:core:2.1.27", "maven"),
+      group("Node.js Core", "nodeCore"),
+    ];
+    const labels = (groups: typeof detected) => librariesRoot(groups)!.children!.map((g) => g.label);
+    expect(labels(detected)).toEqual([
+      "< Go SDK 1.27.4 >",
+      "< Python 3.14 >",
+      "< temurin-21 >",
+      "Cargo dependencies",
+      "Gradle: com.acme:lib:1.0",
+      "Maven: com.acme:core:2.1.27",
+      "Maven: org.junit:junit:4.13",
+      "node_modules",
+      "Node.js Core",
     ]);
+    expect(labels([...detected].reverse())).toEqual(labels(detected));
   });
 
   it("lists archives (src.zip, dependency jars) as browsable roots", () => {
@@ -64,7 +92,9 @@ describe("External Libraries", () => {
       { name: "Maven: g:a:1", kind: "maven", roots: [{ name: "a-1-sources.jar", path: "/m2/g/a/1/a-1-sources.jar!" }] },
     ])!;
     expect(root.children?.[0]?.children?.map((c) => c.icon)).toEqual(["folder-library", "file-archive"]);
-    expect(root.children?.[1]).toMatchObject({ label: "< Maven: g:a:1 >", icon: "maven-project" });
+    // As in IDEA: SDKs in angle brackets, dependencies without.
+    expect(root.children?.[0]).toMatchObject({ label: "< temurin-21 >" });
+    expect(root.children?.[1]).toMatchObject({ label: "Maven: g:a:1", icon: "maven-project" });
     dispose = setLibraryRoots("test", ["/jdk/lib/src.zip!"]);
     expect(isLibraryPath("/jdk/lib/src.zip!/java.base/java/lang/String.java")).toBe(true);
   });

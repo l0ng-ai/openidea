@@ -10,21 +10,25 @@ OpenIDEA 内置了一个 [Model Context Protocol](https://modelcontextprotocol.i
 ## 开启
 
 <Steps>
-  <Step title="打开设置页面">进入 **设置 › 工具 › MCP 服务器**。</Step>
+  <Step title="打开设置页面">进入 **设置 › 智能体 › IDE MCP 服务器**。</Step>
   <Step title="启用">打开 **启用 MCP 服务器** 并应用。默认是关闭的。</Step>
   <Step title="查看状态">
     **状态** 显示服务器正在使用的端口，或启动失败的原因。**端点** 显示当前窗口所在项目的 URL。
   </Step>
 </Steps>
 
-服务器只监听 `127.0.0.1` 上的一个随机端口，每个请求都必须带上令牌，令牌在每次启动 OpenIDEA 时都会变化。来自其他 Origin 或 Host 的请求会被拒绝。
+服务器默认只监听 `127.0.0.1`，每个请求都必须带上访问令牌。来自其他 Origin 的请求，以及用 `localhost` 以外的主机名访问服务器的请求，都会被拒绝。
+
+- **监听地址。** `127.0.0.1`（默认）只允许本机连接。要让其他电脑上的智能体连接，就填本机的其他地址（局域网或 VPN 地址），或填 `0.0.0.0` 监听所有地址；对方带着令牌连接 `http://<该地址>:<端口>/mcp`。任何能访问该地址并持有令牌的人都能使用这些工具，所以只在可信的网络里这样做。地址不是 `127.0.0.1` 时，**状态**会显示它。
+- **端口。** 默认每次运行都监听同一个端口 26371（**使用固定端口** 和 **端口**），这样 OpenIDEA 重启后 HTTP 客户端和端口转发（例如到另一台机器的 SSH 隧道）仍然有效。端口被占用或被系统保留时，本次运行改用一个空闲端口，**状态** 中会说明原因。关闭 **使用固定端口** 则每次运行使用一个空闲端口。
+- **令牌。** 默认每次启动 OpenIDEA 都会换一个新令牌。打开 **保留令牌** 后会在多次运行间保留同一个令牌，保存在 OpenIDEA 的应用数据目录中，只有你的账户可读；**重新生成令牌** 会替换它，使用旧令牌配置的客户端随之失效。
 
 ## 连接客户端
 
 设置页面的 **客户端配置** 下有两个按钮，都会复制一段大多数客户端都能识别的 `mcpServers` JSON 配置。
 
 - **复制 Stdio 配置**（推荐）：客户端以 `--mcp-stdio` 参数启动 OpenIDEA 的可执行文件，由它转发给正在运行的 IDE。配置里没有令牌，OpenIDEA 重启后依然可用。
-- **复制 HTTP 配置**：客户端带着 `Authorization: Bearer <token>` 连接 `http://127.0.0.1:<port>/mcp`。由于端口和令牌会变，OpenIDEA 重启后这份配置就失效了。
+- **复制 HTTP 配置**：客户端带着 `Authorization: Bearer <token>` 连接 `http://<地址>:<端口>/mcp`（监听所有地址时为 `127.0.0.1`）。只有同时使用固定端口并保留令牌时，OpenIDEA 重启后这份配置才继续有效；否则每次重启后都要重新复制。
 
 stdio 配置大致如下（路径以你机器上的为准）：
 
@@ -84,8 +88,10 @@ stdio 配置大致如下（路径以你机器上的为准）：
 | 搜索       | `search_text`、`search_regex`、`search_symbol`、`search_file`               |
 | 编辑器     | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`        |
 | 代码       | `get_symbol_info`、`find_references`、`rename_refactoring`、`reformat_file` |
-| 问题       | `get_file_problems`、`get_project_problems`                                 |
+| 问题       | `get_file_problems`、`get_project_problems`、`check_files`                  |
 | 运行与构建 | `get_run_configurations`、`execute_run_configuration`、`build_project`      |
+| 命令       | `run_command`、`wait_for_run`、`send_run_input`、`stop_run`                 |
+| 命令状态   | `get_run_status`、`read_run_output`、`list_runs`                            |
 | Git        | `get_repositories`、`git_status`、`git_diff`                                |
 
 几点说明：
@@ -93,16 +99,28 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - `read_file` 还能读取依赖的源代码，以及 jar 和 zip 压缩包中的文件。
 - `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
 - `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
+- `check_files` 才是重新分析，适合在任何工具修改文件之后调用：它从磁盘同步每个文件，通知语言服务器文件已保存（这样 `cargo check` 等保存时检查也会运行），并等到服务器答复且分析完成。每个文件都有一个 `status`，说明问题列表是否完整，或者为什么无法检查：没有对应的语言服务器，或者服务器未安装、配置错误、已崩溃。
 - `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。
 - `apply_patch` 接受 Codex 的 `apply_patch` 格式和 unified diff，路径必须在项目内。
 - `git_diff` 比较的是磁盘上的文件，不包含编辑器中尚未保存的内容。
+
+## 在运行工具窗口中执行命令
+
+`run_command` 在运行工具窗口的一个标签页中，用 **设置 › 工具 › 终端** 中配置的 shell 执行一条命令行。标签名由智能体指定，OpenIDEA 显示为 `_agent_<名称>`。输出实时可见，你也可以像对待其他运行一样向命令输入、重新运行或停止它。
+
+和 JetBrains 的 IDE 一样，命令通过管道运行，而不是在终端里运行：程序输出的是普通文本行，不会有进度条和屏幕重绘。智能体拿到的输出会去掉控制字符，并截断到 2000 行（`maxLinesCount`）；超出部分默认保留结尾，也可以用 `truncateMode` 改为保留开头或两头。标签页的原始输出日志保持完整。
+
+- **一个名称对应一个标签。** 名称对应的命令已结束时，下一条命令在同一标签中运行。命令仍在运行时会被拒绝，并返回该命令和它最后的输出：智能体必须先用 `stop_run` 停止它，或者换一个名称。任何进程都不会被悄悄停掉。
+- **跟进命令。** `wait_for_run` 等待命令结束，或等待输出中出现指定文本（例如服务器的“正在监听”一行）；`read_run_output` 从任意位置读取输出；`get_run_status` 报告命令是在运行、成功、失败、崩溃，还是被智能体或你停止；`send_run_input` 向命令的输入写入文本和 Enter，Ctrl+C 会停止命令，Ctrl+D 结束它的输入。
+- **你可以随时干预。** 你在标签输入行中输入的内容、重新运行、停止和关闭标签，都会连同时间一起告诉智能体。正在进行的等待会立即返回，并建议智能体停下手头的工作，回复你已收到干预，等你确认后再继续。
+- **已结束的标签会置灰。** 已结束的标签超过 **显示的已结束智能体标签数**（默认 1）时，最旧的会移入标签栏末尾的归档，显示为 **归档(n)**。归档超过 **保留的已归档智能体标签数**（默认 999）时，最旧的会被关闭。正在运行的命令永远不会被归档或关闭。这两项设置位于 **设置 › 智能体 › IDE MCP 服务器**。
 
 插件可以添加更多工具，它们会出现在同一个列表中。标记为破坏性操作的插件工具同样会先请求确认。
 
 ## 安全
 
 - **未受信任的项目** 只开放只读工具。写文件、重命名、重新格式化、构建或运行的工具都要求项目已被信任。
-- **运行和构建会先询问。** `execute_run_configuration` 和 `build_project` 会在 OpenIDEA 中弹出对话框，说明是哪个客户端、哪个项目、哪个工具以及要运行什么，选择 **允许** 或 **拒绝**；多个请求会排队。
+- **运行和构建会先询问。** `execute_run_configuration`、`build_project` 和 `run_command` 会在 OpenIDEA 中弹出对话框，说明是哪个客户端、哪个项目、哪个工具以及要运行什么，选择 **允许** 或 **拒绝**；多个请求会排队。
 - 会写入的工具拒绝项目之外的路径。
 
 ## 限制

@@ -1,12 +1,12 @@
 /**
  * Database tool window (IDEA's layout): data source → database (PostgreSQL) → schema → `tables` /
- * `views` / `materialized views` / `routines` (optionally `procedures` / `functions`) / `sequences`
- * folders → table → `columns` / `keys` / `foreign keys` / `indexes` / `triggers`,
+ * `views` / `materialized views` / `routines` (optionally `procedures` / `functions`) / `packages` /
+ * `sequences` folders → table → `columns` / `keys` / `foreign keys` / `indexes` / `triggers`,
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
-import { useEffect, useMemo, useRef, type CSSProperties } from "react";
-import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
+import { useEffect, useMemo, useRef } from "react";
+import type { DbColor, DbDatabases, DbTableDetails } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -23,7 +23,6 @@ import {
   T,
 } from "@/ui";
 import {
-  colorVar,
   databaseKey,
   passesObjectFilter,
   passesTreeFilter,
@@ -34,6 +33,8 @@ import {
 } from "./model";
 import {
   nodeTarget,
+  isOtherFolder,
+  otherFolder,
   routineFolder,
   schemaObjectOf,
   tableFolder,
@@ -56,10 +57,20 @@ import {
   useDatabase,
   type Loaded,
 } from "./store";
-import { DB_VIEW_FOCUS, openTableData } from "./treeActions";
+import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest } from "./requests";
+
+const ROW_TINTS: Record<DbColor, string | undefined> = {
+  red: styles.tintRed,
+  orange: styles.tintOrange,
+  yellow: styles.tintYellow,
+  green: styles.tintGreen,
+  blue: styles.tintBlue,
+  violet: styles.tintViolet,
+};
 
 const GROUP_LABELS: Record<Group, string> = {
   columns: "columns",
@@ -76,17 +87,34 @@ const FOLDER_LABELS: Record<Folder, string> = {
   routines: "routines",
   procedures: "procedures",
   functions: "functions",
+  packages: "packages",
   sequences: "sequences",
+  stages: "stages",
+  streams: "streams",
+  tasks: "tasks",
+  pipes: "pipes",
+  fileFormats: "file formats",
 };
 
-const FOLDERS: readonly Folder[] = ["tables", "views", "materializedViews", "routines", "sequences"];
+const OTHERS: readonly Folder[] = ["stages", "streams", "tasks", "pipes", "fileFormats"];
+const FOLDERS: readonly Folder[] = [
+  "tables",
+  "views",
+  "materializedViews",
+  "routines",
+  "packages",
+  "sequences",
+  ...OTHERS,
+];
 const SEPARATE_FOLDERS: readonly Folder[] = [
   "tables",
   "views",
   "materializedViews",
   "procedures",
   "functions",
+  "packages",
   "sequences",
+  ...OTHERS,
 ];
 
 function status<T>(key: string, l: Loaded<T> | undefined, map: (v: T) => Node[]): Node[] | undefined {
@@ -124,12 +152,12 @@ export function DatabaseView() {
   useEffect(() => {
     if (!st.loaded) void loadSources();
   }, [st.loaded]);
-  // Go to Declaration from a console: the rows exist once the expanded nodes render.
+  // Go to Declaration from a console, Select Opened File: the rows exist once the expanded nodes render.
   useEffect(() => {
     if (!st.treeReveal) return;
-    const key = st.treeReveal.key;
+    const path = st.treeReveal.path;
     const frame = requestAnimationFrame(() => {
-      tree.current?.reveal(key);
+      path.toReversed().some((key) => tree.current?.reveal(key));
       tree.current?.focus();
     });
     return () => cancelAnimationFrame(frame);
@@ -168,12 +196,18 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.routines ?? []).filter(shown(id));
   const sequencesOf = (id: string, schema: string) =>
     (st.objects[tablesKey(id, schema)]?.sequences ?? []).filter(shown(id));
+  const packagesOf = (id: string, schema: string) =>
+    (st.objects[tablesKey(id, schema)]?.packages ?? []).filter(shown(id));
+  const othersOf = (id: string, schema: string, folder: Folder) =>
+    (st.objects[tablesKey(id, schema)]?.others ?? []).filter((o) => otherFolder(o.kind) === folder).filter(shown(id));
   /** Members of a schema folder, after object and quick filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
+    if (isOtherFolder(folder)) return othersOf(id, schema, folder).length;
     if (folder === "routines" || folder === "procedures" || folder === "functions")
       return routinesOf(id, schema).filter(
         (routine) => routineFolder(routine.kind, st.separateProceduresAndFunctions) === folder,
       ).length;
+    if (folder === "packages") return packagesOf(id, schema).length;
     if (folder === "sequences") return sequencesOf(id, schema).length;
     return (tablesOf(id, schema) ?? []).filter((t) => tableFolder(t.kind) === folder).length;
   };
@@ -198,6 +232,7 @@ export function DatabaseView() {
     passesTreeFilter(schema, st.treeFilter) ||
     !!tablesOf(id, schema)?.length ||
     routinesOf(id, schema).length > 0 ||
+    packagesOf(id, schema).length > 0 ||
     sequencesOf(id, schema).length > 0;
 
   const schemasOf = (key: string, id: string) =>
@@ -249,6 +284,20 @@ export function DatabaseView() {
               routine,
               ...at,
             }));
+        if (n.folder === "packages")
+          return packagesOf(n.id, n.schema).map((pkg) => ({
+            kind: "package" as const,
+            key: `${n.key}/${pkg.name}`,
+            package: pkg,
+            ...at,
+          }));
+        if (isOtherFolder(n.folder))
+          return othersOf(n.id, n.schema, n.folder).map((object) => ({
+            kind: "object",
+            key: `${n.key}/${object.name}`,
+            object,
+            ...at,
+          }));
         if (n.folder === "sequences")
           return sequencesOf(n.id, n.schema).map((sequence) => ({
             kind: "sequence",
@@ -306,14 +355,59 @@ export function DatabaseView() {
   const load = async (n: Node) => {
     if (n.kind === "source") {
       const id = n.source.id ?? "";
-      if (!(await connect(id))) return;
+      const current = databaseRequest(id);
+      const connected = await connect(id);
+      if (!current()) return;
+      if (!connected) {
+        const err = { status: "error" as const, message: tx("Cannot connect") };
+        if (listsDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
+        else useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: err } }));
+        return;
+      }
       if (listsDatabases(n.source)) await loadDatabases(id);
       else await loadSchemas(id);
     } else if (n.kind === "database") {
-      if (await connect(n.id)) await loadSchemas(n.id);
+      const current = databaseRequest(n.id);
+      const connected = await connect(n.id);
+      if (!current()) return;
+      if (!connected) {
+        useDatabase.setState((s) => ({
+          schemas: { ...s.schemas, [n.id]: { status: "error", message: tx("Cannot connect") } },
+        }));
+        return;
+      }
+      await loadSchemas(n.id);
     } else if (n.kind === "schema") await loadTables(n.id, n.schema);
     else if (n.kind === "table") await loadDetails(n.id, n.schema, n.table.name);
   };
+
+  const expandable = (n: Node) =>
+    n.kind === "source" ||
+    n.kind === "database" ||
+    n.kind === "schema" ||
+    n.kind === "folder" ||
+    n.kind === "table" ||
+    n.kind === "group";
+
+  // Expand All opens the nodes already loaded: it connects to nothing and runs no query.
+  useEffect(() => {
+    databaseTree.expandAll = () => {
+      const next = new Set(useDatabase.getState().treeExpanded);
+      const walk = (nodes: readonly Node[]) => {
+        for (const n of nodes) {
+          const kids = expandable(n) ? children(n) : undefined;
+          if (!kids) continue;
+          next.add(n.key);
+          walk(kids);
+        }
+      };
+      walk(roots);
+      useDatabase.setState({ treeExpanded: next });
+    };
+    return () => {
+      databaseTree.expandAll = null;
+    };
+  });
 
   const label = (n: Node): string => {
     switch (n.kind) {
@@ -327,8 +421,12 @@ export function DatabaseView() {
         return FOLDER_LABELS[n.folder];
       case "routine":
         return n.routine.name;
+      case "package":
+        return n.package.name;
       case "sequence":
         return n.sequence.name;
+      case "object":
+        return n.object.name;
       case "trigger":
         return n.trigger.name;
       case "table":
@@ -371,6 +469,8 @@ export function DatabaseView() {
         return `(${n.routine.arguments})${n.routine.returns ? `: ${n.routine.returns}` : ""}`;
       case "sequence":
         return n.sequence.dataType;
+      case "object":
+        return n.object.detail || undefined;
       case "trigger":
         return `${n.trigger.timing} ${n.trigger.events}`.trim();
       case "group": {
@@ -405,8 +505,12 @@ export function DatabaseView() {
         return n.table.kind === "view" ? "db-view" : n.table.kind === "materializedView" ? "db-matview" : "db-table";
       case "routine":
         return "db-routine";
+      case "package":
+        return "db-routine";
       case "sequence":
         return "db-sequence";
+      case "object":
+        return n.object.kind === "stage" ? "db-folder" : n.object.kind === "stream" ? "db-table" : "db-routine";
       case "trigger":
         return "db-trigger";
       case "column":
@@ -448,18 +552,17 @@ export function DatabaseView() {
           getKey={(n) => n.key}
           getLabel={label}
           getChildren={children}
-          isExpandable={(n) =>
-            n.kind === "source" ||
-            n.kind === "database" ||
-            n.kind === "schema" ||
-            n.kind === "folder" ||
-            n.kind === "table" ||
-            n.kind === "group"
-          }
+          isExpandable={expandable}
           loadChildren={load}
           getIcon={(n) => icon(n)}
           getDetail={detail}
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
+          rowClassName={(n) => {
+            // IDEA tints every row of a coloured data source across its full width and height.
+            const target = nodeTarget(n);
+            const color = target ? sourceOf(target)?.color : null;
+            return color ? `${styles.tintedRow} ${ROW_TINTS[color]}` : undefined;
+          }}
           renderNode={(n: Node) => {
             const i = icon(n);
             const d = detail(n);
@@ -471,13 +574,9 @@ export function DatabaseView() {
                   ? styles.keyLabel
                   : styles.nodeLabel;
             const live = n.kind === "source" && [...st.connected].some((t) => splitTarget(t).id === n.source.id);
-            const target = nodeTarget(n);
-            // IDEA tints every row of a coloured data source.
-            const tint = colorVar(target ? sourceOf(target)?.color : null);
             return (
               <span
-                className={tint ? `${styles.nodeRow} ${styles.tinted}` : styles.nodeRow}
-                style={tint ? ({ "--db-tint": tint } as CSSProperties) : undefined}
+                className={styles.nodeRow}
                 title={n.kind === "source" && n.source.comment ? n.source.comment : undefined}
               >
                 {i && (
@@ -601,7 +700,13 @@ function DatabaseToolbar() {
   );
 }
 
-/** Header controls (shown on hover, like IDEA's): Collapse All. */
+/** Header controls (shown on hover, like IDEA's): Select Opened File, Expand All, Collapse All. */
 export function DatabaseHeaderActions() {
-  return <IconButton icon="collapse-all" action="db.collapseAll" size="small" iconSize={16} />;
+  return (
+    <>
+      <IconButton icon="locate" action="db.selectOpened" size="small" iconSize={16} />
+      <IconButton icon="expand-all" action="db.expandAll" size="small" iconSize={16} />
+      <IconButton icon="collapse-all" action="db.collapseAll" size="small" iconSize={16} />
+    </>
+  );
 }

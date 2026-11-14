@@ -243,6 +243,23 @@ export function closeTab(id: string) {
 }
 
 /**
+ * Takes tab `id` out of the tool window and hands back its session, still running
+ * (Move to Editor): the tab goes away, the session is no longer this store's.
+ */
+export function detachTab(id: string): TerminalSession | undefined {
+  const tab = useTerminals.getState().tabs.find((t) => t.id === id);
+  const session = tab && sessions.get(tab.session);
+  if (!tab || !session) return undefined;
+  sessions.delete(tab.session);
+  useTerminals.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[tab.session];
+    return { ...withoutTab(s, id), sessions: next };
+  });
+  return session;
+}
+
+/**
  * Asks before ending sessions that are running a command, like IDEA
  * (Terminate / Cancel). Resolves true to go ahead.
  */

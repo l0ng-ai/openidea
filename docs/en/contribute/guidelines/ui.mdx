@@ -41,7 +41,7 @@ User-visible text is written in English at the call site and goes through the te
 
 ## WebKit compatibility
 
-On macOS and Linux the app runs in WebKit, and the supported floor is Safari 16 (macOS 11 can update to it). `pnpm build` runs `scripts/check-webkit.ts` on the bundle, and `src/platform/webkitCompatibility.test.ts` checks application regexes. Avoid:
+On macOS and Linux the app runs in WebKit, and the supported floor is Safari 16, the engine of macOS 13 (on macOS 11 and 12 a Safari update doesn't update the engine other apps use). `pnpm build` runs `scripts/check-webkit.ts` on the bundle, and `src/platform/webkitCompatibility.test.ts` checks application regexes. Avoid:
 
 - regex lookbehind (`(?<=…)`, `(?<!…)`), which needs Safari 16.4, and the regex `v` flag;
 - import attributes;

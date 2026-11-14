@@ -10,7 +10,13 @@
 </p>
 
 <p align="center">
+  English · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>Download</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://openidea.sh">Docs</a>
   &nbsp;·&nbsp;
   <a href="#benchmark">Benchmark</a>
   &nbsp;·&nbsp;
@@ -25,9 +31,7 @@ OpenIDEA brings the IntelliJ IDEA way of working — its keymap, its tool window
 its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
-for 60+ languages. Builds for macOS, Windows and Linux. On Windows, if you'd
-rather skip the installer, each release also ships a portable zip — unpack it
-and run `openidea.exe`.
+for 60+ languages. Builds for macOS, Windows and Linux.
 
 ## Benchmark
 
@@ -56,7 +60,7 @@ themes, file icons and languages. They run as sandboxed WebAssembly components;
 themes, icon themes and languages need no code at all.
 
 Install them from Settings › Plugins, or start your own with
-`openidea-plugin new` — see [Writing OpenIDEA plugins](plugins/README.md) and
+`openidea-plugin new` — see [Writing OpenIDEA plugins](https://openidea.sh/en/plugins) and
 the [official plugins](plugins/official). The plugin API is still a preview.
 
 ## Community
@@ -66,11 +70,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 
   <img src=".github/assets/wechat-group.png" alt="WeChat group QR code" width="200">
 
-### Contributors
-
-<a href="https://github.com/l0ng-ai/openidea/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=l0ng-ai/openidea&max=500" alt="OpenIDEA contributors">
-</a>
+- Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
 
 ## License
 

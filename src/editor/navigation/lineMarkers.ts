@@ -38,6 +38,11 @@ export interface MarkerCandidate {
   overriding: boolean;
   /** Identifier position of the enclosing type (methods). */
   owner: { line: number; col: number } | null;
+  /**
+   * Satisfies interfaces implicitly (Go): an implementation request on it answers the interfaces
+   * a type satisfies, or the interface methods a method implements.
+   */
+  implicit?: boolean;
 }
 
 export interface LineMarker {
@@ -54,6 +59,8 @@ export interface LineMarker {
 /** Types whose subtypes / implementations are worth a marker (not structs, enums: they cannot be extended). */
 const INHERITABLE_TYPES = new Set<SymbolKind>(["class", "interface", "trait"]);
 const ABSTRACT_TYPES = new Set<SymbolKind>(["interface", "trait"]);
+/** Go declarations that can satisfy an interface: named types other than interfaces, and methods. */
+const IMPLICIT_KINDS = new Set<SymbolKind>(["struct", "class", "method"]);
 /** Types whose methods may implement or override a supertype's. */
 const MEMBER_OWNERS = new Set<SymbolKind>(["class", "interface", "trait", "enum", "struct"]);
 
@@ -88,12 +95,30 @@ function declarationPrefix(item: OutlineItem, lineText: (line: number) => string
 export function markerCandidates(
   outline: readonly OutlineItem[],
   lineText: (line: number) => string,
+  options: { implicitInterfaces?: boolean } = {},
 ): MarkerCandidate[] {
   const out: MarkerCandidate[] = [];
   const walk = (items: readonly OutlineItem[], parent: OutlineItem | null) => {
     for (const it of items) {
       const prefix = () => declarationPrefix(it, lineText);
       const at = it.selection_range.start;
+      // Go: named types and their methods (`(*Square).Area`, outside the type) only satisfy
+      // interfaces; nothing extends them.
+      if (options.implicitInterfaces && !parent && IMPLICIT_KINDS.has(it.kind)) {
+        out.push({
+          symbol: it.name,
+          name: it.name.replace(/^\([^)]*\)\./, ""),
+          line: at.line,
+          col: at.col,
+          method: it.kind === "method",
+          abstract: false,
+          inheritable: false,
+          overriding: false,
+          owner: null,
+          implicit: true,
+        });
+        continue;
+      }
       if (INHERITABLE_TYPES.has(it.kind)) {
         const p = prefix();
         out.push({
@@ -136,14 +161,50 @@ export function withoutSelf(path: string, c: MarkerCandidate, targets: readonly 
   return targets.filter((t) => !(t.path === path && t.range.start.line === c.line));
 }
 
-const TYPE_DECLARATION = /\b(?:class|interface|trait|object|struct|enum|record|impl)\s+([\p{L}_$][\p{L}\p{N}_$]*)/u;
+const TYPE_DECLARATION =
+  /\b(?:class|interface|trait|object|struct|enum|record|impl)\s+([\p{L}_$][\p{L}\p{N}_$]*)|^\s*type\s+([\p{L}_][\p{L}\p{N}_]*)(?:\[[^\]]*\])?\s+(?:interface|struct)\b/u;
+/** A Go method's receiver type: `func (s *Square) Area()`. */
+const GO_RECEIVER = /^\s*func\s*\(\s*(?:[\p{L}_][\p{L}\p{N}_]*\s+)?\*?\s*([\p{L}_][\p{L}\p{N}_]*)/u;
+
+const FENCES = [`"""`, `'''`];
+
+/**
+ * Name of the type a target sits in (the nearest type declaration above it); null without one.
+ * Text heuristic: docstrings (`"""` / `'''` fences) and line comments (`#`, `//`, `*`…) cannot
+ * declare a type, so "the base class does all that is needed" in a comment is not one.
+ */
+export function enclosingType(lines: readonly string[] | null | undefined, target: Location): string | null {
+  if (!lines) return null;
+  let container: string | null = null;
+  let fence: string | null = null;
+  for (let l = Math.max(0, target.range.start.line - 2000); l < target.range.start.line; l++) {
+    const line = lines[l] ?? "";
+    if (fence) {
+      if ((line.split(fence).length - 1) % 2 === 1) fence = null;
+      continue;
+    }
+    // Comments first: a `#`/`//` line cannot open a docstring fence either.
+    const code = line.replace(/(^|\s)(#|\/\/).*$/, "$1");
+    if (!code.trim()) continue;
+    const opened = FENCES.find((f) => (code.split(f).length - 1) % 2 === 1);
+    if (opened) {
+      fence = opened;
+      continue;
+    }
+    // A single-line docstring (fences open and close on the line) is text too.
+    if (FENCES.some((f) => code.includes(f))) continue;
+    const m = TYPE_DECLARATION.exec(code);
+    if (m && !/^\s*(\*|\/\*)/.test(line)) container = (m[1] ?? m[2])!;
+  }
+  return container;
+}
 
 /** Name of the type a target sits in: the nearest type declaration above it, else the file name. */
 export function enclosingTypeName(lines: readonly string[] | null | undefined, target: Location): string {
-  for (let l = target.range.start.line - 1; lines && l >= 0 && l >= target.range.start.line - 2000; l--) {
-    const m = TYPE_DECLARATION.exec(lines[l] ?? "");
-    if (m && !/^\s*(\/\/|\*|\/\*)/.test(lines[l] ?? "")) return m[1]!;
-  }
+  const receiver = GO_RECEIVER.exec(lines?.[target.range.start.line] ?? "")?.[1];
+  if (receiver) return receiver;
+  const found = enclosingType(lines, target);
+  if (found) return found;
   const file = target.path.split(/[\\/]/).pop() ?? target.path;
   return file.replace(/\.[^.]+$/, "");
 }
@@ -189,6 +250,27 @@ export function inheritorsMarker(
       : tx`Choose Overriding Method of ${c.name} (${n} found)`;
   }
   return { kind, line: c.line, name: c.name, targets: [...targets], tooltip, chooserTitle };
+}
+
+/** ↑ marker of a Go type or method from the interfaces (methods) it satisfies; null without any. */
+export function implementsMarker(
+  c: MarkerCandidate,
+  targets: readonly Location[],
+  files: ReadonlyMap<string, string[] | null>,
+): LineMarker | null {
+  if (!targets.length) return null;
+  const names = nameList(targets.map((t) => targetName(files.get(t.path), t, c.method)));
+  const n = targets.length;
+  return {
+    kind: "implementing",
+    line: c.line,
+    name: c.name,
+    targets: [...targets],
+    tooltip: c.method ? tx`Implements method in ${names}` : tx`Implements ${names}`,
+    chooserTitle: c.method
+      ? tx`Choose Super Method of ${c.name} (${n} found)`
+      : tx`Choose Implemented Interface of ${c.name} (${n} found)`,
+  };
 }
 
 /** Whether a super method is abstract: declared in an interface / trait, or marked `abstract`. */

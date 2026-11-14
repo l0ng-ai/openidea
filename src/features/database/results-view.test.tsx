@@ -1,11 +1,13 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbQueryResult, DbTableDetails } from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
-import { executeConsole, useDatabase, type ResultTab } from "./store";
+import { executeConsole, explainConsole, pinResult, rerunResult, useDatabase, type ResultTab } from "./store";
+import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 
 const backend = vi.hoisted(() => ({
@@ -15,6 +17,7 @@ const backend = vi.hoisted(() => ({
   applyEdits: vi.fn(),
   execute: vi.fn(),
   statements: vi.fn(),
+  explain: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -27,6 +30,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbApplyEdits: backend.applyEdits,
       dbExecute: backend.execute,
       dbStatements: backend.statements,
+      dbExplain: backend.explain,
     },
   };
 });
@@ -157,6 +161,48 @@ describe("editable result grid", () => {
     expect(useDatabase.getState().results[0]!.id).toBe(tab.id);
   });
 
+  it("keeps navigation focus after leaving an inline cell editor and releases it outside Results", async () => {
+    const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    useDatabase.setState({ results: [first, { ...first, id: nextId++, title: "Result 2" }] });
+    const keymap = useKeymap.getState();
+    useKeymap.setState({ preset: "intellij-macos", overrides: {}, extensions: {} });
+    const dispose = registerResultTabActions();
+    const uninstall = installKeyboardDispatcher(window);
+    try {
+      await act(async () =>
+        render(
+          <>
+            <ResultsView />
+            <button>Outside results</button>
+          </>,
+        ),
+      );
+      fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+      const input = screen.getByRole("textbox", { name: "Edit name" });
+      fireEvent.change(input, { target: { value: "Bob" } });
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "}", code: "BracketRight", metaKey: true, shiftKey: true });
+      });
+      expect(screen.getByRole("tab", { name: "Result 2" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Result 2" })).toHaveFocus();
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, { key: "{", code: "BracketLeft", metaKey: true, shiftKey: true });
+      });
+      expect(screen.getByRole("tab", { name: "Result 1" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: "Result 1" })).toHaveFocus();
+      act(() => screen.getByRole("button", { name: "Outside results" }).focus());
+      await act(async () => {
+        fireEvent.keyDown(document.activeElement!, { key: "}", code: "BracketRight", metaKey: true, shiftKey: true });
+      });
+      expect(screen.getByRole("tab", { name: "Result 1" })).toHaveAttribute("aria-selected", "true");
+      expect(backend.applyEdits).not.toHaveBeenCalled();
+    } finally {
+      uninstall();
+      dispose();
+      useKeymap.setState(keymap, true);
+    }
+  });
+
   it.each(["s2", ""])("records the selected schema or connection default: %s", async (schema) => {
     show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
     useDatabase.setState({ consoles: { "console.sql": "pg" }, consoleSchemas: { "console.sql": schema } });
@@ -233,6 +279,29 @@ describe("editable result grid", () => {
     expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Submit" }).hasAttribute("disabled")).toBe(true);
     expect(backend.applyEdits).not.toHaveBeenCalled();
+  });
+
+  it("keeps unsubmitted edits while another result tab is shown", async () => {
+    const first = show("SELECT * FROM users WHERE id < 10", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    const second: ResultTab = {
+      ...first,
+      id: nextId++,
+      title: "Result 2",
+      outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+    };
+    useDatabase.setState((s) => ({ results: [...s.results, second] }));
+    await act(async () => render(<ResultsView />));
+    fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+    const input = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.change(input, { target: { value: "Bob" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await act(async () => useDatabase.setState({ activeResult: second.id }));
+    expect(screen.getByRole("button", { name: "Submit" }).hasAttribute("disabled")).toBe(true);
+    await act(async () => useDatabase.setState({ activeResult: first.id }));
+
+    expect(screen.getByRole("gridcell", { name: "Bob" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Submit" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("keeps an aliased column read-only while the plain ones stay editable", async () => {
@@ -364,6 +433,75 @@ describe("result grid keyboard Submit / Revert (#2332)", () => {
   });
 });
 
+describe("Tab in the results (IDEA: Tab enters the table and moves between its cells)", () => {
+  const selectedCells = () =>
+    screen
+      .getAllByRole("gridcell")
+      .filter((cell) => cell.getAttribute("aria-selected") === "true")
+      .map((cell) => cell.textContent);
+  const rows = [
+    ["1", "Ann"],
+    ["2", "Bob"],
+  ];
+
+  it("goes from the result tab to the first cell, cell by cell, and back through the toolbar's one stop", async () => {
+    const user = userEvent.setup();
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], rows);
+    await act(async () => render(<ResultsView />));
+    await screen.findByRole("button", { name: "Add Row" });
+    act(() => screen.getByRole("tab", { name: "Result 1" }).focus());
+    await user.tab();
+    expect(screen.getByRole("grid")).toHaveFocus();
+    expect(selectedCells()).toEqual(["1"]);
+    await user.tab();
+    expect(selectedCells()).toEqual(["Ann"]);
+    await user.tab();
+    expect(selectedCells()).toEqual(["2"]);
+    await user.tab({ shift: true });
+    await user.tab({ shift: true });
+    expect(selectedCells()).toEqual(["1"]);
+    await user.tab({ shift: true });
+    expect(screen.getByRole("toolbar", { name: "Result actions" })).toContainElement(
+      document.activeElement as HTMLElement,
+    );
+    await user.tab({ shift: true });
+    expect(screen.getByRole("tab", { name: "Result 1" })).toHaveFocus();
+  });
+
+  it("leaves the grid after the last cell", async () => {
+    const user = userEvent.setup();
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], rows);
+    await act(async () => render(<ResultsView />));
+    fireEvent.mouseDown(screen.getByRole("gridcell", { name: "Bob" }), { button: 0 });
+    await user.tab();
+    expect(screen.getByRole("grid")).not.toHaveFocus();
+    expect(selectedCells()).toEqual(["Bob"]);
+  });
+
+  it("commits the cell editor with Tab and selects the next cell", async () => {
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], rows);
+    await act(async () => render(<ResultsView />));
+    fireEvent.doubleClick(await screen.findByRole("gridcell", { name: "Ann" }));
+    const input = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.change(input, { target: { value: "Cara" } });
+    fireEvent.keyDown(input, { key: "Tab" });
+    expect(screen.getByRole("gridcell", { name: "Cara" })).toBeTruthy();
+    expect(selectedCells()).toEqual(["2"]);
+    expect(screen.getByRole("grid")).toHaveFocus();
+  });
+
+  it("goes from the Output tab to the log, past its toolbar", async () => {
+    const user = userEvent.setup();
+    show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], rows);
+    useDatabase.setState({ output: [{ id: 1, time: 0, kind: "statement", text: "SELECT * FROM users" }] });
+    await act(async () => render(<ResultsView />));
+    fireEvent.click(screen.getByRole("tab", { name: "Output" }));
+    act(() => screen.getByRole("tab", { name: "Output" }).focus());
+    await user.tab();
+    expect(screen.getByRole("log", { name: "Database output" })).toHaveFocus();
+  });
+});
+
 it("omits a reset inserted cell from Submit instead of writing SQL NULL", async () => {
   show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
   useKeymap.setState({ preset: "intellij-macos", overrides: {} });
@@ -387,4 +525,150 @@ it("omits a reset inserted cell from Submit instead of writing SQL NULL", async 
     disposeKeys();
     disposeActions();
   }
+});
+
+describe("result tab reuse (IDEA: new results replace the console's unpinned tabs)", () => {
+  const runIn = (path: string, text: string) => executeConsole(path, text, 0, text.length);
+  const strip = () => useDatabase.getState().results.map((r) => `${r.path}:${r.outcome.statement.text}`);
+  const titles = () => useDatabase.getState().results.map((r) => r.title);
+  const ids = () => useDatabase.getState().results.map((r) => r.id);
+  const runNumber = (title: string) => Number(/^Result (\d+)/.exec(title)![1]);
+
+  beforeEach(() => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "postgres", readOnly: false }],
+      completion: { pg: { defaultSchema: "public", tables: [], foreignKeys: [] } },
+      consoles: { "a.sql": "pg", "b.sql": "pg" },
+      consoleSchemas: {},
+      results: [],
+      activeResult: null,
+      output: [],
+      details: {},
+      running: {},
+    });
+    backend.statements.mockImplementation((_id: unknown, text: string) => {
+      let from = 0;
+      const statements = text.split(";").flatMap((part) => {
+        const start = from + part.length - part.trimStart().length;
+        from += part.length + 1;
+        const st = part.trim();
+        return st ? [{ from: start, to: start + st.length, text: st }] : [];
+      });
+      return Promise.resolve({ status: "ok", data: statements });
+    });
+    backend.execute.mockImplementation((_r: unknown, _id: unknown, statements: Array<{ text: string }>) =>
+      Promise.resolve({
+        status: "ok",
+        data: statements.map((st) =>
+          /^bad/i.test(st.text)
+            ? { statement: st, result: null, error: "syntax error" }
+            : /^update/i.test(st.text)
+              ? { statement: st, result: { ...result([], []), affected: 1, statement: st.text }, error: null }
+              : { statement: st, result: { ...result([{ name: "v" }], [[st.text]]), statement: st.text }, error: null },
+        ),
+      }),
+    );
+  });
+
+  it("replaces the console's result in place with a fresh tab, leaving other consoles' results", async () => {
+    await runIn("a.sql", "SELECT 1");
+    await runIn("b.sql", "SELECT b");
+    const [first, other] = ids();
+    await runIn("a.sql", "SELECT 2");
+    expect(strip()).toEqual(["a.sql:SELECT 2", "b.sql:SELECT b"]);
+    expect(ids()[0]).not.toBe(first);
+    expect(ids()[1]).toBe(other);
+    expect(useDatabase.getState().activeResult).toBe(ids()[0]);
+    expect(runNumber(titles()[0]!)).toBe(runNumber(titles()[1]!) + 1);
+  });
+
+  it("opens one tab per result set of a batch, numbered per execution, and a single run replaces them all", async () => {
+    await runIn("a.sql", "SELECT 1; SELECT 2; SELECT 3");
+    const n = runNumber(titles()[0]!);
+    expect(titles()).toEqual([`Result ${n}`, `Result ${n}-2`, `Result ${n}-3`]);
+    expect(useDatabase.getState().activeResult).toBe(ids()[2]);
+    await runIn("a.sql", "SELECT 4");
+    expect(strip()).toEqual(["a.sql:SELECT 4"]);
+    expect(titles()).toEqual([`Result ${n + 1}`]);
+    await runIn("a.sql", "SELECT 5; SELECT 6");
+    expect(titles()).toEqual([`Result ${n + 2}`, `Result ${n + 2}-2`]);
+  });
+
+  it("leaves a pinned result alone and replaces only the newer unpinned one", async () => {
+    await runIn("a.sql", "SELECT 1");
+    const pinned = ids()[0]!;
+    pinResult(pinned, true);
+    await runIn("a.sql", "SELECT 2");
+    await runIn("a.sql", "SELECT 3");
+    expect(strip()).toEqual(["a.sql:SELECT 1", "a.sql:SELECT 3"]);
+    expect(ids()[0]).toBe(pinned);
+    pinResult(pinned, false);
+    await runIn("a.sql", "SELECT 4");
+    expect(strip()).toEqual(["a.sql:SELECT 4"]);
+  });
+
+  it("keeps the previous results when a run returns no result set or fails", async () => {
+    await runIn("a.sql", "SELECT 1");
+    const before = useDatabase.getState().results;
+    await runIn("a.sql", "UPDATE t SET v = 1");
+    expect(useDatabase.getState().results).toBe(before);
+    expect(useDatabase.getState().activeResult).toBe(0);
+    await runIn("a.sql", "bad sql");
+    expect(useDatabase.getState().results).toBe(before);
+  });
+
+  it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
+    backend.explain.mockResolvedValue({ status: "ok", data: [] });
+    await explainConsole("a.sql", "SELECT 1", 0, 0);
+    await runIn("a.sql", "SELECT 2");
+    const plan = ids()[0]!;
+    expect(useDatabase.getState().results.map((r) => !!r.plan)).toEqual([true, false]);
+    await runIn("a.sql", "SELECT 3");
+    expect(ids()[0]).toBe(plan);
+    pinResult(plan, true);
+    await explainConsole("a.sql", "SELECT 4", 0, 0);
+    expect(
+      useDatabase
+        .getState()
+        .results.filter((r) => r.plan)
+        .map((r) => r.outcome.statement.text),
+    ).toEqual(["SELECT 1", "SELECT 4"]);
+  });
+
+  it("drops the oldest unpinned results beyond 12 but never pinned or new ones", async () => {
+    const paths = Array.from({ length: 12 }, (_, i) => `c${i}.sql`);
+    useDatabase.setState((s) => ({ consoles: { ...s.consoles, ...Object.fromEntries(paths.map((p) => [p, "pg"])) } }));
+    for (const path of paths) await runIn(path, "SELECT 0");
+    pinResult(ids()[0]!, true);
+    await runIn("a.sql", "SELECT 1; SELECT 2");
+    // c1 and c2 go (oldest unpinned); pinned c0 and both new results stay.
+    expect(strip()).toEqual([
+      "c0.sql:SELECT 0",
+      ...paths.slice(3).map((p) => `${p}:SELECT 0`),
+      "a.sql:SELECT 1",
+      "a.sql:SELECT 2",
+    ]);
+    for (const r of useDatabase.getState().results) pinResult(r.id, true);
+    await runIn("b.sql", "SELECT b");
+    expect(strip()).toHaveLength(13);
+    expect(strip().at(-1)).toBe("b.sql:SELECT b");
+  });
+
+  it("stays on the new result when a replaced tab's rerun fails afterwards", async () => {
+    await runIn("a.sql", "SELECT 1");
+    const old = ids()[0]!;
+    let fail!: () => void;
+    backend.execute.mockImplementationOnce(
+      (_r: unknown, _id: unknown, statements: Array<{ text: string }>) =>
+        new Promise((resolve) => {
+          fail = () => resolve({ status: "ok", data: [{ statement: statements[0], result: null, error: "gone" }] });
+        }),
+    );
+    const rerun = rerunResult(old);
+    await runIn("a.sql", "SELECT 2");
+    const fresh = ids()[0]!;
+    fail();
+    await rerun;
+    expect(useDatabase.getState().activeResult).toBe(fresh);
+  });
 });

@@ -1,14 +1,14 @@
-import { PluginFormattersPage } from "../languages/PluginFormattersPage";
 /**
- * PyCharm's top-level "Python" group (Interpreter), "Project Structure", and
+ * PyCharm's top-level "Python" group (Interpreter) and
  * Languages & Frameworks › Go / Java / Markdown / Node.js / PHP / Rust / TypeScript. Pages live in
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
-import { ProjectStructurePage } from "../languages/ProjectStructurePage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
+import { PythonInterpretersPage } from "../languages/PythonInterpretersPage";
+import { DocstringsPage } from "../languages/DocstringsPage";
 import { GoBuildTagsPage, GO_BUILD_TAG_SECTIONS } from "../languages/GoBuildTags";
 import { GoModulesPage, GO_MODULE_SECTIONS } from "../languages/GoModules";
 import type { PageSpec } from "./spec";
@@ -17,64 +17,61 @@ export const LANGUAGES_GROUP = "Languages & Frameworks";
 
 export const LANGUAGE_PAGES: PageSpec[] = [
   {
-    id: "languages.pluginFormatters",
-    title: "Plugin Formatters",
+    // PyCharm's "Python" settings folder: its pages nest under this id.
+    id: "python",
+    title: "Python",
     group: LANGUAGES_GROUP,
-    projectScope: true,
-    order: 450,
-    keywords: ["format", "plugins"],
-    component: PluginFormattersPage,
+    order: 403,
+    keywords: ["python", "interpreters", "dependencies", "packages", "virtualenv", "venv", "ruff"],
   },
   {
     id: "python.interpreter",
     projectScope: true,
     defaultScope: "project",
-    title: "Python Interpreter",
+    title: "Dependencies",
     group: LANGUAGES_GROUP,
-    order: 403,
+    order: 403.1,
     keywords: [
       "python interpreter",
+      "project interpreter",
+      "interpreter",
       "sdk",
       "virtualenv",
       "venv",
       "conda",
       "pyenv",
+      "dependencies",
       "packages",
       "pip",
       "install package",
       "add interpreter",
       "activate virtualenv",
-      "docstrings",
-      "documentation string format",
-      "reStructuredText",
-      "Epytext",
-      "NumPy",
-      "Google",
     ],
     component: PythonInterpreterPage,
   },
   {
-    id: "projectStructure",
-    title: "Project Structure",
-    // IntelliJ IDEA order: … Version Control, Project Structure, Build, Execution, Deployment, Languages & Frameworks …
-    order: 350,
+    id: "python.interpreters",
+    title: "All Interpreters",
+    group: LANGUAGES_GROUP,
+    order: 403,
     keywords: [
-      "project structure",
-      "content root",
-      "sources root",
-      "test sources",
-      "resources",
-      "excluded",
-      "mark directory as",
-      "project sdk",
-      "language level",
-      "modules",
-      "libraries",
-      "facets",
-      "artifacts",
-      "sdks",
+      "python interpreters",
+      "all interpreters",
+      "interpreter list",
+      "add interpreter",
+      "remove interpreter",
+      "delete interpreter",
+      "hide other projects",
+      "show interpreter paths",
+      "sdk",
+      "virtualenv",
+      "venv",
+      "conda",
+      "pyenv",
+      "poetry",
+      "uv",
     ],
-    component: ProjectStructurePage,
+    component: PythonInterpretersPage,
   },
   {
     id: "languages.go",
@@ -173,12 +170,29 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     component: OxfmtPage,
   },
   {
-    id: "languages.ruff",
+    id: "python.docstrings",
+    title: "Docstrings",
+    group: LANGUAGES_GROUP,
+    order: 403.2,
+    keywords: [
+      "docstrings",
+      "docstring format",
+      "documentation string format",
+      "restructuredtext",
+      "epytext",
+      "google",
+      "numpy",
+      "plain",
+    ],
+    component: DocstringsPage,
+  },
+  {
+    id: "python.ruff",
     projectScope: true,
     defaultScope: "project",
     title: "Ruff",
     group: LANGUAGES_GROUP,
-    order: 403.7,
+    order: 403.3,
     keywords: [
       "formatter",
       "ruff",

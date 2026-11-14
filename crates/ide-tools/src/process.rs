@@ -280,6 +280,7 @@ pub struct Http {
     explicit_github_token: Option<String>,
     https_only: bool,
     revoke_best_effort: bool,
+    accept: Option<&'static str>,
 }
 
 impl Http {
@@ -289,12 +290,18 @@ impl Http {
         let gh = which::which_in("gh", Some(search_path), ".").ok();
         let explicit_github_token = environment_github_token(|key| std::env::var(key).ok());
         let revoke_best_effort = cfg!(windows) && revoke_best_effort(&curl);
-        Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort })
+        Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort, accept: None })
     }
 
     /// Refuses every protocol but HTTPS, redirects included.
     pub fn https_only(mut self) -> Self {
         self.https_only = true;
+        self
+    }
+
+    /// Sends `Accept: <mime>` (e.g. the npm registry's abbreviated metadata).
+    pub fn accept(mut self, mime: &'static str) -> Self {
+        self.accept = Some(mime);
         self
     }
 
@@ -329,6 +336,9 @@ impl Http {
         }
         if self.revoke_best_effort {
             cmd.arg("--ssl-revoke-best-effort");
+        }
+        if let Some(mime) = self.accept {
+            cmd.arg("--header").arg(format!("Accept: {mime}"));
         }
         cmd.stdin(Stdio::null());
         if token.is_some() {
@@ -700,6 +710,7 @@ mod tests {
             explicit_github_token: None,
             https_only: false,
             revoke_best_effort: false,
+            accept: None,
         };
         for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
         {
@@ -852,6 +863,7 @@ mod github_auth_tests {
                         explicit_github_token: None,
                         https_only: false,
                         revoke_best_effort: false,
+                        accept: None,
                     },
                 };
                 fixture.script(

@@ -6,10 +6,12 @@ import { activateSecondaryWindow, activateWorkbench } from "./workbench/activate
 import {
   activateComparisonWindowFeatures,
   activateDeploymentWindowFeatures,
+  activateDiffWindowFeatures,
   activateFeatures,
   activateSettingsWindowFeatures,
   ComparisonWindow,
   DeploymentWindow,
+  DiffWindow,
   SettingsWindow,
 } from "./features";
 import { auxiliaryWindow } from "./platform/auxWindow";
@@ -22,7 +24,7 @@ import { installPageSwipeTracking } from "./platform/pageSwipe";
 import { installImeKeyGuard } from "./platform/ime";
 import { installKeyboardDispatcher } from "./platform/keymap";
 import { installPointerFocus } from "./platform/pointerFocus";
-import { isTauri } from "./platform/ipc";
+import { call, commands, isTauri } from "./platform/ipc";
 import { hideSplash } from "./platform/splash";
 import { prefetchLazyComponents } from "./ui";
 import { installWindowDrag } from "./workbench/window-drag";
@@ -40,7 +42,11 @@ installRepeatedDoubleClick();
 // click twice.
 if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
 if (guessOs() === "linux" && isTauri()) installWebKitClipboardGuard();
-installWindowDrag();
+// A double click on the title bar fills the work area; the backend steps the frame once per
+// presented webview frame, because AppKit's own zoom hides the page until the resize ends.
+installWindowDrag({
+  toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
+});
 installPointerFocus();
 installImeKeyGuard();
 installErrorLogging();
@@ -56,6 +62,10 @@ if (aux?.kind === "settings") {
 } else if (aux?.kind === "comparison") {
   activateSecondaryWindow();
   activateComparisonWindowFeatures(aux.parent);
+  installKeyboardDispatcher();
+} else if (aux?.kind === "diff") {
+  activateSecondaryWindow();
+  activateDiffWindowFeatures(aux.parent);
   installKeyboardDispatcher();
 } else if (aux?.kind === "deployment") {
   activateSecondaryWindow();
@@ -88,6 +98,8 @@ function App() {
     <SettingsWindow />
   ) : aux?.kind === "comparison" ? (
     <ComparisonWindow />
+  ) : aux?.kind === "diff" ? (
+    <DiffWindow />
   ) : aux?.kind === "deployment" ? (
     <DeploymentWindow />
   ) : (

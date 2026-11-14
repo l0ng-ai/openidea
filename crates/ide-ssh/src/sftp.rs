@@ -80,11 +80,29 @@ fn err(path: &str, e: SftpError) -> IdeError {
 /// Higher-level operations on an [`SftpSession`].
 pub struct SftpFs {
     sftp: SftpSession,
+    /// The SSH session behind it, for commands that list a whole tree at once ([`SftpFs::tree`]).
+    shell: Option<std::sync::Arc<crate::Session>>,
 }
 
 impl SftpFs {
     pub fn new(sftp: SftpSession) -> Self {
-        Self { sftp }
+        Self { sftp, shell: None }
+    }
+
+    pub fn with_shell(self, shell: std::sync::Arc<crate::Session>) -> Self {
+        Self { shell: Some(shell), ..self }
+    }
+
+    /// Every file and symlink below `dir` (not into folders named by `prune`) in one `find`
+    /// command instead of a listing per folder. `None` when there is no shell or the host's
+    /// `find` can't do it (no GNU `-printf`, an unreadable folder): list folder by folder then.
+    pub async fn tree(&self, dir: &str, prune: &[String]) -> Option<Vec<RemoteEntry>> {
+        let shell = self.shell.as_ref()?;
+        let out = shell.exec(&tree_command(dir, prune), None).await.ok()?;
+        if !out.success() {
+            return None;
+        }
+        parse_tree(&out.stdout)
     }
 
     /// The login directory.
@@ -269,9 +287,60 @@ pub fn mtime_of(path: &Path) -> Option<u32> {
     u32::try_from(t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs()).ok()
 }
 
+/// `find` listing the files and symlinks below `dir` as `type\tsize\tmtime\tpath\0` records.
+fn tree_command(dir: &str, prune: &[String]) -> String {
+    let mut cmd = format!("LC_ALL=C find {} -mindepth 1 ", crate::shell::quote(dir));
+    if !prune.is_empty() {
+        let names: Vec<String> = prune.iter().map(|p| format!("-name {}", crate::shell::quote(p))).collect();
+        cmd.push_str(&format!("\\( {} \\) -prune -o ", names.join(" -o ")));
+    }
+    cmd.push_str("\\( -type f -o -type l \\) -printf '%y\\t%s\\t%T@\\t%p\\0'");
+    cmd
+}
+
+fn parse_tree(out: &[u8]) -> Option<Vec<RemoteEntry>> {
+    let mut entries = Vec::new();
+    for record in out.split(|&b| b == 0).filter(|r| !r.is_empty()) {
+        let record = std::str::from_utf8(record).ok()?;
+        let mut fields = record.splitn(4, '\t');
+        let (kind, size, mtime, path) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+        let mtime = mtime.split('.').next()?.parse::<u64>().ok()?;
+        entries.push(RemoteEntry {
+            name: path.rsplit('/').next().unwrap_or(path).to_owned(),
+            path: path.to_owned(),
+            is_dir: false,
+            is_symlink: kind == "l",
+            size: size.parse().ok()?,
+            mtime: u32::try_from(mtime).ok(),
+            permissions: String::new(),
+        });
+    }
+    Some(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_a_tree_with_one_find() {
+        assert_eq!(
+            tree_command("/srv/my app", &[".git".into(), "*.pyc".into()]),
+            "LC_ALL=C find '/srv/my app' -mindepth 1 \\( -name .git -o -name '*.pyc' \\) -prune -o \
+             \\( -type f -o -type l \\) -printf '%y\\t%s\\t%T@\\t%p\\0'"
+        );
+        let out = b"f\t12\t1700000000.5000000000\t/srv/a b\ttab.txt\0l\t7\t1700000001.0\t/srv/link\0";
+        let entries = parse_tree(out).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            (entries[0].path.as_str(), entries[0].name.as_str(), entries[0].size, entries[0].mtime),
+            ("/srv/a b\ttab.txt", "a b\ttab.txt", 12, Some(1_700_000_000))
+        );
+        assert!(entries[1].is_symlink && !entries[1].is_dir);
+        assert!(parse_tree(b"").unwrap().is_empty());
+        // Not `find -printf` output (BusyBox, an error message): list folder by folder instead.
+        assert!(parse_tree(b"find: unrecognized: -printf\n").is_none());
+    }
 
     #[test]
     fn joins_and_splits_paths() {

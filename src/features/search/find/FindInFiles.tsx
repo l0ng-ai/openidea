@@ -89,7 +89,7 @@ import styles from "./FindInFiles.module.css";
 /** The Directory scope's browse button: a folder chooser opened at the current directory. */
 async function chooseDirectory(current: string): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: true,
     multiple: false,
@@ -621,7 +621,9 @@ function FindInFilesDialog() {
         <header className={styles.header} data-dialog-drag="">
           <span className={styles.title}>{s.replace ? tx("Replace in Files") : tx("Find in Files")}</span>
           <span className={styles.status} aria-live="polite">
-            {stale || state.status === "searching" || state.status === "validating" ? <Spinner size={12} /> : null}
+            {stale || state.status === "searching" || state.status === "validating" ? (
+              <Spinner size={16} variant="spokes" />
+            ) : null}
             {summary}
           </span>
           <span className={styles.spacer} />

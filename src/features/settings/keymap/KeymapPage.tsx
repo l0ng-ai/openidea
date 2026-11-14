@@ -1,6 +1,6 @@
 /**
  * Keymap page (IDEA layout): keymap selector with a gear menu (Duplicate… /
- * Rename… / Restore Defaults / Delete), search by name or by recorded shortcut,
+ * Import IntelliJ IDEA Keymap… / Rename… / Restore Defaults / Delete), search by name or by recorded shortcut,
  * and the action tree grouped as Main Menu › File…Help, Editor Actions, Tool
  * Windows, Other, Plugins. Enter / double-click opens the context menu to add,
  * remove or reset shortcuts. Edits are staged as the `keymap`, `keymapOverrides`
@@ -10,7 +10,9 @@ import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useActions, allActions, type Action } from "@/platform/actions";
 import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS, useKeymap } from "@/platform/keymap";
-import { confirm } from "@/workbench/messages";
+import { call, commands } from "@/platform/ipc";
+import { notifications } from "@/workbench/contributions";
+import { ask, confirm, showError } from "@/workbench/messages";
 import {
   HighlightedText,
   Icon,
@@ -44,12 +46,14 @@ import {
   resetBindings,
   resolveBindings,
   switchPreset,
+  validateKeymapName,
   withCustomOverrides,
   type CustomKeymaps,
   type KeymapDraft,
 } from "./model";
 import { groupIcon, groupPath, groupRank } from "./groups";
 import { KeymapNameDialog } from "./KeymapDialogs";
+import { parseIdeaKeymap } from "./ideaKeymapImport";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
@@ -69,6 +73,21 @@ export function keymapSearchLabels(): string[] {
 }
 
 const groupKey = (path: readonly string[]) => `grp:${path.join("/")}`;
+
+/**
+ * The JSON written by "Export Keymap as JSON…": the keymap's name, the preset
+ * it is based on, and every configurable action's resolved bindings, so the
+ * mapping can be read or compared to IDEA offline.
+ */
+export function keymapJson(name: string, basedOn: string, actions: readonly Action[], draft: KeymapDraft): string {
+  const bindings: Keymap = {};
+  for (const action of actions) {
+    if (!isKeymapAction(action, draft)) continue;
+    const keys = resolveBindings(draft, action.id);
+    if (keys.length) bindings[action.id] = keys;
+  }
+  return JSON.stringify({ name, basedOn, actions: bindings }, null, 2);
+}
 
 function sortGroup(g: GroupNode): void {
   const actions = g.children.filter((c) => c.kind === "action");
@@ -227,12 +246,80 @@ export function KeymapPage() {
     setSelected(next.selected);
   };
 
+  const importIdeaKeymap = async () => {
+    const { open } = await import("@/platform/dialog");
+    const path = await open({ multiple: false, filters: [{ name: tx("IntelliJ IDEA Keymap"), extensions: ["xml"] }] });
+    if (!path) return;
+    let parsed;
+    try {
+      parsed = parseIdeaKeymap(await call(commands.fsReadText(path)));
+    } catch (e) {
+      await showError(tx("Import Keymap"), e instanceof Error ? e.message : String(e));
+      return;
+    }
+    const name = validateKeymapName(parsed.name, customs) ? copyName(parsed.name, customs) : parsed.name;
+    const next = duplicateKeymap({ preset: parsed.parent, overrides: parsed.overrides }, customs, name);
+    setCustoms(next.customs);
+    setSelected(next.id);
+    const unknown = parsed.unknownActions;
+    await ask({
+      title: tx("Import Keymap"),
+      body: (
+        <>
+          <div>
+            {tx`Imported '${name}' (based on ${PRESET_TITLES[parsed.parent] ?? parsed.parent}): ${parsed.applied} actions.`}
+          </div>
+          {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
+          {parsed.skippedShortcuts > 0 && <div>{tx`Skipped ${parsed.skippedShortcuts} unsupported shortcuts.`}</div>}
+        </>
+      ),
+      buttons: [{ id: "ok", label: tx("OK"), primary: true }],
+    });
+  };
+
+  const exportKeymap = async () => {
+    const { save } = await import("@/platform/dialog");
+    const name = keymapName(selectedId, customs);
+    const path = await save({
+      title: tx("Export Keymap"),
+      defaultPath: `${name.replace(/[/\\:*?"<>|]/g, "_")}.json`,
+      filters: [{ name: tx("OpenIDEA Keymap"), extensions: ["json"] }],
+    });
+    if (!path) return;
+    const json = keymapJson(
+      name,
+      isCustom ? (customs[selectedId]?.parent ?? draft.preset) : selectedId,
+      allActions(),
+      draft,
+    );
+    try {
+      // The save dialog already confirmed replacing an existing file.
+      await call(commands.fsDelete(path)).catch(() => {});
+      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(json))));
+      notifications().notify({
+        level: "info",
+        title: tx("Keymap exported"),
+        body: path,
+        key: "keymap.export",
+      });
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot export keymap"),
+        body: e instanceof Error ? e.message : String(e),
+        key: "keymap.export",
+      });
+    }
+  };
+
   const gearMenu = (): MenuItem[] => [
     {
       label: "Duplicate…",
       icon: "copy",
       run: () => setNameDialog({ mode: "duplicate", initial: copyName(keymapName(selectedId, customs), customs) }),
     },
+    { label: "Import IntelliJ IDEA Keymap…", run: () => void importIdeaKeymap() },
+    { label: "Export Keymap as JSON…", run: () => void exportKeymap() },
     {
       label: "Rename…",
       icon: "edit",

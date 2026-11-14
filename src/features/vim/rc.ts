@@ -6,6 +6,8 @@
  * reported as ignored, never executed.
  */
 
+import { IDEA_ACTIONS } from "@/platform/ideaActions";
+
 /** codemirror-vim mapping context; undefined = Normal, Visual and Operator-pending. */
 export type MapMode = "normal" | "insert" | "visual" | "operatorPending" | undefined;
 
@@ -223,107 +225,6 @@ export function parseVimrc(text: string, sources?: ReadonlyMap<string, string | 
   });
   return { commands, ignored };
 }
-
-/**
- * IdeaVim (IntelliJ) action ids → OpenIDEA action ids, for `:action` and
- * `<Action>()`. Our own ids (`code.reformat`) work as well.
- */
-export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
-  GotoDeclaration: "navigate.declaration",
-  GotoImplementation: "navigate.implementation",
-  GotoTypeDeclaration: "navigate.typeDeclaration",
-  GotoSuperMethod: "navigate.superMethod",
-  GotoTest: "navigate.gotoTest",
-  GotoClass: "navigate.gotoClass",
-  GotoFile: "navigate.gotoFile",
-  GotoSymbol: "navigate.gotoSymbol",
-  GotoAction: "navigate.findAction",
-  GotoLine: "navigate.gotoLine",
-  SearchEverywhere: "navigate.searchEverywhere",
-  RecentFiles: "navigate.recentFiles",
-  RecentLocations: "navigate.recentLocations",
-  Back: "navigate.back",
-  Forward: "navigate.forward",
-  FileStructurePopup: "navigate.fileStructure",
-  GotoNextError: "navigate.nextError",
-  GotoPreviousError: "navigate.prevError",
-  MethodDown: "navigate.nextMethod",
-  MethodUp: "navigate.previousMethod",
-  CallHierarchy: "navigate.callHierarchy",
-  TypeHierarchy: "navigate.typeHierarchy",
-  ToggleBookmark: "navigate.toggleBookmark",
-  ShowBookmarks: "navigate.showBookmarks",
-  SelectIn: "navigate.selectIn",
-  Find: "find.inFile",
-  Replace: "find.replaceInFile",
-  FindInPath: "find.inPath",
-  ReplaceInPath: "find.replaceInPath",
-  FindUsages: "find.usages",
-  ShowUsages: "find.showUsages",
-  HighlightUsagesInFile: "find.highlightUsages",
-  ReformatCode: "code.reformat",
-  OptimizeImports: "code.optimizeImports",
-  CommentByLineComment: "code.commentLine",
-  CommentByBlockComment: "code.commentBlock",
-  ShowIntentionActions: "code.showIntentions",
-  QuickJavaDoc: "code.quickDocumentation",
-  QuickImplementations: "code.quickDefinition",
-  ParameterInfo: "code.parameterInfo",
-  CodeCompletion: "code.completion",
-  Generate: "code.generate",
-  SurroundWith: "code.surroundWith",
-  EditorSelectWord: "code.extendSelection",
-  EditorUnSelectWord: "code.shrinkSelection",
-  CollapseRegion: "code.fold",
-  ExpandRegion: "code.unfold",
-  CollapseAllRegions: "code.foldAll",
-  ExpandAllRegions: "code.unfoldAll",
-  RenameElement: "refactor.rename",
-  "Refactorings.QuickListPopupAction": "refactor.thisMenu",
-  ChangeSignature: "refactor.changeSignature",
-  ExtractMethod: "refactor.extractMethod",
-  IntroduceVariable: "refactor.extractVariable",
-  IntroduceConstant: "refactor.extractConstant",
-  IntroduceField: "refactor.extractField",
-  IntroduceParameter: "refactor.extractParameter",
-  Inline: "refactor.inline",
-  Move: "refactor.move",
-  SafeDelete: "refactor.safeDelete",
-  MembersPullUp: "refactor.pullMembersUp",
-  MemberPushDown: "refactor.pushMembersDown",
-  Run: "run.run",
-  Debug: "run.debug",
-  RunClass: "run.runContext",
-  DebugClass: "run.debugContext",
-  Stop: "run.stop",
-  Rerun: "run.rerun",
-  ChooseRunConfiguration: "run.chooseConfig",
-  ToggleLineBreakpoint: "debug.toggleBreakpoint",
-  SaveAll: "file.save",
-  ShowSettings: "file.settings",
-  NewScratchFile: "file.newScratchFile",
-  CloseContent: "editor.closeTab",
-  CloseEditor: "editor.closeTab",
-  CloseAllEditors: "editor.closeAllTabs",
-  ReopenClosedTab: "editor.reopenClosedTab",
-  NextTab: "editor.nextTab",
-  PreviousTab: "editor.prevTab",
-  SplitVertically: "editor.splitRight",
-  SplitHorizontally: "editor.splitDown",
-  Unsplit: "editor.unsplit",
-  ToggleDistractionFreeMode: "editor.toggleZen",
-  ActivateProjectToolWindow: "toolwindow.project",
-  HideAllWindows: "toolwindow.hideAll",
-  "Vcs.QuickListPopupAction": "vcs.operations",
-  CheckinProject: "vcs.commit",
-  "Vcs.Push": "vcs.push",
-  "Vcs.UpdateProject": "vcs.update",
-  "Git.Branches": "vcs.branches",
-  Annotate: "vcs.annotate",
-  VcsShowNextChangeMarker: "vcs.nextChange",
-  VcsShowPrevChangeMarker: "vcs.prevChange",
-  "Compare.SameVersion": "vcs.showDiff",
-};
 
 /** The OpenIDEA action for an `:action` argument: an IdeaVim id, or one of ours as is. */
 export function resolveActionId(id: string): string {

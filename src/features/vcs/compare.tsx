@@ -14,6 +14,7 @@ export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
 import { tx } from "@/platform/i18n";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -75,7 +76,7 @@ function info(title: string) {
 
 async function pickFile(near: string): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const dir = near.slice(0, near.lastIndexOf("/")) || undefined;
   const picked = await open({ multiple: false, directory: false, title: "Compare With", defaultPath: dir });
   return (Array.isArray(picked) ? picked[0] : picked) ?? null;
@@ -129,7 +130,7 @@ async function pickDirectory(near: string): Promise<string | null> {
     const picked = await promptText({ title: "Compare With", label: "Directory path", initial: near, mono: true });
     return picked?.value ?? null;
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ multiple: false, directory: true, title: tx("Compare With"), defaultPath: near });
   return (Array.isArray(picked) ? picked[0] : picked) ?? null;
 }
@@ -285,7 +286,7 @@ export function registerCompareActions(): () => void {
         if (!path) return info("Open or select a file to compare with the clipboard");
         let clipboard: string;
         try {
-          clipboard = (await navigator.clipboard?.readText()) ?? "";
+          clipboard = await readClipboardPlainText();
         } catch {
           return info("The clipboard could not be read");
         }

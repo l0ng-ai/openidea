@@ -1,11 +1,14 @@
-package openidea:plugin@1.5.0;
+package openidea:plugin@1.8.0;
 
 /// Problems in files, shown in the editor and the Problems view.
 interface diagnostics {
     use types.{error, range, location};
-    /// Problems reported by a source for a file in this window's project.
+    /// Problems one producer reported for a file, wherever the file is: the host records every
+    /// diagnostics event it emits, so this follows the file, not the invoking window.
     record file-problems { path: string, source: string, diagnostics: list<diagnostic> }
-    /// Current Problems view snapshot, optionally filtered to a project file.
+    /// The diagnostics the host recorded, one entry per producer, optionally
+    /// filtered to a file: language servers, builds, spelling and plugin
+    /// providers alike, whatever window or project opened the file.
     /// Requires project.read and an invoking window. Empty for remote projects.
     problems: func(path: option<string>) -> result<list<file-problems>, error>;
 
@@ -43,6 +46,7 @@ interface diagnostics {
 /// HTTPS with `net:<host>`; unencrypted HTTP with `net.http:<host>`.
 interface net {
     use types.{error};
+    use workspace.{project};
 
     record header {
         name: string,
@@ -69,9 +73,41 @@ interface net {
         body: list<u8>,
     }
 
+    record websocket-request {
+        /// `wss://` requires `net:<host>`; loopback `ws://` is allowed for tests.
+        url: string,
+        /// Secret placeholders are expanded by the host as for HTTP requests.
+        /// `host`, `connection`, `upgrade` and `sec-websocket-*` belong to the
+        /// handshake and are rejected.
+        headers: list<header>,
+        /// Empty for none; otherwise the server must accept this subprotocol.
+        subprotocol: string,
+    }
+
+    record websocket-batch {
+        messages: list<list<u8>>,
+        /// The transport has ended. Any returned messages are still valid and
+        /// this connection is removed after this final drain.
+        closed: bool,
+    }
+
     /// Fails with `denied` for a host the plugin may not reach, `cancelled`
     /// when a newer request replaced the call or the user cancelled.
     fetch: func(req: request) -> result<response, error>;
+    /// A project-bound background WebSocket. At most eight may be open for a
+    /// plugin. Dropping this resource closes the transport and releases it.
+    resource websocket {
+        /// Stable connection identifier used by `websocket-ready` events.
+        id: func() -> u64;
+        send: func(bytes: list<u8>) -> result<_, error>;
+        drain: func(limit: u32) -> result<websocket-batch, error>;
+        close: func() -> result<_, error>;
+    }
+
+    /// Creates a project-bound WebSocket resource. The host retains the
+    /// project binding, so resource methods cannot be redirected to another
+    /// project.
+    websocket-connect: func(project: borrow<project>, req: websocket-request) -> result<websocket, error>;
 }
 
 /// Secrets the user stored for the plugin (Settings › Plugins, kept in the

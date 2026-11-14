@@ -5,6 +5,10 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerDatabaseTreeActions } from "./treeActions";
 import { tablesKey, useDatabase } from "./store";
+import { tableInput } from "./tableInput";
+import { useEditorRegistry } from "@/editor/api";
+import { provideEditorService, provideToolWindowService, type EditorInput } from "@/workbench/contributions";
+import styles from "./Database.module.css";
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -33,6 +37,7 @@ beforeEach(() => {
           { name: "calculate", kind: "function", arguments: "text", returns: "text" },
           { name: "refresh_data", kind: "procedure", arguments: "", returns: null },
         ],
+        packages: [],
         sequences: [],
       },
     },
@@ -104,5 +109,103 @@ describe("routine grouping", () => {
     expect(tree.queryByText("public")).toBeNull();
     expect(tree.queryByText("routines")).toBeNull();
     expect(tree.queryByText("functions")).toBeNull();
+  });
+});
+
+describe("Select Opened File", () => {
+  const nextFrame = () => act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  let active: EditorInput | null = null;
+  const show = vi.fn();
+
+  beforeEach(() => {
+    provideEditorService({ activeInput: () => active } as never);
+    provideToolWindowService({ show } as never);
+    useDatabase.setState({
+      tables: {
+        [tablesKey("pg", "public")]: {
+          status: "ok",
+          value: [
+            { name: "people", kind: "table" },
+            { name: "adults", kind: "view" },
+          ],
+        },
+      },
+      schemas: { pg: { status: "ok", value: ["public", "audit"] } },
+      treeExpanded: new Set(),
+    });
+  });
+
+  afterEach(() => {
+    active = null;
+    useEditorRegistry.setState({ active: null });
+  });
+
+  it("selects the active table editor's view in the views folder", async () => {
+    render(<DatabaseView />);
+    active = tableInput("pg", "public", "adults");
+    await act(() => executeAction("db.selectOpened"));
+    await nextFrame();
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/views/adults");
+    expect(show).toHaveBeenCalledWith("database");
+    expect(document.activeElement).toBe(screen.getByRole("tree", { name: "Data sources" }));
+  });
+
+  it("selects the nearest shown ancestor of a dropped table, and a console's schema", async () => {
+    render(<DatabaseView />);
+    active = tableInput("pg", "public", "dropped");
+    await act(() => executeAction("db.selectOpened"));
+    await nextFrame();
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/tables");
+
+    const path = "/project/audit.sql";
+    useDatabase.setState({ consoles: { [path]: "pg" }, consoleSchemas: { [path]: "audit" } });
+    active = { kind: "file", key: path, path };
+    useEditorRegistry.setState({ active: { ctx: { path, language: "sql" } } as never });
+    await act(() => executeAction("db.selectOpened"));
+    await nextFrame();
+    expect(useDatabase.getState().selectedNode?.key).toBe("pg/audit");
+  });
+});
+
+describe("Expand All", () => {
+  it("opens every loaded node and leaves unloaded ones closed", async () => {
+    useDatabase.setState({
+      sources: [
+        { id: "pg", name: "PostgreSQL", driver: "postgres", options: { singleDatabase: true } },
+        { id: "lite", name: "SQLite", driver: "sqlite" },
+      ],
+      tables: { [tablesKey("pg", "public")]: { status: "ok", value: [{ name: "users", kind: "table" }] } },
+      treeExpanded: new Set(),
+    });
+    render(<DatabaseView />);
+    await act(() => executeAction("db.expandAll"));
+    expect([...useDatabase.getState().treeExpanded].sort()).toEqual([
+      "pg",
+      "pg/public",
+      "pg/public/routines",
+      "pg/public/tables",
+    ]);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    expect(tree.getByText("refresh_data")).toBeInTheDocument();
+    // Its columns aren't loaded, and neither is the SQLite source: Expand All loads nothing.
+    expect(tree.getByText("users").closest('[role="treeitem"]')).toHaveAttribute("aria-expanded", "false");
+    expect(tree.getByText("SQLite").closest('[role="treeitem"]')).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("data source colour", () => {
+  it("tints the whole tree row of the source and of every node under it", () => {
+    useDatabase.setState({
+      sources: [
+        { id: "pg", name: "PostgreSQL", driver: "postgres", color: "red", options: { singleDatabase: true } },
+        { id: "lite", name: "SQLite", driver: "sqlite" },
+      ],
+    });
+    render(<DatabaseView />);
+    const tree = within(screen.getByRole("tree", { name: "Data sources" }));
+    for (const name of ["PostgreSQL", "public", "routines", "refresh_data"]) {
+      expect(tree.getByText(name).closest('[role="treeitem"]')).toHaveClass(styles.tintedRow!, styles.tintRed!);
+    }
+    expect(tree.getByText("SQLite").closest('[role="treeitem"]')).not.toHaveClass(styles.tintedRow!);
   });
 });

@@ -34,6 +34,9 @@ const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
 const settingsSet = vi.fn(async () => ({ status: "ok", data: { general: {}, appearance: {} } }));
+const recordInstalledUpdate = vi.fn();
+
+vi.mock("@/platform/releaseNotes", () => ({ recordInstalledUpdate }));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();
@@ -65,12 +68,12 @@ const {
   installUpdate,
   notifyUpdate,
   progressText,
-  updateSource,
   CHECK_TASK_ID,
   INSTALL_TASK_ID,
   UPDATE_KEY,
 } = await import("../updates");
 const { provideNotificationService } = await import("@/workbench/contributions");
+const { updateSource } = await import("@/platform/updateSource");
 const { useProject } = await import("@/platform/project");
 const { useTasks } = await import("@/workbench/tasks");
 
@@ -118,10 +121,30 @@ describe("Install and Restart", () => {
     await done;
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
     expect(appRestart).toHaveBeenCalledTimes(1);
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", null);
     const installed = notes.at(-1)!;
     expect(installed).toMatchObject({ title: "OpenIDEA 0.1.22 is installed", key: UPDATE_KEY, sticky: true });
     installed.actions![0]!.run();
     expect(appRestart).toHaveBeenCalledTimes(2);
+  });
+
+  it("puts only the first paragraph in the balloon, the page keeps the whole notes", async () => {
+    const longNotes = "A short summary.\n\n## What's new\n\n- " + "detail ".repeat(80);
+    await notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: longNotes, date: null });
+    expect(notes.at(-1)?.body).toBe("A short summary.");
+
+    notes.at(-1)!.actions![0]!.run();
+    install.resolve(ok(null));
+    await tick();
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", longNotes);
+  });
+
+  it("remembers the notes of the update it installed, for the page after the restart", async () => {
+    await notifyUpdate({ version: "0.1.22", currentVersion: "0.1.21", notes: "## Fixed\n- a crash", date: null });
+    notes[0]!.actions![0]!.run();
+    install.resolve(ok(null));
+    await tick();
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", "## Fixed\n- a crash");
   });
 
   it("joins the running install on repeated clicks (balloon, log entry, a second check)", async () => {
@@ -151,6 +174,7 @@ describe("Install and Restart", () => {
     install.resolve({ status: "error", error: { kind: "unavailable", message: "connection reset" } });
     await failed;
     expect(appRestart).not.toHaveBeenCalled();
+    expect(recordInstalledUpdate).not.toHaveBeenCalled();
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
     expect(notes.at(-1)).toMatchObject({
       level: "error",
@@ -211,6 +235,17 @@ describe("Check for Updates", () => {
             anchor: "right",
             component: NotificationsToolWindow,
           });
+          // A maximized side needs a registered window, or the layout treats it as stale.
+          const disposeLeft =
+            mode === "maximized"
+              ? registerToolWindow({
+                  id: "project",
+                  title: "Project",
+                  icon: "folder",
+                  anchor: "left",
+                  component: () => null,
+                })
+              : () => {};
           useProject.setState({
             project: windowKind === "project" ? ({ root: "/p", name: "p" } as never) : null,
             lightEdit: windowKind === "lightEdit",
@@ -219,7 +254,11 @@ describe("Check for Updates", () => {
             } as unknown as Settings,
           });
           useToolWindowLayout.setState({
-            visible: { ...previousLayout.visible, right: "notifications" },
+            visible: {
+              ...previousLayout.visible,
+              right: "notifications",
+              ...(mode === "maximized" ? { left: "project" } : {}),
+            },
             maximized: mode === "maximized" ? "left" : null,
           });
           useNotifications.setState({ items: [] });
@@ -263,6 +302,7 @@ describe("Check for Updates", () => {
             view.unmount();
             list?.unmount();
             dispose();
+            disposeLeft();
             useNotifications.setState({ items: [] });
             useToolWindowLayout.setState(previousLayout);
           }

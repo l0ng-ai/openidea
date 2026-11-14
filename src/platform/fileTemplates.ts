@@ -16,8 +16,11 @@ export interface FileTemplate {
   /** Without the dot; empty for "File…" (the name carries the extension). */
   extension: string;
   nameStyle: NameStyle;
-  /** Package inference: `jvm` (Java/Kotlin source roots) or `go` (directory). */
-  packageStyle?: "jvm" | "go" | "php";
+  /**
+   * Package inference: `jvm` (Java/Kotlin source roots), `go` (directory), `php` (composer.json
+   * PSR-4) or `csharp` (the nearest .csproj's root namespace and the folders below it).
+   */
+  packageStyle?: "jvm" | "go" | "php" | "csharp";
   /** Dotted names (`com.acme.Foo`) create package directories. */
   dottedPackages?: boolean;
   kinds: FileTemplateKind[];

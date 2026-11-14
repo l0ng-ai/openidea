@@ -384,6 +384,10 @@ pub enum AgentEntry {
     Permission {
         id: u32,
         title: String,
+        /// The shell command the request asks to run, from its structured input; `None` for
+        /// any other request, whatever its title says.
+        #[serde(default)]
+        command: Option<String>,
         options: Vec<AgentPermissionOption>,
         /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
         /// of question to answer instead of an option.
@@ -484,7 +488,8 @@ pub struct NewAgentTask {
     pub base: Option<String>,
 }
 
-/// A file the task changed, relative to [`AgentTask::base_commit`].
+/// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
+/// grouped view.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentChange {
@@ -493,6 +498,44 @@ pub struct AgentChange {
     pub kind: ide_vcs::ChangeKind,
     pub added: u32,
     pub removed: u32,
+    /// Path before a rename; the left side of its diff reads this path.
+    pub old_path: Option<String>,
+}
+
+/// A commit made while the task ran, with the files it changed against its first parent.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommit {
+    pub id: String,
+    pub short_id: String,
+    pub summary: String,
+    pub message: String,
+    pub time_ms: f64,
+    /// First parent, or `None` for a root commit.
+    pub parent: Option<String>,
+    pub files: Vec<AgentChange>,
+}
+
+/// Which comparison a rollback of the task's changes uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentChangesView {
+    /// Everything since the commit the task started from.
+    #[default]
+    SinceStart,
+    /// The uncommitted files against `HEAD`; commits made since the start stay.
+    Group,
+}
+
+/// A task's uncommitted files and the commits made since it started.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChanges {
+    /// Files changed against `HEAD`, less those changed before the task started and untouched since.
+    pub uncommitted: Vec<AgentChange>,
+    /// Commits from the task's start (exclusive) to `HEAD` (inclusive), newest first. Empty
+    /// for tasks working in the project's own checkout.
+    pub commits: Vec<AgentCommit>,
 }
 
 /// Streamed to the window that subscribed (`AgentManager::subscribe`).
@@ -534,4 +577,117 @@ pub enum AgentEvent {
     },
     /// The installed or configured agent providers changed.
     Providers,
+}
+
+pub use ide_core::settings::{AgentMcpServer, McpTransport};
+
+/// Where an MCP server configuration is stored (`settings.toml` vs `.openidea/settings.toml`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum McpScope {
+    User,
+    Workspace,
+}
+
+/// A named environment variable or HTTP header for an MCP server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpKeyValue {
+    pub name: String,
+    pub value: String,
+}
+
+/// One configured Model Context Protocol (MCP) server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub id: String,
+    pub name: String,
+    pub scope: McpScope,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: Vec<McpKeyValue>,
+    pub url: Option<String>,
+    pub headers: Vec<McpKeyValue>,
+    /// Agent provider ids this server is enabled for; empty means enabled for all agents.
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+/// Payload for creating or updating a user or workspace MCP server.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub scope: McpScope,
+    pub transport: McpTransport,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<McpKeyValue>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<McpKeyValue>,
+    /// Agent provider ids this server is enabled for; empty means enabled for all agents.
+    #[serde(default)]
+    pub agents: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Payload for creating a custom ACP agent (always the ACP driver); the id
+/// becomes the `<config>/agents/<id>.toml` file name.
+#[derive(Clone, Debug, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomAgentInput {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// What importing one entry of a JetBrains `acp.json` file did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpImportOutcome {
+    /// The `agent_servers` key the entry was imported from.
+    pub name: String,
+    /// The id its agent file would get (also when skipped).
+    pub id: String,
+    pub saved: bool,
+    /// Why the entry was skipped; empty when it was saved.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// What accepting a worktree task's changes copied into the local checkout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcceptOutcome {
+    /// Relative paths copied into the checkout (uncommitted), including ones already identical.
+    pub accepted: Vec<String>,
+    /// Files left alone because the checkout has its own edits to them.
+    pub skipped: Vec<AgentAcceptSkipped>,
+}
+
+/// A file accept left alone, with why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcceptSkipped {
+    pub path: String,
+    pub reason: String,
 }

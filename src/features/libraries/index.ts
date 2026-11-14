@@ -34,6 +34,9 @@ const GROUP_ICONS: Record<string, string> = {
   gems: "file-ruby",
 };
 
+/** SDK groups, which IDEA writes in angle brackets (`< 21 >`); library groups (`Maven: g:a:v`) go without. */
+const SDK_KINDS = new Set(["jdk", "python", "ruby", "go", "rust"]);
+
 /** An archive's root (`/jdk/lib/src.zip!`): its entries live below `<archive>!/`. */
 const isArchiveRoot = (path: string) => path.endsWith("!");
 
@@ -80,6 +83,14 @@ export function touchesManifest(paths: readonly string[]): boolean {
   );
 }
 
+/** IDEA's order, whatever order the ecosystems were detected in: SDKs first, then libraries, each by name. */
+function sortedGroups(groups: readonly LibraryGroup[]): LibraryGroup[] {
+  const rank = (g: LibraryGroup) => (SDK_KINDS.has(g.kind) ? 0 : 1);
+  return [...groups].sort(
+    (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
+  );
+}
+
 /** The "External Libraries" node for `groups` (`< Python 3.12 (.venv) >` › `python3.12`, `site-packages`). */
 export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootContribution | null {
   if (!groups.length) return null;
@@ -90,8 +101,8 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
     // After the project, before Scratches and Consoles (IDEA's order).
     order: 5,
     readOnly: true,
-    children: groups.map((g) => ({
-      label: `< ${g.name} >`,
+    children: sortedGroups(groups).map((g) => ({
+      label: SDK_KINDS.has(g.kind) ? `< ${g.name} >` : g.name,
       icon: GROUP_ICONS[g.kind] ?? "library",
       children: g.roots.map((r) => ({
         label: r.name,
@@ -189,12 +200,18 @@ export function activate(): () => void {
     clearTimeout(timer);
     timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
   });
+  // A Maven / Gradle sync changes the dependency versions without touching a manifest.
+  const unsubRoots = onIdeEvent("projectRootsChanged", () => {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
+  });
   return () => {
     seq++;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     clearTimeout(timer);
     unsub();
     unsubFs();
+    unsubRoots();
     disposeActions();
     clear();
   };
