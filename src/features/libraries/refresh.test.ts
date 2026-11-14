@@ -53,7 +53,7 @@ describe("External Libraries refresh", () => {
     results.push([rust("0.8.0")]);
     await executeAction("libraries.reload");
     await vi.waitFor(() =>
-      expect(useProjectViewRoots.getState().roots.get("externalLibraries")?.children?.[0].children?.[0].label).toBe(
+      expect(useProjectViewRoots.getState().roots.get("externalLibraries")?.children?.[0]?.children?.[0]?.label).toBe(
         "itoa 0.8.0",
       ),
     );
