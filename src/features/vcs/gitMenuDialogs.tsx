@@ -363,8 +363,8 @@ export function showRebaseDialog() {
 }
 
 function RebaseDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
-  const [head] = useState(() => useVcs.getState().branch?.head ?? null);
+  const [repo, setRepo] = useState(currentRepo);
+  const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
   const [upstream, setUpstream] = useState<string | null>(null);
   const [useOnto, setUseOnto] = useState(false);
@@ -376,6 +376,13 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
     [branches],
   );
   const ready = !!upstream && (!useOnto || !!onto);
+
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setUpstream(null);
+    setOnto(null);
+  };
 
   const run = async () => {
     if (!upstream) return;
@@ -410,6 +417,7 @@ function RebaseDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={chooseRepo} />
         <div className={styles.fieldLabel}>
           {useOnto ? tx`Rebase commits of ${head ?? "HEAD"} not on:` : `Rebase ${head ?? "HEAD"} onto:`}
         </div>
