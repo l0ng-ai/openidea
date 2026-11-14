@@ -157,6 +157,16 @@ describe("debug tool window", () => {
     expect(screen.getByRole("tab", { name: "Memory" })).toBeTruthy();
   });
 
+  it("shows the Memory tab of a JVM session while it starts, before its capabilities arrive", () => {
+    const starting = { ...session, adapter: "java-debug", status: "starting" as const, caps: null };
+    useDebug.setState({ sessions: { 1: starting }, active: 1 });
+    render(<DebugToolWindow />);
+    fireEvent.click(screen.getByRole("tab", { name: "Memory" }));
+    expect(screen.getByText("The Memory view is available once the program has started.")).toBeTruthy();
+    act(() => useDebug.setState({ sessions: { 1: { ...starting, adapter: "debugpy" } } }));
+    expect(screen.queryByRole("tab", { name: "Memory" })).toBeNull();
+  });
+
   it("keeps the Memory tab selected when the session pauses", async () => {
     const caps = { jvmMemory: true } as DebugSession["caps"];
     useDebug.setState({ sessions: { 1: { ...session, caps, status: "running" } }, active: 1 });

@@ -158,6 +158,7 @@
   "This debugger cannot list instances.": "此调试器无法列出实例。",
   "The debugger cannot list instances: {detail}": "调试器无法列出实例：{detail}",
   "Pause the program to see instances.": "暂停程序以查看实例。",
+  "The Memory view is available once the program has started.": "程序启动后即可使用内存视图。",
   "The object has been garbage collected.": "该对象已被垃圾回收。",
   "The class is not loaded in the JVM.": "JVM 中未加载该类。",
   "Could not tell which JVM this session debugs.": "无法确定此会话调试的是哪个 JVM。",
