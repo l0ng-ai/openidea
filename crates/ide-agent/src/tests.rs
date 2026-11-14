@@ -3227,3 +3227,75 @@ async fn security_policy_never_auto_approves_a_request_that_only_reads_like_a_co
         "{entries:?}"
     );
 }
+
+/// A temporary side conversation is created ready, without starting its session and
+/// without writing anything to the store; a fresh subscriber (a reloaded page) sweeps
+/// it, and deleting it just drops it from memory.
+#[tokio::test(flavor = "multi_thread")]
+async fn ephemeral_tasks_stay_in_memory_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let source = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("hello"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &source.id, AgentStatus::NeedsInput).await;
+    let calls_before = agent.calls.lock().len();
+    let task = mgr
+        .create_ephemeral(
+            NewAgentTask {
+                project_root: None,
+                prompt: text("What changed in this file?"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            },
+            &source.id,
+        )
+        .await
+        .unwrap();
+    // Registering it starts nothing: the session waits for its first real message.
+    assert_eq!(agent.calls.lock().len(), calls_before);
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
+
+    // Its first message starts the session like any task's, and still saves nothing: the
+    // conversation records the question, not the context that rode along to the agent.
+    mgr.prompt(&task.id, text("Why?"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let question = entries.iter().find_map(|e| match e {
+        AgentEntry::User { text, .. } => Some(text.clone()),
+        _ => None,
+    });
+    assert_eq!(question.as_deref(), Some("Why?"));
+    let pending = entries
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no pending permission request"));
+    mgr.respond(&task.id, pending, Some("no".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    assert!(!mgr.entries(&task.id, None).unwrap().is_empty());
+    assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
+
+    // A fresh subscriber (a reloaded page) sweeps it: it never reaches the task list.
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = events.clone();
+    let tasks = mgr.subscribe(Arc::new(move |e| sink_events.lock().push(e)));
+    assert!(!tasks.iter().any(|t| t.id == task.id));
+    assert!(mgr.task(&task.id).is_err());
+    assert!(events.lock().iter().any(|e| matches!(e, AgentEvent::Removed { id } if *id == task.id)));
+    mgr.shutdown();
+}
