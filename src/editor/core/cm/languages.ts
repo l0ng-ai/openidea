@@ -139,8 +139,8 @@ const OWN_MODES = [
   }),
   LanguageDescription.of({
     name: "Helm Template",
-    alias: ["helm-template", "gotmpl", "tpl"],
-    extensions: ["tpl", "gotmpl"],
+    alias: ["helm-template", "gotmpl"],
+    extensions: ["gotmpl"],
     load: () => import("./helm").then((m) => m.helmTemplate()),
   }),
   LanguageDescription.of({

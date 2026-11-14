@@ -1,6 +1,7 @@
 id = "helm-template"
 name = "Helm Template"
-extensions = ["tpl", "gotmpl"]
+# `.tpl` is Smarty, Terraform and other template engines too: only charts claim it (below).
+extensions = ["gotmpl"]
 line-comment = "#"
 block-comment = ["{{/*", "*/}}"]
 indent = { tab-size = 2, insert-spaces = true }

@@ -861,6 +861,8 @@ mod tests {
         // No `Chart.yaml` / `Chart.yml` above this `templates` folder.
         assert_eq!(detect("k8s/templates/deployment.yaml"), "yaml");
         assert_eq!(detect("common.gotmpl"), "helm-template");
+        // Outside a chart, `.tpl` belongs to other template engines (Smarty, Terraform).
+        assert_ne!(detect("site/index.tpl"), "helm-template");
         assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yaml")));
         assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yml")));
     }
