@@ -41,8 +41,7 @@ It reads repository state (status, diffs, blame, log) in-process, and runs the `
 
 - **Git › Clone…** opens **Clone Repository**. Enter a **URL:** and **Directory:**, and optionally check **Shallow clone with a history truncated to** N commits. The **GitHub** source in the sidebar lists your GitHub repositories (see [GitHub](/en/guide/github)).
 - When creating a project, check **Create Git repository** in the New Project dialog.
-
-There is no action to run `git init` in a project that is already open; run it in the terminal and OpenIDEA picks the repository up.
+- **Git › Create Git Repository…** runs `git init` in a folder you pick (the project root by default) and registers the new repository right away; a repository created in the terminal is picked up the same way.
 
 OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
 
@@ -246,6 +245,6 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 ## Not supported
 
 - Mercurial, Subversion, Perforce and other systems.
-- `git init` for an open project, submodule commands, editable directory mappings.
+- Submodule commands and editable directory mappings.
 - Per-line partial commits (block level only) and per-file stashes.
 - Git LFS beyond the large-file warning.
