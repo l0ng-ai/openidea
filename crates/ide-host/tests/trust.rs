@@ -66,6 +66,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "docker_set_registry_password",
         "docker_run_env",
         "db_console_path",
+        "db_consoles",
         "db_export_file",
         "vcs_write_patch",
         "remote_bootstrap_list",

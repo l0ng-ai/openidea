@@ -38,6 +38,7 @@ import {
   loadDatabases,
   listsDatabases,
   sourceById,
+  newConsole,
   openConsole,
   openHistory,
   openSourceDialog,
@@ -195,6 +196,24 @@ export function activate(): () => void {
           const node = arg && typeof arg === "object" && "kind" in arg ? nodeTarget(arg as DbNode) : null;
           const id = node ?? selectedSource ?? (sources.length === 1 ? sources[0]!.id : null);
           if (id) await openConsole(id);
+          else toolWindowService().show(DB_TOOL_WINDOW, true);
+        },
+      },
+      {
+        id: "db.newConsole",
+        title: "New Query Console",
+        category: "Tools",
+        icon: "db-console",
+        keywords: ["database", "sql console"],
+        when: "projectOpen",
+        run: async ({ arg }) => {
+          const current = projectRequest();
+          if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
+          const { sources, selectedSource } = useDatabase.getState();
+          const node = arg && typeof arg === "object" && "kind" in arg ? nodeTarget(arg as DbNode) : null;
+          const id = node ?? selectedSource ?? (sources.length === 1 ? sources[0]!.id : null);
+          if (id) await newConsole(id);
           else toolWindowService().show(DB_TOOL_WINDOW, true);
         },
       },
