@@ -798,6 +798,30 @@ fn warm_start_detects_changed_ignore_rules() {
 }
 
 #[test]
+fn warm_start_detects_changed_ignore_rules_above_the_project() {
+    // The project is a folder of a repository whose ignore files sit above it.
+    let f = Fixture::new(&[("generated/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")]);
+    let repo = f.root.parent().unwrap().to_owned();
+    std::fs::create_dir_all(repo.join(".git/info")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2);
+    drop(idx);
+
+    std::fs::write(repo.join(".gitignore"), "proj/generated/\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "a new ignore file above the project invalidates the warm snapshot");
+    drop(idx);
+
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(repo.join(".gitignore"), "").unwrap();
+    std::fs::write(repo.join(".git/info/exclude"), "proj/src/\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "so do the enclosing repository's changed rules");
+    assert!(!symbols(&idx, "a", SymbolFilter::All).is_empty());
+}
+
+#[test]
 fn warm_start_detects_a_new_file_in_an_existing_empty_directory() {
     let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
     std::fs::create_dir(f.root.join("empty")).unwrap();

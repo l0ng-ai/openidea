@@ -38,6 +38,16 @@ pub(crate) fn external_ignore_candidates(root: &Path) -> Vec<std::path::PathBuf>
     }
     out.insert(root.join(".git/config"));
     out.insert(root.join(".git/info/exclude"));
+    // The walker also reads the ignore files above the root (`parents`), and a project nested
+    // in a repository uses that repository's exclude file and config.
+    for dir in root.ancestors().skip(1) {
+        out.insert(dir.join(".gitignore"));
+        out.insert(dir.join(".ignore"));
+        if let Some(git) = git_dir(dir) {
+            out.insert(git.join("config"));
+            out.insert(git.join("info/exclude"));
+        }
+    }
     if let Some(path) = ignore::gitignore::gitconfig_excludes_path() {
         out.insert(path);
     }
