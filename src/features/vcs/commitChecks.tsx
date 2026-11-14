@@ -423,7 +423,7 @@ const builtinChecks: readonly CommitCheck[] = [
       const crlf: string[] = [];
       for (const p of ctx.existing) {
         try {
-          if ((await call(commands.fsReadText(p))).includes("\r\n")) crlf.push(p);
+          if (await containsCrlf(p)) crlf.push(p);
         } catch {
           // skip
         }
@@ -444,6 +444,24 @@ const builtinChecks: readonly CommitCheck[] = [
     },
   },
 ];
+
+/**
+ * Whether the file on disk has CRLF line separators. The editor's text is LF-normalised, so the
+ * check has to read bytes (`fsReadRange` returns base64), and a CRLF can straddle two chunks.
+ */
+export async function containsCrlf(path: string): Promise<boolean> {
+  const CHUNK = 64 * 1024;
+  let offset = 0;
+  let carry = "";
+  for (;;) {
+    const range = await call(commands.fsReadRange(path, offset, CHUNK));
+    const text = carry + atob(range.data);
+    if (text.includes("\r\n")) return true;
+    offset = range.offset + atob(range.data).length;
+    if (offset >= range.total) return false;
+    carry = text.slice(-1);
+  }
+}
 
 /** Registers the built-in checks; called when the VCS feature activates. */
 export function installCommitChecks(): () => void {

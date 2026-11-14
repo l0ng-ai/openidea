@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { badFileName, runCommitChecks } from "../commitChecks";
+import { badFileName, containsCrlf, runCommitChecks } from "../commitChecks";
 import { getCommitChecks, registerCommitCheck, type CommitCheck } from "../commitCheckRegistry";
 
 const disposers: Array<() => void> = [];
@@ -83,5 +83,39 @@ describe("the commit check registry", () => {
     const run = await runCommitChecks([], false);
     expect(run.blocked).toBe(true);
     expect(run.problems).toMatchObject([{ title: "vcs.broken", text: "The check could not run: boom" }]);
+  });
+});
+
+describe("containsCrlf", () => {
+  const range = (offset: number, text: string, total: number) => ({
+    status: "ok" as const,
+    data: { offset, data: btoa(text), total },
+  });
+
+  it("reads bytes, because the editor text is LF-normalised", async () => {
+    const { commands } = await import("@/platform/ipc");
+    const calls: Array<{ offset: number; len: number }> = [];
+    vi.spyOn(commands, "fsReadRange").mockImplementation(async (_path, offset, len) => {
+      calls.push({ offset, len });
+      return range(offset, "one\r\ntwo", 9);
+    });
+    expect(await containsCrlf("/p/a.txt")).toBe(true);
+    expect(calls[0]).toMatchObject({ offset: 0 });
+  });
+
+  it("finds a CRLF that straddles two chunks", async () => {
+    const { commands } = await import("@/platform/ipc");
+    vi.spyOn(commands, "fsReadRange").mockImplementation(async (_path, offset) =>
+      range(offset, offset === 0 ? "aaaa\r" : "\nbbbb", 10),
+    );
+    expect(await containsCrlf("/p/a.txt")).toBe(true);
+  });
+
+  it("is false for LF-only content", async () => {
+    const { commands } = await import("@/platform/ipc");
+    vi.spyOn(commands, "fsReadRange").mockImplementation(async (_path, offset) =>
+      range(offset, offset === 0 ? "one\ntwo" : "", 7),
+    );
+    expect(await containsCrlf("/p/a.txt")).toBe(false);
   });
 });
