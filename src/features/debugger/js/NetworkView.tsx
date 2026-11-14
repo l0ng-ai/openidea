@@ -11,7 +11,9 @@ import {
   type NetworkCategory,
   type NetworkRow,
 } from "./network";
+import { OverridesDialog, type OverrideDraft } from "./OverridesDialog";
 import { useRefused } from "./refusals";
+import { overriddenBy, useResponseOverrides } from "./responseOverrides";
 import styles from "./Network.module.css";
 
 const NO_ROWS: NetworkRow[] = [];
@@ -39,10 +41,13 @@ export function formatDuration(ms: number | null): string {
 const Row = memo(function Row({
   row,
   selected,
+  overridden,
   onSelect,
 }: {
   row: NetworkRow;
   selected: boolean;
+  /** A response override applies to requests to this URL. */
+  overridden: boolean;
   onSelect: (key: string) => void;
 }) {
   return (
@@ -56,7 +61,14 @@ const Row = memo(function Row({
       <span role="cell" className={styles.name}>
         {row.name}
       </span>
-      <span role="cell">{row.error ?? row.status ?? ""}</span>
+      <span role="cell">
+        {row.error ?? row.status ?? ""}
+        {overridden && (
+          <span className={styles.badge}>
+            <T>overridden</T>
+          </span>
+        )}
+      </span>
       <span role="cell">{row.method}</span>
       <span role="cell">{row.type}</span>
       <span role="cell" className={styles.number}>
@@ -126,7 +138,15 @@ function ResponseBody({ session, requestId }: { session: number; requestId: stri
   );
 }
 
-function Detail({ session, row }: { session: number; row: NetworkRow }) {
+function Detail({
+  session,
+  row,
+  onOverride,
+}: {
+  session: number;
+  row: NetworkRow;
+  onOverride: (row: NetworkRow) => void;
+}) {
   const tx = useTx();
   return (
     <div className={styles.detail} aria-label={tx("Request details")}>
@@ -143,6 +163,9 @@ function Detail({ session, row }: { session: number; row: NetworkRow }) {
       <div className={styles.actions}>
         <Button size="small" variant="ghost" onClick={() => addRequestBreakpoint(requestPattern(row.url))}>
           <T>Break on Next Request</T>
+        </Button>
+        <Button size="small" variant="ghost" onClick={() => onOverride(row)}>
+          <T>Override Response…</T>
         </Button>
       </div>
       <Headers title={tx("Request Headers")} headers={row.requestHeaders} />
@@ -176,6 +199,23 @@ export function NetworkView({ session }: { session: number }) {
   const shown = useMemo(() => filterRows(rows, query, category, mine), [rows, query, category, mine]);
   const selected = rows.find((r) => r.key === selectedKey) ?? null;
   const notReported = useRefused(session, "network") != null;
+  const overrides = useResponseOverrides((s) => s.rules);
+  const overridesOn = overrides.filter((r) => r.enabled).length;
+  const notReplaced = useRefused(session, "overrides");
+  // The override editor: open on the list (`draft` null) or on a request's response.
+  const [editing, setEditing] = useState<{ draft: OverrideDraft | null } | null>(null);
+  const overrideResponse = async (row: NetworkRow) => {
+    // The request's own body is where the edit starts; one that can't be read as text starts empty.
+    const own = await call(commands.debugJsResponseBody(session, row.requestId)).catch(() => null);
+    setEditing({
+      draft: {
+        pattern: requestPattern(row.url),
+        status: row.status ?? 200,
+        contentType: row.mimeType ?? "application/json",
+        body: own && !own.base64Encoded ? own.body : "",
+      },
+    });
+  };
   return (
     <div className={styles.root}>
       <div className={styles.toolbar}>
@@ -199,12 +239,21 @@ export function NetworkView({ session }: { session: number }) {
           ))}
         </div>
         <Checkbox checked={mine} onChange={setMine} label="My code only" />
+        <Button size="small" variant="ghost" onClick={() => setEditing({ draft: null })}>
+          {tx("Overrides")}
+          {overridesOn ? ` (${overridesOn})` : ""}
+        </Button>
         <IconButton icon="refresh" title="Reload Page" size="small" onClick={() => reloadPage(session)} />
         <IconButton icon="trash" title="Clear" size="small" onClick={() => clearNetwork(session)} />
         <span className={styles.count}>
           {shown.length === rows.length ? rows.length : `${shown.length} / ${rows.length}`}
         </span>
       </div>
+      {notReplaced != null && overridesOn > 0 && (
+        <div className={styles.refused} role="alert">
+          {tx`Responses are not replaced in this page: ${notReplaced}`}
+        </div>
+      )}
       <div className={styles.split}>
         <div className={styles.table} role="table" aria-label={tx("Requests")}>
           <div role="row" className={styles.head}>
@@ -225,11 +274,18 @@ export function NetworkView({ session }: { session: number }) {
             </div>
           )}
           {shown.map((row) => (
-            <Row key={row.key} row={row} selected={row.key === selectedKey} onSelect={setSelectedKey} />
+            <Row
+              key={row.key}
+              row={row}
+              selected={row.key === selectedKey}
+              overridden={notReplaced == null && overriddenBy(row.url, overrides) != null}
+              onSelect={setSelectedKey}
+            />
           ))}
         </div>
-        {selected && <Detail session={session} row={selected} />}
+        {selected && <Detail session={session} row={selected} onOverride={(row) => void overrideResponse(row)} />}
       </div>
+      <OverridesDialog open={editing != null} onClose={() => setEditing(null)} draft={editing?.draft} />
     </div>
   );
 }

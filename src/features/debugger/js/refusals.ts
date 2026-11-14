@@ -4,7 +4,7 @@
  */
 import { create } from "zustand";
 
-export type JsTool = "eventBreakpoints" | "network";
+export type JsTool = "eventBreakpoints" | "network" | "overrides";
 
 /** Per session, the reason each refused tool was refused for. */
 export const useJsRefusals = create<{ refused: Record<number, Partial<Record<JsTool, string>>> }>(() => ({

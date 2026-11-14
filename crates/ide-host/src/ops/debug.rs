@@ -382,6 +382,15 @@ pub async fn debug_js_custom_breakpoints(
     host.debugger.js_set_custom_breakpoints(session, ids, xhr).await
 }
 
+pub async fn debug_js_response_overrides(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    rules: Vec<ide_dap::JsResponseRule>,
+) -> IdeResult<()> {
+    host.debugger.js_set_response_overrides(session, rules).await
+}
+
 pub async fn debug_js_response_body(
     host: &Host,
     _window: &str,
@@ -607,6 +616,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         debug_restart_frame(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await
     });
     d.add("debug_capabilities", |c| async move { debug_capabilities(&c.host, &c.window, c.arg("session")?) });
+    d.add("debug_js_response_overrides", |c| async move {
+        debug_js_response_overrides(&c.host, &c.window, c.arg("session")?, c.arg("rules")?).await
+    });
     d.add("debug_js_response_body", |c| async move {
         debug_js_response_body(&c.host, &c.window, c.arg("session")?, c.arg("requestId")?).await
     });

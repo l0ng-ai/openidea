@@ -1660,6 +1660,17 @@
   "Showing the first 1 MB": "Showing the first 1 MB",
   "Time": "Time",
   "Break on Next Request": "Break on Next Request",
+  "Add Override": "Add Override",
+  "Content type": "Content type",
+  "e.g. /api/items": "e.g. /api/items",
+  "No overrides yet": "No overrides yet",
+  "overridden": "overridden",
+  "Override Response…": "Override Response…",
+  "Overrides": "Overrides",
+  "Part of the URL": "Part of the URL",
+  "Response Overrides": "Response Overrides",
+  "Select an override, or add one, to edit the response it gives.": "Select an override, or add one, to edit the response it gives.",
+  "This also replaces every other response whose URL contains it": "This also replaces every other response whose URL contains it",
   "My code only": "My code only",
   "Resource type": "Resource type",
   "Doc": "Doc",
@@ -1669,5 +1680,6 @@
   "Evaluate watches while the program runs": "Evaluate watches while the program runs",
   "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
   "Stash Selected Files…": "Stash Selected Files…",
-  "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first"
+  "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first",
+  "Responses are not replaced in this page: {why}": "Responses are not replaced in this page: {why}"
 }

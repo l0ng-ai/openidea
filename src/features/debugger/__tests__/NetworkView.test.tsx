@@ -19,6 +19,7 @@ vi.mock("@/platform/ipc", async (orig) => {
         evaluated.push(args);
         return Promise.resolve({ status: "ok", data: { value: "", variablesReference: 0 } });
       },
+      debugJsResponseOverrides: () => Promise.resolve({ status: "ok", data: null }),
     },
   };
 });
@@ -26,6 +27,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 const { applyNetworkEvents, useJsNetwork } = await import("../js/network");
 const { NetworkView } = await import("../js/NetworkView");
 const { useJsBreakpoints } = await import("../js/eventBreakpoints");
+const { loadResponseOverrides, saveOverride } = await import("../js/responseOverrides");
 const { setRefused } = await import("../js/refusals");
 const { handleDebugEvent, useDebug } = await import("../state");
 
@@ -66,6 +68,8 @@ function load() {
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  loadResponseOverrides(null);
   useJsNetwork.setState({ rows: {} });
   asked.length = 0;
   evaluated.length = 0;
@@ -196,5 +200,59 @@ describe("Network view", () => {
       screen.getByText("This version of the JavaScript debugger does not report a page's requests."),
     ).toBeInTheDocument();
     setRefused(7, "network", null);
+  });
+
+  it("marks the requests whose response a rule replaces", () => {
+    loadResponseOverrides("/p");
+    saveOverride({ pattern: "/api/items", status: 200, contentType: "application/json", body: "[]", enabled: true });
+    load();
+    render(<NetworkView session={7} />);
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(rows[0]).toHaveTextContent("overridden");
+    expect(rows[1]).not.toHaveTextContent("overridden");
+    expect(screen.getByRole("button", { name: "Overrides (1)" })).toBeInTheDocument();
+  });
+
+  it("does not mark a request as overridden when the page's debugger refused the rules, and says why", () => {
+    loadResponseOverrides("/p");
+    saveOverride({ pattern: "/api/items", status: 200, contentType: "application/json", body: "[]", enabled: true });
+    load();
+    setRefused(7, "overrides", "no browser connection");
+    render(<NetworkView session={7} />);
+    expect(screen.getAllByRole("row")[1]).not.toHaveTextContent("overridden");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Responses are not replaced in this page: no browser connection",
+    );
+    setRefused(7, "overrides", null);
+  });
+
+  it("opens the override editor on a request, filled with its response", async () => {
+    loadResponseOverrides("/p");
+    load();
+    render(<NetworkView session={7} />);
+    fireEvent.click(screen.getAllByRole("row")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Override Response…" }));
+    await waitFor(() => expect(screen.getByLabelText("Part of the URL")).toHaveValue("/api/items"));
+    expect(screen.getByLabelText("Status")).toHaveValue("200");
+    expect(screen.getByLabelText("Content type")).toHaveValue("application/json");
+    expect(screen.getByLabelText("Response body")).toHaveValue('{"items":[]}');
+  });
+
+  it("starts from an empty body when the request's own can't be read", async () => {
+    loadResponseOverrides("/p");
+    load();
+    answer = { status: "error", error: { kind: "unavailable", message: "gone" } };
+    render(<NetworkView session={7} />);
+    fireEvent.click(screen.getAllByRole("row")[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "Override Response…" }));
+    await waitFor(() => expect(screen.getByLabelText("Part of the URL")).toHaveValue("/api/items"));
+    expect(screen.getByLabelText("Response body")).toHaveValue("");
+  });
+
+  it("opens the list of overrides from the toolbar", () => {
+    loadResponseOverrides("/p");
+    render(<NetworkView session={7} />);
+    fireEvent.click(screen.getByRole("button", { name: "Overrides" }));
+    expect(screen.getByText("No overrides yet")).toBeInTheDocument();
   });
 });

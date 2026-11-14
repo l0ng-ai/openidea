@@ -94,6 +94,9 @@ pub(crate) struct Session {
     /// The `type` of the launch or attach request (js-debug's `pwa-node`, `pwa-chrome`); a child
     /// session's comes from the configuration the adapter started it with.
     pub launch_type: std::sync::OnceLock<String>,
+    /// The response rules of a page once a connection applies them (`js_cdp::serve`).
+    /// Dropped with the session, which switches the browser's interception off.
+    pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -255,6 +258,7 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             jdwp_link: parking_lot::Mutex::new(None),
             launch_type: std::sync::OnceLock::new(),
+            js_overrides: tokio::sync::Mutex::new(None),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),

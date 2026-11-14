@@ -25,7 +25,7 @@ pub(crate) fn is_page(session: &Session) -> bool {
 /// Waits until the adapter answered the `launch` of `session`. js-debug sets a page's session
 /// up between `configurationDone` and that answer; a request of its own that arrives then is
 /// answered and has no effect.
-async fn launched(session: &Session) -> bool {
+pub(crate) async fn launched(session: &Session) -> bool {
     let mut launched = session.launched.subscribe();
     let answered = tokio::time::timeout(REQUEST_TIMEOUT, launched.wait_for(|answered| *answered)).await;
     matches!(answered, Ok(Ok(_)))
