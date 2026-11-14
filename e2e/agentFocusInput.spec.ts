@@ -88,6 +88,30 @@ async function seedTasks(page: Page, placement: Placement, status: AgentTask["st
   await page.evaluate(() => document.fonts.ready);
 }
 
+async function seedChanges(page: Page) {
+  await page.evaluate(async (id) => {
+    // Seed the store in the browser realm; a static import would run in Node.
+    const storePath = "/src/features/agents/store.ts";
+    (await import(storePath)).useAgents.setState({
+      changes: new Map([
+        [
+          id,
+          [
+            {
+              path: "/dev/acme-api/file.ts",
+              relPath: "file.ts",
+              kind: "modified",
+              added: 1,
+              removed: 0,
+              oldPath: null,
+            },
+          ],
+        ],
+      ]),
+    });
+  }, firstTask.id);
+}
+
 function messageBox(page: Page) {
   return page.getByRole("textbox", { name: "Message", exact: true }).filter({ visible: true });
 }
@@ -345,27 +369,7 @@ test("docked Changes view returns to the task input without losing its selection
   await seedTasks(page, "toolWindow");
   const box = messageBox(page);
   const expected = await selectDraft(box, true);
-  await page.evaluate(async (id) => {
-    // Seed the store in the browser realm; a static import would run in Node.
-    const storePath = "/src/features/agents/store.ts";
-    (await import(storePath)).useAgents.setState({
-      changes: new Map([
-        [
-          id,
-          [
-            {
-              path: "/dev/acme-api/file.ts",
-              relPath: "file.ts",
-              kind: "modified",
-              added: 1,
-              removed: 0,
-              oldPath: null,
-            },
-          ],
-        ],
-      ]),
-    });
-  }, firstTask.id);
+  await seedChanges(page);
   await page.getByRole("button", { name: /1 changed file/ }).click();
   const changes = page.getByRole("complementary", { name: "Changes", exact: true });
   await expect(changes).toBeVisible();
@@ -376,4 +380,26 @@ test("docked Changes view returns to the task input without losing its selection
   await expect(box).toBeFocused();
   await expect(box).toHaveText(draft);
   await expect.poll(() => selection(box)).toEqual(expected);
+});
+
+test("dragging the Changes pane's edge resizes it for the next session too", async ({ workbench: page }) => {
+  await seedTasks(page, "editor");
+  await seedChanges(page);
+  const changes = page.getByRole("complementary", { name: "Changes", exact: true });
+  await expect(changes).toBeVisible();
+  const handle = changes.getByRole("separator", { name: "Resize changes", exact: true });
+  const before = (await changes.boundingBox())!.width;
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 120, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(async () => (await changes.boundingBox())!.width).toBeGreaterThan(before + 100);
+  const widened = (await changes.boundingBox())!.width;
+
+  // The next session starts with the dragged width.
+  await page.reload();
+  await seedTasks(page, "editor");
+  await seedChanges(page);
+  await expect.poll(async () => Math.round((await changes.boundingBox())!.width)).toBe(Math.round(widened));
 });
