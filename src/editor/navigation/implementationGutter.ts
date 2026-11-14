@@ -173,6 +173,11 @@ export interface MarkerDeps {
    * Absent for languages whose servers do provide one (Java, Go, ...).
    */
   inheritance?: () => Promise<ClassInheritance[]>;
+  /**
+   * The file a Python `import` path names (`from a.b import X`), `.x` resolved
+   * relative to `from`. Disambiguates a base name two files both declare.
+   */
+  moduleFile?: (module: string, from: string) => Promise<string | null>;
 }
 
 interface CacheEntry {
@@ -266,10 +271,15 @@ export async function fillMarkers(
   if (graph) for (const cls of graph) byName.set(cls.name, [...(byName.get(cls.name) ?? []), cls]);
   // The inheritance graph's direct subclasses, keyed by the *declaration* each base
   // resolves to (path + position), so classes sharing a bare name never mix up.
+  const resolver = baseResolver(byName, deps);
   const subclassesOf = new Map<string, ClassInheritance[]>();
   for (const cls of graph ?? []) {
     for (const base of new Set(cls.bases)) {
-      for (const decl of resolveBase(byName, base, cls.path)) {
+      // Only this file's classes are looked up below: read another file's imports only
+      // when its base may name one of them, not for every shared or library base name.
+      const exact = resolver.exact(base, cls.path);
+      const named = exact.length || !byName.get(base)?.some((c) => c.path === path) ? exact : null;
+      for (const decl of named ?? (await resolver.resolve(base, cls.path))) {
         const key = declarationKey(decl);
         subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
       }
@@ -317,7 +327,7 @@ export async function fillMarkers(
       const c = up[i]!;
       const self = classOf(c);
       if (!self) continue;
-      const found = await superMethodsFrom(byName, self.name, c.symbol, deps);
+      const found = await superMethodsFrom(resolver, self.name, c.symbol, deps);
       if (!found.length) continue;
       const known = supers[i]!;
       // Same merge rule as ↓: add the graph's super methods to what the server answered.
@@ -375,12 +385,104 @@ function declarationKey(cls: ClassInheritance): string {
 /**
  * The classes a base name names. A bare name is only trusted when it is unique in the
  * project, or names a class in the subclass's own file: a `Config` declared in hundreds
- * of modules must not make every one of them a subclass of every other.
+ * of modules must not make every one of them a subclass of every other. When several
+ * files declare it, the subclass's own imports decide (`from x.y import Config`).
  */
-function resolveBase(byName: ReadonlyMap<string, ClassInheritance[]>, name: string, from: string): ClassInheritance[] {
-  const found = byName.get(name) ?? [];
-  if (found.length <= 1) return found;
-  return found.filter((c) => c.path === from);
+interface BaseResolver {
+  /** The graph's classes by name. */
+  byName: ReadonlyMap<string, ClassInheritance[]>;
+  /** A base that names one class, or a class of the subclass's own file. */
+  exact(name: string, from: string): ClassInheritance[];
+  /** `exact`, else the declaration the file's imports point at (empty when unknown). */
+  resolve(name: string, from: string): Promise<ClassInheritance[]>;
+}
+
+function baseResolver(byName: ReadonlyMap<string, ClassInheritance[]>, deps: MarkerDeps): BaseResolver {
+  const imports = new Map<string, Promise<Map<string, ImportBinding> | null>>();
+  const answers = new Map<string, Promise<ClassInheritance[]>>();
+  const exact = (name: string, from: string): ClassInheritance[] => {
+    const found = byName.get(name) ?? [];
+    return found.length <= 1 ? found : found.filter((c) => c.path === from);
+  };
+  const bindingsOf = (from: string): Promise<Map<string, ImportBinding> | null> => {
+    let pending = imports.get(from);
+    if (!pending) {
+      pending = deps
+        .readFiles([from])
+        .then((files) => {
+          const lines = files.get(from);
+          return lines ? importBindings(lines) : null;
+        })
+        .catch(() => null);
+      imports.set(from, pending);
+    }
+    return pending;
+  };
+  return {
+    byName,
+    exact,
+    resolve: (name, from) => {
+      const found = exact(name, from);
+      if (found.length) return Promise.resolve(found);
+      // No class of that name at all: it may be an import alias (`import X as Y`).
+      const key = `${from}\u0000${name}`;
+      let pending = answers.get(key);
+      if (!pending) {
+        pending = (async () => {
+          const binding = (await bindingsOf(from))?.get(name);
+          if (!binding || !deps.moduleFile) return [];
+          // `from . import X` names the package itself: resolve its `__init__`.
+          const module = binding.module;
+          const named = /^\.+$/.test(module) ? `${module.endsWith(".") ? module : `${module}.`}__init__` : module;
+          const file = await deps.moduleFile(named, from).catch(() => null);
+          // The declaration carries the imported (pre-alias) name.
+          return file ? (byName.get(binding.name) ?? []).filter((c) => c.path === file) : [];
+        })();
+        answers.set(key, pending);
+      }
+      return pending;
+    },
+  };
+}
+
+/**
+ * Where a name written in a file comes from: the module of a `from` import and the
+ * name it is declared under there (equal unless the import aliases it).
+ */
+export interface ImportBinding {
+  module: string;
+  name: string;
+}
+
+/**
+ * The local name -> declaration bindings of a file's `from` imports:
+ * `from a.b import X as Y` binds `Y` to (`a.b`, `X`). Plain `import a.b` statements
+ * are skipped: a base written through them keeps its qualifier, which this graph
+ * does not store.
+ */
+export function importBindings(lines: readonly string[]): Map<string, ImportBinding> {
+  const out = new Map<string, ImportBinding>();
+  for (let i = 0; i < lines.length; i++) {
+    const line = (lines[i] ?? "").replace(/#.*$/, "");
+    const from = /^\s*from\s+(\.*[\w.]*)\s+import\s+(.*)$/.exec(line);
+    if (!from) continue;
+    let body = from[2]!.trim();
+    if (body.startsWith("(")) {
+      // The names may span lines inside the parentheses.
+      let text = body.slice(1);
+      while (!text.includes(")") && i + 1 < lines.length) text += ` ${(lines[++i] ?? "").replace(/#.*$/, "")}`;
+      body = text.slice(0, text.indexOf(")") < 0 ? undefined : text.indexOf(")"));
+    }
+    for (const part of body.split(",")) {
+      const [name, alias] = part.trim().split(/\s+as\s+/);
+      const declared = (name ?? "").trim();
+      if (!declared || declared === "*" || !/^\w+$/.test(declared)) continue;
+      const local = (alias ?? declared).trim();
+      if (!/^\w+$/.test(local)) continue;
+      out.set(local, { module: from[1]!, name: declared });
+    }
+  }
+  return out;
 }
 
 /** The class declaration itself as a navigation target (its name identifier). */
@@ -410,7 +512,7 @@ function methodInOutline(outline: readonly OutlineItem[], cls: ClassInheritance,
  * graph's bases up to a few levels. Empty when no base declares the method.
  */
 async function superMethodsFrom(
-  byName: ReadonlyMap<string, ClassInheritance[]>,
+  resolver: BaseResolver,
   start: string,
   method: string,
   deps: MarkerDeps,
@@ -423,11 +525,11 @@ async function superMethodsFrom(
     const next: string[] = [];
     const found: { location: Location; owner: string }[] = [];
     for (const name of level) {
-      for (const cls of byName.get(name) ?? []) {
+      for (const cls of resolver.byName.get(name) ?? []) {
         for (const base of cls.bases) {
           if (!seen.add(base)) continue;
-          // Same rule as the graph: only a base that names one class is followed.
-          const declarations = resolveBase(byName, base, cls.path);
+          // Same rule as the graph: a base the imports name, else a unique one.
+          const declarations = await resolver.resolve(base, cls.path);
           let answered = false;
           for (const baseCls of declarations) {
             const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
@@ -794,6 +896,9 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
     // Python servers answer no type hierarchy (basedpyright, pyrefly): the IDE's
     // own index knows every `class X(Base)` of the project, attached roots included.
     inheritance: ctx.language === "python" ? inheritanceGraph : undefined,
+    // A base name several modules declare is resolved through the file's imports.
+    moduleFile:
+      ctx.language === "python" ? (name, from) => lspRequest(() => commands.navResolveModule(name, from)) : undefined,
   };
 }
 
