@@ -7,6 +7,7 @@ const backend = vi.hoisted(() => ({
   tasks: new Map<string, AgentTask>(),
   entries: new Map<string, AgentEntry[]>(),
   forkTask: vi.fn(),
+  startSideConversation: vi.fn(),
   rerunFrom: vi.fn(),
   quoteInComposer: vi.fn(),
   notify: vi.fn(),
@@ -14,6 +15,7 @@ const backend = vi.hoisted(() => ({
 vi.mock("./store", () => ({
   useAgents: { getState: () => backend },
   forkTask: backend.forkTask,
+  startSideConversation: backend.startSideConversation,
   rerunFrom: backend.rerunFrom,
   quoteInComposer: backend.quoteInComposer,
 }));
@@ -132,6 +134,32 @@ it.each(["files", "steered", "earlier", "busy", "unsupported", "subagent"])(
 it("branches after the reply's turn", async () => {
   await run("forkReply");
   expect(backend.forkTask).toHaveBeenCalledWith(task.id, 1);
+});
+
+it("starts a temporary side conversation on the selection", async () => {
+  backend.startSideConversation.mockResolvedValue("t2");
+  await run("startSideConversation", { task: task.id, text: "the selected text" });
+  expect(backend.startSideConversation).toHaveBeenCalledWith(task.id, "the selected text");
+  expect(backend.forkTask).not.toHaveBeenCalled();
+  expect(backend.quoteInComposer).not.toHaveBeenCalled();
+});
+
+it.each(["archived", "busy", "empty", "unknown"])("does not start a side conversation: %s", async (kind) => {
+  let arg: unknown = { task: task.id, text: "the selected text" };
+  if (kind === "archived") backend.tasks.set(task.id, { ...task, status: "archived" });
+  if (kind === "busy") backend.tasks.set(task.id, { ...task, status: "running" });
+  if (kind === "empty") arg = { task: task.id, text: "  " };
+  if (kind === "unknown") arg = { task: "missing", text: "x" };
+  await run("startSideConversation", arg);
+  expect(backend.startSideConversation).not.toHaveBeenCalled();
+});
+
+it("reports side conversation errors", async () => {
+  backend.startSideConversation.mockRejectedValueOnce(new Error("Unavailable"));
+  await run("startSideConversation", { task: task.id, text: "the selected text" });
+  expect(backend.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ title: "Couldn't start the side conversation" }),
+  );
 });
 
 it("reports regeneration errors and allows retry", async () => {

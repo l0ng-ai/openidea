@@ -3,8 +3,8 @@ import type { Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
 import { notifications } from "@/workbench/contributions";
-import { replyOperations, replyTurns, turnNumbers } from "./model";
-import { forkTask, quoteInComposer, rerunFrom, retractFrom, useAgents } from "./store";
+import { isBusy, replyOperations, replyTurns, turnNumbers } from "./model";
+import { forkTask, quoteInComposer, rerunFrom, retractFrom, startSideConversation, useAgents } from "./store";
 
 export interface CopyReply {
   text: string;
@@ -32,6 +32,12 @@ export const copyReplyAction: Action = {
 interface ReplyTarget {
   task: string;
   turn: number;
+}
+
+/** A selection to start a temporary side conversation from. */
+export interface SideSelection {
+  task: string;
+  text: string;
 }
 
 function resolveReply(arg: unknown) {
@@ -141,6 +147,22 @@ export const replyActions: Action[] = [
       if (!resolved?.operations.fork) return;
       const { task, reply } = resolved;
       return runReplyOperation(task.id, "Couldn't fork the task", () => forkTask(task.id, reply.turn + 1));
+    },
+  },
+  {
+    id: "agents.startSideConversation",
+    title: "Start Side Conversation",
+    category: "Agents",
+    icon: "branch",
+    hidden: true,
+    run: ({ arg }) => {
+      const target = arg as SideSelection | undefined;
+      if (!target || typeof target.task !== "string" || typeof target.text !== "string" || !target.text.trim()) return;
+      const task = useAgents.getState().tasks.get(target.task);
+      if (!task || task.status === "archived" || isBusy(task.status)) return;
+      return runReplyOperation(task.id, "Couldn't start the side conversation", () =>
+        startSideConversation(task.id, target.text),
+      );
     },
   },
 ];
