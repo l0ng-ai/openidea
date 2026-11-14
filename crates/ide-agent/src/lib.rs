@@ -2548,10 +2548,6 @@ fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
 }
 
-/// The conversation as the context a temporary side conversation starts with, in full:
-/// what was said, what was done (tool calls with their reported output), errors and the
-/// agent's reasoning — oldest parts first. Nothing is truncated: a side question is
-/// answered with the same information its asker sees.
 /// The character budget of a side conversation's context: the newest entries win, the
 /// oldest are dropped first. Leaves room for the question and the agent's answer.
 const CONTEXT_BUDGET: usize = 100_000;
@@ -2584,6 +2580,9 @@ fn context_entry(e: &AgentEntry) -> Option<String> {
     }
 }
 
+/// The conversation as the context a temporary side conversation starts with: what was
+/// said, what was done (tool calls with trimmed output), errors and the agent's reasoning,
+/// oldest first, within [`CONTEXT_BUDGET`].
 fn context_transcript(entries: &[AgentEntry]) -> String {
     // Newest wins: walk back until the budget is spent, dropping the oldest entries first.
     let mut lines: Vec<String> = Vec::new();
