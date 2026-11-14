@@ -15,6 +15,7 @@ import { basename, dirname, useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
   _emitEditorEvent,
+  _setEditorSwitching,
   _provideNavigationHistory,
   _provideOpenEditorPaths,
   _setActiveEditor,
@@ -373,14 +374,45 @@ export class EditorController implements SlotHost {
           this.sessionRoot = null;
           const generation = ++this.projectGeneration;
           const documents = customDocuments(useTabs.getState(), useContributions.getState().editorKinds);
+          // Untitled buffers belong to the window, not a project: their tabs
+          // survive the switch (the backend carries them into the new
+          // registry) and their slots rebuild against the carried documents.
+          const carriedUntitled: Tab[] = [];
+          let carriedActive: string | null = null;
+          const cs = useTabs.getState();
+          for (const pane of Object.values(cs.panes)) {
+            for (const tab of pane.tabs) {
+              if (isUntitledUri(tab.input.path ?? "")) {
+                carriedUntitled.push(tab);
+                if (pane.active === tab.id) carriedActive = tab.id;
+              }
+            }
+          }
           // The guard decided already. Disposal must never prompt or autosave
           // custom documents after the backend has replaced their project.
           this.replacingProject = true;
+          _setEditorSwitching(true);
           try {
             useTabs.setState(initialTabsState(), true);
+            if (carriedUntitled.length) {
+              let st = useTabs.getState();
+              const firstPane = paneIds(st)[0]!;
+              for (const tab of carriedUntitled) {
+                st = openTab(st, firstPane, tab.input, { activate: false }).state;
+              }
+              if (carriedActive) {
+                const carriedInPane = st.panes[firstPane]!.tabs.find(
+                  (t) => t.input.key === carriedUntitled.find((c) => c.id === carriedActive)!.input.key,
+                );
+                if (carriedInPane) st = activateTab(st, firstPane, carriedInPane.id);
+              }
+              useTabs.setState(st, true);
+            }
           } finally {
             this.replacingProject = false;
+            _setEditorSwitching(false);
           }
+          for (const tab of carriedUntitled) void this.ensureSlot(tab.id);
           this.closeSession = null;
           this.closeCommitted = false;
           this.preparedDocuments.clear();
@@ -469,6 +501,7 @@ export class EditorController implements SlotHost {
     const live = new Set<string>();
     for (const p of Object.values(next.panes)) for (const t of p.tabs) live.add(t.id);
     for (const id of this.selectionRequests.keys()) if (!live.has(id)) this.selectionRequests.delete(id);
+
     for (const [id, slot] of this.slots) {
       if (!live.has(id)) {
         this.slots.delete(id);
@@ -1995,8 +2028,11 @@ export class EditorController implements SlotHost {
     if (errors.length) throw combinedError(errors);
   }
 
-  async saveAll(): Promise<void> {
-    const results = await Promise.allSettled([this.manager.saveAll("explicit"), this.saveCustomDocuments()]);
+  async saveAll(opts?: { skipUntitled?: boolean }): Promise<void> {
+    const results = await Promise.allSettled([
+      this.manager.saveAll("explicit", opts?.skipUntitled),
+      this.saveCustomDocuments(),
+    ]);
     const errors = failures(results);
     if (errors.length) throw combinedError(errors);
   }

@@ -642,7 +642,9 @@ export interface EditorService {
   /** Doc id + cursor of the focused text editor. */
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
-  saveAll(): Promise<void>;
+  saveAll(opts?: { skipUntitled?: boolean }): Promise<void>;
+  /** Doc ids of untitled buffers with unsaved changes (they follow the window, not a project). */
+  untitledDirtyDocumentIds?(): number[];
   /** Includes local edits not yet acknowledged by the backend. */
   dirtyDocumentIds?(): number[];
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */

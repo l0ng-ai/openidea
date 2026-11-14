@@ -11,6 +11,7 @@ import {
   registerStatusItem,
 } from "@/workbench/contributions";
 import { _provideCodePreview, _provideDocumentAttacher, editorsFor } from "@/editor/api";
+import { isUntitledUri } from "@/platform/virtualDocs";
 import { formatDocument } from "@/editor/lsp/format";
 import { editorController } from "./controller";
 import { attachDocument } from "./model/attachment";
@@ -45,8 +46,10 @@ export function activate(): void | (() => void) {
     openUntitled: (options) => ctrl.openUntitled(options),
     activePath: () => ctrl.activePath(),
     activeCursor: () => ctrl.activeCursor(),
-    saveAll: () => ctrl.saveAll(),
+    saveAll: (opts) => ctrl.saveAll(opts),
     dirtyDocumentIds: () => [...ctrl.manager.byId.values()].filter((m) => m.getMeta().dirty).map((m) => m.doc),
+    untitledDirtyDocumentIds: () =>
+      [...ctrl.manager.byId.values()].filter((m) => isUntitledUri(m.path) && m.getMeta().dirty).map((m) => m.doc),
     focus: () => ctrl.focus(),
     openPaths: () => ctrl.openPaths(),
     openTabs: () => ctrl.openTabs(),

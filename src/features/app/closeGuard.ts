@@ -279,6 +279,13 @@ export async function confirmLeave(
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
   const confirmTerminate = workflowSettings().run.confirmTerminate;
+  // Untitled buffers follow the window across projects: they are neither
+  // counted nor saved by this guard (the window keeps them open).
+  const untitled = new Set(maybeEditorService()?.untitledDirtyDocumentIds?.() ?? []);
+  const saveDeps: CloseDeps =
+    untitled.size > 0
+      ? { ...deps, saveAll: () => Promise.resolve(maybeEditorService()?.saveAll({ skipUntitled: true })) }
+      : deps;
   return decideClose(
     {
       quitting: false,
@@ -286,10 +293,10 @@ export async function confirmLeave(
       confirmExit: false,
       confirmTerminate,
       processes: confirmTerminate ? await processNames(deps) : [],
-      dirty: dirtyCount(),
+      dirty: dirtyCount() - untitled.size,
       project,
     },
-    deps,
+    saveDeps,
   );
 }
 

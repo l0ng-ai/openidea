@@ -531,6 +531,15 @@ export function _provideNavigationHistory(provider: () => NavigationHistorySnaps
   navigationHistoryProvider = provider;
 }
 
+/** A project↔file-editor switch is clearing and re-filling the tabs. @internal editor/core only. */
+let editorSwitchingFlag = false;
+export function _setEditorSwitching(value: boolean) {
+  editorSwitchingFlag = value;
+}
+export function editorSwitching(): boolean {
+  return editorSwitchingFlag;
+}
+
 // --- editor events ------------------------------------------------------------
 
 export type EditorEvent =
