@@ -66,29 +66,32 @@ export function inlineBlameSegments(line: BlameLine, now = Date.now()): BlameSeg
 }
 
 /** Only the current document version is retained, including its in-flight request. */
-/** How long a caret move or an edit waits before the file is blamed. */
-const BLAME_DELAY_MS = 300;
-
 class BlameCache {
   private doc: Text | undefined;
   private pending: Promise<BlameLine[]> | undefined;
+  private lines: BlameLine[] | undefined;
 
   clear() {
     this.doc = undefined;
     this.pending = undefined;
-  }
-
-  /** Whether `doc`'s blame is loaded or loading: showing another of its lines runs no git. */
-  has(doc: Text): boolean {
-    return doc === this.doc && !!this.pending;
+    this.lines = undefined;
   }
 
   get(doc: Text, load: () => Promise<BlameLine[]>): Promise<BlameLine[]> {
     if (doc !== this.doc || !this.pending) {
       this.doc = doc;
-      this.pending = load();
+      this.lines = undefined;
+      this.pending = load().then((lines) => {
+        if (this.doc === doc) this.lines = lines;
+        return lines;
+      });
     }
     return this.pending;
+  }
+
+  /** The resolved blame for `doc`, when it is already loaded. */
+  peek(doc: Text): BlameLine[] | undefined {
+    return doc === this.doc ? this.lines : undefined;
   }
 }
 
@@ -273,17 +276,22 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         if (update.docChanged) this.cache.clear();
         if (update.docChanged || update.selectionSet) {
           this.line = undefined;
-          // The caret moved within a document whose blame is at hand: follow it at once. Edits
-          // (and a document not blamed yet) wait, so typing doesn't run git per keystroke.
-          this.schedule(this.cache.has(update.state.doc) ? 0 : BLAME_DELAY_MS);
+          // A caret move in a document whose blame is already loaded needs no git
+          // call, so show it without the debounce that protects that call (#3396).
+          if (!update.docChanged && this.cache.peek(update.state.doc) !== undefined) {
+            clearTimeout(this.timer);
+            ++this.generation;
+            void this.refresh();
+          } else {
+            this.schedule();
+          }
         }
       }
 
-      private schedule(delay = BLAME_DELAY_MS) {
+      private schedule() {
         clearTimeout(this.timer);
         ++this.generation;
-        if (delay === 0) void this.refresh();
-        else this.timer = setTimeout(() => void this.refresh(), delay);
+        this.timer = setTimeout(() => void this.refresh(), 300);
       }
 
       private async refresh() {
