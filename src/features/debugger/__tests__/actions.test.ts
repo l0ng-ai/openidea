@@ -106,6 +106,7 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   jvmMemory: false,
   jvmInstances: false,
   jvmHeap: false,
+  jsPage: false,
   ...p,
 });
 

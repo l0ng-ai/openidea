@@ -13,6 +13,7 @@ pub mod attach;
 mod cargo;
 pub mod connection;
 pub mod jdwp;
+mod js_debug;
 mod jvm_memory;
 pub mod kotlin;
 pub mod kotlin_lsp;
@@ -136,6 +137,9 @@ pub struct DebugCapabilities {
     pub jvm_instances: bool,
     /// The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]).
     pub jvm_heap: bool,
+    /// The session debugs a page in a browser: js-debug's requests for pages apply
+    /// ([`DebugManager::js_set_custom_breakpoints`]).
+    pub js_page: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -590,6 +594,7 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         jvm_memory: false,
         jvm_instances: false,
         jvm_heap: false,
+        js_page: false,
     }
 }
 
@@ -599,6 +604,7 @@ pub(crate) fn session_capabilities(session: &Session) -> DebugCapabilities {
     caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
     caps.jvm_instances = session.jvm_inspector.lock().is_some();
     caps.jvm_heap = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+    caps.js_page = js_debug::is_page(session);
     caps
 }
 
@@ -933,6 +939,9 @@ impl DebugManager {
             .flatten();
         let session =
             Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
+            let _ = session.launch_type.set(launch_type.to_owned());
+        }
         // rdbg execs the debuggee in its own process and sends no DAP process event.
         if let Some(pid) = rdbg_pid {
             session.debuggee_pid.store(i64::from(pid), Ordering::Release);
@@ -1167,6 +1176,7 @@ impl DebugManager {
                 reply.await.unwrap_or(Err(DapError::Closed))?;
             }
         }
+        s.launched.send_replace(true);
         if let Some(link) = s.jdwp_link.lock().as_ref() {
             link.release();
         }

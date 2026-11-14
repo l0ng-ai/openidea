@@ -244,6 +244,18 @@ pub async fn debug_restart_frame(state: State<'_, AppState>, session: DebugSessi
     ide_host::ops::debug::debug_restart_frame(&state.host, "", session, frame_id).await
 }
 
+/// Breakpoints of a debugged page on DOM events and on requests (js-debug).
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_custom_breakpoints(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+    ids: Vec<String>,
+    xhr: Vec<String>,
+) -> IdeResult<()> {
+    ide_host::ops::debug::debug_js_custom_breakpoints(&state.host, "", session, ids, xhr).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn debug_capabilities(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<DebugCapabilities> {

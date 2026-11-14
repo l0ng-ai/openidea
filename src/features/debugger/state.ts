@@ -186,6 +186,9 @@ export function isLive(s: DebugSession | null | undefined): boolean {
   return !!s && s.status !== "terminated";
 }
 
+/** Whether the session with this id is still there and running, as of now. */
+export const isLiveSession = (id: DebugSessionId) => isLive(useDebug.getState().sessions[id]);
+
 /** Root (user-started) session of `s`. */
 export function rootOf(s: DebugSession): DebugSession {
   const { sessions } = useDebug.getState();

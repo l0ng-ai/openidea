@@ -1,5 +1,14 @@
 /** Debugger popovers and dialogs: breakpoint properties, View Breakpoints, Evaluate, config chooser. */
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MutableRefObject } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MutableRefObject,
+} from "react";
 import { basename, relativePath, useProject } from "@/platform/project";
 import { executeAction, getAction } from "@/platform/actions";
 import { call, commands, type AttachableProcess, type RunConfig, type Variable } from "@/platform/ipc";
@@ -26,10 +35,12 @@ import {
 import { attachConfig, attachDetail, attachRows, type AttachRow } from "../attach";
 import {
   exceptionGroups,
+  filterHint,
   refreshExceptionFilters,
   setExceptionFilter,
   useExceptionBreakpoints,
 } from "../breakpoints/exceptions";
+import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -502,6 +513,7 @@ function BreakpointsDialog() {
             }}
           />
           <ExceptionBreakpoints open={open} />
+          <EventBreakpointsSection />
         </div>
         <div className={styles.bpDetail}>
           {current?.type === "line" ? (
@@ -542,13 +554,18 @@ function ExceptionBreakpoints({ open }: { open: boolean }) {
           >
             {groups.length > 1 && <div className={styles.exceptionAdapter}>{g.adapter}</div>}
             {g.filters.map((f) => (
-              <span key={f.filter} title={f.description ?? undefined} className={styles.exceptionRow}>
-                <Checkbox
-                  checked={f.enabled}
-                  onChange={(on) => setExceptionFilter(g.adapter, f.filter, on)}
-                  label={f.label}
-                />
-              </span>
+              <Fragment key={f.filter}>
+                <span title={f.description ?? undefined} className={styles.exceptionRow}>
+                  <Checkbox
+                    checked={f.enabled}
+                    onChange={(on) => setExceptionFilter(g.adapter, f.filter, on)}
+                    label={f.label}
+                  />
+                </span>
+                {filterHint(g.adapter, f.filter) && (
+                  <div className={styles.exceptionHint}>{tx(filterHint(g.adapter, f.filter)!)}</div>
+                )}
+              </Fragment>
             ))}
           </div>
         ))

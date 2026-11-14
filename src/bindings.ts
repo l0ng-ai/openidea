@@ -1213,6 +1213,8 @@ export const commands = {
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
+	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
+	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -3957,6 +3959,11 @@ export type DebugCapabilities = {
 	jvmInstances: boolean,
 	/**  The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]). */
 	jvmHeap: boolean,
+	/**
+	 *  The session debugs a page in a browser: js-debug's requests for pages apply
+	 *  ([`DebugManager::js_set_custom_breakpoints`]).
+	 */
+	jsPage: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */

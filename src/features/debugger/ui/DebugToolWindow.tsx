@@ -40,6 +40,7 @@ import {
 } from "../state";
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
+import { stopNote } from "../js/eventBreakpoints";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
@@ -329,6 +330,7 @@ function FramesPane({ session }: { session: DebugSession }) {
               : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
           </div>
         )}
+        {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}
         {items.map((item) =>
           item.kind === "hidden" ? (
             <button
