@@ -7,8 +7,8 @@ use crate::rpc::Dispatcher;
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
-    AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession,
-    McpScope, McpServer, McpServerInput, NewAgentTask,
+    AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
+    ExternalSession, McpScope, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::error::ErrorKind;
 use ide_core::{IdeError, IdeEvent, IdeResult, IpcPath, RequestId, SharedSink, TaskId};
@@ -26,6 +26,12 @@ pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
     let mut providers = host.project(window)?.agents.providers();
     ide_agent::registry::mark_updates(&registry_paths(host), &mut providers);
     Ok(providers)
+}
+
+/// Refreshes the selected agent's model catalog without sending a prompt.
+pub fn refresh_models(host: &Host, window: &str, provider: String, force: bool) -> IdeResult<AgentModelCatalog> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.refresh_models(&provider, force)
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
@@ -557,6 +563,9 @@ pub fn mcp_import(host: &Host, window: &str) -> IdeResult<Vec<McpServer>> {
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
     d.add("agent_providers", |c| async move { providers(&c.host, &c.window) });
+    d.add("agent_refresh_models", |c| async move {
+        refresh_models(&c.host, &c.window, c.arg("provider")?, c.arg("force")?)
+    });
     d.add("agent_set_command", |c| async move { set_command(&c.host, &c.window, c.arg("id")?, c.arg("command")?) });
     d.add("agent_set_env", |c| async move { set_env(&c.host, &c.window, c.arg("id")?, c.arg("env")?) });
     d.add("agent_registry_list", |c| async move { registry_list(&c.host, &c.window, c.arg("request")?).await });

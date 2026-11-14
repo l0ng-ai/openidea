@@ -8,6 +8,7 @@
 //! next prompt when the agent supports `session/load`.
 
 mod acp;
+mod catalogs;
 mod config;
 mod conversation;
 mod external;
@@ -21,6 +22,7 @@ mod skills;
 mod timeline;
 mod worktree;
 
+pub use catalogs::AgentCatalogs;
 pub use external::ExternalSession;
 pub use model::*;
 
@@ -88,6 +90,8 @@ pub struct AgentPaths {
     pub worktrees_dir: PathBuf,
     /// Settings each agent offered last time (shared by all projects), and its commands per project.
     pub models_file: PathBuf,
+    /// Shared by every project/window on this backend.
+    pub catalogs: Arc<AgentCatalogs>,
     /// User-defined agents, one `<id>.toml` each (`name`, `command`, `args`, `env`).
     pub custom_agents_dir: Option<PathBuf>,
     /// The user's home: its `.claude` holds their own skills and commands.
@@ -123,12 +127,10 @@ struct Shared {
     sink: RwLock<Option<AgentSink>>,
     security: RwLock<Option<SecurityHook>>,
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
-    known: Mutex<HashMap<String, Known>>,
+    known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
-    /// One pre-session lookup of commands and settings per provider, including failed attempts.
-    command_fetches: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
     mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
@@ -145,6 +147,14 @@ struct Known {
     /// By project root: skills and custom commands differ per project.
     #[serde(default, rename = "projectCommands")]
     commands: HashMap<String, Vec<AgentCommand>>,
+    /// Successful discovery, unlike a session report, owns availability.
+    #[serde(default)]
+    authoritative: bool,
+    #[serde(default, rename = "refreshedAtMs")]
+    refreshed_at_ms: Option<f64>,
+    /// Authoritative availability and freshness are scoped to project and launch context.
+    #[serde(default, rename = "projectCatalogs")]
+    catalogs: HashMap<String, catalogs::SavedCatalog>,
 }
 
 impl Shared {
@@ -171,7 +181,11 @@ impl Shared {
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
-        let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
+        let config = self.paths.catalogs.cached(self, provider).config;
+        self.config_for_new_task(config, provider)
+    }
+
+    fn config_for_new_task(&self, mut config: Vec<AgentConfigOption>, provider: &str) -> Vec<AgentConfigOption> {
         // Model-specific options are offered separately, never as provider-wide defaults.
         config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
@@ -197,80 +211,6 @@ impl Shared {
         cache.get(provider).and_then(|k| k.commands.get(&self.root_key())).cloned().unwrap_or_default()
     }
 
-    async fn fetch_settings(self: &Arc<Self>, spec: provider::ProviderSpec) {
-        let mut ready = {
-            let mut fetches = self.command_fetches.lock();
-            fetches
-                .entry(spec.id.clone())
-                .or_insert_with(|| {
-                    let (done, ready) = tokio::sync::watch::channel(false);
-                    let shared = self.clone();
-                    // Keep the lookup alive if a composer unmounts while it is waiting.
-                    self.runtime.spawn(async move {
-                        tracing::info!("agent {}: settings discovery started", spec.id);
-                        let discovered = if spec.driver == provider::Driver::Acp {
-                            acp::discover::run(&shared, &spec).await.map(|_| None)
-                        } else if spec.driver == provider::Driver::Claude {
-                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await.map(Some)
-                        } else {
-                            return;
-                        };
-                        if let Ok(Some(found)) = discovered {
-                            let commands =
-                                config::commands_of(&json!({ "availableCommands": found.commands }), &spec.id);
-                            let options = config::options_of(&json!({ "configOptions": found.options }));
-                            let levels: Vec<_> = found
-                                .efforts
-                                .into_iter()
-                                .map(|(model, o)| {
-                                    let options = o.map(|o| config::options_of(&json!({ "configOptions": [o] })));
-                                    (model, options.unwrap_or_default())
-                                })
-                                .collect();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                // Notifies subscribers itself when the discovery
-                                // changed the cached config; unchanged results
-                                // stay silent.
-                                shared.remember_discovered(&spec.id, &options, &commands, &levels);
-                            })
-                            .await;
-                        } else if let Err(e) = discovered {
-                            tracing::info!("agent {}: settings discovery failed: {e}", spec.id);
-                        }
-                        let _ = done.send(true);
-                    });
-                    ready
-                })
-                .clone()
-        };
-        while !*ready.borrow_and_update() {
-            if ready.changed().await.is_err() {
-                break;
-            }
-        }
-    }
-
-    fn has_config(&self, provider: &str) -> bool {
-        self.known.lock().get(provider).is_some_and(|k| !k.config.is_empty())
-    }
-
-    /// Whether the thinking levels of every model the agent offers are known (#1686).
-    fn knows_all_levels(&self, provider: &str) -> bool {
-        let cache = self.known.lock();
-        let Some(known) = cache.get(provider) else { return false };
-        let models: Vec<&str> = known
-            .config
-            .iter()
-            .filter(|o| o.category.as_deref() == Some("model"))
-            .flat_map(|o| o.values.iter().map(|v| v.value.as_str()))
-            .collect();
-        // No advertised models yet: nothing to attach effort levels to.
-        if models.is_empty() {
-            return false;
-        }
-        models.iter().all(|id| known.thought_levels.contains_key(*id))
-    }
-
     fn root_key(&self) -> String {
         self.paths.project_root.to_string_lossy().into_owned()
     }
@@ -283,78 +223,48 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
-        self.remember_inner(provider, config, commands, model, &[], false);
-    }
-
-    /// `levels`: each model's thinking-level options, so a new task offers them for any model
-    /// it picks (#1686). A session's report for a model wins over these.
-    fn remember_discovered(
-        &self,
-        provider: &str,
-        config: &[AgentConfigOption],
-        commands: &[AgentCommand],
-        levels: &[(String, Vec<AgentConfigOption>)],
-    ) {
-        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), levels, true);
-    }
-
-    fn remember_inner(
-        &self,
-        provider: &str,
-        config: Option<&[AgentConfigOption]>,
-        commands: Option<&[AgentCommand]>,
-        model: Option<&str>,
-        discovered_levels: &[(String, Vec<AgentConfigOption>)],
-        discovered: bool,
-    ) {
-        // Keep the update and its disk write ordered; a session report wins over discovery.
         let mut cache = self.known.lock();
         let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
-        for (model, levels) in discovered_levels {
-            if !known.thought_levels.contains_key(model) {
-                known.thought_levels.insert(model.clone(), levels.clone());
-                changed = true;
-            }
-        }
-        if let Some(c) = config.filter(|_| !discovered || known.config.is_empty()) {
+        // Running tasks retain their own reported settings. Once discovery has
+        // succeeded, a session's older list/defaults cannot change New Task choices.
+        if !known.authoritative
+            && let Some(config) = config.filter(|c| !c.is_empty())
+        {
             if let Some(model) = model {
                 let levels: Vec<_> =
-                    c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                    config.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
                 if known.thought_levels.get(model) != Some(&levels) {
                     known.thought_levels.insert(model.to_owned(), levels);
                     changed = true;
                 }
             }
-            if !c.is_empty() && known.config != c {
-                known.config = c.to_vec();
+            if known.config != config {
+                known.config = config.to_vec();
                 changed = true;
             }
         }
-        let root = self.root_key();
-        if let Some(c) = commands.filter(|c| {
-            !c.is_empty()
-                && (!discovered || known.commands.get(&root).is_none_or(Vec::is_empty))
-                && known.commands.get(&root).map(Vec::as_slice) != Some(c)
-        }) {
-            known.commands.insert(root, c.to_vec());
+        if let Some(commands) = commands.filter(|c| !c.is_empty())
+            && known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands)
+        {
+            known.commands.insert(self.root_key(), commands.to_vec());
             changed = true;
         }
-        if !changed {
-            return;
+        if changed {
+            self.persist_known(&cache);
         }
-        if let Ok(bytes) = serde_json::to_vec_pretty(&*cache)
+        drop(cache);
+        if changed {
+            self.emit(AgentEvent::Providers);
+        }
+    }
+
+    fn persist_known(&self, cache: &HashMap<String, Known>) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(cache)
             && let Err(e) = write_file(&self.paths.models_file, &bytes)
         {
             tracing::warn!("saving agent settings: {e}");
         }
-        // The cached provider config actually changed (a session report, discovery,
-        // or a turn update): tell subscribers to re-list, so a changed model list
-        // reaches the composer without waiting for the next task (#1490). Unchanged
-        // reports stay silent, so routine session traffic emits nothing. The cache
-        // lock is released first; the sink never runs under it.
-        drop(cache);
-        self.emit(AgentEvent::Providers);
     }
 }
 
@@ -469,8 +379,7 @@ impl AgentManager {
     }
 
     fn with_connector(paths: AgentPaths, runtime: tokio::runtime::Handle, connector: Connector) -> Self {
-        let known =
-            std::fs::read(&paths.models_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let known = paths.catalogs.store(&paths.models_file);
         let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref(), paths.env_secrets.as_deref()));
         let shared = Arc::new(Shared {
             paths,
@@ -479,13 +388,13 @@ impl AgentManager {
             sink: RwLock::new(None),
             security: RwLock::new(None),
             new_task_approvals: RwLock::new(None),
-            known: Mutex::new(known),
+            known,
             providers,
             probes: Mutex::new(HashMap::new()),
-            command_fetches: Mutex::new(HashMap::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
         });
+        shared.paths.catalogs.subscribe(&shared);
         let mut tasks = HashMap::new();
         for file in std::fs::read_dir(&shared.paths.store_dir).into_iter().flatten().flatten() {
             let path = file.path();
@@ -542,9 +451,9 @@ impl AgentManager {
             .filter(|p| !provider::is_unlisted(p) || in_use.contains(&p.id))
             .map(|p| {
                 let mut info = provider::describe(p);
-                info.config = self.shared.known_config(&p.id);
-                info.thought_levels =
-                    self.shared.known.lock().get(&p.id).map(|k| k.thought_levels.clone()).unwrap_or_default();
+                let catalog = self.shared.paths.catalogs.cached(&self.shared, &p.id);
+                info.config = self.shared.config_for_new_task(catalog.config, &p.id);
+                info.thought_levels = catalog.thought_levels;
                 info.commands = self.shared.known_commands(&p.id);
                 info
             })
@@ -632,17 +541,20 @@ impl AgentManager {
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
         if task.is_none()
-            && (offered.is_empty() || !self.shared.has_config(&provider) || !self.shared.knows_all_levels(&provider))
-            && let Some(spec) = self
-                .shared
-                .spec(&provider)
-                .filter(|s| matches!(s.driver, provider::Driver::Claude | provider::Driver::Acp))
+            && let Some(spec) =
+                provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets())
+                    .into_iter()
+                    .find(|spec| spec.id == provider)
         {
-            let claude = spec.driver == provider::Driver::Claude;
-            self.shared.fetch_settings(spec).await;
-            if claude {
-                offered = self.shared.known_commands(&provider);
+            let (_, flight) = self.shared.paths.catalogs.request(&self.shared, spec, false);
+            if let Some(mut ready) = flight {
+                while !*ready.borrow_and_update() {
+                    if ready.changed().await.is_err() {
+                        break;
+                    }
+                }
             }
+            offered = self.shared.known_commands(&provider);
         }
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
@@ -794,16 +706,18 @@ impl AgentManager {
             }
         };
         // Until the session reports its own, show what the agent offered last time with the choices applied.
-        let mut config = self.shared.known_config(&spec.id);
+        let catalog = self.shared.paths.catalogs.cached(&self.shared, &spec.id);
+        let mut levels = catalog.thought_levels;
+        let mut config = self.shared.config_for_new_task(catalog.config, &spec.id);
         for choice in &req.config {
             if let Some(o) = config.iter_mut().find(|o| o.id == choice.id) {
                 o.current = Some(choice.value.clone());
             }
         }
         if let Some(model) = model_of(&config)
-            && let Some(levels) = self.shared.known.lock().get(&spec.id).and_then(|k| k.thought_levels.get(&model))
+            && let Some(levels) = levels.remove(&model)
         {
-            config.extend(levels.iter().cloned().map(|mut o| {
+            config.extend(levels.into_iter().map(|mut o| {
                 if let Some(choice) =
                     req.config.iter().find(|c| c.id == o.id && o.values.iter().any(|v| v.value == c.value))
                 {

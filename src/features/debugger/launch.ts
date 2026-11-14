@@ -67,7 +67,12 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
   return {
     ...base(rc, adapter, cwd),
     args: programArgs,
-    extraJson: JSON.stringify({ cargo: filter ? { args, filter } : { args }, sourceLanguages: ["rust"] }),
+    extraJson: JSON.stringify({
+      cargo: filter ? { args, filter } : { args },
+      ...(adapter === "codelldb" ? { sourceLanguages: ["rust"] } : {}),
+      // lldb-dap takes the environment as `KEY=VALUE` strings.
+      ...(adapter === "lldb-dap" ? { env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`) } : {}),
+    }),
   };
 }
 
@@ -182,8 +187,7 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "js-debug", cwd);
   const extra: Record<string, unknown> = {
     type: "pwa-node",
-    console: "internalConsole",
-    outputCapture: "std",
+    console: "integratedTerminal",
     skipFiles: workflowSettings().debugger.skipLibraryCode ? ["<node_internals>/**", "**/node_modules/**"] : [],
     autoAttachChildProcesses: true,
   };

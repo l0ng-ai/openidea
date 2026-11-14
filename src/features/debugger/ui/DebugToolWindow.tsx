@@ -169,7 +169,9 @@ export function DebugToolWindow() {
             ? "variables"
             : view.tab,
     });
-  const hasMemory = !!active && sessionSupports("jvmMemory", active);
+  // A JVM session shows the Memory tab from the start, before the debugger has reported what it supports.
+  const memoryPending = !!active && !active.caps && JVM_ADAPTERS.has(rootOf(active).adapter);
+  const hasMemory = !!active && (sessionSupports("jvmMemory", active) || memoryPending);
   const hasNetwork = !!active && sessionSupports("jsPage", active);
   // The selected session may be one without the Memory or the Network tab.
   const tab: Tab =
@@ -255,7 +257,15 @@ export function DebugToolWindow() {
         {tab === "variables" ? (
           <ThreadsAndVariables session={active} />
         ) : tab === "memory" ? (
-          <MemoryView key={active.id} session={active} />
+          memoryPending ? (
+            <div className={styles.emptyWrap}>
+              <EmptyState title="Memory">
+                <T>The Memory view is available once the program has started.</T>
+              </EmptyState>
+            </div>
+          ) : (
+            <MemoryView key={active.id} session={active} />
+          )
         ) : tab === "network" ? (
           <NetworkView key={active.id} session={active.id} />
         ) : (
@@ -265,6 +275,9 @@ export function DebugToolWindow() {
     </div>
   );
 }
+
+/** Debug adapters whose sessions have the Memory view (`ide-dap`'s `JVM_MEMORY_ADAPTERS`). */
+const JVM_ADAPTERS = new Set(["java-debug", "kotlin-debug-adapter", "kotlin-lsp"]);
 
 // --- threads & frames ----------------------------------------------------------
 

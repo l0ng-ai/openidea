@@ -474,10 +474,7 @@ impl Session {
             let _ = c.start_kill();
         }
         if let Some(mut program) = self.program.lock().take() {
-            let _ = program.child.kill();
-            let _ = std::thread::Builder::new().name("openidea-debug-reap".into()).spawn(move || {
-                let _ = program.child.wait();
-            });
+            program.kill();
         }
     }
 }
@@ -574,7 +571,7 @@ fn launch_groups(s: &Session) -> Vec<libc::pid_t> {
     for child in s.debuggees.lock().iter() {
         push(child.id());
     }
-    push(s.program.lock().as_ref().and_then(|p| p.child.process_id()));
+    push(s.program.lock().as_ref().and_then(ProgramTerminal::process_id));
     groups.retain(|g| *g > 0);
     groups
 }
@@ -874,7 +871,10 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
 /// A `runInTerminal` program and the pseudo-terminal it runs in.
 pub(crate) struct ProgramTerminal {
     writer: ide_core::input::InputWriter,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    pid: Option<u32>,
+    /// Set once the program has exited and been reaped.
+    exited: Arc<AtomicBool>,
     _master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
@@ -882,6 +882,28 @@ impl ProgramTerminal {
     pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
         self.writer.write(text.as_bytes())
     }
+
+    /// The program's process id while it runs.
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        if self.exited.load(Ordering::Acquire) { None } else { self.pid }
+    }
+
+    pub(crate) fn kill(&mut self) {
+        // After the reap the pid may belong to another process.
+        if !self.exited.load(Ordering::Acquire) {
+            let _ = self.killer.kill();
+        }
+    }
+}
+
+/// Reaps the program as soon as it exits. Until then it stays a zombie that `kill(pid, 0)` still
+/// finds: js-debug polls the `processId` it was given and keeps the session (and its terminal)
+/// open while that process looks alive, and Stop would wait for it as for a running program.
+fn reap_on_exit(mut child: Box<dyn portable_pty::Child + Send + Sync>, exited: Arc<AtomicBool>) {
+    let _ = std::thread::Builder::new().name("openidea-debug-reap".into()).spawn(move || {
+        let _ = child.wait();
+        exited.store(true, Ordering::Release);
+    });
 }
 
 /// `runInTerminal`: starts the debuggee on a pseudo-terminal, as an IDE terminal would (CodeLLDB
@@ -968,8 +990,12 @@ pub(crate) fn run_in_terminal(s: &Arc<Session>, args: &Value) -> Result<Value, S
         #[cfg(unix)]
         wait_readable,
     );
-    if let Some(mut previous) = s.program.lock().replace(ProgramTerminal { writer, child, _master: pair.master }) {
-        let _ = previous.child.kill();
+    let killer = child.clone_killer();
+    let exited = Arc::new(AtomicBool::new(false));
+    reap_on_exit(child, exited.clone());
+    let program = ProgramTerminal { writer, killer, pid, exited, _master: pair.master };
+    if let Some(mut previous) = s.program.lock().replace(program) {
+        previous.kill();
     }
     s.owner.sink.emit(IdeEvent::Debug { session: s.id, event: DebugEvent::ProgramInput });
     Ok(json!({ "processId": pid }))
@@ -1337,5 +1363,30 @@ mod tests {
         assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: 127.0.0.1:51234"), Some(51234));
         assert_eq!(parse_jdwp_port("Listening for transport dt_socket at address: [::1]:51234"), Some(51234));
         assert_eq!(parse_jdwp_port("unrelated output"), None);
+    }
+
+    /// js-debug polls the `runInTerminal` pid with `kill(pid, 0)`; an unreaped zombie answers it as
+    /// a live process and keeps the session open after the program ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_program_is_reaped_when_it_exits() {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pair =
+            native_pty_system().openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 }).unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "exit 0"]);
+        let child = pair.slave.spawn_command(cmd).unwrap();
+        let pid = child.process_id().unwrap() as libc::pid_t;
+        let exited = Arc::new(AtomicBool::new(false));
+        super::reap_on_exit(child, exited.clone());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !exited.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "program was not reaped");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // SAFETY: signal 0 only checks whether the process exists.
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
     }
 }

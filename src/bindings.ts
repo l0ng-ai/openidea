@@ -136,6 +136,8 @@ export const commands = {
 	/**  Streams the project's agent events to this window; returns every task. */
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
+	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -475,6 +477,11 @@ export const commands = {
 	 *  plus its configured dependencies).
 	 */
 	navIndexDefinitions: (name: string, from: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("nav_index_definitions", { name, from })),
+	/**
+	 *  Every Python class in the project (attached dependency roots included) and its base names,
+	 *  for native inheritance gutter markers.
+	 */
+	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
@@ -1726,6 +1733,8 @@ export const commands = {
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
+	/**  The query consoles of data source `id`; `create` adds the next one first. */
+	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
 };
 
 /* Types */
@@ -1963,6 +1972,8 @@ export type AgentEvent =
 { type: "append"; task: string; subagent: string | null; index: number; from: number; text: string } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 { type: "limits"; provider: string; limits: AgentLimit[] } | 
+/**  A model lookup started or completed, including unsuccessful lookups. */
+{ type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
 { type: "providers" };
 
@@ -2016,6 +2027,17 @@ export type AgentMcpServer_Serialize = {
 	 *  empty means enabled for all agents.
 	 */
 	agents?: string[],
+};
+
+/**  Authoritative choices for new tasks, independent of any running session's settings. */
+export type AgentModelCatalog = {
+	provider: string,
+	config: AgentConfigOption[],
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
+	refreshing: boolean,
+	refreshedAtMs: number | null,
+	retryAtMs: number | null,
+	error: string | null,
 };
 
 export type AgentPermissionOption = {
@@ -2887,6 +2909,25 @@ export type CheckoutOutcome = { kind: "done" } |
 export type ChoiceOption = {
 	value: string,
 	label: string,
+};
+
+/**
+ *  A Python class definition and the base names written in its source. The UI builds a
+ *  name → locations index from every class in the project (attached dependency roots
+ *  included) to compute ↑ overrides / ↓ overridden gutter markers without a language
+ *  server's type-hierarchy provider.
+ */
+export type ClassInheritance = {
+	/**  Start of the class definition's selection range (0-based line, UTF-16 column). */
+	path: IpcPath,
+	line: number,
+	col: number,
+	name: string,
+	/**
+	 *  Base names as written in source (bare name, e.g. `AllToAllTokenDispatcher`; a
+	 *  qualified name keeps only its last segment).
+	 */
+	bases: string[],
 };
 
 export type ClassifiedReference = {

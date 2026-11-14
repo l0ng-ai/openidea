@@ -50,7 +50,12 @@ Agents are unavailable in a project you have not marked as trusted.
     - **Local checkout**: the agent edits your files directly.
   </Step>
   <Step title="Pick the agent and its settings">
-    Choose the agent, and its model, mode and other options when it offers them. Models and modes appear after the agent's first task.
+    Choose the agent, and its model, mode and other options when it offers them. Cached models appear immediately; the selected agent's catalog refreshes in the background when it is more than 15 minutes old, without sending a prompt or attaching project MCP servers.
+
+    After changing the agent CLI or account, open the model picker and choose **Refresh models**. Refreshes share one lookup and have a 30-second cooldown after completion, including failures. Cached choices remain usable while refreshing or after a failure.
+
+    Available models depend on the installed agent and account. If a selected model is removed, choose another before starting. Refreshing does not change running tasks.
+
   </Step>
   <Step title="Send">
     The task opens as an editor tab and starts.
@@ -70,6 +75,8 @@ On your own messages you can **Edit** (the messages after it are replaced; files
 **Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either an editor tab or the tool window, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
 
 The shortcut does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. Outside the task conversation, the keys keep their usual editor or terminal behavior. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
+
+Right-click a link and choose **Copy Link Address** to copy its URL; **Copy** copies the selected text.
 
 ### Permissions
 
