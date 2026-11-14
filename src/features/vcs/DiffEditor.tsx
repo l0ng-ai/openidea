@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -1123,8 +1124,10 @@ export function DiffEditor({
     showSettings,
     viewer: viewerOf,
   });
-  useEffect(() => {
-    // Keep the registered navigator's identity while refreshing its handlers.
+  useLayoutEffect(() => {
+    // Keep the registered navigator's identity while refreshing its handlers. Before paint, so a
+    // shortcut pressed as the toolbar updates (Jump to Source once the working copy is found) runs
+    // the handlers that toolbar shows.
     Object.assign(nav.current, {
       next: () => step(1),
       prev: () => step(-1),
