@@ -101,6 +101,7 @@ const UNTRANSLATED = new Set<string>([
   "PHPStan",
   "Xdebug",
   "Chrome",
+  "Edge",
   "Safari",
   "Firefox",
   "JaCoCo",

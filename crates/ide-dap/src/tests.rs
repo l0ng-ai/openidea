@@ -906,6 +906,14 @@ async fn blocked_program_input_does_not_hold_up_shutdown() {
 }
 
 #[test]
+fn a_child_session_is_named_by_the_adapter_unless_it_is_a_blank_page() {
+    assert_eq!(child_name(&json!({ "name": "server.js [4120]" }), "Server"), "server.js [4120]");
+    assert_eq!(child_name(&json!({ "name": "about:blank" }), "Shop in Chrome"), "Shop in Chrome");
+    assert_eq!(child_name(&json!({ "name": "" }), "Shop in Chrome"), "Shop in Chrome");
+    assert_eq!(child_name(&json!({}), "Shop in Chrome"), "Shop in Chrome");
+}
+
+#[test]
 fn launch_arguments_merge_and_defaults() {
     let mut c = config();
     c.extra_json = None;

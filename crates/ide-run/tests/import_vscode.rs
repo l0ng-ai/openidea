@@ -229,7 +229,12 @@ fn nextjs_recipes() {
     assert_eq!(server.args, s(&["run", "dev"]));
     assert_eq!(server.debug_adapter.as_deref(), Some("js-debug"));
 
-    assert_eq!(reason(&r, "Next.js: debug client-side"), &SkipReason::UnsupportedType { type_: "chrome".into() });
+    let client = get(&r, "Next.js: debug client-side");
+    assert_eq!((client.kind.as_str(), client.command.as_str()), ("js-browser", ""));
+    assert_eq!(client.debug_adapter.as_deref(), Some("js-debug"));
+    assert_eq!(client.extras.params["url"], "http://localhost:3000");
+    assert_eq!(client.extras.params["browser"], "chrome");
+    assert!(ignored(&r, "Next.js: debug client-side").is_empty());
 
     let full = get(&r, "Next.js: debug full stack");
     assert_eq!((full.kind.as_str(), full.command.as_str()), ("node", "node"));
@@ -401,6 +406,37 @@ fn attach_requests_become_remote_debug_configurations() {
 
     assert_eq!(reason(&r, "Attach to PID"), &SkipReason::UnsupportedAttach);
     assert_eq!(reason(&r, "Odd"), &SkipReason::UnsupportedRequest { request: "test".into() });
+}
+
+#[test]
+fn browser_launches_become_javascript_debug_configurations() {
+    let (_dir, r) = run(r#"{
+        "configurations": [
+            { "name": "Edge", "type": "pwa-msedge", "request": "launch", "url": "http://localhost:5173/app",
+              "webRoot": "${workspaceFolder}/web", "sourceMaps": true, "userDataDir": false },
+            { "name": "Root", "type": "chrome", "request": "launch", "url": "http://localhost:8080",
+              "webRoot": "${workspaceFolder}" },
+            { "name": "Page file", "type": "chrome", "request": "launch", "file": "${workspaceFolder}/index.html" },
+            { "name": "Running browser", "type": "chrome", "request": "attach", "port": 9222 }
+        ]
+    }"#);
+    let edge = get(&r, "Edge");
+    assert_eq!((edge.kind.as_str(), edge.debug_adapter.as_deref()), ("js-browser", Some("js-debug")));
+    assert_eq!(
+        edge.extras.params,
+        BTreeMap::from([
+            ("browser".into(), "edge".into()),
+            ("url".into(), "http://localhost:5173/app".into()),
+            ("webRoot".into(), "web".into())
+        ])
+    );
+    assert_eq!(ignored(&r, "Edge"), ["userDataDir"]);
+
+    // The project root is the default web root.
+    assert!(!get(&r, "Root").extras.params.contains_key("webRoot"));
+
+    assert_eq!(reason(&r, "Page file"), &SkipReason::NothingToRun);
+    assert_eq!(reason(&r, "Running browser"), &SkipReason::UnsupportedRequest { request: "attach".into() });
 }
 
 #[test]

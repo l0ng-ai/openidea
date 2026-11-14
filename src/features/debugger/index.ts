@@ -38,6 +38,7 @@ import {
 } from "./state";
 import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+import { jsBrowserType } from "./browser";
 import { forgetInstances } from "./memory/instancesState";
 import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
@@ -67,6 +68,7 @@ export function activate(): () => void {
     registerDebugActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
+    registerRunConfigType(jsBrowserType),
     registerToolWindow({
       id: "debug",
       title: "Debug",

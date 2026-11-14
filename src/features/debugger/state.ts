@@ -38,6 +38,7 @@ import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { flashTaskbarForBreakpoint, stopTaskbarFlash } from "./taskbarFlash";
+import { isBrowserLaunch, launchedBrowser, launchedUrl } from "./browser";
 import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
@@ -478,6 +479,45 @@ function flushConsoleOutput() {
   republishForPorts();
 }
 
+/**
+ * A browser launch shows as its page (`sessionTabs`), so a selected launch passes the selection
+ * to its page. Either may exist first: the page's `started` event can precede the launch's result.
+ */
+function selectBrowserPage(launch: DebugSessionId) {
+  const st = useDebug.getState();
+  if (st.active !== launch || !isBrowserLaunch(st.sessions[launch]?.launch ?? null)) return;
+  const page = Object.values(st.sessions).find((s) => s.parent === launch);
+  if (!page) return;
+  useDebug.setState({ active: page.id });
+  publishContext();
+}
+
+/**
+ * Debugs the page `launch` opens. A project has one browser of a kind under the debugger (a
+ * second one can't share its profile), so when it is already running its page goes to the URL
+ * instead and becomes the selected session.
+ */
+export async function startBrowserSession(
+  launch: LaunchConfig,
+  options: Parameters<typeof startSession>[1] = {},
+): Promise<DebugSessionId | null> {
+  const { sessions } = useDebug.getState();
+  const browser = launchedBrowser(launch);
+  const running = Object.values(sessions).find(
+    (s) => s.parent == null && isLive(s) && s.launch?.cwd === launch.cwd && launchedBrowser(s.launch) === browser,
+  );
+  if (!running) return startSession(launch, options);
+  const page = Object.values(sessions).find((s) => s.parent === running.id && isLive(s));
+  if (!page) return running.id;
+  selectSession(page.id);
+  const url = launchedUrl(launch);
+  if (url && url !== launchedUrl(running.launch!)) {
+    const go = `location.assign(${JSON.stringify(url)})`;
+    await call(commands.debugEvaluateIn(page.id, null, go, "repl")).catch(() => undefined);
+  }
+  return running.id;
+}
+
 /** Split styled output at real line breaks, retaining partial lines across events. */
 function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[]) {
   const last = lines.at(-1);
@@ -654,6 +694,7 @@ export async function startSession(
     });
     settleStart(id);
     if (options.process != null) followProcessOutput(id, options.process);
+    selectBrowserPage(id);
     publishContext();
     void refreshExceptionFilters();
     void loadCapabilities(id);
@@ -1122,9 +1163,11 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
   const s = ownSession(id, event);
   if (!s) return;
   switch (event.kind) {
-    case "started":
+    case "started": {
       if (!s.launch) patch(id, { name: event.name, adapter: event.adapter, parent: event.parent });
+      if (event.parent != null) selectBrowserPage(event.parent);
       break;
+    }
     case "initialized":
       if (s.status === "starting") patch(id, { status: "running" });
       break;
