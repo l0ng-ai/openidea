@@ -822,6 +822,28 @@ fn warm_start_detects_changed_ignore_rules_above_the_project() {
 }
 
 #[test]
+fn warm_start_detects_a_changed_exclude_file_of_a_linked_worktree() {
+    // The project is a linked worktree: its `.git` file points into the main repository,
+    // whose shared `info/exclude` the walker reads through `commondir`.
+    let f = Fixture::new(&[("generated/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")]);
+    let main = f.root.parent().unwrap().join("main/.git");
+    let worktree = main.join("worktrees/proj");
+    std::fs::create_dir_all(main.join("info")).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(main.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(worktree.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+    std::fs::write(worktree.join("commondir"), "../..\n").unwrap();
+    std::fs::write(f.root.join(".git"), format!("gitdir: {}\n", worktree.display())).unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2);
+    drop(idx);
+
+    std::fs::write(main.join("info/exclude"), "generated/\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "the shared exclude file invalidates the warm snapshot");
+}
+
+#[test]
 fn warm_start_detects_a_new_file_in_an_existing_empty_directory() {
     let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
     std::fs::create_dir(f.root.join("empty")).unwrap();
