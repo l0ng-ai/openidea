@@ -219,7 +219,9 @@ function PaneView({ paneId }: { paneId: string }) {
           : undefined,
         italic: t.preview,
         modified: dirty[i],
-        closable: showCloseButton,
+        // IDEA: hiding the close button is visual only. Keep close gestures
+        // (middle click, Shift+click, Delete) alive when its position is None.
+        showCloseButton,
         color: colors[i] || undefined,
         tint: tints[i] || undefined,
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
