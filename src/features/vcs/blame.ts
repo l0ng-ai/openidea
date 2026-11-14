@@ -288,11 +288,9 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                     {
                       label: tx("Annotate Previous Revision"),
                       icon: "history",
-                      run: () => {
-                        const line = view.state.doc.lineAt(block.from).number - 1;
-                        // Loads the history and diff viewer code only when it is used.
-                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit, line));
-                      },
+                      // Loads the history and diff viewer code only when it is used.
+                      run: () =>
+                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
                     },
                     { kind: "separator" as const },
                   ]

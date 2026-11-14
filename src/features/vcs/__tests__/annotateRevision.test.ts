@@ -58,24 +58,21 @@ describe("annotate previous revision", () => {
     expect(previousRevisionDiffData("/repo/a.py", commit([]))).toBeNull();
   });
 
-  it("shows the file at the first parent against the commit, on the line that was annotated", () => {
-    expect(previousRevisionDiffData("/repo/a.py", commit([parent]), 3)).toEqual({
+  it("shows the file at the first parent against the commit", () => {
+    expect(previousRevisionDiffData("/repo/a.py", commit([parent]))).toEqual({
       path: "/repo/a.py",
       left: { type: "rev", rev: parent, label: parent.slice(0, 8) },
       right: { type: "rev", rev: sha, label: sha.slice(0, 8) },
-      line: 3,
-      lineSide: "right",
       annotateLeft: true,
     });
   });
 
   it("opens that diff, asking the viewer to annotate the previous side", async () => {
-    await annotatePreviousRevision("/repo/a.py", sha, 3);
+    await annotatePreviousRevision("/repo/a.py", sha);
     expect(mocks.log).toHaveBeenCalledWith("/repo", expect.objectContaining({ branch: sha, limit: 1 }));
     expect(mocks.openDiff).toHaveBeenCalledWith(
       expect.objectContaining({
         path: "/repo/a.py",
-        line: 3,
         annotateLeft: true,
         left: expect.objectContaining({ rev: parent }),
       }),

@@ -17,7 +17,6 @@ import { repoOf } from "./store";
 export function previousRevisionDiffData(
   path: string,
   commit: Pick<Commit, "id" | "shortId" | "parents">,
-  line?: number,
 ): DiffData | null {
   const parent = commit.parents[0];
   if (!parent) return null;
@@ -25,7 +24,6 @@ export function previousRevisionDiffData(
     path,
     left: { type: "rev", rev: parent, label: parent.slice(0, 8) },
     right: { type: "rev", rev: commit.id, label: commit.shortId },
-    ...(line === undefined ? {} : { line, lineSide: "right" as const }),
     annotateLeft: true,
   };
 }
@@ -69,14 +67,18 @@ export async function annotateAtRevision(
   }
 }
 
-/** Opens the previous revision of `commit`, annotated: the line's history before the change. */
-export async function annotatePreviousRevision(path: string, commit: string, line?: number): Promise<void> {
+/**
+ * Opens the previous revision of `commit`, annotated: the line's history before the change. The
+ * diff opens at its first change: the annotated line's number belongs to the working copy, not to
+ * either revision.
+ */
+export async function annotatePreviousRevision(path: string, commit: string): Promise<void> {
   const repo = repoOf(path);
   try {
     const [found] = await call(
       commands.vcsLog(repo, { branch: commit, path: null, author: null, text: null, skip: 0, limit: 1 }),
     );
-    const data = found ? previousRevisionDiffData(path, found, line) : null;
+    const data = found ? previousRevisionDiffData(path, found) : null;
     if (!data) {
       notifications().notify({
         group: "vcs",
