@@ -4,7 +4,7 @@
  */
 import { useProject } from "@/platform/project";
 import { buildCMake, isCMakeBuild } from "./cmake";
-import { dotnetBuildConfig } from "./dotnetTypes";
+import { dotnetProjectFile } from "./dotnetTypes";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { buildTask } from "./buildTask";
 import { moduleTaskError } from "./configs";
@@ -84,8 +84,12 @@ async function runTask(
 ): Promise<string | null> {
   const target = task.target ?? "";
   switch (task.kind) {
-    case "dotnetBuild":
-      return (await runToEnd(dotnetBuildConfig(config), chain, show)) ? null : "Build failed";
+    case "dotnetBuild": {
+      // In the Build tool window, like Build Project: its messages link to the sources.
+      const project = dotnetProjectFile(config);
+      if (!project) return "Select a .NET project";
+      return buildTask("build.buildModule", { target: project, activate: false, wait: true });
+    }
     case "build": {
       if (target) return buildCMake(target, show === true);
       const error = await buildTask(BUILD_ACTION, { activate: false });

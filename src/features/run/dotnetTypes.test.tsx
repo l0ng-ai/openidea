@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { commands } from "@/platform/ipc";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { dotnetBuildConfig, dotnetProjectType, dotnetTestType } from "./dotnetTypes";
+import { dotnetProjectFile, dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { ConfigForm } from "./ConfigForm";
 import { validateConfig } from "./configs";
 import { formParams, newConfigOfType, registerBuiltinTypes, withParams } from "./types";
@@ -99,16 +99,12 @@ describe(".NET configurations", () => {
     expect(formParams({ ...typed, args: ["build", "A"] }, dotnetProjectType)).toBeNull();
   });
 
-  it("builds edited project/framework from the open root instead of a profile cwd", () => {
+  it("builds the edited project from the open root instead of a profile cwd", () => {
     useProject.setState({ project: { root: "/repo" } as never });
-    const c = withParams(
-      { ...config(), cwd: "profile/work" },
-      { ...params, project: "other/App.csproj", framework: "net9.0" },
-    );
-    const build = dotnetBuildConfig(c);
-    expect(build.args).toEqual(["build", "other/App.csproj", "--configuration", "Debug", "--framework", "net9.0"]);
-    expect(build.cwd).toBe("/repo");
-    expect(build.beforeLaunch).toEqual([]);
+    const c = withParams({ ...config(), cwd: "profile/work" }, { ...params, project: "other/App.csproj" });
+    expect(dotnetProjectFile(c)).toBe("/repo/other/App.csproj");
+    expect(dotnetProjectFile(withParams(c, { ...params, project: "C:\\src\\App.csproj" }))).toBe("C:\\src\\App.csproj");
+    expect(dotnetProjectFile(withParams(c, { ...params, project: "" }))).toBeNull();
   });
 
   it("edits project, framework, profile, arguments and environment in the shared form", () => {
