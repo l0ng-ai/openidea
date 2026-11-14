@@ -14,6 +14,55 @@ const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 /// Bump when [`FileRecord`] or its encoding changes.
 const SCHEMA: &str = "openidea-index-3";
 
+/// The real Git directory for a checkout/worktree (`root/.git` may be a file
+/// containing `gitdir: ...`).
+fn git_dir(root: &Path) -> Option<std::path::PathBuf> {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let target = text.strip_prefix("gitdir:")?.trim();
+    let path = Path::new(target);
+    Some(if path.is_absolute() { path.to_owned() } else { root.join(path) })
+}
+
+/// Every ignore/config input the walker may consult, including candidates that
+/// do not exist yet. Comparing the full set (plus presence/mtime/size) catches
+/// new `.git/info/exclude` files, redirected `core.excludesFile`, and worktrees.
+pub(crate) fn ignore_candidates(root: &Path, dirs: &[String]) -> Vec<std::path::PathBuf> {
+    let mut out = std::collections::BTreeSet::new();
+    for rel in dirs {
+        let dir = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
+        out.insert(dir.join(".gitignore"));
+        out.insert(dir.join(".ignore"));
+    }
+    if let Some(git) = git_dir(root) {
+        out.insert(git.join("config"));
+        out.insert(git.join("info/exclude"));
+    }
+    out.insert(root.join(".git/config"));
+    out.insert(root.join(".git/info/exclude"));
+    if let Some(path) = ignore::gitignore::gitconfig_excludes_path() {
+        out.insert(path);
+    }
+    out.insert(std::path::PathBuf::from("/etc/gitconfig"));
+    if let Some(path) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+        out.insert(path.into());
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        out.insert(home.join(".gitconfig"));
+        out.insert(
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| home.join(".config"))
+                .join("git/config"),
+        );
+    }
+    out.into_iter().collect()
+}
+
 /// One file's fixed-size columns in the start-up snapshot.
 #[derive(Clone, Copy, Serialize, Deserialize, Default)]
 struct FileMeta {
@@ -55,6 +104,7 @@ pub(crate) struct Snapshot {
     ignore_ends: Vec<u32>,
     ignore_mtimes: Vec<u64>,
     ignore_sizes: Vec<u64>,
+    ignore_present: Vec<bool>,
 }
 
 impl Snapshot {
@@ -100,6 +150,10 @@ impl Snapshot {
         self.ignore_sizes[i]
     }
 
+    pub(crate) fn ignore_present(&self, i: usize) -> bool {
+        self.ignore_present[i]
+    }
+
     pub(crate) fn mtime(&self, file: usize) -> u64 {
         self.meta[file].mtime
     }
@@ -110,6 +164,10 @@ impl Snapshot {
 
     /// Rejects a corrupt snapshot before any offsets are used for slicing.
     fn valid(&self) -> bool {
+        let max = u32::MAX as usize;
+        if self.rels.len() > max || self.text.len() > max || self.dirs.len() > max || self.ignore_paths.len() > max {
+            return false;
+        }
         if self.rel_ends.len() != self.meta.len() {
             return false;
         }
@@ -143,16 +201,27 @@ impl Snapshot {
             return false;
         }
         if !self.symbols.iter().all(|s| {
-            let name_end = s.name_start as usize + s.name_len as usize;
-            let container_end = s.container_start as usize + s.container_len as usize;
-            boundary(&self.text, s.name_start)
-                && boundary(&self.text, name_end as u32)
+            let Some(name_end) = (s.name_start as usize).checked_add(s.name_len as usize) else {
+                return false;
+            };
+            let Some(container_end) = (s.container_start as usize).checked_add(s.container_len as usize) else {
+                return false;
+            };
+            name_end <= self.text.len()
+                && self.text.is_char_boundary(s.name_start as usize)
+                && self.text.is_char_boundary(name_end)
                 && (s.container_start == u32::MAX
-                    || (boundary(&self.text, s.container_start) && boundary(&self.text, container_end as u32)))
+                    || (s.container_start as usize <= self.text.len()
+                        && container_end <= self.text.len()
+                        && self.text.is_char_boundary(s.container_start as usize)
+                        && self.text.is_char_boundary(container_end)))
         }) {
             return false;
         }
         if self.dir_ends.len() != self.dir_mtimes.len() || self.dir_counts.len() != self.dir_mtimes.len() {
+            return false;
+        }
+        if self.dir_ends.first() != Some(&0) {
             return false;
         }
         let mut dir_end = 0;
@@ -173,7 +242,10 @@ impl Snapshot {
             }
             start = *end as usize;
         }
-        if self.ignore_ends.len() != self.ignore_mtimes.len() || self.ignore_sizes.len() != self.ignore_mtimes.len() {
+        if self.ignore_ends.len() != self.ignore_mtimes.len()
+            || self.ignore_sizes.len() != self.ignore_mtimes.len()
+            || self.ignore_present.len() != self.ignore_mtimes.len()
+        {
             return false;
         }
         let mut ignore_end = 0;
@@ -207,9 +279,13 @@ impl Snapshot {
         let symbols = (sym_start..meta.sym_end as usize)
             .map(|i| {
                 let s = self.symbols[i];
-                let name = &self.text[s.name_start as usize..(s.name_start + s.name_len) as usize];
-                let container = (s.container_start != u32::MAX)
-                    .then(|| &self.text[s.container_start as usize..(s.container_start + s.container_len) as usize]);
+                let name_start = s.name_start as usize;
+                let name_end = name_start + s.name_len as usize;
+                let name = &self.text[name_start..name_end];
+                let container = (s.container_start != u32::MAX).then(|| {
+                    let start = s.container_start as usize;
+                    &self.text[start..start + s.container_len as usize]
+                });
                 Sym {
                     mask: char_mask(name),
                     name: name.into(),
@@ -418,59 +494,24 @@ impl Store {
             snap.dir_mtimes.push(mtime);
             snap.dir_counts.push(count);
         }
-        let mut ignore_files: std::collections::BTreeSet<std::path::PathBuf> = std::collections::BTreeSet::new();
-        for rel in &dir_list {
-            let dir = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
-            for name in [".gitignore", ".ignore"] {
-                let path = dir.join(name);
-                if path.is_file() {
-                    ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
-                }
-            }
-        }
-        for path in [root.join(".git/info/exclude")] {
-            if path.is_file() {
-                ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
-            }
-        }
-        if let Some(path) = ignore::gitignore::gitconfig_excludes_path()
-            && path.is_file()
-        {
-            ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
-        }
-        // Git config can redirect `core.excludesFile`; its mtime invalidates the
-        // snapshot even when the old global ignore file is unchanged.
-        let mut configs = vec![root.join(".git/config"), std::path::PathBuf::from("/etc/gitconfig")];
-        if let Some(path) = std::env::var_os("GIT_CONFIG_GLOBAL") {
-            configs.push(path.into());
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            let home = std::path::PathBuf::from(home);
-            configs.push(home.join(".gitconfig"));
-            configs.push(
-                std::env::var_os("XDG_CONFIG_HOME")
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| home.join(".config"))
-                    .join("git/config"),
-            );
-        }
-        for path in configs {
-            if path.is_file() {
-                ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
-            }
-        }
-        for path in ignore_files {
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-            let mtime = mtime_of(&meta);
+        for path in ignore_candidates(root, &dir_list) {
+            let meta = std::fs::metadata(&path).ok();
+            let present = meta.is_some();
+            let mtime = meta.as_ref().map_or(0, mtime_of);
             if mtime > guard {
                 let _ = std::fs::remove_file(&self.snapshot);
                 return Ok(());
             }
             snap.ignore_paths.push_str(&path.to_string_lossy());
             snap.ignore_ends.push(fit(snap.ignore_paths.len())?);
-            snap.ignore_mtimes.push(mtime);
-            snap.ignore_sizes.push(meta.len());
+            snap.ignore_mtimes.push(if present { mtime } else { 0 });
+            snap.ignore_sizes.push(if present { meta.as_ref().map_or(0, |m| m.len()) } else { 0 });
+            snap.ignore_present.push(present);
         }
+        fit(snap.rels.len())?;
+        fit(snap.text.len())?;
+        fit(snap.dirs.len())?;
+        fit(snap.ignore_paths.len())?;
         let bytes = postcard::to_allocvec(&snap).map_err(err)?;
         let tmp = self.snapshot.with_extension("snapshot.tmp");
         std::fs::write(&tmp, &bytes).map_err(err)?;
@@ -533,11 +574,15 @@ impl Store {
     }
 
     pub(crate) fn save_recent(&self, recent: &[String]) -> Result<()> {
+        self.save_recent_file(recent)?;
         let bytes = postcard::to_allocvec(recent).map_err(err)?;
-        if let Err(e) = std::fs::write(&self.recent_file, &bytes) {
-            tracing::warn!("index recent cache: {e}");
-        }
         self.set_meta("recent", &bytes)
+    }
+
+    /// Rewrites only the recent sidecar, without opening redb.
+    pub(crate) fn save_recent_file(&self, recent: &[String]) -> Result<()> {
+        let bytes = postcard::to_allocvec(recent).map_err(err)?;
+        std::fs::write(&self.recent_file, &bytes).map_err(err)
     }
 
     fn set_meta(&self, key: &str, value: &[u8]) -> Result<()> {

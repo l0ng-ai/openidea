@@ -61,6 +61,9 @@ pub(crate) struct Shared {
     idle: Condvar,
     /// Coalesced post-update snapshot refresh.
     snapshot_due: Mutex<Option<Instant>>,
+    /// Directories whose watcher events still need reconciliation before a
+    /// refreshed snapshot can be trusted.
+    pending_dirs: Mutex<HashSet<PathBuf>>,
 }
 
 impl Shared {
@@ -86,6 +89,7 @@ impl Shared {
             wake: Condvar::new(),
             idle: Condvar::new(),
             snapshot_due: Mutex::default(),
+            pending_dirs: Mutex::default(),
         }
     }
 
@@ -224,10 +228,23 @@ impl Shared {
                 return false;
             }
         }
-        for i in 0..snapshot.ignore_len() {
-            let path = Path::new(snapshot.ignore_path(i));
-            let Ok(meta) = std::fs::symlink_metadata(path) else { return false };
-            if !meta.is_file() || mtime_of(&meta) != snapshot.ignore_mtime(i) || meta.len() != snapshot.ignore_size(i) {
+        let dirs: Vec<String> = (0..snapshot.dirs_len()).map(|i| snapshot.dir(i).to_owned()).collect();
+        let candidates = crate::store::ignore_candidates(root, &dirs);
+        if candidates.len() != snapshot.ignore_len() {
+            return false;
+        }
+        for (i, path) in candidates.iter().enumerate() {
+            if snapshot.ignore_path(i) != path.to_string_lossy() {
+                return false;
+            }
+            let meta = std::fs::metadata(path).ok();
+            let present = meta.is_some();
+            if present != snapshot.ignore_present(i) {
+                return false;
+            }
+            if let Some(meta) = meta
+                && (mtime_of(&meta) != snapshot.ignore_mtime(i) || meta.len() != snapshot.ignore_size(i))
+            {
                 return false;
             }
         }
@@ -278,15 +295,18 @@ impl Shared {
         );
         self.indexing.store(false, Ordering::SeqCst);
         self.emit_state();
-        if let Some(recent) = store.load_recent_file() {
-            let mut r = self.recent.lock();
-            for p in recent.into_iter().map(|rel| root.join(rel)) {
-                if !r.contains(&p) {
-                    r.push(p);
-                }
+        let recent = store.load_recent_file().unwrap_or_else(|| {
+            let recent = store.load_recent();
+            let _ = store.save_recent_file(&recent);
+            recent
+        });
+        let mut r = self.recent.lock();
+        for p in recent.into_iter().map(|rel| root.join(rel)) {
+            if !r.contains(&p) {
+                r.push(p);
             }
-            r.truncate(MAX_RECENT);
         }
+        r.truncate(MAX_RECENT);
         true
     }
 
@@ -459,9 +479,13 @@ impl Shared {
         }
         self.persist(&[], &[], true);
         if let Some(store) = &self.store {
+            let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
             let d = self.data.read();
             if let Err(e) = store.save_snapshot(&d, &filter, guard) {
                 tracing::warn!("index snapshot: {e}");
+            }
+            if let Err(e) = store.save_recent_file(&recent) {
+                tracing::warn!("index recent snapshot: {e}");
             }
         }
         *self.snapshot_due.lock() = None;
@@ -539,6 +563,14 @@ impl Shared {
     }
 
     fn save_snapshot_now(&self) {
+        let dirs: Vec<PathBuf> = self.pending_dirs.lock().drain().collect();
+        if !dirs.is_empty() {
+            // Reconcile the directories touched since the last scan before
+            // recording their mtimes; otherwise a missed watcher event could be
+            // blessed into the manifest.
+            self.scan(Some(&dirs), None, SystemTime::now());
+            return;
+        }
         if let Some(store) = &self.store {
             let filter = self.filter();
             let guard = SystemTime::now();
@@ -607,6 +639,17 @@ impl Shared {
                 Job::Rescan => rescan = true,
                 Job::IgnoreRules(dirs) => rule_dirs.extend(dirs),
                 Job::Reparse(before) => reparse.push(before),
+            }
+        }
+        {
+            let mut pending = self.pending_dirs.lock();
+            for path in changed.iter().chain(removed.iter()) {
+                let dir = if path.is_dir() {
+                    path.clone()
+                } else {
+                    path.parent().map_or_else(|| path.clone(), Path::to_owned)
+                };
+                pending.insert(dir);
             }
         }
         if !rule_dirs.is_empty() {
