@@ -209,10 +209,11 @@ impl Deployment<'_> {
         let start = out.len();
         // One `find` over SSH instead of a listing per folder (thousands of round trips on a
         // big project); the same entries the walk below would keep.
-        if let Some(entries) = self.fs.tree(dir, self.exclude.prunable_names()).await {
-            if self.cancel.is_cancelled() {
-                return Err(IdeError::cancelled());
-            }
+        let tree = tokio::select! {
+            tree = self.fs.tree(dir, self.exclude.prunable_names()) => tree,
+            () = self.cancel.cancelled() => return Err(IdeError::cancelled()),
+        };
+        if let Some(entries) = tree {
             let base = dir.trim_end_matches('/');
             out.extend(entries.into_iter().filter(|e| {
                 let rel = e.path.strip_prefix(base).unwrap_or(&e.path);

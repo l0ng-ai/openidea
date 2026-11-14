@@ -141,6 +141,8 @@ pub struct DebugCapabilities {
     /// The session debugs a page in a browser: js-debug's requests for pages apply
     /// ([`DebugManager::js_set_custom_breakpoints`]).
     pub js_page: bool,
+    /// The adapter evaluates expressions while the program runs, without a stack frame.
+    pub live_evaluate: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -596,6 +598,7 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         jvm_instances: false,
         jvm_heap: false,
         js_page: false,
+        live_evaluate: false,
     }
 }
 
@@ -606,6 +609,7 @@ pub(crate) fn session_capabilities(session: &Session) -> DebugCapabilities {
     caps.jvm_instances = session.jvm_inspector.lock().is_some();
     caps.jvm_heap = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
     caps.js_page = js_debug::is_page(session);
+    caps.live_evaluate = session.adapter == js_debug::ADAPTER;
     caps
 }
 

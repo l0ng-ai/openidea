@@ -585,6 +585,21 @@ pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeRes
     blocking(move || per_backend(&project, &paths, None, |r, paths| r.stage(paths))).await
 }
 
+/// Adds `commit` to annotate's ignore list in `path`'s repository (the file `blame.ignoreRevsFile`
+/// names, else `.git-blame-ignore-revs`, which the local config then names).
+pub async fn vcs_ignore_blame_revision(host: &Host, window: &str, path: PathBuf, commit: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        let result = project.with_disk_sync(|| project.with_repo_of(&path, |r| r.ignore_blame_revision(&commit)));
+        if result.is_ok() {
+            project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
+        }
+        result
+    })
+    .await
+}
+
 /// Project-host operation (also registered with the remote dispatcher).
 /// Returns the ignore files that were updated, so the UI can show them.
 pub async fn vcs_add_to_ignore(
@@ -792,12 +807,19 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
+    let paths = paths.unwrap_or_default();
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
-            r.stash_push(message.as_deref(), include_untracked, keep_index)
+        if paths.is_empty() {
+            return project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
+                r.stash_push(message.as_deref(), include_untracked, keep_index, &[])
+            });
+        }
+        per_repo(&project, &paths, Some("Git stash"), |r, paths| {
+            r.stash_push(message.as_deref(), include_untracked, keep_index, paths)
         })
     })
     .await
@@ -1462,6 +1484,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_add_to_ignore", |c| async move {
         vcs_add_to_ignore(&c.host, &c.window, c.arg("paths")?, c.arg("destination")?).await
     });
+    d.add("vcs_ignore_blame_revision", |c| async move {
+        vcs_ignore_blame_revision(&c.host, &c.window, c.arg("path")?, c.arg("commit")?).await
+    });
     d.add("vcs_unstage", |c| async move { vcs_unstage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_stage_patch", |c| async move { vcs_stage_patch(&c.host, &c.window, c.arg("patch")?).await });
     d.add("vcs_discard", |c| async move { vcs_discard(&c.host, &c.window, c.arg("paths")?).await });
@@ -1520,6 +1545,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("message")?,
             c.arg("includeUntracked")?,
             c.arg("keepIndex")?,
+            c.arg("paths")?,
         )
         .await
     });

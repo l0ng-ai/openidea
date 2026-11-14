@@ -332,6 +332,12 @@ fn cached_cancellable(
     .unwrap_or_default()
 }
 
+/// What `ecosystem` last found under `root` with the same settings, from before its manifests changed.
+fn last_found(root: &Path, ecosystem: &'static str, key: &str) -> Option<Vec<LibraryGroup>> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.get(&(root.to_path_buf(), ecosystem)).filter(|c| c.key == key).map(|c| c.groups.clone())
+}
+
 fn cached_optional(
     root: &Path,
     ecosystem: &'static str,
@@ -807,6 +813,9 @@ fn rust_groups(root: &Path, s: &Settings, locked: bool, cancel: &CancellationTok
             let roots = parse_cargo_metadata(&json)?;
             Some(group("Cargo dependencies", "cargo", named_roots(roots)).into_iter().collect())
         });
+        // An edited manifest that names crates not downloaded yet fails offline until the next
+        // resolution writes Cargo.lock: the last graph stays meanwhile, as a failed sync keeps the model.
+        let graph = graph.or_else(|| last_found(root, "cargo", &r.toolchain));
         out.extend(graph.unwrap_or_else(|| {
             let home = ide_core::process::host_var_os("CARGO_HOME")
                 .map(PathBuf::from)
@@ -1107,6 +1116,20 @@ mod go_cache_tests {
         assert_eq!(groups[0].kind, "cargo");
         assert_eq!(groups[0].roots[0].path, source);
         assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+
+        // The manifest now names a crate that isn't downloaded: the offline graph fails, the last one stays.
+        std::fs::write(
+            bin.join("cargo"),
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = locate-project ]; then echo '{}'; exit; fi\nexit 101\n",
+                root.join("Cargo.toml").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['members/*']\n# edited\n").unwrap();
+        let groups = project_libraries(root, &settings, &[]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].roots[0].path, source);
     }
 
     #[cfg(unix)]

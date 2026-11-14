@@ -221,6 +221,7 @@
   "Opens http-client.private.env.json for this request file, creating it if missing": "打开此请求文件对应的 http-client.private.env.json，不存在时创建",
   "Cannot convert the request to cURL": "无法将请求转换为 cURL",
   "Cannot create the environment file": "无法创建环境文件",
+  "Cannot ignore the commit": "无法忽略该提交",
   "The request was copied as a cURL command": "已将请求复制为 cURL 命令",
   "Related targets": "相关目标",
   "GDB (C, C++)": "GDB（C、C++）",
@@ -1463,6 +1464,7 @@
   "Ignore whitespace": "忽略空白",
   "Ignore whitespaces": "忽略空白",
   "Ignore whitespaces and empty lines": "忽略空白和空行",
+  "Ignore This Commit": "忽略此提交",
   "Ignored": "已忽略",
   "Ignored Files and Folders": "忽略的文件和文件夹",
   "Ignored names": "忽略的名称",
@@ -2728,6 +2730,8 @@
   "Start directory": "起始目录",
   "Startup": "启动",
   "Stash Changes…": "储藏更改…",
+  "Stash Selected Files…": "储藏所选文件…",
+  "Select the files to stash in the Commit view first": "请先在提交视图中选择要贮藏的文件",
   "Stashes": "储藏",
   "State": "状态",
   "Status": "状态",
@@ -8048,5 +8052,7 @@
   "Doc": "文档",
   "Img": "图片",
   "This version of the JavaScript debugger does not report a page's requests.": "此版本的 JavaScript 调试器不报告页面的请求。",
-  "No requests yet. Reload the page to see the requests of its load.": "还没有请求。重新加载页面即可看到加载时的请求。"
+  "No requests yet. Reload the page to see the requests of its load.": "还没有请求。重新加载页面即可看到加载时的请求。",
+  "Evaluate watches while the program runs": "程序运行时计算监视表达式",
+  "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "仅适用于无需暂停即可计算的调试器（JavaScript）。带副作用的监视表达式在每次刷新时都会再次执行。"
 }
