@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IpcError,
+  type ClassInheritance,
   type HierarchyItem,
   type Location,
   type OutlineItem,
@@ -208,8 +209,9 @@ function server(
   impls: Record<string, Location[]>,
   supers: Record<string, HierarchyItem[]>,
   subtypes: Record<string, HierarchyItem[]> = {},
+  inheritance?: ClassInheritance[],
 ) {
-  const calls = { implementations: [] as Pos[][], supertypes: 0, subtypes: 0 };
+  const calls = { implementations: [] as Pos[][], supertypes: 0, subtypes: 0, inheritance: 0 };
   const outlines: Record<string, OutlineItem[]> = {
     [SHAPE_PATH]: SHAPE_OUTLINE,
     "/p/Circle.java": CIRCLE_OUTLINE,
@@ -234,6 +236,35 @@ function server(
       outline: async (p) => outlines[p] ?? [],
     },
     readFiles: async (paths) => new Map(paths.map((p) => [p, FILES[p] ?? null])),
+    inheritance: inheritance
+      ? async () => {
+          calls.inheritance++;
+          return inheritance;
+        }
+      : undefined,
+  });
+  return { calls, deps };
+}
+
+/** A Python project: the server answers neither implementations nor a type hierarchy. */
+function pythonServer(inheritance: ClassInheritance[], outlines: Record<string, OutlineItem[]>) {
+  const calls = { implementations: 0, inheritance: 0 };
+  const deps = (): MarkerDeps => ({
+    implementations: async () => {
+      calls.implementations++;
+      throw new IpcError({ kind: "unavailable", message: "basedpyright doesn't support implementation" });
+    },
+    supers: {
+      supertypes: async () => {
+        throw new IpcError({ kind: "unavailable", message: "basedpyright doesn't support type hierarchy" });
+      },
+      outline: async (p) => outlines[p] ?? [],
+    },
+    readFiles: async () => new Map(),
+    inheritance: async () => {
+      calls.inheritance++;
+      return inheritance;
+    },
   });
   return { calls, deps };
 }
@@ -635,5 +666,100 @@ describe("overriders of a type's methods from its subtypes", () => {
         { line: 6, col: 9 },
       ],
     ]);
+  });
+});
+
+describe("python inheritance fallback", () => {
+  // a.py: `class A` (line 0) with `m` (line 1), then `class B(A)` (line 3) with `m` (line 4).
+  const outline = [
+    item("A", "class", 0, 2, [item("m", "method", 1, 1)], 6),
+    item("B", "class", 3, 5, [item("m", "method", 4, 4)], 6),
+  ];
+  const graph: ClassInheritance[] = [
+    { path: "/p/a.py", line: 0, col: 6, name: "A", bases: [] },
+    { path: "/p/a.py", line: 3, col: 6, name: "B", bases: ["A"] },
+  ];
+
+  it("marks the subclass and the overridden method with no type hierarchy", async () => {
+    const { deps, calls } = pythonServer(graph, { "/p/a.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps(), cache);
+    const markers = cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.targets.map((t) => t.path)]);
+    expect(markers).toEqual([
+      // The class B subclasses A...
+      [0, "overridden", ["/p/a.py"]],
+      // ...and its `m` overrides A's `m`.
+      [1, "overridden", ["/p/a.py"]],
+      [4, "overriding", ["/p/a.py"]],
+    ]);
+    // The graph is asked once per cache, not once per candidate.
+    expect(calls.inheritance).toBe(1);
+  });
+
+  it("survives an unavailable implementation provider (the fallback keeps its candidates)", async () => {
+    const { deps, calls } = pythonServer(graph, { "/p/a.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps(), cache);
+    // The server said "unavailable", but the graph still answered ↓ and ↑.
+    expect(calls.implementations).toBeGreaterThan(0);
+    expect(cache.unsupported.size).toBe(0);
+  });
+
+  it("adds the graph's cross-project subclasses to a non-empty server answer", async () => {
+    // The server (single root) answers the local subclass only; the attached-project
+    // subclass is known to the IDE's graph and must join the list.
+    const outline = [item("A", "class", 0, 2, [], 6), item("B", "class", 3, 5, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "A", bases: [] },
+      { path: "/p/a.py", line: 3, col: 6, name: "B", bases: ["A"] },
+      { path: "/p/attached/a.py", line: 0, col: 6, name: "C", bases: ["A"] },
+    ];
+    const { deps } = server({ "/p/a.py:0": [loc("/p/a.py", 3)] }, {}, {}, graph);
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps("/p/a.py"), cache);
+    const targets = cachedMarkers(candidates, ALL, cache)
+      .filter((m) => m.line === 0)
+      .flatMap((m) => m.targets.map((t) => t.path));
+    expect(targets).toEqual(["/p/a.py", "/p/attached/a.py"]);
+  });
+
+  it("ignores a bare base name that many classes in the project share", async () => {
+    // `Config` is declared in hundreds of modules: no edge, so no marker.
+    const outline = [item("Child", "class", 0, 2, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 0, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    const { deps } = pythonServer(graph, { "/p/c.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
+    expect(cachedMarkers(candidates, ALL, cache)).toEqual([]);
+  });
+
+  it("trusts a shared base name when the subclass's own file declares it", async () => {
+    const outline = [item("Config", "class", 0, 1, [], 6), item("Child", "class", 3, 5, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/c.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/other.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    const { deps } = pythonServer(graph, { "/p/c.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind])).toEqual([[0, "overridden"]]);
+  });
+
+  it("keeps the existing server path when no inheritance graph is injected", async () => {
+    const { deps } = server({}, {});
+    const candidates = markerCandidates([item("Foo", "class", 0, 2, [item("m", "method", 1, 1)], 6)], () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps("/p/a.py"), cache);
+    expect(cachedMarkers(candidates, ALL, cache)).toEqual([]);
   });
 });
