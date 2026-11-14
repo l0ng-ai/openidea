@@ -8,9 +8,11 @@ const ipc = vi.hoisted(() => ({
 }));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
+  isTauri: () => true,
   commands: { ...(await original<typeof import("@/platform/ipc")>()).commands, ...ipc },
 }));
 const { serverCodeLenses } = await import("./serverCodeLens");
+const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const views: EditorView[] = [];
 afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
@@ -90,4 +92,47 @@ it("leaves reference counts to Code Vision's usages", async () => {
   views.push(view);
   await vi.advanceTimersByTimeAsync(400);
   expect(view.state.facet(codeLenses).map((l) => l.title)).toEqual(["2 implementations"]);
+});
+
+it("keeps the shown lenses while the server is busy answering empty or failing, until it settles", async () => {
+  vi.useFakeTimers();
+  ipc.lspCodeLens.mockResolvedValue({
+    status: "ok",
+    data: [
+      {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        command: { title: "Run test", command: "csharp.runTest", arguments: [] },
+      },
+    ],
+  });
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: "x",
+      extensions: serverCodeLenses({ doc: 1, path: "/p/a.cs", language: "csharp", uiMode: null, readOnly: false }),
+    }),
+    parent: document.body,
+  });
+  views.push(view);
+  await vi.advanceTimersByTimeAsync(400);
+  expect(view.state.facet(codeLenses)).toHaveLength(1);
+  // An empty answer while the server is busy keeps what is shown.
+  ipc.lspCodeLens.mockResolvedValue({ status: "ok", data: [] });
+  emitLocalIdeEvent({ type: "languageServer", server: 1, name: "csharp-ls", status: "busy", message: null });
+  view.dispatch({ changes: { from: 1, insert: "\n" } });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(view.state.facet(codeLenses)).toHaveLength(1);
+  // So does a failed request: it says nothing about the lenses shown.
+  ipc.lspCodeLens.mockResolvedValue({
+    status: "error",
+    error: { kind: "unavailable", message: "csharp-ls is not running", data: null },
+  });
+  view.dispatch({ changes: { from: 2, insert: "\n" } });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(view.state.facet(codeLenses)).toHaveLength(1);
+  // Once the spell ends, a settled empty answer applies.
+  ipc.lspCodeLens.mockResolvedValue({ status: "ok", data: [] });
+  await vi.advanceTimersByTimeAsync(1600);
+  emitLocalIdeEvent({ type: "languageServer", server: 1, name: "csharp-ls", status: "ready", message: null });
+  await vi.advanceTimersByTimeAsync(500);
+  expect(view.state.facet(codeLenses)).toHaveLength(0);
 });
