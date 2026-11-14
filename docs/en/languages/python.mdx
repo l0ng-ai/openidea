@@ -49,6 +49,17 @@ The selected interpreter is passed to basedpyright and Pyright (`python.pythonPa
 
 The **Python Interpreter** item in the status bar shows the current interpreter. Click it to switch, or to open **Add New Interpreter…** and **Interpreter Settings…**.
 
+### A Docker or Compose run target as the interpreter
+
+When the project's dependencies are installed only in an image, choose a Docker or Docker Compose [run target](/en/guide/remote/containers#docker-and-docker-compose-run-targets) as the interpreter: the interpreter list and the status bar item show those targets next to the local interpreters.
+
+- **Editor.** The IDE runs the target's Python once in a new container (the image's entrypoint and the service's dependencies are skipped) and copies the folders of its `sys.path` outside the standard library and the project, such as `site-packages`, to its cache with `docker cp`. basedpyright and Pyright get the copies as `extraPaths`, with an empty virtualenv the IDE creates as their interpreter, so local packages don't mix in. Without any Python on this machine they get `extraPaths` alone and use their bundled standard library stubs. The copy is shown under **External Libraries**.
+- **Rebuilds.** The copy belongs to the image: when the project opens or the interpreter is chosen, a rebuilt image gets a new copy. The refresh button on the packages list copies again.
+- **Run.** Python run configurations without a run target of their own run on that target.
+- **Packages.** The list comes from the copy and is read-only: change the image or its requirements, rebuild it, and copy again. Nothing is installed into the container.
+
+A `pyrightconfig.json` or a `[tool.basedpyright]` / `[tool.pyright]` section with its own `extraPaths` replaces the copied paths. The interpreter's Python version is the empty virtualenv's, from a local Python of the same version when there is one.
+
 ### Creating an environment
 
 On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add Python Interpreter** and pick the **Interpreter type**:

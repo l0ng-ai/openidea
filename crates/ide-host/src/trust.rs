@@ -289,6 +289,7 @@ impl crate::Host {
                 }
             }
             project.lsp.reconfigure().await;
+            crate::ops::sdk::container_python::ensure(self, &project);
             project.sink.emit(ide_core::IdeEvent::ProjectTrustChanged { root: project.root.clone().into(), trusted });
         }
         Ok(())

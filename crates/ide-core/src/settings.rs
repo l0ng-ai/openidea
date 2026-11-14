@@ -1092,7 +1092,8 @@ impl Default for ExternalFormatterSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PythonSettings {
-    /// Project interpreter executable; empty = auto-detect (project venv, else `python3`).
+    /// Project interpreter executable; empty = auto-detect (project venv, else `python3`);
+    /// `target:<run-target-id>` = the Python of a Docker or Compose run target.
     pub interpreter: String,
     /// Activate the interpreter's virtualenv in new terminal sessions.
     pub activate_virtualenv: bool,
@@ -1118,6 +1119,17 @@ impl Default for PythonSettings {
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
         }
+    }
+}
+
+impl PythonSettings {
+    /// What `interpreter` starts with when the project interpreter is a run target's.
+    pub const TARGET_PREFIX: &str = "target:";
+
+    /// The run target whose Python is the project interpreter (`target:<id>`), if one is.
+    pub fn run_target(&self) -> Option<&str> {
+        let id = self.interpreter.trim().strip_prefix(Self::TARGET_PREFIX)?.trim();
+        (!id.is_empty()).then_some(id)
     }
 }
 
@@ -1541,6 +1553,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn python_interpreter_may_name_a_run_target() {
+        let python = |interpreter: &str| PythonSettings { interpreter: interpreter.into(), ..Default::default() };
+        assert_eq!(python("target:web").run_target(), Some("web"));
+        assert_eq!(python(" target: web ").run_target(), Some("web"));
+        for local in ["", "target:", "/usr/bin/python3", ".venv/bin/python", "targets/python"] {
+            assert_eq!(python(local).run_target(), None, "{local}");
+        }
+    }
 
     #[test]
     fn removed_one_themes_read_as_islands_themes() {

@@ -21,7 +21,7 @@ fn fake_venv(root: &Path, name: &str) -> std::path::PathBuf {
     py
 }
 
-fn server(name: &str) -> LanguageServerConfig {
+pub(crate) fn server(name: &str) -> LanguageServerConfig {
     LanguageServerConfig {
         name: name.into(),
         command: name.into(),
@@ -186,6 +186,48 @@ fn pyright_gets_python_path_and_venv_env() {
     assert_eq!(opts["python"]["pythonPath"], py.to_string_lossy().as_ref());
     assert_eq!(cfg.env["VIRTUAL_ENV"], tmp.path().join(".venv").to_string_lossy());
     assert!(cfg.env["PATH"].starts_with(&*tmp.path().join(".venv").join(bin_dir()).to_string_lossy()));
+}
+
+#[test]
+fn a_run_target_interpreter_hides_local_pythons() {
+    let tmp = tempfile::tempdir().unwrap();
+    fake_venv(tmp.path(), ".venv");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = "target:web".into();
+    assert_eq!(python_interpreter(tmp.path(), &s), None, "the project virtualenv is not the interpreter");
+    assert_eq!(terminal_activation(tmp.path(), &s, "bash"), None);
+    assert!(!tool_install_environment(tmp.path(), &s).commands.contains_key("python"));
+    let mut cfg = server("basedpyright");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let opts = cfg.initialization_options.map(|o| serde_json::to_value(o).unwrap());
+    assert!(opts.and_then(|o| o.pointer("/python/pythonPath").cloned()).is_none());
+    assert!(!cfg.env.contains_key("VIRTUAL_ENV"));
+}
+
+#[test]
+fn python_configurations_run_on_the_interpreters_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    fake_venv(tmp.path(), ".venv");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = "target:web".into();
+    s.run.default_target = "box".into();
+    let mut own = run("python", "python3", &["main.py"]);
+    own.extras.target = Some(String::new());
+    let mut configs = vec![
+        run("python", "python3", &["manage.py", "runserver"]),
+        run("pytest", "python3", &["-m", "pytest"]),
+        run("npm", "npm", &["run", "dev"]),
+        own,
+    ];
+    apply_to_run_configs(&mut configs, tmp.path(), &s);
+    assert_eq!(configs[0].extras.target.as_deref(), Some("web"));
+    assert_eq!(configs[0].command, "python3", "the container resolves the interpreter");
+    assert!(!configs[0].env.contains_key("VIRTUAL_ENV"));
+    assert_eq!(configs[1].extras.target.as_deref(), Some("web"));
+    assert_eq!(configs[2].extras.target.as_deref(), Some("box"), "other languages keep the default target");
+    assert_eq!(configs[3].extras.target.as_deref(), Some(""), "a configuration's own choice wins");
+    let derived = without_derived(&configs[0], tmp.path(), &s);
+    assert_eq!(derived.extras.target, None, "the target is derived from the interpreter");
 }
 
 #[test]
