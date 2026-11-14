@@ -67,6 +67,7 @@ vi.mock("@/workbench/confirmTerminate", () => ({ confirmTerminate }));
 
 import type { RunConfig } from "@/platform/ipc";
 import { setLocale } from "@/platform/i18n";
+import { ToolWindowShownProvider } from "@/workbench/contributions";
 import { handleDebugEvent, setVariableValue, useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
 import { DebuggerOverlays } from "../ui/Overlays";
@@ -374,5 +375,33 @@ describe("variables the adapter computes after the stop", () => {
     await tick();
     expect(useDebug.getState().variablesEpoch).toBe(1);
     expect(adapterData.memoryClasses).not.toHaveBeenCalled();
+  });
+
+  it("evaluates the watches of a running program only while the tool window is shown", async () => {
+    const caps = { liveEvaluate: true } as DebugSession["caps"];
+    const running: DebugSession = { ...session, id: 5, status: "running", frames: [], selectedFrame: null, caps };
+    useDebug.setState({ sessions: { 5: running }, active: 5, watches: ["count"] });
+    const watched = () => debugEvaluateIn.mock.calls.filter((c) => c[0] === 5 && c[3] === "watch");
+    const shown = (value: boolean) => {
+      const view = render(
+        <ToolWindowShownProvider value={value}>
+          <DebugToolWindow />
+        </ToolWindowShownProvider>,
+      );
+      fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+      return view;
+    };
+    try {
+      debugEvaluateIn.mockClear();
+      // A hidden tool window stays mounted.
+      const hidden = shown(false);
+      await tick();
+      expect(watched()).toEqual([]);
+      hidden.unmount();
+      shown(true);
+      await waitFor(() => expect(watched()).toEqual([[5, null, "count", "watch"]]));
+    } finally {
+      useDebug.setState({ watches: [] });
+    }
   });
 });

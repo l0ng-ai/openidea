@@ -3964,6 +3964,8 @@ export type DebugCapabilities = {
 	 *  ([`DebugManager::js_set_custom_breakpoints`]).
 	 */
 	jsPage: boolean,
+	/**  The adapter evaluates expressions while the program runs, without a stack frame. */
+	liveEvaluate: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -4015,6 +4017,8 @@ export type DebuggerSettings = {
 	inlineValues?: boolean,
 	/**  Data Views: list variables by name instead of the adapter's order. */
 	sortValues?: boolean,
+	/**  Data Views: evaluate watches while the program runs, where the debugger can (JavaScript). */
+	liveWatches?: boolean,
 	valueTooltip?: boolean,
 	/**  While suspended, selecting an expression shows its value. */
 	valueTooltipOnSelection?: boolean,

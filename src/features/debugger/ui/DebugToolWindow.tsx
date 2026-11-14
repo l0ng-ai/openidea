@@ -41,12 +41,14 @@ import {
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
 import { stopNote } from "../js/eventBreakpoints";
+import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { useToolWindowShown } from "@/workbench/contributions";
 import styles from "./DebugToolWindow.module.css";
 import { tx, useTx } from "@/platform/i18n";
 
@@ -430,6 +432,9 @@ function VariablesPane({ session }: { session: DebugSession }) {
     rows: [],
   });
   const frame = session.status === "paused" ? session.selectedFrame : null;
+  const live = liveWatchesApply(session);
+  // A hidden tool window stays mounted: its watches must not go on running in the page.
+  const liveWatches = useLiveWatches(session, watches, useToolWindowShown());
   // Same thread and stack depth across stops: compare like with like.
   const changeScope = `${session.id}:${session.selectedThread}:${session.frames.findIndex((f) => f.id === frame)}`;
 
@@ -491,7 +496,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
         variable: lastEval.result,
         error: lastEval.error,
       });
-    const watchRows = watchData.frame === frame ? watchData.rows : [];
+    // While the program runs, a debugger that evaluates without suspending gives the values.
+    const watchRows = frame == null ? liveWatches : watchData.frame === frame ? watchData.rows : [];
     for (const w of watches) {
       const r = watchRows.find((x) => x.expression === w);
       out.push({
@@ -499,7 +505,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         kind: "watch",
         name: w,
         variable: r?.result ?? null,
-        error: frame == null ? "Not suspended" : (r?.error ?? null),
+        error: frame == null && !live ? "Not suspended" : (r?.error ?? null),
       });
     }
     if (frame != null && scopeData.frame === frame) {
@@ -527,7 +533,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
       }
     }
     return out;
-  }, [lastEval, watches, watchData, scopeData, frame]);
+  }, [lastEval, watches, watchData, scopeData, frame, live, liveWatches]);
 
   const run = async () => {
     const e = expression.trim();
