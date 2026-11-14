@@ -42,6 +42,21 @@ describe("shell interpolation", () => {
     expect(result).toContainEqual(token(' after"', tags.string));
   });
 
+  it("ends a <<- heredoc at a tab-indented delimiter", () => {
+    const result = tokens("\tcat <<- 'EOF'\n\t\tDROP DATABASE x;\n\tEOF\n\tcat $dir/database.sql");
+    expect(result).toContainEqual(token("\t\tDROP DATABASE x;", tags.special(tags.string)));
+    expect(result).toContainEqual(token("\tEOF", tags.special(tags.string)));
+    expect(result.filter((item) => item.text === "cat")).toHaveLength(2);
+    expect(result).toContainEqual(token("dir", tags.variableName));
+  });
+
+  it("keeps the heredoc line and arithmetic shifts as code", () => {
+    const result = tokens("cat <<EOF | grep x\nEOF\necho $((1 << 2))\necho done");
+    expect(result).toContainEqual(token("grep", tags.standard(tags.variableName)));
+    expect(result).toContainEqual(token("<<", tags.operator));
+    expect(result.filter((item) => item.text === "echo")).toHaveLength(2);
+  });
+
   it("leaves single quotes, escaped dollars, comments and heredocs intact", () => {
     for (const doc of ["echo '$name ${count}'", 'echo "\\$name"', '# "${count}"', "cat <<'EOF'\n$name ${count}\nEOF"]) {
       expect(tokens(doc).some((item) => item.cls === openideaHighlightStyle.style([tags.special(tags.brace)]))).toBe(

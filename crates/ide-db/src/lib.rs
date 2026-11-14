@@ -324,6 +324,17 @@ fn group_foreign_keys(rows: Vec<Vec<Option<String>>>, tables: &[CompletionTable]
 /// Connection target: a data source id (its configured database), or
 /// `<id>:<database>` for another database of the same server. Data source ids
 /// never contain `:`.
+/// Snowflake is HTTPS to a named host: a tunnel's local end cannot pass its certificate check.
+fn tunneled(driver: DbDriver) -> bool {
+    !matches!(driver, DbDriver::Sqlite | DbDriver::Snowflake)
+}
+
+/// The database host and port the SSH host forwards to.
+fn tunnel_target(source: &DataSource) -> (&str, u16) {
+    let port = source.port.or(source.driver.default_port()).unwrap_or_default();
+    (if source.host.trim().is_empty() { "localhost" } else { source.host.trim() }, port)
+}
+
 pub fn split_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once(':') {
         Some((id, db)) if !db.is_empty() => (id, Some(db)),
@@ -655,9 +666,7 @@ impl DbManager {
         ssh_secret: Option<String>,
         shared: bool,
     ) -> IdeResult<(DataSource, Option<Arc<Tunnel>>)> {
-        // Snowflake is HTTPS to a named host: a tunnel's local end cannot pass its certificate check.
-        let tunneled = !matches!(source.driver, DbDriver::Sqlite | DbDriver::Snowflake);
-        let Some(ssh) = source.ssh.as_ref().filter(|s| s.enabled && tunneled) else {
+        let Some(ssh) = source.ssh.as_ref().filter(|s| s.enabled && tunneled(source.driver)) else {
             return Ok((source.clone(), None));
         };
         let local = |t: &Tunnel| DataSource { host: "127.0.0.1".into(), port: Some(t.port()), ..source.clone() };
@@ -668,8 +677,25 @@ impl DbManager {
                 return Ok((local(&t), Some(t)));
             }
         }
+        let session = self.ssh_session(source, ssh, ssh_secret).await?;
+        let (target_host, target_port) = tunnel_target(source);
+        let t = Arc::new(Tunnel::open(session, target_host, target_port).await?);
+        if shared {
+            self.tunnels.lock().insert(source.id.clone(), t.clone());
+        }
+        Ok((local(&t), Some(t)))
+    }
+
+    /// The SSH session the tunnel of `source` goes through: its shared SSH configuration's, or one
+    /// opened with the settings typed in the data source.
+    async fn ssh_session(
+        &self,
+        source: &DataSource,
+        ssh: &DbSsh,
+        ssh_secret: Option<String>,
+    ) -> IdeResult<Arc<ide_ssh::Session>> {
         let config = ssh.config.trim();
-        let session = if config.is_empty() {
+        Ok(if config.is_empty() {
             let secret = match ssh_secret {
                 Some(s) => Some(s),
                 None => self.secret(source, secrets::ssh_key(&source.id), ssh.save_secret).await,
@@ -688,14 +714,22 @@ impl DbManager {
                 self.ssh.set_secret(config, Some(s), save);
             }
             self.ssh.session(config).await?
-        };
-        let target_port = source.port.or(source.driver.default_port()).unwrap_or_default();
-        let target_host = if source.host.trim().is_empty() { "localhost" } else { source.host.trim() };
-        let t = Arc::new(Tunnel::open(session, target_host, target_port).await?);
-        if shared {
-            self.tunnels.lock().insert(source.id.clone(), t.clone());
-        }
-        Ok((local(&t), Some(t)))
+        })
+    }
+
+    /// Data Source › SSH/SSL › Test SSH Tunnel: logs in to the SSH host and checks that it reaches
+    /// the database host and port, without logging in to the database.
+    pub async fn test_tunnel(&self, source: &DataSource, ssh_secret: Option<String>) -> IdeResult<String> {
+        let source = &source.resolved()?;
+        let ssh = source
+            .ssh
+            .as_ref()
+            .filter(|s| s.enabled && tunneled(source.driver))
+            .ok_or_else(|| IdeError::invalid("This data source does not use an SSH tunnel"))?;
+        let session = self.ssh_session(source, ssh, ssh_secret).await?;
+        let (host, port) = tunnel_target(source);
+        drop(Tunnel::open(session.clone(), host, port).await?);
+        Ok(format!("{} reaches {host}:{port}", session.label()))
     }
 
     /// Connects with `source` as given (not necessarily saved): Test Connection.

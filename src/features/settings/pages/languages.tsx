@@ -134,10 +134,10 @@ export const LANGUAGE_PAGES: PageSpec[] = [
     id: "languages.node",
     projectScope: true,
     defaultScope: "project",
-    title: "Node.js",
+    title: "JavaScript Runtime",
     group: LANGUAGES_GROUP,
-    order: 402,
-    keywords: ["node interpreter", "package manager", "npm", "pnpm", "yarn", "bun", "nvm"],
+    order: 397,
+    keywords: ["node.js", "node interpreter", "package manager", "npm", "pnpm", "yarn", "bun", "deno", "nvm"],
     component: NodePage,
   },
   {

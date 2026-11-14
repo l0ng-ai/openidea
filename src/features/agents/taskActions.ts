@@ -23,11 +23,12 @@ import {
   openTaskInEditorLocation,
   renameTask,
   setSessionLocation,
+  showImportSessions,
   undockTask,
   useAgents,
 } from "./store";
 
-/** The Agents tool window's options menu: where conversations open, and a new list group. */
+/** The Agents tool window's options menu: where conversations open, a new list group, importing sessions. */
 export function useAgentsHeaderMenu(): MenuItem[] {
   const location = useAgents((s) => s.sessionLocation);
   return [
@@ -36,6 +37,7 @@ export function useAgentsHeaderMenu(): MenuItem[] {
     { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
     { kind: "separator" },
     { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
+    { kind: "action", action: "agents.importSessions", icon: "download" },
   ];
 }
 
@@ -207,6 +209,15 @@ export function groupMenu(group: OrganizeGroup): MenuItem[] {
 }
 
 export const taskActions: Action[] = [
+  {
+    id: "agents.importSessions",
+    title: "Import Sessions from Other Apps…",
+    category: "Agents",
+    icon: "download",
+    when: "projectOpen",
+    keywords: ["import", "claude", "codex", "history", "transcript"],
+    run: showImportSessions,
+  },
   {
     id: "agents.retryConversation",
     title: "Retry Loading Conversation",

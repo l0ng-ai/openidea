@@ -13,6 +13,7 @@ pub mod attach;
 mod cargo;
 pub mod connection;
 pub mod jdwp;
+mod js_debug;
 mod jvm_memory;
 pub mod kotlin;
 pub mod kotlin_lsp;
@@ -23,6 +24,7 @@ use connection::{Connection, DapError};
 use futures::future::join_all;
 use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
 use ide_language::LanguageRegistry;
+pub use js_debug::JsResponseBody;
 pub use jvm_memory::*;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -136,6 +138,11 @@ pub struct DebugCapabilities {
     pub jvm_instances: bool,
     /// The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]).
     pub jvm_heap: bool,
+    /// The session debugs a page in a browser: js-debug's requests for pages apply
+    /// ([`DebugManager::js_set_custom_breakpoints`]).
+    pub js_page: bool,
+    /// The adapter evaluates expressions while the program runs, without a stack frame.
+    pub live_evaluate: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -393,6 +400,16 @@ fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }
 
+/// The name of a child session: the adapter's, or the parent's when it gives none. js-debug
+/// names a browser page's session after the page the browser starts on, before the URL
+/// loads (`about:blank`, or nothing in a new profile), which says nothing about what is debugged.
+fn child_name(configuration: &Value, parent: &str) -> String {
+    match configuration.get("name").and_then(Value::as_str) {
+        Some(name) if !name.trim().is_empty() && name != "about:blank" => name.to_owned(),
+        _ => parent.to_owned(),
+    }
+}
+
 /// Builds the `launch`/`attach` arguments: our fields first, then `extra_json` merged on top.
 pub fn launch_arguments(config: &LaunchConfig) -> IdeResult<Value> {
     // VS Code puts `type`, `request` and `name` in the arguments; js-debug picks launch
@@ -580,6 +597,8 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         jvm_memory: false,
         jvm_instances: false,
         jvm_heap: false,
+        js_page: false,
+        live_evaluate: false,
     }
 }
 
@@ -589,6 +608,8 @@ pub(crate) fn session_capabilities(session: &Session) -> DebugCapabilities {
     caps.jvm_memory = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
     caps.jvm_instances = session.jvm_inspector.lock().is_some();
     caps.jvm_heap = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
+    caps.js_page = js_debug::is_page(session);
+    caps.live_evaluate = session.adapter == js_debug::ADAPTER;
     caps
 }
 
@@ -744,6 +765,9 @@ impl DebugManager {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let dbg = adapter::find_config(&self.languages, &config.adapter)
             .ok_or_else(|| IdeError::unavailable(format!("unknown debug adapter `{}`", config.adapter)))?;
+        if config.adapter == "js-debug" {
+            adapter::set_browser_profile(&mut arguments, &cwd);
+        }
         let mut spec = adapter::resolve(&dbg, cwd.clone());
         if config.adapter == kotlin::ADAPTER
             && let Some(home) = arguments
@@ -872,8 +896,7 @@ impl DebugManager {
         request: String,
         configuration: Value,
     ) -> IdeResult<()> {
-        let name =
-            configuration.get("name").and_then(Value::as_str).map(str::to_owned).unwrap_or_else(|| parent.name.clone());
+        let name = child_name(&configuration, &parent.name);
         let mut configuration = configuration;
         if let Some(obj) = configuration.as_object_mut() {
             obj.entry("request").or_insert_with(|| request.clone().into());
@@ -921,6 +944,9 @@ impl DebugManager {
             .flatten();
         let session =
             Arc::new(Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child));
+        if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
+            let _ = session.launch_type.set(launch_type.to_owned());
+        }
         // rdbg execs the debuggee in its own process and sends no DAP process event.
         if let Some(pid) = rdbg_pid {
             session.debuggee_pid.store(i64::from(pid), Ordering::Release);
@@ -1154,6 +1180,22 @@ impl DebugManager {
                 let reply = s.conn.send_request(request, arguments)?;
                 reply.await.unwrap_or(Err(DapError::Closed))?;
             }
+        }
+        s.launched.send_replace(true);
+        // A page reports its requests from here on. This is the earliest js-debug takes the
+        // request (before its answer to `launch` the page has no adapter and the request is
+        // never answered), and the page is already loading: its document and first scripts
+        // are not in the list.
+        if js_debug::is_page(s) {
+            let answer = s.conn.send_request("enableNetworking", js_debug::networking_arguments())?;
+            let session = s.clone();
+            // Not waited for here: the page runs on. A refusal is told to the Network view,
+            // which would otherwise wait for requests that never come.
+            tokio::spawn(async move {
+                if matches!(answer.await, Ok(Err(_))) {
+                    session.emit(ide_core::event::DebugEvent::JsNetworkUnavailable);
+                }
+            });
         }
         if let Some(link) = s.jdwp_link.lock().as_ref() {
             link.release();

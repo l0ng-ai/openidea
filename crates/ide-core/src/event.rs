@@ -291,6 +291,56 @@ pub enum DebugEvent {
     JvmBackend {
         state: JvmBackendState,
     },
+    /// A step in the life of one request of a debugged page.
+    JsNetwork {
+        event: JsNetworkEvent,
+    },
+    /// The adapter does not report the requests of this page: there will be no `JsNetwork`.
+    JsNetworkUnavailable,
+}
+
+/// Which step of a request a [`JsNetworkEvent`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum JsNetworkKind {
+    Request,
+    Response,
+    Finished,
+    Failed,
+}
+
+/// The script frame that made a request, where the browser ran it (0-based line and column).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JsInitiator {
+    pub function: String,
+    pub url: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// What a debugged page's browser reports about a request, reduced to what the Network view
+/// shows. Events of one request share `request_id`; each kind fills its own fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JsNetworkEvent {
+    pub kind: JsNetworkKind,
+    pub request_id: String,
+    /// The browser's monotonic clock, comparable between the events of a page.
+    pub timestamp_ms: u64,
+    /// Request and response.
+    pub url: Option<String>,
+    pub method: Option<String>,
+    /// `Fetch`, `XHR`, `Script`, `Document`, …
+    pub resource_type: Option<String>,
+    pub status: Option<u16>,
+    pub mime_type: Option<String>,
+    /// The request's headers, or the response's.
+    pub headers: BTreeMap<String, String>,
+    /// Bytes received over the network, once finished.
+    pub encoded_length: Option<u64>,
+    pub error_text: Option<String>,
+    pub initiator: Option<JsInitiator>,
 }
 
 /// The backend that reads a debugged JVM's objects (instances, fields, referrers).

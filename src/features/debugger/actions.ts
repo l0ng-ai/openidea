@@ -12,6 +12,7 @@ import {
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
@@ -41,6 +42,7 @@ import { closeInstances, instancesOutdated, showInstances, showReferrers, useIns
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
+import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import {
   isPythonAttachTarget,
@@ -61,6 +63,7 @@ import {
   rootOf,
   sessionSupports,
   showExecutionPoint,
+  startBrowserSession,
   startSession,
   startPreparedSession,
   stopSession,
@@ -267,6 +270,34 @@ async function startRemote(config: RunConfig, root: string, show?: boolean) {
   if (launch) await startSession(launch, { runConfig: config, show });
 }
 
+/** The browser opens on this desktop, which a remote project's debugger can't reach. */
+function browserUnavailable(name: string): boolean {
+  if (!isRemoteWindow()) return false;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    title: `“${name}” can't be debugged`,
+    body: "JavaScript Debug isn't available in a remote project yet.",
+  });
+  return true;
+}
+
+async function startBrowser(config: RunConfig, root: string, show?: boolean) {
+  if (browserUnavailable(config.name)) return;
+  const launch = browserLaunchConfig(config, root);
+  if (launch) await startBrowserSession(launch, { runConfig: config, show });
+}
+
+/** Debugs the page at a URL without a configuration (a link in a console). */
+async function debugInBrowser(arg: unknown) {
+  const root = useProject.getState().project?.root;
+  const url = typeof arg === "string" ? browserUrl(arg) : null;
+  if (!root || !url) return;
+  const name = new URL(url).host || url;
+  if (browserUnavailable(name)) return;
+  await startBrowserSession(browserLaunch(name, url, await installedDebugBrowser(), root));
+}
+
 /** Preparation belongs to a session from the moment the action begins. */
 async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig, show?: boolean) {
   await startPreparedSession(
@@ -329,6 +360,10 @@ async function startConfig(arg: unknown) {
   }
   if (isRemoteConfig(config)) {
     await startRemote(config, root, show);
+    return;
+  }
+  if (isBrowserConfig(config)) {
+    await startBrowser(config, root, show);
     return;
   }
   if (isJavaDebuggable(config)) {
@@ -822,6 +857,15 @@ export function registerDebugActions(): () => void {
       icon: "attach-to-process",
       description: "Attach the debugger to a running Java, Node.js, Python, Go or native process",
       run: () => void openAttachPopup(),
+    },
+    {
+      id: "debug.debugInBrowser",
+      title: "Debug in Browser",
+      category: "Debug",
+      icon: "browser-chrome",
+      description: "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).",
+      hidden: true,
+      run: ({ arg }) => void debugInBrowser(arg),
     },
     {
       id: "debug.runToCursor",

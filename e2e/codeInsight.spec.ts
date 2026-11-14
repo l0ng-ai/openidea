@@ -71,8 +71,27 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const method = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^toDto$/ }) });
   await expect(method.locator(".cm-completionDetail")).toHaveText("()");
   await expect(method.locator(".cm-lsp-type")).toHaveText("OrderDto");
+  // CodeMirror anchors the popup at the completion's `from` (the word start), and the kind icon
+  // hangs left of the label. With no prefix typed yet `from` is the caret, so the label's x must
+  // match the caret column rather than the popup's left edge.
+  const wordStart = await editor.locator(".cm-content").evaluate(async (content) => {
+    const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+    const { EditorView } = await import(/* @vite-ignore */ viewModule);
+    const view = EditorView.findFromDOM(content as HTMLElement)!;
+    return view.coordsAtPos(view.state.selection.main.head)!.left;
+  });
+  const label = await method.locator(".cm-completionLabel").boundingBox();
+  // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
+  expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
+  // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
+  const footerBelowList = await popup.evaluate((t) => {
+    const list = t.querySelector(":scope > ul")!;
+    const footer = t.querySelector(":scope > .cm-lsp-completion-footer")!;
+    return footer.getBoundingClientRect().top >= list.getBoundingClientRect().bottom - 1;
+  });
+  expect(footerBelowList).toBe(true);
   await page.keyboard.press("Enter");
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);

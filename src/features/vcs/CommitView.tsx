@@ -411,6 +411,7 @@ export function nodeMenu(
       : []),
     { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
+    { kind: "action", action: "vcs.stashSelected", arg: paths, disabled: !paths.length },
     { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {

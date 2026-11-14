@@ -104,6 +104,17 @@ pub enum InstallEvent {
     Progress { fraction: Option<f64>, message: String },
 }
 
+/// A newer version of a tool the IDE installed, as its install source offers it now.
+#[derive(Clone, Debug, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolUpdate {
+    pub name: String,
+    /// The installed version.
+    pub current: String,
+    /// The version installing the tool again would get.
+    pub latest: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Manifest {
     version: Option<String>,
@@ -1435,6 +1446,77 @@ impl Tools {
             }
         }
         self.write_manifest(spec.name, &Manifest { version: Some(dl.version.clone()), source: Some(dl.url.clone()) })
+    }
+
+    /// Newer versions of the tools the IDE installed into its tools folder, for the install
+    /// sources that can be asked: release downloads (GitHub, Open VSX, Maven Central, …) and
+    /// npm packages. A tool whose lookup fails (offline, rate limited) is left out.
+    pub fn updates(&self, cancel: &CancellationToken) -> IdeResult<Vec<ToolUpdate>> {
+        let installed: Vec<(&ToolSpec, Method, String)> = TOOLS
+            .iter()
+            .filter_map(|spec| {
+                let method = self.install_method(spec);
+                Some((spec, method, self.installed_version(spec, method)?))
+            })
+            .collect();
+        let updates = std::thread::scope(|scope| {
+            let lookups: Vec<_> = installed
+                .iter()
+                .map(|(spec, method, current)| {
+                    scope.spawn(move || match self.for_method(*method).latest_version(*method, cancel) {
+                        Ok(Some(latest)) if latest != *current => {
+                            Some(ToolUpdate { name: spec.name.into(), current: current.clone(), latest })
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::info!("update check for {}: {}", spec.name, e.message);
+                            None
+                        }
+                    })
+                })
+                .collect();
+            lookups.into_iter().filter_map(|lookup| lookup.join().ok().flatten()).collect()
+        });
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(updates)
+    }
+
+    /// The version of `spec` in the IDE's tools folder, when `method` (how it was installed)
+    /// can tell the latest one.
+    fn installed_version(&self, spec: &ToolSpec, method: Method) -> Option<String> {
+        match method {
+            Method::Release { .. } => {
+                managed_bin_dir(&self.root, spec, self.platform).and_then(|dir| self.exe_in(&dir, spec.commands[0]))?;
+                self.manifest(spec.name)?.version
+            }
+            // A pinned package (`typescript@6`) stays on its major version.
+            Method::Npm { packages } if npm_name(packages[0]) == packages[0] => self.npm_package_version(packages[0]),
+            _ => None,
+        }
+    }
+
+    /// The version installing with `method` would get now.
+    fn latest_version(&self, method: Method, cancel: &CancellationToken) -> IdeResult<Option<String>> {
+        match method {
+            Method::Release { source, assets, .. } => {
+                let http = Http::new(&self.system_path)?;
+                Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
+            }
+            Method::Npm { packages } => {
+                let (manager, _) = self.npm_manager()?;
+                let mut c = self.command(manager);
+                // The registry the user's npm configuration names (a mirror, a proxy). A cold npm
+                // on a slow registry takes several seconds per package, more when run side by side.
+                c.args(["view", packages[0], "version"]).current_dir(&self.root);
+                match run_quiet(c, Duration::from_secs(60)) {
+                    Some((true, out)) => Ok(out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(String::from)),
+                    _ => Err(IdeError::unavailable(format!("cannot look up the latest {}", packages[0]))),
+                }
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Removes a tool the IDE installed.

@@ -42,6 +42,10 @@ pub(crate) fn register(d: &mut Dispatcher) {
         );
         test(&c.host, &c.window, source, password, ssh_secret).await
     });
+    d.add("db_test_tunnel", |c| async move {
+        let (source, ssh_secret) = (c.arg::<DataSource>("source")?, c.arg::<Option<String>>("sshSecret")?);
+        test_tunnel(&c.host, &c.window, source, ssh_secret).await
+    });
     d.add("db_set_ssh_secret", |c| async move {
         let (id, secret, save) = (c.arg::<String>("id")?, c.arg::<Option<String>>("secret")?, c.arg::<bool>("save")?);
         set_ssh_secret(&c.host, &c.window, &id, secret, save).await
@@ -210,6 +214,17 @@ pub async fn test(
 ) -> IdeResult<String> {
     let db = host.project(window)?.db.clone();
     db.test(&source, password, ssh_secret).await
+}
+
+/// Checks the SSH tunnel of `source` alone: SSH login and the SSH host reaching the database.
+pub async fn test_tunnel(
+    host: &Host,
+    window: &str,
+    source: DataSource,
+    ssh_secret: Option<String>,
+) -> IdeResult<String> {
+    let db = host.project(window)?.db.clone();
+    db.test_tunnel(&source, ssh_secret).await
 }
 
 /// Remembers the SSH password / key passphrase of a data source (see `set_password`).

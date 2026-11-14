@@ -23,8 +23,10 @@ import { registerHistoryActions, trackOperationContext } from "./historyActions"
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
@@ -38,7 +40,7 @@ import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
-import { installDiagnosticsTracking } from "./commitChecks";
+import { installCommitChecks, installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
@@ -220,6 +222,7 @@ export function activate(): () => void {
     installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
+    installCommitChecks(),
     installPreparedMessage(),
     installDraftRevision(),
     provideCommit(),
@@ -247,6 +250,7 @@ export function activate(): () => void {
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
     registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
+    registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
     activateConflictBanner(),
     activateConflictMarkers(),
     trackCommitWindow(),
@@ -288,6 +292,7 @@ export function activate(): () => void {
       restorable: true,
     }),
     activateDiffViewer(),
+    activateRevisionAnnotations(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),

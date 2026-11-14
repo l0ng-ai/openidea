@@ -4,12 +4,42 @@ import type { DecorationSet, Range } from "@/bindings";
 import { registerEditorContribution, useEditorRegistry, type EditorDocContext } from "@/editor/api";
 import { commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { addPathIconProvider, bumpFileIconRevision } from "@/ui";
 import { setFileDecorations, type FileDecoration } from "@/workbench/contributions";
 import styles from "./decorations.module.css";
 
 const snapshots = new Map<string, DecorationSet[]>();
+const pluginIcons = new Map<string, Map<string, string>>();
+let removePathIcons: (() => void) | null = null;
 const refresh = StateEffect.define<null>();
 const versions = new Map<string, number>();
+
+function resolvePluginPathIcon(path: string): string | null {
+  for (const map of pluginIcons.values()) {
+    const icon = map.get(path);
+    if (icon) return icon;
+  }
+  return null;
+}
+
+function syncPathIconProvider(changed: boolean) {
+  let hasAny = false;
+  for (const map of pluginIcons.values()) {
+    if (map.size > 0) {
+      hasAny = true;
+      break;
+    }
+  }
+  if (hasAny && !removePathIcons) {
+    removePathIcons = addPathIconProvider(resolvePluginPathIcon);
+  } else if (!hasAny && removePathIcons) {
+    const dispose = removePathIcons;
+    removePathIcons = null;
+    dispose();
+  } else if (changed) {
+    bumpFileIconRevision();
+  }
+}
 const colors: Record<string, string> = {
   highlight: "var(--accent)",
   search: "var(--fg-search-match)",
@@ -34,10 +64,23 @@ function currentSets(sets: DecorationSet[], tree: boolean) {
   return sets.filter((s) => s.root === root);
 }
 
+function mapsEqual(a: Map<string, string> | undefined, b: Map<string, string>): boolean {
+  if (!a) return b.size === 0;
+  if (a.size !== b.size) return false;
+  for (const [k, v] of b) if (a.get(k) !== v) return false;
+  return true;
+}
+
 function updateTree(plugin: string, sets: DecorationSet[]) {
   const items = new Map<string, FileDecoration>();
-  for (const s of currentSets(sets, true))
-    if (s.tree && s.file && (Object.hasOwn(colors, s.file.style) || s.file.note)) {
+  const icons = new Map<string, string>();
+  for (const s of currentSets(sets, true)) {
+    if (!s.tree || !s.file) continue;
+    const path = String(s.path).replace(/\\/g, "/");
+    if (s.file.icon) {
+      icons.set(path, `ext:fileIcon/${plugin}/${s.file.icon}`);
+    }
+    if (Object.hasOwn(colors, s.file.style) || s.file.note || (s.file.icon && s.file.tooltip)) {
       items.set(s.path, {
         color: Object.hasOwn(colors, s.file.style) ? colors[s.file.style] : undefined,
         badge: s.file.badge ?? undefined,
@@ -48,6 +91,12 @@ function updateTree(plugin: string, sets: DecorationSet[]) {
         suffix: s.file.note ? [{ text: s.file.note }] : undefined,
       });
     }
+  }
+  const prevIcons = pluginIcons.get(plugin);
+  const iconsChanged = !mapsEqual(prevIcons, icons);
+  if (icons.size > 0) pluginIcons.set(plugin, icons);
+  else pluginIcons.delete(plugin);
+  syncPathIconProvider(iconsChanged);
   setFileDecorations(`plugin:${plugin}`, items);
 }
 

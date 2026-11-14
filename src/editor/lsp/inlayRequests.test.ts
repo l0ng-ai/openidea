@@ -160,3 +160,25 @@ describe("retained editors", () => {
     }
   });
 });
+
+describe("settled refresh request lifetime", () => {
+  it.each([true, false])("rejects old busy answers after a settled refresh (empty=%s)", async (empty) => {
+    const view = editor();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(labels(view)).toEqual(["current"]);
+    const old = deferred<ReturnType<typeof ok>>();
+    ipc.lspInlayHints.mockReturnValueOnce(old.promise);
+    emitLocalIdeEvent({ type: "languageServer", server: 91, name: "rust-analyzer", status: "busy", message: null });
+    emitLocalIdeEvent({ type: "lspRefresh", kind: "inlayHints", server: 91 });
+    await vi.advanceTimersByTimeAsync(1600);
+    const settled = empty ? { status: "ok" as const, data: [] } : ok("settled");
+    ipc.lspInlayHints.mockResolvedValue(settled);
+    emitLocalIdeEvent({ type: "languageServer", server: 91, name: "rust-analyzer", status: "ready", message: null });
+    // Settling invalidates immediately, not only after the debounce delay.
+    old.resolve(ok("stale busy"));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(labels(view)).toEqual(["current"]);
+    await vi.advanceTimersByTimeAsync(399);
+    expect(labels(view)).toEqual(empty ? [] : ["settled"]);
+  });
+});

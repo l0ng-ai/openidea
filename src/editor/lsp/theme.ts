@@ -10,6 +10,19 @@ const tooltipSurface = {
   color: "var(--fg)",
 };
 
+/**
+ * Row metrics that put a label one icon column right of the popup's left edge. They live on the
+ * popup as custom properties so every rule consuming them — including the popup's negative
+ * offset below — changes together. The remaining 1px is tooltipSurface's border, shared with
+ * the hover and signature tooltips.
+ */
+const completionRowMetrics = {
+  "--cm-completion-edge": "4px",
+  "--cm-completion-inset": "6px",
+  "--cm-completion-icon": "16px",
+  "--cm-completion-gap": "6px",
+};
+
 const markdown = {
   ".cm-lsp-markdown": {
     fontFamily: "var(--font-ui)",
@@ -84,9 +97,18 @@ export const lspTheme = EditorView.theme({
   // --- completion (IDEA lookup: icon column, bold blue match, grey tail/type, advertiser) ---
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion": {
     ...tooltipSurface,
+    ...completionRowMetrics,
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-code)",
+    // CodeMirror anchors the popup at the completed word's start. Pull it left by one row's
+    // leading inset so the labels, not the icon column, sit on the text. CodeMirror's horizontal
+    // clamp measures the border box (margins excluded), so this offset sits outside its math:
+    // near the right edge it leaves that much extra space, and a word starting within one inset
+    // of the viewport's left edge would let the popup clip there. The normal editor layout
+    // (gutter + project sidebar) keeps the word well clear of that edge.
+    marginLeft:
+      "calc(-1 * (1px + var(--cm-completion-edge) + var(--cm-completion-inset) + var(--cm-completion-icon) + var(--cm-completion-gap)))",
     overflow: "hidden",
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul": {
@@ -100,11 +122,11 @@ export const lspTheme = EditorView.theme({
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li": {
     display: "flex",
     alignItems: "center",
-    gap: "6px",
+    gap: "var(--cm-completion-gap)",
     height: "var(--h-list-row)",
     lineHeight: "var(--h-list-row)",
-    margin: "0 4px",
-    padding: "0 8px 0 6px",
+    margin: "0 var(--cm-completion-edge)",
+    padding: "0 8px 0 var(--cm-completion-inset)",
     borderRadius: "var(--radius-small)",
     color: "var(--fg-editor, var(--fg-strong))",
     whiteSpace: "nowrap",
@@ -122,8 +144,8 @@ export const lspTheme = EditorView.theme({
   },
   ".cm-lsp-completion .cm-lsp-kind": {
     flex: "none",
-    width: "16px",
-    height: "16px",
+    width: "var(--cm-completion-icon)",
+    height: "var(--cm-completion-icon)",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -143,7 +165,9 @@ export const lspTheme = EditorView.theme({
     color: "var(--fg-completion-match, var(--link))",
   },
   // A server's label detail (`(a: string)`) hugs the name; template descriptions keep the gap.
-  ".cm-lsp-completion .cm-lsp-option .cm-completionDetail": { marginLeft: "-6px" },
+  ".cm-lsp-completion .cm-lsp-option .cm-completionDetail": {
+    marginLeft: "calc(-1 * var(--cm-completion-gap))",
+  },
   ".cm-lsp-completion .cm-lsp-type": {
     flex: "1 0 auto",
     maxWidth: "60%",
