@@ -657,6 +657,7 @@ export const commands = {
 	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
 	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
+	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
 	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
 	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
@@ -690,7 +691,7 @@ export const commands = {
 	vcsRenameBranch: (repo: string | null, from: string, to: string, unsetUpstream: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to, unsetUpstream })),
 	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
 	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
-	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex })),
+	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex, paths })),
 	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
 	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
 	/**  Network operation; progress lines stream through `on_output`. Cancellable. */
@@ -1213,6 +1214,10 @@ export const commands = {
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
+	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
+	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
+	/**  The body of a response a debugged page received. */
+	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -1255,6 +1260,8 @@ export const commands = {
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
+	/**  Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open. */
+	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
@@ -3955,6 +3962,13 @@ export type DebugCapabilities = {
 	jvmInstances: boolean,
 	/**  The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]). */
 	jvmHeap: boolean,
+	/**
+	 *  The session debugs a page in a browser: js-debug's requests for pages apply
+	 *  ([`DebugManager::js_set_custom_breakpoints`]).
+	 */
+	jsPage: boolean,
+	/**  The adapter evaluates expressions while the program runs, without a stack frame. */
+	liveEvaluate: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -3990,7 +4004,11 @@ export type DebugEvent =
  *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
  *  `variables`; empty means all) is stale and has to be fetched again.
  */
-{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState } | 
+/**  A step in the life of one request of a debugged page. */
+{ kind: "jsNetwork"; event: JsNetworkEvent } | 
+/**  The adapter does not report the requests of this page: there will be no `JsNetwork`. */
+{ kind: "jsNetworkUnavailable" };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -4006,12 +4024,16 @@ export type DebuggerSettings = {
 	inlineValues?: boolean,
 	/**  Data Views: list variables by name instead of the adapter's order. */
 	sortValues?: boolean,
+	/**  Data Views: evaluate watches while the program runs, where the debugger can (JavaScript). */
+	liveWatches?: boolean,
 	valueTooltip?: boolean,
 	/**  While suspended, selecting an expression shows its value. */
 	valueTooltipOnSelection?: boolean,
 	valueTooltipDelay?: number,
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */
 	skipLibraryCode?: boolean,
+	/**  JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session. */
+	debugServerPage?: boolean,
 	python?: PythonDebuggerSettings,
 };
 
@@ -6405,6 +6427,49 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
 	files: { [key in string]: string },
+};
+
+/**  The script frame that made a request, where the browser ran it (0-based line and column). */
+export type JsInitiator = {
+	function: string,
+	url: string,
+	line: number,
+	column: number,
+};
+
+/**
+ *  What a debugged page's browser reports about a request, reduced to what the Network view
+ *  shows. Events of one request share `request_id`; each kind fills its own fields.
+ */
+export type JsNetworkEvent = {
+	kind: JsNetworkKind,
+	requestId: string,
+	/**  The browser's monotonic clock, comparable between the events of a page. */
+	timestampMs: number,
+	/**  Request and response. */
+	url: string | null,
+	method: string | null,
+	/**  `Fetch`, `XHR`, `Script`, `Document`, … */
+	resourceType: string | null,
+	status: number | null,
+	mimeType: string | null,
+	/**  The request's headers, or the response's. */
+	headers: { [key in string]: string },
+	/**  Bytes received over the network, once finished. */
+	encodedLength: number | null,
+	errorText: string | null,
+	initiator: JsInitiator | null,
+};
+
+/**  Which step of a request a [`JsNetworkEvent`] reports. */
+export type JsNetworkKind = "request" | "response" | "finished" | "failed";
+
+/**  The body of a response, as text or as the browser's base64 for binary content. */
+export type JsResponseBody = {
+	body: string,
+	base64Encoded: boolean,
+	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
+	truncated: boolean,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */

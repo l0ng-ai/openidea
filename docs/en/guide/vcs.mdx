@@ -41,8 +41,7 @@ It reads repository state (status, diffs, blame, log) in-process, and runs the `
 
 - **Git › Clone…** opens **Clone Repository**. Enter a **URL:** and **Directory:**, and optionally check **Shallow clone with a history truncated to** N commits. The **GitHub** source in the sidebar lists your GitHub repositories (see [GitHub](/en/guide/github)).
 - When creating a project, check **Create Git repository** in the New Project dialog.
-
-There is no action to run `git init` in a project that is already open; run it in the terminal and OpenIDEA picks the repository up.
+- **Git › Create Git Repository…** runs `git init` in a folder you pick (the project root by default) and registers the new repository right away; a repository created in the terminal is picked up the same way.
 
 OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
 
@@ -195,7 +194,7 @@ Limits: interactive rebase doesn't support ranges with merge commits, and **Undo
 
 **Stash** uses `git stash`:
 
-- **Stash Changes…**: a message, **Keep index** and **Include untracked files**. Stashes always include all changes; there is no per-file stash.
+- **Stash Changes…**: a message, **Keep index** and **Include untracked files**; it stashes the whole working tree. **Stash Selected Files…** in the changes tree's context menu stashes only the selected files.
 - **Unstash Changes…**: apply or pop a stash, reinstate the index, or create a branch from it.
 - The **Stash** tab of the Commit tool window lists stashes with apply, pop and drop.
 
@@ -217,6 +216,8 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 - **Show History** opens the file's history in a tab of the Git tool window.
 - **Show History for Selection** shows the commits that changed the selected lines.
 - **Show Current Revision** reveals the commit of the caret line in the log.
+
+Annotate skips the commits listed in the file `blame.ignoreRevsFile` names — git's convention is `.git-blame-ignore-revs` at the repository root — so a reformatting or mass-rename commit does not claim every line. **Ignore This Commit** in an annotated line's menu adds the current line's commit to that file and refreshes the annotations.
 
 ### Local history
 
@@ -246,6 +247,6 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 ## Not supported
 
 - Mercurial, Subversion, Perforce and other systems.
-- `git init` for an open project, submodule commands, editable directory mappings.
-- Per-line partial commits (block level only) and per-file stashes.
+- Submodule commands and editable directory mappings.
+- Per-line partial commits (block level only).
 - Git LFS beyond the large-file warning.

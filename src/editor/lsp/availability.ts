@@ -115,6 +115,16 @@ function trackSpells() {
 }
 
 /**
+ * Whether any language server is mid-spell (starting or busy): answers given
+ * meanwhile may be partial, so background features keep what they show until
+ * it settles instead of replacing it with an empty or incomplete answer.
+ */
+export function anyServerBusy(): boolean {
+  trackSpells();
+  return spells.size > 0;
+}
+
+/**
  * Calls `fn` when a server becomes ready after starting or after a long busy
  * spell (indexing), when earlier answers may have been incomplete. Short busy
  * spells are ignored: jdtls reports progress for the very requests a caller
