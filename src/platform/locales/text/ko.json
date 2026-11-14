@@ -2654,7 +2654,7 @@
   "Restored branch {name}": "{name} 브랜치를 복원했습니다",
   "Commits of {name}": "{name}의 커밋",
   "All files are up-to-date": "모든 파일이 최신 상태입니다",
-  "Update Info": "업데이트 정보",
+  "Update Info: {target}": "업데이트 정보: {target}",
   "Press again to go to the next file": "다음 파일로 이동하려면 다시 누르세요",
   "Press again to go to the previous file": "이전 파일로 이동하려면 다시 누르세요",
   "Include in commit": "커밋에 포함",
