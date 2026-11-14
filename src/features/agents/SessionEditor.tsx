@@ -21,7 +21,6 @@ import { useShallow } from "zustand/react/shallow";
 import type {
   AgentChange,
   AgentCommit,
-  AgentConfigOption,
   AgentEntry,
   AgentImage,
   AgentLimit,
@@ -79,7 +78,6 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
-import { useEffortControl } from "./effortControl";
 import { useEffortFocus } from "./effortFocus";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
@@ -137,8 +135,6 @@ import {
 import { setFocusedSession, focusedSession, type FocusedSession } from "./sessionFocus";
 import { taskMenu } from "./taskActions";
 import styles from "./Session.module.css";
-
-const NO_CONFIG: readonly AgentConfigOption[] = [];
 
 export function SessionEditor({ input, docked = false }: { input: EditorInput; docked?: boolean }) {
   const id = (input.data as { task: string }).task;
@@ -209,8 +205,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [inputFocus, setInputFocus] = useState(0);
   const sessionRoot = useRef<HTMLDivElement>(null);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
-  const effort = useEffortControl(task?.config ?? NO_CONFIG, (option, value) => setTaskConfig(id, option, value), id);
-  useEffortFocus(sessionRoot, canFocusInput, effort.cycle);
   const session = useMemo<FocusedSession>(
     () => ({
       openFind: () => {
@@ -269,10 +263,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <SessionComposer
               task={task}
               focusRequest={inputFocus}
-              config={effort.config}
-              onConfig={effort.onChange}
-              effortAnnouncement={effort.announcement}
-              configPending={effort.pending}
+              focusRoot={sessionRoot}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -2711,10 +2702,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 function SessionComposer({
   task,
   focusRequest,
-  config,
-  onConfig,
-  effortAnnouncement,
-  configPending,
+  focusRoot,
   entries,
   head,
   changes,
@@ -2725,10 +2713,7 @@ function SessionComposer({
 }: {
   task: AgentTask;
   focusRequest: number;
-  config: readonly AgentConfigOption[];
-  onConfig: (id: string, value: string) => void;
-  effortAnnouncement: string | null;
-  configPending: boolean;
+  focusRoot: RefObject<HTMLDivElement | null>;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2756,7 +2741,7 @@ function SessionComposer({
     task.status === "running" &&
     (composer.images.length === 0 || !!task.capabilities.images);
   const send = (now: boolean) => {
-    if (!canSend(composer) || sending || configPending || task.status === "archived") return;
+    if (!canSend(composer) || sending || task.status === "archived") return;
     setSending(true);
     sendMessage(task.id, now && (whileRunning !== "steer" || steers))
       .catch((e: unknown) =>
@@ -2768,6 +2753,16 @@ function SessionComposer({
       )
       .finally(() => setSending(false));
   };
+  const setOption = (id: string, value: string) =>
+    void setTaskConfig(task.id, id, value).catch((e: unknown) =>
+      notifications().notify({
+        level: "error",
+        title: "Couldn't change the setting",
+        body: String(e),
+      }),
+    );
+  const shown = useEditorShown();
+  const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
     <div className={styles.composerArea}>
       <SessionStatus
@@ -2815,19 +2810,19 @@ function SessionComposer({
         projectRoot={project?.root ?? task.cwd}
         commands={agentCommands}
         history={history}
-        config={config}
-        onConfig={onConfig}
+        config={task.config}
+        onConfig={setOption}
         onSubmit={send}
         disabled={task.status === "archived"}
-        toolbar={<ConfigPickers config={config} onChange={onConfig} />}
+        toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
         actions={
           <>
             {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
-              pending={sending || configPending}
+              pending={sending}
               variant={busy ? "secondary" : "primary"}
-              disabled={!canSend(composer) || sending || configPending || task.status === "archived"}
+              disabled={!canSend(composer) || sending || task.status === "archived"}
               onClick={() => send(false)}
             />
           </>

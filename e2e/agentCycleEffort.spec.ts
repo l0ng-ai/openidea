@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import type { AgentConfigOption, AgentEntry, AgentProvider, AgentTask, NewAgentTask } from "../src/bindings";
+import type { AgentConfigOption, AgentEntry, AgentProvider, AgentTask } from "../src/bindings";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 type Placement = "editor" | "toolWindow";
@@ -182,36 +182,13 @@ async function seed(
         // Mirror the backend's optimistic task event; production's subscription reducer owns the UI update.
         tasks.set(updated.id, updated);
         window.__ipc.send(channel, { type: "task", task: updated });
-        if (document.documentElement.dataset.rejectEffort === "true") {
-          delete document.documentElement.dataset.rejectEffort;
-          tasks.set(previous.id, previous);
-          window.__ipc.send(channel, { type: "task", task: previous });
-          throw { kind: "unavailable", message: "Provider rejected effort", detail: null };
-        }
-        if (document.documentElement.dataset.holdEffort === "true") {
-          delete document.documentElement.dataset.holdEffort;
+        if (document.documentElement.dataset.holdConfig === "true") {
+          delete document.documentElement.dataset.holdConfig;
           const { promise, resolve } = Promise.withResolvers<void>();
-          document.addEventListener("release-effort-config", () => resolve(), { once: true });
+          document.addEventListener("release-config", () => resolve(), { once: true });
           await promise;
         }
         return null;
-      };
-      handlers.agent_create = ({ request }) => {
-        // This request was constructed by the app in this browser, not supplied by an external process.
-        const submitted = request as NewAgentTask;
-        const created = {
-          ...firstTask,
-          id: "effort-created",
-          config: submitted.config.map((entry) => ({
-            ...provider.config
-              .concat(Object.values(provider.thoughtLevels ?? {}).flat())
-              .find((candidate) => candidate.id === entry.id)!,
-            current: entry.value,
-          })),
-        };
-        tasks.set(created.id, created);
-        window.__ipc.send(channel, { type: "task", task: created });
-        return created;
       };
       handlers.agent_prompt = () => null;
       handlers.agent_interrupt = () => null;
@@ -324,9 +301,7 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await expect.poll(() => stream.evaluate((element) => element.scrollTop)).toBe(0);
   });
 
-  test(`${placement}: New Task remembers each model's effort and sends the displayed value when started`, async ({
-    workbench: page,
-  }) => {
+  test(`${placement}: New Task cycles effort without changing or submitting the draft`, async ({ workbench: page }) => {
     await seed(page, placement, "new");
     await selectDraft(page);
     // macOS Option+T may report † as key; the dispatcher's physical code must still resolve Alt+T.
@@ -335,30 +310,7 @@ for (const placement of ["editor", "toolWindow"] as const) {
     await expect(box(page)).toBeFocused();
     await expect(box(page)).toHaveText(draft);
     await expect.poll(() => selected(box(page))).toEqual({ anchor: 6, head: 10, text: "keep" });
-    await chooseModel(page, "Swift");
-    await expectEffort(page, "Quick");
-    await page.keyboard.press("Alt+t");
-    await expectEffort(page, "Thorough");
-    await chooseModel(page, "Atlas");
-    await expectEffort(page, "Balanced");
-    await chooseModel(page, "Swift");
-    await expectEffort(page, "Thorough");
-    expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
     await expectNoSubmission(page);
-    await page.getByRole("button", { name: "Start", exact: true }).click();
-    await expect
-      .poll(() => ipcCalls(page, "agent_create"))
-      .toEqual([
-        {
-          request: expect.objectContaining({
-            prompt: expect.objectContaining({ text: draft }),
-            config: [
-              { id: modelId, value: "swift" },
-              { id: effortId, value: "thorough" },
-            ],
-          }),
-        },
-      ]);
   });
 }
 
@@ -541,55 +493,41 @@ for (const preset of [
   });
 }
 
-test("provider failure rolls effort back and the next press starts from the restored value", async ({
-  workbench: page,
-}) => {
-  await seed(page, "editor");
-  await selectDraft(page);
-  await page.evaluate(() => {
-    document.documentElement.dataset.rejectEffort = "true";
+for (const setting of ["effort", "model"] as const) {
+  test(`pending ${setting} changes do not block Send or serialize shortcut presses`, async ({ workbench: page }) => {
+    await seed(page, "editor");
+    await box(page).fill(draft);
+    await page.evaluate(() => {
+      document.documentElement.dataset.holdConfig = "true";
+    });
+    if (setting === "effort") {
+      await page.keyboard.press("Alt+t");
+      await expectEffort(page, "Balanced");
+      await page.keyboard.press("Alt+t");
+      await expectEffort(page, "Deep");
+    } else {
+      await chooseModel(page, "Swift");
+      await expectEffort(page, "Quick");
+    }
+    expect(await ipcCalls(page, "agent_set_config")).toEqual(
+      setting === "effort"
+        ? [
+            { task: firstTask.id, option: effortId, value: "budget-23" },
+            { task: firstTask.id, option: effortId, value: "budget-91" },
+          ]
+        : [{ task: firstTask.id, option: modelId, value: "swift" }],
+    );
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+    await box(page).fill("send while configuration is pending");
+    await box(page).press("Enter");
+    await expect
+      .poll(() => ipcCalls(page, "agent_prompt"))
+      .toEqual([
+        expect.objectContaining({
+          task: firstTask.id,
+          prompt: expect.objectContaining({ text: "send while configuration is pending" }),
+        }),
+      ]);
+    await page.evaluate(() => document.dispatchEvent(new Event("release-config")));
   });
-  await page.keyboard.press("Alt+t");
-  await expect(page.getByRole("alert")).toContainText("Provider rejected effort");
-  await expectEffort(page, "Gentle");
-  await expect(box(page)).toHaveText(draft);
-  await box(page).focus();
-  await page.keyboard.press("Alt+t");
-  await expectEffort(page, "Balanced");
-  expect(await ipcCalls(page, "agent_set_config")).toEqual([
-    { task: firstTask.id, option: effortId, value: "budget-23" },
-    { task: firstTask.id, option: effortId, value: "budget-23" },
-  ]);
-  await expectNoSubmission(page);
-});
-
-test("slow provider coalesces rapid effort choices while keeping the draft editable and Send gated", async ({
-  workbench: page,
-}) => {
-  await seed(page, "editor");
-  await box(page).fill(draft);
-  await page.evaluate(() => {
-    document.documentElement.dataset.holdEffort = "true";
-  });
-  await page.keyboard.press("Alt+t");
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
-  await page.keyboard.press("Alt+t");
-  await page.keyboard.press("Alt+t");
-  await box(page).fill("edited while provider is busy");
-  await box(page).press("Enter");
-  expect(await ipcCalls(page, "agent_prompt")).toEqual([]);
-  expect(await ipcCalls(page, "agent_set_config")).toEqual([
-    { task: firstTask.id, option: effortId, value: "budget-23" },
-  ]);
-  await page.evaluate(() => document.dispatchEvent(new Event("release-effort-config")));
-  await expect
-    .poll(() => ipcCalls(page, "agent_set_config"))
-    .toEqual([
-      { task: firstTask.id, option: effortId, value: "budget-23" },
-      { task: firstTask.id, option: effortId, value: "budget-7" },
-    ]);
-  await expectEffort(page, "Gentle");
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
-  await expect(box(page)).toHaveText("edited while provider is busy");
-  await expectNoSubmission(page);
-});
+}

@@ -13,7 +13,6 @@ import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
-import { useEffortControl } from "./effortControl";
 import { useEffortFocus } from "./effortFocus";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
@@ -96,7 +95,6 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [provider?.id, provider?.installed, launch, project?.root]);
   const defaults = useAgentSettings().defaults;
   const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
-  const effort = useEffortControl(config, setDraftOption, provider?.id ?? "");
   const homeRoot = useRef<HTMLDivElement>(null);
   const shown = useEditorShown();
   const unavailableModel = config.some(
@@ -105,7 +103,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       draft.config[o.id] !== undefined &&
       !o.values.some((v) => v.value === draft.config[o.id]),
   );
-  useEffortFocus(homeRoot, shown && !starting && !unavailableModel, effort.cycle);
+  const effortAnnouncement = useEffortFocus(homeRoot, shown && !starting && !unavailableModel, config, setDraftOption);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -117,7 +115,6 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
     !!provider?.installed &&
     !unavailableModel &&
     !starting &&
-    !effort.pending &&
     (!project?.workspace || repoState?.root === root);
 
   const start = () => {
@@ -222,8 +219,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           projectRoot={root}
           commands={agentCommands}
           history={history}
-          config={effort.config}
-          onConfig={effort.onChange}
+          config={config}
+          onConfig={setDraftOption}
           onSubmit={start}
           disabled={!canStart}
           toolbar={
@@ -239,8 +236,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               />
               <ConfigPickers
                 key={provider?.id}
-                config={effort.config}
-                onChange={effort.onChange}
+                config={config}
+                onChange={setDraftOption}
                 modelRefresh={
                   provider?.installed
                     ? {
@@ -257,7 +254,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           actions={
             <SubmitButton
               label={starting ? "Starting…" : "Start"}
-              pending={starting || effort.pending}
+              pending={starting}
               disabled={!canStart}
               onClick={start}
             />
@@ -265,9 +262,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
         />
         {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
         <div className={styles.notes}>
-          {effort.announcement && (
+          {effortAnnouncement && (
             <p className={styles.note} role="status" aria-live="polite" aria-atomic="true">
-              {tx("Effort: {level}").replace("{level}", effort.announcement)}
+              {tx("Effort: {level}").replace("{level}", effortAnnouncement)}
             </p>
           )}
           {unavailableModel && (
