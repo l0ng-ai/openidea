@@ -2264,6 +2264,18 @@ export type AgentSettings_Deserialize = {
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth?: boolean,
+	/**  While the agent works, playful words fill the pauses in what it reports. */
+	playfulStatus?: boolean,
+	/**
+	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
+	 *  from the start.
+	 */
+	playfulAfterSeconds?: number,
+	/**
+	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
+	 *  the built-in ones of that activity; an empty list keeps its status factual.
+	 */
+	playfulWords?: { [key in string]: string[] },
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2304,6 +2316,18 @@ export type AgentSettings_Serialize = {
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth: boolean,
+	/**  While the agent works, playful words fill the pauses in what it reports. */
+	playfulStatus: boolean,
+	/**
+	 *  Seconds the agent reports nothing new before the playful words take over; 0 shows them
+	 *  from the start.
+	 */
+	playfulAfterSeconds: number,
+	/**
+	 *  The user's playful words by activity (`working`, `thinking`, `reading`, …), replacing
+	 *  the built-in ones of that activity; an empty list keeps its status factual.
+	 */
+	playfulWords: { [key in string]: string[] },
 	thinking: ThinkingDisplay,
 	toolCalls: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */

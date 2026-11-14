@@ -32,6 +32,7 @@ import {
   SESSION_KIND,
   TASK_DRAG,
   TOOL_WINDOW,
+  WORKING_STATUS_PAGE,
   providerIcon,
 } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
@@ -64,6 +65,15 @@ export function activateSettingsPages(): () => void {
       order: 450,
       keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
+    }),
+    registerSettingsPage({
+      id: WORKING_STATUS_PAGE,
+      title: "Working Status",
+      group: AGENTS_GROUP,
+      // After Chat.
+      order: 465,
+      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
+      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
     }),
     registerSettingsPage({
       id: MCP_PAGE,
