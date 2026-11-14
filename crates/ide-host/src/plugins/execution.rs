@@ -77,9 +77,22 @@ pub(super) fn validate_reply(reply: &ContentTabReply) -> Result<(), HostError> {
     Ok(())
 }
 
+/// Largest side of a plugin diff, in UTF-16 code units (earlier hosts allowed 1 MiB).
+pub(super) const MAX_DIFF_SIDE: usize = 8 << 20;
+
+fn diff_side(value: &str, side: &str) -> Result<(), HostError> {
+    if value.contains('\0') {
+        return Err(HostError::Invalid(format!("the {side} side of the diff contains NUL")));
+    }
+    if value.encode_utf16().count() > MAX_DIFF_SIDE {
+        return Err(HostError::Invalid(format!("diff too large: the {side} side is over {} MiB", MAX_DIFF_SIDE >> 20)));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_diff(diff: &ide_plugin::ContentDiff) -> Result<(), HostError> {
-    body(&diff.left)?;
-    body(&diff.right)?;
+    diff_side(&diff.left, "left")?;
+    diff_side(&diff.right, "right")?;
     for value in [&diff.left_label, &diff.right_label].into_iter().flatten() {
         label(value, 128)?;
     }
@@ -569,5 +582,27 @@ impl PluginHost {
         for op in self.shared.operations.lock().values_mut().filter(|op| op.run == Some(run)) {
             op.closed = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diff(left: String, right: String) -> ide_plugin::ContentDiff {
+        ide_plugin::ContentDiff { left, right, left_label: None, right_label: None, title: None }
+    }
+
+    #[test]
+    fn diff_sides_up_to_the_limit_open_and_larger_ones_say_why() {
+        assert!(validate_diff(&diff("x".repeat(5 << 20), "y".repeat(MAX_DIFF_SIDE))).is_ok());
+        let err = validate_diff(&diff(String::new(), "y".repeat(MAX_DIFF_SIDE + 1))).unwrap_err();
+        assert!(
+            matches!(&err, HostError::Invalid(m) if m == "diff too large: the right side is over 8 MiB"),
+            "{err:?}"
+        );
+        assert!(
+            matches!(validate_diff(&diff("a\0".into(), String::new())), Err(HostError::Invalid(m)) if m.contains("NUL"))
+        );
     }
 }

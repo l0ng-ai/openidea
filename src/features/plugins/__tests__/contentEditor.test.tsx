@@ -261,8 +261,14 @@ describe("plugin-backed content editor tabs", () => {
       diffs.splice(2);
       expect(() => openPluginDiffRequest({ left: "a", right: 1 }, 10)).toThrow();
       expect(() => openPluginDiffRequest({ left: "a", right: "b", fileName: "x\ny" }, 10)).toThrow();
-      expect(() => openPluginDiffRequest({ left: "a", right: "b" }, 4 << 20)).toThrow();
+      expect(() => openPluginDiffRequest({ left: "a", right: "b" }, 40 << 20)).toThrow();
       expect(diffs).toHaveLength(2);
+      // Lock files and generated code: several MiB per side open; past the limit the error says why.
+      const big = "x".repeat(5 << 20);
+      openPluginDiffRequest({ left: big, right: big + "y" }, 10 << 20);
+      expect(diffs).toHaveLength(3);
+      const huge = "x".repeat((8 << 20) + 1);
+      expect(() => openPluginDiffRequest({ left: "a", right: huge }, huge.length)).toThrow(/Diff too large/);
     } finally {
       unregisterDiff();
     }

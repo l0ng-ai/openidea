@@ -445,7 +445,7 @@ matching SDK. Released 1.6 plugins keep working. New in 1.7:
   two texts in the invoking window's diff viewer, for example a merge request's
   file before and after; `file_name` picks the syntax highlighting. Web views
   send `{ op: "open-diff", left, right, leftLabel?, rightLabel?, title?, fileName? }`.
-  Commands and events only; each side at most 1 MiB.
+  Commands and events only; each side at most 1 MiB (8 MiB on current hosts).
 
 ### API 1.5
 
@@ -669,7 +669,7 @@ then run `openidea-plugin check`.
 | `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                       | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
 | `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                     | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                    | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
-| `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                            | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 1 MiB.                                                                                                                                                                                      |
+| `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                            | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 8 MiB (earlier hosts: 1 MiB), a larger side fails with `Invalid("diff too large: …")`.                                                                                                      |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`           | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
@@ -1883,8 +1883,9 @@ are forwarded to the originating desktop window.
 with the same content, action, reply and diff behavior. Its key is scoped to the
 plugin and window, independently of web views. Save and toolbar actions arrive
 as `content-tab-action`; answer with `host::reply_content_tab(request_id, reply)`.
-The host accepts replies only from that plugin and window. Content and diff text
-are limited to 1 Mi UTF-16 units, with at most 16 actions and one Save action.
+The host accepts replies only from that plugin and window. Content is limited to
+1 Mi UTF-16 units and each side of a diff to 8 Mi, with at most 16 actions and one
+Save action.
 
 ### Plugin-backed content editor tabs (API 1.3)
 
