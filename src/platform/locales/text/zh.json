@@ -8,6 +8,7 @@
   "Rename Group": "重命名组",
   "Remove from Group": "从组中移除",
   "Remove “{name}”? Its tasks move back to their status groups.": "移除“{name}”？其中的任务将回到各自的状态分组。",
+  "Copy Link Address": "复制链接地址",
   "Pin Agent Tasks": "固定 Agent 任务",
   "Unpin Agent Tasks": "取消固定 Agent 任务",
   "New Agent Task Group": "新建 Agent 任务组",

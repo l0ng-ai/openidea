@@ -39,7 +39,7 @@ describe("copyMenuFor", () => {
     ["link", "none"],
     ["nested", "link"],
     ["text", "elsewhere"],
-  ])("copies the destination from a %s target with %s selected", async (target, selection) => {
+  ])("offers Copy Link Address on a %s target with %s selected", async (target, selection) => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     const url = "https://example.com/pull/42?tab=files#diff";
@@ -49,24 +49,27 @@ describe("copyMenuFor", () => {
     if (selection !== "none") select(document.getElementById(selection)!);
     const node = target === "text" ? document.getElementById("nested")!.firstChild : document.getElementById(target);
     const items = copyMenuFor(node)!;
-    expect(items[0]).toMatchObject({ label: "Copy", disabled: false });
-    window.getSelection()!.removeAllRanges();
-    const item = items[0]!;
-    if ("run" in item) item.run?.();
+    expect(items.map((i) => ("label" in i ? i.label : null))).toEqual(["Copy", "Copy Link Address"]);
+    const link = items[1]!;
+    if ("run" in link) link.run?.();
     await Promise.resolve();
     expect(writeText).toHaveBeenCalledWith(url);
   });
 
-  it("copies selected text on an anchor without a destination", async () => {
+  it("keeps Copy on a link copying the selected text", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    mount(`<div class="${selectableText}"><a id="anchor">Section heading</a></div>`);
-    select(document.getElementById("anchor")!);
-    const items = copyMenuFor(document.getElementById("anchor"))!;
-    const item = items[0]!;
-    if ("run" in item) item.run?.();
+    mount(`<div class="${selectableText}"><a id="link" href="https://example.com">Review changes</a></div>`);
+    select(document.getElementById("link")!);
+    const copy = copyMenuFor(document.getElementById("link"))![0]!;
+    if ("run" in copy) copy.run?.();
     await Promise.resolve();
-    expect(writeText).toHaveBeenCalledWith("Section heading");
+    expect(writeText).toHaveBeenCalledWith("Review changes");
+  });
+
+  it("offers no Copy Link Address on an anchor without a destination or with an in-page one", () => {
+    mount(`<div class="${selectableText}"><a id="anchor">Section</a><a id="local" href="#top">Top</a></div>`);
+    for (const id of ["anchor", "local"]) expect(copyMenuFor(document.getElementById(id))).toHaveLength(1);
   });
 
   it("offers a disabled Copy in a selectable pane with nothing selected", () => {
