@@ -41,6 +41,7 @@ pub mod language_features;
 mod market;
 mod mcp;
 pub mod navigation;
+mod network_inbox;
 mod points;
 mod providers;
 pub mod remote;
@@ -54,6 +55,7 @@ mod types;
 pub mod ui_points;
 pub mod views;
 pub mod web;
+mod websocket;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub(crate) use hover::merge as merge_hover;
@@ -1921,6 +1923,7 @@ impl PluginHost {
         for p in plugins {
             let wanted: Vec<WorkbenchEvent> = events
                 .iter()
+                .filter(|event| !matches!(event, WorkbenchEvent::WebsocketReady(ready) if ready.plugin_id != p.id()))
                 .filter(|e| Self::wants(&p, e.kind(), subs.kinds.get(p.id())))
                 .filter(|e| {
                     !matches!(e, WorkbenchEvent::FilesChanged(_))

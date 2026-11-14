@@ -6,9 +6,10 @@
  *
  * Generic over language servers: ↓ comes from implementation requests (one
  * cancellable batch per pass), ↑ from the type hierarchy and the supertypes'
- * document symbols (as Super Method, ⌘U). Only declarations in and near the
- * viewport are asked, in one debounced pass after edits / scrolling; results
- * are cached per document text, and markers follow their lines in between.
+ * document symbols (as Super Method, ⌘U). One debounced pass after edits /
+ * scrolling asks the declarations in and near the viewport first, then the rest
+ * of the file in batches; results are cached per document text, and markers
+ * follow their lines in between.
  * The cache outlives the editor view (switching tabs remounts it) until other
  * files change or a language server settles: on some servers (jdtls) every
  * implementation search walks the whole workspace, so asking again is costly.
@@ -38,6 +39,7 @@ import { gutterIconMarkup } from "@/ui";
 import {
   MARKER_ICONS,
   candidateKey,
+  implementsMarker,
   inheritorsMarker,
   markerCandidates,
   supersMarker,
@@ -49,9 +51,9 @@ import {
 import { overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
 import styles from "./LineMarkers.module.css";
 
-/** Lines above / below the viewport that are covered too, so scrolling feels instant. */
+/** Lines above / below the viewport that are asked with it. */
 const MARGIN_LINES = 60;
-const MAX_PER_PASS = 60;
+const BATCH_SIZE = 60;
 const DEBOUNCE_MS = 500;
 const gutterBackoff = featureBackoff();
 const MAX_CACHED_DOCS = 32;
@@ -166,10 +168,13 @@ export async function fillMarkers(
     groups.has("inheritors") && !cache.unsupported.has("inheritors")
       ? candidates.filter((c) => c.inheritable && cache.entries.get(candidateKey(c))?.inheritors === undefined)
       : [];
-  const up =
-    groups.has("supers") && !cache.unsupported.has("supers")
-      ? candidates.filter((c) => c.overriding && c.owner && cache.entries.get(candidateKey(c))?.supers === undefined)
-      : [];
+  const askSupers = groups.has("supers") && !cache.unsupported.has("supers");
+  const up = askSupers
+    ? candidates.filter((c) => c.overriding && c.owner && cache.entries.get(candidateKey(c))?.supers === undefined)
+    : [];
+  const implicit = askSupers
+    ? candidates.filter((c) => c.implicit && cache.entries.get(candidateKey(c))?.supers === undefined)
+    : [];
 
   let implementations: Location[][] = [];
   const known = down.length ? await fromHierarchy(path, down, deps.supers) : new Map<MarkerCandidate, Location[]>();
@@ -205,13 +210,26 @@ export async function fillMarkers(
   }
   const supers: SuperMethod[][] = [];
   for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
+  // Go: an implementation request on a type or method answers the interfaces it satisfies.
+  let satisfied: Location[][] = [];
+  if (implicit.length) {
+    try {
+      satisfied = await deps.implementations(implicit.map((c) => ({ line: c.line, col: c.col })));
+    } catch (e) {
+      if (isCancelled(e)) throw e;
+      if (isUnavailable(e)) cache.unsupported.add("supers");
+      implicit.length = 0;
+    }
+  }
 
   const files = await deps.readFiles([
     ...implementations.flat().map((l) => l.path),
     ...supers.flat().map((s) => s.location.path),
+    ...satisfied.flat().map((l) => l.path),
   ]);
   down.forEach((c, i) => (entry(c).inheritors = inheritorsMarker(c, implementations[i] ?? [], files)));
   up.forEach((c, i) => (entry(c).supers = supersMarker(c, supers[i]!, files)));
+  implicit.forEach((c, i) => (entry(c).supers = implementsMarker(c, withoutSelf(path, c, satisfied[i] ?? []), files)));
 }
 
 /**
@@ -396,6 +414,24 @@ function markerSet(placed: readonly PlacedMarker[]): RangeSet<GutterMarker> {
   return set;
 }
 
+/**
+ * The declarations one pass asks about, in batches: those in and near the viewport first, then the
+ * rest of the file nearest first, so markers are ready before scrolling to them.
+ */
+export function markerBatches(
+  candidates: readonly MarkerCandidate[],
+  firstVisible: number,
+  lastVisible: number,
+): MarkerCandidate[][] {
+  const first = firstVisible - MARGIN_LINES;
+  const last = lastVisible + MARGIN_LINES;
+  const distance = (c: MarkerCandidate) => (c.line < first ? first - c.line : c.line > last ? c.line - last : 0);
+  const ordered = [...candidates].sort((a, b) => distance(a) - distance(b));
+  const batches: MarkerCandidate[][] = [];
+  for (let i = 0; i < ordered.length; i += BATCH_SIZE) batches.push(ordered.slice(i, i + BATCH_SIZE));
+  return batches;
+}
+
 class MarkersPlugin {
   private refresh = debounce(() => void this.run(), DEBOUNCE_MS);
   private generation = 0;
@@ -462,19 +498,23 @@ class MarkersPlugin {
         if (stale()) return;
         entry.outline = {
           items,
-          candidates: markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : "")),
+          candidates: markerCandidates(items, (l) => (l < text.lines ? text.line(l + 1).text : ""), {
+            implicitInterfaces: ctx.language === "go",
+          }),
         };
       }
       const { candidates, items } = entry.outline;
       const { from, to } = view.viewport;
-      const first = text.lineAt(from).number - 1 - MARGIN_LINES;
-      const last = text.lineAt(to).number - 1 + MARGIN_LINES;
-      const visible = candidates.filter((c) => c.line >= first && c.line <= last).slice(0, MAX_PER_PASS);
-      const request = (this.request = nextRequestId());
-      await fillMarkers(ctx.path, visible, groups, markerDeps(ctx, items, request, entry.cache), entry.cache);
-      if (this.request === request) this.request = null;
-      if (stale()) return;
-      this.show(place(text, cachedMarkers(candidates, groups, entry.cache)));
+      const batches = markerBatches(candidates, text.lineAt(from).number - 1, text.lineAt(to).number - 1);
+      for (const batch of batches) {
+        const request = (this.request = nextRequestId());
+        await fillMarkers(ctx.path, batch, groups, markerDeps(ctx, items, request, entry.cache), entry.cache);
+        if (this.request === request) this.request = null;
+        if (stale()) return;
+        this.show(place(text, cachedMarkers(candidates, groups, entry.cache)));
+        // Hidden meanwhile (tab switch): resume when shown again.
+        if ((this.skipped = !view.dom.isConnected)) return;
+      }
     } catch (e) {
       if (isUnavailable(e)) gutterBackoff.mark(ctx.doc);
       else if (!isCancelled(e)) console.debug("[lineMarkers]", e);

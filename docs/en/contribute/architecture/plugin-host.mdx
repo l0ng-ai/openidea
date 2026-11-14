@@ -19,7 +19,7 @@ The plugin host runs **where the project is**: in the desktop app for local proj
 
 ## The interface
 
-The API is defined in WIT, in `wit/` (package `openidea:plugin@1.5.0`). A plugin is a component targeting the `plugin` world (or `plugin-syntax`). The guest SDK `sdk/rust/openidea-plugin` wraps it in a typed Rust API and carries a copy of `wit/`; `crates/ide-plugin/tests/api_compat.rs` checks the copies are identical.
+The API is defined in WIT, in `wit/` (package `openidea:plugin@1.7.0`). A plugin is a component targeting the `plugin` world (or `plugin-syntax`). The guest SDK `sdk/rust/openidea-plugin` wraps it in a typed Rust API and carries a copy of `wit/`; `crates/ide-plugin/tests/api_compat.rs` checks the copies are identical.
 
 Released API versions are frozen. wasmtime resolves interface names by semver, but function types must match exactly, so a released 1.x only grows: new interfaces and new optional exports, never changed records or variants. See _Evolving the plugin API_ in `plugins/README.md` before touching `wit/`.
 

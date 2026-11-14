@@ -40,6 +40,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("groovy", include_str!("../../../languages/groovy.toml")),
     ("haskell", include_str!("../../../languages/haskell.toml")),
     ("hcl", include_str!("../../../languages/hcl.toml")),
+    ("helm-template", include_str!("../../../languages/helm-template.toml")),
     ("html", include_str!("../../../languages/html.toml")),
     ("http", include_str!("../../../languages/http.toml")),
     ("ignore", include_str!("../../../languages/ignore.toml")),
@@ -67,6 +68,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("php", include_str!("../../../languages/php.toml")),
     ("plaintext", include_str!("../../../languages/plaintext.toml")),
     ("powershell", include_str!("../../../languages/powershell.toml")),
+    ("prisma", include_str!("../../../languages/prisma.toml")),
     ("properties", include_str!("../../../languages/properties.toml")),
     ("proto", include_str!("../../../languages/proto.toml")),
     ("python", include_str!("../../../languages/python.toml")),
@@ -78,6 +80,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("scala", include_str!("../../../languages/scala.toml")),
     ("scss", include_str!("../../../languages/scss.toml")),
     ("shellscript", include_str!("../../../languages/shellscript.toml")),
+    ("slint", include_str!("../../../languages/slint.toml")),
     ("sql", include_str!("../../../languages/sql.toml")),
     ("svelte", include_str!("../../../languages/svelte.toml")),
     ("swift", include_str!("../../../languages/swift.toml")),
@@ -546,6 +549,7 @@ mod tests {
         "Groovy",
         "Haskell",
         "Haxe",
+        "Helm Template",
         "HXML",
         "HTTP",
         "IDL",
@@ -668,6 +672,7 @@ mod tests {
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
             ("java", vec!["jdtls", "kmp-lsp"]),
+            ("kotlin", vec!["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg
@@ -836,6 +841,30 @@ mod tests {
         assert_eq!(detect("site/templates/index.html"), "html");
         assert_eq!(detect("page.djhtml"), "django-html");
         assert!(reg.is_framework_marker(&root.join("src/manage.py")));
+    }
+
+    #[test]
+    fn helm_charts_make_yaml_and_notes_in_templates_folders_helm_templates() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let detect = |file: &str| reg.detect(&root.join(file), None).as_str().to_owned();
+        std::fs::create_dir_all(root.join("charts/podinfo/templates/tests")).unwrap();
+        std::fs::create_dir_all(root.join("k8s/templates")).unwrap();
+        std::fs::write(root.join("charts/podinfo/Chart.yaml"), "apiVersion: v2\nname: podinfo\n").unwrap();
+        assert_eq!(detect("charts/podinfo/Chart.yaml"), "yaml");
+        assert_eq!(detect("charts/podinfo/values.yaml"), "yaml");
+        assert_eq!(detect("charts/podinfo/templates/deployment.yaml"), "helm-template");
+        assert_eq!(detect("charts/podinfo/templates/tests/connection.yml"), "helm-template");
+        assert_eq!(detect("charts/podinfo/templates/_helpers.tpl"), "helm-template");
+        assert_eq!(detect("charts/podinfo/templates/NOTES.txt"), "helm-template");
+        // No `Chart.yaml` / `Chart.yml` above this `templates` folder.
+        assert_eq!(detect("k8s/templates/deployment.yaml"), "yaml");
+        assert_eq!(detect("common.gotmpl"), "helm-template");
+        // Outside a chart, `.tpl` belongs to other template engines (Smarty, Terraform).
+        assert_ne!(detect("site/index.tpl"), "helm-template");
+        assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yaml")));
+        assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yml")));
     }
 
     #[test]
@@ -1025,6 +1054,7 @@ mod tests {
             ("CMakeLists.txt", "cmake"),
             ("api.proto", "proto"),
             ("schema.graphql", "graphql"),
+            ("schema.prisma", "prisma"),
             ("main.tf", "terraform"),
             ("prod.tfvars", "terraform-vars"),
             ("job.nomad", "hcl"),
@@ -1043,6 +1073,7 @@ mod tests {
             ("icon.svg.import", "godot-resource"),
             ("export_presets.cfg", "godot-resource"),
             ("water.gdshader", "gdshader"),
+            ("app-window.slint", "slint"),
             ("notes.txt", "plaintext"),
         ];
         for (path, id) in cases {

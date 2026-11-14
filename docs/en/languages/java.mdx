@@ -7,12 +7,12 @@ Java code insight comes from the Eclipse JDT Language Server (jdtls), extended w
 
 ## Language servers
 
-| Language               | Server                                    | Fallback                                                | Debugger                                |
-| ---------------------- | ----------------------------------------- | ------------------------------------------------------- | --------------------------------------- |
-| Java                   | Eclipse JDT Language Server (`jdtls`)     | `kmp-lsp`                                               | Microsoft java-debug, loaded into jdtls |
-| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`) | Kotlin Debug Adapter (fwcd)             |
-| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                         |                                         |
-| JSP                    | none (highlighting only)                  |                                                         |                                         |
+| Language               | Server                                    | Fallback                                                           | Debugger                                |
+| ---------------------- | ----------------------------------------- | ------------------------------------------------------------------ | --------------------------------------- |
+| Java                   | Eclipse JDT Language Server (`jdtls`)     | `kmp-lsp`                                                          | Microsoft java-debug, loaded into jdtls |
+| Kotlin                 | Kotlin LSP (JetBrains, `kotlin-lsp`)      | Kotlin Language Server (fwcd, `kotlin-language-server`), `kmp-lsp` | Kotlin Debug Adapter (fwcd)             |
+| Groovy, Gradle scripts | `groovy-language-server` (you provide it) |                                                                    |                                         |
+| JSP                    | none (highlighting only)                  |                                                                    |                                         |
 
 A fallback starts only while the server listed before it is not installed. To pick one explicitly, open **Settings › Languages & Frameworks › Language Servers**, select either server and use **Language server for Java** (or Kotlin): **Automatic** uses the first one available, **None** turns code insight off. The choice can be global or for the current project.
 
@@ -86,7 +86,7 @@ When the project uses Lombok (in its build file, an inherited parent POM or Grad
 
 jdtls imports Maven and Gradle projects (including the Gradle wrapper) automatically. A folder without a build file is opened as a plain Java project, and jars under `lib/` are added to its classpath. OpenIDEA also shows **Maven** and **Gradle** tool windows for running goals and tasks, reloading, profiles and dependency analysis. Their settings are in **Settings › Build, Execution, Deployment › Maven** and **Gradle**:
 
-- Maven: **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies.
+- Maven: **Delegate IDE build/run actions to Maven** (Run and Debug build with Maven's `javac` instead of jdtls), **JRE**, **Maven home path** (default: the project's `mvnw`, else `mvn` on `PATH`), **User settings file**, **Toolchains file**, **Local repository**, **Active profiles**, **Thread count** and **Use Maven Daemon (mvnd)**. The profiles you choose in the Maven tool window are passed to jdtls too, so the editor sees the same profile-specific dependencies.
 - Gradle: **Build and run using** (Gradle or OpenIDEA), **Gradle JVM**, **Distribution** (wrapper or local installation), **Gradle home** and **Gradle user home**.
 
 The IDE passes its proxy settings to jdtls, so dependency resolution works behind a proxy. See [Build tools](/en/guide/build-tools) for the tool windows.
@@ -141,5 +141,6 @@ Navigation between MyBatis mapper interfaces and their XML statements is availab
 - One jdtls runs per project window. With several large projects open at once, memory adds up. Lower `-Xmx` in **JVM options** or close windows you are not using. **Share JDT LS across builds** helps only within one window.
 - Without jdtls (for example with `kmp-lsp` only), Application configurations, classpath-based features and Java debugging are not available.
 - Java tests run through Maven or Gradle. A project without either build tool has no test runner.
+- The jdtls compiler (ECJ) is stricter than javac in some places. Known case: a generic method call used directly as an `if`, `while`, `for` or `do` condition or a ternary condition — for example `if (getCacheObject(key))` with a `<T> T getCacheObject(String key)` method — compiles with javac but ECJ reports `Type mismatch: cannot convert from Object to boolean`. Assigning the call to a `boolean` variable first compiles on both (see [#2624](https://github.com/l0ng-ai/openidea/issues/2624)).
 - The Kotlin bridge is Maven only and exposes compiled Kotlin classes to Java. It does not give Java-to-Kotlin source navigation or refactoring.
 - Groovy needs a `groovy-language-server` you build yourself, and JSP has syntax highlighting only.

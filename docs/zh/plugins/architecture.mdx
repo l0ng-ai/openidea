@@ -9,7 +9,7 @@ description: "插件代码如何运行：WebAssembly 组件、WIT world、宿主
 
 | 部分     | 位置                                                                                                       | 作用                                                                                   |
 | -------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| 插件 API | [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit)                                                | 契约：WIT 包 `openidea:plugin@1.5.0`、其中的 interface 和 world                        |
+| 插件 API | [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit)                                                | 契约：WIT 包 `openidea:plugin@1.7.0`、其中的 interface 和 world                        |
 | Rust SDK | [`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)       | WIT 的类型化封装、`Plugin` trait、`register_plugin!`，以及给 `cargo test` 用的模拟宿主 |
 | 插件包   | [`crates/ide-extension`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-extension)               | 清单、能力及其风险等级、授权记录、贡献点、`.oiplugin` 包和插件市场索引                 |
 | 运行时   | [`crates/ide-plugin`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin)                     | wasmtime 引擎、每个插件一个 `Store`、各项限制、每个活跃插件一个 actor 线程             |

@@ -111,8 +111,9 @@ pub trait PluginWorkspace: Send + Sync {
     /// Version and text of the open document at `path`.
     fn document(&self, path: &Path) -> Option<(u64, String)>;
     /// Applies `edits` to the open document at `path` if it is still at
-    /// `version`, as one change (one undo step in the editor).
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError>;
+    /// `version`, as one change: one undo step in the editor, or none for a
+    /// `background` caller (a plugin event rather than a command).
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError>;
     /// Code from the project may run (git hooks and config on fetch).
     fn trusted(&self, root: &Path) -> bool;
     /// Root of the project open in `window`.
@@ -178,9 +179,9 @@ impl SecretStore for FileSecretStore {
 }
 
 /// Largest response body a plugin receives.
-const MAX_RESPONSE: usize = 8 << 20;
+const MAX_RESPONSE: usize = 16 << 20;
 /// Largest stdout / stderr kept from a process.
-const MAX_OUTPUT: usize = 4 << 20;
+const MAX_OUTPUT: usize = 16 << 20;
 /// Most processes one plugin keeps running at once.
 const MAX_PROCESSES: usize = 8;
 /// Most output one stream of a handle holds until the plugin reads it.
@@ -488,6 +489,7 @@ type SettingSnapshots = BTreeMap<(Option<String>, String), BTreeMap<String, Stri
 /// State shared by the host and every plugin's [`PluginApi`].
 pub(super) struct Shared {
     pub sink: Arc<dyn PluginEventSink>,
+    pub websockets: super::websocket::WebSocketHub,
     pub workspace: RwLock<Option<Arc<dyn PluginWorkspace>>>,
     /// `<plugins>/.data`: one directory per plugin id.
     pub data_dir: PathBuf,
@@ -565,7 +567,8 @@ impl Shared {
             ui,
             registry,
             locale: RwLock::new("en".into()),
-            sink,
+            sink: sink.clone(),
+            websockets: super::websocket::WebSocketHub::new(sink.clone()),
             workspace: RwLock::new(None),
             secrets: RwLock::new(Arc::new(FileSecretStore { dir: data_dir.clone() })),
             pins,
@@ -775,6 +778,7 @@ impl Shared {
 
         self.kill_processes(plugin);
         self.connections.clear(plugin);
+        self.websockets.disconnect_plugin(plugin);
         self.setting_snapshots.lock().retain(|(_, p), _| p != plugin);
         let channels: Vec<_> = {
             let mut output = self.output.lock();
@@ -1272,12 +1276,13 @@ pub(super) fn commit_draft(
         };
         // Both callers have checked that the window's project is trusted.
         r.set_execution_allowed(true);
-        let pending = r.pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path))).map_err(
-            |e| match e.kind {
+        let backend = &r as &dyn ide_vcs::Backend;
+        let pending = backend
+            .pending_changes(&repo.options, budget, &|path| Ok(workspace.vcs_encoding(path)))
+            .map_err(|e| match e.kind {
                 ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
                 _ => HostError::Failed(e.message),
-            },
-        )?;
+            })?;
         let root = to_ipc(r.root());
         for c in pending {
             budget -= c.diff.as_ref().map_or(0, String::len).min(budget);
@@ -1526,6 +1531,19 @@ impl HostApi for PluginApi {
         }
         Ok(())
     }
+    fn open_diff(
+        &self,
+        client: &str,
+        diff: ide_plugin::ContentDiff,
+        file_name: Option<String>,
+    ) -> Result<(), HostError> {
+        super::execution::validate_diff(&diff)?;
+        if let Some(name) = &file_name {
+            super::execution::label(name, 256)?;
+        }
+        self.shared.sink.emit(Some(client), PluginEvent::OpenDiff { plugin_id: self.id().into(), diff, file_name });
+        Ok(())
+    }
     fn reply_content_tab(
         &self,
         client: &str,
@@ -1623,6 +1641,9 @@ impl HostApi for PluginApi {
         item: Option<ide_plugin::FileDecoration>,
     ) -> Result<(), HostError> {
         self.set_decorations(path, set, Vec::new(), item, true)
+    }
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        self.set_file_icon_decorations(set, items)
     }
     fn vcs_log(
         &self,
@@ -2048,13 +2069,14 @@ impl HostApi for PluginApi {
 
     fn apply_edits(
         &self,
-        _client: Option<&str>,
+        client: Option<&str>,
         path: &Path,
         version: u64,
         edits: Vec<TextEdit>,
     ) -> Result<u64, HostError> {
         let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
-        workspace.apply_edits(path, version, &edits)
+        // Edits from a window's command are undoable; `editor.apply-edits-at` from a background event isn't.
+        workspace.apply_edits(path, version, &edits, client.is_none())
     }
 
     fn storage_get(&self, key: &str) -> Result<Option<String>, HostError> {
@@ -2262,7 +2284,7 @@ impl HostApi for PluginApi {
                 let mut response = response;
                 while let Some(chunk) = response.chunk().await.map_err(|e| HostError::Failed(e.to_string()))? {
                     if body.len() + chunk.len() > MAX_RESPONSE {
-                        return Err(HostError::Failed("response larger than 8 MiB".into()));
+                        return Err(HostError::Failed(format!("response larger than {} MiB", MAX_RESPONSE >> 20)));
                     }
                     body.extend_from_slice(&chunk);
                 }
@@ -2273,6 +2295,49 @@ impl HostApi for PluginApi {
                 () = cancel.cancelled() => Err(HostError::Cancelled),
             }
         })
+    }
+
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: ide_plugin::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError> {
+        let secrets = self.shared.secrets.read().clone();
+        let plugin = self.id().to_owned();
+        let headers = request
+            .headers
+            .into_iter()
+            .map(|(name, value)| {
+                let value = fill_secrets(&value, |name| secrets.get(&plugin, name))?;
+                Ok((name, value))
+            })
+            .collect::<Result<Vec<_>, HostError>>()?;
+        net_runtime()
+            .block_on(self.shared.websockets.connect(
+                &plugin,
+                &to_ipc(root),
+                &request.url,
+                &headers,
+                &request.subprotocol,
+                timeout,
+            ))
+            .map_err(|error| match error {
+                super::websocket::ConnectError::Invalid(message) => HostError::Invalid(message),
+                super::websocket::ConnectError::Failed(message) => HostError::Failed(message),
+            })
+    }
+
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError> {
+        self.shared.websockets.send(self.id(), connection, bytes).map_err(HostError::Failed)
+    }
+
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<ide_plugin::WebSocketBatch, HostError> {
+        self.shared.websockets.drain(self.id(), connection, limit).map_err(HostError::Invalid)
+    }
+
+    fn websocket_close(&self, connection: u64) {
+        let _ = self.shared.websockets.disconnect(self.id(), connection);
     }
 
     /// The `net:ask` answer: a host the user allowed with "always" is
@@ -2443,9 +2508,14 @@ impl HostApi for PluginApi {
         let read = |pipe: Option<Box<dyn Read + Send>>| {
             std::thread::spawn(move || {
                 let mut out = Vec::new();
+                let mut overflow = false;
                 if let Some(p) = pipe {
                     let mut p = p;
-                    let _ = p.by_ref().take(MAX_OUTPUT as u64).read_to_end(&mut out);
+                    let _ = p.by_ref().take((MAX_OUTPUT + 1) as u64).read_to_end(&mut out);
+                    if out.len() > MAX_OUTPUT {
+                        overflow = true;
+                        out.truncate(MAX_OUTPUT);
+                    }
                     let _ = std::io::copy(&mut p, &mut std::io::sink());
                 }
                 let mut text = String::from_utf8_lossy(&out).into_owned();
@@ -2454,7 +2524,7 @@ impl HostApi for PluginApi {
                     end -= 1;
                 }
                 text.truncate(end);
-                text
+                (text, overflow)
             })
         };
         let stdout = read(child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
@@ -2474,11 +2544,18 @@ impl HostApi for PluginApi {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        Ok(ProcessOutput {
-            status: status.code(),
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        })
+        let (stdout, stdout_overflow) = stdout.join().unwrap_or_default();
+        let (stderr, _) = stderr.join().unwrap_or_default();
+        if stdout_overflow {
+            tracing::warn!(
+                plugin = %self.id(),
+                program = %cmd.program,
+                limit_mib = MAX_OUTPUT >> 20,
+                "process stdout exceeded limit"
+            );
+            return Err(HostError::Failed(format!("{} stdout exceeded {} MiB limit", cmd.program, MAX_OUTPUT >> 20)));
+        }
+        Ok(ProcessOutput { status: status.code(), stdout, stderr })
     }
 
     fn subscribe(&self, kind: EventKind) {
@@ -3102,26 +3179,17 @@ impl PluginWorkspace for HostWorkspace {
         Ok(out)
     }
     fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
+        // The host records every `Diagnostics` event it emits (language servers,
+        // builds, spelling, plugin providers), so this sees a file's problems
+        // whatever window opened it — not just the ones its UI reported.
         let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
-        let root = host.project(client).map_err(failed)?.root.clone();
-        let windows = host.windows_for_root(&root);
+        host.project(client).map_err(failed)?;
         let mut out = Vec::new();
-        for file in host.mcp_reports.problems(&windows) {
-            if path.is_some_and(|p| p != file.path.0) {
+        for (file, source, diagnostics) in host.diagnostics.problems() {
+            if path.is_some_and(|p| p != file) {
                 continue;
             }
-            if ide_plugin::resolve_new_in_root(&root, &to_ipc(&file.path.0)).is_err() {
-                continue;
-            }
-            let mut sources: BTreeMap<String, Vec<ide_core::Diagnostic>> = BTreeMap::new();
-            for d in file.items {
-                sources.entry(d.server.clone().or_else(|| d.source.clone()).unwrap_or_default()).or_default().push(d);
-            }
-            out.extend(sources.into_iter().map(|(source, diagnostics)| ide_plugin::FileProblems {
-                path: to_ipc(&file.path.0),
-                source,
-                diagnostics,
-            }));
+            out.push(ide_plugin::FileProblems { path: to_ipc(&file), source, diagnostics });
         }
         Ok(out)
     }
@@ -3208,11 +3276,16 @@ impl PluginWorkspace for HostWorkspace {
         Some((u64::from(snap.version), snap.text))
     }
 
-    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit]) -> Result<u64, HostError> {
+    fn apply_edits(&self, path: &Path, version: u64, edits: &[TextEdit], background: bool) -> Result<u64, HostError> {
         let (project, doc) =
             self.open_document(path).ok_or_else(|| HostError::NotFound(format!("{} is not open", path.display())))?;
         let version = u32::try_from(version).map_err(|_| HostError::Stale)?;
-        match project.documents.apply_edits_at(doc, version, edits) {
+        let applied = if background {
+            project.documents.apply_background_edits_at(doc, version, edits)
+        } else {
+            project.documents.apply_edits_at(doc, version, edits)
+        };
+        match applied {
             Ok(Some(v)) => Ok(u64::from(v)),
             Ok(None) => Err(HostError::Stale),
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
@@ -3242,6 +3315,8 @@ impl PluginWorkspace for HostWorkspace {
         path: &Path,
         items: Vec<ide_core::Diagnostic>,
     ) -> Result<(), HostError> {
+        // Any open project may publish problems for any file: annotations follow the
+        // file, not the window (an editor can show a file outside every project root).
         let projects = HostWorkspace::projects(self);
         let project = projects
             .iter()
@@ -3253,7 +3328,8 @@ impl PluginWorkspace for HostWorkspace {
                     .iter()
                     .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| path.starts_with(m)))
             })
-            .ok_or_else(|| HostError::Invalid(format!("{} is not in an open project", path.display())))?;
+            .or_else(|| projects.first())
+            .ok_or_else(|| HostError::NotFound("no project is open".into()))?;
         project.sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.to_path_buf().into(),
             source: format!("plugin:{source}"),
@@ -3542,7 +3618,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -3606,7 +3682,7 @@ mod tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             None
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -3807,10 +3883,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let api = shell_api(tmp.path());
         let token = CancellationToken::new();
-        let cmd = shell("head -c 5242880 /dev/zero; head -c 5242880 /dev/zero >&2");
+        // stdout within the limit comes back whole; stderr beyond it is truncated (stdout beyond it fails).
+        let cmd = shell(&format!("head -c 5242880 /dev/zero; head -c {} /dev/zero >&2", MAX_OUTPUT + (1 << 20)));
         let out = api.run_process(cmd.clone(), None, None, &token, Duration::from_secs(5)).unwrap();
         assert_eq!(out.status, Some(0));
-        assert_eq!((out.stdout.len(), out.stderr.len()), (MAX_OUTPUT, MAX_OUTPUT));
+        assert_eq!((out.stdout.len(), out.stderr.len()), (5 << 20, MAX_OUTPUT));
         let id = api.start_process(cmd, None, None).unwrap();
         let out = api.wait_process(id, MAX_PENDING, Duration::from_secs(5), &token).unwrap();
         assert_eq!(out.status, Some(0));
@@ -3881,6 +3958,72 @@ mod tests {
         assert!(matches!(result, Err(HostError::Denied(cap)) if cap == "net:127.0.0.1"));
         assert!(target.accept().is_err(), "ungranted target must never receive a connection");
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_accepts_responses_up_to_16_mib_and_rejects_larger_bodies() {
+        fn serve_bytes(total: usize) -> (u16, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0; 4096];
+                let _ = stream.read(&mut buf);
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n");
+                if stream.write_all(header.as_bytes()).is_err() {
+                    return;
+                }
+                let chunk = [b'x'; 64 << 10];
+                let mut sent = 0;
+                while sent < total {
+                    let n = (total - sent).min(chunk.len());
+                    if stream.write_all(&chunk[..n]).is_err() {
+                        break;
+                    }
+                    sent += n;
+                }
+            });
+            (port, handle)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let api = api(dir.path(), Arc::default());
+
+        let (ok_port, ok_worker) = serve_bytes(10 << 20);
+        let resp = api
+            .fetch(
+                HttpRequest {
+                    method: "GET".into(),
+                    url: format!("http://127.0.0.1:{ok_port}/"),
+                    headers: Vec::new(),
+                    body: None,
+                    timeout: Duration::from_secs(10),
+                    grants: vec![Capability::Net("127.0.0.1".into())],
+                },
+                &CancellationToken::new(),
+            )
+            .expect("10 MiB response within 16 MiB limit succeeds");
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body.len(), 10 << 20);
+        ok_worker.join().unwrap();
+
+        let (big_port, big_worker) = serve_bytes(MAX_RESPONSE + (1 << 20));
+        let err = api
+            .fetch(
+                HttpRequest {
+                    method: "GET".into(),
+                    url: format!("http://127.0.0.1:{big_port}/"),
+                    headers: Vec::new(),
+                    body: None,
+                    timeout: Duration::from_secs(10),
+                    grants: vec![Capability::Net("127.0.0.1".into())],
+                },
+                &CancellationToken::new(),
+            )
+            .expect_err("response exceeding 16 MiB fails explicitly");
+        assert!(matches!(&err, HostError::Failed(msg) if msg.contains("response larger than 16 MiB")), "{err:?}");
+        big_worker.join().unwrap();
     }
 
     #[test]
@@ -3979,25 +4122,30 @@ impl PluginApi {
         if items.len() > 10_000 || file.as_ref().and_then(|f| f.badge.as_ref()).is_some_and(|b| b.chars().count() > 2) {
             return Err(HostError::Invalid("decoration limit exceeded".into()));
         }
+        if let Some(note) = file.as_ref().and_then(|f| f.note.as_ref())
+            && (note.trim().is_empty() || note.chars().count() > 200 || note.contains(['\n', '\r']))
+        {
+            return Err(HostError::Invalid("a file note is one non-empty line of at most 200 characters".into()));
+        }
+        if let Some(icon) = file.as_ref().and_then(|f| f.icon.as_ref()) {
+            ide_extension::validate_item_id(icon, "file icon id").map_err(HostError::Invalid)?;
+        }
         items.retain(|d| decoration_style(&d.style));
         if items.iter().any(|d| d.range.start > d.range.end) {
             return Err(HostError::Invalid("reversed decoration range".into()));
         }
         let replacement = if let Some(path) = path {
-            let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project open".into()))?;
-            let (root, real) = workspace
-                .projects()
-                .into_iter()
-                .filter_map(|root| ide_plugin::resolve_new_in_root(&root, &to_ipc(path)).ok().map(|real| (root, real)))
-                .max_by_key(|(root, _)| root.components().count())
-                .ok_or_else(|| HostError::Invalid("path outside open projects".into()))?;
+            // The decoration follows the file, not the window's project: editors render
+            // whatever they have open, including files outside every project root. The
+            // set's root stays the path's own (deepest open) project for tree filtering.
+            let root = self.decoration_root(path);
             Some(super::DecorationSet {
                 root: root.into(),
-                path: real.into(),
+                path: ide_core::IpcPath(path.to_path_buf()),
                 set_id: set.into(),
                 tree,
                 items,
-                file: file.filter(|f| decoration_style(&f.style)),
+                file: file.filter(|f| f.note.is_some() || f.icon.is_some() || decoration_style(&f.style)),
             })
         } else {
             None
@@ -4025,6 +4173,60 @@ impl PluginApi {
         self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
         Ok(())
     }
+
+    fn decoration_root(&self, path: &Path) -> PathBuf {
+        self.shared
+            .workspace()
+            .map(|w| {
+                w.projects()
+                    .into_iter()
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
+            })
+            .unwrap_or_default()
+            .unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_else(|| path.to_path_buf()))
+    }
+
+    fn set_file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        if set.is_empty() || set.len() > 128 {
+            return Err(HostError::Invalid("set id must be 1-128 bytes".into()));
+        }
+        if items.len() > 10_000 {
+            return Err(HostError::Invalid("at most 10000 file icons per set".into()));
+        }
+        let mut by_path = BTreeMap::new();
+        for (path, icon) in items {
+            ide_extension::validate_item_id(&icon, "file icon id").map_err(HostError::Invalid)?;
+            by_path.insert(path, icon);
+        }
+        let mut all = self.shared.decorations.lock();
+        let mut sets = all.get(self.id()).cloned().unwrap_or_default();
+        sets.retain(|s| !(s.tree && s.set_id == set));
+        for (path, icon) in by_path {
+            let root = self.decoration_root(&path);
+            sets.push(super::DecorationSet {
+                root: root.into(),
+                path: ide_core::IpcPath(path),
+                set_id: set.into(),
+                tree: true,
+                items: Vec::new(),
+                file: Some(ide_plugin::FileDecoration {
+                    badge: None,
+                    style: String::new(),
+                    tooltip: None,
+                    note: None,
+                    icon: Some(icon),
+                }),
+            });
+        }
+        let names: BTreeSet<_> = sets.iter().filter(|s| s.tree).map(|s| &s.set_id).collect();
+        if names.len() > 50 || serde_json::to_vec(&sets).map_err(failed)?.len() > 4 << 20 {
+            return Err(HostError::Invalid("decoration sets exceed plugin limits".into()));
+        }
+        all.insert(self.id().into(), sets.clone());
+        self.shared.sink.emit(None, PluginEvent::DecorationsChanged { plugin_id: self.id().into(), sets });
+        Ok(())
+    }
 }
 fn decoration_style(style: &str) -> bool {
     matches!(
@@ -4037,6 +4239,8 @@ fn decoration_style(style: &str) -> bool {
             | "warning"
             | "error"
             | "info"
+            | "typo"
+            | "weak"
             | "underline"
             | "strikethrough"
             | "muted"
@@ -4066,7 +4270,7 @@ mod workbench_tests {
         fn document(&self, _: &Path) -> Option<(u64, String)> {
             self.text.clone().map(|s| (1, s))
         }
-        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit]) -> Result<u64, HostError> {
+        fn apply_edits(&self, _: &Path, _: u64, _: &[TextEdit], _: bool) -> Result<u64, HostError> {
             Err(HostError::Stale)
         }
         fn trusted(&self, _: &Path) -> bool {
@@ -4157,8 +4361,11 @@ mod workbench_tests {
         };
         api.decorations(Some(&path), "set", vec![item("highlight"), item("unknown")]).unwrap();
         assert_eq!(api.shared.decoration_sets()["test"][0].items.len(), 1);
-        assert!(api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).is_err());
+        // Decorations follow the file: a path outside the open project is accepted too.
+        api.decorations(Some(&root.join("../outside.txt")), "set", vec![]).unwrap();
+        assert_eq!(api.shared.decoration_sets()["test"].len(), 2);
         api.decorations(None, "set", vec![]).unwrap();
+        assert!(api.shared.decoration_sets()["test"].is_empty());
         for i in 0..50 {
             api.decorations(Some(&path), &format!("s{i}"), vec![]).unwrap();
         }
@@ -4169,12 +4376,72 @@ mod workbench_tests {
             api.file_decorations(
                 Some(&path),
                 "tree",
-                Some(ide_plugin::FileDecoration { badge: Some("abc".into()), style: "info".into(), tooltip: None })
+                Some(ide_plugin::FileDecoration {
+                    badge: Some("abc".into()),
+                    style: "info".into(),
+                    tooltip: None,
+                    note: None,
+                    icon: None,
+                })
             )
             .is_err()
         );
+        let note = |text: &str| ide_plugin::FileDecoration {
+            badge: None,
+            style: String::new(),
+            tooltip: Some("why".into()),
+            note: Some(text.into()),
+            icon: None,
+        };
+        api.file_decorations(Some(&path), "notes", Some(note("entry point"))).unwrap();
+        let notes = |api: &PluginApi| {
+            api.shared.decoration_sets()["test"]
+                .iter()
+                .filter(|s| s.tree && s.set_id == "notes")
+                .map(|s| s.file.as_ref().and_then(|f| f.note.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(notes(&api), [Some("entry point".to_string())], "kept without a style");
+        for bad in ["", "two\nlines", &"x".repeat(201)] {
+            assert!(api.file_decorations(Some(&path), "notes", Some(note(bad))).is_err(), "{bad:?}");
+        }
+        api.file_icon_decorations(
+            "icons",
+            vec![(path.clone(), "helm-chart".into()), (root.join("chart"), "helm-dir".into())],
+        )
+        .unwrap();
+        let icons = api.shared.decoration_sets()["test"]
+            .iter()
+            .filter(|s| s.tree && s.set_id == "icons")
+            .filter_map(|s| s.file.as_ref().and_then(|f| f.icon.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(icons.len(), 2);
+        assert!(api.file_icon_decorations("icons", vec![(path.clone(), "BAD ID".into())]).is_err());
         api.shared.clear_plugin("test", true);
         assert!(api.shared.decoration_sets().is_empty());
+    }
+    #[test]
+    fn decoration_styles_keep_the_severity_palette_the_editor_renders() {
+        // Inspection Lens colours typos and weak warnings with their own styles; the
+        // host must keep them, not silently drop them the way an unknown style is dropped.
+        for style in [
+            "highlight",
+            "search",
+            "added",
+            "modified",
+            "removed",
+            "warning",
+            "error",
+            "info",
+            "typo",
+            "weak",
+            "underline",
+            "strikethrough",
+            "muted",
+        ] {
+            assert!(decoration_style(style), "{style} should be a known style");
+        }
+        assert!(!decoration_style("unknown"));
     }
     fn git(root: &Path, args: &[&str]) {
         let out = StdCommand::new("git").current_dir(root).args(args).output().unwrap();

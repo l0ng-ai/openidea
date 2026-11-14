@@ -65,6 +65,16 @@ export interface EditorContribution {
    * editable side, the merge result), which get `doc: -1`. Default false.
    */
   embedded?: boolean;
+  /**
+   * Extensions for a notebook code cell's editor, whose `doc` and `path` are the cell's
+   * language-server document and URI (see {@link cellEditorExtensions}).
+   */
+  cellExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
+  /**
+   * Extensions for a diff viewer pane that shows a file's open document (the working copy,
+   * Compare Files): `ctx` is that document's (see {@link diffSideExtensions}).
+   */
+  diffExtensions?: (ctx: EditorDocContext) => Extension | Extension[];
 }
 
 /**
@@ -180,6 +190,34 @@ export function embeddedEditorExtensions(path: string): Extension {
 
 const embeddedOf = (m: Map<string, EditorContribution>) => [...m.values()].filter((c) => c.embedded);
 
+/** The `diffExtensions` of every contribution, for a diff pane showing the open document of `ctx`. */
+export function diffSideExtensions(ctx: EditorDocContext): Extension[] {
+  const out: Extension[] = [];
+  for (const c of editorContributions()) {
+    if (!c.diffExtensions) continue;
+    try {
+      out.push(c.diffExtensions(ctx));
+    } catch (e) {
+      console.error(`editor contribution ${c.id} failed`, e);
+    }
+  }
+  return out;
+}
+
+/** The `cellExtensions` of every contribution, for the editor of a notebook code cell. */
+export function cellEditorExtensions(ctx: EditorDocContext): Extension[] {
+  const out: Extension[] = [];
+  for (const c of editorContributions()) {
+    if (!c.cellExtensions) continue;
+    try {
+      out.push(c.cellExtensions(ctx));
+    } catch (e) {
+      console.error(`editor contribution ${c.id} failed`, e);
+    }
+  }
+  return out;
+}
+
 useEditorRegistry.subscribe((s, prev) => {
   if (s.contributions === prev.contributions) return;
   const now = embeddedOf(s.contributions);
@@ -255,10 +293,20 @@ export function whenSynced(view: EditorView): Promise<void> {
   return view.state.facet(documentSynced)?.() ?? Promise.resolve();
 }
 
+/** Edits made outside text editors (notebook cells) that language servers must have before a request. */
+const pendingEdits = new Set<() => Promise<void>>();
+
+/** `settled` resolves once the owner's edits reached the backend; included in {@link whenAllSynced}. */
+export function registerPendingEdits(settled: () => Promise<void>): () => void {
+  pendingEdits.add(settled);
+  return () => void pendingEdits.delete(settled);
+}
+
 /** Every open editor's edits reached the backend (language servers answer from its copy). */
 export function whenAllSynced(): Promise<void> {
   const editors = useEditorRegistry.getState().editors;
-  return editors.size ? Promise.all([...editors].map((e) => whenSynced(e.view))).then(() => {}) : Promise.resolve();
+  const waits = [...[...editors].map((e) => whenSynced(e.view)), ...[...pendingEdits].map((settled) => settled())];
+  return waits.length ? Promise.all(waits).then(() => {}) : Promise.resolve();
 }
 
 /** True for doc changes that did not originate from typing in *this* view. */
@@ -491,6 +539,15 @@ export type EditorEvent =
   | { type: "docClosed"; doc: number; path: string }
   /** After the backend wrote the file. */
   | { type: "docSaved"; doc: number; path: string }
+  /** A local edit accepted by the shared document model. UTF-16 offsets. */
+  | {
+      type: "docChanged";
+      doc: number;
+      path: string;
+      baseVersion: number;
+      version: number;
+      changes: Array<{ from: number; to: number; insert: string }>;
+    }
   /** The active (focused or last focused) editor tab changed; `path` is null for non-file tabs. */
   | { type: "activeEditorChanged"; path: string | null; doc: number | null }
   /** Caret moved in the active text editor (throttled to animation frames). 0-based. */
@@ -679,6 +736,8 @@ export interface DocumentAttachment {
   lineEnding(): LineEnding;
   /** The document's language mode name (backend-assigned, as the editor tabs use). */
   uiMode(): string | null;
+  /** The document's context, as editor contributions receive it. */
+  context(): EditorDocContext;
   readOnly: boolean;
   /** Last view state, kept current while unmounted; use it when remounting this attachment. */
   editorState(): EditorState | null;

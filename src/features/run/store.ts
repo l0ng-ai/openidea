@@ -58,6 +58,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { agentName } from "./agentConfig";
 import { loadRunTemplates } from "./runTemplates";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
@@ -1075,9 +1076,7 @@ function finishSession(sessionId: string, code: number | null) {
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);
-          const tests = rt.tests;
-          // Tests the run reported already (Gradle's init script, Surefire failures) keep their output.
-          tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+          applyTestReports(rt.tests, reports);
           moveToReportedClasses(
             rt.tests,
             reports.map((r) => r.className),
@@ -1109,13 +1108,32 @@ async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   }
 }
 
-/** JUnit XML report cases → test tree events (`[class, method]`, failure output and source line). */
+/**
+ * Adds the reports' results to the run's tree. Tests the run reported already (Gradle's init script,
+ * Surefire failures) keep their result and output, but Surefire's console shows a failure without
+ * what the test printed before it.
+ */
+export function applyTestReports(tests: TestResults, reports: readonly TestCaseReport[]) {
+  const reported = reports.filter((r) => tests.hasResult([r.className, r.name]));
+  tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+  for (const r of reported) {
+    const path = [r.className, r.name];
+    const printed = printedLines(r);
+    const shown = new Set(tests.node(path).output);
+    if (printed.length && !printed.every((l) => shown.has(l))) tests.prependOutput(path, printed);
+  }
+}
+
+const printedLines = (r: TestCaseReport) => (r.stdout ? r.stdout.split("\n").slice(0, 200) : []);
+
+/** JUnit XML report cases → test tree events (`[class, method]`, printed and failure output, source line). */
 export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[] {
   const events: TestEvent[] = [];
   for (const r of reports) {
     if (!r.className || !r.name) continue;
     const path = [r.className, r.name];
     events.push({ type: "result", path, status: r.status, durationMs: r.durationMs ?? undefined });
+    for (const line of printedLines(r)) events.push({ type: "output", path, line });
     if (r.status !== "failed") continue;
     const text = [r.message, r.output].filter(Boolean).join("\n");
     for (const line of text.split("\n").slice(0, 200)) events.push({ type: "output", path, line });
@@ -1473,10 +1491,17 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
   return true;
 }
 
-export function closeSession(sessionId: string) {
+/**
+ * Removes a session's tab (stopping its process). An agent tab's closing is told to the MCP
+ * server for the agent unless `agentTabClosed` is false (the archive dropping its oldest).
+ */
+export function closeSession(sessionId: string, options: { agentTabClosed?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) return;
   if (isLive(session)) void stopSession(sessionId);
+  const agent = agentName(session.config);
+  if (agent !== null && options.agentTabClosed !== false && isTauri())
+    void call(commands.mcpAgentRunClosed(agent)).catch(() => {});
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);

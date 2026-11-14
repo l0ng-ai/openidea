@@ -48,6 +48,91 @@ pub fn spawn(
     Ok(info)
 }
 
+/// Tools › Start SSH Session: a login shell on SSH configuration `id`, opened by the
+/// built-in client with the configuration's saved password, key or agent.
+pub async fn spawn_ssh(
+    host: &Host,
+    window: &str,
+    id: &str,
+    cols: u16,
+    rows: u16,
+    on_output: Emit<String>,
+) -> IdeResult<TerminalInfo> {
+    let config = host.ssh.config(id)?;
+    if config.host.trim().is_empty() {
+        return Err(ide_core::IdeError::invalid(format!("SSH configuration {} has no host", config.name)));
+    }
+    let size = (if cols == 0 { 80 } else { cols }, if rows == 0 { 24 } else { rows });
+    let session = host.ssh.session(id).await?;
+    let (feed, output) = ide_terminal::feed();
+    let out = feed.clone();
+    let process = session
+        .spawn(
+            "",
+            Some(size),
+            Box::new(move |chunk| match chunk {
+                ide_ssh::Output::Stdout(data) | ide_ssh::Output::Stderr(data) => out.output(data),
+            }),
+        )
+        .await?;
+    let exit = process.exit_status();
+    let (input, mut inputs) = tokio::sync::mpsc::unbounded_channel();
+    host.runtime.spawn(async move {
+        let p = process;
+        while let Some(op) = inputs.recv().await {
+            let result = match op {
+                SshInput::Data(data) => p.write(&data).await,
+                SshInput::Resize(cols, rows) => p.resize(cols, rows).await,
+                SshInput::Close => {
+                    p.close().await;
+                    break;
+                }
+            };
+            if let Err(e) = result {
+                tracing::debug!("ssh terminal: {e}");
+            }
+        }
+    });
+    host.runtime.spawn(async move {
+        let code = exit.await;
+        feed.exited(code.and_then(|c| i32::try_from(c).ok()));
+    });
+    let title = if config.name.trim().is_empty() { config.label() } else { config.name.clone() };
+    host.terminals.attach(
+        title,
+        size,
+        Box::new(SshTerminal(input)),
+        output,
+        host.owner_window(window).to_owned(),
+        host.window_sink(window),
+        Box::new(move |chunk| on_output(chunk)),
+    )
+}
+
+enum SshInput {
+    Data(Vec<u8>),
+    Resize(u16, u16),
+    Close,
+}
+
+/// Input of an SSH shell, sent in order by one task.
+struct SshTerminal(tokio::sync::mpsc::UnboundedSender<SshInput>);
+
+impl ide_terminal::TerminalChannel for SshTerminal {
+    fn write(&self, data: &[u8]) -> IdeResult<()> {
+        self.0.send(SshInput::Data(data.to_vec())).map_err(|_| ide_core::IdeError::invalid("the SSH session has ended"))
+    }
+
+    fn resize(&self, cols: u16, rows: u16) -> IdeResult<()> {
+        let _ = self.0.send(SshInput::Resize(cols, rows));
+        Ok(())
+    }
+
+    fn close(&self) {
+        let _ = self.0.send(SshInput::Close);
+    }
+}
+
 pub fn write(host: &Host, id: TerminalId, data: &str) -> IdeResult<()> {
     host.terminals.write(id, data)
 }

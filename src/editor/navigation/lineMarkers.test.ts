@@ -27,6 +27,7 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  markerBatches,
   markersOf,
   noteOtherChanges,
   openMarkerTargets,
@@ -124,7 +125,34 @@ const BASE_OUTLINE = [
   item("Base", "class", 0, 3, [item("run()", "method", 1, 1, [], 25), item("label()", "method", 2, 2, [], 18)], 22),
 ];
 
+// main.go, as gopls outlines it: methods sit outside their type.
+const GO = [
+  "package main",
+  "",
+  "type Shape interface {",
+  "\tArea() float64",
+  "}",
+  "",
+  "type Square struct{ side float64 }",
+  "",
+  "func (s *Square) Area() float64 { return s.side * s.side }",
+  "",
+  "type Celsius float64",
+  "",
+  "func main() {}",
+];
+const GO_PATH = "/p/main.go";
+const GO_OUTLINE = [
+  item("Shape", "interface", 2, 4, [item("Area", "method", 3, 3, [], 1)], 5),
+  item("Square", "struct", 6, 6, [], 5),
+  item("(*Square).Area", "method", 8, 8, [], 17),
+  item("Celsius", "class", 10, 10, [], 5),
+  item("main", "function", 12, 12, [], 5),
+];
+
 const FILES: Record<string, string[]> = {
+  [GO_PATH]: GO,
+  "/go/src/fmt/print.go": ["package fmt", "type Stringer interface {", "\tString() string", "}"],
   [SHAPE_PATH]: SHAPE,
   "/p/Circle.java": CIRCLE,
   "/p/Square.java": ["public class Square implements Shape {", "    public double area() { return 2; }", "}"],
@@ -154,6 +182,17 @@ describe("marker candidates", () => {
       ["Base", true],
       ["run", true],
       ["label", false],
+    ]);
+  });
+
+  it("Go: types and receiver methods satisfy interfaces; only interfaces have implementations", () => {
+    const found = markerCandidates(GO_OUTLINE, lines(GO), { implicitInterfaces: true });
+    expect(found.map((c) => [c.name, c.method, c.inheritable, !!c.implicit])).toEqual([
+      ["Shape", false, true, false],
+      ["Area", true, true, false],
+      ["Square", false, false, true],
+      ["Area", true, false, true],
+      ["Celsius", false, false, true],
     ]);
   });
 
@@ -225,6 +264,31 @@ describe("markers from server answers", () => {
       [1, "implemented", 2, "Is implemented in Circle, Square"],
     ]);
     expect(markers[0]!.chooserTitle).toBe("Choose Implementation of Shape (2 found)");
+  });
+
+  it("Go: marks the interfaces a type satisfies and the interface methods a method implements", async () => {
+    const { deps } = server(
+      {
+        [`${GO_PATH}:2`]: [loc(GO_PATH, 6, 5)],
+        [`${GO_PATH}:3`]: [loc(GO_PATH, 8, 17)],
+        [`${GO_PATH}:6`]: [loc(GO_PATH, 2, 5)],
+        [`${GO_PATH}:8`]: [loc(GO_PATH, 3, 1)],
+        [`${GO_PATH}:10`]: [loc("/go/src/fmt/print.go", 1, 5)],
+      },
+      {},
+    );
+    const candidates = markerCandidates(GO_OUTLINE, lines(GO), { implicitInterfaces: true });
+    const cache = emptyCache();
+    await fillMarkers(GO_PATH, candidates, ALL, deps(GO_PATH), cache);
+    const markers = cachedMarkers(candidates, ALL, cache);
+    expect(markers.map((m) => [m.line, m.kind, m.tooltip])).toEqual([
+      [2, "implemented", "Is implemented by Square"],
+      [3, "implemented", "Is implemented in Square"],
+      [6, "implementing", "Implements Shape"],
+      [8, "implementing", "Implements method in Shape"],
+      [10, "implementing", "Implements Stringer"],
+    ]);
+    expect(markers[2]!.chooserTitle).toBe("Choose Implemented Interface of Square (1 found)");
   });
 
   it("marks subclassed classes and overridden methods", async () => {
@@ -353,6 +417,23 @@ describe("marker cache across views", () => {
     expect(affectsMarkers(["/p/build/tmp/x.txt", "/p/.git/index", "C:\\p\\out\\Main.class"])).toBe(false);
     expect(affectsMarkers(["/p/target/classes/a/Shape.class", "/p/src/main/java/a/Circle.java"])).toBe(true);
     expect(affectsMarkers(["/p/src/builder/Shape.java"])).toBe(true);
+  });
+});
+
+describe("marker batches", () => {
+  const at = (line: number) => ({ line }) as MarkerCandidate;
+
+  it("asks the viewport first, then the rest of the file nearest first", () => {
+    const candidates = [0, 100, 300, 400, 650, 900].map(at);
+    const batches = markerBatches(candidates, 380, 420);
+    expect(batches.flat().map((c) => c.line)).toEqual([400, 300, 650, 100, 0, 900]);
+  });
+
+  it("covers every declaration in batches", () => {
+    const candidates = Array.from({ length: 150 }, (_, i) => at(i * 4));
+    const batches = markerBatches(candidates, 0, 40);
+    expect(batches.map((b) => b.length)).toEqual([60, 60, 30]);
+    expect(new Set(batches.flat()).size).toBe(150);
   });
 });
 

@@ -99,6 +99,21 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let path = root.join("a.txt");
     std::fs::write(&path, "value\nnext\nend").unwrap();
     let doc = ops::doc::open(&host, "main", path.clone()).await.unwrap();
+    // `a.toml` has neither a language server, a completion plugin, nor an injection plugin, so `Unavailable` is preserved.
+    let toml_path = root.join("a.toml");
+    std::fs::write(&toml_path, "k = 1\n").unwrap();
+    let toml_doc = ops::doc::open(&host, "main", toml_path).await.unwrap();
+    assert_eq!(
+        ops::lsp::lsp_completion(&host, "main", RequestId(89), toml_doc.id, Pos::default(), None)
+            .await
+            .unwrap_err()
+            .kind,
+        ide_core::error::ErrorKind::Unavailable
+    );
+    let sql_path = root.join("q.sql");
+    std::fs::write(&sql_path, "SELECT 1;").unwrap();
+    let sql_doc = ops::doc::open(&host, "main", sql_path).await.unwrap();
+    assert!(ops::lsp::lsp_completion(&host, "main", RequestId(90), sql_doc.id, Pos::default(), None).await.is_ok());
     assert_eq!(
         ops::lsp::lsp_signature_help(&host, "main", doc.id, Pos::default()).await.unwrap().unwrap().signatures[0]
             .parameters,

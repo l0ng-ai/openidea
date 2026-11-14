@@ -1,14 +1,17 @@
 import type { NotebookSnapshot } from "@/bindings";
+import { registerPendingEdits } from "@/editor/api";
 import { basename } from "@/platform/project";
 import { lazyComponent } from "@/ui";
 import {
+  editorService,
   registerEditorKind,
   registerFileEditorProvider,
+  registerUriOpener,
   type EditorDocumentLifecycle,
 } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
 import { ProviderAcquisitions } from "@/workbench/providerAcquisition";
-import { closeNotebook, existingNotebookSession, notebookBackend, notebookSession } from "./session";
+import { closeNotebook, existingNotebookSession, notebookBackend, notebookSession, notebookSessions } from "./session";
 
 const acquisitions = new ProviderAcquisitions<NotebookSnapshot>(
   (snapshot) => existingNotebookSession(snapshot.path)?.getState().snapshot?.id === snapshot.id,
@@ -82,6 +85,21 @@ export function activate(): () => void {
           }
         }
         return { kind: "notebook", key: `notebook:${canonical}`, path: canonical };
+      },
+    }),
+    // Language servers answer from the backend's copy of the cells.
+    registerPendingEdits(() => Promise.all([...notebookSessions()].map((s) => s.settled())).then(() => {})),
+    // Locations in cells (go to declaration, usages) carry the cell's URI.
+    registerUriOpener({
+      scheme: "vscode-notebook-cell",
+      open: async (uri, { selection, ...options }) => {
+        for (const session of notebookSessions()) {
+          const cell = session.cellOfUri(uri);
+          if (!cell) continue;
+          await editorService().openFile(session.path, options);
+          session.reveal(cell, selection && { line: selection.line, col: selection.col });
+          return;
+        }
       },
     }),
   ];

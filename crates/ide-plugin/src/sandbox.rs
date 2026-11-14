@@ -1,7 +1,9 @@
 //! Capability checks for host functions that touch the file system.
 
+use ide_core::real_path::reaches_git_dir;
+pub use ide_core::real_path::resolve_real;
 use ide_extension::Capability;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 
 /// Largest file `read-file` returns.
 /// The most entries `fs.read-dir` hands over: the same cap as `find-files`.
@@ -11,53 +13,114 @@ pub const MAX_READ_BYTES: u64 = 16 << 20;
 /// The largest file s.write may write, in bytes.
 pub const MAX_WRITE_BYTES: usize = 16 << 20;
 
-/// The canonical `root` and the absolute form of `path` (absolute, or
-/// relative to `root`) — before any symlink or existence check.
-fn joined_path(root: &Path, path: &str) -> Result<(PathBuf, PathBuf), String> {
+/// What a requested path is, judged from its text alone — before anything opens it. On
+/// Windows even resolving a path opens it, and opening a network or pipe path connects to
+/// that host or pipe, so every resolver asks this first and checks the real path after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lexical {
+    /// A local path, or a network path under one of the allowed bases.
+    Resolvable,
+    /// A network path outside every allowed base.
+    Outside,
+    /// A device, pipe or file stream, which is never a file a plugin may use.
+    Refused,
+}
+
+/// Judges `path` against `bases` (absolute paths a resolver allows) from the text alone.
+fn judge(path: &Path, bases: &[&Path]) -> Lexical {
+    let Some((parts, remote)) = lexical_parts(path) else {
+        return Lexical::Refused;
+    };
+    let under =
+        |base: &&Path| base.is_absolute() && lexical_parts(base).is_some_and(|(base, _)| parts.starts_with(&base));
+    if remote && !bases.iter().any(under) { Lexical::Outside } else { Lexical::Resolvable }
+}
+
+/// `path` split into comparable parts, `.` and `..` applied, a verbatim drive or share
+/// spelled like the plain one and, on Windows, case-folded; with whether it names a network
+/// location. `None` for a device or pipe (`\\.\…`, `\\?\GLOBALROOT\…`, `NUL`, `COM1`) or an
+/// NTFS stream (`a.txt:s`).
+fn lexical_parts(path: &Path) -> Option<(Vec<String>, bool)> {
+    let mut parts = Vec::new();
+    let mut remote = false;
+    let mut anchored = 0;
+    for part in path.components() {
+        match part {
+            Component::Prefix(prefix) => {
+                parts.push(match prefix.kind() {
+                    Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => format!("{}:", char::from(drive)),
+                    Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                        remote = true;
+                        format!(r"\\{}\{}", server.to_string_lossy(), share.to_string_lossy())
+                    }
+                    Prefix::Verbatim(_) | Prefix::DeviceNS(_) => return None,
+                });
+                anchored = parts.len();
+            }
+            Component::RootDir => {
+                parts.push(std::path::MAIN_SEPARATOR_STR.to_owned());
+                anchored = parts.len();
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if parts.len() > anchored {
+                    parts.pop();
+                }
+            }
+            Component::Normal(name) => {
+                let name = name.to_string_lossy();
+                if cfg!(windows) && (name.contains(':') || names_device(&name)) {
+                    return None;
+                }
+                parts.push(name.into_owned());
+            }
+        }
+    }
+    if cfg!(windows) {
+        parts.iter_mut().for_each(|part| *part = part.to_lowercase());
+    }
+    Some((parts, remote))
+}
+
+/// A name Windows opens as a device in every folder (`NUL`, `COM1`, `con.txt`): what comes
+/// before the first `.`, trailing spaces ignored.
+fn names_device(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or_default().trim_end_matches(' ').to_ascii_uppercase();
+    match stem.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" => true,
+        _ => stem.strip_prefix("COM").or_else(|| stem.strip_prefix("LPT")).is_some_and(|number| {
+            matches!(number, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+        }),
+    }
+}
+
+fn refused(path: &str) -> String {
+    format!("{path}: devices, pipes and file streams are not allowed")
+}
+
+/// The canonical `root` and the absolute form of `path` (absolute, or relative to `root`) —
+/// before any symlink or existence check — when [`judge`] lets it be resolved inside `root`.
+/// `Ok(None)` for a network path outside `root`.
+fn joined_path(root: &Path, path: &str) -> Result<Option<(PathBuf, PathBuf)>, String> {
     if path.is_empty() {
         return Err("empty path".into());
     }
-    let root = dunce::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?;
+    let real_root = dunce::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?;
     let requested = Path::new(path);
-    let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
-    Ok((root, joined))
-}
-
-/// `joined` after `..`/symlink resolution as far as the file system allows:
-/// the canonical path when it exists, else the canonicalized deepest existing
-/// ancestor with the still-missing tail resolved textually — so the location
-/// of a missing path is still judged where it would really land.
-pub fn resolve_real(joined: &Path) -> PathBuf {
-    let mut tail = Vec::new();
-    let mut candidate = joined.to_path_buf();
-    let mut real = loop {
-        match dunce::canonicalize(&candidate) {
-            Ok(real) => break real,
-            Err(_) => {
-                let Some(last) = candidate.components().next_back() else {
-                    return joined.to_path_buf();
-                };
-                tail.push(last.as_os_str().to_owned());
-                if !candidate.pop() {
-                    return joined.to_path_buf();
-                }
-            }
-        }
-    };
-    for part in tail.iter().rev() {
-        if part == ".." {
-            real.pop();
-        } else if part != "." {
-            real.push(part);
-        }
+    let joined = if requested.is_absolute() { requested.to_path_buf() } else { real_root.join(requested) };
+    match judge(&joined, &[root, &real_root]) {
+        Lexical::Resolvable => Ok(Some((real_root, joined))),
+        Lexical::Outside => Ok(None),
+        Lexical::Refused => Err(refused(path)),
     }
-    real
 }
 
 /// Resolves `path` (absolute, or relative to `root`) and checks that the real
 /// path — after following `..` and symlinks — stays inside `root`.
 pub fn resolve_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
-    let (root, joined) = joined_path(root, path)?;
+    let Some((root, joined)) = joined_path(root, path)? else {
+        return Err(format!("{path}: access outside the project root is not allowed"));
+    };
     let real = dunce::canonicalize(&joined).map_err(|_| format!("{path}: no such file"))?;
     if !real.starts_with(&root) {
         return Err(format!("{path}: access outside the project root is not allowed"));
@@ -88,12 +151,75 @@ pub fn resolve_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String
     }
 }
 
+/// Resolves an already-open document for a background edit without following a
+/// symbolic link, junction, or other Windows reparse point.  Unlike ordinary
+/// project reads, background edits may have originated with another machine:
+/// accepting a link would let that machine change an unexpected file when the
+/// user later saves the editor buffer.
+///
+/// The input is deliberately project-relative.  Existing path components are
+/// examined with `symlink_metadata` from the canonical project root; no
+/// canonicalization happens after the walk, so a link is never traversed.
+pub fn resolve_background_document_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() || Path::new(path).is_absolute() {
+        return Err(format!("{path}: background document paths must be project-relative"));
+    }
+    let root = dunce::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?;
+    let components: Vec<_> = Path::new(path).components().collect();
+    if components.is_empty() || components.iter().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+        return Err(format!("{path}: background document paths must not leave the project"));
+    }
+    let mut current = root.clone();
+    for (index, part) in components.iter().enumerate() {
+        let std::path::Component::Normal(name) = part else { unreachable!() };
+        if background_control_name(name) {
+            return Err(format!("{path}: background edits may not target VCS or IDE control files"));
+        }
+        current.push(name);
+        let metadata = std::fs::symlink_metadata(&current).map_err(|_| format!("{path}: no such open document"))?;
+        if is_link_or_reparse(&metadata) {
+            return Err(format!("{path}: background edits refuse symbolic links"));
+        }
+        if index + 1 < components.len() && !metadata.is_dir() {
+            return Err(format!("{path}: not a directory"));
+        }
+        if index + 1 == components.len() && !metadata.is_file() {
+            return Err(format!("{path}: not a file"));
+        }
+    }
+    Ok(current)
+}
+
+/// [`resolve_background_document_in_root`] over a workspace group's roots.
+pub fn resolve_background_document_in_roots(roots: &[PathBuf], path: &str) -> Result<PathBuf, String> {
+    first_root_resolving(roots, path, resolve_background_document_in_root)
+}
+
+fn is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    let reparse = {
+        use std::os::windows::fs::MetadataExt;
+        metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
+    };
+    #[cfg(not(windows))]
+    let reparse = false;
+    metadata.file_type().is_symlink() || reparse
+}
+
+fn background_control_name(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    let name = name.split(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
+    matches!(name.to_ascii_lowercase().as_str(), ".git" | ".hg" | ".svn" | ".idea" | ".openidea" | ".vscode")
+}
+
 /// Whether `path` (absolute, or relative to `root`) lands inside `root`,
 /// without requiring it to exist: `Ok(true)` also for a missing path, so
 /// callers distinguish "outside" from "absent". Existing symlinks are
 /// followed; a missing tail is judged at its would-be location.
 pub fn inside_root(root: &Path, path: &str) -> Result<bool, String> {
-    let (root, joined) = joined_path(root, path)?;
+    let Some((root, joined)) = joined_path(root, path)? else {
+        return Ok(false);
+    };
     Ok(resolve_real(&joined).starts_with(&root))
 }
 
@@ -114,36 +240,40 @@ pub fn inside_roots(roots: &[PathBuf], path: &str) -> Result<bool, String> {
     Ok(false)
 }
 
+/// The most specific of `roots` containing `path` (absolute, and possibly not existing yet),
+/// judged where it really lands. A network path outside every root is not resolved at all.
+pub(crate) fn innermost_root(roots: Vec<PathBuf>, path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let roots: Vec<(PathBuf, PathBuf)> = roots
+        .into_iter()
+        .map(|root| {
+            let real = resolve_real(&root);
+            (root, real)
+        })
+        .collect();
+    let bases: Vec<&Path> = roots.iter().flat_map(|(root, real)| [root.as_path(), real.as_path()]).collect();
+    if judge(path, &bases) != Lexical::Resolvable {
+        return None;
+    }
+    let real = resolve_real(path);
+    roots
+        .into_iter()
+        .filter(|(_, root)| real.starts_with(root))
+        .map(|(root, _)| root)
+        .max_by_key(|root| root.components().count())
+}
+
 /// Like [`resolve_in_root`] for a path that may not exist yet (a file about to
 /// be created) or that names a symlink itself (to delete or rename it): the
 /// directory part is resolved through symlinks, the final name is kept as is,
 /// and the result must stay inside `root`.
-/// Whether a path (relative to the project root) goes through git's own `.git` folder or file.
-/// git runs what it finds in `.git` (hooks, `gpg.program`, filters), so a content write must
-/// never reach it. Names are normalized for trailing dots and spaces and NTFS stream suffixes;
-/// the caller also checks the short-name-resolved path via [`resolve_real`].
-pub fn names_git_dir(rel: &Path) -> bool {
-    rel.components().any(|part| {
-        let name = part.as_os_str().to_string_lossy();
-        let name = name.split(':').next().unwrap_or_default().trim_end_matches(['.', ' ']);
-        name.eq_ignore_ascii_case(".git")
-    })
-}
-
-/// A resolved write destination that reaches git's own `.git` metadata, judged by the name
-/// given and by the name the file system resolves it to.
-fn reaches_git_dir(root: &Path, real: &Path) -> bool {
-    real.strip_prefix(root).is_ok_and(names_git_dir) || resolve_real(real).strip_prefix(root).is_ok_and(names_git_dir)
-}
-
 pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
     let outside = || format!("{path}: access outside the project root is not allowed");
-    if path.is_empty() {
-        return Err("empty path".into());
-    }
-    let root = dunce::canonicalize(root).map_err(|e| format!("project root unavailable: {e}"))?;
-    let requested = Path::new(path);
-    let joined = if requested.is_absolute() { requested.to_path_buf() } else { root.join(requested) };
+    let Some((root, joined)) = joined_path(root, path)? else {
+        return Err(outside());
+    };
     let mut lexical = PathBuf::new();
     for part in joined.components() {
         match part {
@@ -181,7 +311,9 @@ pub fn resolve_new_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
 /// Resolves a content write's destination, including existing and dangling
 /// symlinks in the final component. Entry operations use [`resolve_new_in_root`].
 pub fn resolve_writable_in_root(root: &Path, path: &str) -> Result<PathBuf, String> {
-    let (root, joined) = joined_path(root, path)?;
+    let Some((root, joined)) = joined_path(root, path)? else {
+        return Err(format!("{path}: access outside the project root is not allowed"));
+    };
     let real = resolve_write_target(&joined, 40).map_err(|e| format!("{path}: {e}"))?;
     if !real.starts_with(&root) {
         return Err(format!("{path}: access outside the project root is not allowed"));
@@ -346,6 +478,22 @@ fn resolve(granted: &[Capability], path: &str, wanted: Wanted) -> Result<PathBuf
     if !asked.is_absolute() {
         return Err(Refusal::Invalid(format!("{path}: use an absolute path (or ~/…)")));
     }
+    let bases: Vec<PathBuf> = granted
+        .iter()
+        .filter_map(|grant| match (wanted, grant) {
+            (Wanted::Read, Capability::FsRead(base)) | (Wanted::Write, Capability::FsWrite(base)) => {
+                Some(expand_tilde(base))
+            }
+            _ => None,
+        })
+        .flat_map(|base| [dunce::canonicalize(&base).ok(), Some(base)])
+        .flatten()
+        .collect();
+    match judge(&asked, &bases.iter().map(PathBuf::as_path).collect::<Vec<_>>()) {
+        Lexical::Resolvable => {}
+        Lexical::Outside => return Err(Refusal::Denied(wanted.capability(strip_verbatim(&asked)).to_string())),
+        Lexical::Refused => return Err(Refusal::Invalid(refused(path))),
+    }
     let real = match wanted {
         Wanted::Read => dunce::canonicalize(&asked).map_err(|_| Refusal::Invalid(format!("{path}: no such file")))?,
         Wanted::Write => dunce::canonicalize(&asked)
@@ -399,6 +547,7 @@ fn strip_verbatim(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ide_core::real_path::names_git_dir;
 
     #[cfg(windows)]
     #[test]
@@ -618,6 +767,25 @@ mod tests {
     }
 
     #[test]
+    fn background_document_edits_are_relative_and_exclude_control_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        std::fs::create_dir_all(root.join(".openidea")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join(".git/hooks/pre-commit"), "#!/bin/sh\n").unwrap();
+        std::fs::write(root.join(".openidea/state"), "state\n").unwrap();
+
+        assert!(resolve_background_document_in_root(&root, "src/main.rs").is_ok());
+        for path in
+            ["/etc/passwd", "../outside", "src/../.git/hooks/pre-commit", ".git/hooks/pre-commit", ".openidea/state"]
+        {
+            assert!(resolve_background_document_in_root(&root, path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
     fn git_folder_is_recognised_under_every_spelling_that_opens_it() {
         for path in [
             "proj/.git/hooks/pre-commit",
@@ -650,6 +818,23 @@ mod tests {
 
         assert_eq!(resolve_new_in_root(&root, "link.txt").unwrap(), root_real.join("link.txt"));
         assert!(resolve_new_in_root(&root, "out/x.txt").unwrap_err().contains("outside"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_document_edits_refuse_final_and_ancestor_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        symlink(root.join("src/main.rs"), root.join("final-link.rs")).unwrap();
+        symlink(root.join("src"), root.join("linked-src")).unwrap();
+
+        assert!(resolve_background_document_in_root(&root, "final-link.rs").unwrap_err().contains("symbolic links"));
+        assert!(
+            resolve_background_document_in_root(&root, "linked-src/main.rs").unwrap_err().contains("symbolic links")
+        );
     }
 
     #[cfg(unix)]
@@ -893,5 +1078,128 @@ mod tests {
             PathBuf::from(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap())
         );
         assert_eq!(expand_tilde("relative/x"), PathBuf::from("relative/x"));
+    }
+
+    /// Resolving a path must not open what it names before the path is known to be allowed:
+    /// on Windows, opening a pipe or network path (even only to canonicalize it) connects to
+    /// that pipe or host. Streams and reserved device names are never project files.
+    #[cfg(windows)]
+    mod windows_paths {
+        use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        /// Every spelling of the local pipe `name` that Windows opens: device, verbatim, object
+        /// manager and network (through the SMB redirector, as a remote host would be reached).
+        fn spellings(name: &str) -> [String; 6] {
+            [
+                format!(r"\\.\pipe\{name}"),
+                format!(r"//./pipe/{name}"),
+                format!(r"\\?\pipe\{name}"),
+                format!(r"\\?\GLOBALROOT\Device\NamedPipe\{name}"),
+                format!(r"\\127.0.0.1\pipe\{name}"),
+                format!(r"\\?\UNC\127.0.0.1\pipe\{name}"),
+            ]
+        }
+
+        /// Each resolver, as `(name, accepts root path)`.
+        type Resolver = (&'static str, fn(&Path, &str) -> bool);
+
+        const RESOLVERS: [Resolver; 11] = [
+            ("resolve_in_root", |root, path| resolve_in_root(root, path).is_ok()),
+            ("resolve_in_roots", |root, path| resolve_in_roots(&[root.to_path_buf()], path).is_ok()),
+            ("inside_root", |root, path| inside_root(root, path).unwrap_or(false)),
+            ("inside_roots", |root, path| inside_roots(&[root.to_path_buf()], path).unwrap_or(false)),
+            ("resolve_new_in_root", |root, path| resolve_new_in_root(root, path).is_ok()),
+            ("resolve_new_in_roots", |root, path| resolve_new_in_roots(&[root.to_path_buf()], path).is_ok()),
+            ("resolve_writable_in_root", |root, path| resolve_writable_in_root(root, path).is_ok()),
+            ("resolve_writable_in_roots", |root, path| resolve_writable_in_roots(&[root.to_path_buf()], path).is_ok()),
+            ("resolve_granted", |root, path| resolve_granted(&[grant_for(root)], path).is_ok()),
+            ("resolve_writable", |root, path| {
+                resolve_writable(&[Capability::FsWrite(strip_verbatim(&dunce::canonicalize(root).unwrap()))], path)
+                    .is_ok()
+            }),
+            ("project_of", |root, path| innermost_root(vec![root.to_path_buf()], Path::new(path)).is_some()),
+        ];
+
+        #[test]
+        fn pipe_and_network_paths_are_refused_without_being_opened() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("project");
+            std::fs::create_dir(&root).unwrap();
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let _context = runtime.enter();
+            let mut probes = Vec::new();
+            for (resolver, accepts) in RESOLVERS {
+                for spelling in 0..spellings("").len() {
+                    let name = format!("openidea-sandbox-{}-{resolver}-{spelling}", std::process::id());
+                    let server = ServerOptions::new().first_pipe_instance(true).create(format!(r"\\.\pipe\{name}"));
+                    let server = server.unwrap();
+                    let opened = Arc::new(AtomicBool::new(false));
+                    let flag = opened.clone();
+                    runtime.spawn(async move {
+                        let _ = server.connect().await;
+                        flag.store(true, Ordering::SeqCst);
+                    });
+                    let path = spellings(&name)[spelling].clone();
+                    let accepted = accepts(&root, &path);
+                    probes.push((resolver, path, accepted, opened));
+                }
+            }
+            runtime.block_on(tokio::time::sleep(std::time::Duration::from_millis(500)));
+            let failures: Vec<String> = probes
+                .iter()
+                .filter(|(_, _, accepted, opened)| *accepted || opened.load(Ordering::SeqCst))
+                .map(|(resolver, path, accepted, opened)| {
+                    format!("{resolver}({path}): accepted={accepted} opened={}", opened.load(Ordering::SeqCst))
+                })
+                .collect();
+            assert!(failures.is_empty(), "{failures:#?}");
+        }
+
+        #[test]
+        fn streams_and_device_names_are_refused() {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("project");
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("a.txt"), "text").unwrap();
+            let root = dunce::canonicalize(root).unwrap();
+            let mut accepted = Vec::new();
+            for rel in ["a.txt:hidden", "a.txt::$DATA", "NUL", "con.txt", "sub/COM1", "LPT1.log", "CONIN$"] {
+                for path in [rel.to_owned(), root.join(rel).to_string_lossy().into_owned()] {
+                    for (resolver, accepts) in RESOLVERS {
+                        if accepts(&root, &path) {
+                            accepted.push(format!("{resolver}({path})"));
+                        }
+                    }
+                }
+            }
+            assert!(accepted.is_empty(), "{accepted:#?}");
+        }
+
+        #[test]
+        fn a_share_path_is_resolved_only_under_a_root_on_that_share() {
+            let root = Path::new(r"\\?\UNC\server\share\proj");
+            for path in
+                [r"\\server\share\proj\a.txt", r"\\SERVER\Share\Proj\src\..\a.txt", r"\\?\UNC\server\share\proj"]
+            {
+                assert_eq!(judge(Path::new(path), &[root]), Lexical::Resolvable, "{path}");
+            }
+            for path in [
+                r"\\server\other\a.txt",
+                r"\\elsewhere\share\proj\a.txt",
+                r"\\server\share\proj\..\..\other\a.txt",
+                r"\\server\share\project\a.txt",
+            ] {
+                assert_eq!(judge(Path::new(path), &[root]), Lexical::Outside, "{path}");
+                assert_eq!(judge(Path::new(path), &[Path::new(r"C:\proj")]), Lexical::Outside, "{path}");
+            }
+            for path in [r"C:\proj\a.txt", r"\\?\C:\elsewhere\a.txt", r"D:\x"] {
+                assert_eq!(judge(Path::new(path), &[root]), Lexical::Resolvable, "{path}");
+            }
+            assert_eq!(judge(Path::new(r"\\server\share\proj\a.txt:s"), &[root]), Lexical::Refused);
+            assert!(!names_device("console.log") && !names_device("com10") && !names_device("aux_utils.rs"));
+        }
     }
 }

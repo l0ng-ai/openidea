@@ -31,10 +31,12 @@ pub mod scaffold;
 pub mod sdk;
 pub mod search;
 pub mod spell;
+mod ssh;
 pub mod syntax;
 pub mod term;
 pub mod tools;
 pub mod vcs;
+pub mod web;
 
 use crate::Host;
 use ide_core::{IdeError, IdeResult};
@@ -94,6 +96,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     deploy::register(d);
     docker::register(d);
     db::register(d);
+    ssh::register(d);
 }
 
 impl Host {

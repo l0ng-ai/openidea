@@ -42,16 +42,19 @@ import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
+import { renderedDocsExtension } from "./renderedDocs";
 import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapActive } from "./prefs";
 import { commentTokens } from "./languages";
 import { multiCaretMouse } from "./multiCaret";
 import { columnModeExtension } from "./columnMode";
+import { bracketBlockSelect } from "./bracketBlockSelect";
 import { visibleGoalColumns } from "./verticalMotion";
 import { tabKeymap } from "./smartKeys";
 import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
 import { overwriteField } from "./overwrite";
+import { relativeLineNumbers } from "./relativeLineNumbers";
 import { clipboardDocumentPath, clipboardFilesExtension } from "./clipboard";
 import { clipboardHistoryExtension } from "../clipboardHistory";
 import type { LanguageInfo } from "../backend";
@@ -242,7 +245,11 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
 }
 
 export function lineNumbersExtension(settings: EditorSettings | undefined): Extension {
-  return prefsOf(settings).appearance.lineNumbers && !isDistractionFree() ? lineNumbers() : [];
+  const a = prefsOf(settings).appearance;
+  if (!a.lineNumbers || isDistractionFree()) return [];
+  return a.lineNumberMode === "relative" || a.lineNumberMode === "hybrid"
+    ? relativeLineNumbers(a.lineNumberMode === "hybrid")
+    : lineNumbers();
 }
 
 /**
@@ -275,12 +282,14 @@ export function prefsFor(o: {
   info: LanguageInfo | undefined;
   readOnly: boolean;
   wrapOverride?: boolean | null;
+  renderedDocsOverride?: boolean | null;
 }): Extension {
   return prefsExtension({
     prefs: prefsOf(o.settings),
     path: o.path,
     softWrap: o.settings?.softWrap,
     wrapOverride: o.wrapOverride,
+    renderedDocsOverride: o.renderedDocsOverride,
     showWhitespace: o.settings?.showWhitespace,
     hardWrapAt: hardWrapAt(o.settings, o.info),
     readOnly: o.readOnly,
@@ -314,6 +323,8 @@ export interface SetupOptions {
   formatIndent?: EffectiveIndent | null;
   /** Soft wraps toggled for this file (View › Active Editor › Soft-Wrap). */
   wrapOverride?: boolean | null;
+  /** Rendered doc comments toggled for this file (View › Active Editor › Render Documentation Comments). */
+  renderedDocsOverride?: boolean | null;
   /** Extra extensions owned by the slot (update listeners, focus handlers). */
   extra?: Extension;
   /** Standalone value editors supply their own extensions without file-backed contributions. */
@@ -366,6 +377,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     EditorState.allowMultipleSelections.of(true),
     multiCaretMouse,
     columnModeExtension,
+    bracketBlockSelect,
     visibleGoalColumns,
     occurrenceSearch,
     overwriteField,
@@ -384,6 +396,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     overviewLane,
     cornerInset,
     codeLensExtension,
+    renderedDocsExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",
       autocorrect: "off",
@@ -406,6 +419,7 @@ export function baseExtensions(o: SetupOptions): Extension {
         info: o.info,
         readOnly: o.ctx.readOnly,
         wrapOverride: o.wrapOverride,
+        renderedDocsOverride: o.renderedDocsOverride,
       }),
     ),
     compartments.contributions.of(o.contributions ?? contributionExtensions(o.ctx)),

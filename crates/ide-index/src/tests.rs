@@ -773,6 +773,95 @@ fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
 }
 
 #[test]
+fn incremental_changes_refresh_the_warm_start_snapshot() {
+    let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
+    let idx = f.open();
+    let changed = f.write("src/a.rs", "fn renamed() {}\n");
+    idx.update(&[changed], &[]);
+    assert!(idx.wait_idle(WAIT));
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(f.cache.join("index.snapshot").exists(), "a watcher update must regenerate the snapshot");
+}
+
+#[test]
+fn warm_start_detects_changed_ignore_rules() {
+    let f = Fixture::new(&[("sub/generated/a.rs", "fn a() {}\n"), (".git/HEAD", "ref: refs/heads/main\n")]);
+    f.write("sub/.gitignore", "");
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2, "generated/a.rs plus .gitignore itself");
+    drop(idx);
+
+    std::thread::sleep(Duration::from_millis(20));
+    f.write("sub/.gitignore", "generated/\n");
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "an updated ignore rule invalidates the warm snapshot");
+}
+
+#[test]
+fn warm_start_detects_changed_ignore_rules_above_the_project() {
+    // The project is a folder of a repository whose ignore files sit above it.
+    let f = Fixture::new(&[("generated/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")]);
+    let repo = f.root.parent().unwrap().to_owned();
+    std::fs::create_dir_all(repo.join(".git/info")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2);
+    drop(idx);
+
+    std::fs::write(repo.join(".gitignore"), "proj/generated/\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "a new ignore file above the project invalidates the warm snapshot");
+    drop(idx);
+
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(repo.join(".gitignore"), "").unwrap();
+    std::fs::write(repo.join(".git/info/exclude"), "proj/src/\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "so do the enclosing repository's changed rules");
+    assert!(!symbols(&idx, "a", SymbolFilter::All).is_empty());
+}
+
+#[test]
+fn warm_start_detects_a_changed_exclude_file_of_a_linked_worktree() {
+    // The project is a linked worktree: its `.git` file points into the main repository,
+    // whose shared `info/exclude` the walker reads through `commondir`.
+    let f = Fixture::new(&[("generated/a.rs", "fn a() {}\n"), ("src/b.rs", "fn b() {}\n")]);
+    let main = f.root.parent().unwrap().join("main/.git");
+    let worktree = main.join("worktrees/proj");
+    std::fs::create_dir_all(main.join("info")).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(main.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(worktree.join("HEAD"), "ref: refs/heads/wt\n").unwrap();
+    std::fs::write(worktree.join("commondir"), "../..\n").unwrap();
+    std::fs::write(f.root.join(".git"), format!("gitdir: {}\n", worktree.display())).unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2);
+    drop(idx);
+
+    std::fs::write(main.join("info/exclude"), "generated/\n").unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "the shared exclude file invalidates the warm snapshot");
+}
+
+#[test]
+fn warm_start_detects_a_new_file_in_an_existing_empty_directory() {
+    let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
+    std::fs::create_dir(f.root.join("empty")).unwrap();
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1);
+    assert!(idx.find_dirs("empty", 10).is_empty());
+    drop(idx);
+    let idx = f.open();
+    assert!(idx.find_dirs("empty", 10).is_empty(), "empty folders are not searchable after warm start");
+    drop(idx);
+
+    f.write("empty/new.rs", "fn new_symbol() {}\n");
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2);
+    assert_eq!(symbols(&idx, "new_symbol", SymbolFilter::All), ["new_symbol"]);
+}
+
+#[test]
 fn rule_changes_refresh_only_the_affected_index_subtree() {
     for (rule, subtree) in [(".git/info/exclude", ""), ("sub/.gitignore", "sub"), ("sub/.ignore", "sub")] {
         let fx = Fixture::new(&[
@@ -833,4 +922,43 @@ fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
     idx.ignore_rules_changed(std::slice::from_ref(&fx.root));
     assert!(idx.wait_idle(WAIT));
     assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
+}
+
+#[test]
+fn warm_start_sees_edits_deletions_and_renames_made_while_closed() {
+    let f = Fixture::new(&[
+        ("src/a.rs", "fn aaaa() {}\n"),
+        ("src/deep/b.rs", "fn bbbb() {}\n"),
+        ("c.rs", "fn cccc() {}\n"),
+    ]);
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    drop(idx);
+    std::thread::sleep(Duration::from_millis(200));
+    // Warm start of an unchanged tree keeps everything.
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(symbols(&idx, "aaaa", SymbolFilter::All), ["aaaa"]);
+    drop(idx);
+    std::thread::sleep(Duration::from_millis(20));
+    // Same size, new content; a deletion; a new file two levels down; a rename.
+    f.write("src/a.rs", "fn zzzz() {}\n");
+    std::fs::remove_file(f.root.join("c.rs")).unwrap();
+    f.write("src/deep/deeper/n.rs", "fn nnnn() {}\n");
+    std::fs::rename(f.root.join("src/deep/b.rs"), f.root.join("src/deep/r.rs")).unwrap();
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "aaaa", SymbolFilter::All).is_empty(), "stale content");
+    assert_eq!(symbols(&idx, "zzzz", SymbolFilter::All), ["zzzz"]);
+    assert!(symbols(&idx, "cccc", SymbolFilter::All).is_empty(), "deleted file");
+    assert_eq!(symbols(&idx, "nnnn", SymbolFilter::All), ["nnnn"]);
+    assert_eq!(symbols(&idx, "bbbb", SymbolFilter::All), ["bbbb"]);
+    assert_eq!(idx.status().files, 3);
+    drop(idx);
+    // After the cold rescan, the next warm start agrees.
+    std::thread::sleep(Duration::from_millis(200));
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(idx.status().files, 3);
+    assert_eq!(symbols(&idx, "zzzz", SymbolFilter::All), ["zzzz"]);
 }

@@ -17,6 +17,16 @@ pub async fn sdk_detect(window: Window, state: State<'_, AppState>, kind: SdkKin
     ide_host::ops::sdk::sdk_detect(&state.host, window.label(), kind).await
 }
 
+/// The Python interpreters of the recently opened projects, each with its project.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_python_project_interpreters(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<ide_host::ops::sdk::ProjectInterpreter>> {
+    ide_host::ops::sdk::sdk_python_project_interpreters(&state.host, window.label()).await
+}
+
 /// The interpreter the project uses: the configured one, else its virtualenv.
 #[tauri::command]
 #[specta::specta]

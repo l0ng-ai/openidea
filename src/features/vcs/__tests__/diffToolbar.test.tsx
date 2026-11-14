@@ -41,6 +41,7 @@ vi.mock("@/editor/api", async (importOriginal) => ({
       lineEnding: () => workingEol,
       readOnly: false,
       extension: [],
+      context: () => ({ doc: 1, path, language: "plaintext", uiMode: null, readOnly: false }),
       save: () => Promise.resolve(),
       release: () => {},
     }),
@@ -182,6 +183,35 @@ describe("Diff toolbar", () => {
     );
     expect(await screen.findByText("Contents are identical")).toBeInTheDocument();
     expect(screen.queryByText("Contents differ only in line separators")).toBeNull();
+  });
+
+  it("gives the working-copy pane its document's navigation, and the revision pane none", async () => {
+    const { registerEditorContribution } = await import("@/editor/api");
+    const marked = EditorView.contentAttributes.of({ "data-diff-doc": "1" });
+    const diffExtensions = vi.fn(() => marked);
+    const off = registerEditorContribution({ id: "test.diffSide", extensions: () => [], diffExtensions });
+    texts.HEAD = "a\n";
+    working = "b\n";
+    const mounted = render(
+      <DiffEditor
+        input={diffInput({
+          path: "/p/a.ts",
+          left: { type: "rev", rev: "HEAD" },
+          right: { type: "worktree" },
+          mode: "split",
+        })}
+      />,
+    );
+    try {
+      await waitFor(() => expect(mounted.container.querySelectorAll(".cm-editor")).toHaveLength(2));
+      const [left, right] = mounted.container.querySelectorAll(".cm-content");
+      expect(left!.getAttribute("data-diff-doc")).toBeNull();
+      expect(right!.getAttribute("data-diff-doc")).toBe("1");
+      expect(diffExtensions).toHaveBeenCalledWith(expect.objectContaining({ doc: 1, path: "/p/a.ts" }));
+    } finally {
+      mounted.unmount();
+      off();
+    }
   });
 
   it("titles a revision with its short commit id, HEAD resolved, and the file's repository path", async () => {
@@ -559,6 +589,41 @@ describe("Jump to Source of a revision diff", () => {
     render(<DiffEditor input={input} />);
     expect(await jumpFrom(0, 2)).toEqual(["/p/a.ts", { selection: { line: 5, col: 1 }, focus: true }]);
   });
+
+  it.each([{ key: "ArrowDown", metaKey: true }, { key: "F4" }])(
+    "jumps with $key when the working copy is found after the pane gains focus",
+    async (stroke) => {
+      setUp();
+      let finishProbe!: (result: unknown) => void;
+      probe.mockReturnValue(new Promise((resolve) => (finishProbe = resolve)));
+      const keymap = useKeymap.getState();
+      applyKeymapSettings("intellij-macos", {});
+      const unregister = registerCompareActions();
+      const uninstall = installKeyboardDispatcher(window);
+      const mounted = render(<DiffEditor input={input} />);
+      try {
+        const view = await pane(1);
+        view.dispatch({ selection: { anchor: view.state.doc.line(3).from + 1 } });
+        view.focus();
+        expect(view.contentDOM).toBe(document.activeElement);
+        expect(screen.queryByRole("button", { name: "Jump to Source" })).toBeNull();
+
+        finishProbe({ status: "ok", data: { size: working.length, binary: false, tooLarge: false } });
+        await screen.findByRole("button", { name: "Jump to Source" });
+        expect(view.contentDOM).toBe(document.activeElement);
+        fireEvent.keyDown(view.contentDOM, { ...stroke, code: stroke.key });
+        await waitFor(() =>
+          expect(openFile).toHaveBeenCalledExactlyOnceWith("/p/a.ts", { selection: { line: 3, col: 1 }, focus: true }),
+        );
+      } finally {
+        mounted.unmount();
+        setContext("diffEditorFocus", false);
+        uninstall();
+        unregister();
+        useKeymap.setState(keymap);
+      }
+    },
+  );
 
   it("jumps on ⌘↓ in the IntelliJ macOS keymap only while a diff pane has focus", async () => {
     setUp();

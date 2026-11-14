@@ -272,6 +272,20 @@ export class DocModel {
       },
       {
         applyRemote: (cs, grouped) => this.applyRemote(cs, grouped),
+        onLocalCommitted: (baseVersion, version, changes) => {
+          const eventChanges: Array<{ from: number; to: number; insert: string }> = [];
+          changes.iterChanges((from, to, _fromB, _toB, inserted) => {
+            eventChanges.push({ from, to, insert: inserted.toString() });
+          });
+          _emitEditorEvent({
+            type: "docChanged",
+            doc: this.doc,
+            path: this.path,
+            baseVersion,
+            version,
+            changes: eventChanges,
+          });
+        },
         onDiscarded: (reason) => {
           logError(`document ${this.path}: unsaved edits replaced by the file's content`, reason);
           manager.notify({
@@ -455,6 +469,18 @@ export class DocModel {
     this.applySettings();
   }
 
+  /** Rendered doc comments toggled for this file (wins over settings until the file is closed). */
+  renderedDocsOverride: boolean | null = null;
+
+  renderedDocsOn(): boolean {
+    return this.renderedDocsOverride ?? prefsOf(this.settings()).appearance.renderDocComments;
+  }
+
+  toggleRenderedDocs() {
+    this.renderedDocsOverride = !this.renderedDocsOn();
+    this.applySettings();
+  }
+
   setIndent(indent: { tabSize: number; insertSpaces: boolean }) {
     this.indentOverride = indent;
     this.applySettings();
@@ -483,6 +509,7 @@ export class DocModel {
           info: this.info,
           readOnly: this.meta.readOnly,
           wrapOverride: this.softWrapOverride,
+          renderedDocsOverride: this.renderedDocsOverride,
         }),
       ),
     ];
@@ -518,6 +545,7 @@ export class DocModel {
             info: this.info,
             readOnly,
             wrapOverride: this.softWrapOverride,
+            renderedDocsOverride: this.renderedDocsOverride,
           }),
         ),
       ]);

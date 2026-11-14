@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { undo, history } from "@codemirror/commands";
-import { enterInDocComment, phpDocTags } from "./docComment";
+import { java } from "@codemirror/lang-java";
+import { enterInBlockComment, enterInDocComment, phpDocTags } from "./docComment";
 
 const views: EditorView[] = [];
 afterEach(() => views.splice(0).forEach((v) => v.destroy()));
@@ -73,5 +74,43 @@ describe("Enter after /**", () => {
     expect(enter("$a = 1; /**|").handled).toBe(false);
     expect(enter("/** x|").handled).toBe(false);
     expect(enter("/**|", "python", hash).handled).toBe(false);
+  });
+});
+
+/** Enter through `enterInBlockComment`, in a parsed Java document. */
+function enterBlock(text: string) {
+  const at = text.indexOf("|");
+  const view = new EditorView({
+    state: EditorState.create({
+      doc: text.replace("|", ""),
+      selection: EditorSelection.cursor(at),
+      extensions: [java()],
+    }),
+  });
+  views.push(view);
+  const handled = enterInBlockComment(view);
+  const s = view.state;
+  const caret = s.selection.main.head;
+  return { handled, text: s.doc.sliceString(0, caret) + "|" + s.doc.sliceString(caret) };
+}
+
+describe("Enter in a /* */ comment", () => {
+  it("starts the new line with a leading asterisk aligned under the comment's", () => {
+    expect(enterBlock("/**\n * xxxx|\n **/\nclass A {}").text).toBe("/**\n * xxxx\n * |\n **/\nclass A {}");
+    expect(enterBlock("class A {\n    /**\n     * a|b\n     */\n}").text).toBe(
+      "class A {\n    /**\n     * a\n     * |b\n     */\n}",
+    );
+    expect(enterBlock("class A {\n  /* note|\n  */\n}").text).toBe("class A {\n  /* note\n   * |\n  */\n}");
+  });
+
+  it("keeps the closing */ on its own line", () => {
+    expect(enterBlock("/** summary |*/\nclass A {}").text).toBe("/** summary\n * |\n */\nclass A {}");
+  });
+
+  it("leaves Enter alone outside a comment, before its asterisk, and in a string", () => {
+    expect(enterBlock("/* a */ int x;|").handled).toBe(false);
+    expect(enterBlock("/**\n|  * a\n */").handled).toBe(false);
+    expect(enterBlock('class A { String s = "/* x|"; }').handled).toBe(false);
+    expect(enterBlock("// a /* b|").handled).toBe(false);
   });
 });

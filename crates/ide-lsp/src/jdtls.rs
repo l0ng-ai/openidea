@@ -809,6 +809,21 @@ impl LspManager {
             .map_err(|e| crate::rpc_err(&server.name, "java/projectConfigurationsUpdate", e))
     }
 
+    /// Asks jdtls to re-read library archives replaced in place (`openidea.java.refreshArchives`):
+    /// a SNAPSHOT installed again keeps its path, and JDT would keep showing the classes it read
+    /// from the old archive. Best-effort: skipped while jdtls is not already running.
+    pub async fn java_refresh_archives(&self, path: &Path, archives: &[PathBuf]) -> IdeResult<()> {
+        let java = LanguageId::new("java");
+        let Some(server) = self.servers_for(&java, path).into_iter().find(|s| s.name == SERVER) else {
+            return Ok(());
+        };
+        if server.running().is_none() {
+            return Ok(());
+        }
+        let archives = archives.iter().map(|a| Value::String(a.to_string_lossy().into_owned())).collect();
+        self.jdtls_command(path, "openidea.java.refreshArchives", archives).await.map(|_| ())
+    }
+
     /// Pause autobuild before resolving the launch classpath. That query takes the
     /// Java project's workspace scheduling rule, draining the interrupted autobuild.
     /// Keep this guard until Maven outputs have been copied out of JDT's reach.
@@ -1314,15 +1329,22 @@ mod tests {
         std::fs::write(&file, format!("{}=warning\n{}=ignore\nother=error\n", ACCESS_OPTIONS[0], ACCESS_OPTIONS[1]))
             .unwrap();
         let mut cfg: ide_language::LanguageServerConfig = toml::from_str("name = 'jdtls'\ncommand = 'jdtls'").unwrap();
-        cfg.initialization_options = Some(
-            toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": file.to_string_lossy()}}}}))
-                .unwrap(),
-        );
+        let with_url = |cfg: &mut ide_language::LanguageServerConfig, url: String| {
+            cfg.initialization_options =
+                Some(toml::Value::try_from(json!({"settings": {"java": {"settings": {"url": url}}}})).unwrap());
+        };
+        with_url(&mut cfg, crate::uri::path_to_uri_string(&file));
         assert_eq!(compiler_defaults(&cfg), json!({}));
         for prefix in ["", "--jvm-arg="] {
             cfg.args = vec![format!("{prefix}-Djava.import.generatesMetadataFilesAtProjectRoot=false")];
             assert_eq!(compiler_defaults(&cfg), json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}));
         }
+        with_url(&mut cfg, file.to_string_lossy().into_owned());
+        assert_eq!(
+            compiler_defaults(&cfg),
+            json!({ACCESS_OPTIONS[0]: "warning", ACCESS_OPTIONS[1]: "ignore"}),
+            "a path"
+        );
         cfg.args.push("--jvm-arg=-Djava.import.generatesMetadataFilesAtProjectRoot=true".into());
         assert_eq!(compiler_defaults(&cfg), json!({}), "the final JVM property wins");
         cfg.args.pop();

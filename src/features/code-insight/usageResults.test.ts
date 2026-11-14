@@ -160,7 +160,7 @@ describe("findUsages", () => {
     const pending = findUsages();
     const at = (line: number) => ({ path: "/p/b.rs", range: { start: { line, col: 4 }, end: { line, col: 8 } } });
     try {
-      await vi.waitFor(() => expect(sync).toHaveBeenCalledWith("/p/a.rs"));
+      await vi.waitFor(() => expect(sync).toHaveBeenCalledWith("/p/a.rs", "usages"));
       expect(lspReferences).not.toHaveBeenCalled();
       expect(channels).toHaveLength(allocated);
       release();
@@ -176,6 +176,23 @@ describe("findUsages", () => {
       release?.();
       finish?.({ locations: [], incomplete: null });
       await pending;
+      resetUsages();
+    }
+  });
+});
+
+describe("findUsages with a contributed index that is not up to date", () => {
+  it("still searches, and says plugin usages may be missing", async () => {
+    const off = registerDocumentIndexSync(async () => false);
+    const at = { path: "/p/b.rs", range: { start: { line: 1, col: 4 }, end: { line: 1, col: 8 } } };
+    referenceResponse.mockResolvedValueOnce({ locations: [at], incomplete: null });
+    try {
+      await findUsages();
+      const search = activeUsageSearch(useUsages.getState())!;
+      expect(search.groups).toHaveLength(1);
+      expect(search.note).toBe("May be incomplete: plugin indexes are still updating");
+    } finally {
+      off();
       resetUsages();
     }
   });

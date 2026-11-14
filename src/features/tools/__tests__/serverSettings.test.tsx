@@ -21,7 +21,11 @@ describe("server settings text fields", () => {
   });
 
   it("parses environment variables separated by semicolons", () => {
-    expect(parseEnv("A=1; B_2 = x=y;\n C=")).toEqual({ A: "1", B_2: "x=y", C: "" });
+    expect(parseEnv("A=1; B_2 = x=y;\n C=")).toEqual({
+      A: "1",
+      B_2: "x=y",
+      C: "",
+    });
     expect(parseEnv(" ; ")).toBeNull();
     expect(() => parseEnv("A=1; nope")).toThrow("Expected NAME=value: nope");
   });
@@ -44,8 +48,14 @@ describe("server settings text fields", () => {
 
 describe("Language Servers page settings", () => {
   let backend: MemoryToolsBackend;
-  const listItem = (name: string) =>
-    screen.getByRole("list", { name: /language servers/i }).querySelector<HTMLElement>(`[data-tool="${name}"]`);
+  const listItem = (name: string) => document.querySelector<HTMLElement>(`[data-tool="${name}"]`);
+  const open = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+    const row = () =>
+      screen.queryByRole("list", { name: "Languages" })?.querySelector<HTMLElement>(`[data-language="${name}"]`);
+    await waitFor(() => expect(row()).toBeTruthy());
+    await user.click(row()!);
+    return within(screen.getByLabelText(`${name} tools`));
+  };
   const details = (name: string) => screen.getByLabelText(`${name} details`);
   const renderPage = () =>
     render(
@@ -59,7 +69,11 @@ describe("Language Servers page settings", () => {
     backend = new MemoryToolsBackend(
       sampleTools().map((t) =>
         t.name === "rust-analyzer"
-          ? { ...t, defaultArgs: ["--stdio"], defaultInitializationOptions: '{"checkOnSave":true}' }
+          ? {
+              ...t,
+              defaultArgs: ["--stdio"],
+              defaultInitializationOptions: '{"checkOnSave":true}',
+            }
           : t,
       ),
       1,
@@ -67,32 +81,74 @@ describe("Language Servers page settings", () => {
     setToolsBackend(backend);
     resetLanguageChoices();
     resetTestForm();
-    useTools.setState({ tools: [], loaded: false, loading: false, error: null, jobs: {}, logs: {} });
+    useTools.setState({
+      tools: [],
+      loaded: false,
+      loading: false,
+      error: null,
+      jobs: {},
+      logs: {},
+    });
     useProject.setState({ project: null, settings: null });
   });
 
   afterEach(() => setToolsBackend(null));
 
   const pythonPicker = async (user: ReturnType<typeof userEvent.setup>) => {
-    await waitFor(() => expect(listItem("pyright")).not.toBeNull());
+    const python = await open(user, "Python");
     await user.click(listItem("pyright")!);
     // No on/off box: the group's picker replaces it.
-    expect(within(details("Pyright")).queryByRole("checkbox", { name: /^Use Pyright/ })).toBeNull();
-    return within(details("Pyright")).getByRole("button", { name: "Language server for Python" });
+    expect(
+      within(details("Pyright")).queryByRole("checkbox", {
+        name: /^Use Pyright/,
+      }),
+    ).toBeNull();
+    return python.getByRole("button", { name: "Language server for Python" });
   };
 
-  it("lists one picker per group of interchangeable servers, on each member", async () => {
+  it("lists one picker per group of interchangeable servers, above them", async () => {
     const user = userEvent.setup();
     renderPage();
-    await pythonPicker(user);
-    await user.click(listItem("ty")!);
-    const ty = details("ty (Python)");
-    expect(within(ty).getByRole("button", { name: "Language server for Python" })).toHaveTextContent("Automatic");
+    const picker = await pythonPicker(user);
+    expect(picker).toHaveTextContent("Automatic");
     // The language is in the label already, so names drop a "(Python)" suffix.
-    expect(within(ty).getByText(/basedpyright → Pyright → ty → Pyrefly\.$/)).toBeInTheDocument();
-    await user.click(listItem("gopls")!);
+    expect(screen.getByText(/basedpyright → Pyright → ty → Pyrefly\.$/)).toBeInTheDocument();
+    const go = await open(user, "Go");
     expect(within(details("gopls")).getByRole("checkbox", { name: /Use gopls/ })).toBeInTheDocument();
-    expect(within(details("gopls")).queryByRole("button", { name: /^Language server for/ })).toBeNull();
+    expect(go.queryByRole("button", { name: /^Language server for/ })).toBeNull();
+  });
+
+  it("shows a shared alternative in the group of each language it serves", async () => {
+    const base = backend.tools.find((t) => t.name === "gopls")!;
+    const server = (name: string, languages: string[], alternatives: string[]) => ({
+      ...base,
+      name,
+      displayName: name,
+      command: name,
+      languages,
+      alternatives,
+    });
+    backend.tools.push(
+      server("jdtls", ["Java"], ["jdtls", "kmp-lsp"]),
+      server("kotlin-lsp", ["Kotlin"], ["kotlin-lsp", "kmp-lsp"]),
+      server("kmp-lsp", ["Java", "Kotlin"], ["jdtls", "kmp-lsp"]),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    const java = await open(user, "Java");
+    expect(
+      java.getAllByRole("button", { name: /^Language server for/ }).map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Language server for Java"]);
+    const kotlin = await open(user, "Kotlin");
+    expect(
+      kotlin.getAllByRole("button", { name: /^Language server for/ }).map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Language server for Kotlin"]);
+    await user.click(listItem("kmp-lsp")!);
+    expect(
+      within(details("kmp-lsp")).queryByRole("button", {
+        name: /^Language server for/,
+      }),
+    ).toBeNull();
   });
 
   it("selects exactly one Python analyzer and restores automatic fallback without writing defaults", async () => {
@@ -139,7 +195,8 @@ describe("Language Servers page settings", () => {
   it("stages startup options, showing the defaults they replace", async () => {
     const user = userEvent.setup();
     renderPage();
-    const pane = await screen.findByLabelText("rust-analyzer details");
+    await open(user, "Rust");
+    const pane = screen.getByLabelText("rust-analyzer details");
     // Folded while nothing is set there.
     expect(within(pane).queryByRole("textbox", { name: "Arguments" })).toBeNull();
     await user.click(within(pane).getByRole("button", { name: "Startup" }));
@@ -153,10 +210,14 @@ describe("Language Servers page settings", () => {
     await user.type(args, '--log "a b"');
     expect(stagedFor("languageServers.rust-analyzer.args")).toEqual(["--log", "a b"]);
     await user.type(within(pane).getByRole("textbox", { name: "Environment variables" }), "RA_LOG=info");
-    expect(stagedFor("languageServers.rust-analyzer.env")).toEqual({ RA_LOG: "info" });
+    expect(stagedFor("languageServers.rust-analyzer.env")).toEqual({
+      RA_LOG: "info",
+    });
 
     // Invalid JSON is marked and not staged; valid JSON is.
-    const init = within(pane).getByRole("textbox", { name: "Initialization options" });
+    const init = within(pane).getByRole("textbox", {
+      name: "Initialization options",
+    });
     await user.click(init);
     await user.paste('{ "check": null }');
     expect(within(pane).getByRole("alert")).toHaveTextContent("null is not supported");
@@ -166,7 +227,11 @@ describe("Language Servers page settings", () => {
     expect(stagedFor("languageServers.rust-analyzer.initializationOptions")).toEqual({ check: { command: "clippy" } });
 
     // Turned off: marked in the list.
-    await user.click(within(pane).getByRole("checkbox", { name: /Use rust-analyzer for Rust files/ }));
+    await user.click(
+      within(pane).getByRole("checkbox", {
+        name: /Use rust-analyzer for Rust files/,
+      }),
+    );
     expect(stagedFor("languageServers.rust-analyzer.enabled")).toBe(false);
     expect(listItem("rust-analyzer")).toHaveTextContent("Disabled");
 
@@ -179,7 +244,7 @@ describe("Language Servers page settings", () => {
   it("adds a server of one's own from its command line, then removes it", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByLabelText("rust-analyzer details");
+    await open(user, "Rust");
     await user.click(screen.getByRole("button", { name: "Add Language Server…" }));
     const dialog = screen.getByRole("dialog", { name: "New Language Server" });
     const ok = within(dialog).getByRole("button", { name: "OK" });
@@ -222,9 +287,11 @@ describe("Language Servers page settings", () => {
 
   it("keeps the remove button for servers of one's own", async () => {
     const user = userEvent.setup();
-    resetTestForm({ languageServers: { ruff: { command: "ruff", languages: ["python"] } } });
+    resetTestForm({
+      languageServers: { ruff: { command: "ruff", languages: ["python"] } },
+    });
     renderPage();
-    await screen.findByLabelText("rust-analyzer details");
+    await open(user, "Python");
     expect(screen.getByRole("button", { name: "Remove Language Server" })).toBeDisabled();
     await user.click(listItem("ruff")!);
     expect(screen.getByRole("button", { name: "Remove Language Server" })).toBeEnabled();

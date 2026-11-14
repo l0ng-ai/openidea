@@ -427,6 +427,8 @@ describe("phase 1: filters, cross-references and dashboard parsers", () => {
     expect(nodeDetail(groups[3]!)).toBe("2");
     const imageNodes = filtered(groups[3]!)!;
     expect(imageNodes.map(nodeLabel)).toEqual(["postgres:16", "postgres:latest"]);
+    // Both tags share one image id; the tree needs distinct keys for them.
+    expect(new Set(imageNodes.map((n) => n.key)).size).toBe(imageNodes.length);
     expect(isUntaggedImage(richSnapshot.images[2]!)).toBe(true);
     expect(isUntaggedImage(richSnapshot.images[0]!)).toBe(false);
 

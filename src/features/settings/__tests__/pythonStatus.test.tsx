@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction, registerAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useProject } from "@/platform/project";
+import { useEditorRegistry } from "@/editor/api";
 import type { ProjectInfo, Sdk } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
@@ -31,7 +32,7 @@ vi.mock("@/workbench/contributions", () => ({
     return () => {};
   },
 }));
-import { activatePythonStatus, interpreterChoices, isPythonPath } from "../languages/PythonStatus";
+import { activatePythonStatus, interpreterChoices, isPythonPath, nearMember } from "../languages/PythonStatus";
 
 let dispose: () => void;
 beforeEach(() => {
@@ -41,6 +42,7 @@ beforeEach(() => {
   mocks.detect.mockResolvedValue([]);
   mocks.set.mockResolvedValue({ languages: { python: { interpreter: "/new/python" } } });
   useProject.setState({ project: { root: "/project" } as ProjectInfo, settings: null });
+  useEditorRegistry.setState({ active: null });
   setContext("projectOpen", true);
   dispose = activatePythonStatus();
 });
@@ -66,6 +68,47 @@ describe("Python interpreter status", () => {
   it.each(["main.ts", "python.md", "pyproject.toml.bak", "copy.py.json"])("rejects %s", (path) =>
     expect(isPythonPath(path)).toBe(false),
   );
+  it.each([
+    [["/project", "/project/member"], "/project/src/main.py", "/project/src"],
+    [["/project", "/project/member"], "/project/main.py", "/project"],
+    [["C:\\project", "C:\\attached"], "C:\\attached\\src\\main.py", "C:/attached/src"],
+    [["C:\\project", "C:\\project\\member"], "C:\\project\\member\\src\\main.py", "C:/project/member/src"],
+    [["/project"], "/other/main.py", null],
+    [["/project"], null, null],
+    [undefined, "/project/main.py", null],
+  ])("asks about the active file's member: nearMember(%j, %s) = %s", (projects, file, near) =>
+    expect(nearMember(projects, file)).toBe(near),
+  );
+  it("resolves the interpreter for the active file's workspace member", async () => {
+    useProject.setState({
+      project: {
+        root: "/project",
+        workspace: { version: 1, name: "W", projects: ["/project", "/project/member"] },
+      } as ProjectInfo,
+    });
+    useEditorRegistry.setState({ active: { ctx: { path: "/project/member/src/main.py" } } } as never);
+    mocks.files.mockResolvedValue([{ path: "/project/member/src/main.py" }]);
+    mocks.effective.mockResolvedValue("/member/venv/python");
+    mocks.detect.mockResolvedValue([{ path: "/member/venv/python", name: "Python 3.12 (member)" }]);
+    mount();
+    await screen.findByRole("button", { name: "Python Interpreter: Python 3.12 (member)" });
+    expect(mocks.effective).toHaveBeenCalledWith("/project/member/src");
+  });
+  it("resolves the interpreter for an attached member outside the project root", async () => {
+    useProject.setState({
+      project: {
+        root: "/project",
+        workspace: { version: 1, name: "W", projects: ["/project", "/attached"] },
+      } as ProjectInfo,
+    });
+    useEditorRegistry.setState({ active: { ctx: { path: "/attached/trainer.py" } } } as never);
+    mocks.files.mockResolvedValue([{ path: "/attached/trainer.py" }]);
+    mocks.effective.mockResolvedValue("/primary/venv/python");
+    mocks.detect.mockResolvedValue([{ path: "/primary/venv/python", name: "Python 3.14 (primary)" }]);
+    mount();
+    await screen.findByRole("button", { name: "Python Interpreter: Python 3.14 (primary)" });
+    expect(mocks.effective).toHaveBeenCalledWith("/attached");
+  });
   it("keeps custom interpreters and deduplicates detected paths", () => {
     const sdk = { path: "/python", name: "Python 3.12" } as Sdk;
     expect(interpreterChoices([sdk, sdk], "/custom")).toEqual([sdk, { path: "/custom", name: "/custom" }]);

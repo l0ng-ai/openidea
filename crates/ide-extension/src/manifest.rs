@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.5.0";
+pub const ENGINE_VERSION: &str = "1.8.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -151,6 +151,8 @@ impl ActivationEvent {
 /// Workbench event kinds (`on-event:<kind>`, WIT `events.event-kind`).
 /// `scheduled` comes from `on-schedule` instead.
 pub const EVENT_KINDS: &[&str] = &[
+    "document-changed",
+    "websocket-ready",
     "run-exited",
     "terminal-exited",
     "content-tab-action",
@@ -164,6 +166,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "editor-focused",
     "action-performed",
     "vcs-changed",
+    "problems-changed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -366,6 +369,15 @@ impl Manifest {
         }
         let mut seen = BTreeSet::new();
         for event in &self.activation {
+            if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "document-changed" | "websocket-ready"))
+            {
+                self.needs_api(&format!("`{event}`"), 6)?;
+            }
+            // Added after 1.7.0 shipped: a 1.7 host rejects the manifest, so the gate is the minor
+            // that carries it.
+            if matches!(event, ActivationEvent::Event(kind) if kind == "problems-changed") {
+                self.needs_api(&format!("`{event}`"), 8)?;
+            }
             if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action"))
             {
                 self.needs_api(&format!("`{event}`"), 4)?;
@@ -582,6 +594,8 @@ mod tests {
             ActivationEvent::parse("on-event:files-changed"),
             Ok(ActivationEvent::Event("files-changed".into()))
         );
+        assert!(ActivationEvent::parse("on-event:document-changed").is_ok());
+        assert!(ActivationEvent::parse("on-event:websocket-ready").is_ok());
         let err = ActivationEvent::parse("on-event:keystroke").unwrap_err();
         assert!(err.contains("unknown event kind") && err.contains("action-performed"), "{err}");
         assert!(ActivationEvent::parse("on-event:scheduled").is_err(), "declared with on-schedule");
@@ -860,7 +874,7 @@ mod commands_api_tests {
 mod net_ask_api_tests {
     use super::*;
     #[test]
-    fn net_ask_requires_api_1_5() {
+    fn api_1_5_declarations_require_api_1_5() {
         for declaration in ["[capabilities]\nrequired = [\"net:ask\"]", "[capabilities]\noptional = [\"net:ask\"]"] {
             for engine in ["^1.4", "^1.5"] {
                 let manifest = format!(
@@ -871,6 +885,25 @@ mod net_ask_api_tests {
                     parsed.unwrap();
                 } else {
                     assert!(parsed.unwrap_err().contains("new in plugin API 1.5"), "{engine}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn realtime_events_require_api_1_6() {
+        for declaration in
+            ["activation = [\"on-event:document-changed\"]", "activation = [\"on-event:websocket-ready\"]"]
+        {
+            for engine in ["^1.5", "^1.6"] {
+                let manifest = format!(
+                    "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\n{declaration}\n"
+                );
+                let parsed = Manifest::parse(&manifest);
+                if engine == "^1.6" {
+                    parsed.unwrap();
+                } else {
+                    assert!(parsed.unwrap_err().contains("new in plugin API 1.6"), "{engine}");
                 }
             }
         }

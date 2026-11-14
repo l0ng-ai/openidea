@@ -16,6 +16,16 @@ use tauri::{AppHandle, Manager, State, Window};
 pub async fn vcs_status(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<FileStatus>> {
     ide_host::ops::vcs::status(&state.host, window.label()).await
 }
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_status_paths(
+    window: Window,
+    paths: Vec<PathBuf>,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::status_paths(&state.host, window.label(), paths).await
+}
 /// The project's repositories, the primary one first.
 #[tauri::command]
 #[specta::specta]
@@ -49,6 +59,19 @@ pub async fn vcs_file_at(
     rev: Option<String>,
 ) -> IdeResult<Option<String>> {
     ide_host::ops::vcs::vcs_file_at(&state.host, window.label(), path, rev).await
+}
+
+/// The file's git mode at `rev` (`100644`, `100755`, `120000`…), `"WT"` for the
+/// worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_file_mode(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    rev: Option<String>,
+) -> IdeResult<Option<String>> {
+    ide_host::ops::vcs::vcs_file_mode(&state.host, window.label(), path, rev).await
 }
 
 /// History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
@@ -214,6 +237,17 @@ pub async fn vcs_add_to_ignore(
     destination: IgnoreDestination,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     ide_host::ops::vcs::vcs_add_to_ignore(&state.host, window.label(), paths, destination).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_ignore_blame_revision(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_ignore_blame_revision(&state.host, window.label(), path, commit).await
 }
 
 #[tauri::command]
@@ -405,8 +439,10 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index).await
+    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index, paths)
+        .await
 }
 
 #[tauri::command]

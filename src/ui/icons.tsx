@@ -117,6 +117,7 @@ const ICONS = {
   "file-ts": "fileTypes/typeScript",
   "file-tsx": "openidea/fileTypes/tsx",
   "file-npm": "openidea/fileTypes/npm",
+  "file-bun": "openidea/fileTypes/bun",
   "file-vue": "fileTypes/vue",
   "file-svelte": "openidea/fileTypes/svelte",
   "file-jsp": "openidea/fileTypes/jsp",
@@ -177,6 +178,8 @@ const ICONS = {
   "file-gdshader": "openidea/fileTypes/gdshader",
   "file-asciidoc": "openidea/fileTypes/asciidoc",
   "file-d": "openidea/fileTypes/d",
+  "file-prisma": "openidea/fileTypes/prisma",
+  "file-slint": "openidea/fileTypes/slint",
   "file-dart": "openidea/fileTypes/dart",
   "file-elixir": "openidea/fileTypes/elixir",
   "file-erlang": "openidea/fileTypes/erlang",
@@ -262,6 +265,12 @@ const ICONS = {
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
+  // Python environment sources: virtualenv / conda / uv / Poetry, and version managers (pyenv, mise, asdf).
+  "python-venv": "openidea/python/venv",
+  "python-conda": "openidea/python/conda",
+  "python-uv": "openidea/python/uv",
+  "python-poetry": "openidea/python/poetry",
+  "python-versions": "openidea/python/versions",
   // General UI
   "chevron-right": "general/chevronRight",
   "chevron-down": "general/chevronDown",
@@ -382,6 +391,7 @@ const ICONS = {
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-oracle": "openidea/database/oracle",
+  "db-snowflake": "openidea/database/snowflake",
   "db-mariadb": "openidea/database/mariadb",
   "db-aurora": "openidea/database/aurora",
   "db-redshift": "openidea/database/redshift",
@@ -437,6 +447,8 @@ const ICONS = {
   "gutter-implementing": "gutter/implementingMethod",
   "gutter-overridden": "gutter/overridenMethod",
   "gutter-overriding": "gutter/overridingMethod",
+  "gutter-javadoc-read": "gutter/javadocRead",
+  "gutter-javadoc-edit": "gutter/javadocEdit",
   stop: "run/stop",
   rerun: "run/rerun",
   "hot-reload": "openidea/general/hotReload",
@@ -694,13 +706,20 @@ export function setFileIconTheme(theme: FileIconTheme | null) {
   useFileIconRevision.setState((n) => n + 1, true);
 }
 
-/** The icon theme's icon for a plain folder, or null to keep the built-in one. */
+/** The icon theme's (or plugin path provider's) icon for a plain folder, or null to keep the built-in one. */
 export function themedFolderIconName(
   folderName: string,
   expanded = false,
   holdsOpenFile = false,
   path: string | null = null,
 ): IconName | null {
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   return (fileIconTheme?.folder(folderName, expanded, holdsOpenFile, path) ?? null) as IconName | null;
 }
 
@@ -1038,7 +1057,7 @@ const EXT_ICONS = table({
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
-  "file-yaml": "yaml yml",
+  "file-yaml": "yaml yml gotmpl",
   "file-toml": "toml",
   "file-text": "txt text",
   "file-log": "log",
@@ -1095,6 +1114,8 @@ const EXT_ICONS = table({
   "file-gdshader": "gdshader gdshaderinc",
   "file-asciidoc": "adoc asciidoc",
   "file-d": "d di",
+  "file-prisma": "prisma",
+  "file-slint": "slint",
   "file-dart": "dart",
   "file-elixir": "ex exs",
   "file-erlang": "erl hrl escript app.src",
@@ -1127,12 +1148,25 @@ export function setFileIconOverride(resolve: ((fileName: string) => IconName | n
   iconOverride = resolve;
 }
 
-/** Icons for particular files (plugin `fileIcons`), newest first: after the user's, before the icon theme's. */
+/** Icons for exact project paths (plugin `decorations.set-file-icon`), newest first: before filename globs. */
+let pathIconProviders: ReadonlyArray<(path: string) => string | null> = [];
+
+/** Icons for particular files (plugin `fileIcons`), newest first: after path providers, before the icon theme's. */
 let fileIconProviders: ReadonlyArray<(fileName: string, path: string | null) => string | null> = [];
 
 /** Bumps the file-icon revision so mounted trees and editor tabs re-resolve icons. */
 export function bumpFileIconRevision() {
   useFileIconRevision.setState((n) => n + 1, true);
+}
+
+/** Adds an exact-path icon provider for files and plain folders; the returned function removes it. */
+export function addPathIconProvider(resolve: (path: string) => string | null): () => void {
+  pathIconProviders = [resolve, ...pathIconProviders];
+  bumpFileIconRevision();
+  return () => {
+    pathIconProviders = pathIconProviders.filter((p) => p !== resolve);
+    bumpFileIconRevision();
+  };
 }
 
 /** Adds a file icon provider (an `ext:` or built-in icon name or null); the returned function removes it. */
@@ -1149,6 +1183,13 @@ export function addFileIconProvider(resolve: (fileName: string, path: string | n
 export function fileIconName(fileName: string, path: string | null = null): IconName {
   const custom = iconOverride?.(fileName);
   if (custom) return custom;
+  if (path) {
+    const normalized = path.replace(/\\/g, "/");
+    for (const provide of pathIconProviders) {
+      const icon = provide(normalized);
+      if (icon && iconPath(icon)) return icon as IconName;
+    }
+  }
   for (const provide of fileIconProviders) {
     const icon = provide(fileName, path);
     if (icon && iconPath(icon)) return icon as IconName;

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { indentUnit, language as languageFacet } from "@codemirror/language";
-import { HEAVY_LIMIT, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
+import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
 import { _resetLanguages } from "../cm/languages";
 import { DocumentManager, ModifiedRanges, saveCleanupChanges, useDocMeta } from "./document";
@@ -38,6 +38,33 @@ function setup(files: Record<string, string>, settings = {}) {
 afterEach(() => useDocMeta.setState({}, true));
 
 describe("DocumentManager + slots", () => {
+  it("emits a versioned document change from a real local edit", async () => {
+    const { manager, frame } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    const events: unknown[] = [];
+    const off = onEditorEvent((event) => {
+      if (event.type === "docChanged") events.push(event);
+    });
+    try {
+      slot.dispatchLocal({ changes: { from: 1, to: 2, insert: "XYZ" }, userEvent: "input.type" });
+      await frame();
+      expect(events).toEqual([
+        {
+          type: "docChanged",
+          doc: model.doc,
+          path: "/p/a.txt",
+          baseVersion: 0,
+          version: 1,
+          changes: [{ from: 1, to: 2, insert: "XYZ" }],
+        },
+      ]);
+    } finally {
+      off();
+      manager.stop();
+    }
+  });
+
   it("requests Kotlin declaration highlights while retaining its CodeMirror language", async () => {
     const { backend, manager, frame } = setup({ "/p/Palette.kt": "class Greeter { fun greet() {} }" });
     const highlights = vi.spyOn(backend, "highlights").mockResolvedValue({ kinds: ["function"], data: [20, 25, 0] });

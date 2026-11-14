@@ -228,6 +228,19 @@ describe("Maven runs", () => {
     });
     expect(root.cwd).toBeNull();
     expect(root.isTest).toBe(false);
+    const external = mavenGoalConfig(
+      project({
+        pom: "/code/B/pom.xml",
+        dir: "/code/B",
+        artifactId: "b",
+        displayName: "b",
+        command: "/code/B/mvnw",
+      }),
+      ["compile"],
+      maven,
+      { offline: false, skipTests: false, profiles: {} },
+    );
+    expect(external).toMatchObject({ command: "/code/B/mvnw", cwd: "/code/B", args: ["compile"] });
     const configured = {
       ...core,
       command: "//?/UNC/server/share/maven/bin/mvn.cmd",

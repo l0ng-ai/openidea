@@ -10,7 +10,16 @@ import {
  * click), the multiple-targets chooser, and document highlights (occurrences
  * of the symbol at the caret, plus the sticky find.highlightUsages variant).
  */
-import { EditorSelection, Prec, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
+import {
+  countColumn,
+  EditorSelection,
+  Prec,
+  StateEffect,
+  StateField,
+  type Extension,
+  type Text,
+} from "@codemirror/state";
+import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import {
   Decoration,
   EditorView,
@@ -54,6 +63,7 @@ import {
   SYNTAX_NOTE,
   declarationFallback,
   indexDefinitions,
+  isDeclarationName,
   isSelfTarget,
   localHighlights,
   type DeclarationTarget,
@@ -192,6 +202,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
         label: l.name,
         detail: [l.container, where].filter(Boolean).join(" · "),
         symbol: l.kind,
+        location: { path: l.path, line: l.range.start.line },
         run: () => navigateTo(l),
       };
     return {
@@ -199,6 +210,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       label: names[i] ?? basename(l.path),
       detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
       icon: fileIconName(basename(l.path), l.path),
+      location: { path: l.path, line: l.range.start.line },
       run: () => navigateTo(l),
     };
   });
@@ -244,7 +256,6 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
       channel.onmessage = (locs) => {
         if (finished || opened || current !== request || !locs.length || superseded()) return;
         opened = true;
-        onOpen();
         first = dedupeLocations(locs);
         showing = locationItems(first).then((items) => {
           // All of them arrived meanwhile: shown as usual.
@@ -256,6 +267,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
             kind: "list",
             anchor: caretAnchor(view, offset),
             title: searchingTitle(name, first.length),
+            busy: true,
             items,
             pin: pinToFind(name ?? "", first),
             onClose: () => {
@@ -263,6 +275,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
               if (!finished) void commands.cancelRequest(request).catch(() => {});
             },
           });
+          onOpen();
         });
       };
       return lspRequest(() => commands.lspGotoImplementation(request, doc, pos, channel)).finally(() => {
@@ -282,6 +295,7 @@ function streamedImplementations(view: EditorView, offset: number, onOpen: () =>
       if (closed || superseded()) return;
       updatePopup("list", {
         title: chooserTitle("implementation", name, all.length),
+        busy: false,
         items,
         pin: pinToFind(name ?? "", all),
       });
@@ -328,7 +342,6 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   const gesture = ++gestures;
   latestGesture.set(view, gesture);
   pendingGestureHints.get(view)?.();
-  pendingGestureHints.delete(view);
   const source = view.state.doc;
   const context = docOf(view);
   const superseded = () =>
@@ -336,7 +349,34 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     !view.dom.isConnected ||
     view.state.doc !== source ||
     docOf(view) !== context;
-  const offset = at ?? view.state.selection.main.head;
+  // Until the target or the chooser shows: preparing the chooser's rows (file lines, symbols)
+  // can take as long as the server's answer.
+  const done = showPendingHint(view, tx`Finding navigation target…`);
+  pendingGestureHints.set(view, done);
+  try {
+    await gotoResolved(view, kind, at ?? view.state.selection.main.head, superseded, done);
+  } finally {
+    done();
+    if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
+  }
+}
+
+/** Whether the caret is on the name of a declaration, by the syntax tree (no language server wait). */
+async function onDeclarationName(view: EditorView, offset: number): Promise<boolean> {
+  const doc = docOf(view);
+  if (!doc) return false;
+  const pos = offsetToPos(view.state.doc, offset);
+  const at = await structure.nodeAt(doc.doc, { start: pos, end: pos }).catch(() => null);
+  return isDeclarationName(at);
+}
+
+async function gotoResolved(
+  view: EditorView,
+  kind: GotoKind,
+  offset: number,
+  superseded: () => boolean,
+  done: () => void,
+) {
   if (kind === "definition" || kind === "declaration") {
     const own = contributedAt<ContributedDefinition>(view.state, CONTRIBUTED_DEFINITION, offset);
     if (own?.(view, offset)) return;
@@ -344,7 +384,10 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
     const before = view.state.doc;
     const plugin = await contributedNavigation(view, offset).catch(() => null);
     if (view.state.doc !== before || superseded()) return;
-    if (plugin) {
+    // ⌘B on a declaration shows its usages, also when a plugin links the name elsewhere (a
+    // MyBatis mapper method to its XML statement).
+    if (plugin && !(kind === "definition" && (await onDeclarationName(view, offset)))) {
+      if (superseded()) return;
       if (plugin.targets.length === 1) await navigateTo(plugin.targets[0]!);
       else {
         const items = await locationItems(plugin.targets);
@@ -379,17 +422,10 @@ export async function gotoTargets(view: EditorView, kind: GotoKind, at?: number)
   let serverDown = false;
   let streamed: ReturnType<typeof streamedImplementations> | null = null;
   try {
-    const done = showPendingHint(view, tx`Finding navigation target…`);
-    pendingGestureHints.set(view, done);
     const stream = kind === "implementation" ? streamedImplementations(view, offset, done, superseded) : null;
     streamed = stream;
     const request = stream ? () => stream.request(doc.doc, pos) : () => requestNavigation(view, offset, kind);
-    try {
-      locs = dedupeLocations(await gotoAfterEdits(view, request, superseded));
-    } finally {
-      done();
-      if (pendingGestureHints.get(view) === done) pendingGestureHints.delete(view);
-    }
+    locs = dedupeLocations(await gotoAfterEdits(view, request, superseded));
   } catch (e) {
     // The chooser shows the first ones: closing it cancelled the search, or the rest failed.
     if (streamed && (await streamed.opened())) {
@@ -1017,6 +1053,8 @@ function navigateFromPointer(view: EditorView, e: MouseEvent): boolean {
 
 interface HighlightState {
   deco: DecorationSet;
+  /** The highlighted usages (the decorations also hold whole-line backgrounds). */
+  ranges: readonly { from: number; to: number }[];
   sticky: boolean;
 }
 
@@ -1024,30 +1062,93 @@ type HighlightItem = { from: number; to: number; kind: Highlight["kind"] };
 
 const setHighlights = StateEffect.define<{ items: HighlightItem[]; sticky: boolean }>();
 
+const OCCURRENCE = "cm-lsp-occurrence";
+const KIND_CLASS = {
+  text: OCCURRENCE,
+  read: `${OCCURRENCE} ${OCCURRENCE}-read`,
+  write: `${OCCURRENCE} ${OCCURRENCE}-write`,
+};
 const marks = {
-  text: Decoration.mark({ class: "cm-lsp-occurrence" }),
-  read: Decoration.mark({ class: "cm-lsp-occurrence cm-lsp-occurrence-read" }),
-  write: Decoration.mark({ class: "cm-lsp-occurrence cm-lsp-occurrence-write" }),
+  text: Decoration.mark({ class: KIND_CLASS.text }),
+  read: Decoration.mark({ class: KIND_CLASS.read }),
+  write: Decoration.mark({ class: KIND_CLASS.write }),
+};
+const fullLines = {
+  text: Decoration.line({ class: KIND_CLASS.text }),
+  read: Decoration.line({ class: KIND_CLASS.read }),
+  write: Decoration.line({ class: KIND_CLASS.write }),
 };
 
+/**
+ * Highlights as IDEA paints a text range: one on a single line marks its text; one over
+ * several lines (a `return` statement's exit point) is a block, from its start to the right
+ * edge, whole lines between, and its last line up to its end.
+ */
+function highlightDeco(doc: Text, tabSize: number, items: readonly HighlightItem[]): DecorationSet {
+  const out = [];
+  for (const i of items) {
+    if (i.from >= i.to) continue;
+    const first = doc.lineAt(i.from);
+    const last = doc.lineAt(i.to);
+    if (first.number === last.number) {
+      out.push(marks[i.kind].range(i.from, i.to));
+      continue;
+    }
+    const col = countColumn(first.text.slice(0, i.from - first.from), tabSize);
+    const tail = Decoration.line({
+      class: i.kind === "write" ? "cm-lsp-occurrence-tail cm-lsp-occurrence-tail-write" : "cm-lsp-occurrence-tail",
+      attributes: { style: `--lsp-occurrence-from: calc(${LINE_INSET}px + ${col}ch)` },
+    });
+    out.push(tail.range(first.from));
+    for (let n = first.number + 1; n < last.number; n++) out.push(fullLines[i.kind].range(doc.line(n).from));
+    if (i.to > last.from) out.push(marks[i.kind].range(last.from, i.to));
+  }
+  return Decoration.set(out, true);
+}
+
 const highlightField = StateField.define<HighlightState>({
-  create: () => ({ deco: Decoration.none, sticky: false }),
+  create: () => ({ deco: Decoration.none, ranges: [], sticky: false }),
   update(value, tr) {
     for (const e of tr.effects)
-      if (e.is(setHighlights))
+      if (e.is(setHighlights)) {
+        const items = e.value.items.filter((i) => i.from < i.to);
         return {
-          deco: Decoration.set(
-            e.value.items.filter((i) => i.from < i.to).map((i) => marks[i.kind].range(i.from, i.to)),
-            true,
-          ),
+          deco: highlightDeco(tr.state.doc, tr.state.tabSize, items),
+          ranges: items.map(({ from, to }) => ({ from, to })),
           sticky: e.value.sticky,
         };
+      }
     // Kept (mapped) until recomputed; ⌘⇧F7 highlights survive edits until Escape.
-    if (tr.docChanged) return { deco: value.deco.map(tr.changes), sticky: value.sticky };
+    if (tr.docChanged)
+      return {
+        deco: value.deco.map(tr.changes),
+        ranges: value.ranges.map((r) => ({ from: tr.changes.mapPos(r.from, 1), to: tr.changes.mapPos(r.to, -1) })),
+        sticky: value.sticky,
+      };
     return value;
   },
   provide: (f) => EditorView.decorations.from(f, (v) => v.deco),
 });
+
+/**
+ * The latest usages found per editor, for its current document: a caret landing in one shows
+ * them at once while the server is asked again, as IDEA's highlighting follows the caret.
+ */
+const recentHighlights = new WeakMap<EditorView, { doc: Text; sets: HighlightItem[][] }>();
+const RECENT_SETS = 8;
+
+function rememberHighlights(view: EditorView, doc: Text, items: HighlightItem[]) {
+  if (!items.length) return;
+  let recent = recentHighlights.get(view);
+  if (recent?.doc !== doc) recentHighlights.set(view, (recent = { doc, sets: [] }));
+  recent.sets = [items, ...recent.sets].slice(0, RECENT_SETS);
+}
+
+function recentHighlightsAt(view: EditorView, doc: Text, head: number): HighlightItem[] | null {
+  const recent = recentHighlights.get(view);
+  if (recent?.doc !== doc) return null;
+  return recent.sets.find((set) => set.some((i) => i.from <= head && head <= i.to)) ?? null;
+}
 
 /** IDEA's status bar text while ⌘⇧F7 highlights are shown. */
 export const useUsagesStatus = create<{ text: string | null; owner: EditorView | null }>(() => ({
@@ -1078,6 +1179,7 @@ async function fetchHighlights(view: EditorView, sticky: boolean) {
   const stale = () => view.state.doc !== state.doc || view.state.selection.main.head !== head;
   const apply = (items: HighlightItem[]) => {
     view.dispatch({ effects: setHighlights.of({ items, sticky: sticky && items.length > 0 }) });
+    rememberHighlights(view, state.doc, items);
     if (!sticky) return;
     if (!items.length) {
       if (useUsagesStatus.getState().owner === view) setUsagesStatus(null, null);
@@ -1115,7 +1217,7 @@ async function fetchHighlights(view: EditorView, sticky: boolean) {
   if (lspError) reportLspError(view, lspError, sticky);
   else if (sticky) showHint(view, NO_SERVER);
   // Drop stale marks from an earlier caret position.
-  if (view.state.field(highlightField).deco.size) apply([]);
+  if (view.state.field(highlightField).ranges.length) apply([]);
 }
 
 async function syntaxHighlights(view: EditorView, doc: EditorDocContext, head: number) {
@@ -1134,10 +1236,7 @@ async function syntaxHighlights(view: EditorView, doc: EditorDocContext, head: n
 export function highlightUsages(view: EditorView) {
   const st = view.state.field(highlightField, false);
   const head = view.state.selection.main.head;
-  let onUsage = false;
-  st?.deco.between(head, head, (from, to) => {
-    if (from <= head && head <= to) onUsage = true;
-  });
+  const onUsage = !!st?.ranges.some(({ from, to }) => from <= head && head <= to);
   if (st?.sticky && onUsage) {
     clearHighlights(view);
     return;
@@ -1151,8 +1250,7 @@ export function highlightUsages(view: EditorView) {
  */
 export function gotoHighlightedUsage(view: EditorView, dir: 1 | -1): boolean {
   const st = view.state.field(highlightField, false);
-  const ranges: { from: number; to: number }[] = [];
-  st?.deco.between(0, view.state.doc.length, (from, to) => void ranges.push({ from, to }));
+  const ranges = [...(st?.ranges ?? [])].sort((a, b) => a.from - b.from);
   const head = view.state.selection.main.head;
   const current = ranges.findIndex((r) => r.from <= head && head <= r.to);
   if (ranges.length < 2 || current < 0) return false;
@@ -1164,7 +1262,8 @@ export function gotoHighlightedUsage(view: EditorView, dir: 1 | -1): boolean {
 
 const highlightPlugin = ViewPlugin.fromClass(
   class {
-    private request = debounce(() => void fetchHighlights(this.view, false), 300);
+    // Keyboard moves wait a little, so holding an arrow key does not ask for every line.
+    private request = debounce(() => void fetchHighlights(this.view, false), 100);
     constructor(private view: EditorView) {}
     update(u: ViewUpdate) {
       // Recomputed after caret moves and, like IDEA's daemon, after edits.
@@ -1176,7 +1275,7 @@ const highlightPlugin = ViewPlugin.fromClass(
       }
       const clear = () => {
         this.request.cancel();
-        if (st.deco.size)
+        if (st.ranges.length)
           queueMicrotask(() => this.view.dispatch({ effects: setHighlights.of({ items: [], sticky: false }) }));
       };
       // Code Editing › "Usages of element at caret".
@@ -1184,7 +1283,20 @@ const highlightPlugin = ViewPlugin.fromClass(
         clear();
         return;
       }
-      this.request();
+      const doc = u.state.doc;
+      const head = u.state.selection.main.head;
+      const known = u.docChanged ? null : recentHighlightsAt(this.view, doc, head);
+      if (known)
+        queueMicrotask(() => {
+          const now = this.view.state;
+          if (now.doc === doc && now.selection.main.head === head)
+            this.view.dispatch({ effects: setHighlights.of({ items: known, sticky: false }) });
+        });
+      // A click asks at once (IDEA highlights as the caret lands).
+      if (u.transactions.some((tr) => tr.isUserEvent("select.pointer"))) {
+        this.request.cancel();
+        void fetchHighlights(this.view, false);
+      } else this.request();
     }
     destroy() {
       this.request.cancel();

@@ -76,6 +76,11 @@ export interface ToolWindowContribution {
    * or "onUse" — listed under the stripe's "…" until first opened (Find, Run…).
    */
   stripe?: "shown" | "onUse";
+  /**
+   * Its content lasts only while the project is open (run and debug sessions, search results),
+   * so it isn't reopened with the project.
+   */
+  sessionContent?: boolean;
 }
 
 export type StatusAlign = "left" | "right";
@@ -137,6 +142,12 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /**
+   * Whether the tab is busy (a process is running, like a terminal session's):
+   * closing its last tab asks first, and tab-limit eviction skips it. May be
+   * async; both the close confirmation and the eviction await the answer.
+   */
+  isBusy?(input: EditorInput): boolean | Promise<boolean>;
   /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
@@ -447,6 +458,30 @@ export function registerFileEditorProvider(p: FileEditorProvider): () => void {
   };
 }
 
+/**
+ * Opens locations under a URI scheme a feature owns (a notebook cell's
+ * `vscode-notebook-cell:` URI): the editor hands them over instead of opening
+ * them as a server-provided virtual document.
+ */
+export interface UriOpener {
+  scheme: string;
+  open(uri: string, options: OpenOptions): Promise<void>;
+}
+
+const uriOpeners = new Map<string, UriOpener>();
+
+export function registerUriOpener(o: UriOpener): () => void {
+  uriOpeners.set(o.scheme, o);
+  return () => {
+    if (uriOpeners.get(o.scheme) === o) uriOpeners.delete(o.scheme);
+  };
+}
+
+export function uriOpenerFor(uri: string): UriOpener | undefined {
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]+):/.exec(uri)?.[1];
+  return scheme ? uriOpeners.get(scheme.toLowerCase()) : undefined;
+}
+
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
 export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
   const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
@@ -483,6 +518,44 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
     await rollback();
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Files opened with another application (IDEA's "Files opened in associated
+// applications"): asked before the file editors above, so an explicit
+// association wins over the built-in viewers.
+
+/** Hands a file to another application instead of opening an editor tab. */
+export interface ExternalFileOpenHandler {
+  id: string;
+  /** Lower asks first. Default 100. */
+  order?: number;
+  /** Opens `path` outside the IDE; true when it was handed over. */
+  open(path: string): boolean | Promise<boolean>;
+}
+
+const externalFileOpenHandlers = new Map<string, ExternalFileOpenHandler>();
+
+export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler): () => void {
+  externalFileOpenHandlers.set(handler.id, handler);
+  return () => {
+    if (externalFileOpenHandlers.get(handler.id) === handler) externalFileOpenHandlers.delete(handler.id);
+  };
+}
+
+/** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
+export async function openFileExternally(path: string): Promise<boolean> {
+  const handlers = [...externalFileOpenHandlers.values()].sort(
+    (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
+  );
+  for (const handler of handlers) {
+    try {
+      if (await handler.open(path)) return true;
+    } catch (e) {
+      console.warn(`external file opener ${handler.id} failed`, e);
+    }
+  }
+  return false;
 }
 
 /**
@@ -739,6 +812,35 @@ let commitServiceImpl: CommitService | undefined;
 export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
 export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
 
+/**
+ * Context a feature offers the agent composer's `@` menu (`@problems`, `@terminal`): what
+ * choosing it inserts, a ``` block (`info` names its kind: `problems`, `terminal <title>`)
+ * or references to files.
+ */
+export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
+
+export interface AgentContextSource {
+  /** Typed after `@`. */
+  id: string;
+  /** English: shown through the text catalog. */
+  title: string;
+  description: string;
+  icon: string;
+  /** What to insert now; null when there is nothing (no problems, no terminal). */
+  resolve(): Promise<AgentContext | null>;
+}
+
+const agentContextSources = new Map<string, AgentContextSource>();
+
+export function registerAgentContextSource(source: AgentContextSource): () => void {
+  agentContextSources.set(source.id, source);
+  return () => {
+    if (agentContextSources.get(source.id) === source) agentContextSources.delete(source.id);
+  };
+}
+
+export const getAgentContextSources = (): AgentContextSource[] => [...agentContextSources.values()];
+
 /** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
 export interface ContributedCommitCheck {
   /** Stable key (`<plugin id>/<check id>`), stored when the check is turned off. */
@@ -832,6 +934,12 @@ export interface DecorationSegment {
   icon?: string;
   strike?: boolean;
   label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
+  /** CSS values for the segment's font style / effect, e.g. scheme-driven bold or wavy underline. */
+  fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
 }
 
 export interface FileDecoration {
@@ -1664,6 +1772,12 @@ export const useDebugRunSessions = create<{
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
 
+/**
+ * The Services tool window's badge: how many of its listed services are running.
+ * The run provider (another feature) keeps it current; `null` hides the badge.
+ */
+export const useServicesRunningCount = create<{ count: number | null }>(() => ({ count: null }));
+
 // ---------------------------------------------------------------------------
 // Processes a closing window or project would terminate. Features that own
 // child processes (Run/Debug sessions) publish them here, so the close guard can
@@ -1763,16 +1877,23 @@ export function addContributedFileTemplate(t: import("@/platform/fileTemplates")
   return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
 }
 
-/** Flush contributed document indexes before workspace usages or refactoring. */
-const documentIndexSync = new Set<(path: string) => Promise<void>>();
-export function registerDocumentIndexSync(sync: (path: string) => Promise<void>): () => void {
+/**
+ * Flush contributed document indexes before workspace usages or refactoring. A refactoring
+ * refuses (throws) while an index is incomplete; usages go ahead and resolve `false`, so the
+ * results can say they may be incomplete.
+ */
+export type DocumentIndexPurpose = "usages" | "refactor";
+type DocumentIndexSync = (path: string, purpose: DocumentIndexPurpose) => Promise<boolean | void>;
+const documentIndexSync = new Set<DocumentIndexSync>();
+export function registerDocumentIndexSync(sync: DocumentIndexSync): () => void {
   documentIndexSync.add(sync);
   return () => {
     documentIndexSync.delete(sync);
   };
 }
-export async function synchronizeDocumentIndexes(path: string): Promise<void> {
-  await Promise.all([...documentIndexSync].map((sync) => sync(path)));
+export async function synchronizeDocumentIndexes(path: string, purpose: DocumentIndexPurpose): Promise<boolean> {
+  const complete = await Promise.all([...documentIndexSync].map((sync) => sync(path, purpose)));
+  return complete.every((c) => c !== false);
 }
 
 /** Font zoom for non-CodeMirror surfaces, owned and released by their features. */

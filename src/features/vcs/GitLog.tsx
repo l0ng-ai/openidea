@@ -25,11 +25,13 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { setContext } from "@/platform/context";
 import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
   IconButton,
+  Menu,
   SearchField,
   SplitGroup,
   SplitHandle,
@@ -662,9 +664,18 @@ const DATE_OPTIONS: { label: string; days: number }[] = [
   { label: "Last Year", days: 365 },
 ];
 
-function menuBelow(anchor: HTMLElement | ReactMouseEvent<HTMLElement>, items: MenuItem[]) {
-  const r = ("currentTarget" in anchor ? anchor.currentTarget : anchor).getBoundingClientRect();
-  showContextMenu({ x: r.left, y: r.bottom + 2 }, items);
+/**
+ * A toolbar button's dropdown, anchored to the button: a second click on it closes the menu
+ * instead of reopening it, as in IDEA. Returns the opener and the element to render.
+ */
+function useDropdownMenu() {
+  const [menu, setMenu] = useState<{ anchor: HTMLElement; items: MenuItem[] } | null>(null);
+  const open = (anchor: HTMLElement | ReactMouseEvent<HTMLElement>, items: MenuItem[]) => {
+    const el = "currentTarget" in anchor ? anchor.currentTarget : anchor;
+    setMenu((m) => (m?.anchor === el ? null : { anchor: el, items }));
+  };
+  const dropdown = menu && <Menu open anchor={menu.anchor} items={menu.items} onClose={() => setMenu(null)} />;
+  return [open, dropdown] as const;
 }
 
 interface LogFilter {
@@ -740,6 +751,7 @@ function FilterBar() {
   }, [repositories, filters.repositories, version, logGeneration]);
   const [text, setText] = useState(filters.text);
   const [branchAnchor, setBranchAnchor] = useState<HTMLElement | null>(null);
+  const [menuBelow, dropdown] = useDropdownMenu();
   // Filters that do not fit move behind a chevron, like a toolbar's overflow.
   const groupRef = useRef<HTMLSpanElement>(null);
   const [hiddenFrom, setHiddenFrom] = useState(Infinity);
@@ -889,7 +901,7 @@ function FilterBar() {
     {
       label: "Branch",
       value: filters.range || filters.branches.join(", ") || null,
-      onOpen: setBranchAnchor,
+      onOpen: (anchor: HTMLElement) => setBranchAnchor((open) => (open === anchor ? null : anchor)),
       onClear: () => setLogBranches([]),
     },
     {
@@ -967,6 +979,7 @@ function FilterBar() {
           }}
         />
       )}
+      {dropdown}
       {branchAnchor && (
         <BranchFilterPopup
           anchor={branchAnchor}
@@ -1271,7 +1284,8 @@ function CommitList() {
             {
               id: "date",
               title: "Date",
-              width: 120,
+              // Fits a 12-hour date and time ("11/05/2026 02:30 PM", "Yesterday 09:07 AM").
+              width: 140,
               render: (c: Commit) => formatTime(opts.commitTimestamp ? (c.commitTimeMs ?? c.timeMs) : c.timeMs),
             },
           ]
@@ -2434,6 +2448,7 @@ export function RefLabels({
  */
 export function CommitDetails({ commits }: { commits: Commit[] }) {
   const scope = useContext(LogIdContext);
+  const [menuBelow, dropdown] = useDropdownMenu();
   const shown = useGitLog((s) => s.shownLog);
   const active = !scope || scope === shown;
   const readOnly = useReadOnlyLog();
@@ -2627,6 +2642,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
     },
     [scope],
   );
+  useEffect(() => () => setContext("vcsLogChangesFocus", false), []);
 
   if (!commit)
     return (
@@ -2667,7 +2683,13 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const details = (
     <SplitGroup orientation="vertical" id="git-log-details">
       <SplitPanel id="files" defaultSize="60%" minSize="60px">
-        <div className={styles.filesPane}>
+        <div
+          className={styles.filesPane}
+          onFocusCapture={() => setContext("vcsLogChangesFocus", true)}
+          onBlurCapture={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogChangesFocus", false);
+          }}
+        >
           <div className={styles.detailsBar} role="toolbar" aria-label={tx("Changed files")}>
             <IconButton
               icon="diff"
@@ -2775,6 +2797,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   const selectedChange = chosenChanges.length === 1 ? chosenChanges[0] : undefined;
   return (
     <div className={styles.details}>
+      {dropdown}
       {embedded ? (
         <SplitGroup
           orientation={diffLocation === "right" ? "horizontal" : "vertical"}

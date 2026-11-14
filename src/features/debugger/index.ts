@@ -20,6 +20,8 @@ import {
 import { registerDebugActions } from "./actions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
+import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
+import { watchNetworkSessions } from "./js/networkSessions";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
@@ -38,6 +40,7 @@ import {
 } from "./state";
 import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+import { jsBrowserType } from "./browser";
 import { forgetInstances } from "./memory/instancesState";
 import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
@@ -48,29 +51,38 @@ import { forgetMemory } from "./memory/memoryState";
 const useAnyOverlay = () =>
   useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
 
+/** The Debug stripe button's badge, like Run's: how many debug sessions (child sessions aside) are live. */
+function useLiveSessionCount(): number | null {
+  return useDebug((s) => Object.values(s.sessions).filter((x) => x.parent === null && isLive(x)).length || null);
+}
+
 export function activate(): () => void {
   useDebugRunSessions.setState({
     Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
   });
-  loadWatches();
+  loadWatches(useProject.getState().project?.root ?? null);
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
+  loadJsBreakpoints(useProject.getState().project?.root ?? null);
   const disposers = [
     () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
     registerDebugActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
+    registerRunConfigType(jsBrowserType),
     registerToolWindow({
       id: "debug",
       title: "Debug",
       icon: "toolwindow-debug",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 20,
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
+      useBadge: useLiveSessionCount,
     }),
     registerEditorKind(heapEditorKind),
     installHeapContext(),
@@ -129,11 +141,15 @@ export function activate(): () => void {
       const root = s.project?.root ?? null;
       if (root !== (prev.project?.root ?? null) || s.project?.trusted !== prev.project?.trusted) {
         resetSessions();
+        loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);
+        loadJsBreakpoints(root);
       }
     }),
+    watchPageSessions(),
+    watchNetworkSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

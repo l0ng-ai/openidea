@@ -117,6 +117,14 @@ pub(crate) fn oracle_err(e: &oracledb::Error) -> IdeError {
         // config first. Treat it as a logon failure, so the UI prompts for one.
         let kind = match e.kind() {
             oracledb::ErrorKind::NoCredentials => ErrorKind::PermissionDenied,
+            // The thin driver speaks the protocol of Oracle Database 12c and later only.
+            oracledb::ErrorKind::ServerVersionNotSupported => {
+                return IdeError::new(
+                    ErrorKind::Unavailable,
+                    "This Oracle Database is older than 12c. OpenIDEA connects to Oracle Database 12c and later; \
+                     11g and earlier are not supported.",
+                );
+            }
             _ => ErrorKind::InvalidInput,
         };
         return IdeError::new(kind, e.to_string());
@@ -569,6 +577,33 @@ mod tests {
             "(DESCRIPTION=(ADDRESS=...))"
         );
         assert_eq!(connect_string_with(&s("PROD=MYDB"), false).unwrap(), "PROD=MYDB");
+    }
+
+    #[test]
+    fn a_server_older_than_12c_is_named() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut connect = [0u8; 1024];
+            let _ = socket.read(&mut connect);
+            // A TNS ACCEPT packet with protocol version 314, as Oracle Database 11g answers.
+            let mut accept = vec![0u8; 32];
+            accept[1] = 32;
+            accept[4] = 2;
+            accept[8..10].copy_from_slice(&314u16.to_be_bytes());
+            let _ = socket.write_all(&accept);
+        });
+        let config = oracledb::Config::default()
+            .set_credentials("scott", "tiger")
+            .set_connect_string(&format!("//127.0.0.1:{port}/ORCL"))
+            .unwrap()
+            .set_transport_connect_timeout(Some(std::time::Duration::from_secs(5)));
+        let err = oracle_err(&oracledb::connect(config).err().expect("an 11g server is refused"));
+        assert_eq!(err.kind, ErrorKind::Unavailable, "{err:?}");
+        assert!(err.message.contains("older than 12c"), "{}", err.message);
+        server.join().unwrap();
     }
 
     #[test]

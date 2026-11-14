@@ -19,7 +19,7 @@ const INSPECT_DELAY = 500;
  * Dialects the grammar doesn't follow: the database support checks SQL, and Django templates
  * borrow the HTML grammar, which reads `{% if a > b %}` as broken markup.
  */
-const SKIPPED = new Set(["sql", "plaintext", "django-html"]);
+const SKIPPED = new Set(["sql", "plaintext", "django-html", "helm-template"]);
 const RUNNING: ReadonlySet<ServerStatus> = new Set<ServerStatus>(["starting", "ready", "busy"]);
 
 let checked: Promise<ReadonlySet<string>> | null = null;

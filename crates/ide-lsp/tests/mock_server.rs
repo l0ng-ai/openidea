@@ -687,6 +687,8 @@ async fn java_classpath_waits_for_a_config_restart_that_is_reaping_startup() {
             assert!(result.unwrap_err().message.contains("restart configuration error"));
         } else {
             assert!(result.is_ok(), "a configuration restart is transient: {result:?}");
+            // The module folder resolves to the instance serving its files, not a second one.
+            assert_eq!(h.mgr.servers().len(), 1);
             assert_eq!(state.launches.load(Ordering::SeqCst), 2);
             assert_eq!(h.mgr.servers()[0].id != old, shared);
         }
@@ -755,6 +757,40 @@ async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
         assert!(error.message.contains(if missing { "not installed" } else { "permanent mock configuration error" }));
         h.mgr.shutdown_all().await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_maven_import_joins_the_opened_root_without_replacing_discovery() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let external = tempfile::tempdir().unwrap();
+    let external = dunce::canonicalize(external.path()).unwrap();
+    std::fs::write(external.join("pom.xml"), "<project><artifactId>b</artifactId></project>").unwrap();
+    let outside = external.join("src/Main.java");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    std::fs::write(&outside, "class External {}").unwrap();
+    let inside = h.root.join("src/App.java");
+    std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+    std::fs::write(&inside, "class App {}").unwrap();
+    // An in-root build with its own marker keeps a separate server.
+    let nested = h.root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("mock.toml"), "").unwrap();
+    let nested_file = nested.join("Nested.java");
+    std::fs::write(&nested_file, "class Nested {}").unwrap();
+
+    h.mgr.set_jdtls_import_roots(vec![external.clone()]);
+    h.mgr.did_open(DocId::next(), &inside, &h.lang, 1, "class App {}");
+    h.mgr.did_open(DocId::next(), &outside, &h.lang, 1, "class External {}");
+    h.mgr.did_open(DocId::next(), &nested_file, &h.lang, 1, "class Nested {}");
+    let state = h.launcher.state("jdtls");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    let inits = state.requested("initialize");
+    let project = inits.iter().find(|init| init["rootUri"] == uri_of(&h.root)).unwrap();
+    assert_eq!(project["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root), uri_of(&external)]));
+    assert!(project["initializationOptions"].get("projectConfigurations").is_none());
+    assert!(state.requested("initialize").iter().any(|init| init["rootUri"] == uri_of(&nested)));
+    assert_eq!(h.mgr.servers().len(), 2);
+    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1916,16 +1952,17 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     for _ in 0..2 {
         peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
     }
-    // A later task is a barrier for both end notifications.
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
+    assert_eq!(refs.incomplete, None);
+    // A later task is a barrier for both end notifications. It starts only after the search
+    // finished: one that is still running would see the barrier as indexing.
     peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "begin", "title": "Barrier" } })).unwrap();
     peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "end" } })).unwrap();
     eventually(|| {
         h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Barrier"))
     })
     .await;
-    h.wait_status("mock", ServerStatus::Ready).await;
-    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
-    assert_eq!(refs.incomplete, None);
     assert!(!ide_core::task::cancel(new));
     let events = h.events.lock();
     for id in [old, new] {
@@ -2139,6 +2176,76 @@ async fn missing_server_reports_once() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
     assert!(h.mgr.semantic_tokens(doc).await.unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checking_a_document_saves_it_and_waits_for_fresh_diagnostics() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    let (doc, path) = h.open("a.mk", "bad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // The server answers the save with a publish, as an on-save check (`cargo check`) does.
+    let (server, uri) = (s.clone(), uri_of(&path));
+    let publisher = tokio::spawn(async move {
+        eventually(|| !server.notified("textDocument/didSave").is_empty()).await;
+        let diag = json!({ "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                           "severity": 1, "message": "on save" });
+        server.peer().notify("textDocument/publishDiagnostics", json!({ "uri": uri, "diagnostics": [diag] })).unwrap();
+    });
+    let cancel = CancellationToken::new();
+    let changed = Some(std::time::Instant::now());
+    let check = h.mgr.check_document(doc, changed, Duration::from_secs(20), &cancel).await.unwrap();
+    publisher.await.unwrap();
+    assert_eq!(check.diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["on save"]);
+    assert!(check.servers[0].checked && !check.servers[0].incomplete, "{:?}", check.servers);
+
+    // A change the server never answered: what it has is reported as not fresh.
+    let changed = Some(std::time::Instant::now());
+    let stale = h.mgr.check_document(doc, changed, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(stale.servers[0].checked && stale.servers[0].incomplete, "{:?}", stale.servers);
+    assert_eq!(stale.diagnostics.len(), 1);
+
+    // The text changed before the call (the file watcher reloaded it), so the caller saw no
+    // change of its own: the old publication is still not fresh.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "good")], &|| "good\n".to_owned());
+    let reloaded = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(reloaded.servers[0].incomplete, "{:?}", reloaded.servers);
+
+    // A late publication tagged with the old version is no answer for the current text.
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "version": 1, "diagnostics": [] }))
+        .unwrap();
+    let late = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(late.servers[0].incomplete, "{:?}", late.servers);
+    // One for the current version is.
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "version": 2, "diagnostics": [] }))
+        .unwrap();
+    let fresh = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert!(fresh.servers[0].checked && !fresh.servers[0].incomplete, "{:?}", fresh.servers);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checking_a_document_reports_servers_that_cannot_check() {
+    let cancel = CancellationToken::new();
+    let h = harness(&[("ghost", json!({}))]);
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("ghost", ServerStatus::Missing).await;
+    let check = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert!(check.diagnostics.is_empty());
+    let s = &check.servers[0];
+    assert_eq!((s.name.as_str(), s.status, s.checked), ("ghost", ServerStatus::Missing, false));
+    assert_eq!(s.message.as_deref(), Some("install ghost"));
+
+    let h = harness(&[("mock", incremental_caps())]);
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Misconfigured).await;
+    let check = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert_eq!(check.servers[0].status, ServerStatus::Misconfigured);
+    assert!(check.servers[0].message.as_deref().is_some_and(|m| m.contains("needs JDK 21")), "{:?}", check.servers);
+    assert!(!check.servers[0].checked);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4922,6 +5029,39 @@ async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() 
     assert!(seen.lock().is_empty());
 }
 
+/// jdtls' searches wait for its index themselves, and it reports background work (builds,
+/// validation) for long stretches: a method nothing calls is answered at once meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "void unused() {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.peer()
+        .notify("$/progress", json!({ "token": "build", "value": { "kind": "begin", "title": "Building" } }))
+        .unwrap();
+    h.wait_status("jdtls", ServerStatus::Busy).await;
+    // Until the project is imported, finding nothing may only mean it is not indexed yet.
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
+    for _ in 0..200 {
+        let refs = h.mgr.references(doc, Pos::new(0, 6), true, false, Default::default()).await.unwrap();
+        if refs.incomplete.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    let refs = h.mgr.references(doc, Pos::new(0, 6), true, true, Default::default()).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
+    assert!(refs.locations.is_empty());
+    assert_eq!(refs.incomplete, None);
+}
+
 /// A library method's usages in the sources are shown before the dependencies and the JDK
 /// are searched, which takes seconds; scope widening searches the sources alone again.
 #[tokio::test(flavor = "multi_thread")]
@@ -6780,4 +6920,143 @@ async fn gomod_files_are_served_by_gopls() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].message, "missing requirement");
     mgr.shutdown_all().await;
+}
+
+// ------------------------------------------------------------------ notebooks
+
+fn notebook_caps() -> Value {
+    let mut caps = incremental_caps();
+    caps["notebookDocumentSync"] = json!({
+        "notebookSelector": [{
+            "notebook": { "scheme": "file", "notebookType": "jupyter-notebook" },
+            "cells": [{ "language": "python" }]
+        }]
+    });
+    caps
+}
+
+fn cells(cells: &[(&str, &str)]) -> Vec<ide_lsp::NotebookCell> {
+    cells.iter().map(|(id, source)| ide_lsp::NotebookCell { id: (*id).into(), source: (*source).into() }).collect()
+}
+
+fn cell_texts(open: &Value) -> Vec<(String, String)> {
+    open["cellTextDocuments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["uri"].as_str().unwrap().to_owned(), c["text"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notebook_cells_are_documents_of_the_servers_that_sync_notebooks() {
+    let h = harness_for("python", "py", &[("nb", notebook_caps()), ("plain", incremental_caps())], &[]);
+    let path = h.root.join("analysis.ipynb");
+    let python = LanguageId::new("python");
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "import os\n"), ("b", "os.pa")]));
+    h.wait_status("nb", ServerStatus::Ready).await;
+    h.wait_status("plain", ServerStatus::Ready).await;
+    let (nb, plain) = (h.launcher.state("nb"), h.launcher.state("plain"));
+    eventually(|| !nb.notified("notebookDocument/didOpen").is_empty()).await;
+
+    let docs = h.mgr.notebook_cells(&path);
+    assert_eq!(docs.iter().map(|d| d.cell.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(docs[0].uri, ide_lsp::cell_uri(&path, "a"));
+    let open = &nb.notified("notebookDocument/didOpen")[0];
+    assert_eq!(open["notebookDocument"]["uri"], uri_of(&path));
+    assert_eq!(open["notebookDocument"]["notebookType"], "jupyter-notebook");
+    assert_eq!(open["notebookDocument"]["cells"][1], json!({ "kind": 2, "document": docs[1].uri }));
+    assert_eq!(
+        cell_texts(open),
+        [(docs[0].uri.clone(), "import os\n".to_owned()), (docs[1].uri.clone(), "os.pa".to_owned())]
+    );
+    assert!(plain.notified("notebookDocument/didOpen").is_empty() && plain.notified("textDocument/didOpen").is_empty());
+
+    // Requests address a cell like a file, and go only to the server it is open on.
+    nb.respond("textDocument/completion", json!({ "isIncomplete": false, "items": [{ "label": "path" }] }));
+    plain.respond("textDocument/completion", json!({ "isIncomplete": false, "items": [{ "label": "wrong" }] }));
+    let list = h.mgr.completion(docs[1].doc, Pos::new(0, 5), None, Default::default()).await.unwrap();
+    assert_eq!(list.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["path"]);
+    assert_eq!(nb.requested("textDocument/completion")[0]["textDocument"]["uri"], docs[1].uri);
+    assert!(plain.requested("textDocument/completion").is_empty());
+
+    // Its diagnostics are reported under the cell's URI.
+    nb.peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": docs[1].uri, "diagnostics": [{
+                "range": {"start":{"line":0,"character":3},"end":{"line":0,"character":5}}, "message": "no attribute pa"
+            }] }),
+        )
+        .unwrap();
+    let cell_path = PathBuf::from(&docs[1].uri);
+    eventually(|| {
+        h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path, items, .. } if path.0 == cell_path && items.len() == 1))
+    })
+    .await;
+
+    h.mgr.close_notebook(&path);
+    eventually(|| !nb.notified("notebookDocument/didClose").is_empty()).await;
+    assert_eq!(nb.notified("notebookDocument/didClose")[0]["cellTextDocuments"].as_array().unwrap().len(), 2);
+    assert!(h.mgr.notebook_cells(&path).is_empty());
+    assert!(h.mgr.completion(docs[1].doc, Pos::new(0, 5), None, Default::default()).await.is_err());
+    let last = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path, items, source } if path.0 == cell_path && source == "nb" => Some(items.len()),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(last, Some(0), "a closed notebook's diagnostics are cleared");
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
+    let h = harness_for("python", "py", &[("nb", notebook_caps())], &[]);
+    let path = h.root.join("n.ipynb");
+    let python = LanguageId::new("python");
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x)\n")]));
+    h.wait_status("nb", ServerStatus::Ready).await;
+    let nb = h.launcher.state("nb");
+    eventually(|| nb.notified("notebookDocument/didOpen").len() == 1).await;
+    let before = h.mgr.notebook_cells(&path);
+
+    // Typing in one cell sends only that cell's text.
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x + 1)\n")]));
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x + 1)\n")]));
+    eventually(|| !nb.notified("notebookDocument/didChange").is_empty()).await;
+    let changes = nb.notified("notebookDocument/didChange");
+    assert_eq!(changes.len(), 1, "an unchanged notebook sends nothing");
+    let content = &changes[0]["change"]["cells"]["textContent"];
+    assert_eq!(content.as_array().unwrap().len(), 1);
+    assert_eq!(content[0]["document"]["uri"], before[1].uri);
+    assert_eq!(content[0]["changes"], json!([{ "text": "print(x + 1)\n" }]));
+    assert_eq!(changes[0]["notebookDocument"]["version"], 2);
+
+    // Inserting and moving cells reopens the notebook; kept cells keep their documents.
+    h.mgr.sync_notebook(&path, &python, &cells(&[("c", "import math\n"), ("b", "print(x + 1)\n"), ("a", "x = 1\n")]));
+    eventually(|| nb.notified("notebookDocument/didOpen").len() == 2).await;
+    assert_eq!(nb.notified("notebookDocument/didClose").len(), 1);
+    let after = h.mgr.notebook_cells(&path);
+    assert_eq!(after.iter().map(|d| d.cell.as_str()).collect::<Vec<_>>(), ["c", "b", "a"]);
+    assert_eq!((after[1].doc, after[2].doc), (before[1].doc, before[0].doc));
+    let reopened = &nb.notified("notebookDocument/didOpen")[1];
+    assert_eq!(
+        cell_texts(reopened).into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+        ["import math\n", "print(x + 1)\n", "x = 1\n"]
+    );
+
+    // A restarted server gets the notebook again.
+    let launches = nb.launches.load(Ordering::SeqCst);
+    let server = h.mgr.servers()[0].id;
+    h.mgr.restart(server).await.unwrap();
+    eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
+        .await;
+    h.mgr.shutdown_all().await;
 }

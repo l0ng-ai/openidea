@@ -21,9 +21,9 @@ export async function lspRequest<T>(run: () => Promise<Result<T>>): Promise<T> {
 
 export const isUnavailable = (e: unknown) => e instanceof IpcError && e.kind === "unavailable";
 
-/** Small hint at the caret (via editor/lsp), or a notification without an editor. */
-export function hint(text: string, tone: "info" | "warning" | "error" = "info") {
-  if (activeEditor()) void executeAction("editor.showHint", { text, tone });
+/** Small hint at the caret (via editor/lsp), or a notification without an editor; `data`: its `data-*` attributes. */
+export function hint(text: string, tone: "info" | "warning" | "error" = "info", data?: Record<string, string>) {
+  if (activeEditor()) void executeAction("editor.showHint", { text, tone, data });
   else
     notifications().notify({
       group: "lsp",

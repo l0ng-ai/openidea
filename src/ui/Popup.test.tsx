@@ -6,6 +6,7 @@ import { registerAction } from "@/platform/actions";
 import { Popup } from "./Popup";
 import { ContextMenuHost, Menu, MenuList, hideContextMenu, showContextMenu, useContextMenuStore } from "./Menu";
 import menuStyles from "./Menu.module.css";
+import popupStyles from "./Popup.module.css";
 import { Dialog } from "./Dialog";
 
 function Harness({ onClose }: { onClose?: (r: string) => void }) {
@@ -92,6 +93,50 @@ describe("Popup", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
     expect(inner).toHaveBeenCalledTimes(1);
     expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("resizes by its right edge, bottom edge and corner within the minimums, and reports each size", () => {
+    const onResized = vi.fn();
+    render(
+      <Popup
+        open
+        anchor={{ x: 0, y: 0 }}
+        onClose={() => {}}
+        aria-label="Branches"
+        resizable="both"
+        minWidth={200}
+        minHeight={100}
+        initialSize={{ w: 400, h: 300 }}
+        onResized={onResized}
+      >
+        <div>rows</div>
+      </Popup>,
+    );
+    const popup = screen.getByRole("dialog", { name: "Branches" });
+    expect([popup.style.width, popup.style.height]).toEqual(["400px", "300px"]);
+    // jsdom lays nothing out: the popup measures what its style says, at the origin.
+    popup.getBoundingClientRect = () =>
+      new DOMRect(0, 0, parseFloat(popup.style.width), parseFloat(popup.style.height));
+    const drag = (handle: Element, dx: number, dy: number) => {
+      fireEvent.pointerDown(handle, { button: 0, clientX: 0, clientY: 0 });
+      fireEvent.pointerMove(window, { buttons: 1, clientX: dx, clientY: dy });
+      fireEvent.pointerUp(window);
+      return [popup.style.width, popup.style.height];
+    };
+    expect(drag(popup.querySelector(`.${popupStyles.resizeRight}`)!, 100, 50)).toEqual(["500px", "300px"]);
+    expect(drag(popup.querySelector(`.${popupStyles.resizeBottom}`)!, 50, -100)).toEqual(["500px", "200px"]);
+    expect(drag(screen.getByRole("separator", { name: "Resize" }), -1000, -1000)).toEqual(["200px", "100px"]);
+    expect(onResized.mock.calls).toEqual([[{ w: 500, h: 300 }], [{ w: 500, h: 200 }], [{ w: 200, h: 100 }]]);
+  });
+
+  it("has no resize handles and ignores a remembered size unless resizable", () => {
+    render(
+      <Popup open anchor={{ x: 0, y: 0 }} onClose={() => {}} aria-label="Menu" initialSize={{ w: 400, h: 300 }}>
+        <div>rows</div>
+      </Popup>,
+    );
+    expect(screen.getByRole("dialog", { name: "Menu" }).style.width).toBe("");
+    expect(screen.queryByRole("separator", { name: "Resize" })).toBeNull();
   });
 });
 
@@ -193,6 +238,31 @@ describe("Menu action enablement", () => {
     expect(input).toHaveFocus();
   });
 
+  it("keeps the text selection a context menu was opened on", async () => {
+    render(
+      <>
+        <p>Selected text</p>
+        <ContextMenuHost />
+      </>,
+    );
+    // WebKit drops the page's selection whenever focus moves.
+    const drop = () => document.getSelection()!.removeAllRanges();
+    document.addEventListener("focusin", drop);
+    try {
+      const text = screen.getByText("Selected text").firstChild!;
+      document.getSelection()!.setBaseAndExtent(text, 0, text, 8);
+      act(() => showContextMenu({ x: 0, y: 0 }, [{ label: "Copy", run: () => undefined }]));
+      expect(screen.getByRole("menuitem", { name: /Copy/ })).toHaveFocus();
+      expect(document.getSelection()!.toString()).toBe("Selected");
+      act(() => hideContextMenu());
+      await act(async () => {});
+      expect(document.getSelection()!.toString()).toBe("Selected");
+    } finally {
+      document.removeEventListener("focusin", drop);
+      document.getSelection()!.removeAllRanges();
+    }
+  });
+
   it("highlights the row under the pointer without moving focus", () => {
     render(
       <MenuList
@@ -211,6 +281,17 @@ describe("Menu action enablement", () => {
     expect(save.className).toContain(menuStyles.active);
     expect(open.className).not.toContain(menuStyles.active);
     expect(open).toHaveFocus();
+  });
+
+  it("keeps a right-click in a menu from reaching the components behind it", () => {
+    const behind = vi.fn((e: { defaultPrevented: boolean }) => e.defaultPrevented);
+    render(
+      <div onContextMenu={(e) => behind(e)}>
+        <MenuList items={[{ label: "Recent", run: () => undefined }]} onDone={() => {}} />
+      </div>,
+    );
+    fireEvent.contextMenu(screen.getByRole("menuitem", { name: "Recent" }));
+    expect(behind).toHaveReturnedWith(true);
   });
 
   it("reports a hovered row once and lets the keyboard continue from it", () => {

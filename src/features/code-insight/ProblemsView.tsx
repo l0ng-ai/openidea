@@ -1,7 +1,7 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { menuGroupItems } from "@/workbench/contributions";
 /** Problems tool window: "File" (current editor) and "Project Errors" tabs. */
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import type { Diagnostic, Severity } from "@/bindings";
@@ -12,7 +12,7 @@ import { formatBinding, hasPrimaryModifier, hostBinding, shortcutLabel } from "@
 import { basename, relativeDir, useProject } from "@/platform/project";
 import { diagnosticInspection, producerOf, type InspectionRef } from "@/platform/inspections";
 import { problemControls } from "@/platform/inspectionControls";
-import { editorService, useOccurrenceNavigator } from "@/workbench/contributions";
+import { editorService, maybeEditorService, useOccurrenceNavigator } from "@/workbench/contributions";
 import {
   EmptyState,
   Icon,
@@ -34,6 +34,8 @@ import { previewText } from "./ipc";
 import {
   DEFAULT_PROBLEM_ORDER,
   countSeverities,
+  currentProblemsPath,
+  filePaths,
   fileDiagnostics,
   producerFor,
   sortProblems,
@@ -162,8 +164,12 @@ async function showQuickFixes(path: string, d: Diagnostic) {
   void executeAction("code.showIntentions");
 }
 
+const subscribeActiveInput = (fn: () => void) => maybeEditorService()?.onActiveInputChange?.(fn) ?? (() => {});
+const activeInput = () => maybeEditorService()?.activeInput?.() ?? null;
+
 function useCurrentPath(): string | null {
-  return useEditorRegistry((s) => s.active?.ctx.path ?? null);
+  const text = useEditorRegistry((s) => s.active?.ctx.path ?? null);
+  return currentProblemsPath(text, useSyncExternalStore(subscribeActiveInput, activeInput));
 }
 
 export function ProblemsHeaderActions() {
@@ -198,7 +204,9 @@ export function ProblemsTabs() {
   const tab = useProblemsView((s) => s.tab);
   const setTab = useProblemsView((s) => s.setTab);
   const current = useCurrentPath();
-  const fileCount = current ? countSeverities(fileDiagnostics(map, current)) : null;
+  const fileCount = current
+    ? countSeverities(filePaths(map, current).flatMap((path) => fileDiagnostics(map, path)))
+    : null;
   const projectErrors = useMemo(() => {
     let n = 0;
     for (const sources of map.values())
@@ -253,7 +261,7 @@ export function ProblemsView() {
   );
 
   const roots = useMemo(() => {
-    const paths = tab === "file" ? (current ? [current] : []) : [...map.keys()];
+    const paths = tab === "file" ? (current ? filePaths(map, current) : []) : [...map.keys()];
     return buildProblemNodes(map, paths, show, order);
   }, [map, tab, current, show, order]);
 

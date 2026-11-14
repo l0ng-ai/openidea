@@ -35,7 +35,7 @@ pub(crate) fn configure(cfg: &mut LanguageServerConfig, root: &Path, server_root
     });
     if node.is_none() || find_command("node", &search, server_root).is_none() {
         cfg.launch_error = Some(
-            "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js."
+            "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › JavaScript Runtime."
                 .into(),
         );
         return;

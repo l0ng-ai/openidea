@@ -30,7 +30,7 @@ import { targetLanguage, type RunTarget } from "./targets";
 import { onTestStatesChanged, testState, testStatesVersion, type TestState } from "./testing/states";
 
 /** Languages with gutter run targets (C / C++ `main` included). */
-const hasGutterTargets = (path: string) => !!targetLanguage(path) || /\.(c|cpp|cc|cxx)$/.test(path);
+const hasGutterTargets = (path: string) => !!targetLanguage(path) || /\.(c|cpp|cc|cxx|zig)$/.test(path);
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 

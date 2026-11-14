@@ -36,15 +36,15 @@ Code plugins are WebAssembly components targeting the `plugin` world in [`wit/`]
 
 |                           |                                                              |
 | ------------------------- | ------------------------------------------------------------ |
-| Latest released API       | **1.4.0**, shipped with OpenIDEA 0.1.40                      |
-| In development            | **1.5.0** on the `main` branch, planned for the next release |
+| Latest released API       | **1.6.0**, shipped with OpenIDEA 0.1.43                      |
+| In development            | **1.7.0** on the `main` branch, planned for the next release |
 | Format of the WIT package | `openidea:plugin@<version>`                                  |
 
 Declare the API your plugin needs with `engines.openidea` in the manifest, for example `engines.openidea = "^1.4"`.
 
 ## Where plugins come from
 
-- **Marketplace:** **Settings › Plugins › Available** lists the official plugins and the community plugins of the [registry](https://github.com/l0ng-ai/openidea-plugins). See [Publish to the marketplace](/en/plugins/publishing/marketplace).
+- **Marketplace:** **Settings › Plugins** lists the installed plugins first, then the official plugins and the community plugins of the [registry](https://github.com/l0ng-ai/openidea-plugins). See [Publish to the marketplace](/en/plugins/publishing/marketplace).
 - **Disk:** **Install Plugin from Disk…** (a folder) or **Install Plugin from Package File…** (an `.oiplugin` or `.zip`) in the gear menu of **Settings › Plugins**.
 - **Linked folders:** `openidea-plugin link` loads a folder you are developing, without installing it.
 - **Project plugins:** packages in `<project>/.openidea/plugins/<name>/` load in trusted projects only, after you approve their permissions.

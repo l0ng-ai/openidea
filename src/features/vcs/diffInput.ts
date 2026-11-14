@@ -5,7 +5,7 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
-import { groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
+import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 
@@ -59,6 +59,8 @@ export interface DiffData {
   context?: { kind: string; [key: string]: unknown };
   /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
   embedded?: boolean;
+  /** Annotate the left (previous) side with Git Blame when the diff opens. */
+  annotateLeft?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
 }
@@ -188,6 +190,20 @@ export function changeNodeDiffData(roots: readonly ChangeNode[], node: ChangeNod
   );
 }
 
+/**
+ * The Commit window's diff of a file: every file of the tree (in tree order) as the F7 chain,
+ * so past the last change it goes on into the unversioned files, as IDEA's Commit diff
+ * preview does (`ChangesViewDiffPreviewProcessor.iterateAllChanges`).
+ */
+export function changeTreeDiffData(roots: readonly ChangeNode[], node: ChangeNode): DiffData {
+  const all = changeFileNodes(roots);
+  const nodes = all.includes(node) ? all : [node];
+  return withChain(
+    nodes.map((n) => changeNodeDiff(n)),
+    nodes.indexOf(node),
+  );
+}
+
 /** Default local-changes diff for a working file: HEAD (or empty) vs the working copy. */
 export function workingDiffData(path: string, line?: number, side?: "staged" | "unstaged" | null): DiffData {
   if (side === "staged") {
@@ -267,6 +283,22 @@ export async function loadSide(path: string, side: DiffSide): Promise<string> {
       return side.text;
     case "history":
       return call(commands.historyContent(side.id));
+  }
+}
+
+/**
+ * The file's git mode on `side` (`100644`, `100755`, `120000`…), `null` when the
+ * side has no repository mode — non-git sides and absent files. When the texts
+ * compare equal but the modes differ, the diff reports a mode-only change.
+ */
+export async function loadSideMode(path: string, side: DiffSide): Promise<string | null> {
+  switch (side.type) {
+    case "rev":
+      return call(commands.vcsFileMode(side.path ?? path, side.rev)).catch(() => null);
+    case "worktree":
+      return call(commands.vcsFileMode(path, "WT")).catch(() => null);
+    default:
+      return null;
   }
 }
 

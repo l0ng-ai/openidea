@@ -122,6 +122,23 @@ test("Apply writes and stages unresolved text only after confirmation", async ({
   expect((await writes(page))[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: BASE }] });
 });
 
+test("footer buttons work when a click doesn't focus them, as in WebKit", async ({ page }) => {
+  await mountMerge(page);
+  await result(page).locator(".cm-content").click();
+  // WebKit focuses the clicked button's nearest focusable ancestor, not the button.
+  await page
+    .locator("#merge-host")
+    .getByRole("button", { name: "Apply", exact: true })
+    .evaluate((button) => {
+      let target = button.parentElement;
+      while (target && !target.hasAttribute("tabindex")) target = target.parentElement;
+      if (target) target.focus();
+      else (document.activeElement as HTMLElement | null)?.blur();
+      (button as HTMLButtonElement).click();
+    });
+  await expect(page.getByRole("dialog")).toContainText("Save and mark the file as resolved anyway?");
+});
+
 test("binary and unreadable versions show an error with no Apply controls", async ({ page }) => {
   await mountMerge(page, ["\0base", "\0ours", "\0theirs"]);
   await expect(page.locator("#merge-host")).toContainText("Binary files cannot be resolved in the merge editor.");

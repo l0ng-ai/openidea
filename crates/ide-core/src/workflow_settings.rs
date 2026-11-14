@@ -192,6 +192,33 @@ pub struct IssueLink {
     pub link: String,
 }
 
+/// Per-level colours for console log lines: a line whose level is detected
+/// (`ERROR`, `WARN`, …) takes the level's colour; ANSI colours the program
+/// prints itself win over it. Values are CSS colours, usually scheme tokens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogLevelColors {
+    pub enabled: bool,
+    pub error: String,
+    pub warn: String,
+    pub info: String,
+    pub debug: String,
+    pub trace: String,
+}
+
+impl Default for LogLevelColors {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            error: "var(--ansi-red)".into(),
+            warn: "var(--ansi-yellow)".into(),
+            info: "var(--ansi-green)".into(),
+            debug: "var(--ansi-cyan)".into(),
+            trace: "var(--ansi-magenta)".into(),
+        }
+    }
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -203,6 +230,8 @@ pub struct ConsoleSettings {
     pub encoding: String,
     /// Consecutive lines containing any of these are folded.
     pub fold_patterns: Vec<String>,
+    /// Log lines take the colour of their level (Run/Debug consoles).
+    pub log_colors: LogLevelColors,
 }
 
 impl Default for ConsoleSettings {
@@ -219,6 +248,7 @@ impl Default for ConsoleSettings {
                 "at node:internal/".into(),
                 "<frozen importlib._bootstrap".into(),
             ],
+            log_colors: LogLevelColors::default(),
         }
     }
 }
@@ -236,12 +266,16 @@ pub struct DebuggerSettings {
     pub inline_values: bool,
     /// Data Views: list variables by name instead of the adapter's order.
     pub sort_values: bool,
+    /// Data Views: evaluate watches while the program runs, where the debugger can (JavaScript).
+    pub live_watches: bool,
     pub value_tooltip: bool,
     /// While suspended, selecting an expression shows its value.
     pub value_tooltip_on_selection: bool,
     pub value_tooltip_delay: u32,
     /// Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`).
     pub skip_library_code: bool,
+    /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
+    pub debug_server_page: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -255,10 +289,12 @@ impl Default for DebuggerSettings {
             run_to_cursor_inlay: true,
             inline_values: true,
             sort_values: false,
+            live_watches: false,
             value_tooltip: true,
             value_tooltip_on_selection: true,
             value_tooltip_delay: 700,
             skip_library_code: true,
+            debug_server_page: false,
             python: PythonDebuggerSettings::default(),
         }
     }

@@ -18,8 +18,10 @@ import {
   loadToolWindowLayout,
   resetToolWindowLayout,
   setToolWindowSize,
+  setToolWindowViewMode,
   showToolWindow,
   useToolWindowLayout,
+  viewModeOf,
 } from "./store";
 
 const Empty = () => null;
@@ -62,6 +64,16 @@ describe("tool window layouts", () => {
     restoreDefaultLayout();
     expect(isToolWindowVisible("terminal")).toBe(false);
     expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("saves view modes with a layout; the default layout docks and pins every window", () => {
+    setToolWindowViewMode("project", "undock");
+    saveLayout("Sliding");
+    setToolWindowViewMode("project", "dockUnpinned");
+    expect(restoreLayout("Sliding")).toBe(true);
+    expect(viewModeOf("project")).toBe("undock");
+    restoreDefaultLayout();
+    expect(viewModeOf("project")).toBe("dockPinned");
   });
 
   it("replaces a layout of the same name, renames and deletes", () => {

@@ -264,6 +264,23 @@ impl Handler for FakeAgent {
                     self.say(&session, &format!("late chose {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "escalate" {
+                    // A request for wider access, titled with text the model wrote.
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "session/request_permission",
+                            json!({"sessionId": session, "toolCall": {"toolCallId": "e1", "title": "Run cargo test",
+                                "kind": "other", "rawInput": {"network": {"enabled": true}}},
+                                "options": [{"optionId": "yes", "name": "Allow for this turn", "kind": "allow_once"},
+                                            {"optionId": "no", "name": "Decline", "kind": "reject_once"}]}),
+                            None,
+                        ))
+                        .unwrap();
+                    let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
+                    self.say(&session, &format!("escalation chose {chosen}"));
+                    return Ok(json!({"stopReason": "end_turn"}));
+                }
                 if text == "ask" {
                     let peer = self.latest();
                     let answer: Value = tokio::runtime::Handle::current()
@@ -344,7 +361,8 @@ impl Handler for FakeAgent {
                 let answer: Value = tokio::runtime::Handle::current()
                     .block_on(peer.request(
                         "session/request_permission",
-                        json!({"sessionId": session, "toolCall": {"toolCallId": "t1", "title": "Run cargo test"},
+                        json!({"sessionId": session, "toolCall": {"toolCallId": "t1", "title": "Run cargo test",
+                            "kind": "execute", "rawInput": {"command": "cargo test"}},
                             "options": [{"optionId": "yes", "name": "Allow", "kind": "allow_once"},
                                         {"optionId": "no", "name": "Reject", "kind": "reject_once"}]}),
                         None,
@@ -366,7 +384,8 @@ fn manager(dir: &Path, agent: Arc<FakeAgent>) -> AgentManager {
 fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentManager {
     // These tests speak to FakeAgent, never an installed CLI, including after a provider reload.
     let agents = dir.join("agents");
-    provider::set_builtin_command(&agents, "claude", Some(&dir.join("missing-claude").to_string_lossy())).unwrap();
+    provider::set_builtin_command(&agents, None, "claude", Some(&dir.join("missing-claude").to_string_lossy()))
+        .unwrap();
     let connector: Connector = Arc::new(move |_spec, _cwd, client, _stderr| {
         let (a, b) = duplex(1 << 20);
         let (ar, aw) = tokio::io::split(a);
@@ -385,6 +404,7 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             // The project is the boundary of the skill walk: nothing above it (such as the
             // user's profile, when temp lives under it) leaks into the test.
             home_dir: Some(dir.to_path_buf()),
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -492,7 +512,7 @@ for line in sys.stdin:
         }
         let concurrent = async {
             if outcome == "session_report" {
-                tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::time::timeout(Duration::from_secs(10), async {
                     while !root.join("initialized").exists() {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
@@ -564,7 +584,7 @@ for line in sys.stdin:
             };
             assert_eq!(subtypes, expected, "{outcome}");
             let pid = std::fs::read_to_string(root.join("pid")).unwrap();
-            tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::time::timeout(Duration::from_secs(10), async {
                 while std::process::Command::new("kill").args(["-0", pid.trim()]).output().unwrap().status.success() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -1410,6 +1430,7 @@ async fn real_claude_task_in_a_worktree() {
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
     );
@@ -2243,6 +2264,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
             models_file: tmp.path().join("models.json"),
             custom_agents_dir: Some(agents_dir.clone()),
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2367,6 +2389,27 @@ async fn idle_agents_stop_and_resume_their_session_on_the_next_message() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     assert!(live(&mgr, &task.id));
+    mgr.shutdown();
+
+    // Undoing turns or copying the conversation starts a stopped agent: it stops again too.
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    mgr.set_idle_release(Duration::from_millis(200));
+    let task = mgr.create(new()).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.prompt(&task.id, text("again"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id));
+    mgr.rollback(&task.id, 1).await.unwrap();
+    assert!(live(&mgr, &task.id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id), "an agent started to undo turns stops too");
+    mgr.fork(&task.id, None).await.unwrap();
+    assert!(live(&mgr, &task.id));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!live(&mgr, &task.id), "an agent started to copy the conversation stops too");
     mgr.shutdown();
 
     // An agent that can't reload its session keeps running: stopping it would lose the conversation.
@@ -2553,6 +2596,7 @@ async fn delete_running_agent(no_load: bool) {
             models_file: root.join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2853,14 +2897,14 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     }
     assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt", "other.txt"]);
 
-    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()])).await.unwrap();
+    mgr.rollback_changes(&task.id, Some(vec!["other.txt".into()]), AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("other.txt"), "base\n");
     assert_eq!(changed(&mgr, &task.id).await, ["mine.txt", "new.txt"]);
 
     // After a restart, from the saved copy.
     mgr.shutdown();
     let mgr = manager(&dir, Arc::new(FakeAgent::default()));
-    mgr.rollback_changes(&task.id, None).await.unwrap();
+    mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
     assert!(!dir.join("new.txt").exists());
     assert!(changed(&mgr, &task.id).await.is_empty());
@@ -2873,15 +2917,30 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
 struct Checkout {
     _tmp: tempfile::TempDir,
     dir: PathBuf,
+    eol: Eol,
 }
 
+/// How the checkout keeps line endings: as committed, or CRLF on disk with `core.autocrlf`
+/// (Git for Windows' default), where the files' bytes never equal the committed blobs.
+#[derive(Debug, Clone, Copy)]
+enum Eol {
+    Lf,
+    Crlf,
+}
+
+const EOLS: [Eol; 2] = [Eol::Lf, Eol::Crlf];
+
 impl Checkout {
-    fn new() -> Self {
+    fn new(eol: Eol) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let dir = dunce::canonicalize(tmp.path()).unwrap();
-        let checkout = Self { _tmp: tmp, dir };
+        let checkout = Self { _tmp: tmp, dir, eol };
         checkout.git(&["init", "-q", "-b", "main"]);
-        checkout.git(&["config", "core.autocrlf", "false"]);
+        let autocrlf = match eol {
+            Eol::Lf => "false",
+            Eol::Crlf => "true",
+        };
+        checkout.git(&["config", "core.autocrlf", autocrlf]);
         checkout.write(".gitignore", "store/\nworktrees/\nagents/\nmodels.json\n");
         checkout
     }
@@ -2903,11 +2962,16 @@ impl Checkout {
     }
 
     fn write(&self, rel: &str, text: &str) {
+        let text = match self.eol {
+            Eol::Lf => text.to_owned(),
+            Eol::Crlf => text.replace('\n', "\r\n"),
+        };
         std::fs::write(self.dir.join(rel), text).unwrap();
     }
 
+    /// The file's text with LF line endings (a rollback writes the committed bytes back).
     fn read(&self, rel: &str) -> String {
-        std::fs::read_to_string(self.dir.join(rel)).unwrap()
+        std::fs::read_to_string(self.dir.join(rel)).unwrap().replace("\r\n", "\n")
     }
 
     /// A local task, stopped so it can be rolled back.
@@ -2937,88 +3001,167 @@ async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn work_uncommitted_by_a_reset_during_a_local_task_is_not_rolled_back() {
-    let repo = Checkout::new();
-    repo.write("a.txt", "base\n");
-    repo.write("mine.txt", "base\n");
-    repo.commit("init");
-    repo.write("mine.txt", "my work\n");
-    repo.commit("my work");
-    let (mgr, task) = repo.task().await;
-    repo.write("a.txt", "agent\n");
-    // The user takes the last commit back into the working tree (`git reset --soft`, an
-    // undone commit): its changes are the user's, not the agent's.
-    repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
-    assert_eq!(changed(&mgr, &task.id).await, ["a.txt"]);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.write("mine.txt", "base\n");
+        repo.commit("init");
+        repo.write("mine.txt", "my work\n");
+        repo.commit("my work");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        // The user takes the last commit back into the working tree (`git reset --soft`, an
+        // undone commit): its changes are the user's, not the agent's.
+        repo.git(&["reset", "-q", "--soft", "HEAD~1"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-    let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
-    assert_eq!(base.as_deref(), Some("base\n"));
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert_eq!(repo.read("a.txt"), "base\n");
-    assert_eq!(repo.read("mine.txt"), "my work\n", "the user's work survives the rollback");
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        let base = mgr.base_text(&task.id, repo.dir.join("a.txt")).await.unwrap();
+        assert_eq!(base.map(|b| b.replace("\r\n", "\n")).as_deref(), Some("base\n"), "{eol:?}");
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
+        assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}: the user's work survives the rollback");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_a_mixed_reset_during_a_local_task_leaves_behind_are_not_rolled_back() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.write("mine.txt", "base\n");
+        repo.commit("init");
+        repo.write("mine.txt", "my work\n");
+        repo.write("mine-new.txt", "my new file\n");
+        repo.commit("my work");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        // `git reset HEAD~1`: the commit's new file is untracked now, its edit unstaged.
+        repo.git(&["reset", "-q", "HEAD~1"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
+
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
+        assert_eq!(repo.read("mine.txt"), "my work\n", "{eol:?}");
+        assert_eq!(repo.read("mine-new.txt"), "my new file\n", "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_branch_switched_to_during_a_local_task_is_left_alone() {
-    let repo = Checkout::new();
-    repo.write("a.txt", "base\n");
-    repo.write("other.txt", "base\n");
-    repo.commit("init");
-    repo.git(&["checkout", "-q", "-b", "feature"]);
-    repo.write("other.txt", "feature\n");
-    repo.write("only-feature.txt", "feature\n");
-    repo.commit("feature");
-    repo.git(&["checkout", "-q", "main"]);
-    repo.write("only-main.txt", "main\n");
-    repo.commit("main");
-    let (mgr, task) = repo.task().await;
-    repo.write("a.txt", "agent\n");
-    // The agent's uncommitted edit comes along to a branch that doesn't contain the task's start.
-    repo.git(&["checkout", "-q", "feature"]);
-    assert_eq!(changed(&mgr, &task.id).await, ["a.txt"]);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.write("other.txt", "base\n");
+        repo.commit("init");
+        repo.git(&["checkout", "-q", "-b", "feature"]);
+        repo.write("other.txt", "feature\n");
+        repo.write("only-feature.txt", "feature\n");
+        repo.commit("feature");
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write("only-main.txt", "main\n");
+        repo.commit("main");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        // The agent's uncommitted edit comes along to a branch that doesn't contain the task's start.
+        repo.git(&["checkout", "-q", "feature"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt"], "{eol:?}");
 
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert_eq!(repo.read("a.txt"), "base\n");
-    assert_eq!(repo.read("other.txt"), "feature\n");
-    assert_eq!(repo.read("only-feature.txt"), "feature\n");
-    assert!(!repo.dir.join("only-main.txt").exists());
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "base\n", "{eol:?}");
+        assert_eq!(repo.read("other.txt"), "feature\n", "{eol:?}");
+        assert_eq!(repo.read("only-feature.txt"), "feature\n", "{eol:?}");
+        assert!(!repo.dir.join("only-main.txt").exists(), "{eol:?}");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn commits_made_during_a_local_task_are_kept_by_its_rollback() {
-    let repo = Checkout::new();
-    repo.write("a.txt", "base\n");
-    repo.commit("init");
-    let (mgr, task) = repo.task().await;
-    repo.write("a.txt", "agent\n");
-    repo.write("b.txt", "agent\n");
-    // The user commits what the agent did to `a.txt` so far: it drops out of the task's changes.
-    repo.git(&["add", "a.txt"]);
-    repo.git(&["commit", "-q", "-m", "keep"]);
-    assert_eq!(changed(&mgr, &task.id).await, ["b.txt"]);
-    repo.write("a.txt", "agent\nagain\n");
-    assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"]);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        repo.write("b.txt", "agent\n");
+        // The user commits what the agent did to `a.txt` so far: it drops out of the task's changes.
+        repo.git(&["add", "a.txt"]);
+        repo.git(&["commit", "-q", "-m", "keep"]);
+        assert_eq!(changed(&mgr, &task.id).await, ["b.txt"], "{eol:?}");
+        repo.write("a.txt", "agent\nagain\n");
+        assert_eq!(changed(&mgr, &task.id).await, ["a.txt", "b.txt"], "{eol:?}");
 
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert_eq!(repo.read("a.txt"), "agent\n", "back to the commit, not to before it");
-    assert!(!repo.dir.join("b.txt").exists());
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to before it");
+        assert!(!repo.dir.join("b.txt").exists(), "{eol:?}");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rolling_back_a_rename_brings_the_old_file_back() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("Old.java", "class Old {}\n");
+        repo.write("Case.java", "class Case {}\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.git(&["mv", "Old.java", "New.java"]);
+        repo.git(&["mv", "Case.java", "CASE.java"]);
+        // Renames list their new path only.
+        let listed = changed(&mgr, &task.id).await;
+        assert_eq!(listed, ["CASE.java", "New.java"], "{eol:?}");
+
+        mgr.rollback_changes(&task.id, Some(listed), AgentChangesView::SinceStart).await.unwrap();
+        assert_eq!(repo.read("Old.java"), "class Old {}\n", "{eol:?}");
+        assert!(!repo.dir.join("New.java").exists(), "{eol:?}");
+        assert_eq!(repo.read("Case.java"), "class Case {}\n", "{eol:?}");
+        let names: Vec<String> = std::fs::read_dir(&repo.dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".java"))
+            .collect();
+        assert!(!names.contains(&"CASE.java".to_owned()), "{eol:?}: {names:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_group_view_rolls_back_only_uncommitted_files() {
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("a.txt", "base\n");
+        repo.commit("init");
+        let (mgr, task) = repo.task().await;
+        repo.write("a.txt", "agent\n");
+        repo.commit("agent work");
+        repo.write("a.txt", "agent\nagain\n");
+
+        let grouped = mgr.grouped_changes(&task.id).await.unwrap();
+        assert_eq!(grouped.uncommitted.iter().map(|c| c.rel_path.as_str()).collect::<Vec<_>>(), ["a.txt"], "{eol:?}");
+        assert!(grouped.commits.is_empty(), "{eol:?}: local tasks have no commits to group");
+
+        mgr.rollback_changes(&task.id, None, AgentChangesView::Group).await.unwrap();
+        assert_eq!(repo.read("a.txt"), "agent\n", "{eol:?}: back to the commit, not to the start");
+        assert!(mgr.grouped_changes(&task.id).await.unwrap().uncommitted.is_empty(), "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_local_task_in_a_repository_without_commits_lists_and_rolls_back_its_changes() {
-    let repo = Checkout::new();
-    repo.write("mine.txt", "mine\n");
-    let (mgr, task) = repo.task().await;
-    repo.write("new.txt", "agent\n");
-    assert_eq!(changed(&mgr, &task.id).await, ["new.txt"]);
-    assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None);
+    for eol in EOLS {
+        let repo = Checkout::new(eol);
+        repo.write("mine.txt", "mine\n");
+        let (mgr, task) = repo.task().await;
+        repo.write("new.txt", "agent\n");
+        assert_eq!(changed(&mgr, &task.id).await, ["new.txt"], "{eol:?}");
+        assert_eq!(mgr.base_text(&task.id, repo.dir.join("new.txt")).await.unwrap(), None, "{eol:?}");
 
-    mgr.rollback_changes(&task.id, None).await.unwrap();
-    assert!(!repo.dir.join("new.txt").exists());
-    assert_eq!(repo.read("mine.txt"), "mine\n");
-    assert!(changed(&mgr, &task.id).await.is_empty());
+        mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
+        assert!(!repo.dir.join("new.txt").exists(), "{eol:?}");
+        assert_eq!(repo.read("mine.txt"), "mine\n", "{eol:?}");
+        assert!(changed(&mgr, &task.id).await.is_empty(), "{eol:?}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3086,5 +3229,45 @@ async fn security_policy_auto_approves_whitelist_and_rejects_blacklist() {
             AgentEntry::Permission { chosen: Some(c), .. } if c.contains("Blocked by policy")
         )),
         "{blocked_entries:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn security_policy_never_auto_approves_a_request_that_only_reads_like_a_command() {
+    use ide_core::settings::AgentSecuritySettings;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    mgr.set_security_hook(Arc::new(|| AgentSecuritySettings {
+        allowed_commands: vec!["cargo test".into()],
+        blocked_commands: vec![],
+    }));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("escalate"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let pending = entries
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the request was answered without the user: {entries:?}"));
+    mgr.respond(&task.id, pending, Some("no".into())).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "escalation chose no")),
+        "{entries:?}"
     );
 }

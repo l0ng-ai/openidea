@@ -41,6 +41,8 @@
 }
 
 .grid {
+  /* Undocked tool windows are positioned against the grid. */
+  position: relative;
   flex: 1;
   display: grid;
   min-width: 0;
@@ -116,6 +118,81 @@
   overflow: hidden;
   background: var(--bg-island);
   border-radius: var(--island-radius);
+}
+
+/*
+ * Undock: the area leaves its (zero) track and lies over the editor at the side's
+ * edge, --undock-size deep; two undocked areas of a side share its length.
+ */
+.undocked {
+  position: absolute;
+  z-index: calc(var(--z-panel) + 1);
+  max-width: 100%;
+  max-height: 100%;
+  box-shadow: var(--shadow-popup);
+}
+.undocked[data-slot^="left"],
+.undocked[data-slot^="right"] {
+  width: var(--undock-size);
+  height: calc(var(--undock-share) * 100% - var(--undock-gap));
+}
+/* The inner edge keeps the resize handle off the content (a tree's scrollbar). */
+.undocked[data-slot^="left"] {
+  left: 0;
+  padding-right: var(--island-gap);
+}
+.undocked[data-slot^="right"] {
+  right: 0;
+  padding-left: var(--island-gap);
+}
+.undocked[data-slot="left"],
+.undocked[data-slot="right"] {
+  top: 0;
+}
+.undocked[data-slot="left-split"],
+.undocked[data-slot="right-split"] {
+  bottom: 0;
+}
+.undocked[data-slot^="bottom"] {
+  bottom: 0;
+  padding-top: var(--island-gap);
+  height: var(--undock-size);
+  width: calc(var(--undock-share) * 100% - var(--undock-gap));
+}
+.undocked[data-slot="bottom"] {
+  left: 0;
+}
+.undocked[data-slot="bottom-split"] {
+  right: 0;
+}
+.grid[data-maximized] .undocked {
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+/* The inner edge of an undocked window resizes it. */
+.undockEdge {
+  position: absolute;
+  z-index: 1;
+  outline: none;
+}
+.undocked[data-slot^="left"] > .undockEdge {
+  inset: 0 0 0 auto;
+  width: var(--island-gap);
+  cursor: ew-resize;
+}
+.undocked[data-slot^="right"] > .undockEdge {
+  inset: 0 auto 0 0;
+  width: var(--island-gap);
+  cursor: ew-resize;
+}
+.undocked[data-slot^="bottom"] > .undockEdge {
+  inset: 0 0 auto;
+  height: var(--island-gap);
+  cursor: ns-resize;
+}
+.undockEdge:focus-visible {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 /* Resize handles live in the gaps; a hidden neighbour takes no gap. */

@@ -282,10 +282,16 @@ pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
 /// for 21, but the Eclipse platform it ships moves on (1.63 needs 25), and on
 /// an older JDK the server dies resolving its bundles.
 pub fn jdtls_min_java(cfg: &LanguageServerConfig) -> u32 {
-    let required = crate::jdtls::script_for(cfg)
+    jdtls_required_java(cfg).unwrap_or(JDTLS_MIN_JAVA)
+}
+
+/// [`jdtls_min_java`] when the installed jdtls tells; `None` when none is
+/// installed or its bundles can't be read.
+pub fn jdtls_required_java(cfg: &LanguageServerConfig) -> Option<u32> {
+    crate::jdtls::script_for(cfg)
         .and_then(|script| Some(script.parent()?.parent()?.to_path_buf()))
-        .and_then(|home| bundles_min_java(&home));
-    required.map_or(JDTLS_MIN_JAVA, |v| v.max(JDTLS_MIN_JAVA))
+        .and_then(|home| bundles_min_java(&home))
+        .map(|v| v.max(JDTLS_MIN_JAVA))
 }
 
 /// Per install: (plugins directory mtime, its requirement).
@@ -1541,7 +1547,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "java-usages",
-        "1.13.0",
+        "1.14.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
     )
 }

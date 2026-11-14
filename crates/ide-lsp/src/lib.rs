@@ -25,6 +25,7 @@ mod kotlin_lsp;
 mod launch;
 mod library_source;
 mod loading;
+mod notebook;
 mod pull;
 mod scope;
 mod server;
@@ -36,12 +37,14 @@ pub mod types;
 mod uri;
 mod virtual_doc;
 mod vue_navigation;
+mod vue_refs;
 
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
-pub use inspect::{FileInspection, InspectHost, InspectOptions};
+pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
+pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 
@@ -115,6 +118,10 @@ struct DocState {
     servers: Vec<Attached>,
     /// Open YAML document whose filename does not match a Compose glob and whose content is Compose.
     compose_detected: bool,
+    /// The notebook a code cell belongs to: synced through `notebookDocument/*`, not as a file.
+    notebook: Option<PathBuf>,
+    /// When the servers last got new text (open or change): diagnostics published before are stale.
+    changed: std::time::Instant,
 }
 
 impl DocState {
@@ -153,6 +160,8 @@ struct DocSnap {
     language: LanguageId,
     text: Arc<DocText>,
     servers: Vec<Arc<Server>>,
+    /// [`DocState::changed`].
+    changed: std::time::Instant,
 }
 
 impl DocSnap {
@@ -197,6 +206,10 @@ pub struct LspManager {
     me: Weak<LspManager>,
     project_root: PathBuf,
     content_roots: RwLock<Vec<PathBuf>>,
+    /// Maven projects linked from outside `project_root`. jdtls scans them as extra
+    /// workspace folders; `projectConfigurations` stays unset so the opened root is
+    /// still discovered automatically.
+    jdtls_import_roots: RwLock<Vec<PathBuf>>,
     languages: Arc<LanguageRegistry>,
     sink: SharedSink,
     launcher: Arc<dyn Launcher>,
@@ -228,7 +241,12 @@ pub struct LspManager {
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
     virtual_docs: Mutex<HashMap<String, VirtualDocument>>,
+    /// Modification time of the archive behind a cached library class, so a jar
+    /// replaced in place (a SNAPSHOT installed again) is read again.
+    virtual_stamps: Mutex<HashMap<String, std::time::SystemTime>>,
     injections: injections::State,
+    /// Open notebooks by path. Locked before `docs` when both are.
+    notebooks: Mutex<HashMap<PathBuf, notebook::NotebookState>>,
 }
 
 /// Fetched virtual documents kept before the cache is reset.
@@ -367,15 +385,32 @@ fn read_jar_source(uri: &str, encoding: Option<&str>) -> Option<(String, ide_vfs
 /// Library classes in `jar:` targets (the official Kotlin LSP) go to their source
 /// in the artifact's sources jar when it is cached, at the declaration of the
 /// name navigated from; [`LspManager::virtual_document`] serves it.
-async fn library_sources(snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
-    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"))) {
+async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+    let jar_class = |u: &str| u.starts_with("jar:") && u.ends_with(".class");
+    // The path names the class's source file (`Db.kt`); the handle in the query, the class.
+    let jdt_class = |u: &str| u.starts_with("jdt://contents/") && u.contains(".class");
+    if !locs.iter().any(|l| l.uri.as_deref().is_some_and(|u| jar_class(u) || jdt_class(u))) {
         return locs;
     }
     let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+    let root = root.to_owned();
     tokio::task::spawn_blocking(move || {
         locs.into_iter()
             .map(|loc| {
-                let Some(uri) = loc.uri.as_deref().filter(|u| u.starts_with("jar:") && u.ends_with(".class")) else {
+                // A class JDT finds in a project's class folder (Kotlin compiled for Java code):
+                // the project's source file, not the decompiled class.
+                if let Some(uri) = loc.uri.as_deref().filter(|u| jdt_class(u)) {
+                    let source = library_source::folder_class(uri)
+                        .and_then(|(package, class)| library_source::project_class_source(&root, &package, &class));
+                    let Some(source) = source else { return loc };
+                    let range = name
+                        .as_deref()
+                        .zip(std::fs::read_to_string(&source).ok())
+                        .map(|(n, text)| library_source::declaration_range(&text, n))
+                        .unwrap_or_default();
+                    return Location { path: source.into(), range, uri: None };
+                }
+                let Some(uri) = loc.uri.as_deref().filter(|u| jar_class(u)) else {
                     return loc;
                 };
                 let Some((source, loaded)) = library_source::class_source(uri, None) else { return loc };
@@ -438,6 +473,7 @@ impl LspManager {
             me: me.clone(),
             project_root,
             content_roots: RwLock::new(Vec::new()),
+            jdtls_import_roots: RwLock::new(Vec::new()),
             languages,
             sink: {
                 let me = me.clone();
@@ -475,7 +511,9 @@ impl LspManager {
             go_mod_checked: Mutex::new(HashSet::new()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
+            virtual_stamps: Mutex::new(HashMap::new()),
             injections: injections::State::default(),
+            notebooks: Mutex::new(HashMap::new()),
         })
     }
 
@@ -494,6 +532,28 @@ impl LspManager {
         {
             me.reconfigure_soon();
         }
+    }
+
+    /// Directories of Maven projects linked from outside the opened root. The jdtls
+    /// rooted at the opened project scans them together with that root. An empty list
+    /// leaves discovery as the single `rootUri` scan.
+    pub fn set_jdtls_import_roots(&self, mut roots: Vec<PathBuf>) {
+        roots.retain(|root| root.is_absolute() && root.is_dir() && !root.starts_with(&self.project_root));
+        roots.sort();
+        roots.dedup();
+        let changed = {
+            let mut current = self.jdtls_import_roots.write();
+            let changed = *current != roots;
+            *current = roots;
+            changed
+        };
+        if changed && let Some(me) = self.me.upgrade() {
+            me.reconfigure_soon();
+        }
+    }
+
+    pub fn jdtls_import_roots(&self) -> Vec<PathBuf> {
+        self.jdtls_import_roots.read().clone()
     }
 
     /// Shares JDT LS within this manager; callers reconfigure after the hook's value changes.
@@ -530,8 +590,27 @@ impl LspManager {
             if state.shared {
                 return state.roots.clone();
             }
+            // The opened project's server also scans linked external Maven projects.
+            // Other in-root builds keep their own server and their own root.
+            if server.root == self.project_root {
+                return self.project_and_import_roots();
+            }
         }
         vec![server.root.clone()]
+    }
+
+    fn project_and_import_roots(&self) -> Vec<PathBuf> {
+        let mut roots = vec![self.project_root.clone()];
+        for root in self.jdtls_import_roots.read().iter() {
+            if root.is_absolute() && root.is_dir() && !roots.contains(root) {
+                roots.push(root.clone());
+            }
+        }
+        roots
+    }
+
+    fn imports_external_java(&self, config: &LanguageServerConfig, path: &Path) -> bool {
+        is_local_jdtls(config) && self.jdtls_import_roots.read().iter().any(|root| path.starts_with(root))
     }
 
     fn project_root_for(&self, path: &Path) -> PathBuf {
@@ -550,7 +629,9 @@ impl LspManager {
         let mut servers = self.servers.lock();
         let project = self.project_root_for(path);
         let sketch = (cfg.name == arduino::SERVER).then(|| arduino::sketch_root(&project, path)).flatten();
-        let root = if shared.as_ref().is_some_and(|state| state.shared) {
+        let root = if shared.as_ref().is_some_and(|state| state.shared) || self.imports_external_java(cfg, path) {
+            // One server for the opened root and a linked external Maven project, so
+            // Java completion and navigation see the import jdtls made of both.
             self.project_root.clone()
         } else {
             sketch.or_else(|| launch::find_root(&project, path, &cfg.root_markers)).unwrap_or_else(|| {
@@ -614,8 +695,13 @@ impl LspManager {
     /// enabled in settings.
     fn attach_fallbacks(&self) {
         let _gate = self.injections.gate.lock();
-        let open: Vec<(DocId, LanguageId, PathBuf)> =
-            self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
+        let open: Vec<(DocId, LanguageId, PathBuf)> = self
+            .docs
+            .lock()
+            .iter()
+            .filter(|(_, d)| d.notebook.is_none())
+            .map(|(id, d)| (*id, d.language.clone(), d.path.clone()))
+            .collect();
         let wanted: Vec<(DocId, Vec<Arc<Server>>)> =
             open.into_iter().map(|(id, language, path)| (id, self.servers_for(&language, &path))).collect();
         let mut start = Vec::new();
@@ -647,6 +733,11 @@ impl LspManager {
         }
         for (doc, server) in opened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
+        }
+        for server in self.attach_notebook_servers() {
+            if !start.iter().any(|s| s.id == server.id) {
+                start.push(server);
+            }
         }
         for server in &start {
             self.ensure_started(server);
@@ -756,7 +847,7 @@ impl LspManager {
             Err(LaunchError::Missing) => {
                 let cfg = server.effective_config();
                 let message =
-                    cfg.install_hint.clone().unwrap_or_else(|| format!("`{}` was not found on PATH", cfg.command));
+                    cfg.install_hint.clone().unwrap_or_else(|| format!("{} was not found on PATH", cfg.command));
                 if server.fail_start(
                     generation,
                     Conn::Missing,
@@ -867,7 +958,7 @@ impl LspManager {
                 false
             } else {
                 let open_close = run.caps.read().open_close;
-                for (id, d) in docs.iter_mut() {
+                for (id, d) in docs.iter_mut().filter(|(_, d)| d.notebook.is_none()) {
                     let params = d.did_open_params();
                     for a in
                         d.servers.iter_mut().filter(|a| a.server.id == server.id && a.opened_gen != Some(generation))
@@ -889,6 +980,7 @@ impl LspManager {
         for doc in reopened {
             self.schedule_pull(doc, Some(&server), Duration::ZERO);
         }
+        self.reopen_notebooks(&server, &run);
         self.check_clang_tidy(&server).await;
         self.check_vue_navigation(&server).await;
         server.refresh_busy_status(&self.sink);
@@ -935,13 +1027,15 @@ impl LspManager {
             }
             init_options["settings"] = handler::all_settings(&cfg);
             let shared = is_local_jdtls(&server.config) && self.jdtls_workspace_state().shared;
-            if shared {
-                init_options["workspaceFolders"] = json!(
-                    self.server_workspace_roots(server)
-                        .iter()
-                        .map(|root| uri::path_to_uri_string(root))
-                        .collect::<Vec<_>>()
-                );
+            // jdtls imports `initializationOptions.workspaceFolders` by scanning each
+            // directory. It ignores the LSP workspace folder list for that first import,
+            // and a `projectConfigurations` list replaces the scan. Extra Maven projects
+            // are therefore folders here, not an explicit build-file list, so projects
+            // under the opened root are still discovered.
+            let folders: Vec<String> =
+                self.server_workspace_roots(server).iter().map(|root| uri::path_to_uri_string(root)).collect();
+            if shared || folders.len() > 1 {
+                init_options["workspaceFolders"] = json!(folders);
             }
             let triggers: Vec<_> = self
                 .docs
@@ -1083,6 +1177,8 @@ impl LspManager {
             text: Arc::new(DocText::new(text)),
             servers: servers.iter().map(|s| Attached { server: s.clone(), opened_gen: None }).collect(),
             compose_detected,
+            notebook: None,
+            changed: std::time::Instant::now(),
         };
         let compose_added = {
             let mut docs = self.docs.lock();
@@ -1130,6 +1226,7 @@ impl LspManager {
         let mut docs = self.docs.lock();
         let Some(d) = docs.get_mut(&doc) else { return };
         d.version = version as i32;
+        d.changed = std::time::Instant::now();
 
         // Servers that have this document open on their current instance.
         let targets: Vec<(Arc<Server>, Running, SyncKind, Encoding)> = d
@@ -1214,7 +1311,7 @@ impl LspManager {
             return;
         }
         let docs = self.docs.lock();
-        for d in docs.values() {
+        for d in docs.values().filter(|d| d.notebook.is_none()) {
             if !d.servers.iter().any(|a| a.server.id == server.id && a.opened_gen == Some(generation)) {
                 continue;
             }
@@ -1288,13 +1385,24 @@ impl LspManager {
     fn snapshot(&self, doc: DocId) -> IdeResult<DocSnap> {
         let docs = self.docs.lock();
         let d = docs.get(&doc).ok_or_else(|| IdeError::not_found(format!("{doc} is not open")))?;
+        // A cell is asked only of the servers its notebook is open on (those that sync notebooks).
+        let servers = d
+            .servers
+            .iter()
+            .filter(|a| {
+                d.notebook.is_none()
+                    || a.opened_gen.is_some_and(|g| a.server.running().is_some_and(|run| run.generation == g))
+            })
+            .map(|a| a.server.clone())
+            .collect();
         Ok(DocSnap {
             version: d.version,
             path: d.path.clone(),
             uri: d.uri.clone(),
             language: d.language.clone(),
             text: d.text.clone(),
-            servers: d.servers.iter().map(|a| a.server.clone()).collect(),
+            servers,
+            changed: d.changed,
         })
     }
 
@@ -1336,13 +1444,9 @@ impl LspManager {
         let params = serde_json::to_value(params).map_err(|e| IdeError::internal(e.to_string()))?;
         let stamp = self.injected_request_stamp(&params);
         let fut = async {
-            if t.server.name == "csharp-ls" {
-                let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
-                virtual_doc::normalize_csharp_uris(&mut value);
-                serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
-            } else {
-                t.run.peer.request::<Value, R>(method, params, cancel.cloned()).await
-            }
+            let mut value = t.run.peer.request::<Value, Value>(method, params, cancel.cloned()).await?;
+            virtual_doc::normalize_uris(&mut value);
+            serde_json::from_value(value).map_err(|e| RpcError::Protocol(format!("{method}: {e}")))
         };
         let result = match tokio::time::timeout(timeout, fut).await {
             Ok(r) => r.map_err(|e| rpc_err(&t.server.name, method, e)),
@@ -1523,6 +1627,9 @@ impl LspManager {
             {
                 return Ok(result.locations);
             }
+            if let Some(found) = self.vue_ref_navigation(doc, &snap, pos).await {
+                return Ok(found);
+            }
         }
         let (method, cap, feature) = goto_method(kind);
         let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
@@ -1600,7 +1707,7 @@ impl LspManager {
             Ok(found) => {
                 let locs =
                     convert::goto_response(&self.conv(t.enc()), lsp::GotoDefinitionResponse::Array(found.locations));
-                let locs = library_sources(snap, pos, locs).await;
+                let locs = library_sources(snap, &self.project_root, pos, locs).await;
                 self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                 (locs, found.complete)
             }
@@ -1649,7 +1756,7 @@ impl LspManager {
             match r {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
-                    let locs = library_sources(snap, pos, locs).await;
+                    let locs = library_sources(snap, &self.project_root, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = merge_locations(first, locs);
@@ -2822,7 +2929,7 @@ impl LspManager {
         let params = json!({ "textDocument": snap.ident() });
         let r: Option<Value> = self.call(t, "textDocument/semanticTokens/full", params, None, DEFAULT_TIMEOUT).await?;
         let Some(data) = r.as_ref().and_then(|v| v.get("data")).and_then(Value::as_array) else { return Ok(None) };
-        let data: Vec<u32> = data.iter().map(|n| n.as_u64().unwrap_or(0) as u32).collect();
+        let data: Vec<i64> = data.iter().map(|n| n.as_i64().unwrap_or(0)).collect();
         let (enc, legend) = {
             let caps = t.caps();
             (caps.encoding, caps.semantic_legend.clone().unwrap_or_default())
@@ -3099,14 +3206,44 @@ impl LspManager {
         Ok(found)
     }
 
+    /// Whether the archive behind a cached library class changed since it was read.
+    /// Stats the archive: call from a blocking worker.
+    pub fn library_class_changed(&self, uri: &str) -> bool {
+        let Some(stamp) = self.virtual_stamps.lock().get(uri).copied() else { return false };
+        virtual_doc::archive_modified(uri) != Some(stamp)
+    }
+
+    /// Archives behind cached library classes that changed since they were read.
+    /// Stats each archive: call from a blocking worker.
+    pub fn changed_library_archives(&self) -> Vec<PathBuf> {
+        let uris: Vec<String> = self.virtual_stamps.lock().keys().cloned().collect();
+        let mut archives: Vec<PathBuf> = uris
+            .iter()
+            .filter(|uri| self.library_class_changed(uri))
+            .filter_map(|uri| virtual_doc::archive(uri))
+            .collect();
+        archives.sort();
+        archives.dedup();
+        archives
+    }
+
     /// Contents of a virtual document, from the server that owns `uri`:
     /// `workspace/textDocumentContent` (LSP 3.18) when the server serves the
     /// scheme, jdtls' `java/classFileContents` for `jdt:` URIs. A `jar:` entry
     /// is read from its archive, a `jar:` class shown as its library source
     /// (see [`library_source`]) or else decompiled by the server. Cached.
     pub async fn virtual_document(&self, uri: &str) -> IdeResult<VirtualDocument> {
-        if let Some(d) = self.virtual_docs.lock().get(uri) {
-            return Ok(d.clone());
+        let cached = self.virtual_docs.lock().get(uri).cloned();
+        if let Some(d) = cached {
+            let stamp = self.virtual_stamps.lock().get(uri).copied();
+            let current = {
+                let uri = uri.to_owned();
+                tokio::task::spawn_blocking(move || virtual_doc::archive_modified(&uri)).await.ok().flatten()
+            };
+            if stamp.is_none() || stamp == current {
+                return Ok(d);
+            }
+            self.virtual_docs.lock().remove(uri);
         }
         let scheme = virtual_doc::scheme(uri).to_owned();
         let jar_class = scheme == "jar" && library_source::parse(uri).is_some_and(|e| e.entry.ends_with(".class"));
@@ -3250,11 +3387,18 @@ impl LspManager {
         if let Some(server) = server {
             self.virtual_origins.lock().entry(uri.to_owned()).or_insert(server);
         }
+        let stamp = virtual_doc::archive_modified(uri);
         let mut cache = self.virtual_docs.lock();
+        let mut stamps = self.virtual_stamps.lock();
         if cache.len() >= VIRTUAL_CACHE_LIMIT {
             cache.clear();
+            stamps.clear();
         }
         cache.insert(uri.to_owned(), doc.clone());
+        match stamp {
+            Some(stamp) => stamps.insert(uri.to_owned(), stamp),
+            None => stamps.remove(uri),
+        };
         doc
     }
 
@@ -3490,11 +3634,17 @@ impl LspManager {
             join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;
             return;
         }
+        let existing: Vec<ide_core::ServerId> = self.servers.lock().iter().map(|s| s.id).collect();
         self.reconfigure_jdtls_workspace().await;
         self.stop_unlisted().await;
         let Some(me) = self.me.upgrade() else { return };
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         for s in servers {
+            // Created in this pass (the jdtls of a new workspace layout): it starts with the
+            // current configuration, though it may not have recorded it yet.
+            if !existing.contains(&s.id) {
+                continue;
+            }
             // The settings hook may run tools (`npm root -g`), as when the server starts.
             let next = match tokio::task::spawn_blocking({
                 let (me, s) = (me.clone(), s.clone());

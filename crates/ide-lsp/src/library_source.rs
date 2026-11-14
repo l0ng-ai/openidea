@@ -226,6 +226,66 @@ pub(crate) fn identifier_at(line: &str, col: u32) -> Option<&str> {
     (!word.is_empty() && !word.starts_with(|c: char| c.is_ascii_digit())).then_some(word)
 }
 
+/// A class of a class folder on JDT's classpath, as `(package path, class name)`, read
+/// from the element handle in the query:
+/// `jdt://contents/<folder>/<pkg>/<File>?=<project>/<escaped folder>[=/<attribute>=/<value>]…<pkg(Name.class`
+/// (`<File>` is the class's SourceFile, `Db.kt` for a Kotlin class). A folder is a project's
+/// own build output (the Kotlin classes the IDE compiles for JDT among them), never a
+/// dependency, which is a jar or a JDK module.
+pub(crate) fn folder_class(uri: &str) -> Option<(String, String)> {
+    uri.strip_prefix("jdt://contents/")?;
+    let query = percent_decode_str(uri.split_once('?')?.1).decode_utf8().ok()?;
+    let (root, element) = query.split_once('/')?.1.split_once('<')?;
+    let folder = PathBuf::from(root.split("=/").next()?.replace('\\', ""));
+    let (package, file) = element.split_once('(')?;
+    let name = file.strip_suffix(".class")?;
+    if name.is_empty() || !folder.is_dir() {
+        return None;
+    }
+    Some((package.replace('.', "/"), name.to_owned()))
+}
+
+/// The project's source of `class` (`Name`, `Outer$Inner`, `FileKt`) in `package`
+/// (`/`-separated): a `.kt` / `.java` file of that name declaring the package. Build
+/// output and ignored files are skipped.
+pub(crate) fn project_class_source(root: &Path, package: &str, class: &str) -> Option<PathBuf> {
+    let outer = class.split('$').next().unwrap_or(class);
+    let mut names = vec![format!("{outer}.kt"), format!("{outer}.java")];
+    if let Some(file) = outer.strip_suffix("Kt").filter(|f| !f.is_empty()) {
+        names.push(format!("{file}.kt"));
+    }
+    let package = package.replace('/', ".");
+    let mut found: Vec<PathBuf> = ignore::WalkBuilder::new(root)
+        .filter_entry(|e| {
+            let output = matches!(e.file_name().to_str(), Some("target" | "build" | "out" | "node_modules"));
+            // A package may be named `build`: only outside source trees is it output.
+            !output || e.path().components().any(|c| c.as_os_str() == "src")
+        })
+        .build()
+        .flatten()
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .filter(|e| e.file_name().to_str().is_some_and(|n| names.iter().any(|name| name == n)))
+        .map(|e| e.into_path())
+        .filter(|p| std::fs::read_to_string(p).is_ok_and(|text| declared_package(&text) == package))
+        .collect();
+    // The directory matching the package first, then by name order.
+    found.sort_by_key(|p| {
+        let dir = p.parent().map(|d| d.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        (!dir.ends_with(&format!("/{}", package.replace('.', "/"))), names.iter().position(|n| n == name))
+    });
+    found.into_iter().next()
+}
+
+/// The `package` a Kotlin or Java file declares; empty for the default package.
+fn declared_package(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("package "))
+        .map(|line| line["package ".len()..].trim_end_matches(';').trim().replace('`', ""))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +472,58 @@ mod tests {
         // Reload with an explicit encoding re-reads the same source.
         let (_, reloaded) = class_source(&uri("example/encoding/EncodingSample.class"), Some("gbk")).unwrap();
         assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), (GBK_SAMPLE, "gbk"));
+    }
+
+    #[test]
+    fn maps_class_folder_classes_to_project_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let output = root.join(".cache/kotlin/main-0");
+        std::fs::create_dir_all(output.join("test001")).unwrap();
+        // As jdtls writes it: the class's source file name in the path, the library's
+        // classpath attributes after the folder.
+        let escaped = output.to_string_lossy().replace('/', "\\/");
+        let handle = format!("=demo/{escaped}=/ai.openidea.kotlin=/true=/<test001(Db.class");
+        let uri = format!("jdt://contents/main-0/test001/Db.kt?{}", utf8_percent_encode(&handle, PATH));
+        assert_eq!(folder_class(&uri), Some(("test001".into(), "Db".into())));
+        let plain = format!(
+            "jdt://contents/main-0/test001/Db.class?{}",
+            utf8_percent_encode(&format!("=demo/{escaped}<test001(Db.class"), PATH)
+        );
+        assert_eq!(folder_class(&plain), Some(("test001".into(), "Db".into())));
+        let nested = format!(
+            "jdt://contents/main-0/a.b/Db.kt?{}",
+            utf8_percent_encode(&format!("=demo/{escaped}<a.b(Db$Companion.class"), PATH)
+        );
+        assert_eq!(folder_class(&nested), Some(("a/b".into(), "Db$Companion".into())));
+        let jar = "jdt://contents/a.jar/p/C.class?=p/%5C/m2%5C/a.jar%3Cp%28C.class";
+        assert_eq!(folder_class(jar), None, "a dependency jar");
+        assert_eq!(folder_class(&uri.replace("main-0", "gone")), None);
+
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write("src/main/kotlin/test001/Db.kt", "package test001\n\nclass Db\n");
+        write("src/main/kotlin/other/Db.kt", "package other\n\nclass Db\n");
+        write("target/generated/test001/Db.kt", "package test001\n\nclass Db\n");
+        write("src/main/kotlin/util/Strings.kt", "@file:JvmName(\"Strings\")\npackage util\n\nfun shout() = 1\n");
+        write("src/main/kotlin/com/x/build/Tool.kt", "package com.x.build\n\nclass Tool\n");
+        write("src/main/kotlin/flat/Elsewhere.kt", "");
+        write("src/main/kotlin/Loose.kt", "package flat\n\nobject Loose\n");
+        let source = |package: &str, class: &str| {
+            project_class_source(root, package, class).map(|p| p.strip_prefix(root).unwrap().to_owned())
+        };
+        assert_eq!(source("test001", "Db"), Some(PathBuf::from("src/main/kotlin/test001/Db.kt")));
+        assert_eq!(source("test001", "Db$Companion"), Some(PathBuf::from("src/main/kotlin/test001/Db.kt")));
+        assert_eq!(source("other", "Db"), Some(PathBuf::from("src/main/kotlin/other/Db.kt")));
+        assert_eq!(source("util", "StringsKt"), Some(PathBuf::from("src/main/kotlin/util/Strings.kt")));
+        assert_eq!(source("com/x/build", "Tool"), Some(PathBuf::from("src/main/kotlin/com/x/build/Tool.kt")));
+        assert_eq!(source("flat", "Loose"), Some(PathBuf::from("src/main/kotlin/Loose.kt")), "any directory");
+        assert_eq!(source("test001", "Missing"), None);
+        assert_eq!(declared_package("package a.b.c;\n"), "a.b.c");
+        assert_eq!(declared_package("class A"), "");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! execution ([`conn`]), introspection, table data paging / editing ([`sql`])
 //! and statement splitting ([`split`]), for SQLite, PostgreSQL and MySQL/MariaDB.
 
+pub mod catalog;
 mod clickhouse;
 pub mod conn;
 pub mod history;
@@ -9,15 +10,20 @@ mod oracle;
 pub mod plan;
 pub mod plugin;
 pub mod secrets;
+mod snowflake;
 pub mod source;
 pub mod split;
 pub mod sql;
+mod watch;
+pub use watch::SourcesWatch;
 
+pub use catalog::{CatalogDatabase, CatalogSchema, SourceCatalog};
 pub use conn::{Held, Pool, QueryResult, ResultColumn};
 pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
-    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSsh, DbSshAuth, DbSslMode, DbTxMode,
+    DataSource, DbColor, DbDriver, DbIntrospection, DbOptions, DbProperty, DbSnowflake, DbSnowflakeAuth, DbSsh,
+    DbSshAuth, DbSslMode, DbTxMode,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -109,6 +115,21 @@ pub struct SchemaObjects {
     pub routines: Vec<RoutineInfo>,
     pub packages: Vec<PackageInfo>,
     pub sequences: Vec<SequenceInfo>,
+    /// Objects of kinds only some databases have (Snowflake stages, streams, tasks…).
+    #[serde(default)]
+    pub others: Vec<SchemaObject>,
+}
+
+/// A schema object the tree lists by name under a folder of its kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbSchemaObject")]
+pub struct SchemaObject {
+    /// `stage`, `stream`, `task`, `pipe`, `fileFormat`.
+    pub kind: String,
+    pub name: String,
+    /// What the list says about it (a stage's type, a stream's table, a task's schedule).
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -204,6 +225,18 @@ pub struct TablePage {
     pub offset: f64,
 }
 
+/// What a Snowflake session computes with and acts as, and what it may switch to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbSessionContext")]
+pub struct SessionContext {
+    /// Empty: no warehouse is in use.
+    pub warehouse: String,
+    pub role: String,
+    pub warehouses: Vec<String>,
+    pub roles: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbDatabases")]
@@ -228,6 +261,8 @@ pub struct DbManager {
     /// Directory of the global data sources and their saved passwords ([`DbManager::with_global_sources`]).
     global: Option<(PathBuf, SecretStore)>,
     history: Arc<HistoryStore>,
+    /// What introspection read of each data source, kept between runs.
+    catalogs: catalog::CatalogStore,
     /// Records executed statements in the history off the async threads, in order.
     recorder: std::sync::mpsc::Sender<(String, String, f64)>,
     /// Passwords entered this session (not saved, or not yet), by credential key.
@@ -235,6 +270,9 @@ pub struct DbManager {
     /// Manual-commit data sources, each with the connection of its open
     /// transaction (taken by the first statement after a commit / rollback).
     sessions: Mutex<HashMap<String, Session>>,
+    /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
+    /// (`None` until [`DbManager::watch_sources`]).
+    on_disk: Mutex<Option<Vec<DataSource>>>,
 }
 
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
@@ -286,6 +324,17 @@ fn group_foreign_keys(rows: Vec<Vec<Option<String>>>, tables: &[CompletionTable]
 /// Connection target: a data source id (its configured database), or
 /// `<id>:<database>` for another database of the same server. Data source ids
 /// never contain `:`.
+/// Snowflake is HTTPS to a named host: a tunnel's local end cannot pass its certificate check.
+fn tunneled(driver: DbDriver) -> bool {
+    !matches!(driver, DbDriver::Sqlite | DbDriver::Snowflake)
+}
+
+/// The database host and port the SSH host forwards to.
+fn tunnel_target(source: &DataSource) -> (&str, u16) {
+    let port = source.port.or(source.driver.default_port()).unwrap_or_default();
+    (if source.host.trim().is_empty() { "localhost" } else { source.host.trim() }, port)
+}
+
 pub fn split_target(target: &str) -> (&str, Option<&str>) {
     match target.split_once(':') {
         Some((id, db)) if !db.is_empty() => (id, Some(db)),
@@ -336,6 +385,9 @@ impl DbManager {
     /// `passwords` / `history` are the app-wide files of saved passwords
     /// ([`SecretStore`]) and query history ([`HistoryStore`]).
     pub fn new(root: PathBuf, passwords: PathBuf, history: PathBuf, ssh: Arc<SshManager>) -> Self {
+        // Beside the query history, in the app data directory.
+        let catalogs = history.parent().unwrap_or(&root).join("db-catalogs");
+        let catalogs = catalog::CatalogStore::new(catalogs, &root);
         let history = Arc::new(HistoryStore::new(history, &root));
         let (recorder, statements) = std::sync::mpsc::channel::<(String, String, f64)>();
         {
@@ -355,6 +407,7 @@ impl DbManager {
             saved_passwords: SecretStore::new(passwords, &root),
             global: None,
             history,
+            catalogs,
             recorder,
             root,
             pools: Mutex::default(),
@@ -362,6 +415,7 @@ impl DbManager {
             tunnel_open: tokio::sync::Mutex::new(()),
             ssh,
             session_passwords: Mutex::default(),
+            on_disk: Mutex::default(),
             sessions: Mutex::default(),
         }
     }
@@ -417,6 +471,10 @@ impl DbManager {
             .ok_or_else(|| IdeError::not_found(format!("no data source {id}")))?
             .resolved()?;
         if let Some(db) = database {
+            // The configured schema belongs to the configured database.
+            if source.driver == DbDriver::Snowflake && !source.database.eq_ignore_ascii_case(db) {
+                source.options.default_schema.clear();
+            }
             source.database = db.to_owned();
         }
         Ok(source)
@@ -451,9 +509,10 @@ impl DbManager {
             match sources.iter().find(|s| s.id == o.id) {
                 Some(n) if *n == o => {}
                 gone_or_changed => {
-                    let keys = [o.id.clone(), secrets::ssh_key(&o.id)];
+                    let keys = [o.id.clone(), secrets::ssh_key(&o.id), Self::sso_credential(&o.id)];
                     match gone_or_changed {
                         None => {
+                            self.catalogs.forget(&o.id);
                             for k in &keys {
                                 self.session_passwords.lock().remove(k);
                                 self.store_of(&o).delete(k);
@@ -474,7 +533,43 @@ impl DbManager {
                 }
             }
         }
+        // Our own write is not reported as an edit on disk.
+        if let Some(known) = self.on_disk.lock().as_mut() {
+            *known = self.sources().unwrap_or(sources);
+        }
         Ok(())
+    }
+
+    /// Watches the data source files (the project's and the global one) for edits made
+    /// outside the IDE; `on_change` runs on a background thread once they settle, and
+    /// should call [`DbManager::reconcile_sources`]. Stops when the result is dropped.
+    pub fn watch_sources(&self, on_change: Box<dyn Fn() + Send>) -> IdeResult<SourcesWatch> {
+        *self.on_disk.lock() = Some(self.sources().unwrap_or_default());
+        SourcesWatch::start(&self.root, self.global.as_ref().map(|(dir, _)| dir.as_path()), on_change)
+    }
+
+    /// Re-reads the data sources after their files changed on disk: connections of
+    /// removed or changed sources close, as on [`DbManager::save_sources`] (saved
+    /// passwords stay, the source may come back). Returns whether the list the tree
+    /// shows changed, or the files no longer parse (the tree reports the error).
+    pub async fn reconcile_sources(&self) -> bool {
+        let now = match self.sources() {
+            Ok(now) => now,
+            Err(e) => {
+                tracing::warn!("data sources: {}", e.message);
+                return true;
+            }
+        };
+        let before = self.on_disk.lock().replace(now.clone()).unwrap_or_default();
+        if before == now {
+            return false;
+        }
+        for o in &before {
+            if now.iter().find(|s| s.id == o.id) != Some(o) {
+                self.disconnect_source(&o.id).await;
+            }
+        }
+        true
     }
 
     /// Remembers `password` for the session, and in the saved passwords when
@@ -571,7 +666,7 @@ impl DbManager {
         ssh_secret: Option<String>,
         shared: bool,
     ) -> IdeResult<(DataSource, Option<Arc<Tunnel>>)> {
-        let Some(ssh) = source.ssh.as_ref().filter(|s| s.enabled && source.driver != DbDriver::Sqlite) else {
+        let Some(ssh) = source.ssh.as_ref().filter(|s| s.enabled && tunneled(source.driver)) else {
             return Ok((source.clone(), None));
         };
         let local = |t: &Tunnel| DataSource { host: "127.0.0.1".into(), port: Some(t.port()), ..source.clone() };
@@ -582,8 +677,25 @@ impl DbManager {
                 return Ok((local(&t), Some(t)));
             }
         }
+        let session = self.ssh_session(source, ssh, ssh_secret).await?;
+        let (target_host, target_port) = tunnel_target(source);
+        let t = Arc::new(Tunnel::open(session, target_host, target_port).await?);
+        if shared {
+            self.tunnels.lock().insert(source.id.clone(), t.clone());
+        }
+        Ok((local(&t), Some(t)))
+    }
+
+    /// The SSH session the tunnel of `source` goes through: its shared SSH configuration's, or one
+    /// opened with the settings typed in the data source.
+    async fn ssh_session(
+        &self,
+        source: &DataSource,
+        ssh: &DbSsh,
+        ssh_secret: Option<String>,
+    ) -> IdeResult<Arc<ide_ssh::Session>> {
         let config = ssh.config.trim();
-        let session = if config.is_empty() {
+        Ok(if config.is_empty() {
             let secret = match ssh_secret {
                 Some(s) => Some(s),
                 None => self.secret(source, secrets::ssh_key(&source.id), ssh.save_secret).await,
@@ -602,14 +714,22 @@ impl DbManager {
                 self.ssh.set_secret(config, Some(s), save);
             }
             self.ssh.session(config).await?
-        };
-        let target_port = source.port.or(source.driver.default_port()).unwrap_or_default();
-        let target_host = if source.host.trim().is_empty() { "localhost" } else { source.host.trim() };
-        let t = Arc::new(Tunnel::open(session, target_host, target_port).await?);
-        if shared {
-            self.tunnels.lock().insert(source.id.clone(), t.clone());
-        }
-        Ok((local(&t), Some(t)))
+        })
+    }
+
+    /// Data Source › SSH/SSL › Test SSH Tunnel: logs in to the SSH host and checks that it reaches
+    /// the database host and port, without logging in to the database.
+    pub async fn test_tunnel(&self, source: &DataSource, ssh_secret: Option<String>) -> IdeResult<String> {
+        let source = &source.resolved()?;
+        let ssh = source
+            .ssh
+            .as_ref()
+            .filter(|s| s.enabled && tunneled(source.driver))
+            .ok_or_else(|| IdeError::invalid("This data source does not use an SSH tunnel"))?;
+        let session = self.ssh_session(source, ssh, ssh_secret).await?;
+        let (host, port) = tunnel_target(source);
+        drop(Tunnel::open(session.clone(), host, port).await?);
+        Ok(format!("{} reaches {host}:{port}", session.label()))
     }
 
     /// Connects with `source` as given (not necessarily saved): Test Connection.
@@ -625,7 +745,10 @@ impl DbManager {
             None => self.password(source).await,
         };
         let (target, tunnel) = self.endpoint(source, ssh_secret, false).await?;
-        let pool = Pool::connect(&target, password.as_deref(), Some(&self.root)).await.map_err(|e| {
+        self.restore_sso(source).await;
+        let connected = Pool::connect(&target, password.as_deref(), Some(&self.root)).await;
+        self.keep_sso(source).await;
+        let pool = connected.map_err(|e| {
             through_tunnel(
                 e,
                 source,
@@ -638,10 +761,16 @@ impl DbManager {
             DbDriver::Mysql => "SELECT CONCAT(@@version_comment, ' ', VERSION())",
             DbDriver::SqlServer => "SELECT @@VERSION",
             DbDriver::Oracle => "SELECT banner FROM v$version WHERE banner LIKE 'Oracle%' AND ROWNUM = 1",
+            DbDriver::Snowflake => "SELECT 'Snowflake ' || CURRENT_VERSION()",
         };
-        let result = pool.rows(version, 1).await;
+        let result = match &pool {
+            // On the session the login opened: metadata has its own, which would sign in again.
+            Pool::Snowflake(p) => p.execute(version, 1, &CancellationToken::new()).await.map(|r| r.rows),
+            _ => pool.rows(version, 1).await,
+        };
         pool.close().await;
-        let rows = if source.driver == DbDriver::Clickhouse { result? } else { result.unwrap_or_default() };
+        let strict = matches!(source.driver, DbDriver::Clickhouse | DbDriver::Snowflake);
+        let rows = if strict { result? } else { result.unwrap_or_default() };
         let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten());
         Ok(v.unwrap_or_else(|| "Connected".into()))
     }
@@ -668,7 +797,10 @@ impl DbManager {
         let source = self.source(id)?;
         let password = self.password(&source).await;
         let (target, tunnel) = self.endpoint(&source, None, true).await?;
-        let pool = match Pool::connect(&target, password.as_deref(), Some(&self.root)).await {
+        self.restore_sso(&source).await;
+        let connected = Pool::connect(&target, password.as_deref(), Some(&self.root)).await;
+        self.keep_sso(&source).await;
+        let pool = match connected {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 self.drop_unused_tunnel(source_id);
@@ -681,9 +813,10 @@ impl DbManager {
         };
         // Another caller may have connected meanwhile; keep theirs.
         let kept = self.pools.lock().entry(id.to_owned()).or_insert_with(|| pool.clone()).clone();
-        if Arc::ptr_eq(&kept, &pool)
-            && let Some(secs) = source.options.keep_alive_secs.filter(|s| *s > 0)
-        {
+        if !Arc::ptr_eq(&kept, &pool) {
+            // Ours lost the race: close it rather than leave its session open on the server.
+            pool.close().await;
+        } else if let Some(secs) = source.options.keep_alive_secs.filter(|s| *s > 0) {
             keep_alive(&pool, Duration::from_secs(secs.into()));
         }
         Ok(kept)
@@ -733,6 +866,23 @@ impl DbManager {
             let names = first(pool.rows(sql::sqlserver_databases(), MAX_META_ROWS).await?).collect();
             return Ok(Databases { current, names });
         }
+        if pool.driver() == DbDriver::Snowflake {
+            let current = pool
+                .rows("SELECT CURRENT_DATABASE()", 1)
+                .await?
+                .into_iter()
+                .next()
+                .and_then(|r| r.into_iter().next().flatten())
+                .unwrap_or_default();
+            // `SHOW` needs no running warehouse and lists what the role may see. Columns: created_on, name…
+            let names = pool
+                .rows("SHOW TERSE DATABASES", MAX_META_ROWS)
+                .await?
+                .into_iter()
+                .filter_map(|r| r.into_iter().nth(1).flatten())
+                .collect();
+            return Ok(Databases { current, names });
+        }
         if pool.driver() != DbDriver::Postgres {
             return Err(IdeError::invalid("this data source does not list databases"));
         }
@@ -747,17 +897,95 @@ impl DbManager {
         Ok(Databases { current, names })
     }
 
+    /// The schemas of `database` of data source `id` with their tables and views (Snowflake):
+    /// what completion needs to follow `database.schema.table` without the tree being opened.
+    /// The result is also saved ([`DbManager::saved_catalog`]) for the next run.
+    pub async fn database_catalog(&self, id: &str, database: &str) -> IdeResult<Vec<CatalogSchema>> {
+        let id = split_target(id).0;
+        let schemas = match &*self.pool(id).await? {
+            Pool::Snowflake(p) => snowflake::meta::catalog(p, database).await?,
+            _ => return Err(IdeError::invalid("this data source does not list other databases")),
+        };
+        if let Err(e) = self.catalogs.put(id, database, schemas.clone()).await {
+            // Completion still has it for this run.
+            tracing::warn!("could not save the catalog of {database}: {}", e.message);
+        }
+        Ok(schemas)
+    }
+
+    /// What earlier introspection of data source `id` saved (`None`: never introspected).
+    /// Read from disk: the data source is not connected to.
+    pub async fn saved_catalog(&self, id: &str) -> IdeResult<Option<SourceCatalog>> {
+        self.catalogs.load(split_target(id).0).await
+    }
+
+    /// Drops the saved databases of data source `id` that are not in `databases` any more.
+    pub async fn retain_catalog(&self, id: &str, databases: Vec<String>) -> IdeResult<()> {
+        self.catalogs.retain(split_target(id).0, databases).await
+    }
+
+    /// Credential key of the single sign-on ID token of data source `id`.
+    fn sso_credential(id: &str) -> String {
+        format!("{id}#sso")
+    }
+
+    /// Hands the saved single sign-on token of `source` to the driver, so it signs in without the browser.
+    async fn restore_sso(&self, source: &DataSource) {
+        let Some(key) = snowflake::sso_key(source) else { return };
+        if snowflake::sso_token(&key).is_none()
+            && let Some(saved) = self.store_of(source).get(&Self::sso_credential(&source.id))
+        {
+            snowflake::sso_seed(&key, &saved);
+        }
+    }
+
+    /// Keeps the token the last sign-in of `source` left in the credential store (or forgets a refused one).
+    async fn keep_sso(&self, source: &DataSource) {
+        let Some(key) = snowflake::sso_key(source) else { return };
+        if source.id.is_empty() {
+            return;
+        }
+        let credential = Self::sso_credential(&source.id);
+        let store = self.store_of(source);
+        let (now, saved) = (snowflake::sso_token(&key), store.get(&credential));
+        if now == saved {
+            return;
+        }
+        match now {
+            Some(token) => {
+                if let Err(e) = store.set(&credential, &token) {
+                    tracing::warn!("could not save the single sign-on token: {}", e.message);
+                }
+            }
+            None => store.delete(&credential),
+        }
+    }
+
+    /// The warehouse and role of the session of data source `id` (Snowflake), and its choices.
+    pub async fn session_context(&self, id: &str) -> IdeResult<SessionContext> {
+        match &*self.pool(id).await? {
+            Pool::Snowflake(p) => snowflake::meta::session(p).await,
+            _ => Err(IdeError::invalid("this data source has no warehouse or role")),
+        }
+    }
+
     /// Every schema (the Schemas tab picks the ones the tree shows); system schemas
     /// only with [`DbIntrospection::show_system`].
     pub async fn schemas(&self, id: &str) -> IdeResult<Vec<String>> {
         let system = self.source(id)?.introspection.show_system;
         let pool = self.pool(id).await?;
+        if let Pool::Snowflake(p) = &*pool {
+            return snowflake::meta::schemas(p, system).await;
+        }
         let rows = pool.rows(sql::schemas(pool.driver(), system), MAX_META_ROWS).await?;
         Ok(rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())
     }
 
     pub async fn tables(&self, id: &str, schema: &str) -> IdeResult<Vec<TableInfo>> {
         let pool = self.pool(id).await?;
+        if let Pool::Snowflake(p) = &*pool {
+            return snowflake::meta::tables(p, schema).await;
+        }
         let rows = pool.rows(&sql::tables(pool.driver(), schema), MAX_META_ROWS).await?;
         Ok(rows
             .into_iter()
@@ -771,6 +999,9 @@ impl DbManager {
 
     pub async fn table_details(&self, id: &str, schema: &str, table: &str) -> IdeResult<TableDetails> {
         let pool = self.pool(id).await?;
+        if let Pool::Snowflake(p) = &*pool {
+            return snowflake::meta::table_details(p, schema, table).await;
+        }
         let driver = pool.driver();
         let columns = pool
             .rows(&sql::columns(driver, schema, table), MAX_META_ROWS)
@@ -798,7 +1029,7 @@ impl DbManager {
                 _ => indexes.push(IndexInfo { name, unique: flag(&unique), columns: vec![col] }),
             }
         }
-        let fk_rows = if driver == DbDriver::Clickhouse {
+        let fk_rows = if matches!(driver, DbDriver::Clickhouse | DbDriver::Snowflake) {
             Vec::new()
         } else {
             pool.rows(&sql::table_foreign_keys(driver, schema, table), MAX_META_ROWS).await.unwrap_or_default()
@@ -815,7 +1046,7 @@ impl DbManager {
                 .collect();
         }
         foreign_keys.retain(|k| k.columns.len() == k.ref_columns.len());
-        let trigger_rows = if driver == DbDriver::Clickhouse {
+        let trigger_rows = if matches!(driver, DbDriver::Clickhouse | DbDriver::Snowflake) {
             Vec::new()
         } else {
             pool.rows(&sql::triggers(driver, schema, table), MAX_META_ROWS).await.unwrap_or_else(|e| {
@@ -842,6 +1073,9 @@ impl DbManager {
     /// The routines and sequences of `schema`.
     pub async fn schema_objects(&self, id: &str, schema: &str) -> IdeResult<SchemaObjects> {
         let pool = self.pool(id).await?;
+        if let Pool::Snowflake(p) = &*pool {
+            return snowflake::meta::schema_objects(p, schema).await;
+        }
         let driver = pool.driver();
         let mut out = SchemaObjects::default();
         if let Some(q) = sql::routines(driver, schema) {
@@ -891,6 +1125,14 @@ impl DbManager {
     /// The definition of a routine (every overload), package (spec and body), trigger or sequence.
     pub async fn object_ddl(&self, id: &str, schema: &str, kind: DbObjectKind, name: &str) -> IdeResult<String> {
         let pool = self.pool(id).await?;
+        if let Pool::Snowflake(p) = &*pool {
+            let defs = snowflake::meta::object_ddl(p, schema, kind, name).await?;
+            if defs.is_empty() {
+                return Err(IdeError::not_found(format!("{schema}.{name}")));
+            }
+            let defs: Vec<String> = defs.iter().map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).collect();
+            return Ok(defs.join("\n"));
+        }
         if kind == DbObjectKind::Package {
             let mut defs: Vec<String> = Vec::new();
             for body in [false, true] {
@@ -991,6 +1233,26 @@ impl DbManager {
                 .next();
                 ddl.map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).ok_or_else(missing)
             }
+            DbDriver::Snowflake => {
+                let path = match &*pool {
+                    Pool::Snowflake(p) => p.database_ident().map(|db| format!("{db}.")).unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let target = sql::quote_literal(driver, &format!("{path}{}", sql::qualified(driver, schema, name)));
+                let mut ddl = None;
+                // Views answer to their own object type on some accounts.
+                for kind in ["TABLE", "VIEW"] {
+                    match pool.rows(&format!("SELECT GET_DDL('{kind}', {target})"), 1).await {
+                        Ok(rows) => {
+                            ddl = cells(rows, 0).into_iter().next();
+                            break;
+                        }
+                        Err(_) if kind == "TABLE" => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                ddl.map(|d| format!("{};\n", d.trim_end().trim_end_matches(';'))).ok_or_else(missing)
+            }
             DbDriver::Postgres => {
                 let rel = pool.rows(&sql::postgres_relation(schema, name), 1).await?.into_iter().next();
                 let (oid, kind) = match rel.as_deref() {
@@ -1039,7 +1301,14 @@ impl DbManager {
         let pool = self.pool(id).await?;
         let driver = pool.driver();
         let mut tables: Vec<CompletionTable> = Vec::new();
-        for r in pool.rows(sql::completion_columns(driver), MAX_META_ROWS).await? {
+        let rows = match &*pool {
+            Pool::Snowflake(p) => {
+                tables = snowflake::meta::completion(p).await?;
+                Vec::new()
+            }
+            _ => pool.rows(sql::completion_columns(driver), MAX_META_ROWS).await?,
+        };
+        for r in rows {
             let mut it = r.into_iter().map(Option::unwrap_or_default);
             let mut next = || it.next().unwrap_or_default();
             let (schema, name, kind) = (next(), next(), next());
@@ -1064,7 +1333,7 @@ impl DbManager {
             }
         }
         // Foreign keys are a nicety (JOIN completion): a server that refuses the catalog query still completes.
-        let fk_rows = if driver == DbDriver::Clickhouse {
+        let fk_rows = if matches!(driver, DbDriver::Clickhouse | DbDriver::Snowflake) {
             Vec::new()
         } else {
             pool.rows(sql::foreign_keys(driver), MAX_META_ROWS).await.unwrap_or_else(|e| {
@@ -1256,18 +1525,21 @@ impl DbManager {
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
         let Some(mut conn) = held.take() else { return Ok(()) };
-        let result = async {
-            conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await?;
-            conn.restore_default().await
-        }
-        .await;
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
+        if let Err(e) = conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+            // Discarding a Snowflake connection doesn't end its session, which the data source's
+            // other targets share: the transaction stays open, so it stays held to be ended again.
+            if matches!(conn, conn::Held::Snowflake(..)) {
+                *held = Some(conn);
+            } else {
                 conn.discard().await;
-                Err(e)
             }
+            return Err(e);
         }
+        if let Err(e) = conn.restore_default().await {
+            conn.discard().await;
+            return Err(e);
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -3,6 +3,7 @@ use crate::Host;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
 use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
+use std::path::Path;
 use std::time::Duration;
 
 /// Detected configs followed by user-defined ones (user ids win on conflict).
@@ -138,8 +139,21 @@ pub fn save_configs(
     ide_run::save_user_configs_with_removals(&project.root, &configs, removed_detected_ids)
 }
 
-/// The project `config` runs in (a workspace member, by its working directory) and its settings.
+/// The project `config` runs in (a workspace member, by its working directory) and its
+/// settings, with the primary project as the inherited fallback: a member with no Python
+/// of its own runs on the primary project's interpreter (see `apply_to_run_configs_in`).
 fn settings_for(
+    host: &Host,
+    project: &crate::project::Project,
+    config: &mut RunConfig,
+) -> IdeResult<(std::path::PathBuf, ide_core::settings::Settings, Option<std::path::PathBuf>)> {
+    let (root, settings) = settings_only(host, project, config)?;
+    let fallback = (root != project.root).then_some(project.root.clone());
+    Ok((root, settings, fallback))
+}
+
+/// [`settings_for`] without the fallback, for callers that only rebase or read settings.
+fn settings_only(
     host: &Host,
     project: &crate::project::Project,
     config: &mut RunConfig,
@@ -180,8 +194,8 @@ pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> Id
             if c.kind == "gradle" {
                 return Ok(c);
             }
-            let (root, settings) = settings_for(host, &project, &mut c)?;
-            Ok(ide_sdk::apply::without_derived(&c, &root, &settings))
+            let (root, settings, fallback) = settings_for(host, &project, &mut c)?;
+            Ok(ide_sdk::apply::without_derived_in(&c, &root, fallback.as_deref(), &settings))
         })
         .collect()
 }
@@ -194,8 +208,13 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
         .into_iter()
         .map(|mut c| {
             if c.kind != "gradle" {
-                let (root, settings) = settings_for(host, &project, &mut c)?;
-                ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut c), &root, &settings);
+                let (root, settings, fallback) = settings_for(host, &project, &mut c)?;
+                ide_sdk::apply::apply_to_run_configs_in(
+                    std::slice::from_mut(&mut c),
+                    &root,
+                    fallback.as_deref(),
+                    &settings,
+                );
             }
             Ok(c)
         })
@@ -215,7 +234,19 @@ pub async fn start_request(
 ) -> IdeResult<RunInfo> {
     let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
     let operation = config.extras.params.get("plugin.operation").cloned();
-    let result = start_inner(host, window, config, on_output, &cancel).await;
+    let mut config = config;
+    let agent = match host.project(window) {
+        Ok(project) => host.mcp_agent_runs.launch(&project.root, window, &mut config),
+        Err(_) => None,
+    };
+    let on_output = match &agent {
+        Some(agent) => agent.wrap_output(on_output),
+        None => on_output,
+    };
+    let result = start_inner(host, window, config, on_output, agent.as_ref(), &cancel).await;
+    if let Some(agent) = &agent {
+        agent.started(&result);
+    }
     if let Some(id) = request {
         host.end_request(id);
     }
@@ -230,6 +261,7 @@ async fn start_inner(
     window: &str,
     mut config: RunConfig,
     on_output: Emit<OutputChunk>,
+    agent: Option<&crate::mcp::run::agent::Launch>,
     cancel: &ide_core::CancellationToken,
 ) -> IdeResult<RunInfo> {
     if cancel.is_cancelled() {
@@ -262,6 +294,9 @@ async fn start_inner(
     let mut sink = project.sink.clone();
     if let Some(plugins) = host.plugin_host() {
         sink = plugins.run_operation_sink(window, &mut config, sink)?;
+    }
+    if let Some(agent) = agent {
+        sink = agent.wrap_sink(sink);
     }
     if config.command.is_empty() {
         return Err(IdeError::invalid("run configuration has no command"));
@@ -329,7 +364,7 @@ async fn start_inner(
         return host.remote.run(&settings, &project.root, &config, sink.clone(), Box::new(move |c| out(c))).await;
     }
     let mut config = config;
-    let (root, settings) = settings_for(host, &project, &mut config)?;
+    let (root, settings, fallback) = settings_for(host, &project, &mut config)?;
     let root = &root;
     // Configurations made in the UI name bare tools (`godot`) that may live outside PATH.
     // Maven re-applies too: a config listed before a settings change (daemon toggle,
@@ -338,16 +373,37 @@ async fn start_inner(
     if config.kind == "maven" {
         ide_sdk::apply::prepare_maven_run(&mut config, root, &settings);
     } else if matches!(config.kind.as_str(), "gradle" | "tomcat" | "junit") {
-        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+        ide_sdk::apply::apply_to_run_configs_in(
+            std::slice::from_mut(&mut config),
+            root,
+            fallback.as_deref(),
+            &settings,
+        );
     } else {
         ide_sdk::apply::resolve_run_command(&mut config, root, &settings);
     }
     if config.kind == "go" {
-        ide_sdk::apply::apply_to_run_configs(std::slice::from_mut(&mut config), root, &settings);
+        ide_sdk::apply::apply_to_run_configs_in(
+            std::slice::from_mut(&mut config),
+            root,
+            fallback.as_deref(),
+            &settings,
+        );
         ide_sdk::go::apply_to_run(&mut config, &settings.languages.go.build_tags);
     }
     if config.command == ide_sdk::godot::COMMAND {
         return Err(IdeError::unavailable(ide_sdk::godot::NOT_FOUND));
+    }
+    // A Python configuration pointing at a missing interpreter fails in the depth of
+    // process spawn otherwise; name the cause and the fix like PyCharm's "Invalid SDK".
+    if matches!(config.kind.as_str(), "python" | "pytest" | "django-test")
+        && !Path::new(&config.command).is_file()
+        && Path::new(&config.command).components().count() > 1
+    {
+        return Err(IdeError::invalid(format!(
+            "The configured Python interpreter does not exist: {}\nSelect a working interpreter in Settings › Languages & Frameworks › Python Interpreter.",
+            config.command
+        )));
     }
     if config.kind == "tomcat" {
         if host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -410,6 +466,7 @@ pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
     if let Some(plugins) = host.plugin_host() {
         plugins.run_operation_stopped(id);
     }
+    host.mcp_agent_runs.stopping(id);
     let settings = match host.project(window) {
         Ok(p) => p.settings.effective(),
         Err(_) => host.global_settings.effective(),
@@ -421,7 +478,9 @@ pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
     host.processes.stop_with_grace(id, grace)
 }
 
+/// Input the user typed into a run (the agent's goes to the process directly).
 pub fn stdin(host: &Host, id: RunId, data: &str) -> IdeResult<()> {
+    host.mcp_agent_runs.user_input(id, data);
     if host.remote.runs.contains(id) {
         return host.remote.runs.write_stdin(id, data);
     }

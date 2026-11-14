@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
-import { Icon, IconButton, showContextMenu } from "@/ui";
+import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
 import styles from "./WindowGroupTabs.module.css";
 
@@ -105,10 +105,10 @@ export function WindowGroupTabs() {
                 run(executeAction("window.selectTab", tabs[next]!.label));
               }}
             >
-              <Icon name="folder" size={14} />
               <span>{tab.name}</span>
             </button>
             <IconButton
+              className={styles.close}
               icon="close"
               size="small"
               title={tx`Close ${tab.name}`}

@@ -22,6 +22,18 @@ describe("response bodies", () => {
     expect(prettyBody("json", "{oops")).toBe("{oops");
   });
 
+  it("keeps numeric values exact while formatting (defaults over raw)", () => {
+    expect(prettyBody("json", '{"id":9007199254740993,"amount":1.0000000000000000002}')).toBe(
+      '{\n  "id": 9007199254740993,\n  "amount": 1.0000000000000000002\n}',
+    );
+    expect(prettyBody("json", "[1.0, -0, 1e-400, 1E5, 123456789012345678901234567890]")).toBe(
+      "[\n  1.0,\n  -0,\n  1e-400,\n  1E5,\n  123456789012345678901234567890\n]",
+    );
+    expect(prettyBody("json", '{"nested":{"deep":{"id":9007199254740993}}}')).toBe(
+      '{\n  "nested": {\n    "deep": {\n      "id": 9007199254740993\n    }\n  }\n}',
+    );
+  });
+
   it("re-indents XML, keeping text-only elements on one line", () => {
     expect(prettyMarkup('<?xml version="1.0"?><a><b>1</b><c/><d><e>x</e></d><f></f></a>')).toBe(
       [

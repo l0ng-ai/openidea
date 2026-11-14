@@ -16,6 +16,8 @@ export const test = base.extend<{ workbench: Page }>({
     await page.goto("/");
     await expect(page.getByRole("tree", { name: "Project" })).toBeVisible();
     await expect(page.getByRole("treeitem", { name: /acme-api/ })).toBeVisible();
+    // The start-up splash swallows raw mouse presses until it has faded out.
+    await expect(page.locator("#splash")).toHaveCount(0);
     await provide(page);
     expect(errors, "uncaught page errors").toEqual([]);
   },

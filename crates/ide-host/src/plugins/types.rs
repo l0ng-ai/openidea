@@ -218,6 +218,9 @@ pub enum PluginEvent {
     /// Reply to a content action in this window.
     #[serde(rename_all = "camelCase")]
     ContentTabReply { plugin_id: String, request_id: String, reply: ide_plugin::ContentTabReply },
+    /// Open two texts in this window's diff viewer.
+    #[serde(rename_all = "camelCase")]
+    OpenDiff { plugin_id: String, diff: ide_plugin::ContentDiff, file_name: Option<String> },
 
     /// Plugins, their status or their contributions changed: re-fetch `plugin_list`.
     CommandsChanged,
@@ -275,6 +278,9 @@ pub enum PluginEvent {
     /// The kinds of workbench events plugins want changed: re-fetch
     /// `plugin_event_kinds` (the UI reports only those).
     SubscriptionsChanged,
+    /// A background WebSocket has messages ready for its owning plugin.
+    #[serde(rename_all = "camelCase")]
+    WebsocketReady { plugin_id: String, connection: u64 },
     #[serde(rename_all = "camelCase")]
     ThemeChanged { theme: Option<ActiveTheme> },
     /// A plugin needs capabilities the user has not granted yet (first use

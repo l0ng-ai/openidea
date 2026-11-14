@@ -10,6 +10,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   PLUGIN_CONTENT_EDITOR_KIND,
   WASM_CONTENT_VIEW,
 } from "./views/contentTab";
@@ -33,9 +34,10 @@ import { editorsFor, onEditorEvent } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, onActionExecuted } from "@/platform/actions";
 import { clearContext, setContext, type ContextValue } from "@/platform/context";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
-import { openExternalUrl } from "@/platform/openUrl";
+import { isOpenable, openExternalUrl } from "@/platform/openUrl";
 import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { ipcPath } from "@/platform/paths";
 import { shortcutLabel } from "@/platform/keymap";
 import { BarButton } from "@/ui/BarButton";
@@ -46,6 +48,7 @@ import { removeTask, upsertTask, useTasks } from "@/workbench/tasks";
 import { editorContext } from "./editorContext";
 import { pluginsBackend } from "./backend";
 import { askNetPermission } from "./netAsk";
+import { confirmRemoteCopy, confirmRemoteOpen } from "./remoteAsk";
 import { usePluginT } from "./pluginText";
 import { setPluginOutput } from "./views/outputStore";
 import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
@@ -340,6 +343,11 @@ function trackWorkbenchEvents(): () => void {
     if (e.type === "inputModeChanged" && wanted.has("input-mode-changed"))
       post({ kind: "inputModeChanged", value: { path: e.path, mode: e.mode, sub: e.sub } });
     if (e.type === "docSaved" && wanted.has("file-saved")) post({ kind: "fileSaved", value: e.path });
+    if (e.type === "docChanged" && wanted.has("document-changed"))
+      post({
+        kind: "documentChanged",
+        value: { path: e.path, baseVersion: e.baseVersion, version: e.version, changes: e.changes },
+      });
   });
   const offActions = onActionExecuted((id, _arg, source) => {
     if (!wanted.has("action-performed")) return;
@@ -355,11 +363,17 @@ function trackWorkbenchEvents(): () => void {
   const offVcs = onIdeEvent("vcsChanged", (e) => {
     if (wanted.has("vcs-changed")) post({ kind: "vcsChanged", value: e.root });
   });
+  // Diagnostics arrive from language servers and builds without a file event; plugins
+  // that draw them (Inspection Lens) re-read the snapshot when this fires.
+  const offProblems = onIdeEvent("diagnostics", () => {
+    if (wanted.has("problems-changed")) post({ kind: "problemsChanged" });
+  });
   return () => {
     offEditor();
     offActions();
     offVcs();
     offSettings();
+    offProblems();
     if (postTimer) clearTimeout(postTimer);
     postTimer = null;
     queue = [];
@@ -534,6 +548,9 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     case "subscriptionsChanged":
       refreshEventKinds();
       return true;
+    case "websocketReady":
+      post({ kind: "websocketReady", value: { pluginId: e.pluginId, connection: e.connection } });
+      return true;
     case "viewChanged":
       bumpView(e.pluginId, e.view);
       return true;
@@ -552,6 +569,23 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
           ...JSON.parse(JSON.stringify(e.reply), (_k, v: unknown) => (v === null ? undefined : v)),
         }),
       );
+      return true;
+    case "openDiff":
+      try {
+        const { diff, fileName } = e;
+        openPluginDiffRequest(
+          {
+            ...diff,
+            leftLabel: diff.leftLabel ?? undefined,
+            rightLabel: diff.rightLabel ?? undefined,
+            title: diff.title ?? undefined,
+            fileName: fileName ?? undefined,
+          },
+          diff.left.length + diff.right.length,
+        );
+      } catch (err) {
+        console.warn(`plugin ${e.pluginId} diff:`, err);
+      }
       return true;
     case "openTerminal":
       // The program was approved (`process:`) and verified by the host.
@@ -597,13 +631,15 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void maybeEditorService()?.openFile(e.path, { selection: { line: e.line, col: e.column }, focus: true });
       return true;
     case "copyToClipboard":
-      void writeClipboardText(e.text);
+      if (isRemoteWindow()) void copyRemoteText(e.pluginId, e.text);
+      else void writeClipboardText(e.text);
       return true;
     case "openProject":
       void executeAction("file.openProjectPath", { path: e.path, newWindow: e.newWindow });
       return true;
     case "openUrl":
-      void openExternalUrl(e.url);
+      if (isRemoteWindow()) void openRemoteUrl(e.pluginId, e.url);
+      else void openExternalUrl(e.url);
       return true;
     case "promptRequested":
       void answerPrompt(e.promptId, e.prompt, e.pluginId);
@@ -624,6 +660,16 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
     default:
       return false;
   }
+}
+
+/** A remote window's plugin code runs on its server: what it opens here, the user confirms first. */
+async function openRemoteUrl(pluginId: string, url: string) {
+  if (isOpenable(url) && (await confirmRemoteOpen(pluginId, url))) await openExternalUrl(url);
+}
+
+/** A remote window's plugin code runs on its server: what it copies here, the user confirms first. */
+async function copyRemoteText(pluginId: string, text: string) {
+  if (await confirmRemoteCopy(pluginId, text)) await writeClipboardText(text).catch(() => {});
 }
 
 /** Another window ran a command of a plugin whose prompt is open here: show this window. */

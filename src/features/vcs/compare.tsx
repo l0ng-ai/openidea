@@ -14,6 +14,7 @@ export { compareFilesData, displayPath } from "./compareData";
 import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
 import { tx } from "@/platform/i18n";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -285,7 +286,7 @@ export function registerCompareActions(): () => void {
         if (!path) return info("Open or select a file to compare with the clipboard");
         let clipboard: string;
         try {
-          clipboard = (await navigator.clipboard?.readText()) ?? "";
+          clipboard = await readClipboardPlainText();
         } catch {
           return info("The clipboard could not be read");
         }

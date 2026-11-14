@@ -4,6 +4,51 @@ import type { FileTemplate, TemplateFragment } from "./model";
 /** Includes tab: fragments file templates pull in with `#parse("…")`. */
 export const BUILTIN_INCLUDES: readonly TemplateFragment[] = [{ name: "File Header", body: "" }];
 
+/** Opens empty: the notebook editor adds the first cell. */
+const JUPYTER_NOTEBOOK_BODY = `{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`;
+
+/** Starts with a Markdown heading named after the file. */
+const JUPYTER_TITLED_NOTEBOOK_BODY = `{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "cell-title",
+   "metadata": {},
+   "source": [
+    "# $NAME$"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`;
+
 /** Code tab: the members the built-in test templates generate. */
 export const BUILTIN_CODE_TEMPLATES: readonly TemplateFragment[] = [
   {
@@ -129,6 +174,17 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     ],
   },
   {
+    id: "jupyter",
+    name: "Jupyter Notebook",
+    icon: "file-jupyter",
+    extension: "ipynb",
+    nameStyle: "asis",
+    kinds: [
+      { id: "notebook", label: "Notebook", body: JUPYTER_NOTEBOOK_BODY },
+      { id: "titled", label: "Notebook with a title", body: JUPYTER_TITLED_NOTEBOOK_BODY },
+    ],
+  },
+  {
     id: "go",
     name: "Go File",
     icon: "file-go",
@@ -237,6 +293,27 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
         body: 'package $PACKAGE$;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.*;\n\n#parse("File Header")\nclass $NAME$ {\n\n    #parse("JUnit5 Test Method")\n}\n',
       },
     ],
+  },
+  {
+    id: "csharp",
+    name: "C# Class",
+    icon: "class",
+    extension: "cs",
+    nameStyle: "pascal",
+    packageStyle: "csharp",
+    kinds: (
+      [
+        ["class", "Class", "class"],
+        ["interface", "Interface", "interface"],
+        ["struct", "Struct", "struct"],
+        ["enum", "Enum", "enum"],
+        ["record", "Record", "record"],
+      ] as const
+    ).map(([id, label, keyword]) => ({
+      id,
+      label,
+      body: `namespace $PACKAGE$;\n\n#parse("File Header")\npublic ${keyword} $NAME$\n{\n    $END$\n}\n`,
+    })),
   },
   {
     id: "kotlin",

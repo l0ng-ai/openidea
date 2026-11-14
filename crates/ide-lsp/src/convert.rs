@@ -966,10 +966,12 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
     }
 }
 
-/// Decodes relative semantic token data into absolute UTF-16 quintuples.
-pub fn decode_semantic_tokens(data: &[u32], enc: Encoding, text: Option<&DocText>) -> Vec<u32> {
-    let mut out = Vec::with_capacity(data.len());
-    let (mut line, mut start) = (0u32, 0u32);
+/// Decodes relative semantic token data into absolute UTF-16 quintuples, sorted by position.
+/// Deltas are read as signed because some servers (JDT LS) emit tokens out of order; tokens that
+/// land before the document start are dropped and exact duplicates removed.
+pub fn decode_semantic_tokens(data: &[i64], enc: Encoding, text: Option<&DocText>) -> Vec<u32> {
+    let mut out: Vec<[u32; 5]> = Vec::with_capacity(data.len() / 5);
+    let (mut line, mut start) = (0i64, 0i64);
     for &[dl, ds, len, ty, mods] in data.as_chunks::<5>().0 {
         if dl == 0 {
             start = start.saturating_add(ds);
@@ -977,16 +979,21 @@ pub fn decode_semantic_tokens(data: &[u32], enc: Encoding, text: Option<&DocText
             line = line.saturating_add(dl);
             start = ds;
         }
+        let (Ok(line), Ok(start), Ok(len)) = (u32::try_from(line), u32::try_from(start), u32::try_from(len)) else {
+            continue;
+        };
         let (col, len16) = match (enc, text) {
             (Encoding::Utf16, _) | (_, None) => (start, len),
             (_, Some(t)) => {
-                let (a, b) = convert_offsets(t.line(line as usize), start as usize, (start + len) as usize, enc);
+                let (a, b) = convert_offsets(t.line(line as usize), start as usize, start as usize + len as usize, enc);
                 (a, b - a)
             }
         };
-        out.extend_from_slice(&[line, col, len16, ty, mods]);
+        out.push([line, col, len16, ty as u32, mods as u32]);
     }
-    out
+    out.sort_by_key(|t| (t[0], t[1]));
+    out.dedup();
+    out.into_flattened()
 }
 
 pub fn code_lens(conv: &Conv, path: &Path, l: lsp::CodeLens) -> CodeLens {
@@ -1473,12 +1480,34 @@ mod tests {
 
     #[test]
     fn semantic_token_decoding() {
-        let data = [1, 2, 3, 0, 1, 0, 5, 2, 1, 0, 2, 0, 4, 2, 3];
+        let data: [i64; 15] = [1, 2, 3, 0, 1, 0, 5, 2, 1, 0, 2, 0, 4, 2, 3];
         let out = decode_semantic_tokens(&data, Encoding::Utf16, None);
         assert_eq!(out, vec![1, 2, 3, 0, 1, 1, 7, 2, 1, 0, 3, 0, 4, 2, 3]);
         // UTF-8 server: "😀ab" token "ab" at byte 4 len 2 → utf16 col 2 len 2.
         let text = DocText::new("😀ab");
         assert_eq!(decode_semantic_tokens(&[0, 4, 2, 0, 0], Encoding::Utf8, Some(&text)), vec![0, 2, 2, 0, 0]);
+    }
+
+    #[test]
+    fn semantic_tokens_out_of_order() {
+        // JDT LS for `public class Repro<T extends Number> extends\n        ArrayList<T> {`: the bound's
+        // `extends` comes after `Number`, the superclass is emitted twice and the line goes backwards.
+        let data: [i64; 95] = [
+            0, 8, 4, 0, 0, 2, 7, 4, 0, 4096, 0, 5, 4, 0, 4096, 0, 5, 9, 1, 5184, 2, 0, 6, 11, 0, 0, 7, 5, 11, 0, 0, 6,
+            5, 1, 1104, 0, 6, 1, 6, 16, 0, 10, 6, 1, 65, 0, -8, 7, 11, 0, 1, 8, 9, 1, 1088, 0, 10, 1, 6, 2048, -1, 37,
+            7, 11, 0, 1, 8, 9, 1, 1088, 0, 10, 1, 6, 2048, 1, 4, 7, 11, 0, 0, 12, 5, 8, 144, 2, 9, 1, 7, 1040, 1, 8, 5,
+            8, 128,
+        ];
+        let out = decode_semantic_tokens(&data, Encoding::Utf16, None);
+        let positions: Vec<(u32, u32)> = out.chunks(5).map(|t| (t[0], t[1])).collect();
+        #[rustfmt::skip]
+        assert_eq!(positions, [
+            (0, 8), (2, 7), (2, 12), (2, 17),
+            (4, 0), (4, 7), (4, 13), (4, 19), (4, 21), (4, 29), (4, 37),
+            (5, 8), (5, 18), (6, 4), (6, 16), (8, 9), (9, 8),
+        ]);
+        // A token that would start before the document is dropped rather than wrapped.
+        assert_eq!(decode_semantic_tokens(&[0, -1, 2, 0, 0, 0, 5, 1, 0, 0], Encoding::Utf16, None), [0, 4, 1, 0, 0]);
     }
 
     #[test]

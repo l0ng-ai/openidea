@@ -262,7 +262,20 @@ const APPEARANCE = editorPage({
           key: `${P}.appearance.hardWrapGuides`,
           label: "Show hard wrap and visual guides (configured in Code Style options)",
         },
-        { t: "check", key: `${P}.appearance.lineNumbers`, label: "Show line numbers" },
+        {
+          t: "check",
+          key: `${P}.appearance.lineNumbers`,
+          label: "Show line numbers",
+          inline: {
+            kind: "select",
+            key: `${P}.appearance.lineNumberMode`,
+            options: [
+              { value: "absolute", label: "Absolute" },
+              { value: "relative", label: "Relative" },
+              { value: "hybrid", label: "Hybrid" },
+            ],
+          },
+        },
         { t: "check", key: `${P}.appearance.methodSeparators`, label: "Show method separators" },
         {
           t: "check",
@@ -281,6 +294,11 @@ const APPEARANCE = editorPage({
           children: [{ t: "check", key: `${P}.appearance.rainbowIndentGuides`, label: "Rainbow indent guides" }],
         },
         { t: "check", key: `${P}.appearance.intentionBulb`, label: "Show intention bulb" },
+        {
+          t: "check",
+          key: `${P}.appearance.renderDocComments`,
+          label: "Render documentation comments",
+        },
         {
           t: "number",
           key: `${P}.appearance.distractionFreeWidth`,
@@ -683,6 +701,7 @@ const SMART_KEYS = editorPage({
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
+        { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
         {
           t: "select",
           key: `${P}.smartKeys.reformatOnPaste`,

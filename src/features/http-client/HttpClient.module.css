@@ -138,6 +138,11 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  outline: none;
+}
+.tabBody:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .pre {
   margin: 0;
@@ -180,4 +185,25 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* The request being sent, in place of a response. */
+.pending {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.pendingLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-secondary);
+}
+.pendingRequest {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.pendingMethod {
+  font-weight: 600;
 }

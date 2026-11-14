@@ -21,8 +21,10 @@ import {
 } from "@/workbench/contributions";
 import { installCellActions } from "./cellActions";
 import { installValueEditorActions } from "./valueEditorActions";
+import { registerResultTabActions } from "./resultTabActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
+import { databaseRequest, projectRequest } from "./requests";
 import { nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
 import {
@@ -99,6 +101,7 @@ export function activate(): () => void {
         loaded: false,
         connected: new Set(),
         databases: {},
+        catalogs: {},
         schemas: {},
         tables: {},
         details: {},
@@ -127,6 +130,7 @@ export function activate(): () => void {
     installTableEditorFocus(),
     installValueEditorActions(),
     installCellActions(),
+    registerResultTabActions(),
     registerDatabaseTreeActions(),
     registerActions([
       {
@@ -139,9 +143,14 @@ export function activate(): () => void {
             throw new Error(tx("Trust this project to connect plugin data sources"));
           const id = e.arg;
           if (typeof id !== "string") throw new Error(tx("Invalid data source id"));
+          const project = projectRequest();
           await loadSources();
+          if (!project()) return;
+          const current = databaseRequest(id);
           toolWindowService().show(DB_TOOL_WINDOW, true);
-          if (!(await connect(id))) throw new Error(tx("Database connection failed"));
+          const connected = await connect(id);
+          if (!current()) return;
+          if (!connected) throw new Error(tx("Database connection failed"));
           if (listsDatabases(sourceById(id))) await loadDatabases(id);
           else await loadSchemas(id);
         },
@@ -163,7 +172,9 @@ export function activate(): () => void {
         keywords: ["database", "connection", "postgres", "mysql", "sqlite"],
         when: "projectOpen",
         run: async () => {
+          const current = projectRequest();
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           openSourceDialog(null);
         },
       },
@@ -175,8 +186,10 @@ export function activate(): () => void {
         keywords: ["database", "sql console"],
         when: "projectOpen",
         run: async ({ arg }) => {
+          const current = projectRequest();
           const s = useDatabase.getState();
           if (!s.loaded) await loadSources();
+          if (!current()) return;
           const { sources, selectedSource } = useDatabase.getState();
           // A tree node (New ▸ Query Console) opens its data source's console.
           const node = arg && typeof arg === "object" && "kind" in arg ? nodeTarget(arg as DbNode) : null;
@@ -192,14 +205,36 @@ export function activate(): () => void {
         icon: "run",
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
         run: async () => {
+          const current = projectRequest();
           const e = activeEditor();
           if (!e || e.ctx.language !== SQL_LANGUAGE) return;
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           if (!consoleSource(e.ctx.path) && !useDatabase.getState().sources.length) {
             openSourceDialog(null);
             return;
           }
           await (await import("./console")).executeInView(e.view, e.ctx.path);
+        },
+      },
+      {
+        id: "db.executeScript",
+        title: "Execute SQL Script",
+        category: "Tools",
+        icon: "gutter-run-all",
+        keywords: ["run all", "whole file", "statements"],
+        when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        run: async () => {
+          const current = projectRequest();
+          const e = activeEditor();
+          if (!e || e.ctx.language !== SQL_LANGUAGE) return;
+          if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
+          if (!consoleSource(e.ctx.path) && !useDatabase.getState().sources.length) {
+            openSourceDialog(null);
+            return;
+          }
+          await (await import("./console")).executeScriptInView(e.view, e.ctx.path);
         },
       },
       {
@@ -234,9 +269,11 @@ export function activate(): () => void {
         keywords: ["query plan", "explain", "sql"],
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
         run: async () => {
+          const current = projectRequest();
           const e = activeEditor();
           if (!e || e.ctx.language !== SQL_LANGUAGE) return;
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           await (await import("./console")).explainInView(e.view, e.ctx.path);
         },
       },
@@ -248,7 +285,9 @@ export function activate(): () => void {
         keywords: ["database", "sql", "history"],
         when: "projectOpen",
         run: async () => {
+          const current = projectRequest();
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           const e = activeEditor();
           const path = e?.ctx.language === SQL_LANGUAGE ? e.ctx.path : null;
           const s = useDatabase.getState();

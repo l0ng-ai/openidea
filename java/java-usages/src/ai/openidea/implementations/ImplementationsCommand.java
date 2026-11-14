@@ -8,6 +8,11 @@ import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.OperationCanceledException;
 import org.eclipse.jdt.core.*;
+import org.eclipse.jdt.core.search.IJavaSearchScope;
+import org.eclipse.jdt.core.search.SearchEngine;
+import org.eclipse.jdt.internal.core.CreateTypeHierarchyOperation;
+import org.eclipse.jdt.internal.core.DefaultWorkingCopyOwner;
+import org.eclipse.jdt.internal.core.JavaModelManager;
 import org.eclipse.jdt.internal.corext.util.MethodOverrideTester;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
 import org.eclipse.jdt.ls.core.internal.JDTUtils;
@@ -56,7 +61,7 @@ public final class ImplementationsCommand implements IDelegateCommandHandler {
             return false;
         }
         if (type == null || type.getJavaProject() == null) return false;
-        IRegion sources = JavaCore.newRegion();
+        List<IJavaElement> sources = new ArrayList<>();
         for (IJavaProject project : JavaCore.create(ResourcesPlugin.getWorkspace().getRoot()).getJavaProjects()) {
             for (IPackageFragmentRoot fragmentRoot : project.getPackageFragmentRoots()) {
                 if (fragmentRoot.getKind() == IPackageFragmentRoot.K_SOURCE || isKotlinOutput(fragmentRoot)) {
@@ -64,7 +69,13 @@ public final class ImplementationsCommand implements IDelegateCommandHandler {
                 }
             }
         }
-        ITypeHierarchy hierarchy = type.getJavaProject().newTypeHierarchy(type, sources, monitor);
+        // IType.newTypeHierarchy's operation over the sources: the index narrows the subtypes to the
+        // files that name a supertype, where a region hierarchy resolves every type in the region.
+        ICompilationUnit[] workingCopies = JavaModelManager.getJavaModelManager().getWorkingCopies(DefaultWorkingCopyOwner.PRIMARY, true);
+        IJavaSearchScope scope = SearchEngine.createJavaSearchScope(sources.toArray(IJavaElement[]::new));
+        CreateTypeHierarchyOperation operation = new CreateTypeHierarchyOperation(type, workingCopies, scope, true);
+        operation.runOperation(monitor);
+        ITypeHierarchy hierarchy = operation.getResult();
         for (IType subtype : hierarchy.getAllSubtypes(type)) {
             if (monitor.isCanceled()) throw new OperationCanceledException();
             IMember found;

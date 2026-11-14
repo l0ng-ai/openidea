@@ -36,7 +36,7 @@ import {
   withCustomOverrides,
   type KeymapDraft,
 } from "../keymap/model";
-import { buildKeymapTree, keymapSearchLabels } from "../keymap/KeymapPage";
+import { buildKeymapTree, keymapJson, keymapSearchLabels } from "../keymap/KeymapPage";
 import { groupPath } from "../keymap/groups";
 import { registerEditorActions } from "@/editor/core/actions";
 import { registerLspActions } from "@/editor/lsp/actions";
@@ -57,6 +57,32 @@ it("finds the translated declaration action by 声明 and its English title", as
     dispose();
     _resetI18nForTests();
   }
+});
+
+describe("keymapJson", () => {
+  it("exports the keymap's name, base preset and every bound action", () => {
+    registerEditorActions();
+    const out = JSON.parse(
+      keymapJson("My Keymap", "intellij-macos", allActions(), { preset: "intellij-macos", overrides: {} }),
+    );
+    expect(out.name).toBe("My Keymap");
+    expect(out.basedOn).toBe("intellij-macos");
+    expect(out.actions["code.duplicateLine"]).toEqual(["Meta+D"]);
+    expect(out.actions["navigate.gotoLine"]).toEqual(["Meta+L"]);
+    // Unbound actions are omitted, not exported as empty lists.
+    expect(Object.values(out.actions).every((keys) => Array.isArray(keys) && keys.length > 0)).toBe(true);
+  });
+
+  it("exports overrides over the preset", () => {
+    registerEditorActions();
+    const out = JSON.parse(
+      keymapJson("Custom", "intellij-macos", allActions(), {
+        preset: "intellij-macos",
+        overrides: { "code.duplicateLine": ["Ctrl+T"] },
+      }),
+    );
+    expect(out.actions["code.duplicateLine"]).toEqual(["Ctrl+T"]);
+  });
 });
 
 const key = (

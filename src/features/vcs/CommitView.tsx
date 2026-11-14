@@ -82,6 +82,7 @@ import {
   DIFF_KIND,
   changeNodeDiff,
   changeNodeDiffData,
+  changeTreeDiffData,
   diffInput,
   openDiff,
   openVcsDiff,
@@ -205,7 +206,8 @@ const bottomLeft = (el: HTMLElement) => {
 
 /**
  * Activates a change (Enter, double-click, Show Diff); F7 continues through the other
- * files of its group, in tree order. Enter and double-click follow IDEA's Show on
+ * files of its group, in tree order (Enter and double-click: of the whole tree, on into the
+ * unversioned files, as IDEA's Commit diff preview). Enter and double-click follow IDEA's Show on
  * Double-Click (opensDiffOnActivate): the source file, or the diff where the commit
  * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
  * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
@@ -217,7 +219,7 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false
     void editorService().openFile(n.path, { focus: true });
     return;
   }
-  void openVcsDiff(changeNodeDiffData(roots, n), { preview: true });
+  void openVcsDiff((forceDiff ? changeNodeDiffData : changeTreeDiffData)(roots, n), { preview: true });
 }
 
 /** The setting behind Show on Double-Click (`None` follows the commit interface). */
@@ -409,6 +411,7 @@ export function nodeMenu(
       : []),
     { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
+    { kind: "action", action: "vcs.stashSelected", arg: paths, disabled: !paths.length },
     { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {
@@ -568,10 +571,11 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const viewRef = useRef<HTMLButtonElement>(null);
 
   const repos = useVcs((s) => s.roots);
+  const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging),
-    [status, root, groupByDir, lists, repos, groupByStaging],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -629,7 +633,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     const active = maybeEditorService()?.activeInput?.();
     if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
     if (diffInput(changeNodeDiff(node)).key === active.key) return;
-    void openDiff(changeNodeDiffData(roots, node), { preview: true, focus: false });
+    void openDiff(changeTreeDiffData(roots, node), { preview: true, focus: false });
   };
 
   // Reveal only after the ancestors have expanded, without moving keyboard focus.
@@ -726,6 +730,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       {mode !== "dialog" && <OperationBanner />}
       <div
         className={styles.treeWrap}
+        data-changes-tree={mode}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
@@ -882,6 +887,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                     <T>partial</T>
                   </span>
                 )}
+                {n.detail && n.detailIcon && <Icon name={n.detailIcon} size={14} className={styles.detailIcon} />}
                 {n.detail && <span className={styles.detail}>{n.detail}</span>}
               </span>
             );
@@ -977,12 +983,21 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
 }
 
 /** Amend, message history and the message field with its inspections and failed checks. */
-export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
+export function CommitMessageField({
+  included,
+  runner,
+  autoFocus = false,
+}: {
+  included: number;
+  runner: CommitRunner;
+  /** The message takes the initial focus of the dialog it is in (the Commit dialog). */
+  autoFocus?: boolean;
+}) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const historyRef = useRef<HTMLButtonElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
@@ -1013,10 +1028,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
 
   return (
     <>
-      <div className={styles.commitBar}>
+      <div ref={barRef} className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
         <IconButton
-          ref={historyRef}
           icon="history"
           title="Commit Message History"
           size="small"
@@ -1028,8 +1042,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
         <Menu
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          anchor={historyRef}
-          placement="bottom-end"
+          anchor={barRef}
+          placement="top-start"
+          iconColumn={false}
           aria-label="Recent commit messages"
           items={history.map((m, i) => ({
             id: `h${i}`,
@@ -1050,6 +1065,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
       </div>
       <textarea
         ref={ref}
+        data-autofocus={autoFocus ? "" : undefined}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
         aria-invalid={emptyError || undefined}
         style={{ ["--guide" as string]: `${margin}ch` }}
@@ -1167,7 +1183,7 @@ function CommitPanel({ included }: { included: number }) {
             className={styles.pushButton}
             disabled={!canCommit || !!remoteBusy}
             onClick={() => void runner.run(true)}
-            title="⌥⌘↩"
+            title={`${tx(commitAndPushLabel(amend))} (⌥⌘↩)`}
           >
             <span>
               <T>{commitAndPushLabel(amend)}</T>

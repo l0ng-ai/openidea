@@ -5,6 +5,7 @@
  * a terminal feeds its process).
  */
 import { writeClipboardText } from "@/platform/clipboard";
+import { noteCopySource } from "@/platform/clipboardSource";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installTerminalPaste } from "./paste";
@@ -12,6 +13,7 @@ import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import "./xtermInput.css";
 import type { EmbeddedTerminal, EmbeddedTerminalOptions } from "@/workbench/contributions";
 import { isImeKey } from "@/platform/ime";
 import { terminalKeyAction } from "./keys";
@@ -63,7 +65,11 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
     if (action.kind === "send" && e.key === "Enter") {
       if (e.type === "keydown") term.input(action.data);
     } else if (action.kind === "copy") {
-      if (e.type === "keydown") void writeClipboardText(term.getSelection()).catch(() => undefined);
+      if (e.type === "keydown") {
+        const text = term.getSelection();
+        noteCopySource(text, { kind: "terminal", title: "Terminal" });
+        void writeClipboardText(text).catch(() => undefined);
+      }
     } else {
       return true;
     }

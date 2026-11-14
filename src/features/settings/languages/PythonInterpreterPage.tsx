@@ -1,5 +1,5 @@
 /**
- * Settings › Python › Interpreter (PyCharm's "Python Interpreter" page): the
+ * Settings › Python › Dependencies (PyCharm's "Python Interpreter" page): the
  * project interpreter and its packages (pip / uv pip). The interpreter feeds
  * run configurations, basedpyright / pyright (`python.pythonPath`) and the
  * terminal's virtualenv activation. A Docker or Compose run target can be the
@@ -8,10 +8,9 @@
 import { isCancelled } from "@/platform/ipc";
 import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
-import { Button, IconButton, Input, Spinner, showContextMenu, T, type SelectOption } from "@/ui";
+import { Button, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
 import { useProject } from "@/platform/project";
-import { DOCSTRING_FORMATS, type DocstringFormat } from "@/platform/editorSettings";
-import { Section, SettingSelect, Toggle } from "../components/Form";
+import { Section, Toggle } from "../components/Form";
 import {
   containerPython,
   effectivePython,
@@ -20,7 +19,6 @@ import {
   pip,
   refreshContainerPython,
   targetChoices,
-  useSdks,
   type ContainerPython,
   type PythonPackage,
 } from "./api";
@@ -28,22 +26,11 @@ import { validateRunTargets, type RunTargetValid } from "@/platform/remoteSettin
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
 import { useSetting } from "../components/context";
 import { SdkField, tildify } from "./components";
+import { interpreterIcon, sameInterpreterPath, usePythonInterpreters } from "./interpreters";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
 type Op = "install" | "upgrade" | "uninstall";
-
-const DOCSTRING_LABELS: Record<DocstringFormat, string> = {
-  plain: "Plain",
-  rest: "reStructuredText",
-  epytext: "Epytext",
-  google: "Google",
-  numpy: "NumPy",
-};
-const DOCSTRING_OPTIONS: readonly SelectOption<DocstringFormat>[] = DOCSTRING_FORMATS.map((value) => ({
-  value,
-  label: DOCSTRING_LABELS[value],
-}));
 
 interface Job {
   op: Op;
@@ -141,7 +128,22 @@ export function PythonInterpreterPage() {
   const [activate, setActivate] = useSetting<boolean>("languages.python.activateVirtualenv");
   const root = useProject((s) => s.project?.root ?? null);
   const [auto, setAuto] = useState<string | null>(null);
-  const detected = useSdks((s) => s.byKind.python);
+  // Bumped when an environment is created: it may reuse the configured path, whose state changed.
+  const [created, setCreated] = useState(0);
+  // Detected interpreters plus the ones added to (or hidden from) the IDE-wide list.
+  const { detected, rows, hidden } = usePythonInterpreters({ withProjects: false });
+  const extras = useMemo(
+    () =>
+      rows
+        .filter((row) => !row.invalid && !detected.some((sdk) => sameInterpreterPath(sdk.path, row.path, null)))
+        .map((row) => ({
+          value: row.path,
+          label: row.name,
+          detail: tildify(row.path),
+          icon: interpreterIcon(row.source),
+        })),
+    [rows, detected],
+  );
   const [rawTargets] = useSetting<RunTargetValid[] | undefined>("runTargets");
   const targets = useMemo(() => targetChoices(validateRunTargets(rawTargets)), [rawTargets]);
   const target = interpreterTarget(interpreter);
@@ -155,7 +157,26 @@ export function PythonInterpreterPage() {
     return () => {
       live = false;
     };
-  }, [root]);
+  }, [root, created]);
+
+  // The interpreter runs resolve to: the configured one while it exists, else the fallback.
+  const [resolved, setResolved] = useState<{ interpreter: string; path: string | null } | null>(null);
+  useEffect(() => {
+    if (!interpreter) return;
+    let live = true;
+    effectivePython()
+      .then((path) => live && setResolved({ interpreter, path }))
+      .catch(() => live && setResolved(null));
+    return () => {
+      live = false;
+    };
+  }, [root, interpreter, created]);
+  // A configured interpreter whose executable is gone (PyCharm's "Invalid"): runs fall back.
+  const invalid =
+    !target &&
+    !!interpreter &&
+    resolved?.interpreter === interpreter &&
+    !sameInterpreter(resolved.path, interpreter, root);
 
   // Without a configured interpreter the project's virtualenv is used (like run configurations).
   const python = target ? null : interpreter || auto;
@@ -245,7 +266,10 @@ export function PythonInterpreterPage() {
           emptyDetail={autoDetail}
           browseTitle="Select Python Interpreter"
           aria-label="Python interpreter"
-          extra={targets}
+          invalid={invalid}
+          extra={[...extras, ...targets]}
+          exclude={hidden}
+          optionIcon={(sdk) => interpreterIcon(sdk.source)}
         />
         <Button
           size="small"
@@ -263,8 +287,13 @@ export function PythonInterpreterPage() {
       )}
       {python && (
         <div className={styles.path} title={python}>
-          {current ? `${current.name} — ` : ""}
+          {current && !invalid ? `${current.name} — ` : ""}
           {tildify(python)}
+        </div>
+      )}
+      {invalid && (
+        <div className={clsx(styles.empty, styles.error)} role="alert">
+          <T>The configured Python interpreter no longer exists. Choose another interpreter or add a new one.</T>
         </div>
       )}
 
@@ -370,7 +399,7 @@ export function PythonInterpreterPage() {
               <T>No interpreter selected. Choose one above or add a new one.</T>
             </div>
           )}
-          {(python || target) && error && (
+          {(python || target) && error && !invalid && (
             <div className={clsx(styles.empty, styles.error)} role="alert">
               {error}
             </div>
@@ -426,25 +455,25 @@ export function PythonInterpreterPage() {
         />
       </Section>
 
-      <Section title="Docstrings">
-        <SettingSelect
-          k="editor.docstringFormat"
-          label="Documentation string format"
-          hint="Docstring tags and keywords are highlighted according to this markup format (Color Scheme › Python styles their colours)."
-          options={DOCSTRING_OPTIONS}
-        />
-      </Section>
-
       {adding && root && (
         <AddInterpreterDialog
           root={root}
           onClose={() => setAdding(false)}
           onAdded={(path) => {
             setInterpreter(path);
+            setCreated((n) => n + 1);
+            reload();
             setAdding(false);
           }}
         />
       )}
     </div>
   );
+}
+
+/** Whether `resolved` (an absolute path from the backend) is the configured `interpreter` setting. */
+function sameInterpreter(resolved: string | null, interpreter: string, root: string | null): boolean {
+  if (!resolved) return false;
+  if (tildify(resolved) === tildify(interpreter)) return true;
+  return !!root && resolved === `${root.replace(/[\\/]+$/, "")}/${interpreter}`;
 }

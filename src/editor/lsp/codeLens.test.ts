@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { OutlineItem, References } from "@/platform/ipc";
-import { _addEditor, _removeEditor, codeLenses, documentSynced } from "@/editor/api";
+import { _addEditor, _emitEditorEvent, _removeEditor, codeLenses, documentSynced, viewShown } from "@/editor/api";
 
 const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
@@ -79,6 +79,17 @@ const item = (name: string, kind: OutlineItem["kind"], line: number, children: O
   return { name, kind, detail: null, range: r, selection_range: r, children };
 };
 
+describe("usages label", () => {
+  it("is translated", async () => {
+    const { usagesLabel } = await import("./codeLens");
+    const { setLocale } = await import("@/platform/i18n");
+    expect([0, 1, 3].map(usagesLabel)).toEqual(["no usages", "1 usage", "3 usages"]);
+    await setLocale("zh");
+    expect([0, 1, 3].map(usagesLabel)).toEqual(["无用法", "1 个用法", "3 个用法"]);
+    await setLocale("en");
+  });
+});
+
 describe("usages lens targets", () => {
   it("skips callbacks and anonymous functions", () => {
     const items = [
@@ -139,6 +150,72 @@ describe("background usage counts", () => {
     await settle();
     expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
     expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("asks again for a count that came back incomplete during a short busy spell", async () => {
+    // jdtls reports progress for a few milliseconds around many requests: no settle follows it.
+    ipc.lspReferences.mockResolvedValueOnce(refs(0, "indexing"));
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual([]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
+    ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
+    const view = editor();
+    for (let i = 0; i < 10; i++) await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
+    expect(titles(view)).toEqual([]);
+    ipc.lspReferences.mockResolvedValue(refs(2));
+    emitLocalIdeEvent({ type: "lspRefresh", kind: "codeLens", server: 1 });
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("keeps the shown lens while the server is busy and corrects the count once it settles", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Editing while the server is indexing: the re-computed count comes back incomplete.
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "rust-analyzer", status: "busy", message: null });
+    ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await settle();
+    await settle();
+    await settle();
+    await settle();
+    // The lens stays on its (mapped) line instead of blinking away and shifting the layout.
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Once it settles, a complete answer replaces the stale count.
+    ipc.lspReferences.mockResolvedValue(refs(0));
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "rust-analyzer", status: "ready", message: null });
+    await settle();
+    expect(titles(view)).toEqual(["no usages"]);
+  });
+
+  it("opens usages at the lens's current position after edits above it", async () => {
+    // The lens anchors on the identifier (`f0` at column 3), as in a real outline.
+    const decl = item("f0", "function", 0);
+    decl.selection_range = { start: { line: 0, col: 3 }, end: { line: 0, col: 5 } };
+    ipc.docOutline.mockResolvedValue(ok([decl]));
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Insert a line above the declaration. The lens maps down with its line, and a
+    // pass with an identical count is suppressed by `sameLenses` — the click must
+    // still land on the identifier, not where it was when the lens was created.
+    view.dispatch({ changes: { from: 0, insert: "\n" } });
+    const declAfter = item("f0", "function", 1);
+    declAfter.selection_range = { start: { line: 1, col: 3 }, end: { line: 1, col: 5 } };
+    ipc.docOutline.mockResolvedValue(ok([declAfter]));
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.kind === "usages")!;
+    expect(lens.pos).toBe(4);
+    lens.run!(view, new MouseEvent("click"));
+    expect(view.state.selection.main.head).toBe(4);
   });
 
   it("cancels obsolete requests immediately on edits and ignores their late replies", async () => {
@@ -228,5 +305,80 @@ describe("background usage counts", () => {
     } finally {
       _removeEditor(handle);
     }
+  });
+});
+
+describe("recounting when the project's documents change", () => {
+  it("recounts when another document is edited (the call sites)", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    _emitEditorEvent({ type: "docChanged", doc: 9, path: "/p/b.rs", baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    ipc.lspReferences.mockResolvedValue(refs(5));
+    _emitEditorEvent({ type: "docChanged", doc: 9, path: "/p/b.rs", baseVersion: 2, version: 3, changes: [] });
+    await settle();
+    expect(titles(view)).toEqual(["5 usages"]);
+  });
+
+  it("recounts when a kept tab is shown again after another document changed while hidden", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(5));
+    // A recently used tab keeps its view, detached from the document, while hidden.
+    view.dom.remove();
+    _emitEditorEvent({ type: "docChanged", doc: 9, path: "/p/b.rs", baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+    document.body.append(view.dom);
+    view.dispatch({ effects: viewShown.of(null) });
+    await settle();
+    expect(titles(view)).toEqual(["5 usages"]);
+  });
+
+  it("recounts when the backend patches another document (a refactoring)", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(3));
+    emitLocalIdeEvent({ type: "docPatched", doc: 9, baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(titles(view)).toEqual(["3 usages"]);
+  });
+
+  it("leaves a backend patch of this document to the document change itself", async () => {
+    editor();
+    await settle();
+    const calls = ipc.lspReferences.mock.calls.length;
+    emitLocalIdeEvent({ type: "docPatched", doc: 7, baseVersion: 1, version: 2, changes: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(calls);
+  });
+
+  it("recounts when the plugin document indexes change (an XML statement indexed after its declaration)", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(5));
+    const { invalidateNavigationProviders } = await import("@/editor/navigationProviders");
+    invalidateNavigationProviders();
+    await settle();
+    expect(titles(view)).toEqual(["5 usages"]);
+  });
+
+  it("recounts when files change on disk or another document closes", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(3));
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/p/b.rs"], removed: [] });
+    await settle();
+    expect(titles(view)).toEqual(["3 usages"]);
+    ipc.lspReferences.mockResolvedValue(refs(4));
+    _emitEditorEvent({ type: "docClosed", doc: 9, path: "/p/b.rs" });
+    await settle();
+    expect(titles(view)).toEqual(["4 usages"]);
   });
 });

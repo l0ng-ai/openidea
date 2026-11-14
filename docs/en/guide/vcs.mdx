@@ -41,8 +41,7 @@ It reads repository state (status, diffs, blame, log) in-process, and runs the `
 
 - **Git › Clone…** opens **Clone Repository**. Enter a **URL:** and **Directory:**, and optionally check **Shallow clone with a history truncated to** N commits. The **GitHub** source in the sidebar lists your GitHub repositories (see [GitHub](/en/guide/github)).
 - When creating a project, check **Create Git repository** in the New Project dialog.
-
-There is no action to run `git init` in a project that is already open; run it in the terminal and OpenIDEA picks the repository up.
+- **Git › Create Git Repository…** runs `git init` in a folder you pick (the project root by default) and registers the new repository right away; a repository created in the terminal is picked up the same way.
 
 OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
 
@@ -131,6 +130,8 @@ Other ways to compare:
 
 Click the branch widget in the title bar (or **Git › Branches…**) to open the branches popup. Type to search branches and actions. The popup shows **Recent**, **Local**, **Remote** and **Tags**, and at the top **Update Project…**, **Commit…**, **Push…**, **New Branch…** and **Checkout Tag or Revision…**. The gear button toggles grouping by prefix, recent branches and tags.
 
+Click the incoming or outgoing marker next to the branch name in the title bar (or **Incoming and Outgoing Commits…** in the branches popup) to list the commits to pull or push, newest first. Click a commit for its diff, or **Open in Git Log** to show it in the Git log.
+
 Select a branch (`→` or `Enter`) for its actions:
 
 - **Checkout**, **New Branch from '…'…**, **Checkout and Rebase onto '…'**
@@ -195,7 +196,7 @@ Limits: interactive rebase doesn't support ranges with merge commits, and **Undo
 
 **Stash** uses `git stash`:
 
-- **Stash Changes…**: a message, **Keep index** and **Include untracked files**. Stashes always include all changes; there is no per-file stash.
+- **Stash Changes…**: a message, **Keep index** and **Include untracked files**; it stashes the whole working tree. **Stash Selected Files…** in the changes tree's context menu stashes only the selected files.
 - **Unstash Changes…**: apply or pop a stash, reinstate the index, or create a branch from it.
 - The **Stash** tab of the Commit tool window lists stashes with apply, pop and drop.
 
@@ -212,9 +213,13 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 ## Blame and history
 
 - **Annotate with Git Blame** shows author and date per line in the gutter (also from the gutter's context menu). Click an entry to open the commit in the log. **Show inline blame for the current line** in the Git settings shows the author at the end of the caret line.
+- **Annotate Previous Revision** in an annotated line's menu opens the file as it was before that commit, annotated, next to the commit's version.
+- **Annotate at Revision…** picks any revision the file has and shows it annotated next to the working copy.
 - **Show History** opens the file's history in a tab of the Git tool window.
 - **Show History for Selection** shows the commits that changed the selected lines.
 - **Show Current Revision** reveals the commit of the caret line in the log.
+
+Annotate skips the commits listed in the file `blame.ignoreRevsFile` names — git's convention is `.git-blame-ignore-revs` at the repository root — so a reformatting or mass-rename commit does not claim every line. **Ignore This Commit** in an annotated line's menu adds the current line's commit to that file and refreshes the annotations.
 
 ### Local history
 
@@ -244,6 +249,6 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 ## Not supported
 
 - Mercurial, Subversion, Perforce and other systems.
-- `git init` for an open project, submodule commands, editable directory mappings.
-- Per-line partial commits (block level only) and per-file stashes.
+- Submodule commands and editable directory mappings.
+- Per-line partial commits (block level only).
 - Git LFS beyond the large-file warning.

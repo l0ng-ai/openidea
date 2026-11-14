@@ -541,3 +541,29 @@ async fn output_before_the_handshake_is_reported_not_dropped() {
     assert!(lines.iter().any(|l| l == "python: not found"), "{lines:?}");
     assert!(lines.iter().any(|l| l.ends_with(". . .") && l.len() > 6), "{lines:?}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn incoming_messages_are_normalized_before_dispatch() {
+    struct Server;
+    impl Handler for Server {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, _: &str, params: Value) -> Result<Value, (i64, String)> {
+            Ok(params)
+        }
+    }
+    struct Client;
+    impl Handler for Client {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, _: &str, _: Value) -> Result<Value, (i64, String)> {
+            Err((codes::METHOD_NOT_FOUND, "no".into()))
+        }
+        fn normalize_incoming(&self, message: &mut Value) {
+            if let Some(result) = message.get_mut("result") {
+                *result = json!("normalized");
+            }
+        }
+    }
+    let (client, _server) = pair(Arc::new(Client), Arc::new(Server));
+    let v: Value = client.request("echo", "raw", None).await.unwrap();
+    assert_eq!(v, json!("normalized"));
+}

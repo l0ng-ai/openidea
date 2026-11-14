@@ -6,7 +6,7 @@ test("Add Python Interpreter keeps environment labels and fields inside their ro
   await settings.getByRole("textbox", { name: "Search settings" }).fill("Python Interpreter");
   await settings
     .getByRole("tree", { name: "Settings pages" })
-    .getByRole("treeitem", { name: "Python Interpreter", exact: true })
+    .getByRole("treeitem", { name: "Dependencies", exact: true })
     .click();
   await settings.getByRole("button", { name: "Add Interpreter…", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Add Python Interpreter", exact: true });

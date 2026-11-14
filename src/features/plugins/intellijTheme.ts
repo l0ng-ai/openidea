@@ -55,6 +55,12 @@ export const UI_KEYS: Record<string, string[]> = {
   "--bg-tab-selected": ["EditorTabs.underlinedTabBackground", "EditorTabs.selectedBackground"],
   // Islands paints the selected tab's border with `underlinedBorderColor`; the classic tabs underline with `underlineColor`.
   "--border-tab-selected": ["EditorTabs.underlinedBorderColor", "EditorTabs.underlineColor"],
+  // The selected tab of a part without focus (src/ui/focusScope.ts).
+  "--bg-tab-selected-inactive": ["EditorTabs.inactiveUnderlinedTabBackground"],
+  "--border-tab-selected-inactive": [
+    "EditorTabs.inactiveUnderlinedTabBorderColor",
+    "EditorTabs.inactiveUnderlineColor",
+  ],
   "--bg-tab-hover": ["EditorTabs.hoverBackground"],
   "--border-editor-tabs": ["EditorTabs.borderColor"],
   "--bg-toolbar-hover": ["ActionButton.hoverBackground"],
@@ -172,7 +178,7 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   WARNING_ATTRIBUTES: [["EFFECT_COLOR", "--wave-warning"]],
   NOT_USED_ELEMENT_ATTRIBUTES: [["FOREGROUND", "--fg-unused"]],
   MATCHED_BRACE_ATTRIBUTES: [["BACKGROUND", "--bg-matched-brace"]],
-  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-match"]],
+  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-result"]],
   TEXT_SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-text-search-result"]],
   IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret"]],
   WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret-write"]],

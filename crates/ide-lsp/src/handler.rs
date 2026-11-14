@@ -10,6 +10,7 @@ use ide_core::{IdeEvent, TaskId};
 use ide_jsonrpc::{Handler, codes};
 use lsp_types as lsp;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -217,11 +218,44 @@ impl ClientHandler {
         true
     }
 
+    /// Ends every running task of a tsserver that died at its heap limit: the process
+    /// behind them is gone, so no `end` will ever arrive. Without this the tasks sit
+    /// as zombies until [`PROGRESS_STALE`] and the server stays "loading", holding
+    /// empty answers back for [`LOADING_WAIT`] — while vtsls already restarts
+    /// tsserver, which re-reports its own loading.
+    fn tsserver_died(&self, mgr: &LspManager) {
+        let events: Vec<IdeEvent> = {
+            let mut progress = self.server.progress.lock();
+            progress
+                .drain()
+                .map(|(_, p)| IdeEvent::Task {
+                    id: p.task,
+                    title: p.title,
+                    message: p.message,
+                    fraction: Some(1.0),
+                    done: true,
+                    cancellable: false,
+                })
+                .collect()
+        };
+        let ended = !events.is_empty();
+        for event in events {
+            self.server.emit(mgr.sink(), event);
+        }
+        if ended {
+            self.server.refresh_busy_status(mgr.sink());
+            self.server.progress_ended();
+        }
+        self.server.set_loading(mgr.sink(), false);
+    }
+
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
         // Problems come only from servers used for `diagnostics`.
         if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
             return;
         }
+        let mut params = params;
+        crate::virtual_doc::normalize_uris(&mut params);
         let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
@@ -229,7 +263,11 @@ impl ClientHandler {
                 return;
             }
         };
-        let Some(path) = uri_to_path(params.uri.as_str()) else { return };
+        let Some(path) = uri_to_path(params.uri.as_str())
+            .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
+        else {
+            return;
+        };
         if self.server.name == "jdtls"
             && let Some(failure) = crate::jdtls::build_plan_failure(&path, &self.server.root, &params.diagnostics)
         {
@@ -245,7 +283,14 @@ impl ClientHandler {
         {
             return;
         }
-        let shown = self.server.set_diagnostics(path.clone(), params.diagnostics);
+        // A late answer for an older version of the text is shown, but isn't fresh (`check_files`).
+        let obsolete =
+            params.version.is_some_and(|v| mgr.docs.lock().values().any(|d| d.path == path && d.version > v));
+        let shown = if obsolete {
+            self.server.set_obsolete_diagnostics(path.clone(), params.diagnostics)
+        } else {
+            self.server.set_diagnostics(path.clone(), params.diagnostics)
+        };
         mgr.emit_diagnostics(&self.server, path, shown, self.encoding());
     }
 
@@ -310,11 +355,13 @@ impl ClientHandler {
     }
 
     fn apply_edit(&self, mgr: &LspManager, params: Value) -> Result<Value, (i64, String)> {
-        let edit: lsp::WorkspaceEdit = params
-            .get("edit")
-            .cloned()
-            .ok_or_else(|| (codes::INVALID_PARAMS, "missing edit".to_owned()))
-            .and_then(|e| serde_json::from_value(e).map_err(|e| (codes::INVALID_PARAMS, e.to_string())))?;
+        let edit: lsp::WorkspaceEdit =
+            params.get("edit").cloned().ok_or_else(|| (codes::INVALID_PARAMS, "missing edit".to_owned())).and_then(
+                |mut e| {
+                    crate::virtual_doc::normalize_uris(&mut e);
+                    serde_json::from_value(e).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))
+                },
+            )?;
         // Convert before calling the hook: it re-enters document sync.
         let edit = convert::workspace_edit(&mgr.conv(self.encoding()), edit);
         let applied = match mgr.apply_edit_hook() {
@@ -361,7 +408,24 @@ impl ClientHandler {
     }
 }
 
+/// Shown once per session when tsserver keeps aborting at its heap limit; the UI adds a
+/// button that opens the language server settings.
+const TSSERVER_OUT_OF_MEMORY: &str = "tsserver stopped because it reached its memory limit and is restarted, so code intelligence may pause or miss results. Raise typescript.tsserver.maxTsServerMemory (in MB) in the server's Workspace Configuration.";
+
+/// Whether a vtsls log line reports tsserver aborting, which is how Node exits at its heap
+/// limit: exit code 134 on Windows, `SIGABRT` elsewhere.
+fn tsserver_ran_out_of_memory(text: &str) -> bool {
+    text.split_once("TSServer exited. ").is_some_and(|(_, rest)| {
+        let rest = rest.trim_end();
+        rest.starts_with("Code: 134.") || rest.ends_with("Signal: SIGABRT")
+    })
+}
+
 impl Handler for ClientHandler {
+    fn normalize_incoming(&self, message: &mut Value) {
+        crate::uri::encode_loose_file_uris(message);
+    }
+
     fn on_notification(&self, method: &str, params: Value) {
         let Some(mgr) = self.mgr.upgrade() else { return };
         match method {
@@ -375,6 +439,20 @@ impl Handler for ClientHandler {
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
+                if self.server.config.tsserver_project && tsserver_ran_out_of_memory(text) {
+                    tracing::warn!("[{}] {text}", self.server.name);
+                    // The tasks of the dead tsserver never see their `end`: end them now
+                    // instead of letting them sit as zombies until the stale window, and
+                    // stop holding queries back — the restarted instance re-reports.
+                    self.tsserver_died(&mgr);
+                    if mgr.first_message(&self.server.name, TSSERVER_OUT_OF_MEMORY) {
+                        mgr.sink().emit(IdeEvent::Notify {
+                            level: NotifyLevel::Error,
+                            title: "TypeScript server ran out of memory".into(),
+                            body: Some(TSSERVER_OUT_OF_MEMORY.into()),
+                        });
+                    }
+                }
                 if self.server.name == "jdtls"
                     && text.contains("Can't use Java ")
                     && text.contains(" to import Gradle project ")
@@ -402,6 +480,9 @@ impl Handler for ClientHandler {
                 crate::kotlin_lsp::record_import_state(&self.server, self.generation, &params)
             }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
+                if self.server.running_gen(self.generation).is_some() {
+                    self.server.set_java_ready();
+                }
                 mgr.java_import_ready(self.server.clone(), self.generation);
             }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ProjectStatus" => {
@@ -516,5 +597,107 @@ fn merge(base: &mut Value, layer: Value) {
             }
         }
         (base, layer) => *base = layer,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::Progress;
+    use ide_core::event::SharedSink;
+    use ide_core::{LanguageId, TaskId};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn tsserver_aborts_are_out_of_memory() {
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: 134. Signal: null"));
+        assert!(tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGABRT"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 0. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: null. Signal: SIGTERM"));
+        assert!(!tsserver_ran_out_of_memory("TSServer exited. Code: 1340. Signal: null"));
+        assert!(!tsserver_ran_out_of_memory("Code: 134."));
+        assert!(tsserver_ran_out_of_memory("[error] TSServer exited. Code: 134. Signal: null\n"));
+    }
+
+    /// A vtsls server with two running tasks, one marked stalled, and `loading` set:
+    /// the state a tsserver OOM leaves behind.
+    fn loaded_vtsls(events: Arc<Mutex<Vec<IdeEvent>>>) -> (Arc<LspManager>, Arc<crate::server::Server>) {
+        let sink: SharedSink = {
+            let events = events.clone();
+            Arc::new(move |event: IdeEvent| events.lock().unwrap().push(event))
+        };
+        let languages = Arc::new(ide_language::LanguageRegistry::from_configs(vec![]));
+        let mgr = LspManager::new(PathBuf::from("/p"), languages, sink);
+        let cfg: ide_language::LanguageServerConfig =
+            toml::from_str("name = \"vtsls\"\ncommand = \"vtsls\"\ntsserver-project = true").unwrap();
+        let server = Arc::new(crate::server::Server::new(cfg, PathBuf::from("/p"), LanguageId::new("vue")));
+        server.progress.lock().insert(
+            "loading".into(),
+            Progress {
+                task: TaskId::next(),
+                title: "Initializing 'tsconfig.json'".into(),
+                message: None,
+                cancel: None,
+                last: tokio::time::Instant::now(),
+                fraction: Some(0.1),
+                stalled: false,
+            },
+        );
+        server.progress.lock().insert(
+            "stuck".into(),
+            Progress {
+                task: TaskId::next(),
+                title: "Analyzing 'index.vue' and its dependencies".into(),
+                message: None,
+                cancel: None,
+                last: tokio::time::Instant::now(),
+                fraction: Some(0.2),
+                stalled: true,
+            },
+        );
+        let quiet: SharedSink = Arc::new(|_: IdeEvent| {});
+        server.set_loading(&quiet, true);
+        (mgr, server)
+    }
+
+    #[test]
+    fn tsserver_dying_ends_every_task_and_the_loading_state() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (mgr, server) = loaded_vtsls(events.clone());
+        let handler = ClientHandler::new(Arc::downgrade(&mgr), server.clone(), 0);
+
+        handler.tsserver_died(&mgr);
+
+        // Both tasks ended (done: true), including the stalled one; none left running.
+        let tasks: Vec<_> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Task { title, done, .. } => Some((title.clone(), *done)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tasks.len(), 2, "{tasks:?}");
+        assert!(tasks.iter().all(|(_, done)| *done), "{tasks:?}");
+        assert!(server.progress.lock().is_empty());
+        assert!(!server.is_loading());
+        assert!(!server.is_busy());
+    }
+
+    #[test]
+    fn tsserver_dying_without_tasks_only_clears_loading() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (mgr, server) = loaded_vtsls(events.clone());
+        server.progress.lock().clear();
+        let handler = ClientHandler::new(Arc::downgrade(&mgr), server.clone(), 0);
+
+        handler.tsserver_died(&mgr);
+
+        assert!(events.lock().unwrap().is_empty());
+        assert!(!server.is_loading());
+        // A status event may be published, but no task events.
+        assert!(server.progress.lock().is_empty());
     }
 }

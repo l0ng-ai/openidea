@@ -300,6 +300,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.rollback": [],
   "vcs.addToVcs": [],
   "vcs.showDiff": [],
+  "vcs.log.changes.showDiff": [],
   "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Alt+F5"],
   "vcs.prevChange": ["Alt+Shift+F5"],
@@ -358,6 +359,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
+  "db.nextResultTab": ["Meta+Alt+Right", "Meta+Shift+]"],
+  "db.previousResultTab": ["Meta+Alt+Left", "Meta+Shift+["],
   "db.showToolWindow": [],
   // Database tool window (when the tree has focus).
   "db.openConsole": [],
@@ -389,6 +392,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.selectOpened": [],
+  "db.expandAll": [],
   "db.collapseAll": [],
   // Find in Files popup (findPopupOpen): after the editor's keys, so these win while it is open.
   "find.popup.nextResult": ["Meta+G"],

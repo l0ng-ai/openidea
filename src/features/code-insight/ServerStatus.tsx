@@ -69,25 +69,29 @@ export function ServerStatus() {
                     >
                       {jdkFix.label}
                     </Button>
-                  ) : s.status === "missing" && canInstall ? (
-                    <Button
-                      size="small"
-                      aria-label={tx`Install ${s.name}`}
-                      onClick={() => {
-                        setOpen(false);
-                        void executeAction("tools.install", s.name);
-                      }}
-                    >
-                      <T>Install</T>
-                    </Button>
                   ) : (
-                    <IconButton
-                      icon="refresh"
-                      size="small"
-                      title={tx`Restart ${s.name}`}
-                      disabled={s.status === "missing" || s.status === "starting"}
-                      onClick={() => void restartServer(s.id)}
-                    />
+                    <>
+                      {s.status === "missing" && canInstall && (
+                        <Button
+                          size="small"
+                          aria-label={tx`Install ${s.name}`}
+                          onClick={() => {
+                            setOpen(false);
+                            void executeAction("tools.install", s.name);
+                          }}
+                        >
+                          <T>Install</T>
+                        </Button>
+                      )}
+                      {/* A missing server may have been installed outside the IDE since; restarting looks for it again. */}
+                      <IconButton
+                        icon="refresh"
+                        size="small"
+                        title={s.status === "missing" ? tx`Check for ${s.name} again` : tx`Restart ${s.name}`}
+                        disabled={s.status === "starting"}
+                        onClick={() => void restartServer(s.id)}
+                      />
+                    </>
                   )}
                 </div>
                 {(s.languages.length > 0 || s.root) && (

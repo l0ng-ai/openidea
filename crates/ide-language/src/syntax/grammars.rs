@@ -431,6 +431,16 @@ pub(crate) static SPECS: &[Spec] = &[
         constructors: NONE,
     },
     Spec {
+        name: "prisma",
+        language: tree_sitter_prisma_io::LANGUAGE,
+        outline: outline!("prisma"),
+        highlights: Some(Highlights { query: highlights!("prisma"), first_wins: false }),
+        fold_nodes: NONE,
+        fold_bodies: NONE,
+        imports: NONE,
+        constructors: NONE,
+    },
+    Spec {
         name: "make",
         language: tree_sitter_make::LANGUAGE,
         outline: outline!("make"),
