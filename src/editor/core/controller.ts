@@ -45,7 +45,7 @@ import {
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { restoreMaximizedToolWindow } from "@/workbench/toolwindows/store";
 import { ask, confirm } from "@/workbench/messages";
-import { t } from "@/platform/i18n";
+import { t, tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { save as saveFileDialog, type DialogFilter as SaveDialogFilter } from "@/platform/dialog";
 import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
@@ -1225,7 +1225,7 @@ export class EditorController implements SlotHost {
    */
   private async saveUntitled(model: import("./model/document").DocModel): Promise<boolean> {
     const path = await saveFileDialog({
-      title: t("app.action.newFile"),
+      title: tx("Save As"),
       defaultPath: this.saveAsSuggestion(model),
       filters: await languageFilters(),
     });
@@ -1623,10 +1623,10 @@ export class EditorController implements SlotHost {
           }
           const decision = await ask({
             title: t("app.unsaved.title"),
-            body: t("app.unsaved.body", { count: 1, project: untitledTitle(key) }),
+            body: t("app.unsaved.fileBody", { name: untitledTitle(key) }),
             buttons: [
               { id: "discard", label: t("app.unsaved.discard") },
-              { id: "save", label: t("app.unsaved.save"), primary: true },
+              { id: "save", label: t("app.unsaved.saveFile"), primary: true },
             ],
             icon: "warning",
           });

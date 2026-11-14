@@ -2503,6 +2503,7 @@
   "Sample plugin: inserts today's date and counts words in the active file.": "示例插件：插入今天的日期，并统计当前文件的字数。",
   "Save": "保存",
   "Save All": "全部保存",
+  "Save As": "另存为",
   "Save Files": "保存文件",
   "Save files if the IDE is idle for": "IDE 空闲以下时长时保存文件",
   "Save files when switching to a different application or a built-in terminal": "切换到其他应用程序或内置终端时保存文件",
