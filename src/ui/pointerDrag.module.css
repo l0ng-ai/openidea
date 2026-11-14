@@ -17,3 +17,10 @@
   cursor: grabbing !important;
   user-select: none !important;
 }
+
+/* WebKit keeps editable text selectable whatever its user-select, so the pointer passing over
+   the editor or a text field during a drag selected text there (#3334). Take them out of hit
+   testing; drop targets are their containers. */
+.dragging :is(input, textarea, [contenteditable]) {
+  pointer-events: none !important;
+}
