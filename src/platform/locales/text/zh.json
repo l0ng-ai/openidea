@@ -1310,7 +1310,6 @@
   "Filter by User": "按用户过滤",
   "Filter by message": "按消息过滤",
   "Filter by name, PID or command line": "按名称、PID 或命令行过滤",
-  "Filter objects": "过滤对象",
   "Filter plugins": "过滤插件",
   "Filter processes": "过滤进程",
   "Filter recent files": "过滤最近的文件",
@@ -8068,5 +8067,6 @@
   "This version of the JavaScript debugger does not report a page's requests.": "此版本的 JavaScript 调试器不报告页面的请求。",
   "No requests yet. Reload the page to see the requests of its load.": "还没有请求。重新加载页面即可看到加载时的请求。",
   "Evaluate watches while the program runs": "程序运行时计算监视表达式",
-  "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "仅适用于无需暂停即可计算的调试器（JavaScript）。带副作用的监视表达式在每次刷新时都会再次执行。"
+  "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "仅适用于无需暂停即可计算的调试器（JavaScript）。带副作用的监视表达式在每次刷新时都会再次执行。",
+  "Show Only Matches": "仅显示匹配项"
 }

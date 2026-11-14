@@ -164,8 +164,6 @@ interface DatabaseState {
   consoles: Record<string, string>;
   /** Console path → its active schema (unqualified names resolve there; see `consoleSchema`). */
   consoleSchemas: Record<string, string>;
-  /** The Database tree's quick object filter (empty: everything shows). */
-  treeFilter: string;
   separateProceduresAndFunctions: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
@@ -233,7 +231,6 @@ export const useDatabase = create<DatabaseState>(() => ({
   objects: {},
   consoles: readBindings(),
   consoleSchemas: readConsoleSchemas(),
-  treeFilter: "",
   separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
   completion: {},
   results: [],

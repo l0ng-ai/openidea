@@ -1685,5 +1685,6 @@
   "Evaluate watches while the program runs": "Evaluate watches while the program runs",
   "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
   "Stash Selected Files…": "Stash Selected Files…",
-  "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first"
+  "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first",
+  "Show Only Matches": "Show Only Matches"
 }
