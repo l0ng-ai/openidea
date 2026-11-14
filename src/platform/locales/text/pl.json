@@ -5773,7 +5773,6 @@
   "Pin": "Przypnij",
   "Unpin": "Odepnij",
   "Project default": "Wartość domyślna projektu",
-  "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.": "Plik wykonywalny Node, na którym uruchamiany jest ten skrypt; puste pole spowoduje użycie Ustawienia › Języki i frameworki › Node.js.",
   "Loading repositories…": "Wczytywanie repozytoriów…",
   "GitHub repositories are listed with the": "Repozytoria serwisu GitHub są wyświetlane z",
   "Search repositories": "Przeszukaj repozytoria",

@@ -7477,6 +7477,11 @@ export type NodeSettings = {
 	runTarget?: string,
 	/**  `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`. */
 	packageManager?: string,
+	/**
+	 *  Runtime for running JavaScript / TypeScript files: `node` | `bun` | `deno`; empty = from the
+	 *  project (`deno.json` → Deno, `bun.lock` → Bun, else Node.js).
+	 */
+	runtime?: string,
 };
 
 /**  Why an identifier is not treated as a local. */
