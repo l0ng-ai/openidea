@@ -201,23 +201,36 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
-  const [session] = useState<FocusedSession>(() => ({
-    openFind: () => {
-      setFinding(true);
-      setFindFocus((n) => n + 1);
-    },
-  }));
-  useEffect(
-    () => () => {
-      if (focusedSession() === session) setFocusedSession(null);
-    },
-    [session],
+  const [inputFocus, setInputFocus] = useState(0);
+  const sessionRoot = useRef<HTMLDivElement>(null);
+  const canFocusInput = shown && !!task && task.status !== "archived" && !view;
+  const session = useMemo<FocusedSession>(
+    () => ({
+      openFind: () => {
+        setFinding(true);
+        setFindFocus((n) => n + 1);
+      },
+      focusInput: canFocusInput
+        ? () => {
+            if (docked) setChangesOpen(false);
+            setInputFocus((n) => n + 1);
+          }
+        : undefined,
+    }),
+    [canFocusInput, docked, setChangesOpen],
   );
+  useLayoutEffect(() => {
+    if (shown && sessionRoot.current?.contains(document.activeElement)) setFocusedSession(session);
+    return () => {
+      if (focusedSession() === session) setFocusedSession(null);
+    };
+  }, [session, shown]);
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div
+      ref={sessionRoot}
       className={clsx(styles.session, docked && styles.docked)}
-      onFocusCapture={() => setFocusedSession(session)}
+      onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
           setFocusedSession(null);
@@ -248,6 +261,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <QuestionCard task={task} entries={entries ?? null} />
             <SessionComposer
               task={task}
+              focusRequest={inputFocus}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -387,7 +401,7 @@ function SessionStatus({
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
-      {/* What changed sits above the meter, time and terminal; those keep their one row at the right. */}
+      {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
         {(!!changes?.length || !!commits.length) && (
           <span className={styles.statusChips}>
@@ -2680,6 +2694,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 
 function SessionComposer({
   task,
+  focusRequest,
   entries,
   head,
   changes,
@@ -2689,6 +2704,7 @@ function SessionComposer({
   onOpenSubagent,
 }: {
   task: AgentTask;
+  focusRequest: number;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2766,6 +2782,7 @@ function SessionComposer({
       </Tray>
       <Composer
         id={task.id}
+        focusRequest={focusRequest}
         placeholder={
           !busy
             ? "Reply to the agent"
@@ -2906,15 +2923,18 @@ function useChangesOpen(
     open: docked ? false : loadChangesOpen()[task],
   }));
   const chosen = state.task === task ? state.open : docked ? false : loadChangesOpen()[task];
-  const set = (open: boolean) => {
-    setState({ task, open });
-    if (docked) return;
-    try {
-      globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
-    } catch {
-      /* storage unavailable */
-    }
-  };
+  const set = useCallback(
+    (open: boolean) => {
+      setState({ task, open });
+      if (docked) return;
+      try {
+        globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [task, docked],
+  );
   return [chosen ?? (changes?.length ?? 0) > 0, set];
 }
 

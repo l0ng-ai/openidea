@@ -12,25 +12,17 @@ import { shortcutLabel } from "@/platform/keymap";
 import {
   Button,
   EmptyState,
+  HighlightedText,
   Icon,
   IconButton,
   Menu,
-  SearchField,
   Tree,
   showContextMenu,
   tooltipAttrs,
   type TreeHandle,
   T,
 } from "@/ui";
-import {
-  databaseKey,
-  passesObjectFilter,
-  passesTreeFilter,
-  shownNames,
-  sourceIcon,
-  splitTarget,
-  targetOf,
-} from "./model";
+import { databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
 import {
   nodeTarget,
   isOtherFolder,
@@ -168,25 +160,10 @@ export function DatabaseView() {
     [st.sources],
   );
 
-  // While a quick filter is on, the schemas of expanded sources load their objects, so
-  // tables / routines matching the filter show up without expanding every schema node.
-  useEffect(() => {
-    if (!st.treeFilter.trim()) return;
-    const s = useDatabase.getState();
-    for (const [target, list] of Object.entries(s.schemas)) {
-      if (list.status !== "ok") continue;
-      const { id, database } = splitTarget(target);
-      if (!s.treeExpanded.has(database ? databaseKey(id, database) : id)) continue;
-      for (const schema of list.value) {
-        if (!s.tables[tablesKey(target, schema)]) void loadTables(target, schema);
-      }
-    }
-  }, [st.treeFilter, st.treeExpanded, st.schemas]);
-
-  /** Schemas tab › Object filter, plus the toolbar's quick filter, of the data source of target `id`. */
+  /** Schemas tab › Object filter of the data source of target `id`. */
   const shown = (id: string) => {
     const filter = sourceOf(id)?.introspection?.objectFilter;
-    return (o: { name: string }) => passesObjectFilter(o.name, filter) && passesTreeFilter(o.name, st.treeFilter);
+    return (o: { name: string }) => passesObjectFilter(o.name, filter);
   };
   const tablesOf = (id: string, schema: string) => {
     const t = st.tables[tablesKey(id, schema)];
@@ -200,7 +177,7 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.packages ?? []).filter(shown(id));
   const othersOf = (id: string, schema: string, folder: Folder) =>
     (st.objects[tablesKey(id, schema)]?.others ?? []).filter((o) => otherFolder(o.kind) === folder).filter(shown(id));
-  /** Members of a schema folder, after object and quick filtering. */
+  /** Members of a schema folder, after object filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
     if (isOtherFolder(folder)) return othersOf(id, schema, folder).length;
     if (folder === "routines" || folder === "procedures" || folder === "functions")
@@ -227,19 +204,9 @@ export function DatabaseView() {
     return shownNames(v.names, i?.allDatabases, i?.databases, v.current);
   };
 
-  /** Under a quick filter a schema shows when its name matches, or its loaded objects do. */
-  const schemaVisible = (id: string, schema: string) =>
-    passesTreeFilter(schema, st.treeFilter) ||
-    !!tablesOf(id, schema)?.length ||
-    routinesOf(id, schema).length > 0 ||
-    packagesOf(id, schema).length > 0 ||
-    sequencesOf(id, schema).length > 0;
-
   const schemasOf = (key: string, id: string) =>
     status(key, st.schemas[id], (v) =>
-      shownSchemas(id, v)
-        .filter((schema) => schemaVisible(id, schema))
-        .map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
+      shownSchemas(id, v).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
     );
 
   const children = (n: Node): readonly Node[] | undefined => {
@@ -563,7 +530,8 @@ export function DatabaseView() {
             const color = target ? sourceOf(target)?.color : null;
             return color ? `${styles.tintedRow} ${ROW_TINTS[color]}` : undefined;
           }}
-          renderNode={(n: Node) => {
+          speedSearchField
+          renderNode={(n: Node, state) => {
             const i = icon(n);
             const d = detail(n);
             const counted = n.kind === "source" || n.kind === "database" || n.kind === "folder" || n.kind === "group";
@@ -586,7 +554,7 @@ export function DatabaseView() {
                     {live && <span className={styles.connectedDot} title={tx("Connected")} />}
                   </span>
                 )}
-                <span className={labelClass}>{label(n)}</span>
+                <HighlightedText className={labelClass} text={label(n)} indices={state.matches} />
                 {n.kind === "source" && n.source.global && (
                   <span className={styles.treeDetail} title={tx("Available in all projects")}>
                     {tx("global")}
@@ -643,7 +611,6 @@ function DatabaseToolbar() {
   const node = useDatabase((s) => s.selectedNode);
   const connected = useDatabase((s) => s.connected);
   const sources = useDatabase((s) => s.sources);
-  const treeFilter = useDatabase((s) => s.treeFilter);
   const plus = useRef<HTMLButtonElement>(null);
   const newOpen = useDatabase((s) => s.newMenuOpen);
   const setNewOpen = (v: boolean) => useDatabase.setState({ newMenuOpen: v });
@@ -689,13 +656,6 @@ function DatabaseToolbar() {
       >
         <T>DDL</T>
       </button>
-      <SearchField
-        className={styles.treeFilter}
-        value={treeFilter}
-        onChange={(treeFilter) => useDatabase.setState({ treeFilter })}
-        placeholder={tx("Filter objects")}
-        aria-label={tx("Filter objects")}
-      />
     </div>
   );
 }

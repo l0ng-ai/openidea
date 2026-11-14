@@ -189,6 +189,40 @@
 .modelEffortPopup .modelList {
   max-height: 216px;
 }
+.catalogFooter {
+  margin-top: 6px;
+  padding: 8px 12px 2px;
+  border-top: 1px solid var(--border);
+}
+.catalogNote,
+.catalogError {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.catalogError {
+  color: var(--danger);
+}
+.catalogFooter .catalogError {
+  padding: 0 0 8px;
+}
+.refreshModels {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.refreshModels:hover:not(:disabled) {
+  color: var(--fg-strong);
+}
+.refreshModels:disabled {
+  color: var(--fg-muted);
+  cursor: default;
+}
 .effortHeader {
   display: flex;
   align-items: baseline;
@@ -438,7 +472,10 @@
 .suggestion:focus-visible {
   outline: 2px solid var(--focus-ring);
 }
+/* The file name truncates first; the hint stays on one line. */
 .suggestionHint {
+  flex: none;
+  white-space: nowrap;
   color: var(--fg-faint);
 }
 .removeChip {
@@ -458,6 +495,7 @@
   color: var(--fg-strong);
 }
 .attachmentName {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

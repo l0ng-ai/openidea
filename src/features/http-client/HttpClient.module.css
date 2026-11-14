@@ -207,3 +207,12 @@
 .pendingMethod {
   font-weight: 600;
 }
+
+.match {
+  border-radius: 2px;
+  color: var(--fg-search-match);
+  background: var(--bg-search-match);
+}
+.matchCurrent {
+  background: var(--bg-search-match-current);
+}

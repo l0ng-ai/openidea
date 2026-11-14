@@ -11,6 +11,155 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
+struct ModelPages {
+    pages: Mutex<VecDeque<Result<Value, (i64, String)>>>,
+    cursors: Mutex<Vec<Value>>,
+}
+
+impl Handler for ModelPages {
+    fn on_notification(&self, _: &str, _: Value) {}
+
+    fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        assert_eq!(method, "model/list", "listing models must never start a thread or turn");
+        self.cursors.lock().push(params["cursor"].clone());
+        self.pages.lock().pop_front().expect("another expected page")
+    }
+}
+
+fn model_peer(pages: Arc<ModelPages>) -> (Peer, Peer) {
+    let (ours, theirs) = tokio::io::duplex(1 << 16);
+    let (read, write) = tokio::io::split(theirs);
+    let server = Peer::connect_framed(read, write, pages, Framing::Lines);
+    let (read, write) = tokio::io::split(ours);
+    (Peer::connect_framed(read, write, Arc::new(ide_jsonrpc::NoopHandler), Framing::Lines), server)
+}
+
+#[tokio::test]
+async fn model_pagination_failure_does_not_cache_an_incomplete_catalog() {
+    let first = json!({ "data": [{ "id": "first" }], "nextCursor": "next" });
+    let pages = Arc::new(ModelPages {
+        pages: Mutex::new(VecDeque::from([
+            Ok(first.clone()),
+            Err((-32000, "authentication expired".into())),
+            Ok(first),
+            Ok(json!({ "data": [{ "id": "second" }], "nextCursor": null })),
+        ])),
+        cursors: Mutex::default(),
+    });
+    let (peer, server) = model_peer(pages.clone());
+    let shim = CodexShim {
+        runtime: tokio::runtime::Handle::current(),
+        codex: OnceLock::from(peer.clone()),
+        client: OnceLock::new(),
+        state: Mutex::default(),
+        models: tokio::sync::Mutex::new(None),
+        skills: tokio::sync::Mutex::new(()),
+    };
+    assert_eq!(shim.models().await.unwrap_err().message, "authentication expired");
+    let models = shim.models().await.unwrap();
+    assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+    assert_eq!(shim.models().await.unwrap().len(), 2);
+    assert_eq!(*pages.cursors.lock(), [Value::Null, json!("next"), Value::Null, json!("next")]);
+    peer.kill();
+    server.kill();
+}
+
+#[tokio::test]
+async fn repeated_or_invalid_model_cursors_and_malformed_pages_are_failures() {
+    for pages in [
+        vec![json!({ "data": [], "nextCursor": "a" }), json!({ "data": [], "nextCursor": "a" })],
+        vec![
+            json!({ "data": [], "nextCursor": "a" }),
+            json!({ "data": [], "nextCursor": "b" }),
+            json!({ "data": [], "nextCursor": "a" }),
+        ],
+        vec![json!({ "data": [], "nextCursor": 7 })],
+        vec![json!({ "nextCursor": null })],
+        vec![json!({ "data": [{}], "nextCursor": null })],
+    ] {
+        let pages =
+            Arc::new(ModelPages { pages: Mutex::new(pages.into_iter().map(Ok).collect()), cursors: Mutex::default() });
+        let (peer, server) = model_peer(pages);
+        assert!(list_models(&peer).await.is_err());
+        peer.kill();
+        server.kill();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn native_discovery_only_initializes_and_pages_models_then_stops_the_process() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let script = tmp.path().join("fake-codex");
+    std::fs::write(
+        &script,
+        r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+pathlib.Path('pid').write_text(str(os.getpid()))
+for line in sys.stdin:
+    request = json.loads(line)
+    with pathlib.Path('requests').open('a') as f:
+        f.write(json.dumps(request) + '\n')
+    method = request['method']
+    if method == 'initialized':
+        continue
+    if method == 'initialize':
+        result = {}
+    elif method == 'model/list':
+        cursor = request['params']['cursor']
+        model = 'one' if cursor is None else 'two'
+        result = {'data': [{'id': model, 'isDefault': cursor is None,
+            'defaultReasoningEffort': 'low', 'supportedReasoningEfforts': [{'reasoningEffort': 'low'}]}],
+            'nextCursor': 'second-page' if cursor is None else None}
+    else:
+        raise RuntimeError('must not create a thread or prompt: ' + method)
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let spec = ProviderSpec {
+        id: "codex".into(),
+        name: "Codex".into(),
+        driver: crate::provider::Driver::Codex,
+        command: script.to_string_lossy().into_owned(),
+        args: Vec::new(),
+        env: Vec::new(),
+        login_hint: String::new(),
+        source: crate::AgentSource::Builtin,
+    };
+    let found = discover(spec, tmp.path().to_path_buf()).await.unwrap();
+    let models: Vec<_> = found
+        .config
+        .iter()
+        .filter(|o| o.category.as_deref() == Some("model"))
+        .flat_map(|o| o.values.iter().map(|v| v.value.as_str()))
+        .collect();
+    assert_eq!(models, ["one", "two"]);
+    assert_eq!(found.levels.keys().map(String::as_str).collect::<Vec<_>>(), ["one", "two"]);
+    let requests = std::fs::read_to_string(tmp.path().join("requests")).unwrap();
+    let requests: Vec<Value> = requests.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(
+        requests.iter().map(|r| r["method"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["initialize", "initialized", "model/list", "model/list"]
+    );
+    assert_eq!(requests[2]["params"]["cursor"], Value::Null);
+    assert_eq!(requests[3]["params"]["cursor"], "second-page");
+    let pid = std::fs::read_to_string(tmp.path().join("pid")).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).output().unwrap().status.success();
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("discovery must kill and reap its child");
+}
+
 // ---- Pure translations -------------------------------------------------------------
 
 fn models() -> Vec<ModelInfo> {

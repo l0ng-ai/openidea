@@ -32,6 +32,7 @@ const owners = (km: Record<string, string[]>, key: string) =>
 // parent collisions are not introduced by this preset; new pairs must be reviewed here.
 const shared = [
   ["navigate.gotoClass", "terminal.new"],
+  ["navigate.gotoLine", "agents.focusInput"],
   ["navigate.recentLocations", "project.open", "debug.jumpToSource", "diff.jumpToSource", "find.popup.openResult"],
   [
     "navigate.declaration",

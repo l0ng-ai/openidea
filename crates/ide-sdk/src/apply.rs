@@ -69,7 +69,11 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 /// root, else the Python the project pins for mise / asdf. A configured
 /// interpreter whose executable is gone (uninstalled, moved) is skipped like
 /// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
+/// `None` when the project interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
+    if s.languages.python.run_target().is_some() {
+        return None;
+    }
     setting_path(root, &s.languages.python.interpreter)
         .filter(|p| p.is_file())
         .or_else(|| project_venv_python(root))
@@ -78,6 +82,9 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
 pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
+    if s.languages.python.run_target().is_some() {
+        return None;
+    }
     if let Some(python) = setting_path(root, &s.languages.python.interpreter).filter(|p| p.is_file()) {
         return Some(python);
     }
@@ -1168,6 +1175,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
         cfg.tsserver_project_extras.extensions = vec![vue::EXTENSION.into()];
+        // Hybrid mode: one program holds every .vue's virtual TypeScript, so the
+        // heap must clear it (vtsls' default 3072 dies in a GC death spiral), and
+        // the syntax tsserver duplicates the plugin and its file watching.
+        merge_init_options(
+            cfg,
+            json!({ "typescript": { "tsserver": { "useSyntaxServer": "never", "maxTsServerMemory": 8192 } } }),
+        );
+        // A configured project resolves its own types; the typings installer only
+        // serves inferred projects and keeps scanning npm in the background.
+        if server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file()) {
+            merge_init_options(cfg, json!({ "typescript": { "disableAutomaticTypeAcquisition": true } }));
+        }
+    }
+    let memory = s.languages.typescript.tsserver_max_memory;
+    if name == "vtsls" && memory > 0 {
+        merge_init_options(cfg, json!({ "typescript": { "tsserver": { "maxTsServerMemory": memory } } }));
     }
     if name == "vtsls"
         && cfg.tsserver_project
@@ -1460,6 +1483,9 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
         || matches!(config.kind.as_str(), "node" | "npm" | "vitest" | "jest" | "mocha")
     {
         &settings.languages.node.run_target
+    } else if let Some(target) = settings.languages.python.run_target().filter(|_| is_python_config(config, &name)) {
+        // The project interpreter is a run target's: Python runs there.
+        return Some(target);
     } else {
         return non_empty(&settings.run.default_target);
     };
@@ -1470,6 +1496,10 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
     } else {
         Some(target)
     }
+}
+
+fn is_python_config(config: &RunConfig, program: &str) -> bool {
+    matches!(config.kind.as_str(), "python" | "pytest" | "django-test") || is_python_command(program)
 }
 
 /// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
@@ -1814,10 +1844,17 @@ pub fn without_derived_in(config: &RunConfig, root: &Path, fallback: Option<&Pat
     if path.is_absolute()
         && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
     {
-        let mut probe = out.clone();
-        probe.command = name.clone();
-        if applied(&probe).command == config.command {
-            out.command = name;
+        // Generated configurations name the bare program (`java`), also on Windows where the
+        // derived path ends in `java.exe`.
+        let bare =
+            name.len().checked_sub(4).filter(|&at| name[at..].eq_ignore_ascii_case(".exe")).map(|at| &name[..at]);
+        for candidate in bare.into_iter().chain([name.as_str()]) {
+            let mut probe = out.clone();
+            probe.command = candidate.to_owned();
+            if applied(&probe).command == config.command {
+                out.command = candidate.to_owned();
+                break;
+            }
         }
     }
     out
@@ -2103,6 +2140,74 @@ mod gradle_runtime_tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn hybrid_vtsls_gets_one_server_a_full_heap_and_no_type_acquisition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The Vue package the hybrid block finds through the command's package dir.
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        std::fs::write(root.join("tsconfig.json"), "{}").unwrap();
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/useSyntaxServer"), Some(&json!("never")));
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(8192)));
+        assert_eq!(options.pointer("/typescript/disableAutomaticTypeAcquisition"), Some(&json!(true)));
+        // A user-set limit wins over the automatic one.
+        s.languages.typescript.tsserver_max_memory = 6144;
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(6144)));
+    }
+
+    #[test]
+    fn hybrid_without_a_config_keeps_type_acquisition_and_plain_vtsls_stays_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        // No tsconfig/jsconfig anywhere: inferred projects still want the typings installer.
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert!(options.pointer("/typescript/disableAutomaticTypeAcquisition").is_none());
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(8192)));
+        // Without the Vue package there is no hybrid mode: nothing is injected. The
+        // command points at a bare binary, so the package lookup finds nothing
+        // (a bare name would resolve on the host's PATH and break the test).
+        std::fs::write(root.join("bare-vue-language-server"), "#!/bin/sh\n").unwrap();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: "bare-vue-language-server".into() });
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
+        assert!(options.pointer("/typescript/tsserver/maxTsServerMemory").is_none());
+        // A user-set limit applies to plain TypeScript projects too.
+        s.languages.typescript.tsserver_max_memory = 12288;
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(12288)));
+        assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
+    }
 
     #[test]
     fn default_maven_repository_reads_the_user_settings() {

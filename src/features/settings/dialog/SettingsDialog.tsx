@@ -28,7 +28,16 @@ import {
 } from "@/ui";
 import { PageContext, useSettingsFormFor } from "../components/context";
 import { SearchLabel } from "../components/Form";
-import { breadcrumb, buildPageTree, filterPageTree, flatten, groupKey, type PageNode } from "../model/pages";
+import {
+  breadcrumb,
+  buildPageTree,
+  filterPageTree,
+  flatten,
+  groupKey,
+  titledPage,
+  titleRank,
+  type PageNode,
+} from "../model/pages";
 import {
   applySettings,
   closeSettings,
@@ -264,7 +273,15 @@ export function SettingsLayout() {
 
   const onQuery = (q: string) => {
     setQuery(q);
-    const next = flatten(filterPageTree(tree, q, pageLabels));
+    const filtered = filterPageTree(tree, q, pageLabels);
+    const next = flatten(filtered);
+    // A page named like the query wins over pages that only mention it.
+    const titled = titledPage(filtered, q);
+    const rank = (n: PageNode | undefined) => (n ? (titleRank(n, q) ?? 2) : 2);
+    if (titled && titled.key !== current?.key && rank(titled) < rank(current)) {
+      selectPage(titled.key);
+      return;
+    }
     if (q && current && !next.some((n) => n.key === current.key && n.matched)) {
       const first = firstPage(next);
       if (first) selectPage(first);

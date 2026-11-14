@@ -1136,7 +1136,10 @@ pub(crate) fn stash_push(
     paths: &[PathBuf],
 ) -> IdeResult<()> {
     let rel = r.rel_paths(paths)?;
-    let mut args = vec!["--literal-pathspecs", "stash", "push", "-q"];
+    // Literal pathspecs only for the chosen files: git's whole-tree stash passes itself `:/`,
+    // which a literal pathspec turns into a file of that name.
+    let mut args = if rel.is_empty() { vec![] } else { vec!["--literal-pathspecs"] };
+    args.extend(["stash", "push", "-q"]);
     if include_untracked {
         args.push("--include-untracked");
     }

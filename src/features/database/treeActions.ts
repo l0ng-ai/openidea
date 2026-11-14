@@ -22,7 +22,10 @@ import {
   loadSchemas,
   loadSources,
   loadTables,
+  consoleFiles,
+  newConsole,
   openConsole,
+  openConsoleFile,
   openConsoleWith,
   openDdl,
   openObjectDdl,
@@ -42,6 +45,7 @@ import {
 } from "./store";
 import { tableInput } from "./tableInput";
 import { tx } from "@/platform/i18n";
+import { chooseItem } from "@/workbench/inputDialogs";
 import { databaseRequest } from "./requests";
 
 /** Context key: the Database tree has focus. */
@@ -279,7 +283,7 @@ export function registerDatabaseTreeActions(): () => void {
         const id = n ? nodeTarget(n) : null;
         const { sources } = useDatabase.getState();
         const target = id ?? (sources.length === 1 ? (sources[0]!.id ?? null) : null);
-        if (target) void openConsole(target);
+        if (target) void jumpToConsole(target);
         else toolWindowService().show(DB_TOOL_WINDOW, true);
       },
     }),
@@ -523,4 +527,15 @@ export function registerDatabaseTreeActions(): () => void {
       run: () => useDatabase.setState({ treeExpanded: new Set() }),
     }),
   ]);
+}
+
+/** One console opens directly; with several, DataGrip's list of them plus New Query Console. */
+async function jumpToConsole(id: string): Promise<void> {
+  const files = await consoleFiles(id).catch(() => []);
+  if (files.length <= 1) return openConsole(id);
+  const names = files.map((f) => (f.split(/[\\/]/).pop() ?? f).replace(/\.sql$/, ""));
+  const create = tx("New Query Console");
+  const picked = await chooseItem({ title: "Query Consoles", items: [...names, create] });
+  if (picked === create) await newConsole(id);
+  else if (picked) await openConsoleFile(id, files[names.indexOf(picked)]!);
 }

@@ -405,6 +405,7 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             // user's profile, when temp lives under it) leaks into the test.
             home_dir: Some(dir.to_path_buf()),
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -442,7 +443,7 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn claude_commands_before_session_are_fetched_once_and_saved() {
+async fn claude_commands_share_catalog_discovery_and_persist_results() {
     use std::os::unix::fs::PermissionsExt;
 
     for outcome in ["success", "session_report", "empty", "settings_timeout", "error", "exit", "timeout", "missing"] {
@@ -502,14 +503,18 @@ for line in sys.stdin:
         std::fs::write(root.join(".claude/skills/triage/SKILL.md"), "---\nname: triage\ndescription: Triage\n---\n")
             .unwrap();
         let mgr = manager(root, Arc::new(FakeAgent::default()));
-        {
-            let mut providers = mgr.shared.providers.write();
-            let spec = providers.iter_mut().find(|p| p.id == "claude").unwrap();
-            if outcome != "missing" {
-                spec.command = script.to_string_lossy().into_owned();
-            }
-            spec.env = vec![("OUTCOME".into(), outcome.into())];
+        if outcome != "missing" {
+            provider::set_builtin_command(&root.join("agents"), None, "claude", Some(&script.to_string_lossy()))
+                .unwrap();
         }
+        provider::set_builtin_env(
+            &root.join("agents"),
+            None,
+            "claude",
+            BTreeMap::from([("OUTCOME".into(), outcome.into())]),
+        )
+        .unwrap();
+        mgr.reload_providers();
         let concurrent = async {
             if outcome == "session_report" {
                 tokio::time::timeout(Duration::from_secs(10), async {
@@ -553,7 +558,6 @@ for line in sys.stdin:
                     effort.unwrap().current.as_deref(),
                     Some(match outcome {
                         "settings_timeout" => "default",
-                        "session_report" => "low",
                         _ => "high",
                     })
                 );
@@ -571,6 +575,8 @@ for line in sys.stdin:
             assert_eq!(launches.lines().count(), 1, "{outcome}");
             let args: Vec<String> = serde_json::from_str(launches.trim()).unwrap();
             assert!(args.windows(2).any(|a| a == ["--input-format", "stream-json"]));
+            assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+            assert!(args.windows(2).any(|a| a == ["--mcp-config", "{\"mcpServers\":{}}"]));
             let requests = std::fs::read_to_string(root.join("requests")).unwrap();
             let subtypes: Vec<String> = requests
                 .lines()
@@ -1431,6 +1437,7 @@ async fn real_claude_task_in_a_worktree() {
             custom_agents_dir: None,
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
     );
@@ -2265,6 +2272,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
             custom_agents_dir: Some(agents_dir.clone()),
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2597,6 +2605,7 @@ async fn delete_running_agent(no_load: bool) {
             custom_agents_dir: None,
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2657,34 +2666,6 @@ fn mcp_servers_follow_server_state_and_agent_capabilities() {
         vec![json!({"name":"OpenIDEA","command":"/app/openidea",
         "args":["--mcp-stdio","--project","/project"],"env":[]})]
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
-    for discovery_first in [false, true] {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
-        let options = |model: &str, effort: &str| {
-            config::options_of(&json!({ "configOptions": [
-                { "id": "model", "category": "model", "type": "select", "currentValue": model,
-                  "options": [{ "value": "saved" }, { "value": "discovered" }] },
-                { "id": "effort", "category": "thought_level", "type": "select", "currentValue": effort,
-                  "options": [{ "value": "low" }, { "value": "high" }] }
-            ] }))
-        };
-        let saved = options("saved", "low");
-        let discovered = options("discovered", "high");
-        if discovery_first {
-            mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
-        }
-        mgr.shared.remember("claude", Some(&saved), None, Some("saved"));
-        mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
-        let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
-        for mgr in [&mgr, &restored] {
-            assert_eq!(model_of(&mgr.shared.known_config("claude")).as_deref(), Some("saved"));
-            assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
-        }
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2771,31 +2752,6 @@ async fn discovery_times_out_when_session_new_hangs() {
     assert!(started.elapsed() < Duration::from_secs(10), "discovery should time out quickly in tests");
     let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
     assert!(!cursor.config.iter().any(|o| o.category.as_deref() == Some("model")));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn discovered_effort_levels_fill_models_no_session_has_reported() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
-    let effort = |values: &[&str], current: &str| {
-        config::options_of(&json!({ "configOptions": [
-            { "id": "effort", "category": "thought_level", "type": "select", "currentValue": current,
-              "options": values.iter().map(|v| json!({ "value": v })).collect::<Vec<_>>() }
-        ] }))
-    };
-    let model = config::options_of(&json!({ "configOptions": [
-        { "id": "model", "category": "model", "type": "select", "currentValue": "sonnet",
-          "options": [{ "value": "sonnet" }, { "value": "opus" }] }
-    ] }));
-    // A session already reported sonnet's levels; discovery adds opus's.
-    let reported = [model.clone(), effort(&["low", "high"], "high")].concat();
-    mgr.shared.remember("claude", Some(&reported), None, Some("sonnet"));
-    let levels =
-        [("sonnet".to_owned(), effort(&["low"], "low")), ("opus".to_owned(), effort(&["low", "max"], "default"))];
-    mgr.shared.remember_discovered("claude", &model, &[], &levels);
-    let known = mgr.shared.known.lock();
-    assert_eq!(known["claude"].thought_levels["sonnet"], effort(&["low", "high"], "high"), "the session's report wins");
-    assert_eq!(known["claude"].thought_levels["opus"], effort(&["low", "max"], "default"));
 }
 
 #[test]

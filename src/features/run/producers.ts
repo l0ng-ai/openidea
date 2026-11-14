@@ -1132,7 +1132,7 @@ function elementProduction(input: ContextInput, env: ToolEnv, target: RunTarget)
   }
   if (/\.zig$/.test(input.path)) {
     // `--test-filter` matches a substring of the test's full name.
-    return zigFile(input, env, s, { name: target.name, filter: target.name.replace(/\\(.)/g, "$1") });
+    return zigFile(input, env, s, { name: target.name, filter: target.name });
   }
   const rust = /\.rs$/.test(input.path);
   if (rust && !(s.inProject && cargoOwner(rel, input.configs).length)) {

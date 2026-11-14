@@ -64,6 +64,7 @@ import { TextEditorHost } from "./TextEditorHost";
 import { FindBar } from "./FindBar";
 import { EditorBanners, VirtualBanner } from "./Banner";
 import { CodeBreadcrumbs } from "./StatusItems";
+import { SideTabsResizer, useSideTabsStyle } from "./SideTabsResizer";
 import styles from "./EditorArea.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -219,7 +220,9 @@ function PaneView({ paneId }: { paneId: string }) {
           : undefined,
         italic: t.preview,
         modified: dirty[i],
-        closable: showCloseButton,
+        // IDEA: hiding the close button is visual only. Keep close gestures
+        // (middle click, Shift+click, Delete) alive when its position is None.
+        showCloseButton,
         color: colors[i] || undefined,
         tint: tints[i] || undefined,
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
@@ -252,6 +255,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const pinnedCount = tabs.filter((t) => t.pinned).length;
   // Settings › Editor Tabs › Tab placement Left / Right: a vertical, scrolling column.
   const vertical = tabPrefs.placement === "left" || tabPrefs.placement === "right";
+  const sideTabsStyle = useSideTabsStyle();
   const pinnedRow = tabPrefs.pinnedSeparateRow && pinnedCount > 0 && pinnedCount < tabs.length;
   const dnd = useMemo(() => {
     // A tab released outside the window detaches into a forced new window.
@@ -366,6 +370,7 @@ function PaneView({ paneId }: { paneId: string }) {
         vertical && styles.tabsVertical,
         tabPrefs.placement === "right" && styles.tabsRight,
       )}
+      style={vertical ? sideTabsStyle : undefined}
       data-pane-id={paneId}
       data-focus-scope=""
       aria-label={tx("Editor")}
@@ -381,6 +386,7 @@ function PaneView({ paneId }: { paneId: string }) {
       ) : (
         strip(items, dnd.all, actions)
       )}
+      {vertical && !hidden && <SideTabsResizer side={tabPrefs.placement === "left" ? "left" : "right"} />}
       <div
         className={styles.content}
         role="tabpanel"

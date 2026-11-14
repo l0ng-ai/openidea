@@ -1092,7 +1092,8 @@ impl Default for ExternalFormatterSettings {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PythonSettings {
-    /// Project interpreter executable; empty = auto-detect (project venv, else `python3`).
+    /// Project interpreter executable; empty = auto-detect (project venv, else `python3`);
+    /// `target:<run-target-id>` = the Python of a Docker or Compose run target.
     pub interpreter: String,
     /// Activate the interpreter's virtualenv in new terminal sessions.
     pub activate_virtualenv: bool,
@@ -1118,6 +1119,17 @@ impl Default for PythonSettings {
             hide_other_project_interpreters: false,
             show_interpreter_paths: true,
         }
+    }
+}
+
+impl PythonSettings {
+    /// What `interpreter` starts with when the project interpreter is a run target's.
+    pub const TARGET_PREFIX: &str = "target:";
+
+    /// The run target whose Python is the project interpreter (`target:<id>`), if one is.
+    pub fn run_target(&self) -> Option<&str> {
+        let id = self.interpreter.trim().strip_prefix(Self::TARGET_PREFIX)?.trim();
+        (!id.is_empty()).then_some(id)
     }
 }
 
@@ -1358,11 +1370,15 @@ pub struct TypeScriptSettings {
     /// `bundled` (the server's own TypeScript), `workspace` (`node_modules/typescript`),
     /// or a path to a TypeScript `lib` directory.
     pub version: String,
+    /// tsserver heap limit in MB. `0` = automatic: 8192 when vtsls hosts the Vue
+    /// plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
+    /// vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
+    pub tsserver_max_memory: u32,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into() }
+        Self { version: "bundled".into(), tsserver_max_memory: 0 }
     }
 }
 
@@ -1537,6 +1553,16 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn python_interpreter_may_name_a_run_target() {
+        let python = |interpreter: &str| PythonSettings { interpreter: interpreter.into(), ..Default::default() };
+        assert_eq!(python("target:web").run_target(), Some("web"));
+        assert_eq!(python(" target: web ").run_target(), Some("web"));
+        for local in ["", "target:", "/usr/bin/python3", ".venv/bin/python", "targets/python"] {
+            assert_eq!(python(local).run_target(), None, "{local}");
+        }
+    }
 
     #[test]
     fn removed_one_themes_read_as_islands_themes() {

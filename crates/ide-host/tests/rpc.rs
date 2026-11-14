@@ -82,7 +82,9 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "lsp_resend_diagnostics", json!({})).await.unwrap();
     let files = invoke(&peer, "find_files", json!({"query": "main", "limit": 10})).await.unwrap();
     assert!(files.is_array());
-    for command in ["build_sync", "run_start", "sdk_locate_tools", "notebook_execute", "debug_start"] {
+    for command in
+        ["build_sync", "run_start", "sdk_locate_tools", "notebook_execute", "debug_start", "agent_refresh_models"]
+    {
         let error = invoke(&peer, command, json!({})).await.unwrap_err();
         assert!(error.message.contains("Restricted Mode"), "{command}: {error:?}");
     }
@@ -365,6 +367,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_table_page",
         "db_apply_edits",
         "db_console_path",
+        "db_consoles",
         "ssh_test",
         "ssh_set_secret",
         "ssh_password_saved",

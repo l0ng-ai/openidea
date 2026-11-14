@@ -26,6 +26,7 @@ import { annotationsShown, blameSlot } from "./blame";
 import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
+import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
 import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
@@ -249,6 +250,7 @@ export function activate(): () => void {
     installHunkPopup(),
     registerOverlay({ id: "vcs.dialogs", component: VcsDialogHost }),
     registerOverlay({ id: "vcs.branches", component: BranchesPopupHost }),
+    registerOverlay({ id: "vcs.syncCommits", component: SyncCommitsPopupHost }),
     activateConflictBanner(),
     activateConflictMarkers(),
     trackCommitWindow(),

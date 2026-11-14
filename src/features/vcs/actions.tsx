@@ -25,6 +25,7 @@ import {
   showUnstashDialog,
 } from "./changeOps";
 import { setAmend, useCommit } from "./commitStore";
+import { currentPlan } from "./commitSelection";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { showDiffWindow } from "./DiffWindow";
@@ -59,6 +60,7 @@ import {
   showWorktrees,
 } from "./gitMenuDialogs";
 import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
@@ -357,9 +359,20 @@ export function registerVcsActions(): () => void {
         // IDEA: in the editor, with the caret on changed lines, ⌥⌘Z is Rollback Lines.
         const ed = activeEditor();
         if (!explicit?.length && ed?.view.hasFocus && rollbackSelectedLines(ed.view)) return;
+        // The Commit window's subject is its tree selection; when the selection holds
+        // nothing rollbackable (unversioned files, stale paths), the checked changes are
+        // instead — as IDEA's toolbar Rollback acts on the checked changes there.
+        const focused = commitWindowFocused();
         const sel = useCommit.getState().selection;
-        const paths = explicit?.length ? explicit : commitWindowFocused() && sel.length ? sel : undefined;
-        if (paths) {
+        const fromSel = focused && sel.length ? rollbackCandidates(sel) : null;
+        const paths = explicit?.length
+          ? explicit
+          : fromSel?.length
+            ? sel
+            : focused
+              ? currentPlan().included.map((f) => f.path)
+              : undefined;
+        if (paths?.length) {
           const candidates = rollbackCandidates(paths);
           const submodule = paths.find((p) => isNestedRepoEntry(p));
           if (!candidates.length && submodule)
@@ -611,6 +624,15 @@ export function registerVcsActions(): () => void {
         showGitWindow();
         void revealCommit(id, repo);
       },
+    },
+    {
+      id: "vcs.syncCommits",
+      title: "Show Incoming and Outgoing Commits",
+      category: "Git",
+      icon: "history",
+      when: VCS,
+      keywords: ["incoming", "outgoing", "ahead", "behind", "unpushed", "unpulled"],
+      run: ({ arg }) => showSyncCommitsForCurrent(arg === "incoming" || arg === "outgoing" ? arg : undefined),
     },
     ...(["gitignore", "localExclude"] as const).map((destination): Action => ({
       id: destination === "gitignore" ? "vcs.ignoreShared" : "vcs.ignoreLocal",
