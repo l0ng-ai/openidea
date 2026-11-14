@@ -66,6 +66,23 @@ beforeEach(() => {
   });
 });
 
+/** Where the page goes when it runs `expression`; null when it stays. Tracks the address. */
+let pageAt = "http://localhost:5173/";
+function run(expression: string): string | null {
+  let went: string | null = null;
+  const location = {
+    get href() {
+      return pageAt;
+    },
+    assign: (url: string) => {
+      went = url;
+      pageAt = url;
+    },
+  };
+  new Function("location", `return ${expression}`)(location);
+  return went;
+}
+
 describe("the browser of a project under the debugger", () => {
   it("is started once: a second launch sends its page to the new address and selects it", async () => {
     const first = await startBrowserSession(browserLaunch("a", "http://localhost:5173/", "chrome", "/p"));
@@ -76,13 +93,18 @@ describe("the browser of a project under the debugger", () => {
     const again = await startBrowserSession(browserLaunch("b", "http://localhost:5173/cart", "chrome", "/p"));
     expect(again).toBe(first);
     expect(ipc.debugStart).toHaveBeenCalledTimes(1);
-    expect(ipc.debugEvaluateIn).toHaveBeenCalledWith(2, null, 'location.assign("http://localhost:5173/cart")', "repl");
+    const sentTo = () => ipc.debugEvaluateIn.mock.calls.map(([, , expression]) => run(String(expression)));
+    expect(sentTo()).toEqual(["http://localhost:5173/cart"]);
     expect(useDebug.getState().active).toBe(2);
 
-    // The address it was started on: the page is where it is.
+    // Back to the address it was started on: the page is at /cart now, so it goes back.
     ipc.debugEvaluateIn.mockClear();
     await startBrowserSession(browserLaunch("a", "http://localhost:5173/", "chrome", "/p"));
-    expect(ipc.debugEvaluateIn).not.toHaveBeenCalled();
+    expect(sentTo()).toEqual(["http://localhost:5173/"]);
+    // A page already at the address stays as it is.
+    ipc.debugEvaluateIn.mockClear();
+    await startBrowserSession(browserLaunch("a", "http://localhost:5173/", "chrome", "/p"));
+    expect(sentTo()).toEqual([null]);
   });
 
   it("is another one for another browser, another project, or after the first has ended", async () => {
