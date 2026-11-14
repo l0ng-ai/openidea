@@ -5,13 +5,13 @@ import { getAction, executeAction } from "@/platform/actions";
 import { BarButton, Button, IconButton, Popup, T } from "@/ui";
 import { downloadJdkActions } from "@/platform/jdk";
 import { relativePath, useProject } from "@/platform/project";
-import { STATUS_LABEL, restartServer, servedByOther, serversSummary, useServers } from "./servers";
+import { STATUS_LABEL, restartServer, servedByOther, serverLabel, serversSummary, useServers } from "./servers";
 import styles from "./ServerStatus.module.css";
 import { tx } from "@/platform/i18n";
 
 export function ServerStatus() {
   const map = useServers((s) => s.servers);
-  const servers = useMemo(() => [...map.values()].sort((a, b) => a.name.localeCompare(b.name)), [map]);
+  const servers = useMemo(() => [...map.values()].sort((a, b) => serverLabel(a).localeCompare(serverLabel(b))), [map]);
   const root = useProject((s) => s.project?.root ?? "");
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
@@ -56,7 +56,7 @@ export function ServerStatus() {
                     )}
                     aria-hidden
                   />
-                  <span className={styles.name}>{s.name}</span>
+                  <span className={styles.name}>{serverLabel(s)}</span>
                   <span className={styles.status}>{STATUS_LABEL[s.status]}</span>
                   <span className={styles.spacer} />
                   {jdkFix ? (
@@ -87,7 +87,7 @@ export function ServerStatus() {
                       <IconButton
                         icon="refresh"
                         size="small"
-                        title={s.status === "missing" ? tx`Check for ${s.name} again` : tx`Restart ${s.name}`}
+                        title={s.status === "missing" ? tx`Check for ${s.name} again` : tx`Restart ${serverLabel(s)}`}
                         disabled={s.status === "starting"}
                         onClick={() => void restartServer(s.id)}
                       />
