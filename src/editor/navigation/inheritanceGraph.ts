@@ -10,6 +10,7 @@
 import { commands, type ClassInheritance, type Location, type OutlineItem } from "@/platform/ipc";
 import { lspRequest } from "@/editor/lsp/lsp";
 import { useProject } from "@/platform/project";
+import { readManyFileLines } from "@/editor/lsp/files";
 import { baseName } from "./structureNav";
 
 /**
@@ -19,9 +20,10 @@ import { baseName } from "./structureNav";
  */
 let cache: { root: string; promise: Promise<ClassInheritance[]> } | null = null;
 
-/** Forgets the cached graph (files changed, a server settled, or tests). */
+/** Forgets the cached graph and everything derived from it (files changed, a server settled, or tests). */
 export function forgetInheritanceGraph() {
   cache = null;
+  indexCache = null;
 }
 
 /** The project's classes and their base names, fetched once per project and invalidation. */
@@ -144,6 +146,42 @@ export function inheritanceIndex(graph: readonly ClassInheritance[], deps: Inher
       return pending;
     },
   };
+}
+
+/** The graph indexed once per project, with what every consumer derives from it. */
+export interface PythonIndex {
+  classes: readonly ClassInheritance[];
+  index: InheritanceIndex;
+  /** Direct subclasses, keyed by [`declarationKey`] of the base they write. */
+  subclasses: Map<string, ClassInheritance[]>;
+}
+
+let indexCache: { source: Promise<ClassInheritance[]>; pending: Promise<PythonIndex> } | null = null;
+
+/**
+ * The project's graph indexed once, shared by every consumer: the gutter, the type
+ * hierarchy and the inspections all need the same name map, resolver and subclass map,
+ * and rebuilding them per call (or per feature) would walk the graph again.
+ */
+/** What the project index reads: file lines and the file a module names. */
+const PROJECT_DEPS: InheritanceDeps = {
+  readFiles: readManyFileLines,
+  moduleFile: (module, from) => lspRequest(() => commands.navResolveModule(module, from)),
+};
+
+export function projectPythonIndex(): Promise<PythonIndex> {
+  const source = pythonInheritanceGraph();
+  if (!indexCache || indexCache.source !== source) {
+    const pending = source.then(async (graph) => {
+      const index = inheritanceIndex(graph, PROJECT_DEPS);
+      return { classes: graph, index, subclasses: await subclassMap(index) };
+    });
+    indexCache = { source, pending };
+    pending.catch(() => {
+      if (indexCache?.pending === pending) indexCache = null;
+    });
+  }
+  return indexCache.pending;
 }
 
 /** Identifies one class declaration in the graph. */
