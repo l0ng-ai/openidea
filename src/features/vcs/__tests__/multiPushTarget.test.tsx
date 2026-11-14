@@ -1,10 +1,12 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { RemoteOp } from "@/bindings";
 
 const mocks = vi.hoisted(() => ({
   ops: [] as Array<{ repo: string | null; op: RemoteOp }>,
   failing: new Set<string>(),
+  upToDate: new Set<string>(),
+  changes: vi.fn(),
   ask: vi.fn(),
 }));
 
@@ -32,7 +34,30 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
         ok({ head: "feat-x", headCommit: "c1", upstream: "origin/feat-x", ahead: 1, behind: 0, operation: null, repo }),
       vcsRemotes: (repo: string) => ok(repo === "/p/b" ? [remote("origin"), remote("fork")] : [remote("origin")]),
       vcsLog: (repo: string) =>
-        ok([{ id: `${repo}-1`, shortId: "c1", parents: ["c0"], summary: "Work", author: "me", timeMs: 0 }]),
+        ok(
+          mocks.upToDate.has(repo)
+            ? []
+            : [
+                {
+                  id: `${repo}-1`,
+                  shortId: "c1",
+                  parents: ["c0"],
+                  summary: "Work",
+                  message: "Work",
+                  author: "me",
+                  email: "me@example.com",
+                  timeMs: 0,
+                },
+              ],
+        ),
+      vcsCommitFiles: (repo: string) => {
+        mocks.changes(repo);
+        return ok([{ path: `${repo.slice(3)}.txt`, oldPath: null, kind: "modified" }]);
+      },
+      vcsCommitsChanges: (repo: string) => {
+        mocks.changes(repo);
+        return ok([{ path: `${repo.slice(3)}.txt`, oldPath: null, kind: "modified", before: "c0", after: "c1" }]);
+      },
       vcsHasHook: () => ok(false),
       vcsRemote: (repo: string | null, _request: number, op: RemoteOp) => {
         mocks.ops.push({ repo, op });
@@ -56,6 +81,8 @@ let notes: Note[] = [];
 beforeEach(() => {
   mocks.ops = [];
   mocks.failing = new Set();
+  mocks.upToDate = new Set();
+  mocks.changes.mockReset();
   mocks.ask.mockReset();
   mocks.ask.mockResolvedValue({ button: "force", checked: false });
   notes = [];
@@ -63,12 +90,21 @@ beforeEach(() => {
   provideNotificationService({ notify: (n) => void notes.push(n as Note), expire: () => {} });
 });
 
+afterEach(() => {
+  for (const cancel of screen.queryAllByRole("button", { name: "Cancel" })) fireEvent.click(cancel);
+});
+
+function check(...repos: string[]) {
+  for (const name of repos) fireEvent.click(screen.getByRole("checkbox", { name }));
+}
+
 it("pushes each repository to its own remote and target branch, reporting the one that failed", async () => {
   mocks.failing.add("/p/b");
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
 
   const targetOfA = await screen.findByRole("textbox", { name: "Target branch of a" });
+  check("a", "b", "c");
   expect(targetOfA).toHaveValue("feat-x");
   expect(screen.getByRole("checkbox", { name: "Push tags:" })).toBeInTheDocument();
   fireEvent.change(targetOfA, { target: { value: "release-2.1" } });
@@ -127,7 +163,42 @@ async function openPushDialog() {
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
   await screen.findByRole("textbox", { name: "Target branch of a" });
+  check("a", "b", "c");
 }
+
+it("lists every repository on Push all, none checked or expanded, with no files shown", async () => {
+  mocks.upToDate.add("/p/c");
+  render(<VcsDialogHost />);
+  await act(() => showPushDialog());
+
+  await screen.findByRole("textbox", { name: "Target branch of a" });
+  expect(screen.getByRole("textbox", { name: "Target branch of c" })).toBeInTheDocument();
+  for (const name of ["a", "b", "c"]) expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
+  expect(screen.queryByText("Work")).toBeNull();
+  expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
+  expect(mocks.changes).not.toHaveBeenCalled();
+
+  check("a");
+  fireEvent.click(screen.getByRole("button", { name: "Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(1));
+  expect(mocks.ops[0]?.repo).toBe("/p/a");
+});
+
+it("shows only the repository Push was invoked from without a checkbox, its files shown at once", async () => {
+  render(<VcsDialogHost />);
+  await act(() => showPushDialog({ repo: "/p/b" }));
+
+  expect(await screen.findByText("Push Commits to b")).toBeInTheDocument();
+  expect(await screen.findByText("b.txt")).toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Target branch of b" })).toBeInTheDocument();
+  expect(screen.queryByRole("textbox", { name: "Target branch of a" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Target branch of c" })).toBeNull();
+  expect(screen.queryByRole("checkbox", { name: "b" })).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(1));
+  expect(mocks.ops[0]?.repo).toBe("/p/b");
+});
 
 it("asks to confirm each forced target and pushes nothing when one is declined", async () => {
   mocks.ask.mockResolvedValueOnce({ button: "force", checked: false }).mockResolvedValueOnce({ button: null });
