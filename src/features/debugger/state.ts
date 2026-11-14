@@ -510,6 +510,15 @@ function selectBrowserPage(launch: DebugSessionId) {
   publishContext();
 }
 
+/** `url` as `location.href` spells it (`http://localhost:5173` → `http://localhost:5173/`). */
+function canonicalUrl(url: string): string {
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
+}
+
 /**
  * Debugs the page `launch` opens. A project has one browser of a kind under the debugger (a
  * second one can't share its profile), so when it is already running its page goes to the URL
@@ -531,9 +540,10 @@ export async function startBrowserSession(
   const url = launchedUrl(launch);
   if (url) {
     // The page may have moved on since the browser started (an earlier launch, a link): it
-    // compares its own address, so a page already there isn't reloaded.
-    const target = JSON.stringify(url);
-    const go = `(() => { const u = new URL(${target}, location.href).href; if (location.href !== u) location.assign(u); })()`;
+    // compares its own address, so a page already there isn't reloaded. The address is made
+    // canonical here, the page's own `URL` may be anything.
+    const target = JSON.stringify(canonicalUrl(url));
+    const go = `location.href !== ${target} && location.assign(${target})`;
     await call(commands.debugEvaluateIn(page.id, null, go, "repl")).catch(() => undefined);
   }
   return running.id;
