@@ -7,8 +7,8 @@ import {
   annotatePreviousRevision,
   previousRevisionDiffData,
   revisionDiffData,
-} from "../annotatePrevious";
-import { activateAnnotatePreviousRevision } from "../annotatePreviousProvider";
+} from "../annotateRevision";
+import { activateRevisionAnnotations } from "../annotateRevisionProvider";
 import type { DiffData } from "../diffInput";
 import { createDiffViewerContributions, type DiffViewerHost } from "../diffViewerProviders";
 import { useVcs } from "../store";
@@ -84,7 +84,7 @@ describe("annotate previous revision", () => {
   });
 
   it("annotates the left pane of a diff that asks for it, once", async () => {
-    activateAnnotatePreviousRevision();
+    activateRevisionAnnotations();
     const data = previousRevisionDiffData("/repo/a.py", commit([parent])) as DiffData;
     const view = new EditorView({ parent: document.body, state: EditorState.create({ doc: "old one\nold two" }) });
     const host = {

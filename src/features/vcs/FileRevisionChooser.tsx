@@ -4,7 +4,7 @@ import { call, commands, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Dialog, List, SearchField, Spinner, T, listNavigate } from "@/ui";
 import { openDialog } from "./dialogs";
-import { annotateAtRevision } from "./annotatePrevious";
+import { annotateAtRevision } from "./annotateRevision";
 import { openVcsDiff } from "./diffInput";
 import { hasFileHistory } from "./fileRevisions";
 import { formatTime } from "./model";

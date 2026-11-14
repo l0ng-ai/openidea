@@ -2,7 +2,7 @@
  * Annotating a file as of an earlier revision (IDEA's annotate family): the file at the first
  * parent of the annotated line's commit, or at a revision the user picks. Shown as a diff so the
  * change stays visible; the left pane is annotated by the viewer provider in
- * `annotatePreviousProvider`.
+ * `annotateRevisionProvider`.
  */
 import type { Commit } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -48,6 +48,15 @@ export function revisionDiffData(
   };
 }
 
+function notifyFailure(e: unknown): void {
+  notifications().notify({
+    group: "vcs",
+    level: "error",
+    title: tx("Cannot annotate"),
+    body: e instanceof Error ? e.message : String(e),
+  });
+}
+
 /** Opens `commit` against the working file, annotated on that side. */
 export async function annotateAtRevision(
   path: string,
@@ -56,12 +65,7 @@ export async function annotateAtRevision(
   try {
     await openDiff(revisionDiffData(path, repoOf(path), commit), { preview: false });
   } catch (e) {
-    notifications().notify({
-      group: "vcs",
-      level: "error",
-      title: tx("Cannot annotate"),
-      body: e instanceof Error ? e.message : String(e),
-    });
+    notifyFailure(e);
   }
 }
 
@@ -84,11 +88,6 @@ export async function annotatePreviousRevision(path: string, commit: string, lin
     }
     await openDiff(data, { preview: false });
   } catch (e) {
-    notifications().notify({
-      group: "vcs",
-      level: "error",
-      title: tx("Cannot annotate"),
-      body: e instanceof Error ? e.message : String(e),
-    });
+    notifyFailure(e);
   }
 }

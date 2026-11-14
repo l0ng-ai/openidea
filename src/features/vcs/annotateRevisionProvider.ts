@@ -1,4 +1,4 @@
-/** Opens "Annotate Previous Revision" diffs with the left (previous) pane annotated. */
+/** Annotates the left (historical) pane of a diff opened by an annotate action. */
 import { toggleAnnotations } from "./blame";
 import type { DiffViewerContribution, DiffViewerHost } from "./diffViewerProviders";
 import { registerDiffViewerProvider } from "./diffViewerProviders";
@@ -19,9 +19,9 @@ class LeftPaneAnnotations implements DiffViewerContribution {
   }
 }
 
-export function activateAnnotatePreviousRevision(): () => void {
+export function activateRevisionAnnotations(): () => void {
   return registerDiffViewerProvider({
-    id: "vcs.annotatePrevious",
+    id: "vcs.annotateRevision",
     create: (data) => (data.annotateLeft ? new LeftPaneAnnotations(data) : null),
   });
 }
