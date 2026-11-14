@@ -680,6 +680,21 @@ export function DiffEditor({
 
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
 
+  // The editor area focuses the tab's host (`[data-editor-focus]`), e.g. after F7 opened the next
+  // file: hand that focus on to the diff, so its keymap and Jump to Source apply right away.
+  useEffect(() => {
+    const host = rootRef.current?.closest<HTMLElement>("[data-editor-focus]");
+    const views = viewsRef.current;
+    if (!host || !views) return;
+    const forward = () => (focusedSide.current === "a" && views.a ? views.a : views.b).focus();
+    const onFocus = (e: FocusEvent) => {
+      if (e.target === host) forward();
+    };
+    host.addEventListener("focus", onFocus);
+    if (document.activeElement === host) forward();
+    return () => host.removeEventListener("focus", onFocus);
+  }, [viewsGen]);
+
   useEffect(
     () => () => {
       viewsRef.current?.destroy();
