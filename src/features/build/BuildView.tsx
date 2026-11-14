@@ -339,7 +339,12 @@ export function BuildView() {
   }
   return (
     <div className={styles.view}>
-      <SplitGroup orientation="horizontal" className={styles.split} id="build-view-split">
+      <SplitGroup
+        orientation="horizontal"
+        className={styles.split}
+        id="build-view-split"
+        storageKey="openidea.build.split"
+      >
         <SplitPanel id="build-tree" defaultSize="38%" minSize="120px" className={styles.pane}>
           <BuildTree />
         </SplitPanel>

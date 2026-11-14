@@ -35,7 +35,16 @@ import {
 } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
+import {
+  closeActiveTask,
+  closeAndNewTask,
+  connect,
+  disconnect,
+  openHome,
+  refreshModels,
+  refreshProviders,
+  useAgents,
+} from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
@@ -192,6 +201,15 @@ export function activate(): () => void {
         run: () => focusedSession()?.openFind(),
       },
       {
+        id: "agents.focusInput",
+        title: "Focus Agent Input",
+        description: "Focuses the message input of the current agent task without moving the caret.",
+        category: "Agents",
+        when: "agentSessionFocus && agentInputAvailable",
+        keyWhen: "agentSessionFocus && !popupOpen",
+        run: () => focusedSession()?.focusInput?.(),
+      },
+      {
         id: "agents.newTask",
         title: "New Agent Task",
         description: "Opens the New Task page; a string `arg` pre-fills the task description.",
@@ -200,6 +218,13 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["agent", "claude", "codex", "gemini", "ai"],
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "agents.refreshModels",
+        title: "Refresh models",
+        category: "Agents",
+        when: "projectOpen",
+        run: () => refreshModels(),
       },
       {
         id: "agents.closeTask",

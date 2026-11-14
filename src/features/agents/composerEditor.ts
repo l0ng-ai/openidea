@@ -79,8 +79,16 @@ class ChipWidget extends WidgetType {
   eq(other: ChipWidget) {
     return other.path === this.path && other.text === this.text;
   }
-  toDOM() {
-    const chip = chipElement(this.path, this.mention);
+  toDOM(view: EditorView) {
+    const chip = chipElement(this.path, this.mention, () => {
+      const from = view.posAtDOM(chip);
+      const at = view.state.field(painted).chips.find((c) => c.from === from);
+      if (!at) return;
+      // The space typed after the reference goes with it.
+      const end = view.state.sliceDoc(at.to, at.to + 1) === " " ? at.to + 1 : at.to;
+      view.dispatch({ changes: { from: at.from, to: end }, userEvent: "delete" });
+      view.focus();
+    });
     // Keep the editor's focus and caret; a click opens the file.
     chip.addEventListener("mousedown", (e) => e.preventDefault());
     chip.addEventListener("click", (e) => {

@@ -6,6 +6,7 @@ mod external;
 mod folding;
 mod grammars;
 mod highlight;
+mod inheritance;
 pub(crate) mod lines;
 mod literals;
 mod outline;
@@ -22,6 +23,7 @@ pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, 
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
+pub use inheritance::ClassBases;
 pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::merge_visibility;

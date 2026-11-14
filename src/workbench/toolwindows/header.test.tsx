@@ -1,6 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "@/ui";
+import { useI18n } from "@/platform/i18n";
 import { registerToolWindow } from "../contributions";
 import { installToolWindowActions } from "./actions";
 import { isToolWindowVisible, resetToolWindowLayout, showToolWindow, useToolWindowLayout, viewModeOf } from "./store";
@@ -117,4 +118,17 @@ it("a menu opened from the header returns focus to the window, not the editor", 
   fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
   expect(screen.queryByRole("menu")).toBeNull();
   expect(document.activeElement).toBe(options);
+});
+
+it("shows the header title in a language chosen while the window is open", () => {
+  showToolWindow("run");
+  render(<ToolWindowLayout editor={null} />);
+  expect(header("run").textContent).toContain("Run");
+  const before = useI18n.getState().texts;
+  try {
+    act(() => useI18n.setState({ texts: { Run: "运行" } }));
+    expect(header("run").textContent).toContain("运行");
+  } finally {
+    act(() => useI18n.setState({ texts: before }));
+  }
 });

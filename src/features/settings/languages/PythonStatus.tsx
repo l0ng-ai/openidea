@@ -8,8 +8,9 @@ import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { useEditorRegistry } from "@/editor/api";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
-import { effectivePython, type Sdk } from "./api";
+import { effectivePython, interpreterTarget, targetChoices, type Sdk } from "./api";
 import { tildify } from "./components";
+import { validateRunTargets } from "@/platform/remoteSettings";
 import { interpreterIcon, interpreterPathKey } from "./interpreters";
 
 /** What the widget last resolved for a project, so the popup action can read it without a render. */
@@ -90,6 +91,7 @@ function PythonStatus() {
   const root = useProject((s) => s.project?.root);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const configured = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
+  const runTargets = useProject((s) => s.settings?.runTargets);
   const hidden = useProject((s) => s.settings?.languages?.python?.hiddenInterpreters ?? EMPTY);
   const members = useProject((s) => s.project?.workspace?.projects);
   const status = usePopup((s) => s.status);
@@ -162,12 +164,19 @@ function PythonStatus() {
     current.sdks.filter((sdk) => !ignored.has(interpreterPathKey(sdk.path))),
     current.python,
   );
+  // Docker / Compose run targets can be the interpreter too (`target:<id>`).
+  const targets = targetChoices(validateRunTargets(runTargets));
+  const target = interpreterTarget(current.configured) ? current.configured.trim() : null;
+  const targetLabel = target ? (targets.find((t) => t.value === target)?.label ?? target) : null;
   // A configured interpreter the backend cannot resolve (its file is gone) reads
   // as "Invalid" — PyCharm marks such SDKs instead of showing them as working.
-  const invalid = !!current.configured && !current.python;
-  const label = invalid
-    ? tx("Invalid interpreter")
-    : (choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter"));
+  const invalid = !target && !!current.configured && !current.python;
+  const label =
+    targetLabel ??
+    (invalid
+      ? tx("Invalid interpreter")
+      : (choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter")));
+  const select = (value: string) => void executeAction("python.selectInterpreter", value);
   const names = new Map<string, number>();
   for (const sdk of choices) names.set(sdk.name, (names.get(sdk.name) ?? 0) + 1);
   const items: MenuItem[] = [
@@ -178,8 +187,15 @@ function PythonStatus() {
       verbatim: true,
       // Several system interpreters share a name ("Python 3.11"); their paths tell them apart.
       shortcut: (names.get(sdk.name) ?? 0) > 1 ? tildify(sdk.path) : undefined,
-      checked: sdk.path === current.python,
-      run: () => void executeAction("python.selectInterpreter", sdk.path),
+      checked: !target && sdk.path === current.python,
+      run: () => select(sdk.path),
+    })),
+    ...targets.map((t): MenuItem => ({
+      label: t.label,
+      verbatim: true,
+      shortcut: t.detail,
+      checked: t.value === target,
+      run: () => select(t.value),
     })),
     { kind: "separator" },
     { kind: "action", action: "python.addInterpreter" },
@@ -189,13 +205,19 @@ function PythonStatus() {
     <>
       <BarButton
         ref={anchor}
-        tooltip={invalid ? tx("The configured interpreter does not exist") : (current.python ?? tx("No interpreter"))}
+        tooltip={
+          target
+            ? (targets.find((t) => t.value === target)?.detail ?? target)
+            : invalid
+              ? tx("The configured interpreter does not exist")
+              : (current.python ?? tx("No interpreter"))
+        }
         aria-label={tx`Python Interpreter: ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => void executeAction("python.interpreterPopup")}
       >
-        {(!current.python || invalid) && <Icon name="warning" size={14} />}
+        {!target && (!current.python || invalid) && <Icon name="warning" size={14} />}
         {label}
       </BarButton>
       <Menu

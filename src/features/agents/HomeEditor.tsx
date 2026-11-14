@@ -20,6 +20,7 @@ import {
   NO_COMMANDS,
   draftConfig,
   refreshProviders,
+  refreshModels,
   setDraftOption,
   startTask,
   updateDraft,
@@ -81,6 +82,24 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
   const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
+  const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
+  const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
+  const launch = provider && JSON.stringify([provider.program, provider.args, provider.env, provider.command]);
+  useEffect(() => {
+    if (!provider?.installed) return;
+    const refresh = () => void refreshModels(provider.id, false);
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [provider?.id, provider?.installed, launch, project?.root]);
+  const defaults = useAgentSettings().defaults;
+  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const unavailableModel = config.some(
+    (o) =>
+      o.category === "model" &&
+      draft.config[o.id] !== undefined &&
+      !o.values.some((v) => v.value === draft.config[o.id]),
+  );
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -88,7 +107,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   const isolation = isGit ? draft.isolation : "local";
   const base = draft.base ?? current;
   const canStart =
-    canSend(composer) && !!provider?.installed && !starting && (!project?.workspace || repoState?.root === root);
+    canSend(composer) &&
+    !!provider?.installed &&
+    !unavailableModel &&
+    !starting &&
+    (!project?.workspace || repoState?.root === root);
 
   const start = () => {
     if (!canStart) return;
@@ -98,8 +121,6 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const defaults = useAgentSettings().defaults;
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
 
   return (
     <div className={clsx(styles.home, docked && styles.docked)}>
@@ -209,7 +230,21 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
                 }
               />
-              <ConfigPickers config={config} onChange={setDraftOption} />
+              <ConfigPickers
+                key={provider?.id}
+                config={config}
+                onChange={setDraftOption}
+                modelRefresh={
+                  provider?.installed
+                    ? {
+                        refreshing: requestingModels || (catalog?.refreshing ?? false),
+                        retryAtMs: catalog?.retryAtMs ?? null,
+                        error: catalog?.error ?? null,
+                        onRefresh: () => void executeAction("agents.refreshModels"),
+                      }
+                    : undefined
+                }
+              />
             </>
           }
           actions={
@@ -221,26 +256,29 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             />
           }
         />
-        {probe && (!docked || probe.error) && (
-          <p className={probe.error ? styles.warning : styles.note}>
-            {probe.error
-              ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
-              : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
-          </p>
-        )}
-        {(error || (provider && !provider.installed) || (provider && !provider.config.length)) && (
-          <p
-            className={error || !provider?.installed ? styles.warning : styles.note}
-            role={error ? "alert" : undefined}
-          >
-            {error ??
-              (provider && !provider.installed ? (
-                txTemplate(`${provider.command} was not found on PATH`)
-              ) : (
-                <T>Models and modes appear after this agent's first task.</T>
-              ))}
-          </p>
-        )}
+        {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
+        <div className={styles.notes}>
+          {unavailableModel && (
+            <p className={styles.warning} role="alert">
+              <T>Choose another model before starting.</T>
+            </p>
+          )}
+          {probe && (!docked || probe.error) && (
+            <p className={probe.error ? styles.warning : styles.note}>
+              {probe.error
+                ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
+                : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {(error || (provider && !provider.installed)) && (
+            <p
+              className={error || !provider?.installed ? styles.warning : styles.note}
+              role={error ? "alert" : undefined}
+            >
+              {error ?? txTemplate(`${provider?.command ?? ""} was not found on PATH`)}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

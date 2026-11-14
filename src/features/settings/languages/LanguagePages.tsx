@@ -664,6 +664,7 @@ export function MavenPage() {
 
 export function TypeScriptPage() {
   const [version, setVersion] = useSetting<string>("languages.typescript.version");
+  const [memory, setMemory] = useSetting<number>("languages.typescript.tsserverMaxMemory");
   const { list } = useDetected("typeScript");
   const workspace = list.find((s) => s.source === "workspace");
   const options = useMemo<SelectOption[]>(() => {
@@ -679,6 +680,17 @@ export function TypeScriptPage() {
       out.push({ value: version, label: tildify(version), detail: "custom" });
     return out;
   }, [workspace, version]);
+  const memoryOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "0", label: "Auto", detail: "8192 MB in Vue hybrid mode, else the server default" },
+      { value: "4096", label: "4096 MB" },
+      { value: "6144", label: "6144 MB" },
+      { value: "8192", label: "8192 MB" },
+      { value: "12288", label: "12288 MB" },
+      { value: "16384", label: "16384 MB" },
+    ],
+    [],
+  );
   return (
     <div className={styles.page}>
       <Section>
@@ -698,6 +710,17 @@ export function TypeScriptPage() {
               }}
             />
           </span>
+        </Row>
+        <Row
+          label="tsserver memory limit"
+          hint="Heap limit of the TypeScript server (typescript.tsserver.maxTsServerMemory, in MB). Auto raises it for Vue projects, whose single program holds every .vue file's virtual TypeScript."
+        >
+          <Select
+            value={String(memory ?? 0)}
+            options={memoryOptions}
+            onChange={(v) => setMemory(Number(v))}
+            aria-label="tsserver memory limit"
+          />
         </Row>
       </Section>
     </div>

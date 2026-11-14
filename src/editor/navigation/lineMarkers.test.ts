@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IpcError,
+  type ClassInheritance,
   type HierarchyItem,
   type Location,
   type OutlineItem,
@@ -27,6 +28,7 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
+  importBindings,
   markerBatches,
   markersOf,
   noteOtherChanges,
@@ -208,8 +210,9 @@ function server(
   impls: Record<string, Location[]>,
   supers: Record<string, HierarchyItem[]>,
   subtypes: Record<string, HierarchyItem[]> = {},
+  inheritance?: ClassInheritance[],
 ) {
-  const calls = { implementations: [] as Pos[][], supertypes: 0, subtypes: 0 };
+  const calls = { implementations: [] as Pos[][], supertypes: 0, subtypes: 0, inheritance: 0 };
   const outlines: Record<string, OutlineItem[]> = {
     [SHAPE_PATH]: SHAPE_OUTLINE,
     "/p/Circle.java": CIRCLE_OUTLINE,
@@ -234,6 +237,44 @@ function server(
       outline: async (p) => outlines[p] ?? [],
     },
     readFiles: async (paths) => new Map(paths.map((p) => [p, FILES[p] ?? null])),
+    inheritance: inheritance
+      ? async () => {
+          calls.inheritance++;
+          return inheritance;
+        }
+      : undefined,
+  });
+  return { calls, deps };
+}
+
+/** A Python project: the server answers neither implementations nor a type hierarchy. */
+function pythonServer(
+  inheritance: ClassInheritance[],
+  outlines: Record<string, OutlineItem[]>,
+  files: Record<string, string[]> = {},
+  modules: Record<string, string> = {},
+) {
+  const calls = { implementations: 0, inheritance: 0, modules: [] as string[] };
+  const deps = (): MarkerDeps => ({
+    implementations: async () => {
+      calls.implementations++;
+      throw new IpcError({ kind: "unavailable", message: "basedpyright doesn't support implementation" });
+    },
+    supers: {
+      supertypes: async () => {
+        throw new IpcError({ kind: "unavailable", message: "basedpyright doesn't support type hierarchy" });
+      },
+      outline: async (p) => outlines[p] ?? [],
+    },
+    readFiles: async (paths) => new Map(paths.map((p) => [p, files[p] ?? null])),
+    moduleFile: async (module, from) => {
+      calls.modules.push(`${module}@${from}`);
+      return modules[`${module}@${from}`] ?? null;
+    },
+    inheritance: async () => {
+      calls.inheritance++;
+      return inheritance;
+    },
   });
   return { calls, deps };
 }
@@ -635,5 +676,213 @@ describe("overriders of a type's methods from its subtypes", () => {
         { line: 6, col: 9 },
       ],
     ]);
+  });
+});
+
+describe("python inheritance fallback", () => {
+  // a.py: `class A` (line 0) with `m` (line 1), then `class B(A)` (line 3) with `m` (line 4).
+  const outline = [
+    item("A", "class", 0, 2, [item("m", "method", 1, 1)], 6),
+    item("B", "class", 3, 5, [item("m", "method", 4, 4)], 6),
+  ];
+  const graph: ClassInheritance[] = [
+    { path: "/p/a.py", line: 0, col: 6, name: "A", bases: [] },
+    { path: "/p/a.py", line: 3, col: 6, name: "B", bases: ["A"] },
+  ];
+
+  it("marks the subclass and the overridden method with no type hierarchy", async () => {
+    const { deps, calls } = pythonServer(graph, { "/p/a.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps(), cache);
+    const markers = cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.targets.map((t) => t.path)]);
+    expect(markers).toEqual([
+      // The class B subclasses A...
+      [0, "overridden", ["/p/a.py"]],
+      // ...and its `m` overrides A's `m`.
+      [1, "overridden", ["/p/a.py"]],
+      [4, "overriding", ["/p/a.py"]],
+    ]);
+    // The graph is asked once per cache, not once per candidate.
+    expect(calls.inheritance).toBe(1);
+  });
+
+  it("survives an unavailable implementation provider (the fallback keeps its candidates)", async () => {
+    const { deps, calls } = pythonServer(graph, { "/p/a.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps(), cache);
+    // The server said "unavailable", but the graph still answered ↓ and ↑.
+    expect(calls.implementations).toBeGreaterThan(0);
+    expect(cache.unsupported.size).toBe(0);
+  });
+
+  it("adds the graph's cross-project subclasses to a non-empty server answer", async () => {
+    // The server (single root) answers the local subclass only; the attached-project
+    // subclass is known to the IDE's graph and must join the list.
+    const outline = [item("A", "class", 0, 2, [], 6), item("B", "class", 3, 5, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "A", bases: [] },
+      { path: "/p/a.py", line: 3, col: 6, name: "B", bases: ["A"] },
+      { path: "/p/attached/a.py", line: 0, col: 6, name: "C", bases: ["A"] },
+    ];
+    const { deps } = server({ "/p/a.py:0": [loc("/p/a.py", 3)] }, {}, {}, graph);
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps("/p/a.py"), cache);
+    const targets = cachedMarkers(candidates, ALL, cache)
+      .filter((m) => m.line === 0)
+      .flatMap((m) => m.targets.map((t) => t.path));
+    expect(targets).toEqual(["/p/a.py", "/p/attached/a.py"]);
+  });
+
+  it("ignores a bare base name that many classes in the project share", async () => {
+    // `Config` is declared in hundreds of modules: no edge, so no marker.
+    const outline = [item("Child", "class", 0, 2, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 0, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    const { deps } = pythonServer(graph, { "/p/c.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
+    expect(cachedMarkers(candidates, ALL, cache)).toEqual([]);
+  });
+
+  it("trusts a shared base name when the subclass's own file declares it", async () => {
+    const outline = [item("Config", "class", 0, 1, [], 6), item("Child", "class", 3, 5, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/c.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/other.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    const { deps } = pythonServer(graph, { "/p/c.py": outline });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind])).toEqual([[0, "overridden"]]);
+  });
+
+  it("resolves an ambiguous base name through the subclass file's imports", async () => {
+    // Two modules declare `Config`; `from pkg.b import Config` picks one of them, so
+    // only b.py's Config is marked as subclassed.
+    const child = [item("Child", "class", 3, 4, [], 6)];
+    const parentOutline = [item("Config", "class", 0, 1, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    const files = { "/p/c.py": ["from pkg.b import Config", "", "", "class Child(Config):"] };
+    const modules = { "pkg.b@/p/c.py": "/p/b.py" };
+    const { deps, calls } = pythonServer(graph, { "/p/c.py": child, "/p/b.py": parentOutline }, files, modules);
+    const candidates = markerCandidates(parentOutline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/b.py", candidates, ALL, deps(), cache);
+    expect(calls.modules).toEqual(["pkg.b@/p/c.py"]);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.targets.map((t) => t.path)])).toEqual([
+      [0, "overridden", ["/p/c.py"]],
+    ]);
+  });
+
+  it("resolves a base through an aliased import", async () => {
+    // c.py: `class Child(Cfg)` (line 3) with `m` (line 4); b.py's Config declares `m` too.
+    const outline = [item("Child", "class", 3, 5, [item("m", "method", 4, 4)], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Cfg"] },
+    ];
+    const files = {
+      "/p/c.py": ["from pkg.b import Config as Cfg", "", "", "class Child(Cfg):", "    def m(self): ..."],
+    };
+    const outlines = {
+      "/p/c.py": outline,
+      "/p/a.py": [item("Config", "class", 0, 2, [item("m", "method", 1, 1)], 6)],
+      "/p/b.py": [item("Config", "class", 0, 2, [item("m", "method", 1, 1)], 6)],
+    };
+    const { deps } = pythonServer(graph, outlines, files, { "pkg.b@/p/c.py": "/p/b.py" });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.targets.map((t) => t.path)])).toEqual([
+      [4, "overriding", ["/p/b.py"]],
+    ]);
+  });
+
+  it("reads no other file's imports for a shared base this file does not declare", async () => {
+    const outline = [item("Other", "class", 0, 1, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Config", "BaseModel"] },
+      { path: "/p/d.py", line: 0, col: 6, name: "Other", bases: [] },
+    ];
+    const files = { "/p/c.py": ["from pkg.b import Config", "", "", "class Child(Config, BaseModel):"] };
+    const { deps, calls } = pythonServer(graph, { "/p/d.py": outline }, files, { "pkg.b@/p/c.py": "/p/b.py" });
+    const cache = emptyCache();
+    await fillMarkers(
+      "/p/d.py",
+      markerCandidates(outline, () => ""),
+      ALL,
+      deps(),
+      cache,
+    );
+    expect(calls.modules).toEqual([]);
+  });
+
+  it("keeps ignoring a shared base name when no import names it", async () => {
+    const outline = [item("Child", "class", 0, 2, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 0, col: 6, name: "Child", bases: ["Config"] },
+    ];
+    // No import of `Config`: the name stays ambiguous and no edge is invented.
+    const files = { "/p/c.py": ["import os", "", "class Child(Config):"] };
+    const { deps } = pythonServer(graph, { "/p/c.py": outline }, files);
+    const cache = emptyCache();
+    await fillMarkers(
+      "/p/c.py",
+      markerCandidates(outline, () => ""),
+      ALL,
+      deps(),
+      cache,
+    );
+    expect(
+      cachedMarkers(
+        markerCandidates(outline, () => ""),
+        ALL,
+        cache,
+      ),
+    ).toEqual([]);
+  });
+
+  it("reads plain, aliased and parenthesized imports", () => {
+    const bindings = importBindings([
+      "from pkg.mod import A, B as Bee",
+      "from pkg import (",
+      "    C,",
+      "    D as Dee,",
+      ")",
+      "import x.y as xy",
+      "if TYPE_CHECKING:",
+    ]);
+    expect(Object.fromEntries(bindings)).toEqual({
+      A: { module: "pkg.mod", name: "A" },
+      Bee: { module: "pkg.mod", name: "B" },
+      C: { module: "pkg", name: "C" },
+      Dee: { module: "pkg", name: "D" },
+    });
+  });
+
+  it("keeps the existing server path when no inheritance graph is injected", async () => {
+    const { deps } = server({}, {});
+    const candidates = markerCandidates([item("Foo", "class", 0, 2, [item("m", "method", 1, 1)], 6)], () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps("/p/a.py"), cache);
+    expect(cachedMarkers(candidates, ALL, cache)).toEqual([]);
   });
 });
