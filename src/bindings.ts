@@ -623,6 +623,8 @@ export const commands = {
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
+	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
+	vcsStatusPaths: (paths: string[]) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status_paths", { paths })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
 	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
@@ -7235,7 +7237,7 @@ export type McpServerInput = {
 
 /**  Agents › MCP Server: agents use the IDE's built-in tools. */
 export type McpServerSettings = {
-	/**  Serve the tools on 127.0.0.1 while the IDE runs. */
+	/**  Serve the tools on [`Self::address`] while the IDE runs. */
 	enabled?: boolean,
 	/**
 	 *  Run the tools that change the project or start processes without asking first
@@ -7246,6 +7248,11 @@ export type McpServerSettings = {
 	agentTabLimit?: number,
 	/**  Archived agent tabs kept; older ones are closed. */
 	agentArchiveLimit?: number,
+	/**
+	 *  The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+	 *  address of this computer, or `0.0.0.0` / `::` for every address.
+	 */
+	address?: string,
 	/**
 	 *  Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
 	 *  port forwards keep working after a restart.
@@ -7265,6 +7272,8 @@ export type McpServerStatus = {
 	running: boolean,
 	/**  Why it isn't running though turned on. */
 	error: string | null,
+	/**  The address listened on (`0.0.0.0` / `::`: every address). */
+	address: string | null,
 	port: number | null,
 	/**
 	 *  Why the fixed port (`mcpServer.port`) isn't the one listened on: it was in use or
@@ -7273,7 +7282,7 @@ export type McpServerStatus = {
 	portUnavailable: string | null,
 	/**  The window's local project, which the URL and command below are for. */
 	project: IpcPath | null,
-	/**  `http://127.0.0.1:<port>/mcp?project=<root>`. */
+	/**  `http://<address>:<port>/mcp?project=<root>`, with loopback for every address. */
 	url: string | null,
 	/**  Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on). */
 	token: string | null,

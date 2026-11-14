@@ -20,13 +20,40 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
-    let (map, conflicts) = gix_status(r, &ignored).or_else(|e| {
+    let (map, conflicts) = gix_status(r, &ignored, &[]).or_else(|e| {
         tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
         cli_status(r, &ignored)
     })?;
+    Ok(collect(r, &ignored, map, conflicts))
+}
+
+/// Status of `paths` only (repository-relative, `/`-separated): the dirty-scope refresh.
+///
+/// A watcher batch touches a few files, and the full status walks the whole tree; git's own
+/// pathspec filtering keeps that batch proportional to what changed. An empty list is the
+/// full status, so a caller that lost the paths still gets a correct answer.
+pub(crate) fn status_paths(r: &Repo, paths: &[String]) -> IdeResult<Vec<FileStatus>> {
+    if paths.is_empty() {
+        return status(r);
+    }
+    let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
+    // gitoxide's status takes the pathspec in-process: no `git` process, so a watcher batch on a
+    // large repository costs the index check for its paths and nothing else.
+    let (map, conflicts) = gix_status(r, &ignored, paths).or_else(|e| {
+        tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
+        cli_status_paths(r, &ignored, paths)
+    })?;
+    Ok(collect(r, &ignored, map, conflicts))
+}
+
+fn collect(
+    r: &Repo,
+    ignored: &IgnoredNames,
+    map: BTreeMap<String, Entry>,
+    conflicts: HashSet<String>,
+) -> Vec<FileStatus> {
     let mut disk = r.gix().is_ok_and(|repo| crate::repo::ignores_case(&repo)).then(DiskSpelling::default);
-    Ok(map
-        .into_iter()
+    map.into_iter()
         .filter(|(_, e)| e.staged.is_some() || e.unstaged.is_some())
         // Ignored names mean "the IDE treats these as nonexistent": hide their tracked
         // changes too, not just untracked hits above. Conflicts stay visible so merges
@@ -51,7 +78,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
                 renamed_from: e.renamed_from,
             }
         })
-        .collect())
+        .collect()
 }
 
 /// Spells repository paths the way a case-insensitive disk does, so that the tree, tabs and
@@ -94,7 +121,7 @@ impl DiskSpelling {
 
 type Entries = (BTreeMap<String, Entry>, HashSet<String>);
 
-fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
+fn gix_status(r: &Repo, ignored: &IgnoredNames, pathspec: &[String]) -> IdeResult<Entries> {
     let repo = r.gix()?;
     let mut map: BTreeMap<String, Entry> = BTreeMap::new();
     let mut conflicts: HashSet<String> = HashSet::new();
@@ -112,7 +139,8 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
         .index_worktree_rewrites(None)
         .index_worktree_submodules(gix::status::Submodule::AsConfigured { check_dirty: true })
         .tree_index_track_renames(gix::status::tree_index::TrackRenames::Given(gix::diff::Rewrites::default()));
-    let mut iter = platform.into_iter(Vec::<gix::bstr::BString>::new()).map_err(gx)?;
+    let patterns: Vec<gix::bstr::BString> = pathspec.iter().map(|path| path.as_bytes().into()).collect();
+    let mut iter = platform.into_iter(patterns).map_err(gx)?;
     for item in iter.by_ref() {
         let item = item.map_err(gx)?;
         match item {
@@ -212,6 +240,21 @@ fn cli_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     if !crate::execution_allowed() {
         args.push("--ignore-submodules=dirty");
     }
+    let out = crate::cli::run(r.root(), &args, None)?;
+    Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
+}
+
+/// `git status` for `paths` only, parsed and filtered like the full one. `--literal-pathspecs`
+/// keeps a `*` or `[` in a file name from being read as a pattern.
+fn cli_status_paths(r: &Repo, ignored: &IgnoredNames, paths: &[String]) -> IdeResult<Entries> {
+    let overrides = crate::cli::filter_overrides(r.root(), &ide_core::CancellationToken::new())?;
+    let mut args: Vec<&str> = overrides.iter().map(String::as_str).collect();
+    args.extend(["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=all"]);
+    if !crate::execution_allowed() {
+        args.push("--ignore-submodules=dirty");
+    }
+    args.push("--");
+    args.extend(paths.iter().map(String::as_str));
     let out = crate::cli::run(r.root(), &args, None)?;
     Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout), ignored))
 }
@@ -399,7 +442,7 @@ mod tests {
             (m, c)
         };
         let from_git = show(cli_status(&repo, &ignored).unwrap());
-        assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
+        assert_eq!(from_git, show(gix_status(&repo, &ignored, &[]).unwrap()));
         assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
         assert_eq!(from_git.1, ["conflict.txt"]);
     }

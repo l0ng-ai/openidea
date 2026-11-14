@@ -13,7 +13,7 @@
         details: "启动错误详情",
         timeout: "启动未在 30 秒内完成。",
         outdatedMac:
-          "这台 Mac 的 Safari 版本过旧：OpenIDEA 的界面使用系统的 Safari 网页引擎，需要 Safari 16 或更高版本。请在「系统偏好设置 › 软件更新」中更新 Safari，然后重新打开 OpenIDEA。",
+          "这台 Mac 的系统网页引擎过旧：OpenIDEA 的界面运行在 macOS 自带的 WebKit 引擎上，需要 macOS 13 Ventura 或更高版本。在 macOS 11、12 上更新 Safari 不会更新其他应用使用的引擎，需要升级 macOS。",
         outdated:
           "系统的 WebKitGTK 版本过旧：OpenIDEA 需要较新的 WebKitGTK（webkit2gtk-4.1）。请通过系统的包管理器更新后重新打开 OpenIDEA。",
       }
@@ -27,7 +27,7 @@
         details: "Startup error details",
         timeout: "Startup did not finish within 30 seconds.",
         outdatedMac:
-          "Safari on this Mac is too old: OpenIDEA's interface runs on the system's Safari web engine and needs Safari 16 or later. Update Safari in System Preferences › Software Update, then open OpenIDEA again.",
+          "The system web engine on this Mac is too old: OpenIDEA's interface runs on macOS's built-in WebKit and needs macOS 13 Ventura or later. On macOS 11 and 12 a Safari update doesn't update the engine other apps use, so macOS itself needs upgrading.",
         outdated:
           "The system's WebKitGTK is too old: OpenIDEA needs a recent WebKitGTK (webkit2gtk-4.1). Update it with your package manager, then open OpenIDEA again.",
       };

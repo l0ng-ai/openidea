@@ -4,6 +4,7 @@ import { Compartment, Prec, RangeSet, StateEffect, StateField, type Extension, t
 import { EditorView, GutterMarker, ViewPlugin, gutter, type PluginValue, type ViewUpdate } from "@codemirror/view";
 import type { BlameLine } from "@/bindings";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -278,6 +279,18 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       label: "Copy Revision Number",
                       icon: "copy",
                       run: () => void writeClipboardText(l.commit),
+                    },
+                    {
+                      label: tx("Annotate at Revision…"),
+                      icon: "clock",
+                      run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
+                    },
+                    {
+                      label: tx("Annotate Previous Revision"),
+                      icon: "history",
+                      // Loads the history and diff viewer code only when it is used.
+                      run: () =>
+                        void import("./annotateRevision").then((m) => m.annotatePreviousRevision(path, l.commit)),
                     },
                     { kind: "separator" as const },
                   ]
