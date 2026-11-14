@@ -27,16 +27,11 @@ fn git_dir(root: &Path) -> Option<std::path::PathBuf> {
     Some(if path.is_absolute() { path.to_owned() } else { root.join(path) })
 }
 
-/// Every ignore/config input the walker may consult, including candidates that
-/// do not exist yet. Comparing the full set (plus presence/mtime/size) catches
-/// new `.git/info/exclude` files, redirected `core.excludesFile`, and worktrees.
-pub(crate) fn ignore_candidates(root: &Path, dirs: &[String]) -> Vec<std::path::PathBuf> {
+/// External ignore/config inputs, including candidates that do not exist yet.
+/// These are outside the directory manifest (`.git` is skipped), so the full
+/// path set must match at warm start.
+pub(crate) fn external_ignore_candidates(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = std::collections::BTreeSet::new();
-    for rel in dirs {
-        let dir = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
-        out.insert(dir.join(".gitignore"));
-        out.insert(dir.join(".ignore"));
-    }
     if let Some(git) = git_dir(root) {
         out.insert(git.join("config"));
         out.insert(git.join("info/exclude"));
@@ -59,6 +54,22 @@ pub(crate) fn ignore_candidates(root: &Path, dirs: &[String]) -> Vec<std::path::
                 .unwrap_or_else(|| home.join(".config"))
                 .join("git/config"),
         );
+    }
+    out.into_iter().collect()
+}
+
+/// Existing per-directory ignore files. Adding/removing one changes the
+/// directory mtime, which the manifest already validates before this list is used.
+fn per_dir_ignore_candidates(root: &Path, dirs: &[String]) -> Vec<std::path::PathBuf> {
+    let mut out = std::collections::BTreeSet::new();
+    for rel in dirs {
+        let dir = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
+        for name in [".gitignore", ".ignore"] {
+            let path = dir.join(name);
+            if path.is_file() {
+                out.insert(path);
+            }
+        }
     }
     out.into_iter().collect()
 }
@@ -105,6 +116,7 @@ pub(crate) struct Snapshot {
     ignore_mtimes: Vec<u64>,
     ignore_sizes: Vec<u64>,
     ignore_present: Vec<bool>,
+    ignore_external: Vec<bool>,
 }
 
 impl Snapshot {
@@ -152,6 +164,10 @@ impl Snapshot {
 
     pub(crate) fn ignore_present(&self, i: usize) -> bool {
         self.ignore_present[i]
+    }
+
+    pub(crate) fn ignore_external(&self, i: usize) -> bool {
+        self.ignore_external[i]
     }
 
     pub(crate) fn mtime(&self, file: usize) -> u64 {
@@ -245,6 +261,7 @@ impl Snapshot {
         if self.ignore_ends.len() != self.ignore_mtimes.len()
             || self.ignore_sizes.len() != self.ignore_mtimes.len()
             || self.ignore_present.len() != self.ignore_mtimes.len()
+            || self.ignore_external.len() != self.ignore_mtimes.len()
         {
             return false;
         }
@@ -494,7 +511,12 @@ impl Store {
             snap.dir_mtimes.push(mtime);
             snap.dir_counts.push(count);
         }
-        for path in ignore_candidates(root, &dir_list) {
+        let external: std::collections::BTreeSet<std::path::PathBuf> =
+            external_ignore_candidates(root).into_iter().collect();
+        let mut candidates: std::collections::BTreeSet<std::path::PathBuf> =
+            per_dir_ignore_candidates(root, &dir_list).into_iter().collect();
+        candidates.extend(external.iter().cloned());
+        for path in candidates {
             let meta = std::fs::metadata(&path).ok();
             let present = meta.is_some();
             let mtime = meta.as_ref().map_or(0, mtime_of);
@@ -507,6 +529,7 @@ impl Store {
             snap.ignore_mtimes.push(if present { mtime } else { 0 });
             snap.ignore_sizes.push(if present { meta.as_ref().map_or(0, |m| m.len()) } else { 0 });
             snap.ignore_present.push(present);
+            snap.ignore_external.push(external.contains(&path));
         }
         fit(snap.rels.len())?;
         fit(snap.text.len())?;

@@ -228,15 +228,18 @@ impl Shared {
                 return false;
             }
         }
-        let dirs: Vec<String> = (0..snapshot.dirs_len()).map(|i| snapshot.dir(i).to_owned()).collect();
-        let candidates = crate::store::ignore_candidates(root, &dirs);
-        if candidates.len() != snapshot.ignore_len() {
+        let external = crate::store::external_ignore_candidates(root);
+        let saved_external: Vec<&str> = (0..snapshot.ignore_len())
+            .filter(|&i| snapshot.ignore_external(i))
+            .map(|i| snapshot.ignore_path(i))
+            .collect();
+        if external.len() != saved_external.len()
+            || external.iter().zip(&saved_external).any(|(path, saved)| path.to_string_lossy() != **saved)
+        {
             return false;
         }
-        for (i, path) in candidates.iter().enumerate() {
-            if snapshot.ignore_path(i) != path.to_string_lossy() {
-                return false;
-            }
+        for i in 0..snapshot.ignore_len() {
+            let path = Path::new(snapshot.ignore_path(i));
             let meta = std::fs::metadata(path).ok();
             let present = meta.is_some();
             if present != snapshot.ignore_present(i) {
