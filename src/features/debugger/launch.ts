@@ -187,8 +187,7 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "js-debug", cwd);
   const extra: Record<string, unknown> = {
     type: "pwa-node",
-    console: "internalConsole",
-    outputCapture: "std",
+    console: "integratedTerminal",
     skipFiles: workflowSettings().debugger.skipLibraryCode ? ["<node_internals>/**", "**/node_modules/**"] : [],
     autoAttachChildProcesses: true,
   };
