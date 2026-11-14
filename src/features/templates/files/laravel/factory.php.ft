@@ -1,0 +1,23 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+/**
+ * @extends Factory<$MODEL$>
+ */
+class $CLASS$ extends Factory
+{
+    /**
+     * Define the model's default state.
+     *
+     * @return array<string, mixed>
+     */
+    public function definition(): array
+    {
+        return [
+            $DEFINITION$
+        ];
+    }
+}

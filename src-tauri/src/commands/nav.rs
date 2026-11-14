@@ -51,6 +51,133 @@ pub fn spring_route_sources(
     ide_host::ops::routes::spring_route_sources(&state.host, window.label())
 }
 
+/// The Laravel routes matching `query` (name, URI, method or action parts) for
+/// Search Everywhere's Routes scope, from the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_routes(
+    window: Window,
+    state: State<'_, AppState>,
+    query: String,
+) -> IdeResult<Vec<ide_host::ops::routes::LaravelRoute>> {
+    ide_host::ops::routes::php_laravel_routes(&state.host, window.label(), query).await
+}
+
+/// The edit adding Laravel translation `key` with each locale's text (the
+/// "Create translation key…" dialog), from the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_create_translation(
+    window: Window,
+    state: State<'_, AppState>,
+    key: String,
+    texts: Vec<ide_host::ops::laravel::TranslationText>,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_create_translation(&state.host, window.label(), key, texts).await
+}
+
+/// The Eloquent model view of Laravel model class `model` (table, columns,
+/// relations, scopes, accessors, related classes), from the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_model_view(
+    window: Window,
+    state: State<'_, AppState>,
+    model: String,
+) -> IdeResult<ide_host::ops::laravel::LaravelModelView> {
+    ide_host::ops::laravel::php_laravel_model_view(&state.host, window.label(), model).await
+}
+
+/// The edit of the Eloquent model view's Add Columns button: a migration adding
+/// `columns` to the model's table, and the columns added to `$fillable`.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_add_columns(
+    window: Window,
+    state: State<'_, AppState>,
+    model: String,
+    columns: Vec<ide_host::ops::laravel::LaravelNewColumn>,
+    fillable: bool,
+    timestamp: String,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_add_columns(&state.host, window.label(), model, columns, fillable, timestamp)
+        .await
+}
+
+/// The Artisan commands of the Laravel project (classes, closure commands, packages',
+/// Laravel's own) with their arguments and options; `None` outside Laravel projects and
+/// without the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_artisan_commands(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<Vec<ide_host::ops::laravel::LaravelArtisanCommand>>> {
+    ide_host::ops::laravel::php_laravel_artisan_commands(&state.host, window.label()).await
+}
+
+/// What the Laravel generator dialogs offer (namespace, modules, models, generators);
+/// `None` outside Laravel projects and without the native PHP engine.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_generation_context(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::laravel::LaravelGenerationContext>> {
+    ide_host::ops::laravel::php_laravel_generation_context(&state.host, window.label()).await
+}
+
+/// The edit of the Laravel New Model dialog: the model and its companion classes,
+/// rendered from the file templates (`templates`: the user's edited ones).
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_new_model(
+    window: Window,
+    state: State<'_, AppState>,
+    spec: ide_host::ops::laravel::LaravelNewModel,
+    templates: Vec<ide_host::ops::laravel::LaravelTemplate>,
+    timestamp: String,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_new_model(&state.host, window.label(), spec, templates, timestamp).await
+}
+
+/// The edit of a Laravel class generator (controller, job, view, test…): the new files
+/// rendered from the file templates (`templates`: the user's edited ones).
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_generate_class(
+    window: Window,
+    state: State<'_, AppState>,
+    spec: ide_host::ops::laravel::LaravelNewClass,
+    templates: Vec<ide_host::ops::laravel::LaravelTemplate>,
+    timestamp: String,
+) -> IdeResult<ide_core::WorkspaceEdit> {
+    ide_host::ops::laravel::php_laravel_generate_class(&state.host, window.label(), spec, templates, timestamp).await
+}
+
+/// Keeps the user's edited Laravel generator templates for the Generate actions inside
+/// a model class.
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_set_templates(
+    window: Window,
+    state: State<'_, AppState>,
+    templates: Vec<ide_host::ops::laravel::LaravelTemplate>,
+) -> IdeResult<()> {
+    ide_host::ops::laravel::php_laravel_set_templates(&state.host, window.label(), templates).await
+}
+
+/// Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
+/// native PHP engine (`None`: none chosen).
+#[tauri::command]
+#[specta::specta]
+pub async fn php_laravel_refresh_schema(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::laravel::LaravelSchemaStatus>> {
+    ide_host::ops::laravel::php_laravel_refresh_schema(&state.host, window.label()).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn find_symbols(

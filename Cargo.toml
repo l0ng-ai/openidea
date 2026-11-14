@@ -47,6 +47,7 @@ ide-scaffold = { path = "crates/ide-scaffold" }
 ide-notebook = { path = "crates/ide-notebook" }
 ide-extension = { path = "crates/ide-extension" }
 ide-plugin = { path = "crates/ide-plugin" }
+ide-php = { path = "crates/ide-php" }
 ide-cli = { path = "crates/ide-cli" }
 ide-jvm-attach = { path = "crates/ide-jvm-attach" }
 ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
@@ -56,6 +57,7 @@ ide-heap = { path = "crates/ide-heap" }
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 toml = "0.9"
 toml_edit = "0.25"
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
@@ -66,6 +68,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tokio-util = { version = "0.7", features = ["rt"] }
 parking_lot = "0.12"
 rayon = "1"
+stacker = "0.1"
 dashmap = "6"
 futures = "0.3"
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "__rustls-tls"] }
@@ -78,6 +81,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # text & fs
 ropey = "1.6"
+self_cell = "1"
 encoding_rs = "0.8"
 chardetng = "0.1"
 ignore = "0.4"

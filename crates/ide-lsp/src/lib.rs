@@ -2508,7 +2508,7 @@ impl LspManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        Ok(Renamed { preview: false, edit: out.finish(WorkspaceEdit::default())?, incomplete })
+        Ok(Renamed { edit: out.finish(WorkspaceEdit::default())?, incomplete, ..Renamed::default() })
     }
 
     /// The servers that can rename at `pos`, the first one when none can (a
@@ -2562,7 +2562,7 @@ impl LspManager {
             let edit = query().await?;
             let empty = edit.files.is_empty();
             let w = scope::Widened::only((), empty, &t.server);
-            return Ok(Renamed { preview: false, edit, incomplete: w.incomplete });
+            return Ok(Renamed { edit, incomplete: w.incomplete, ..Renamed::default() });
         }
         let files = |e: &WorkspaceEdit| {
             e.files
@@ -2588,7 +2588,7 @@ impl LspManager {
         let files =
             more.into_iter().map(|(path, edits)| ide_core::FileEdit::Edit { path: path.into(), edits, version: None });
         convert::merge_workspace_edit(&mut edit, WorkspaceEdit { files: files.collect(), ..Default::default() });
-        Ok(Renamed { preview: false, edit, incomplete: w.incomplete })
+        Ok(Renamed { edit, incomplete: w.incomplete, ..Renamed::default() })
     }
 
     // ---- file operations (`workspace/willRenameFiles`, `workspace/didRenameFiles`) ----

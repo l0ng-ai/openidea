@@ -8,11 +8,14 @@ indent = { tab-size = 4, insert-spaces = true }
 ui-mode = "PHP"
 tree-sitter = "php"
 
+# The built-in engine (`ide-php`) answers code insight for PHP by default. The servers below are
+# the fallback: they run only when Settings › PHP › Code insight engine selects Intelephense
+# (`ide_sdk::apply::language_servers`).
 [[language-servers]]
 name = "intelephense"
 command = "intelephense"
 args = ["--stdio"]
-root-markers = ["composer.json", ".phpactor.json", "index.php"]
+root-markers = ["composer.json", "index.php"]
 install-hint = "npm i -g intelephense"
 # Intelephense applies the PHP version only to documents it parses after reading it.
 resync-on-configuration = true

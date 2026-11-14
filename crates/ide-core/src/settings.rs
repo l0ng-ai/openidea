@@ -1141,6 +1141,131 @@ pub struct PhpSettings {
     /// `phpstan.neon.dist` or `phpstan.dist.neon` PHPStan finds in the project root. Absolute,
     /// `~/`, or relative to the project.
     pub phpstan_config: String,
+    /// Which engine answers code insight for PHP: the built-in native engine (`ide-php`,
+    /// the default) or the Intelephense language server as a fallback.
+    pub engine: PhpEngineKind,
+    /// Run PHPStan and Psalm from the project's `vendor/bin` on each saved PHP file and
+    /// show their problems (Settings › PHP › External Analyzers). Off by default.
+    pub analyzers_on_save: bool,
+    /// Laravel support (Settings › PHP › Laravel), passed to the native engine as one struct.
+    pub laravel: LaravelSettings,
+}
+
+/// Settings › PHP › Laravel. The native engine takes it as it is (`ide_php`), so another
+/// front end can map its own configuration onto it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LaravelSettings {
+    /// A code lens on controller methods listing their routes, and the full URI after each
+    /// route registration. On by default.
+    pub route_hints: bool,
+    /// The id of the data source (Database tool window) whose live schema the engine uses
+    /// for model columns, validation rules and `DB::table('…')`, along with the migrations;
+    /// empty = the migrations alone.
+    pub database: String,
+    /// Settings › PHP › Laravel › Code generation: what the Laravel generators (New Model…)
+    /// write.
+    pub generation: LaravelCodeGeneration,
+    /// Whether the project is a Laravel project: found from `composer.json`, `composer.lock`
+    /// and `artisan` (`Auto`), or forced on or off.
+    pub detection: LaravelDetection,
+    /// Which modules of a modular application are read.
+    pub modules: LaravelModuleSystem,
+    /// The folders of Inertia pages, relative to the project (`resources/js/Pages`); empty =
+    /// the `ide.json` page paths, else `resources/js/Pages`.
+    pub inertia_pages: Vec<String>,
+}
+
+impl Default for LaravelSettings {
+    fn default() -> Self {
+        Self {
+            route_hints: true,
+            database: String::new(),
+            generation: LaravelCodeGeneration::default(),
+            detection: LaravelDetection::default(),
+            modules: LaravelModuleSystem::default(),
+            inertia_pages: Vec::new(),
+        }
+    }
+}
+
+/// Settings › PHP › Laravel › Laravel support.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LaravelDetection {
+    /// A Laravel project when `composer.json` requires `laravel/framework`, a lock file lists
+    /// it, or `artisan` exists.
+    #[default]
+    Auto,
+    /// Always a Laravel project.
+    Enabled,
+    /// Never a Laravel project: Laravel support is off.
+    Disabled,
+}
+
+/// Settings › PHP › Laravel › Modules.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LaravelModuleSystem {
+    /// `nwidart/laravel-modules` modules when the package is installed, and module folders.
+    #[default]
+    Auto,
+    /// Only `nwidart/laravel-modules` modules.
+    Nwidart,
+    /// Only the folders of `modules/`, `app-modules/`, `app/Modules/` and `src/Modules/`.
+    Directory,
+    /// No modules.
+    None,
+}
+
+/// Settings › PHP › Laravel › Code generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LaravelCodeGeneration {
+    /// The application's root namespace (`App\`); empty = the one `composer.json` maps to `app/`.
+    pub namespace: String,
+    /// The module (`nwidart/laravel-modules` or a modules folder) new classes go to unless the
+    /// generator's dialog picks another; empty = the application.
+    pub module: String,
+    /// The suffixes of generated class names (`PostController`); empty = none.
+    pub controller_suffix: String,
+    pub request_suffix: String,
+    pub resource_suffix: String,
+    pub policy_suffix: String,
+    pub seeder_suffix: String,
+    /// Constructors declare their properties by promoting parameters (`public function
+    /// __construct(private Mailer $mailer)`) rather than assigning them.
+    pub constructor_promotion: bool,
+    /// Generated methods declare their return types (`: bool`, `: array`).
+    pub type_hints: bool,
+}
+
+impl Default for LaravelCodeGeneration {
+    fn default() -> Self {
+        Self {
+            namespace: String::new(),
+            module: String::new(),
+            controller_suffix: "Controller".to_owned(),
+            request_suffix: "Request".to_owned(),
+            resource_suffix: "Resource".to_owned(),
+            policy_suffix: "Policy".to_owned(),
+            seeder_suffix: "Seeder".to_owned(),
+            constructor_promotion: true,
+            type_hints: true,
+        }
+    }
+}
+
+/// Settings › PHP › Engine. Only the keys a user sets are stored, so settings that never
+/// chose an engine get the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PhpEngineKind {
+    /// The Intelephense language server: the optional fallback.
+    Intelephense,
+    /// The built-in engine: indexes the project in-process.
+    #[default]
+    Native,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]

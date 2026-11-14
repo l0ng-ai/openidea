@@ -12,7 +12,14 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
-import { getIndentUnit, getIndentation, indentString, indentUnit, syntaxTree } from "@codemirror/language";
+import {
+  getIndentUnit,
+  getIndentation,
+  indentService,
+  indentString,
+  indentUnit,
+  syntaxTree,
+} from "@codemirror/language";
 import { indentMore } from "@codemirror/commands";
 import { visibleColumn } from "./visibleColumn";
 
@@ -181,6 +188,63 @@ export function closesStringAt(state: EditorState, pos: number, quote: string): 
   return false;
 }
 
+// --- closing bracket -------------------------------------------------------------------------
+
+const OPEN_OF: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/**
+ * Whether `pos` is inside a string or comment (brackets there don't count).
+ * Code embedded in a string is code again (`${x}` in a template, `{$x}` in a
+ * PHP string), and a file's root node is never a literal, whatever it is
+ * called (PHP's is `Template`).
+ */
+function inLiteral(state: EditorState, pos: number): boolean {
+  for (
+    let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, 1);
+    n;
+    n = n.parent
+  ) {
+    if (n.type.isTop || /Interpolation|Substitution/.test(n.type.name)) return false;
+    if (/String|Char|Template|Comment|Rune|Heredoc/.test(n.type.name) && n.from < pos + 1 && n.to > pos) return true;
+  }
+  return false;
+}
+
+/**
+ * `close` at `pos` can be typed over: the next character is that closing
+ * bracket and its line is not short of closers (so typing over it leaves the
+ * brackets balanced), as IDEA's "Insert pair bracket" does for existing
+ * brackets, not only the ones it inserted.
+ */
+export function closesBracketAt(state: EditorState, pos: number, close: string): boolean {
+  const open = OPEN_OF[close];
+  if (!open || state.sliceDoc(pos, pos + 1) !== close || inLiteral(state, pos)) return false;
+  const line = state.doc.lineAt(pos);
+  let depth = 0;
+  for (let i = line.from; i < line.to; i++) {
+    const ch = state.sliceDoc(i, i + 1);
+    if ((ch === open || ch === close) && !inLiteral(state, i)) depth += ch === open ? 1 : -1;
+  }
+  return depth <= 0;
+}
+
+/** Typing a closing bracket right before the same closing bracket steps over it, as in IDEA. */
+export const skipClosingBracket = EditorView.inputHandler.of((view, _from, _to, text) => {
+  if (!OPEN_OF[text] || view.state.readOnly) return false;
+  const { state } = view;
+  const sel = state.selection;
+  if (!sel.ranges.every((r) => r.empty && closesBracketAt(state, r.head, text))) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      sel.ranges.map((r) => EditorSelection.cursor(r.head + 1)),
+      sel.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "input.type",
+  });
+  return true;
+});
+
 /** Typing a quote right before the closing quote of a string literal steps over it, as in IDEA. */
 export const skipClosingQuote = EditorView.inputHandler.of((view, _from, _to, text) => {
   if (!/^["'`]$/.test(text) || view.state.readOnly) return false;
@@ -198,6 +262,73 @@ export const skipClosingQuote = EditorView.inputHandler.of((view, _from, _to, te
   return true;
 });
 
+// --- indentation after a bracket that ends its line ---------------------------------------------
+
+const CLOSE_OF: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** How far back the opening bracket around a position is looked for. */
+const BRACKET_SCAN = 20_000;
+
+/**
+ * Indentation the language modes get wrong, as IDEA does it. Tried before
+ * the mode's own; everything not listed is left to the mode.
+ *
+ * A bracket that is the last thing on its line (`$this->add([`,
+ * `'items' => [`, `foo(function () {`): a mode may align the content under
+ * the bracket, or under an outer bracket's content, columns to the right.
+ *
+ * - The line right after the opening bracket: one unit deeper than its line.
+ * - A line starting with its closing bracket: that line's indentation.
+ * - In `[…]` and `(…)`, a line after one ending in `,`: that line's
+ *   indentation (the next element or argument).
+ *
+ * A `case …:` or `default:` label: the line after it is one unit deeper.
+ */
+export const trailingBracketIndent = indentService.of((cx, pos) => {
+  const { state } = cx;
+  if (!syntaxTree(state).length) return undefined;
+  // The last line with text before the position (the caret's own, up to it).
+  const here = state.doc.lineAt(pos);
+  let before: string | null = state.sliceDoc(here.from, pos).trim() ? state.sliceDoc(here.from, pos) : null;
+  let beforeFrom = here.from;
+  for (let n = here.number - 1; before === null && n >= 1 && n >= here.number - 50; n--) {
+    const prev = state.doc.line(n);
+    if (prev.text.trim()) {
+      before = prev.text;
+      beforeFrom = prev.from;
+    }
+  }
+  if (before !== null && /^\s*(case\b.*|default)\s*:\s*$/.test(before) && !inLiteral(state, beforeFrom)) {
+    return cx.lineIndent(beforeFrom) + cx.unit;
+  }
+  const from = Math.max(0, pos - BRACKET_SCAN);
+  const text = state.sliceDoc(from, pos);
+  let depth = 0;
+  let open = -1;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch !== "(" && ch !== ")" && ch !== "[" && ch !== "]" && ch !== "{" && ch !== "}") continue;
+    if (inLiteral(state, from + i)) continue;
+    if (OPEN_OF[ch]) depth++;
+    else if (depth > 0) depth--;
+    else {
+      open = from + i;
+      break;
+    }
+  }
+  if (open < 0) return undefined;
+  const line = state.doc.lineAt(open);
+  // The bracket ends its line (up to the caret, when the break is on it).
+  const lineEnd = pos <= line.to ? pos : line.to;
+  if (state.sliceDoc(open + 1, lineEnd).trim()) return undefined;
+  const base = cx.lineIndent(line.from);
+  const bracket = state.sliceDoc(open, open + 1);
+  const close = CLOSE_OF[bracket];
+  if (close && cx.textAfterPos(pos).trimStart().startsWith(close)) return base;
+  if (before === null || beforeFrom === line.from) return base + cx.unit;
+  if (bracket !== "{" && before.trimEnd().endsWith(",")) return cx.lineIndent(beforeFrom);
+  return undefined;
+});
 // --- smart angle brackets --------------------------------------------------------------------
 
 /**
@@ -217,7 +348,7 @@ function wordBefore(state: EditorState, pos: number): string {
 }
 
 /** The caret is inside a literal: never pair there, whatever the language rule says. */
-function inLiteral(state: EditorState, pos: number): boolean {
+function inLiteralForPairs(state: EditorState, pos: number): boolean {
   for (
     let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, -1);
     n;
@@ -353,7 +484,7 @@ export function smartAngleBrackets(language: string | undefined): Extension {
       const { state } = view;
       if (state.readOnly || state.selection.ranges.some((r) => !r.empty)) return false;
       if (text === "<") {
-        if (!state.selection.ranges.every((r) => !inLiteral(state, r.head) && isTypePosition(state, r.head)))
+        if (!state.selection.ranges.every((r) => !inLiteralForPairs(state, r.head) && isTypePosition(state, r.head)))
           return false;
         view.dispatch(
           state.changeByRange((r) => ({

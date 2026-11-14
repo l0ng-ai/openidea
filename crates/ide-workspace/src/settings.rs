@@ -186,8 +186,11 @@ fn json_to_toml(value: &Json) -> IdeResult<toml_edit::Value> {
         }
         Json::Object(map) => {
             let mut t = toml_edit::InlineTable::new();
-            // TOML has no null: an unset optional field is left out.
-            for (k, v) in map.iter().filter(|(_, v)| !v.is_null()) {
+            // TOML has no null: an unset optional field is left out. Keys are sorted, since the
+            // map's own order depends on whether some crate enables serde_json's `preserve_order`.
+            let mut entries: Vec<_> = map.iter().filter(|(_, v)| !v.is_null()).collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            for (k, v) in entries {
                 t.insert(k, json_to_toml(v)?);
             }
             t.into()

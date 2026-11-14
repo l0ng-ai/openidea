@@ -28,6 +28,7 @@ import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
 import { phpunitType } from "./phpunitTypes";
+import { artisanType } from "./artisan";
 
 export const COMPOUND = "compound";
 
@@ -488,6 +489,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   rspecType,
   djangoTestType,
   phpunitType,
+  artisanType,
   dotnetProjectType,
   dotnetTestType,
   goBuildType,

@@ -451,6 +451,69 @@ export const commands = {
 	indexFileExtensions: () => typedError<ExtensionCount[], IdeError>(__TAURI_INVOKE("index_file_extensions")),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
 	springRouteSources: () => typedError<RouteSource[], IdeError>(__TAURI_INVOKE("spring_route_sources")),
+	/**
+	 *  The Laravel routes matching `query` (name, URI, method or action parts) for
+	 *  Search Everywhere's Routes scope, from the native PHP engine.
+	 */
+	phpLaravelRoutes: (query: string) => typedError<LaravelRoute[], IdeError>(__TAURI_INVOKE("php_laravel_routes", { query })),
+	/**
+	 *  The edit adding Laravel translation `key` with each locale's text (the
+	 *  "Create translation key…" dialog), from the native PHP engine.
+	 */
+	phpLaravelCreateTranslation: (key: string, texts: TranslationText[]) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_create_translation", { key, texts })),
+	/**
+	 *  The Eloquent model view of Laravel model class `model` (table, columns,
+	 *  relations, scopes, accessors, related classes), from the native PHP engine.
+	 */
+	phpLaravelModelView: (model: string) => typedError<LaravelModelView, IdeError>(__TAURI_INVOKE("php_laravel_model_view", { model })),
+	/**
+	 *  The edit of the Eloquent model view's Add Columns button: a migration adding
+	 *  `columns` to the model's table, and the columns added to `$fillable`.
+	 */
+	phpLaravelAddColumns: (model: string, columns: LaravelNewColumn[], fillable: boolean, timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_add_columns", { model, columns, fillable, timestamp })),
+	/**
+	 *  What the Laravel generator dialogs offer (namespace, modules, models, generators);
+	 *  `None` outside Laravel projects and without the native PHP engine.
+	 */
+	phpLaravelGenerationContext: () => typedError<{
+	/**  The application's namespace, with a trailing `\`. */
+	namespace: string,
+	modules: string[],
+	/**  The module of Settings › PHP › Laravel › Code generation. */
+	defaultModule: string | null,
+	/**  The project's Eloquent models (FQNs). */
+	models: string[],
+	generators: LaravelGenerator[],
+} | null, IdeError>(__TAURI_INVOKE("php_laravel_generation_context")),
+	/**
+	 *  The Artisan commands of the Laravel project (classes, closure commands, packages',
+	 *  Laravel's own) with their arguments and options; `None` outside Laravel projects and
+	 *  without the native PHP engine.
+	 */
+	phpLaravelArtisanCommands: () => typedError<LaravelArtisanCommand[] | null, IdeError>(__TAURI_INVOKE("php_laravel_artisan_commands")),
+	/**
+	 *  The edit of the Laravel New Model dialog: the model and its companion classes,
+	 *  rendered from the file templates (`templates`: the user's edited ones).
+	 */
+	phpLaravelNewModel: (spec: LaravelNewModel, templates: LaravelTemplate[], timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_new_model", { spec, templates, timestamp })),
+	/**
+	 *  The edit of a Laravel class generator (controller, job, view, test…): the new files
+	 *  rendered from the file templates (`templates`: the user's edited ones).
+	 */
+	phpLaravelGenerateClass: (spec: LaravelNewClass, templates: LaravelTemplate[], timestamp: string) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("php_laravel_generate_class", { spec, templates, timestamp })),
+	/**
+	 *  Keeps the user's edited Laravel generator templates for the Generate actions inside
+	 *  a model class.
+	 */
+	phpLaravelSetTemplates: (templates: LaravelTemplate[]) => typedError<null, IdeError>(__TAURI_INVOKE("php_laravel_set_templates", { templates })),
+	/**
+	 *  Reads the schema of the data source chosen in Settings › PHP › Laravel again for the
+	 *  native PHP engine (`None`: none chosen).
+	 */
+	phpLaravelRefreshSchema: () => typedError<{
+	source: string,
+	tables: number,
+} | null, IdeError>(__TAURI_INVOKE("php_laravel_refresh_schema")),
 	findFiles: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_files", { query, limit })),
 	findFilesNamed: (name: string) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("find_files_named", { name })),
 	/**  Folders holding indexed files, for `@` references. */
@@ -620,7 +683,7 @@ export const commands = {
 	formFields: FormField[],
 	formAnswers: FormAnswer[],
 } | null, IdeError>(__TAURI_INVOKE("lsp_resolve_command", { request, doc, server, command, answers })),
-	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
+	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<AppliedCodeAction, IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
 	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
@@ -2476,6 +2539,16 @@ export type AppearanceSettings_Serialize = {
 	backgroundImage: BackgroundImageSettings,
 };
 
+/**
+ *  What applying a code action did: the files its edit creates and those its
+ *  command reports created, and where the editor opens next
+ *  ([`CodeAction::open`]).
+ */
+export type AppliedCodeAction = {
+	created: IpcPath[],
+	open: Location | null,
+};
+
 export type ApplyOutcome = {
 	/**  Repository-relative paths changed without conflicts. */
 	applied: string[],
@@ -2931,6 +3004,11 @@ export type CodeAction = {
 	command: Command | null,
 	data: string | null,
 	server: ServerId,
+	/**
+	 *  Where the editor opens after applying the action's edit (a created
+	 *  class at its new method); set by the built-in engines.
+	 */
+	open?: Location | null,
 };
 
 /**
@@ -6134,6 +6212,8 @@ export type InlayLabelPart = {
 	tooltip: string | null,
 	/**  Declaration the part stands for (⌘-click navigates there). */
 	location: Location | null,
+	/**  What a click on the part runs (`InlayHintLabelPart.command`). */
+	command?: Command | null,
 };
 
 /**  One `textDocument/inlineCompletion` suggestion (ghost text at the caret). */
@@ -6765,6 +6845,385 @@ export type LanguagesSettings = {
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
+};
+
+/**  An argument of an Artisan command. */
+export type LaravelArtisanArgument = {
+	name: string,
+	description: string,
+	required: boolean,
+	/**  Takes several values. */
+	array: boolean,
+	default: string | null,
+};
+
+/**  An Artisan command of a Laravel project. */
+export type LaravelArtisanCommand = {
+	/**  `posts:publish`. */
+	name: string,
+	description: string,
+	/**  `posts:publish [--dry-run] <post>`. */
+	synopsis: string,
+	arguments: LaravelArtisanArgument[],
+	options: LaravelArtisanOption[],
+	/**  `class` (the project's), `closure` (`routes/console.php`), `package` or `framework`. */
+	source: string,
+	/**  The command class (FQN). */
+	class: string | null,
+	/**  The command's name in its signature (or its class name). */
+	location: LaravelLocation | null,
+	/**  The 0-based line of the command class's name (its run gutter icon). */
+	classLine: number | null,
+};
+
+/**  An option of an Artisan command (`name` without `--`). */
+export type LaravelArtisanOption = {
+	name: string,
+	shortcut: string | null,
+	description: string,
+	/**  Takes a value (`--queue=`), as opposed to a flag. */
+	acceptsValue: boolean,
+	/**  Can be given several times. */
+	array: boolean,
+	default: string | null,
+};
+
+/**  Settings › PHP › Laravel › Code generation. */
+export type LaravelCodeGeneration = {
+	/**  The application's root namespace (`App\`); empty = the one `composer.json` maps to `app/`. */
+	namespace?: string,
+	/**
+	 *  The module (`nwidart/laravel-modules` or a modules folder) new classes go to unless the
+	 *  generator's dialog picks another; empty = the application.
+	 */
+	module?: string,
+	/**  The suffixes of generated class names (`PostController`); empty = none. */
+	controllerSuffix?: string,
+	requestSuffix?: string,
+	resourceSuffix?: string,
+	policySuffix?: string,
+	seederSuffix?: string,
+	/**
+	 *  Constructors declare their properties by promoting parameters (`public function
+	 *  __construct(private Mailer $mailer)`) rather than assigning them.
+	 */
+	constructorPromotion?: boolean,
+	/**  Generated methods declare their return types (`: bool`, `: array`). */
+	typeHints?: boolean,
+};
+
+/**  Settings › PHP › Laravel › Laravel support. */
+export type LaravelDetection = 
+/**
+ *  A Laravel project when `composer.json` requires `laravel/framework`, a lock file lists
+ *  it, or `artisan` exists.
+ */
+"auto" | 
+/**  Always a Laravel project. */
+"enabled" | 
+/**  Never a Laravel project: Laravel support is off. */
+"disabled";
+
+/**  A choice of a `select` field. */
+export type LaravelFieldOption = {
+	value: string,
+	label: string,
+};
+
+/**  What the Laravel generator dialogs offer. */
+export type LaravelGenerationContext = {
+	/**  The application's namespace, with a trailing `\`. */
+	namespace: string,
+	modules: string[],
+	/**  The module of Settings › PHP › Laravel › Code generation. */
+	defaultModule: string | null,
+	/**  The project's Eloquent models (FQNs). */
+	models: string[],
+	generators: LaravelGenerator[],
+};
+
+/**  A generator of the Laravel › Generate menu. */
+export type LaravelGenerator = {
+	/**  `model`. */
+	id: string,
+	title: string,
+	description: string,
+	/**  The names of the file templates it renders (`Laravel Model`). */
+	templates: string[],
+	/**
+	 *  The options its dialog asks for (`model`, `related`, `table`, `create`, `event`,
+	 *  `queued`, `api`, `backing`, `status`); empty for the New Model dialog.
+	 */
+	options: string[],
+	/**  The input fields of an `ide.json` code generation (id `ide-json:<id>`). */
+	fields: LaravelGeneratorField[],
+};
+
+/**  An input field of an `ide.json` code generation's dialog. */
+export type LaravelGeneratorField = {
+	/**  The key of its value in [`LaravelNewClass::inputs`]. */
+	id: string,
+	title: string,
+	/**  `text`, `checkbox` or `select`. */
+	kind: string,
+	/**  The template variable it sets. */
+	variable: string,
+	optional: boolean,
+	/**  The value when left empty (`true` for a ticked checkbox). */
+	default: string,
+	/**  The choices of a `select`. */
+	options: LaravelFieldOption[],
+};
+
+/**  The value of an input field of an `ide.json` code generation. */
+export type LaravelGeneratorInput = {
+	/**  [`LaravelGeneratorField::id`]. */
+	id: string,
+	value: string,
+};
+
+/**  A place in a file of the model view. */
+export type LaravelLocation = {
+	path: IpcPath,
+	range: Range,
+};
+
+/**  A column of a model's table. */
+export type LaravelModelColumn = {
+	name: string,
+	/**  The PHP type reading the column gives (before casts). */
+	ty: string,
+	nullable: boolean,
+	/**  The model's cast of it. */
+	cast: string | null,
+	/**  `migration` or `database`. */
+	source: string,
+	/**  The data source's name, for columns of the database. */
+	database: string | null,
+	fillable: boolean,
+	hidden: boolean,
+	location: LaravelLocation | null,
+};
+
+/**  A local scope or an accessor of a model. */
+export type LaravelModelMember = {
+	name: string,
+	method: string,
+	ty: string | null,
+	location: LaravelLocation | null,
+};
+
+/**  A relation method of a model. */
+export type LaravelModelRelation = {
+	name: string,
+	/**  `HasMany`, `BelongsTo`… */
+	kind: string,
+	related: string | null,
+	many: boolean,
+	location: LaravelLocation | null,
+};
+
+/**  The Eloquent model view of a model class. */
+export type LaravelModelView = {
+	class: string,
+	name: string,
+	location: LaravelLocation | null,
+	table: string,
+	primaryKey: string,
+	keyType: string,
+	incrementing: boolean,
+	/**  The columns are known for certain (a migration creates the table, or the database has it). */
+	schemaCertain: boolean,
+	columns: LaravelModelColumn[],
+	relations: LaravelModelRelation[],
+	scopes: LaravelModelMember[],
+	accessors: LaravelModelMember[],
+	related: LaravelRelatedClass[],
+};
+
+/**  Settings › PHP › Laravel › Modules. */
+export type LaravelModuleSystem = 
+/**  `nwidart/laravel-modules` modules when the package is installed, and module folders. */
+"auto" | 
+/**  Only `nwidart/laravel-modules` modules. */
+"nwidart" | 
+/**  Only the folders of `modules/`, `app-modules/`, `app/Modules/` and `src/Modules/`. */
+"directory" | 
+/**  No modules. */
+"none";
+
+/**
+ *  What the dialog of a Laravel class generator (controller, job, view, test…) asks
+ *  for. Each generator reads the options its [`LaravelGenerator::options`] lists.
+ */
+export type LaravelNewClass = {
+	/**  The generator's id (`controller`, `migration`). */
+	generator: string,
+	/**
+	 *  The class name (`Admin/PostController`), view name (`posts.index`) or migration
+	 *  name (`add_votes_to_users_table`).
+	 */
+	name: string,
+	/**  The module; `None` = the one of the settings, empty = the application. */
+	module: string | null,
+	/**  The model (FQN or short name). */
+	model: string,
+	/**  The other model of a pivot table. */
+	related: string,
+	/**  A migration's table; empty = guessed from the name. */
+	table: string,
+	/**  The migration creates the table. */
+	create: boolean,
+	/**  The event a listener handles (FQN or short name). */
+	event: string,
+	/**  A queued job or listener. */
+	queued: boolean,
+	/**  An API resource controller. */
+	api: boolean,
+	/**  An enum's backing type: `string`, `int` or empty. */
+	backing: string,
+	/**  An HTTP exception's status; 0 = 500. */
+	status: number,
+	/**  The values of an `ide.json` code generation's input fields. */
+	inputs?: LaravelGeneratorInput[],
+};
+
+/**  A column the model view's **Add columns** button adds. */
+export type LaravelNewColumn = {
+	name: string,
+	/**  The `Blueprint` method making it (`string`, `foreignId`). */
+	ty: string,
+	nullable: boolean,
+};
+
+/**  What the New Model dialog asks for. */
+export type LaravelNewModel = {
+	/**  The class name (`Post`, `Blog/Post`). */
+	name: string,
+	/**  The module; `None` = the one of the settings, empty = the application. */
+	module: string | null,
+	fields: LaravelNewModelField[],
+	relations: LaravelNewModelRelation[],
+	indexes: LaravelNewModelIndex[],
+	timestamps: boolean,
+	softDeletes: boolean,
+	migration: boolean,
+	factory: boolean,
+	seeder: boolean,
+	/**  `none`, `plain`, `resource` or `api`. */
+	controller: string,
+	formRequests: boolean,
+	resource: boolean,
+	policy: boolean,
+};
+
+/**  A field (column) of the New Model dialog. */
+export type LaravelNewModelField = {
+	name: string,
+	/**  The `Blueprint` method making the column (`string`). */
+	ty: string,
+	nullable: boolean,
+	unique: boolean,
+	index: boolean,
+	/**  The default value as PHP; empty = none. */
+	default: string,
+};
+
+/**  An index of the New Model dialog. */
+export type LaravelNewModelIndex = {
+	columns: string[],
+	unique: boolean,
+};
+
+/**  A relation of the New Model dialog. */
+export type LaravelNewModelRelation = {
+	/**  `belongsTo`, `hasOne`, `hasMany`, `belongsToMany`, `morphMany` or `morphTo`. */
+	kind: string,
+	/**  The related model (FQN or short name). */
+	model: string,
+	/**  The method name; empty = from the related model. */
+	name: string,
+};
+
+/**  A factory, resource, policy, observer or migration of a model. */
+export type LaravelRelatedClass = {
+	/**  `factory`, `resource`, `policy`, `observer` or `migration`. */
+	kind: string,
+	name: string,
+	location: LaravelLocation,
+};
+
+/**
+ *  A Laravel route, as the native PHP engine reads it from the route files
+ *  (`ide_php::frameworks::laravel::RouteInfo`).
+ */
+export type LaravelRoute = {
+	/**  The full name (`dashboard.posts.create`). */
+	name: string | null,
+	/**  `GET`, `PUT|PATCH`… (`HEAD` left out next to `GET`). */
+	methods: string[],
+	/**  The full URI with a leading `/`. */
+	uri: string,
+	/**  `App\Http\Controllers\PostController@show`, `view about`, `Closure`… */
+	action: string,
+	middleware: string[],
+	/**  The route file, and the registering method's name in it. */
+	path: IpcPath,
+	range: Range,
+	/**  `APP_URL` and the URI. */
+	url: string,
+	/**  The route as an HTTP client request (`.http`). */
+	request: string,
+};
+
+/**  The live schema in use: the data source's name and how many tables it has. */
+export type LaravelSchemaStatus = {
+	source: string,
+	tables: number,
+};
+
+/**
+ *  Settings › PHP › Laravel. The native engine takes it as it is (`ide_php`), so another
+ *  front end can map its own configuration onto it.
+ */
+export type LaravelSettings = {
+	/**
+	 *  A code lens on controller methods listing their routes, and the full URI after each
+	 *  route registration. On by default.
+	 */
+	routeHints?: boolean,
+	/**
+	 *  The id of the data source (Database tool window) whose live schema the engine uses
+	 *  for model columns, validation rules and `DB::table('…')`, along with the migrations;
+	 *  empty = the migrations alone.
+	 */
+	database?: string,
+	/**
+	 *  Settings › PHP › Laravel › Code generation: what the Laravel generators (New Model…)
+	 *  write.
+	 */
+	generation?: LaravelCodeGeneration,
+	/**
+	 *  Whether the project is a Laravel project: found from `composer.json`, `composer.lock`
+	 *  and `artisan` (`Auto`), or forced on or off.
+	 */
+	detection?: LaravelDetection,
+	/**  Which modules of a modular application are read. */
+	modules?: LaravelModuleSystem,
+	/**
+	 *  The folders of Inertia pages, relative to the project (`resources/js/Pages`); empty =
+	 *  the `ide.json` page paths, else `resources/js/Pages`.
+	 */
+	inertiaPages?: string[],
+};
+
+/**
+ *  A file template's body as the user edited it (Settings › Editor › File and Code
+ *  Templates › Code).
+ */
+export type LaravelTemplate = {
+	name: string,
+	body: string,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -7716,6 +8175,16 @@ export type PathCompletion = {
 	dir: boolean,
 };
 
+/**
+ *  Settings › PHP › Engine. Only the keys a user sets are stored, so settings that never
+ *  chose an engine get the default.
+ */
+export type PhpEngineKind = 
+/**  The Intelephense language server: the optional fallback. */
+"intelephense" | 
+/**  The built-in engine: indexes the project in-process. */
+"native";
+
 /**  A PHP version and where it comes from. */
 export type PhpLanguageLevel = {
 	/**  `X.Y.Z`. */
@@ -7773,6 +8242,18 @@ export type PhpSettings = {
 	 *  `~/`, or relative to the project.
 	 */
 	phpstanConfig?: string,
+	/**
+	 *  Which engine answers code insight for PHP: the built-in native engine (`ide-php`,
+	 *  the default) or the Intelephense language server as a fallback.
+	 */
+	engine?: PhpEngineKind,
+	/**
+	 *  Run PHPStan and Psalm from the project's `vendor/bin` on each saved PHP file and
+	 *  show their problems (Settings › PHP › External Analyzers). Off by default.
+	 */
+	analyzersOnSave?: boolean,
+	/**  Laravel support (Settings › PHP › Laravel), passed to the native engine as one struct. */
+	laravel?: LaravelSettings,
 };
 
 /**  A PHP interpreter's version and the Xdebug it loads. */
@@ -8944,6 +9425,11 @@ export type Renamed = {
 	preview?: boolean,
 	edit: WorkspaceEdit,
 	incomplete: ReferencesIncomplete | null,
+	/**
+	 *  Dynamic uses the edit leaves alone that may reach the renamed symbol
+	 *  (`$f()`, `$o->$m()`, string callables), for the preview to warn about.
+	 */
+	possibleUsages?: Location[],
 };
 
 export type ReplaceEvent = 
@@ -10331,6 +10817,12 @@ export type TransferReport = {
 	/**  Files left alone: excluded, or outside every mapping. */
 	skipped: number,
 	errors: TransferError[],
+};
+
+/**  One locale's text for a new translation key. */
+export type TranslationText = {
+	locale: string,
+	text: string,
 };
 
 export type TrustDecisions = {

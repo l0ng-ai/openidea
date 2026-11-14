@@ -10,14 +10,25 @@ import { basename, isTypeKind, relDir, symbolDisplayName } from "../common/open"
 import { byScore, matchText } from "../common/rank";
 import { wordMatch } from "@/ui";
 
-export type SeTab = "all" | "classes" | "files" | "symbols" | "actions" | "text";
-export type SectionId = "recent" | "recentActions" | "classes" | "files" | "symbols" | "endpoints" | "actions" | "text";
+export type SeTab = "all" | "classes" | "files" | "symbols" | "routes" | "generators" | "actions" | "text";
+export type SectionId =
+  | "recent"
+  | "recentActions"
+  | "classes"
+  | "files"
+  | "symbols"
+  | "endpoints"
+  | "generators"
+  | "actions"
+  | "text";
 
 export const TABS: ReadonlyArray<{ id: SeTab; label: string }> = [
   { id: "all", label: "All" },
   { id: "classes", label: "Classes" },
   { id: "files", label: "Files" },
   { id: "symbols", label: "Symbols" },
+  { id: "routes", label: "Routes" },
+  { id: "generators", label: "Laravel Generators" },
   { id: "actions", label: "Actions" },
   { id: "text", label: "Text" },
 ];
@@ -29,6 +40,7 @@ export const SECTION_ORDER: readonly SectionId[] = [
   "files",
   "symbols",
   "endpoints",
+  "generators",
   "actions",
   "text",
 ];
@@ -40,6 +52,7 @@ export const SECTION_TITLES: Record<SectionId, string> = {
   files: "Files",
   symbols: "Symbols",
   endpoints: "Endpoints",
+  generators: "Laravel Generators",
   actions: "Actions",
   text: "Text",
 };
@@ -54,10 +67,14 @@ export function sectionsFor(tab: SeTab, emptyQuery: boolean): SectionId[] {
         return ["recent"];
       case "actions":
         return ["recentActions"];
+      case "generators":
+        return ["generators"];
       default:
         return [];
     }
   }
+  if (tab === "routes") return ["endpoints"];
+  if (tab === "generators") return ["generators"];
   return tab === "all" ? ["classes", "files", "symbols", "endpoints", "actions", "text"] : [tab];
 }
 
@@ -300,6 +317,29 @@ export function mergeSymbols(
   return { items: sorted.slice(0, opts.limit), hasMore: sorted.length > opts.limit };
 }
 
+/** The category of the Laravel generator actions, listed by the Laravel Generators tab. */
+export const GENERATORS_CATEGORY = "Laravel Generators";
+
+/**
+ * The Laravel generator actions (category {@link GENERATORS_CATEGORY}) matching `query`;
+ * all of them, by title, for an empty query.
+ */
+export function matchGenerators(
+  actions: readonly Action[],
+  query: string,
+  opts: { isEnabled: (a: Action) => boolean; recent: readonly string[] },
+): ActionItem[] {
+  const generators = actions.filter((a) => a.category === GENERATORS_CATEGORY);
+  if (query.trim()) return matchActions(generators, query, opts);
+  return generators
+    .filter((a) => !a.hidden)
+    .map((a) => actionItem(a, opts.isEnabled(a)))
+    .sort((a, b) => tx(a.title).localeCompare(tx(b.title)));
+}
+
+/** The best score of a match in an action's category, description or keywords. */
+const KEYWORD_CEILING = 330;
+
 export function matchActions(
   actions: readonly Action[],
   query: string,
@@ -330,7 +370,9 @@ export function matchActions(
       );
       const best = Math.max(-Infinity, ...extra.map((s) => matchText(s, q, { wordAligned: true })?.score ?? -Infinity));
       const idHit = a.id.toLowerCase().includes(q.toLowerCase()) ? 0 : -Infinity;
-      score = Math.max(best, idHit) - 400;
+      // Below any word-aligned title match: an exact keyword (`model` of New
+      // Observer) doesn't outrank the title it names (New Eloquent Model).
+      score = Math.min(Math.max(best, idHit) - 400, KEYWORD_CEILING);
       if (!Number.isFinite(score)) continue;
     }
     if (!enabled) score -= 150;

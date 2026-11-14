@@ -1,0 +1,4 @@
+# Link with LLVM's lld (shipped with the Rust toolchain as rust-lld) instead of MSVC's link.exe on
+# Windows: debug test binaries of ide-host link several times faster and with less memory.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

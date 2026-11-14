@@ -214,6 +214,21 @@ pub struct CodeAction {
     #[specta(type = Option<String>)]
     pub data: Option<serde_json::Value>,
     pub server: ServerId,
+    /// Where the editor opens after applying the action's edit (a created
+    /// class at its new method); set by the built-in engines.
+    #[serde(default)]
+    #[specta(optional)]
+    pub open: Option<Location>,
+}
+
+/// What applying a code action did: the files its edit creates and those its
+/// command reports created, and where the editor opens next
+/// ([`CodeAction::open`]).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedCodeAction {
+    pub created: Vec<ide_core::IpcPath>,
+    pub open: Option<Location>,
 }
 
 /// Code actions at a range plus the kinds the servers advertise
@@ -271,6 +286,9 @@ pub struct InlayLabelPart {
     pub tooltip: Option<String>,
     /// Declaration the part stands for (⌘-click navigates there).
     pub location: Option<Location>,
+    /// What a click on the part runs (`InlayHintLabelPart.command`).
+    #[serde(default)]
+    pub command: Option<Command>,
 }
 
 /// Decoded semantic tokens (absolute positions) with the server legend applied.
@@ -417,6 +435,11 @@ pub struct Renamed {
     pub preview: bool,
     pub edit: WorkspaceEdit,
     pub incomplete: Option<ReferencesIncomplete>,
+    /// Dynamic uses the edit leaves alone that may reach the renamed symbol
+    /// (`$f()`, `$o->$m()`, string callables), for the preview to warn about.
+    #[serde(default)]
+    #[specta(optional)]
+    pub possible_usages: Vec<Location>,
 }
 
 /// IDEA's class-hierarchy refactorings.

@@ -28,10 +28,12 @@ import { featureBackoff } from "./availability";
 import { iconNode } from "./iconMarkup";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
-import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";
+import { inspectionsAt, isLocalDiagnostic, type EditorDiagnostic } from "./diagnostics";
 import { SPELLING_INSPECTION } from "@/platform/inspections";
 import { editInspectionSettings, intentionControls } from "@/platform/inspectionControls";
 import { runInteractiveCodeAction } from "./interactiveCommand";
+import { isClientCommand, runCommand } from "./clientCommands";
+import { startMemberChooser } from "@/editor/refactor/memberChooser";
 import { tx } from "@/platform/i18n";
 
 const codeActionBackoff = featureBackoff();
@@ -156,10 +158,12 @@ export async function quickFixesAt(
   from: number,
   to: number,
   problem?: Diagnostic,
+  { localOnly = false }: { localOnly?: boolean } = {},
 ): Promise<EditorQuickFix[]> {
   const local = contributedQuickFixes(view, from, to).map((fix) => ({ title: fix.label, run: fix.run }));
   const doc = docOf(view);
-  if (!doc) return local;
+  // A problem the UI found (a typo): the server's fixes at its range are for other problems.
+  if (!doc || localOnly) return local;
   try {
     await whenSynced(view);
     const actions = await lspRequest(() =>
@@ -181,17 +185,24 @@ export async function applyQuickFix(view: EditorView) {
   const state = view.state;
   const caret = state.selection.main.head;
   const line = state.doc.lineAt(caret);
-  const problems: Array<PlacedProblem & { rank: number; problem?: Diagnostic }> = [];
+  const problems: Array<PlacedProblem & { rank: number; local: boolean; problem?: Diagnostic }> = [];
   forEachDiagnostic(state, (d, from, to) => {
     if (d.severity === "hint" || to < line.from || from > line.to) return;
     const rank =
       (d.severity === "error" ? 0 : d.severity === "warning" ? 1 : 2) + (from <= caret && caret <= to ? 0 : 3);
-    problems.push({ from, to, severity: d.severity, rank, problem: (d as EditorDiagnostic).problem });
+    problems.push({
+      from,
+      to,
+      severity: d.severity,
+      rank,
+      local: isLocalDiagnostic(d),
+      problem: (d as EditorDiagnostic).problem,
+    });
   });
   problems.sort((a, b) => a.rank - b.rank);
   try {
     for (const p of problems) {
-      const fix = (await quickFixesAt(view, p.from, p.to, p.problem))[0];
+      const fix = (await quickFixesAt(view, p.from, p.to, p.problem, { localOnly: p.local }))[0];
       if (view.state.doc !== state.doc) return;
       if (fix) return applyCodeAction(view, fix);
     }
@@ -208,6 +219,18 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
   if (!doc) return;
   if (action.disabledReason) {
     showHint(view, action.disabledReason);
+    return;
+  }
+  // Generate with a member chooser: its dialog picks the members and applies the edit.
+  if (startMemberChooser(view, action)) return;
+  // An action whose command the client runs (Laravel's "Create translation
+  // key…"): its dialog applies the edit.
+  if (!action.edit && isClientCommand(action.command)) {
+    try {
+      await runCommand(view, action.command);
+    } catch (e) {
+      reportLspError(view, e, true);
+    }
     return;
   }
   const before = view.state.doc;

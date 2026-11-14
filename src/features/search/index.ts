@@ -279,6 +279,22 @@ export function activate(): void | (() => void) {
         run: se("files"),
       },
       {
+        id: "navigate.searchRoutes",
+        title: "Search Routes…",
+        category: "Navigate",
+        keywords: ["route", "endpoint", "url", "uri", "laravel", "spring", "request mapping"],
+        when: "projectOpen",
+        run: se("routes"),
+      },
+      {
+        id: "navigate.searchLaravelGenerators",
+        title: "Search Laravel Generators…",
+        category: "Navigate",
+        keywords: ["laravel", "generate", "generator", "make", "artisan", "model"],
+        when: "projectOpen",
+        run: se("generators"),
+      },
+      {
         id: "navigate.gotoSymbol",
         title: "Go to Symbol…",
         category: "Navigate",

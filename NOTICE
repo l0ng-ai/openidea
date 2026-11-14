@@ -6,6 +6,12 @@ contributors as part of the IntelliJ Platform (https://github.com/JetBrains/inte
 https://github.com/JetBrains/intellij-plugins), licensed under the Apache License 2.0.
 Copyright 2000-2026 JetBrains s.r.o. and contributors.
 
+The native PHP engine bundles JetBrains phpstorm-stubs
+(https://github.com/JetBrains/phpstorm-stubs), licensed under the Apache License 2.0,
+Copyright JetBrains s.r.o. and contributors. Its documentation comments contain
+material by the PHP Documentation Group, licensed under CC-BY 3.0
+(https://www.php.net/manual/en/cc.license.php).
+
 Some Simplified Chinese UI terms follow the Visual Studio Code Simplified Chinese
 language pack (https://github.com/microsoft/vscode-loc), Copyright (c) Microsoft
 Corporation, licensed under the MIT License.

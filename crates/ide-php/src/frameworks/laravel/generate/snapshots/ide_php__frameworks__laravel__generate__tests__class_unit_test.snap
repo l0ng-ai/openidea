@@ -1,0 +1,21 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== tests/Unit/Money/ParserTest.php
+<?php
+
+namespace Tests\Unit\Money;
+
+use PHPUnit\Framework\TestCase;
+
+class ParserTest extends TestCase
+{
+    /**
+     * A basic unit test example.
+     */
+    public function test_example(): void
+    {
+        $this->assertTrue(true);
+    }
+}

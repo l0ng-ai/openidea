@@ -11,6 +11,7 @@
 import { create } from "zustand";
 import type { Diagnostic, Severity } from "@/bindings";
 import { useProject } from "./project";
+import { BLADE_PRODUCER, PHP_STRICT_OPTION, phpInspection, phpInspectionId } from "./phpInspections";
 
 export type InspectionLevel = "error" | "warning" | "weakWarning" | "serverProblem" | "typo" | "none";
 /** `default`, `project`, `ide:<key>` or `project:<key>`. */
@@ -337,6 +338,18 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
 const BUILTIN_BY_PRODUCER = new Map(BUILTIN_INSPECTIONS.map((b) => [b.producer, b]));
 const BUILTIN_BY_ID = new Map(BUILTIN_INSPECTIONS.map((b) => [b.id, b]));
 
+/** The Strict option of the PHP engine's call and type checks. */
+export const PHP_STRICT_OPTION_SPEC: InspectionOptionSpec = {
+  key: PHP_STRICT_OPTION,
+  label: "Strict: also report possible mismatches against PHPDoc types",
+  default: false,
+};
+
+/** The options of inspection `id` (a built-in check's, or a PHP engine inspection's). */
+export function inspectionOptions(id: string): readonly InspectionOptionSpec[] | undefined {
+  return BUILTIN_BY_ID.get(id)?.options ?? (phpInspection(id)?.strict ? [PHP_STRICT_OPTION_SPEC] : undefined);
+}
+
 /** Whether inspection `id` is on when a profile doesn't say. */
 export function enabledByDefault(id: string): boolean {
   return BUILTIN_BY_ID.get(id)?.defaultEnabled ?? true;
@@ -346,7 +359,7 @@ export function enabledByDefault(id: string): boolean {
 export function inspectionOption(profile: ProfileOverrides, id: string, key: string): boolean {
   const value = profile[id]?.options?.[key];
   if (typeof value === "boolean") return value;
-  return BUILTIN_BY_ID.get(id)?.options?.find((o) => o.key === key)?.default ?? true;
+  return inspectionOptions(id)?.find((o) => o.key === key)?.default ?? true;
 }
 
 /** The inspection a diagnostic of `producer` belongs to: its code's own when it has one. */
@@ -401,7 +414,9 @@ export function applyProfile<D extends Diagnostic>(
   let changed = false;
   const out: D[] = [];
   for (const d of items) {
-    const code = d.code ? profile[codeInspectionId(base, d.code)] : undefined;
+    const code = d.code
+      ? (profile[codeInspectionId(base, d.code)] ?? sharedEngineOverride(profile, producer, d.code))
+      : undefined;
     if (code?.enabled === false) {
       changed = true;
       continue;
@@ -419,6 +434,22 @@ export function applyProfile<D extends Diagnostic>(
     }
   }
   return changed ? out : items;
+}
+
+/**
+ * The PHP engine's own inspection a Blade template's problem belongs to: the
+ * undefined configuration keys, translations and the like that Blade views
+ * report under `blade` are the PHP inspections of the same code, set once in
+ * Settings › PHP › Inspections.
+ */
+function sharedEngineOverride(
+  profile: ProfileOverrides,
+  producer: string,
+  code: string,
+): InspectionOverride | undefined {
+  if (producer !== BLADE_PRODUCER) return undefined;
+  const id = phpInspectionId(code);
+  return phpInspection(id) ? profile[id] : undefined;
 }
 
 /** Applies `profile` to diagnostics of mixed producers (Inspect Code results). */

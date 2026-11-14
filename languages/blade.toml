@@ -1,0 +1,11 @@
+id = "blade"
+name = "Blade"
+# Laravel's views: `welcome.blade.php`. The compound extension wins over `php`.
+extensions = ["blade.php"]
+block-comment = ["{{--", "--}}"]
+indent = { tab-size = 4, insert-spaces = true }
+# The frontend's own mode (`src/editor/core/cm/blade.ts`): HTML, with
+# directives, echoes and the PHP inside them highlighted. Completion, hover,
+# signature help and goto come from the native engine (`ide_php::blade`,
+# served by `ide-host`'s `BladeService`), with no language server.
+ui-mode = "Blade"

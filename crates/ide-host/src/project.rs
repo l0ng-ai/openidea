@@ -61,6 +61,12 @@ pub struct Project {
     /// Native notebooks and owned kernels, scoped to this project incarnation.
     pub notebooks: Arc<crate::notebook::NotebookService>,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
+    /// The native PHP engine, while Settings › PHP › Engine is `Native`.
+    pub php: Arc<crate::php::PhpEngineSlot>,
+    /// PHPStan and Psalm on save (Settings › PHP › External Analyzers); not in LightEdit.
+    pub(crate) php_analyzers: Option<Arc<crate::php_analyzers::PhpAnalyzers>>,
+    /// In-process language services, asked before the language servers (`ops/lsp.rs`).
+    pub services: Arc<crate::language_service::LanguageServices>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
     /// Watchers of the Project Structure content roots outside the project folder.
@@ -128,6 +134,8 @@ impl Host {
             })?;
         }
         let project_key = project_key(&root);
+        // The index and the PHP engine both report dumb mode; the UI sees them merged.
+        let index_states = crate::php::IndexStates::new(sink.clone(), 2);
         let index = ProjectIndex::open(
             &root,
             &self.local_data_dir.join("index").join(&project_key),
@@ -135,7 +143,7 @@ impl Host {
             excludes.clone(),
             languages.clone(),
             self.syntax(),
-            sink.clone(),
+            index_states.producer(0),
         )?;
         mark("index");
         let lsp = LspManager::new(root.clone(), languages.clone(), sink.clone());
@@ -174,6 +182,7 @@ impl Host {
                 let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                crate::php::associate_ide_json_schema(cfg);
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
@@ -323,6 +332,44 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(kotlin_bridge.clone());
+        let php = Arc::new(crate::php::PhpEngineSlot::new(
+            &root,
+            &self.local_data_dir.join("cache").join(&project_key),
+            index_states.producer(1),
+            documents.clone(),
+        ));
+        documents.add_observer(Arc::new(crate::php::PhpObserver(php.clone())));
+        documents.add_observer(Arc::new(crate::blade::BladeObserver { php: php.clone(), sink: sink.clone() }));
+        let php_analyzers = crate::php_analyzers::PhpAnalyzers::new(
+            &root,
+            settings.clone(),
+            sink.clone(),
+            trusted.clone(),
+            php.clone(),
+        );
+        documents.add_observer(php_analyzers.clone());
+        let services = Arc::new(crate::language_service::LanguageServices::default());
+        services.register(LanguageId::new("php"), Arc::new(crate::php::PhpService(php.clone())));
+        services.register(LanguageId::new("twig"), Arc::new(crate::twig::TwigService::new(&root, documents.clone())));
+        services.register(
+            LanguageId::new("blade"),
+            Arc::new(crate::blade::BladeService::new(&root, documents.clone(), php.clone())),
+        );
+        // Laravel usages and renames from `.env` lines, JSON locale files and
+        // Inertia pages.
+        services.register(
+            LanguageId::new("dotenv"),
+            Arc::new(crate::laravel_files::DotenvService { documents: documents.clone(), php: php.clone() }),
+        );
+        services.register(
+            LanguageId::new("json"),
+            Arc::new(crate::laravel_files::TranslationJsonService { documents: documents.clone(), php: php.clone() }),
+        );
+        let pages =
+            Arc::new(crate::laravel_files::InertiaPageService { documents: documents.clone(), php: php.clone() });
+        for language in crate::laravel_files::PAGE_LANGUAGES {
+            services.register(LanguageId::new(language), pages.clone());
+        }
         let phpstan = crate::phpstan::Phpstan::new(
             root.clone(),
             self.config_dir.clone(),
@@ -361,6 +408,7 @@ impl Host {
             let lsp = lsp.clone();
             let trusted = trusted.clone();
             let build_cache = build_cache.clone();
+            let php = php.clone();
             let notify_watch_exhausted = notify_watch_exhausted.clone();
             let watcher_weak = watcher_weak.clone();
             Watcher::start(
@@ -373,6 +421,7 @@ impl Host {
                     index.ignore_rules_changed(&batch.ignore_rules);
                     index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
+                    php.files_changed(&changed, &batch.removed);
                     phpstan.files_removed(batch.removed.iter());
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
@@ -584,6 +633,9 @@ impl Host {
             agents,
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
+            php,
+            php_analyzers: Some(php_analyzers),
+            services,
             phpstan: Some(phpstan),
             watcher,
             content_watchers: Mutex::new(content_watchers),
@@ -623,6 +675,11 @@ impl Host {
         project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);
+        }
+        // Only when Settings › PHP › Engine asks for it; returns at once (it indexes in the background).
+        project.php.apply(&project.settings.effective());
+        if !project.light {
+            crate::ops::laravel::refresh_schema_if_changed(&project, &self.runtime);
         }
         if let Some(phpstan) = &project.phpstan {
             phpstan.start(&self.runtime);
@@ -731,6 +788,13 @@ impl Host {
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
+        // Never started: LightEdit has no project to index.
+        let php = Arc::new(crate::php::PhpEngineSlot::new(
+            &dir,
+            &self.local_data_dir.join("cache").join(&project_key),
+            sink.clone(),
+            documents.clone(),
+        ));
         let plugin_diagnostics =
             crate::plugins::diagnostics::Diagnostics::new(sink.clone(), self.runtime.clone(), &documents, &dir);
         documents.add_observer(plugin_diagnostics.clone());
@@ -760,6 +824,9 @@ impl Host {
             agents,
             notebooks,
             kotlin_bridge: None,
+            php,
+            php_analyzers: None,
+            services: Arc::default(),
             phpstan: None,
             watcher: Arc::new(watcher),
             content_watchers: Mutex::new(Vec::new()),

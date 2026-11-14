@@ -23,6 +23,7 @@ import { installCellActions } from "./cellActions";
 import { installValueEditorActions } from "./valueEditorActions";
 import { registerResultTabActions } from "./resultTabActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
+import { phpSqlExtension } from "./phpSql";
 import { TABLE_KIND, tableTitle } from "./tableInput";
 import { databaseRequest, projectRequest } from "./requests";
 import { nodeTarget, type DbNode } from "./nodes";
@@ -93,6 +94,7 @@ export function activate(): () => void {
         () => import("./console").then((m) => m.consoleExtension),
       ),
     }),
+    registerEditorContribution({ id: "database.php-sql", order: 57, extensions: phpSqlExtension }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;

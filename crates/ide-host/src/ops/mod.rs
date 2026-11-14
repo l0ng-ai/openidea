@@ -19,6 +19,7 @@ pub mod heap;
 pub mod history;
 pub mod java;
 pub mod jvm_icons;
+pub mod laravel;
 pub mod lsp;
 pub mod nav;
 pub mod notebook;
@@ -85,6 +86,7 @@ pub fn register_all(d: &mut crate::rpc::Dispatcher) {
     scaffold::register(d);
     sdk::register(d);
     java::register(d);
+    laravel::register(d);
     debug::register(d);
     heap::register(d);
     bytes::register(d);

@@ -1,0 +1,18 @@
+---
+source: crates/ide-php/src/frameworks/laravel/refs/controller_tests.rs
+expression: controller
+---
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+
+/** Mine. */
+final class GhostController extends Controller
+{
+    public function show(Request $request)
+    {
+        //
+    }
+}

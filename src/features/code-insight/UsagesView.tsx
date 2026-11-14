@@ -187,12 +187,17 @@ export function UsagesView() {
     return step;
   });
 
-  if (!search)
+  if (!search) {
+    // The shortcut of the keymap in effect, not a fixed one.
+    const key = shortcutLabel("find.usages");
     return (
       <EmptyState>
-        <T>Use Find Usages (⌥F7) on a symbol to see its usages here</T>
+        {key
+          ? formatMessage(tx("Use Find Usages ({key}) on a symbol to see its usages here"), { key })
+          : tx("Use Find Usages on a symbol to see its usages here")}
       </EmptyState>
     );
+  }
   const total = usageCount(search.groups);
   const visibleLead =
     lead?.kind === "usage"

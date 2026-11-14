@@ -1,8 +1,8 @@
 /**
  * HTTP Client (IDEA's `.http` / `.rest` files): highlighting, ▶ gutter per
  * request, environments, Run All, and a tool window with the responses and
- * their history, and requests generated from Spring Web mappings in Java /
- * Kotlin sources (`spring/`). Parsing, variable resolution and sending happen in Rust
+ * their history, requests generated from Spring Web mappings in Java /
+ * Kotlin sources (`spring/`), and the actions on Laravel routes (`laravel/`). Parsing, variable resolution and sending happen in Rust
  * (`ide-http`).
  */
 import { activeEditor, registerEditorContribution, registerLanguageMode } from "@/editor/api";
@@ -32,6 +32,7 @@ import {
 import { endpointEditorExtension, OPEN_ENDPOINT, openEndpoint } from "./endpoints";
 import type { EndpointEntry } from "@/workbench/contributions";
 import { registerSpringEndpointProvider } from "./spring/routeIndex";
+import { registerLaravelRoutes } from "./laravel/routes";
 
 const SPRING_WHEN = "editorLangId == java || editorLangId == kotlin";
 
@@ -133,6 +134,7 @@ async function newRequest(directory?: string) {
 export function activate(): () => void {
   const disposers = [
     registerSpringEndpointProvider(),
+    registerLaravelRoutes(),
     registerVariableNavigation(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root) resetHttpClient();

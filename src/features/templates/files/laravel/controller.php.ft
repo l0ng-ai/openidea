@@ -1,0 +1,10 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+class $CLASS$ extends Controller
+{
+    //
+}

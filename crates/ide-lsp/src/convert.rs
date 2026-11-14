@@ -587,6 +587,7 @@ pub fn code_action(
             command: Some(command(c)),
             data: None,
             server,
+            open: None,
         },
         lsp::CodeActionOrCommand::CodeAction(a) => CodeAction {
             title: a.title,
@@ -604,6 +605,7 @@ pub fn code_action(
             command: a.command.map(command),
             data: a.data,
             server,
+            open: None,
         },
     }
 }
@@ -944,6 +946,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
                         lsp::InlayHintLabelPartTooltip::MarkupContent(m) => m.value,
                     }),
                     location: p.location.as_ref().and_then(|l| conv.location(l)),
+                    command: p.command.map(command),
                 })
                 .collect();
             (label, parts)

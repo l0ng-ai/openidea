@@ -1,0 +1,878 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use ide_core::{CancellationToken, DocId, IdeEvent, Pos, SharedSink};
+
+use super::views::{ViewPaths, ViewRef, goto_view, view_ref_at};
+use super::*;
+use crate::engine::{CACHE_SUBDIR, EngineConfig, PhpEngine};
+use crate::project::LayoutConfig;
+use crate::stubs::StubFilter;
+
+const CARET: &str = "/*|*/";
+
+/// The text without the caret marker, and the caret's position.
+fn caret(source: &str) -> (String, Pos) {
+    let at = source.find(CARET).expect("a /*|*/ caret");
+    let text = format!("{}{}", &source[..at], &source[at + CARET.len()..]);
+    let pos = LineIndex::new(&text).pos(at as u32);
+    (text, pos)
+}
+
+/// `(kind, text of the span, text of the code)` of each node.
+fn nodes(text: &str) -> Vec<(String, &str, Option<&str>)> {
+    parse(text)
+        .into_iter()
+        .map(|node| {
+            let kind = match node.kind {
+                NodeKind::Comment => "comment".to_owned(),
+                NodeKind::Echo { raw: false } => "echo".to_owned(),
+                NodeKind::Echo { raw: true } => "raw".to_owned(),
+                NodeKind::Php => "php".to_owned(),
+                NodeKind::Directive { name } => format!("@{name}"),
+                NodeKind::Bound => "bound".to_owned(),
+            };
+            let span = &text[node.span.start as usize..node.span.end as usize];
+            (kind, span, node.code.map(|code| &text[code.start as usize..code.end as usize]))
+        })
+        .collect()
+}
+
+#[test]
+fn parse_finds_echoes_comments_and_php() {
+    let text = "<p>{{ $a }} {!! $b !!} {{-- {{ $no }} --}} @{{ $escaped }} <?php $c = 1; ?><?= $d ?></p>";
+    assert_eq!(
+        nodes(text),
+        [
+            ("echo".to_owned(), "{{ $a }}", Some(" $a ")),
+            ("raw".to_owned(), "{!! $b !!}", Some(" $b ")),
+            ("comment".to_owned(), "{{-- {{ $no }} --}}", None),
+            ("php".to_owned(), "<?php $c = 1; ?>", Some(" $c = 1; ")),
+            ("raw".to_owned(), "<?= $d ?>", Some(" $d ")),
+        ]
+    );
+}
+
+#[test]
+fn parse_finds_directives_with_balanced_arguments() {
+    let text = "@if (count($a) > 1 && $b === ')')\n@foreach($items as $item)@endforeach\n@endif @csrf";
+    assert_eq!(
+        nodes(text),
+        [
+            ("@if".to_owned(), "@if (count($a) > 1 && $b === ')')", Some("count($a) > 1 && $b === ')'")),
+            ("@foreach".to_owned(), "@foreach($items as $item)", Some("$items as $item")),
+            ("@endforeach".to_owned(), "@endforeach", None),
+            ("@endif".to_owned(), "@endif", None),
+            ("@csrf".to_owned(), "@csrf", None),
+        ]
+    );
+}
+
+#[test]
+fn parse_skips_what_is_not_a_directive() {
+    // An e-mail, CSS, Alpine, an escaped directive, verbatim text.
+    let text = "a@b.com @media (x) <a @click=\"go\"> @@if($x) @verbatim {{ $v }} @if($v) @endverbatim @json($j)";
+    assert_eq!(nodes(text), [("@json".to_owned(), "@json($j)", Some("$j"))]);
+}
+
+#[test]
+fn parse_takes_php_blocks_and_unclosed_constructs() {
+    let text = "@php\n$x = 1;\n@endphp @php($y = 2)";
+    assert_eq!(
+        nodes(text),
+        [
+            ("php".to_owned(), "@php\n$x = 1;\n@endphp", Some("\n$x = 1;\n")),
+            ("@php".to_owned(), "@php($y = 2)", Some("$y = 2")),
+        ]
+    );
+    // While typing: an echo runs to the end, directive arguments to the end of the line.
+    assert_eq!(nodes("{{ $user->"), [("echo".to_owned(), "{{ $user->", Some(" $user->"))]);
+    assert_eq!(nodes("@if($a->\n<p>"), [("@if".to_owned(), "@if($a->", Some("$a->"))]);
+}
+
+#[test]
+fn compile_writes_php_structures() {
+    let text = "@use('App\\Models\\User', 'Account')\n@extends('layouts.app')\n@foreach($users as $user)\n{{ $user->name }}\n@if($loop->first) a @elseif($x) b @else c @endif\n@endforeach\n@forelse($a as $b) @empty none @endforelse\n@switch($s) @case(1) @break @default x @endswitch\n@error('email') {{ $message }} @enderror\n@inject('metrics', 'App\\Services\\Metrics')\n@php($n = 1)";
+    let compiled = compile(text, false);
+    let expected = "<?php
+use App\\Models\\User as Account;
+/** @var \\Illuminate\\Support\\ViewErrorBag $errors */
+$errors = null;
+__blade_extends('layouts.app');
+foreach ($users as $user) {
+/** @var \\stdClass $loop */
+$loop = null;
+echo  $user->name ;
+if ($loop->first) {
+} elseif ($x) {
+} else {
+}
+}
+foreach ($a as $b) {
+/** @var \\stdClass $loop */
+$loop = null;
+} {
+}
+switch ($s) {
+case 1:
+break;
+default:
+}
+['email'];
+if (true) {
+/** @var string $message */
+$message = null;
+echo  $message ;
+}
+/** @var \\App\\Services\\Metrics $metrics */
+$metrics = null;
+$n = 1;
+";
+    assert_eq!(compiled.php, expected);
+    // The compiled PHP parses.
+    let parsed = crate::syntax::ParsedFile::parse("view.blade.php", compiled.php.as_str());
+    assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+}
+
+#[test]
+fn compile_balances_blocks() {
+    // Unclosed blocks are closed, stray ends and middles don't break the PHP.
+    for text in [
+        "@if($a) @foreach($b as $c)",
+        "@endif @endforeach x",
+        "@else @elseif($a) @empty",
+        "@case(1) @break",
+        "@if($a) @else @elseif($b) @endif",
+    ] {
+        let compiled = compile(text, false);
+        let parsed = crate::syntax::ParsedFile::parse("view.blade.php", compiled.php.as_str());
+        assert!(parsed.errors().is_empty(), "{text}: {}\n{:?}", compiled.php, parsed.errors());
+    }
+    let components = compile("{{ $attributes }}", true);
+    assert!(components.php.contains("$attributes = null;") && components.php.contains("$slot = null;"));
+}
+
+#[test]
+fn positions_map_both_ways() {
+    let text = "<h1>\n  {{ $title }}</h1>\n@if ($ok)";
+    let compiled = compile(text, false);
+    let title = Pos::new(1, 5);
+    let php = compiled.to_php(title).expect("in the echo");
+    let php_text = &compiled.php;
+    let offset = LineIndex::new(php_text).byte(php) as usize;
+    assert!(php_text[offset..].starts_with("$title"));
+    assert_eq!(compiled.to_blade(php), Some(title));
+    // The end of a piece of code maps too; HTML and delimiters don't.
+    assert!(compiled.to_php(Pos::new(2, 8)).is_some());
+    assert_eq!(compiled.to_php(Pos::new(0, 1)), None);
+    assert_eq!(compiled.to_php(Pos::new(1, 2)), None);
+    assert_eq!(compiled.to_blade(Pos::new(0, 2)), None);
+}
+
+#[test]
+fn directive_prefix_only_outside_php() {
+    let (text, pos) = caret("<p>\n@for/*|*/each");
+    let (prefix, range) = directive_prefix(&text, pos).expect("a directive");
+    assert_eq!(prefix, "for");
+    assert_eq!(range, Range::new(Pos::new(1, 1), Pos::new(1, 8)));
+    for source in ["a@b/*|*/", "{{ '@x/*|*/' }}", "@if('@x/*|*/')", "@php @x/*|*/ @endphp", "x/*|*/"] {
+        let (text, pos) = caret(source);
+        assert_eq!(directive_prefix(&text, pos), None, "{source}");
+    }
+}
+
+#[test]
+fn parse_finds_bound_component_attributes() {
+    let text = "<x-alert type=\"info\" :message=\"$post->title\" ::class=\"{ a: b }\" :$user>{{ $x }}</x-alert>";
+    assert_eq!(
+        nodes(text),
+        [
+            ("bound".to_owned(), ":message=\"$post->title", Some("$post->title")),
+            ("bound".to_owned(), ":$user", Some("$user")),
+            ("echo".to_owned(), "{{ $x }}", Some(" $x ")),
+        ]
+    );
+    // The PHP of bound attributes isn't scanned for Blade constructs.
+    assert_eq!(nodes("<x-a :b=\"'@if'\" />"), [("bound".to_owned(), ":b=\"'@if'", Some("'@if'"))]);
+    let compiled = compile(
+        "@if($a)
+<x-alert :message=\"$a->name\" />
+@endif",
+        false,
+    );
+    assert!(
+        compiled.php.contains(
+            "if ($a) {
+($a->name);
+}"
+        ),
+        "{}",
+        compiled.php
+    );
+    let parsed = crate::syntax::ParsedFile::parse("view.blade.php", compiled.php.as_str());
+    assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+}
+
+#[test]
+fn custom_directives_take_php_arguments() {
+    let custom = ["money".to_owned()];
+    assert!(nodes("@money($cents)").is_empty());
+    let found = parse_with("@money($cents)", &custom);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, NodeKind::Directive { name: "money".into() });
+    let compiled = compile_with("@money($cents)", false, &[], &custom);
+    assert!(compiled.php.contains("[$cents];"), "{}", compiled.php);
+}
+
+#[test]
+fn component_tags_and_places() {
+    use super::tags::{TagPlace, component_tags, tag_place};
+    let text = "<x-forms.input name=\"a\" :value=\"$v\" disabled />
+<x-billing::alert>";
+    let tags = component_tags(text);
+    assert_eq!(tags.len(), 2);
+    let names: Vec<&str> =
+        tags[0].attributes.iter().map(|a| &text[a.name.start as usize..a.name.end as usize]).collect();
+    assert_eq!(names, ["name", ":value", "disabled"]);
+    assert!(tags[0].closed);
+    assert_eq!(&text[tags[1].name.start as usize..tags[1].name.end as usize], "billing::alert");
+
+    let place = |source: &str| {
+        let (text, pos) = caret(source);
+        tag_place(&text, LineIndex::new(&text).byte(pos)).map(|place| match place {
+            TagPlace::Name(span) => format!("name {}", &text[span.start as usize..span.end as usize]),
+            TagPlace::Attribute { component, name, bound } => {
+                format!("{component} {} {bound}", &text[name.start as usize..name.end as usize])
+            }
+        })
+    };
+    assert_eq!(place("<x-al/*|*/").as_deref(), Some("name al"));
+    assert_eq!(place("<x-alert ty/*|*/").as_deref(), Some("alert ty false"));
+    assert_eq!(place("<x-alert :mess/*|*/age=\"$m\" />").as_deref(), Some("alert message true"));
+    assert_eq!(place("<x-alert type=\"info\" /*|*/>").as_deref(), Some("alert  false"));
+    assert_eq!(place("<x-alert type=\"in/*|*/fo\" />"), None);
+    assert_eq!(place("<x-alert /> <p/*|*/>"), None);
+    assert_eq!(place("<div cl/*|*/>"), None);
+}
+
+#[test]
+fn sections_stacks_and_props() {
+    use super::structure::{NameKind, NameRole, extends, names, props};
+    let text = "@extends('layouts.app')
+@section('title', 'Home')
+@section('content') x @endsection
+@yield('side')
+@hasSection('nav')
+@push('scripts') a @endpush
+@pushIf($x, 'styles') b @endPushIf
+@stack('head')";
+    let found: Vec<(NameKind, NameRole, String)> =
+        names(text, &[]).into_iter().map(|name| (name.kind, name.role, name.name)).collect();
+    use NameKind::*;
+    use NameRole::*;
+    assert_eq!(
+        found,
+        [
+            (Section, Fill, "title".to_owned()),
+            (Section, Fill, "content".to_owned()),
+            (Section, Show, "side".to_owned()),
+            (Section, Show, "nav".to_owned()),
+            (Stack, Fill, "scripts".to_owned()),
+            (Stack, Fill, "styles".to_owned()),
+            (Stack, Show, "head".to_owned()),
+        ]
+    );
+    assert_eq!(extends(text).map(|(name, _)| name).as_deref(), Some("layouts.app"));
+    // A name being typed.
+    let typing = names(
+        "@section('con
+<p>",
+        &[],
+    );
+    assert_eq!(typing.len(), 1);
+    assert_eq!(typing[0].name, "con");
+
+    let props = props("@props(['type' => 'info', 'message', 'isActive' => fn () => [1, 2]])");
+    let props: Vec<(&str, Option<&str>)> = props.iter().map(|p| (p.name.as_str(), p.default.as_deref())).collect();
+    assert_eq!(props, [("type", Some("'info'")), ("message", None), ("isActive", Some("fn () => [1, 2]"))]);
+}
+
+#[test]
+fn unclosed_sections_are_reported() {
+    use super::structure::inspect;
+    let messages = |text: &str| -> Vec<(u32, String)> {
+        inspect(text, &[]).into_iter().map(|d| (d.range.start.line, d.message)).collect()
+    };
+    // Closed every way, inline sections, pushes.
+    let fine = "@section('a') x @endsection
+@section('b') @show
+@section('c') @stop
+@section('d') @overwrite
+@section('e') @append
+@section('title', 'Home')
+@push('s') @endpush @prepend('s') @endprepend";
+    assert!(messages(fine).is_empty(), "{:?}", messages(fine));
+    // Blade's directive methods are found case-insensitively (Bagisto writes
+    // `@endpushOnce`).
+    let any_case = "@pushOnce('scripts') x @endpushOnce
+@prependOnce('s') @endprependonce
+@push('s') @endPush";
+    assert!(messages(any_case).is_empty(), "{:?}", messages(any_case));
+    assert_eq!(
+        messages(
+            "@section('content')
+<p>x</p>
+@push('scripts')
+"
+        ),
+        [
+            (
+                0,
+                "`@section('content')` is not closed: add `@endsection`, `@show`, `@stop`, `@overwrite`, `@append`"
+                    .to_owned()
+            ),
+            (2, "`@push('scripts')` is not closed: add `@endpush`, `@endPushIf`".to_owned()),
+        ]
+    );
+    assert_eq!(
+        messages(
+            "<p>
+@endsection"
+        ),
+        [(1, "`@endsection` without an open `@section`".to_owned())]
+    );
+    let problem = &inspect("@section('a')", &[])[0];
+    assert_eq!(problem.source.as_deref(), Some("blade"));
+    assert_eq!(problem.range, Range::new(Pos::new(0, 0), Pos::new(0, 13)));
+}
+
+fn write(root: &Path, files: &[(&str, &str)]) {
+    for (rel, text) in files {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+}
+
+#[test]
+fn views_and_components_resolve_to_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    write(
+        &root,
+        &[
+            ("resources/views/layouts/app.blade.php", ""),
+            ("resources/views/partials/nav.php", ""),
+            ("resources/views/components/alert.blade.php", ""),
+            ("app/View/Components/Alert.php", ""),
+            ("resources/views/components/forms/input-group/index.blade.php", ""),
+            ("app/View/Components/Forms/InputGroup.php", ""),
+            ("resources/views/components/card/card.blade.php", ""),
+        ],
+    );
+    let paths = ViewPaths::new(&root);
+    let views = root.join("resources/views");
+    assert_eq!(paths.view("layouts.app"), Some(views.join("layouts/app.blade.php")));
+    assert_eq!(paths.view("partials.nav"), Some(views.join("partials/nav.php")));
+    assert_eq!(paths.view("missing"), None);
+    assert_eq!(paths.view("../secret"), None);
+    assert_eq!(paths.view("mail::message"), None);
+    assert_eq!(
+        paths.component("alert"),
+        [root.join("app/View/Components/Alert.php"), views.join("components/alert.blade.php")]
+    );
+    assert_eq!(
+        paths.component("forms.input-group"),
+        [
+            root.join("app/View/Components/Forms/InputGroup.php"),
+            views.join("components/forms/input-group/index.blade.php")
+        ]
+    );
+    assert_eq!(paths.component("card"), [views.join("components/card/card.blade.php")]);
+    assert!(paths.is_component_view(&views.join("components/alert.blade.php")));
+    assert!(!paths.is_component_view(&views.join("layouts/app.blade.php")));
+
+    let goto = |source: &str| {
+        let (text, pos) = caret(source);
+        goto_view(&text, pos, &paths)
+    };
+    assert_eq!(goto("@extends('layouts./*|*/app')"), [views.join("layouts/app.blade.php")]);
+    assert_eq!(goto("@includeWhen($x, 'partials/*|*/.nav', [])"), [views.join("partials/nav.php")]);
+    assert_eq!(goto("<x-al/*|*/ert type=\"error\" />").len(), 2);
+    assert_eq!(goto("<x-alert></x-al/*|*/ert>").len(), 2);
+    assert_eq!(goto("<x-forms.input-gr/*|*/oup />").len(), 2);
+    assert!(goto("<x-slot:ti/*|*/tle>").is_empty());
+    assert!(goto("@yield('con/*|*/tent')").is_empty());
+}
+
+#[test]
+fn view_refs_report_their_range() {
+    let (text, pos) = caret("@include('a.b/*|*/')");
+    let (found, range) = view_ref_at(&text, pos).unwrap();
+    assert_eq!(found, ViewRef::View("a.b".into()));
+    assert_eq!(range, Range::new(Pos::new(0, 10), Pos::new(0, 13)));
+    let (text, pos) = caret("<x-a/*|*/lert/>");
+    assert_eq!(view_ref_at(&text, pos).unwrap().0, ViewRef::Component("alert".into()));
+}
+
+// ------------------------------------------------------------ the engine
+
+const MODELS: &str = "<?php
+namespace App\\Models;
+
+class User
+{
+    public string $name = '';
+
+    /** The posts the user wrote. */
+    public function posts(int $limit): array { return []; }
+}
+
+class Post
+{
+    public string $title = '';
+}
+";
+
+const HELPERS: &str = "<?php
+function format_money(int $cents, string $currency): string { return ''; }
+";
+
+struct Project {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    engine: Arc<PhpEngine>,
+}
+
+impl Project {
+    fn new() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let root = base.join("project");
+        write(&root, &[("app/Models/User.php", MODELS), ("app/helpers.php", HELPERS)]);
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let config = EngineConfig {
+            cache_dir: base.join("cache").join(CACHE_SUBDIR),
+            layout: LayoutConfig { root: root.clone(), ..LayoutConfig::default() },
+            stubs: StubFilter::default(),
+        };
+        let engine = PhpEngine::open(config, sink).unwrap();
+        assert!(engine.wait_idle(Duration::from_secs(60)));
+        Self { _tmp: tmp, root, engine }
+    }
+
+    fn view(&self) -> PathBuf {
+        self.root.join("resources/views/page.blade.php")
+    }
+
+    fn with<T>(&self, source: &str, f: impl FnOnce(&PhpEngine, &BladeDocument, Pos) -> T) -> T {
+        let (text, pos) = caret(source);
+        let path = self.view();
+        let blade = BladeDocument { doc: DocId(7), path: &path, version: 1, text: &text };
+        let found = f(&self.engine, &blade, pos);
+        self.engine.document_closed(DocId(7));
+        found
+    }
+
+    fn labels(&self, source: &str) -> Vec<String> {
+        self.with(source, |engine, blade, pos| {
+            let found = engine.blade_completion(blade, pos, None, &CancellationToken::new()).expect("in PHP");
+            found.items.into_iter().map(|item| item.label).collect()
+        })
+    }
+}
+
+const PRELUDE: &str = "@use('App\\Models\\User')\n@php\n/** @var User $user */\n$user = new User();\n@endphp\n";
+
+#[test]
+fn completion_in_echoes_and_directives() {
+    let project = Project::new();
+    let labels = project.labels(&format!("{PRELUDE}<h1>{{{{ $user->/*|*/ }}}}</h1>"));
+    assert!(labels.contains(&"name".to_owned()) && labels.contains(&"posts".to_owned()), "{labels:?}");
+    let labels = project.labels(&format!("{PRELUDE}@if ($user->/*|*/)"));
+    assert!(labels.contains(&"name".to_owned()), "{labels:?}");
+    // Loop variables and `$loop`.
+    let labels = project.labels("@foreach([1, 2] as $number)\n{{ $num/*|*/ }}\n@endforeach");
+    assert!(labels.contains(&"$number".to_owned()), "{labels:?}");
+    let labels = project.labels("@foreach([1] as $n) {{ $lo/*|*/ }} @endforeach");
+    assert!(labels.contains(&"$loop".to_owned()), "{labels:?}");
+    // Outside the PHP: not the engine's.
+    project.with("<p>/*|*/</p>", |engine, blade, pos| {
+        assert!(engine.blade_completion(blade, pos, None, &CancellationToken::new()).is_none());
+    });
+}
+
+#[test]
+fn completion_ranges_are_the_templates() {
+    let project = Project::new();
+    project.with(&format!("{PRELUDE}<h1>{{{{ $user->na/*|*/ }}}}</h1>"), |engine, blade, pos| {
+        let found = engine.blade_completion(blade, pos, None, &CancellationToken::new()).unwrap();
+        let name = found.items.iter().find(|item| item.label == "name").expect("name");
+        assert_eq!(name.replace, Range::new(Pos::new(pos.line, pos.col - 2), pos));
+    });
+    // A class from elsewhere: its qualified name, no import.
+    project.with("{{ new Pos/*|*/ }}", |engine, blade, pos| {
+        let found = engine.blade_completion(blade, pos, None, &CancellationToken::new()).unwrap();
+        let post = found.items.iter().find(|item| item.label == "Post").expect("Post");
+        assert!(post.additional_edits.is_empty());
+        assert!(post.insert_text.starts_with("\\App\\Models\\Post"), "{}", post.insert_text);
+    });
+}
+
+#[test]
+fn hover_and_signature_help_in_the_php() {
+    let project = Project::new();
+    project.with(&format!("{PRELUDE}{{{{ $user->po/*|*/sts(3) }}}}"), |engine, blade, pos| {
+        let hover = engine.blade_hover(blade, pos).expect("a hover");
+        assert!(hover.markdown.contains("posts(int $limit): array"), "{}", hover.markdown);
+        assert!(hover.markdown.contains("The posts the user wrote."), "{}", hover.markdown);
+        assert_eq!(hover.range, Range::new(Pos::new(pos.line, pos.col - 2), Pos::new(pos.line, pos.col + 3)));
+    });
+    project.with("@if (true) {!! format_money(10, /*|*/) !!} @endif", |engine, blade, pos| {
+        let help = engine.blade_signature_help(blade, pos).expect("signature help");
+        assert_eq!(help.signatures[0].label, "format_money(int $cents, string $currency): string");
+        assert_eq!(help.active_parameter, 1);
+    });
+    project.with("@inject('people', 'App\\Models\\User')\n{{ $peo/*|*/ple }}", |engine, blade, pos| {
+        let hover = engine.blade_hover(blade, pos).expect("a hover");
+        assert!(hover.markdown.contains("User"), "{}", hover.markdown);
+    });
+    project.with("<p>/*|*/</p>", |engine, blade, pos| assert!(engine.blade_hover(blade, pos).is_none()));
+}
+
+#[test]
+fn definition_from_the_php() {
+    let project = Project::new();
+    let models = project.root.join("app/Models/User.php");
+    project.with(&format!("{PRELUDE}{{{{ $user->na/*|*/me }}}}"), |engine, blade, pos| {
+        let targets = engine.blade_definition(blade, pos).expect("handled");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].path, models);
+        assert_eq!(targets[0].range.start.line, 5);
+    });
+    // A variable assigned in the template: mapped back into it.
+    project.with("@php($total = 3)\n<b>{{ $to/*|*/tal }}</b>", |engine, blade, pos| {
+        let targets = engine.blade_definition(blade, pos).expect("handled");
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].path, project.view());
+        assert_eq!(targets[0].range, Range::new(Pos::new(0, 5), Pos::new(0, 11)));
+    });
+}
+
+#[test]
+fn embedded_documents_are_not_inspected() {
+    let project = Project::new();
+    project.with("{{ undefined_function() }}/*|*/", |engine, blade, _| {
+        engine.blade_sync(blade);
+        assert!(engine.is_open(blade.doc));
+        assert!(engine.inspect(blade.doc, &CancellationToken::new()).is_none());
+        // The editor's raw-text updates don't replace the compiled PHP.
+        engine.document_changed(blade.doc, 2, "<?php nonsense(");
+        let held = engine.open_document(blade.path).unwrap();
+        assert!(held.embedded && held.text.contains("echo  undefined_function() ;"));
+    });
+}
+
+#[test]
+fn props_and_aware_entries_compile_to_variables() {
+    let text = "@props(['type' => 'info', 'message'])\n@aware(['color' => 'gray'])\n{{ $type }}";
+    let compiled = compile_full(text, true, &[("message".to_owned(), "string".to_owned())], &[], &[]);
+    assert!(compiled.php.contains("$type = ('info');\n"), "{}", compiled.php);
+    assert!(compiled.php.contains("$color = ('gray');\n"), "{}", compiled.php);
+    // A variable the callers pass keeps its type.
+    assert!(!compiled.php.contains("@var mixed $message"), "{}", compiled.php);
+    let compiled = compile_full("@props(['size'])", true, &[], &[], &[]);
+    assert!(compiled.php.contains("/** @var mixed $size */\n$size = null;\n"), "{}", compiled.php);
+}
+
+#[test]
+fn bound_attributes_of_class_components_compile_to_constructor_calls() {
+    let text = "<x-alert :message=\"$m\" :user-name=\"$u\" :$type class=\"a\" />\n<x-badge :status=\"$s\" />";
+    let classes = [("alert".to_owned(), "App\\View\\Components\\Alert".to_owned())];
+    let compiled = compile_full(text, false, &[], &[], &classes);
+    assert!(compiled.php.contains("new \\App\\View\\Components\\Alert(message: $m);\n"), "{}", compiled.php);
+    assert!(compiled.php.contains("new \\App\\View\\Components\\Alert(userName: $u);\n"), "{}", compiled.php);
+    assert!(compiled.php.contains("new \\App\\View\\Components\\Alert(type: $type);\n"), "{}", compiled.php);
+    // Anonymous components keep the plain expression.
+    assert!(compiled.php.contains("($s);\n"), "{}", compiled.php);
+    // The value still maps both ways.
+    let at = text.find("$m").unwrap() as u32;
+    let php = compiled.php_offset(at).unwrap();
+    assert_eq!(&compiled.php[php as usize..php as usize + 2], "$m");
+    assert_eq!(compiled.blade_offset(php), Some(at));
+    assert_eq!(camel("user-name"), "userName");
+    assert_eq!(camel("is_active"), "isActive");
+    assert_eq!(camel("type"), "type");
+}
+
+#[test]
+fn slots_find_their_enclosing_component() {
+    use super::tags::{attribute_value_at, enclosing_component, is_builtin};
+    let text = "<x-card>\n<x-alert />\n<x-panel>\n</x-panel>\n<x-slot:title>T</x-slot>\n<x-slot name=\"footer\"></x-slot>\n</x-card>\n";
+    let at = |needle: &str| text.find(needle).unwrap() as u32;
+    assert_eq!(enclosing_component(text, at("<x-alert")).as_deref(), Some("card"));
+    assert_eq!(enclosing_component(text, at("</x-panel>")).as_deref(), Some("panel"));
+    assert_eq!(enclosing_component(text, at("<x-slot:title")).as_deref(), Some("card"));
+    assert_eq!(enclosing_component(text, text.len() as u32), None);
+    let value = attribute_value_at(text, at("footer") + 2, "slot", "name").unwrap();
+    assert_eq!(&text[value.start as usize..value.end as usize], "footer");
+    assert!(attribute_value_at(text, at("title"), "slot", "name").is_none());
+    assert!(is_builtin("slot") && is_builtin("slot:title") && is_builtin("dynamic-component"));
+    assert!(!is_builtin("slotted"));
+}
+
+#[test]
+fn vue_component_tags_and_their_registrations() {
+    use super::vue::{component_tag_at, normalize_name, registrations, x_template};
+    let text = "<v-dashboard-filters>\n</v-dashboard-filters> <x-alert/> <div> <livewire:counter/>";
+    let name = |offset: u32| component_tag_at(text, offset).map(|(s, e)| &text[s as usize..e as usize]);
+    assert_eq!(name(5), Some("v-dashboard-filters"));
+    assert_eq!(name(26), Some("v-dashboard-filters"));
+    assert_eq!(name(46), None, "Blade's own component");
+    assert_eq!(name(56), None, "a plain element");
+    assert_eq!(name(64), None, "Livewire's tag");
+    assert_eq!(normalize_name("VForm"), normalize_name("v-form"));
+
+    let script = "app.component('v-dashboard-filters', {\n template: '#v-dashboard-filters-template' });\n\
+                  app.component(\"VForm\", Form); mycomponent('v-dashboard-filters');";
+    let found = registrations(script, &normalize_name("v-dashboard-filters"));
+    assert_eq!(
+        found.iter().map(|&(s, e)| &script[s as usize..e as usize]).collect::<Vec<_>>(),
+        ["v-dashboard-filters"]
+    );
+    assert_eq!(registrations(script, &normalize_name("v-form")).len(), 1);
+    let template = "<script type=\"text/x-template\" id=\"v-dashboard-filters-template\">";
+    let (s, e) = x_template(template, &normalize_name("v-dashboard-filters")).unwrap();
+    assert_eq!(&template[s as usize..e as usize], "v-dashboard-filters-template");
+}
+
+#[test]
+fn goto_a_vue_component_from_its_tag() {
+    let project = Project::new();
+    // Registered in the template itself.
+    let page = "<v-dash/*|*/board-filters></v-dashboard-filters>\n@pushOnce('scripts')\n<script type=\"module\">\n\
+                app.component('v-dashboard-filters', { template: '#v-dashboard-filters-template' });\n</script>\n@endPushOnce";
+    let found = project
+        .with(page, |engine, blade, pos| engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos)));
+    let found = found.expect("the registration");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, crate::project::normalize(&project.view()));
+    assert_eq!(found[0].range.start, Pos::new(3, 15));
+
+    // Registered in the app's JavaScript, and a single-file component.
+    write(
+        &project.root,
+        &[
+            ("resources/js/app.js", "import Form from './Form.vue';\napp.component(\"VForm\", Form);\n"),
+            ("resources/js/components/UserCard.vue", "<template><div/></template>\n"),
+            ("node_modules/lib/index.js", "app.component('v-form', X);\n"),
+        ],
+    );
+    let found = project
+        .with("<v-fo/*|*/rm></v-form>", |engine, blade, pos| {
+            engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos))
+        })
+        .expect("the registration in app.js");
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].path.ends_with("resources/js/app.js"), "{found:?}");
+    assert_eq!(found[0].range.start, Pos::new(1, 15));
+    let found = project
+        .with("<User/*|*/Card/>", |engine, blade, pos| {
+            engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos))
+        })
+        .expect("the .vue file");
+    assert!(found[0].path.ends_with("resources/js/components/UserCard.vue"), "{found:?}");
+    // Nothing registered: left to the other services.
+    assert!(
+        project
+            .with("<v-no/*|*/where/>", |engine, blade, pos| {
+                engine.blade_vue_definition(blade, LineIndex::new(blade.text).byte(pos))
+            })
+            .is_none()
+    );
+}
+
+#[test]
+fn outline_nests_blocks_and_lists_sections_includes_and_components() {
+    use crate::blade::structure::outline;
+    let text = "@extends('layouts.app')\n\n@section('title', $title)\n\n@section('content')\n    @php($n = 1)\n    @foreach ($posts as $post)\n        @include('posts._card', ['post' => $post])\n        <x-alert :message=\"$post->title\" />\n    @endforeach\n    @forelse ($tags as $tag)\n        {{ $tag }}\n    @empty\n        none\n    @endforelse\n@endsection\n\n@push('scripts')\n    @can('edit')\n";
+    let shape = |items: &[ide_core::OutlineItem]| -> Vec<String> {
+        fn walk(items: &[ide_core::OutlineItem], depth: usize, out: &mut Vec<String>) {
+            for item in items {
+                out.push(format!("{}{} {}", "  ".repeat(depth), item.name, item.range.start.line));
+                walk(&item.children, depth + 1, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(items, 0, &mut out);
+        out
+    };
+    let items = outline(text, &[]);
+    assert_eq!(
+        shape(&items),
+        [
+            "@extends('layouts.app') 0",
+            "@section('title', $title) 2",
+            "@section('content') 4",
+            "  @foreach($posts as $post) 6",
+            "    @include('posts._card', ['post' => $post]) 7",
+            "    <x-alert> 8",
+            "  @forelse($tags as $tag) 10",
+            // Left open: they run to the end.
+            "@push('scripts') 17",
+            "  @can('edit') 18",
+        ]
+    );
+    // A block spans its closer.
+    assert_eq!(items[2].range.end.line, 15);
+    assert_eq!(items[3].range.end.line, 19);
+}
+
+fn blade_format(text: &str) -> String {
+    use crate::blade::format::{BladeFormatOptions, format};
+    format(text, &BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: None }, &["admin".to_owned()])
+}
+
+#[test]
+fn format_indents_html_and_blade_blocks_and_spaces_echoes() {
+    let messy = "@extends('layouts.app')\n\n@section('title', $title)\n\n@section('content')\n<h1>{{$title}}</h1>\n      <div class=\"card\">\n<p>{!!$body!!}</p>\n  @can('edit', $post)\n<a href=\"#\">Edit</a>\n    @else\n<span>Read only</span>\n        @endcan\n@foreach ($items as $item)\n<x-alert :message=\"$item\" />\n<input type=\"text\">\n@endforeach\n</div>   \n@admin\n<p>secret</p>\n@endadmin\n@endsection\n\n\n";
+    let formatted = "@extends('layouts.app')\n\n@section('title', $title)\n\n@section('content')\n    <h1>{{ $title }}</h1>\n    <div class=\"card\">\n        <p>{!! $body !!}</p>\n        @can('edit', $post)\n            <a href=\"#\">Edit</a>\n        @else\n            <span>Read only</span>\n        @endcan\n        @foreach ($items as $item)\n            <x-alert :message=\"$item\" />\n            <input type=\"text\">\n        @endforeach\n    </div>\n    @admin\n        <p>secret</p>\n    @endadmin\n@endsection\n";
+    assert_eq!(blade_format(messy), formatted);
+    // Already formatted: unchanged.
+    assert_eq!(blade_format(formatted), formatted);
+}
+
+#[test]
+fn format_keeps_raw_text_and_shifts_scripts_and_php() {
+    let messy = "<div>\n<pre>\n  keep   this\n</pre>\n<script>\n        if (a) {\n            b();\n        }\n</script>\n@php\n  $a = 1;\n    $b = 2;\n@endphp\n{{-- a\n   comment --}}\n<a\nhref=\"x\"\n  class=\"y\"\n>link</a>\n@verbatim\n   {{ raw }}\n@endverbatim\n</div>\n";
+    let formatted = "<div>\n    <pre>\n  keep   this\n</pre>\n    <script>\n        if (a) {\n            b();\n        }\n    </script>\n    @php\n        $a = 1;\n          $b = 2;\n    @endphp\n    {{-- a\n   comment --}}\n    <a\n        href=\"x\"\n        class=\"y\"\n    >link</a>\n    @verbatim\n   {{ raw }}\n@endverbatim\n</div>\n";
+    assert_eq!(blade_format(messy), formatted);
+}
+
+#[test]
+fn format_closes_elements_left_open_and_keeps_line_endings() {
+    let messy = "<ul>\n<li>one\n<li>two\n</ul>\n<p>after</p>";
+    assert_eq!(blade_format(messy), "<ul>\n    <li>one\n    <li>two\n</ul>\n<p>after</p>\n");
+    let crlf = "<div>\r\n<p>x</p>\r\n</div>\r\n";
+    assert_eq!(blade_format(crlf), "<div>\r\n    <p>x</p>\r\n</div>\r\n");
+}
+
+/// Reformat Code over the templates of a real app (`LARAVEL_APP_DIR`):
+/// only whitespace changes (and the spaces inside echoes), and formatting
+/// again changes nothing. Prints how many lines it changes.
+#[test]
+#[ignore = "needs LARAVEL_APP_DIR"]
+fn format_is_safe_and_stable_on_a_real_app() {
+    let Some(dir) = std::env::var_os("LARAVEL_APP_DIR").map(std::path::PathBuf::from) else { return };
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n != "node_modules" && n != "vendor") {
+                    walk(&path, out);
+                }
+            } else if path.to_string_lossy().ends_with(".blade.php") {
+                out.push(path);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
+    let options = crate::blade::format::BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: None };
+    let strip = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let (mut lines, mut changed) = (0, 0);
+    let mut failures = Vec::new();
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let out = crate::blade::format::format(&text, &options, &[]);
+        if strip(&text) != strip(&out) {
+            failures.push(format!("changes more than whitespace: {}", file.display()));
+        }
+        if crate::blade::format::format(&out, &options, &[]) != out {
+            failures.push(format!("not stable: {}", file.display()));
+        }
+        lines += text.lines().count();
+        changed += text.lines().zip(out.lines()).filter(|(a, b)| a.trim_end() != *b).count();
+        // With the PHP inside formatted too: stable.
+        let php = crate::blade::format::BladeFormatOptions { php: Some(crate::stubs::PhpVersion::LATEST), ..options };
+        let out = crate::blade::format::format(&text, &php, &[]);
+        if crate::blade::format::format(&out, &php, &[]) != out {
+            failures.push(format!("not stable with PHP formatted: {}", file.display()));
+        }
+    }
+    eprintln!("{} templates, {changed} of {lines} lines changed", files.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+fn format_edits_change_lines_in_place_and_only_the_range() {
+    use crate::blade::format::edits;
+    let text = "<div>\n<p>a</p>\n<p>b</p>\n</div>\n\n\n";
+    let formatted = blade_format(text);
+    assert_eq!(formatted, "<div>\n    <p>a</p>\n    <p>b</p>\n</div>\n");
+    let all = edits(text, &formatted, None);
+    let mut document = ide_text::Document::new(text);
+    document.apply_edits(&all).unwrap();
+    assert_eq!(document.text().to_string(), formatted);
+    // A range: its lines only, the end of the text left alone.
+    let some = edits(text, &formatted, Some((2, 2)));
+    assert_eq!(some.len(), 1);
+    assert_eq!((some[0].range.start.line, some[0].new_text.as_str()), (2, "    <p>b</p>"));
+}
+
+#[test]
+fn format_formats_the_php_in_blocks_and_echoes() {
+    use crate::blade::format::{BladeFormatOptions, format};
+    let options =
+        BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: Some(crate::stubs::PhpVersion::LATEST) };
+    let messy = "<div>\n@php\n$total=0;\nforeach($items as $item){$total+=$item->price;}\n@endphp\n<p>{{$total*2}}</p>\n<p>{{ $x or 'default' }}</p>\n@php $one=1; @endphp\n<?php echo $a+1 ?>\n@php $a=1; $b=2; @endphp\n</div>\n";
+    let formatted = "<div>\n    @php\n        $total = 0;\n        foreach ($items as $item) {\n            $total += $item->price;\n        }\n    @endphp\n    <p>{{ $total * 2 }}</p>\n    <p>{{ $x or 'default' }}</p>\n    @php $one = 1; @endphp\n    <?php echo $a + 1 ?>\n    @php $a=1; $b=2; @endphp\n</div>\n";
+    assert_eq!(format(messy, &options, &[]), formatted);
+    assert_eq!(format(formatted, &options, &[]), formatted, "stable");
+}
+
+#[test]
+fn format_formats_directive_arguments() {
+    use crate::blade::format::{BladeFormatOptions, format};
+    let options =
+        BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: Some(crate::stubs::PhpVersion::LATEST) };
+    let messy = "@if($a==1&&$b)\n<p>x</p>\n@elseif (count($items)>2)\n<p>y</p>\n@endif\n@foreach($items as $key=>$item)\n@include('posts._card',['post'=>$item])\n@endforeach\n@for($i=0;$i<3;$i++)\n@endfor\n@lang('messages.welcome',['name'=>$name])\n@isset($a,$b)\n@endisset\n@php($x=1)\n@section('title', $title)\n";
+    let formatted = "@if($a == 1 && $b)\n    <p>x</p>\n@elseif (count($items) > 2)\n    <p>y</p>\n@endif\n@foreach($items as $key => $item)\n    @include('posts._card', ['post' => $item])\n@endforeach\n@for($i = 0; $i < 3; $i++)\n@endfor\n@lang('messages.welcome', ['name' => $name])\n@isset($a, $b)\n@endisset\n@php($x = 1)\n@section('title', $title)\n";
+    assert_eq!(format(messy, &options, &[]), formatted);
+    assert_eq!(format(formatted, &options, &[]), formatted, "stable");
+    // Laravel's style (Pint): `! $x`, `'a'.$b`.
+    assert_eq!(
+        format(
+            "@if(!$a)
+@endif
+{{ 'a' . $b }}
+",
+            &options,
+            &[]
+        ),
+        "@if(! $a)
+@endif
+{{ 'a'.$b }}
+"
+    );
+}
+
+/// An element every branch of an `@if … @else` opens alike, closed after
+/// the block, nests what follows it; one only some branches open doesn't.
+#[test]
+fn format_nests_an_element_every_branch_opens() {
+    use crate::blade::format::{BladeFormatOptions, format};
+    let options = BladeFormatOptions { indent: 4, use_tabs: false, line_width: 120, php: None };
+    let messy = "<section>\n@if($a)\n<div class=\"x\">\n@elseif($b)\n<div class=\"y\">\n@else\n<div>\n@endif\n<p>hi</p>\n</div>\n</section>\n";
+    let formatted = "<section>\n    @if($a)\n        <div class=\"x\">\n    @elseif($b)\n        <div class=\"y\">\n    @else\n        <div>\n    @endif\n        <p>hi</p>\n    </div>\n</section>\n";
+    assert_eq!(format(messy, &options, &[]), formatted);
+    assert_eq!(format(formatted, &options, &[]), formatted, "stable");
+    // Without `@else` (or with another element in one branch): as before.
+    for text in [
+        "<section>\n    @if($a)\n        <a href=\"x\">\n    @endif\n    <p>hi</p>\n    </a>\n</section>\n",
+        "<section>\n    @if($a)\n        <div>\n    @else\n        <span>\n    @endif\n    <p>hi</p>\n    </div>\n</section>\n",
+    ] {
+        assert_eq!(format(text, &options, &[]), text);
+    }
+}

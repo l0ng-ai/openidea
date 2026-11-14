@@ -47,6 +47,24 @@ describe("endpoints in Search Everywhere", () => {
     }
   });
 
+  it("reads a method alone as text too", () => {
+    const laravel = [
+      route({ method: "GET", url: "/posts", name: "posts.index", controller: "PostController", methodName: "index" }),
+      route({
+        method: "POST",
+        url: "/dashboard/items",
+        name: "items.store",
+        controller: "ItemController",
+        methodName: "store",
+      }),
+      route({ method: "GET", url: "/about", name: "about", controller: "PageController", methodName: "about" }),
+    ];
+    const found = matchRoutes(laravel, "post", 5).items.map((i) => i.display);
+    // Text first, then the routes of the method.
+    expect(found).toEqual(["GET /posts", "POST /dashboard/items"]);
+    expect(matchRoutes(laravel, "POST items", 5).items.map((i) => i.display)).toEqual(["POST /dashboard/items"]);
+  });
+
   it("honours an HTTP method prefix", () => {
     expect(matchRoutes(routes, "GET /deeplink/menu/x", 5).items).toEqual([]);
     expect(matchRoutes(routes, "GET /deeplink/menu", 5).items[0]?.container).toBe("DeepLinkController.getMenuDetail");
@@ -58,6 +76,22 @@ describe("endpoints in Search Everywhere", () => {
       "DeepLinkController.getMenuDetail",
     );
     expect(matchRoutes(routes, "deeplink", 5).items).toHaveLength(2);
+  });
+
+  it("finds a named route by its name and keeps routes answering several methods", () => {
+    const named = [
+      ...routes,
+      route({
+        method: "PUT|PATCH",
+        url: "/posts/{post}",
+        name: "posts.update",
+        detail: "posts.update · PostController@update",
+      }),
+    ];
+    expect(matchRoutes(named, "posts.update", 5).items[0]?.container).toBe("posts.update · PostController@update");
+    expect(matchRoutes(named, "update", 5).items[0]?.display).toBe("PUT|PATCH /posts/{post}");
+    expect(matchRoutes(named, "PATCH /posts/{post}", 5).items).toHaveLength(1);
+    expect(matchRoutes(named, "DELETE /posts/{post}", 5).items).toEqual([]);
   });
 
   it("says nothing for an empty or unrelated query", () => {

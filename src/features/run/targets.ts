@@ -36,6 +36,8 @@ export interface RunTarget {
   spring?: boolean;
   /** Python: a unittest `TestCase` subclass or one of its methods (what Django's runner can run). */
   unittest?: boolean;
+  /** Laravel: the Artisan command a console command class declares (from the PHP engine). */
+  artisan?: string;
   /** Ruby: a `module` suite, which runs the tests of every class declared inside it. */
   rubyModule?: boolean;
   pest?: boolean;

@@ -379,8 +379,11 @@ pub async fn remove_history(host: &Host, window: &str, id: &str, texts: Option<V
 
 /// Tables, columns and foreign keys for SQL completion.
 pub async fn completion(host: &Host, window: &str, id: &str) -> IdeResult<CompletionModel> {
-    let db = host.project(window)?.db.clone();
-    db.completion(id).await
+    let project = host.project(window)?;
+    let model = project.db.completion(id).await?;
+    // The schema as the Database tool sees it now: also the PHP engine's live schema.
+    crate::ops::laravel::schema_read(&project, id, &model);
+    Ok(model)
 }
 
 /// Statements a console runs: the selection's (`from < to`) or the one at the caret (`from`).
@@ -408,9 +411,10 @@ pub async fn execute(
     max_rows: u32,
     schema: Option<&str>,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    let db = host.project(window)?.db.clone();
+    let project = host.project(window)?;
+    let db = project.db.clone();
     let cancel = host.begin_request(request);
-    let mut out = Vec::new();
+    let mut out: Vec<StatementOutcome> = Vec::new();
     for statement in statements {
         match db.execute_from(id, &statement.text, skip as usize, max_rows.max(1) as usize, &cancel, schema).await {
             Ok(result) => out.push(StatementOutcome { statement, result: Some(result), error: None }),
@@ -430,6 +434,10 @@ pub async fn execute(
         }
     }
     host.end_request(request);
+    let changed = out.iter().any(|o| o.result.is_some() && crate::ops::laravel::is_schema_statement(&o.statement.text));
+    if changed {
+        crate::ops::laravel::schema_changed(&project, id, &host.runtime);
+    }
     Ok(out)
 }
 

@@ -6,7 +6,7 @@ use crate::exec::{path_with, search_path, which};
 use crate::npm::{has_ts_api, native_typescript, own_typescript};
 use crate::{angular, astro, godot, pinned, vue};
 use crate::{bin_dir, exe, venv_of};
-use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, Settings};
+use ide_core::settings::{InspectionLevel, InspectionSettings, LanguageServerSettings, PhpEngineKind, Settings};
 use ide_core::version_managers::Tool;
 use ide_core::{IdeError, IdeResult};
 use ide_language::{LanguageConfig, LanguageServerConfig};
@@ -1216,7 +1216,7 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     if let Some(dir) = node_dir(root, s) {
         path_dirs.push(dir);
     }
-    // PHP servers (phpactor, `php intelephense`-style wrappers) on the selected PHP.
+    // PHP-based servers (`php intelephense`-style wrappers, ones added in settings) on the selected PHP.
     if let Some(dir) = php_dir(root, s) {
         path_dirs.push(dir);
     }
@@ -1248,10 +1248,18 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
 /// The servers `language` uses after Settings › Language Servers: the
 /// definition's ones that aren't disabled, then the ones defined in settings for it.
 pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Settings) -> Vec<LanguageServerConfig> {
-    let enabled = |name: &str| s.language_servers.get(name).is_none_or(|ls| ls.enabled);
+    // The native engine (Settings › PHP › Engine, the default) replaces the PHP servers of
+    // `languages/php.toml`, which are only the Intelephense fallback; servers the user adds in
+    // Settings › Language Servers stay.
+    let replaced = language == "php" && s.languages.php.engine == PhpEngineKind::Native;
+    let enabled = |name: &str| !replaced && s.language_servers.get(name).is_none_or(|ls| ls.enabled);
     let mut out: Vec<LanguageServerConfig> = defined.iter().filter(|c| enabled(&c.name)).cloned().collect();
     for (name, ls) in &s.language_servers {
-        if ls.enabled && ls.languages.iter().any(|l| l == language) && !out.iter().any(|c| &c.name == name) {
+        if ls.enabled
+            && ls.languages.iter().any(|l| l == language)
+            && !out.iter().any(|c| &c.name == name)
+            && !(replaced && defined.iter().any(|c| &c.name == name))
+        {
             out.push(custom_server(name, ls));
         }
     }

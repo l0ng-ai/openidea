@@ -54,7 +54,7 @@ const submit = async (value: string) => {
 beforeEach(() => {
   vi.clearAllMocks();
   resolve.mockResolvedValue(ok(form()));
-  execute.mockResolvedValue(ok([]));
+  execute.mockResolvedValue(ok({ created: [], open: null }));
   render(<InputDialogsHost />);
 });
 afterEach(cleanup);
@@ -134,7 +134,7 @@ describe("interactive code actions", () => {
 
   it("opens the created test returned by the applied edit", async () => {
     resolve.mockResolvedValue(ok(null));
-    execute.mockResolvedValue(ok(["/p/probe_test.go"]));
+    execute.mockResolvedValue(ok({ created: ["/p/probe_test.go"], open: null }));
     expect(await runInteractiveCodeAction(7, { ...action, kind: "source.addTest" })).toBe(true);
     expect(openFile).toHaveBeenCalledWith("/p/probe_test.go");
     expect(screen.queryByRole("dialog")).toBeNull();

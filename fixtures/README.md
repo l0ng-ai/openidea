@@ -15,6 +15,7 @@ something to show.
 | `java-app/`      | JDK 21, Maven 3.9                                               | `mvn compile exec:java`             | `mvn test`           | `mvn test -DopenideaFail=true`            | unused variable in `App.java`                            |
 | `c-app/`         | gcc / g++ 12+, make, GDB 14+                                    | `make all`                          | —                    | —                                     | —                                                        |
 | `php-app/`       | PHP 8.5, Composer                                               | `composer quote`                    | `vendor/bin/pest`    | `OPENIDEA_FAIL=1 vendor/bin/pest`         | unused variable in `ThresholdCustoms.php`                |
+| `php-library/`   | PHP 8.2+, Composer                                              | `composer install && composer start` | `composer test` (PHPUnit 11) | `OPENIDEA_FAIL=1 composer test`           | undefined method `count()` in `src/Reports/ShelfReport.php` |
 | `django-app/`    | Python 3.10+, Django 5.2+                                       | `python manage.py runserver`        | `python manage.py test` | `OPENIDEA_FAIL=1 python manage.py test` | unused import in `shop/views.py`                         |
 | `zig-app/`       | Zig 0.17                                                        | `zig build run`                     | `zig build test`     | —                                     | —                                                        |
 | `polyglot/`      | Go, TS, Python, C, shell, SQL, TOML/YAML/JSON, proto, Terraform | `make`                              | `make test`          | —                                     | unused variable in `native/hash.c`                       |
@@ -39,6 +40,10 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
+`php-library/` is the fixture of the native PHP engine's tests (`crates/ide-php`): a small
+lending library. `laravel-app/` is the test fixture of the engine's Laravel support; see its
+README (it has no `vendor/` and borrows the stubs in `laravel-stubs/`).
+
 For `ts-app` / `polyglot/web` run `pnpm install` first; for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
 `php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).

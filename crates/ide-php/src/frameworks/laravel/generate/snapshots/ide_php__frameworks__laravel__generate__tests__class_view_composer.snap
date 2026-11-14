@@ -1,0 +1,21 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/View/Composers/ProfileComposer.php
+<?php
+
+namespace App\View\Composers;
+
+use Illuminate\View\View;
+
+class ProfileComposer
+{
+    /**
+     * Bind data to the view.
+     */
+    public function compose(View $view): void
+    {
+        //
+    }
+}

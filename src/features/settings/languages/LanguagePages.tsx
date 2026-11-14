@@ -155,6 +155,10 @@ const PHP_LEVEL_OPTIONS: SelectOption[] = PHP_LANGUAGE_LEVELS.map((level) =>
   level ? { value: level, label: level } : { value: "", label: "Auto", detail: "from composer.json" },
 );
 
+const PHP_ENGINE_OPTIONS: SelectOption[] = [
+  { value: "native", label: "Built-in", detail: "default" },
+  { value: "intelephense", label: "Intelephense", detail: "language server, fallback" },
+];
 /** The `php` on `PATH` (what the Default interpreter runs), looked up while `enabled`. */
 function usePathPhp(enabled: boolean): string | null {
   const [path, setPath] = useState<string | null>(null);
@@ -191,10 +195,12 @@ function useXdebug(php: Sdk | undefined): string | null | undefined {
 }
 
 export function PhpPage() {
+  const [engine, setEngine] = useSetting<string>("languages.php.engine");
   const [interpreter] = useSetting<string>("languages.php.interpreter");
   const [level, setLevel] = useSetting<string>("languages.php.languageLevel");
   const [includePaths, setIncludePaths] = useSetting<string[]>("languages.php.includePaths");
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
+  const [analyzersOnSave, setAnalyzersOnSave] = useSetting<boolean>("languages.php.analyzersOnSave");
   const { list } = useDetected("php");
   const pathPhp = usePathPhp(!interpreter);
   // Default runs the `php` on PATH: the list is newest first, so it isn't necessarily `list[0]`.
@@ -204,15 +210,26 @@ export function PhpPage() {
     <div className={styles.page}>
       <Section>
         <Row
+          label="Code insight engine"
+          hint="Which engine answers completion, navigation and inspections in PHP files: the engine built into OpenIDEA, which indexes the project itself, or the Intelephense language server as a fallback (npm i -g intelephense). Intelephense is started only when it is selected."
+        >
+          <Select
+            value={engine || "native"}
+            options={PHP_ENGINE_OPTIONS}
+            onChange={setEngine}
+            aria-label="Code insight engine"
+          />
+        </Row>
+        <Row
           label="PHP language level"
-          hint="The PHP version Intelephense checks the code against: newer syntax and functions are reported. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
+          hint="The PHP version the code is checked against: newer syntax and functions are reported, and only the built-in functions and classes of that version are offered. Auto uses config.platform.php from composer.json, else the lowest version require.php allows."
         >
           <Select value={level} options={PHP_LEVEL_OPTIONS} onChange={setLevel} aria-label="PHP language level" />
         </Row>
         <Row
           label="Include paths"
           stacked
-          hint="Folders outside the project whose classes and functions Intelephense indexes too, such as the platform a module extends. Absolute, or relative to the project."
+          hint="Folders outside the project whose classes and functions are indexed too, such as the platform a module extends. Absolute, or relative to the project."
         >
           <GlobListEditor
             value={includePaths ?? []}
@@ -226,7 +243,7 @@ export function PhpPage() {
         <Row
           label="Additional stubs"
           stacked
-          hint="Intelephense stub sets loaded on top of its defaults, such as wordpress. Each ext-* in require or require-dev of composer.json adds its own."
+          hint="Stub sets loaded on top of the defaults: phpstorm-stubs folder names such as redis or mongodb (Intelephense also knows wordpress). Each ext-* in require or require-dev of composer.json adds its own."
         >
           <GlobListEditor
             value={stubs ?? []}
@@ -237,6 +254,14 @@ export function PhpPage() {
             aria-label="Additional stubs"
           />
         </Row>
+      </Section>
+      <Section title="External Analyzers">
+        <Toggle
+          label="Run PHPStan and Psalm on save"
+          checked={analyzersOnSave ?? false}
+          onChange={setAnalyzersOnSave}
+          hint="When vendor/bin/phpstan or vendor/bin/psalm (with a psalm.xml) is installed, runs it on each saved PHP file of a trusted project with the PHP interpreter below and shows its problems, without those the built-in engine already reports."
+        />
       </Section>
       <Section title="PHPStan">
         <PathInput
@@ -258,7 +283,7 @@ export function PhpPage() {
           emptyDetail="php on PATH"
           browseTitle="Select PHP Interpreter"
           aria-label="PHP interpreter"
-          hint="Runs PHP scripts, PHPUnit, Composer and artisan, and the PHP-based language servers (phpactor). Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
+          hint="Runs PHP scripts, PHPUnit, Composer and artisan. Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
         />
         {selected?.version && <Row label="Version">{selected.version}</Row>}
         {xdebug !== undefined && <Row label="Xdebug">{xdebug ?? <T>Not installed</T>}</Row>}

@@ -1,5 +1,5 @@
-//! File move / rename refactoring: reference updates from the language
-//! servers, the move itself (one undoable step) and its undo.
+//! File move / rename refactoring: reference updates from the in-process
+//! language services and the language servers, the move itself (one undoable step) and its undo.
 use crate::Host;
 use crate::rpc::Dispatcher;
 
@@ -23,9 +23,28 @@ pub async fn refactor_file_move_edits(
 ) -> IdeResult<FileRenameEdits> {
     let project = host.project(window)?;
     let token = host.begin_request(request);
-    let result = project.lsp.will_rename_files(&pairs(&moves), token).await;
+    let moved = pairs(&moves);
+    let native = {
+        let (moved, cancel) = (moved.clone(), token.clone());
+        crate::language_service::ask_all(&project, move |service| service.will_rename_files(&moved, &cancel)).await
+    };
+    let result = project.lsp.will_rename_files(&moved, token.clone()).await;
     host.end_request(request);
     let mut result = result?;
+    // The in-process services' edits (the native PHP engine) come first.
+    let mut files = Vec::new();
+    for answer in native {
+        match answer {
+            Ok(edit) => files.extend(edit.files),
+            Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled && token.is_cancelled() => return Err(e),
+            Err(e) => result.errors.push(e.message),
+        }
+    }
+    if !files.is_empty() {
+        result.servers.insert(0, ide_php::engine::SERVER_NAME.to_owned());
+        files.append(&mut result.edit.files);
+        result.edit.files = files;
+    }
     blocking(move || {
         project.documents.prepare_workspace_edit(&mut result.edit)?;
         Ok(result)

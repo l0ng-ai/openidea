@@ -1,0 +1,26 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Data/Billing/RefundData.php
+<?php
+
+namespace App\Data\Billing;
+
+use App\Data\BaseData;
+
+final class RefundData extends BaseData
+{
+    /**
+     * Built from a model.
+     *
+     * Totals only.
+     */
+    public function __construct()
+    {
+    }
+}
+== docs/data/Billing/refund_data.md
+# RefundData
+
+`App\Billing\RefundData`, in data classes of App.

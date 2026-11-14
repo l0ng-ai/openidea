@@ -1,0 +1,19 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Policies/BillingPolicy.php
+<?php
+
+namespace App\Policies;
+
+class BillingPolicy
+{
+    /**
+     * Create a new policy instance.
+     */
+    public function __construct()
+    {
+        //
+    }
+}

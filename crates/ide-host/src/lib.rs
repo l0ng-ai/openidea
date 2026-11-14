@@ -4,15 +4,20 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod agent_secrets;
+mod blade;
 pub mod data_dirs;
 pub mod diagnostics_store;
 pub mod environment;
 mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
+pub mod language_service;
+mod laravel_files;
 pub mod mcp;
 pub mod notebook;
 pub mod ops;
+pub mod php;
+mod php_analyzers;
 mod phpstan;
 pub mod plugins;
 mod project;
@@ -22,6 +27,7 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod twig;
 
 pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
 
@@ -312,6 +318,10 @@ impl Host {
         if let Some(phpstan) = &project.phpstan {
             phpstan.stop();
         }
+        project.php.shutdown();
+        if let Some(analyzers) = &project.php_analyzers {
+            analyzers.stop();
+        }
         project.documents.clear_workspace_edit_history();
         project.agents.shutdown();
         project.notebooks.stop_admission();
@@ -458,6 +468,10 @@ impl Host {
             project.plugin_diagnostics.close();
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.stop();
+            }
+            project.php.shutdown();
+            if let Some(analyzers) = &project.php_analyzers {
+                analyzers.stop();
             }
             if let Some(phpstan) = &project.phpstan {
                 phpstan.stop();

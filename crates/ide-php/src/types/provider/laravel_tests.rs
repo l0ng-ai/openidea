@@ -1,0 +1,866 @@
+use super::core_alias;
+use crate::summary::{FileSummary, LaravelFacts};
+use crate::syntax::ParsedFile;
+use crate::types::{Resolver, SummarySet, TypeCache, type_at};
+
+const CARET: &str = "/*|*/";
+
+/// Just enough of laravel/framework (the signatures as Laravel declares
+/// them, the bodies empty).
+pub(crate) const FRAMEWORK: &str = r#"<?php
+namespace Illuminate\Contracts\Container {
+    interface Container {
+        /** @return mixed */
+        public function make($abstract, array $parameters = []);
+    }
+}
+namespace Illuminate\Container {
+    class Container implements \Illuminate\Contracts\Container\Container {
+        /** @return mixed */
+        public function make($abstract, array $parameters = []) { return null; }
+        /** @return mixed */
+        public function makeWith($abstract, array $parameters = []) { return null; }
+    }
+}
+namespace Illuminate\Support\Facades {
+    abstract class Facade {
+        public static function __callStatic($method, $args): mixed { return null; }
+    }
+    class App extends Facade {
+        protected static function getFacadeAccessor() { return 'app'; }
+    }
+}
+namespace Illuminate\Cache {
+    class CacheManager {
+        public function store(?string $name = null): Repository { return new Repository(); }
+    }
+    class Repository {
+        public function has(string $key): bool { return false; }
+    }
+}
+namespace Illuminate\Database\Query {
+    class Builder {
+        public function where($column, $operator = null, $value = null): static { return $this; }
+        public function orderBy($column): static { return $this; }
+        public function count(): int { return 0; }
+    }
+}
+namespace Illuminate\Database\Eloquent {
+    /** @template TModel */
+    class Builder {
+        /** @return TModel|null */
+        public function first() { return null; }
+        public function __call($method, $args): mixed { return null; }
+    }
+    /**
+     * @template TKey
+     * @template TModel
+     */
+    class Collection {}
+    abstract class Model {
+        public function __call($method, $args): mixed { return null; }
+        public static function __callStatic($method, $args): mixed { return null; }
+        public function __get($key): mixed { return null; }
+        public function hasMany($related): Relations\HasMany { return new Relations\HasMany(); }
+        public function belongsTo($related): Relations\BelongsTo { return new Relations\BelongsTo(); }
+        public function belongsToMany($related): Relations\BelongsToMany { return new Relations\BelongsToMany(); }
+        public static function query(): Builder { return new Builder(); }
+    }
+}
+namespace Illuminate\Database\Eloquent\Relations {
+    abstract class Relation {
+        public function __call($method, $args): mixed { return null; }
+    }
+    /**
+     * @template TRelatedModel
+     * @template TDeclaringModel
+     */
+    class HasMany extends Relation {}
+    class BelongsTo extends Relation {}
+    class BelongsToMany extends Relation {}
+}
+namespace Illuminate\Database\Eloquent\Casts {
+    /** @template TGet */
+    class Attribute {}
+}
+namespace {
+    /** @return mixed */
+    function app($abstract = null, array $parameters = []) { return null; }
+    /** @return mixed */
+    function resolve($name, array $parameters = []) { return null; }
+}
+"#;
+
+/// The class that says laravel/framework is installed.
+pub(crate) const APPLICATION: &str = r#"<?php
+namespace Illuminate\Foundation;
+class Application extends \Illuminate\Container\Container {
+    public function version(): string { return ''; }
+}
+"#;
+
+pub(crate) const APP: &str = r#"<?php
+namespace App\Services {
+    class PaymentGateway {
+        public function charge(int $cents): bool { return true; }
+    }
+}
+namespace App\Facades {
+    use Illuminate\Support\Facades\Facade;
+    class Payments extends Facade {
+        protected static function getFacadeAccessor(): string { return \App\Services\PaymentGateway::class; }
+    }
+    class Cache extends Facade {
+        protected static function getFacadeAccessor() { return 'cache'; }
+    }
+    /** @method static int documented() */
+    class Documented extends Facade {
+        protected static function getFacadeAccessor() { return 'cache'; }
+    }
+}
+namespace App\Models {
+    use Illuminate\Database\Eloquent\Builder;
+    use Illuminate\Database\Eloquent\Casts\Attribute;
+    use Illuminate\Database\Eloquent\Model;
+    class Post extends Model {
+        public function author() { return $this->belongsTo(User::class); }
+    }
+    class Tag extends Model {}
+    class User extends Model {
+        public function posts() { return $this->hasMany(Post::class); }
+        public function tags() { return $this->belongsToMany(Tag::class); }
+        public function scopeActive(Builder $query) { return $query->where('active', 1); }
+        public function getFullNameAttribute(): string { return ''; }
+        /** @return Attribute<int> */
+        protected function age(): Attribute { return new Attribute(); }
+        public function plain(): int { return 1; }
+    }
+    function admins() { return User::where('admin', 1); }
+}
+"#;
+
+const HEADER: &str = "<?php
+namespace Main;
+use App\\Models\\{User, Post};
+use App\\Facades\\{Payments, Cache, Documented};
+use App\\Services\\PaymentGateway;
+use Illuminate\\Support\\Facades\\App;
+use function App\\Models\\admins;
+";
+
+/// The type at the caret in `HEADER` + `body`, the `libs` declared too.
+fn type_in(libs: &[&str], body: &str) -> String {
+    let source = format!("{HEADER}{body}");
+    let offset = source.find(CARET).unwrap_or_else(|| panic!("no caret in {source}"));
+    let source = source.replacen(CARET, "", 1);
+    let file = ParsedFile::parse("main.php", source.as_str());
+    assert!(!file.has_errors(), "{source}: {:?}", file.errors());
+    let mut summaries = vec![FileSummary::extract(&file)];
+    for (i, lib) in libs.iter().enumerate() {
+        let name = if lib.contains("namespace PHPSTORM_META") {
+            ".phpstorm.meta.php".to_owned()
+        } else {
+            format!("lib{i}.php")
+        };
+        let lib = ParsedFile::parse(name.as_str(), *lib);
+        assert!(!lib.has_errors(), "{:?}", lib.errors());
+        summaries.push(FileSummary::extract(&lib));
+    }
+    let decls = SummarySet::new(summaries);
+    let cache = TypeCache::new();
+    let resolver = Resolver::new(&decls, &cache, 1);
+    type_at(&file, &resolver, offset as u32).map(|ty| ty.to_string()).unwrap_or_else(|| "<none>".to_owned())
+}
+
+fn check(libs: &[&str], cases: &[(&str, &str)]) {
+    let failures: Vec<String> = cases
+        .iter()
+        .filter_map(|(body, expected)| {
+            let got = type_in(libs, body);
+            (got != *expected).then(|| format!("{body}\n  expected {expected}\n  got      {got}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+const INSTALLED: &[&str] = &[FRAMEWORK, APPLICATION, APP];
+const BUILDER: &str = "Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>";
+
+#[test]
+fn container_helpers() {
+    check(
+        INSTALLED,
+        &[
+            ("app(PaymentGateway::class)/*|*/;", "App\\Services\\PaymentGateway"),
+            ("\\app('App\\Services\\PaymentGateway')/*|*/;", "App\\Services\\PaymentGateway"),
+            ("resolve(PaymentGateway::class)/*|*/;", "App\\Services\\PaymentGateway"),
+            ("app('cache')/*|*/;", "Illuminate\\Cache\\CacheManager"),
+            ("app('cache')->store()/*|*/;", "Illuminate\\Cache\\Repository"),
+            ("app()/*|*/;", "Illuminate\\Foundation\\Application"),
+            ("app()->make(PaymentGateway::class)/*|*/;", "App\\Services\\PaymentGateway"),
+            ("app()->makeWith('cache', [])/*|*/;", "Illuminate\\Cache\\CacheManager"),
+            ("app(PaymentGateway::class)->charge(1)/*|*/;", "bool"),
+            // Unknown bindings and dynamic arguments stay unknown.
+            ("app('unknown.binding')/*|*/;", "mixed"),
+            ("app($name)/*|*/;", "mixed"),
+        ],
+    );
+    // A helper of the same name in the caller's namespace is that one.
+    check(INSTALLED, &[("function app(): int { return 1; }\napp(PaymentGateway::class)/*|*/;", "int")]);
+    assert_eq!(core_alias("db"), Some("Illuminate\\Database\\DatabaseManager"));
+    assert_eq!(core_alias("nope"), None);
+}
+
+#[test]
+fn facades_forward_to_their_service() {
+    check(
+        INSTALLED,
+        &[
+            // A class accessor (with a `: string` hint) and an alias one.
+            ("Payments::charge(1)/*|*/;", "bool"),
+            ("Cache::store()/*|*/;", "Illuminate\\Cache\\Repository"),
+            ("Cache::store()->has('k')/*|*/;", "bool"),
+            ("App::make(PaymentGateway::class)/*|*/;", "App\\Services\\PaymentGateway"),
+            ("App::make('cache')/*|*/;", "Illuminate\\Cache\\CacheManager"),
+            // `@method static` on the facade wins.
+            ("Documented::documented()/*|*/;", "int"),
+            // Neither the facade nor the service has it.
+            ("Payments::refund()/*|*/;", "mixed"),
+            // The facade's root is its service.
+            ("Payments::getFacadeRoot()/*|*/;", "App\\Services\\PaymentGateway"),
+        ],
+    );
+}
+
+#[test]
+fn eloquent_builder_forwarding() {
+    check(
+        INSTALLED,
+        &[
+            ("User::where('a', 1)/*|*/;", BUILDER),
+            ("User::whereEmail('a@b.c')/*|*/;", BUILDER),
+            ("User::active()/*|*/;", BUILDER),
+            ("User::query()/*|*/;", BUILDER),
+            ("User::where('a', 1)->active()/*|*/;", BUILDER),
+            ("User::where('a', 1)->orderBy('a')->whereName('x')/*|*/;", BUILDER),
+            ("User::where('a', 1)->first()/*|*/;", "?App\\Models\\User"),
+            ("User::where('a', 1)->count()/*|*/;", "int"),
+            ("(new User())->where('a', 1)/*|*/;", BUILDER),
+            // Declared methods win; unknown ones stay unknown.
+            ("User::plain()/*|*/;", "int"),
+            ("User::frobnicate()/*|*/;", "mixed"),
+            ("User::where('a', 1)->frobnicate()/*|*/;", "mixed"),
+            // Through a summary: another file's untyped function.
+            ("admins()/*|*/;", BUILDER),
+        ],
+    );
+}
+
+/// prettus/l5-repository, and repositories naming a model and a contract
+/// one model implements (Bagisto's Concord models).
+const REPOSITORIES: &str = r#"<?php
+namespace Prettus\Repository\Eloquent {
+    abstract class BaseRepository {
+        abstract public function model();
+        /** @return mixed */
+        public function find($id) { return null; }
+        /** @return mixed */
+        public function findWhere(array $where) { return null; }
+        /** @var \Illuminate\Database\Eloquent\Model */
+        protected $model;
+        public function __call($method, $arguments) { return null; }
+    }
+}
+namespace Illuminate\Database\Eloquent\Relations {
+    /**
+     * @template TRelatedModel of \Illuminate\Database\Eloquent\Model
+     * @template TDeclaringModel
+     */
+    class HasOne extends Relation {}
+}
+namespace Illuminate\Database\Eloquent\Relations {
+    class MorphTo extends Relation {}
+}
+namespace Illuminate\Http\Resources\Json {
+    class JsonResource {
+        public function __get($key) { return null; }
+        public function __call($method, $parameters) { return null; }
+    }
+}
+// A package's own model of the same name doesn't make `User` ambiguous.
+namespace App\Sitemap {
+    class User extends \App\Models\User {}
+}
+namespace App\Resources {
+    class OrderResource extends \Illuminate\Http\Resources\Json\JsonResource {}
+}
+namespace App\Contracts {
+    interface Order {}
+    interface Shared {}
+}
+namespace App\Models {
+    class Order extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Order, \App\Contracts\Shared {
+        public function ship(): bool { return true; }
+        public function invoices() { return $this->hasMany(Invoice::class); }
+        public function parent() { return $this->belongsTo(static::class); }
+        public function user(): \Illuminate\Database\Eloquent\Relations\MorphTo { return $this->morphTo(); }
+        /**
+         * As Laravel declares its relations: generic.
+         *
+         * @template TRelatedModel of \Illuminate\Database\Eloquent\Model
+         * @param class-string<TRelatedModel> $related
+         * @return \Illuminate\Database\Eloquent\Relations\HasOne<TRelatedModel, $this>
+         */
+        public function hasOne($related) { return new \Illuminate\Database\Eloquent\Relations\HasOne(); }
+        public function lastInvoice() { return $this->hasOne(InvoiceProxy::modelClass()); }
+        public function firstInvoice() { return $this->hasOne(Invoice::class); }
+    }
+    function order(): \App\Contracts\Order { return new Order(); }
+    function shared(): \App\Contracts\Shared { return new Order(); }
+    class Invoice extends \Illuminate\Database\Eloquent\Model implements \App\Contracts\Shared {
+        /** A Concord proxy names the related model. */
+        public function order() { return $this->belongsTo(OrderProxy::modelClass()); }
+    }
+}
+namespace App\Repositories {
+    class UserRepository extends \Prettus\Repository\Eloquent\BaseRepository {
+        public function model(): string { return \App\Models\User::class; }
+    }
+    class OrderRepository extends \Prettus\Repository\Eloquent\BaseRepository {
+        public function model(): string { return 'App\Contracts\Order'; }
+    }
+    class SharedRepository extends \Prettus\Repository\Eloquent\BaseRepository {
+        public function model(): string { return 'App\Contracts\Shared'; }
+    }
+}
+"#;
+
+#[test]
+fn repositories_and_concord_proxies_name_their_model() {
+    let libs = &[FRAMEWORK, APPLICATION, APP, REPOSITORIES];
+    check(
+        libs,
+        &[
+            ("(new \\App\\Repositories\\UserRepository())->where('a', 1)/*|*/;", BUILDER),
+            ("(new \\App\\Repositories\\UserRepository())->active()/*|*/;", BUILDER),
+            ("(new \\App\\Repositories\\UserRepository())->plain()/*|*/;", "int"),
+            ("(new \\App\\Repositories\\UserRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\User"),
+            // `parent::find()` under an abstract repository naming no model.
+            (
+                "abstract class Base extends \\Prettus\\Repository\\Eloquent\\BaseRepository {}\nclass Mine extends Base {\n    function model(): string { return \\App\\Models\\User::class; }\n    function one() { return parent::find(1)/*|*/; }\n}",
+                "App\\Models\\User",
+            ),
+            // Its `$model` property is its model.
+            (
+                "class Mine2 extends \\App\\Repositories\\UserRepository {\n    function one() { return $this->model/*|*/; }\n}",
+                "App\\Models\\User",
+            ),
+            // The query of its `scopeQuery()` closure.
+            ("(new \\App\\Repositories\\UserRepository())->scopeQuery(fn ($query) => $query/*|*/);", BUILDER),
+            // A contract: the model implementing it.
+            ("(new \\App\\Repositories\\OrderRepository())->ship()/*|*/;", "bool"),
+            ("(new \\App\\Repositories\\OrderRepository())->where('a', 1)->first()/*|*/;", "?App\\Models\\Order"),
+            // What the repository declares stays; two models implementing the
+            // contract, unknown.
+            // Its documented-`mixed` finders give the model.
+            ("(new \\App\\Repositories\\UserRepository())->find(1)/*|*/;", "App\\Models\\User"),
+            (
+                "(new \\App\\Repositories\\OrderRepository())->findWhere([])/*|*/;",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Order>",
+            ),
+            ("(new \\App\\Repositories\\SharedRepository())->where('a', 1)/*|*/;", "mixed"),
+            ("(new \\App\\Models\\Invoice())->order/*|*/;", "?App\\Models\\Order"),
+            ("(new \\App\\Models\\Invoice())->order->ship()/*|*/;", "bool"),
+            // A value typed with the contract is its model.
+            ("\\App\\Models\\order()->ship()/*|*/;", "bool"),
+            ("\\App\\Models\\order()->where('a', 1)->first()/*|*/;", "?App\\Models\\Order"),
+            (
+                "\\App\\Models\\order()->invoices/*|*/;",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Invoice>",
+            ),
+            ("\\App\\Models\\shared()->ship()/*|*/;", "mixed"),
+            // A proxy through a generic relation method (the core only gets
+            // the template's bound), and a class the core reads.
+            ("(new \\App\\Models\\Order())->lastInvoice/*|*/;", "?App\\Models\\Invoice"),
+            ("(new \\App\\Models\\Order())->firstInvoice/*|*/;", "?App\\Models\\Invoice"),
+            // A `morphTo()` relation: the one model its name names.
+            ("(new \\App\\Models\\Order())->user/*|*/;", "?App\\Models\\User"),
+            // An API resource stands for the model its name starts with.
+            ("(new \\App\\Resources\\OrderResource())->ship()/*|*/;", "bool"),
+            (
+                "(new \\App\\Resources\\OrderResource())->invoices/*|*/;",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Invoice>",
+            ),
+            // `static::class` relates the model itself.
+            ("(new \\App\\Models\\Order())->parent/*|*/;", "?App\\Models\\Order"),
+            ("(new \\App\\Repositories\\UserRepository())->findOrFail(1)/*|*/;", "App\\Models\\User"),
+        ],
+    );
+}
+
+#[test]
+fn mock_closures_get_the_mock() {
+    const MOCKERY: &str = "<?php\nnamespace Mockery;\ninterface MockInterface {}\n";
+    check(
+        &[FRAMEWORK, APPLICATION, APP, MOCKERY],
+        &[
+            ("$test->mock(PaymentGateway::class, function ($mock) { $mock/*|*/; });", "Mockery\\MockInterface"),
+            ("$test->partialMock(PaymentGateway::class, fn ($mock) => $mock/*|*/);", "Mockery\\MockInterface"),
+        ],
+    );
+}
+
+#[test]
+fn closures_of_fakes_conditionables_and_object_receivers() {
+    const BAG: &str = r#"<?php
+namespace Illuminate\Support\Traits {
+    trait Conditionable {
+        public function when($value = null, ?callable $callback = null) { return $this; }
+    }
+}
+namespace App {
+    class Bag { use \Illuminate\Support\Traits\Conditionable; }
+}
+"#;
+    check(
+        &[FRAMEWORK, APPLICATION, APP, BAG],
+        &[
+            // A fake's assertion: an object of the class named before the closure.
+            (
+                "Payments::assertQueued(PaymentGateway::class, fn ($mail) => $mail/*|*/);",
+                "App\\Services\\PaymentGateway",
+            ),
+            ("Payments::assertQueued('welcome', fn ($mail) => $mail/*|*/);", "mixed"),
+            // `when()` where `Conditionable` declares it: the object itself.
+            ("(new \\App\\Bag())->when(true, fn ($bag) => $bag/*|*/);", "App\\Bag"),
+            // A receiver declared `object` is as unknown as an undeclared one.
+            (
+                "function f(object $query) { $query->orWhere(function ($q) { $q/*|*/; }); }",
+                "Illuminate\\Database\\Query\\Builder",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_container_makes_what_a_class_string_names() {
+    check(
+        INSTALLED,
+        &[
+            // A variable holding a class name.
+            ("$class = PaymentGateway::class;\napp($class)/*|*/;", "App\\Services\\PaymentGateway"),
+            // One of an array of class names.
+            (
+                "class Helpers {\n    protected $helpers = ['pay' => PaymentGateway::class, 'user' => User::class];\n    function pick($type) { return app($this->helpers[$type])/*|*/; }\n}",
+                "App\\Services\\PaymentGateway|App\\Models\\User",
+            ),
+            // A plain string says nothing.
+            ("function f(string $name) { return app($name)/*|*/; }", "mixed"),
+        ],
+    );
+}
+
+#[test]
+fn storage_disks_are_adapters() {
+    const STORAGE: &str = r#"<?php
+namespace Illuminate\Contracts\Filesystem { interface Filesystem {} }
+namespace Illuminate\Filesystem {
+    class FilesystemAdapter implements \Illuminate\Contracts\Filesystem\Filesystem {
+        public function download($path) { return null; }
+    }
+    class FilesystemManager {
+        public function disk($name = null): \Illuminate\Contracts\Filesystem\Filesystem { return new FilesystemAdapter(); }
+    }
+}
+"#;
+    check(
+        &[FRAMEWORK, APPLICATION, APP, STORAGE],
+        &[(
+            "(new \\Illuminate\\Filesystem\\FilesystemManager())->disk('public')/*|*/;",
+            "Illuminate\\Filesystem\\FilesystemAdapter",
+        )],
+    );
+}
+
+#[test]
+fn join_closures_get_the_join_clause() {
+    const JOIN: &str = r#"<?php
+namespace Illuminate\Database\Query;
+class JoinClause extends Builder {
+    public function on($first, $operator = null, $second = null): static { return $this; }
+}
+"#;
+    let clause = "Illuminate\\Database\\Query\\JoinClause";
+    check(
+        &[FRAMEWORK, APPLICATION, APP, JOIN],
+        &[
+            ("User::where('a', 1)->leftJoin('posts', function ($join) { $join/*|*/; });", clause),
+            ("User::where('a', 1)->join('posts', fn ($join) => $join->on('a', '=', 'b')/*|*/);", clause),
+            // An untyped query (`$this->queryBuilder`).
+            ("$query->leftJoin('posts', function ($join) { $join/*|*/; });", clause),
+            // A table that isn't a string literal.
+            ("$query->leftJoin($table, function ($join) { $join/*|*/; });", clause),
+            // A nested query is the receiver's builder; the query builder on
+            // an unknown receiver.
+            ("User::where('a', 1)->where(function ($q) { $q/*|*/; });", BUILDER),
+            ("User::where('a', 1)->when(true, fn ($q) => $q/*|*/);", BUILDER),
+            ("$query->orWhere(function ($q) { $q/*|*/; });", "Illuminate\\Database\\Query\\Builder"),
+            ("$unknown->when(true, fn ($q) => $q/*|*/);", "mixed"),
+            // Not a query.
+            ("(new PaymentGateway())->join('posts', function ($join) { $join/*|*/; });", "mixed"),
+        ],
+    );
+}
+
+#[test]
+fn eloquent_relations_and_accessors() {
+    let has_many = "Illuminate\\Database\\Eloquent\\Relations\\HasMany<App\\Models\\Post, App\\Models\\User>";
+    check(
+        INSTALLED,
+        &[
+            ("(new User())->posts()/*|*/;", has_many),
+            ("(new User())->posts()->whereTitle('x')/*|*/;", has_many),
+            ("(new User())->posts/*|*/;", "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Post>"),
+            ("(new User())->tags/*|*/;", "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Tag>"),
+            ("(new Post())->author/*|*/;", "?App\\Models\\User"),
+            ("(new Post())->author->posts/*|*/;", "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Post>"),
+            ("(new User())->full_name/*|*/;", "string"),
+            ("(new User())->age/*|*/;", "int"),
+            ("(new User())->nothing/*|*/;", "mixed"),
+            // Not a relation: a plain method's name isn't a property.
+            ("(new User())->plain/*|*/;", "mixed"),
+            (
+                "class Me extends User { function f() { $this->posts/*|*/; } }",
+                "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\Post>",
+            ),
+        ],
+    );
+}
+
+/// An ide-helper style `.phpstorm.meta.php`.
+const META: &str = r#"<?php
+namespace PHPSTORM_META {
+    override(\app(0), map(['payments' => \App\Services\PaymentGateway::class]));
+}
+"#;
+
+const STORED: &str = r#"<?php
+namespace App\Http;
+function payments() { return app('payments'); }
+function gateway() { return app(\App\Services\PaymentGateway::class); }
+"#;
+
+#[test]
+fn meta_overrides_still_apply() {
+    let libs = [FRAMEWORK, APPLICATION, APP, META, STORED];
+    check(
+        &libs,
+        &[
+            ("app('payments')/*|*/;", "App\\Services\\PaymentGateway"),
+            ("app('cache')/*|*/;", "Illuminate\\Cache\\CacheManager"),
+            // Through summaries: the stored payload keeps the meta fallback.
+            ("\\App\\Http\\payments()/*|*/;", "App\\Services\\PaymentGateway"),
+            ("\\App\\Http\\gateway()/*|*/;", "App\\Services\\PaymentGateway"),
+        ],
+    );
+}
+
+#[test]
+fn off_without_laravel() {
+    // The same code without laravel/framework's `Application`: nothing
+    // from the provider.
+    check(
+        &[FRAMEWORK, APP],
+        &[
+            ("app(PaymentGateway::class)/*|*/;", "mixed"),
+            ("Payments::charge(1)/*|*/;", "mixed"),
+            ("User::where('a', 1)/*|*/;", "mixed"),
+            ("(new User())->posts/*|*/;", "mixed"),
+            ("(new User())->posts()/*|*/;", "Illuminate\\Database\\Eloquent\\Relations\\HasMany"),
+            ("User::plain()/*|*/;", "int"),
+        ],
+    );
+}
+
+#[test]
+fn facade_accessor_value_is_summarised() {
+    let summary = FileSummary::extract(&ParsedFile::parse("app.php", APP));
+    let class = summary.class_like("App\\Facades\\Payments").unwrap();
+    let accessor = class.methods.iter().find(|method| method.name == "getFacadeAccessor").unwrap();
+    assert_eq!(
+        accessor.inferred_return.as_ref().map(ToString::to_string).as_deref(),
+        Some("class-string<App\\Services\\PaymentGateway>")
+    );
+}
+
+/// Service providers, migrations and models with casts.
+pub(crate) const PROJECT: &str = r#"<?php
+namespace App\Support {
+    class Clock {
+        public function now(): int { return 0; }
+    }
+    class Reports {}
+    enum Status: string { case Active = 'active'; }
+    class MoneyCast {
+        public function get($model, string $key, $value, array $attributes): \App\Support\Money { return new Money(); }
+    }
+    class Money {}
+}
+namespace App\Providers {
+    use App\Services\PaymentGateway;
+    use App\Support\{Clock, Reports};
+    use Illuminate\Support\Facades\App;
+    class AppServiceProvider {
+        public function register(): void {
+            $this->app->singleton('payments', PaymentGateway::class);
+            $this->app->bind('clock', fn ($app) => new Clock());
+            $this->app->scoped('reports', function ($app) { return new Reports(); });
+            $this->app->bind('typed', function (): Clock { return new Clock(); });
+            $this->app->instance('report', new Reports());
+            $this->app->alias(Clock::class, 'time');
+            App::singleton('gateway', 'App\Services\PaymentGateway');
+            // Ignored: a class id, a binding without a concrete.
+            $this->app->bind(Clock::class, Clock::class);
+            $this->app->bind('lonely');
+        }
+    }
+}
+namespace App\Facades {
+    use Illuminate\Support\Facades\Facade;
+    class Clock extends Facade {
+        protected static function getFacadeAccessor() { return 'clock'; }
+    }
+}
+namespace Database\Migrations {
+    use Illuminate\Database\Schema\Blueprint;
+    use Illuminate\Support\Facades\Schema;
+    class CreateInvoicesTable {
+        public function up(): void {
+            Schema::create('invoices', function (Blueprint $table) {
+                $table->id();
+                $table->string('number');
+                $table->text('note')->nullable();
+                $table->decimal('total', 8, 2);
+                $table->boolean('paid')->default(false);
+                $table->json('meta');
+                $table->string('status');
+                $table->foreignId('user_id')->constrained();
+                $table->float('rate');
+                $table->timestamps();
+                $table->softDeletes();
+                $table->index('number');
+            });
+            Schema::table('invoices', fn (Blueprint $t) => $t->string('label')->nullable());
+            Schema::create('blog_categories', function (Blueprint $table) {
+                $table->morphs('owner');
+                $table->string('title');
+            });
+            Schema::create('ledger', function (Blueprint $table) {
+                $table->integer('amount');
+                $table->string('legacy');
+                $table->string('memo');
+                $table->foreignIdFor(\App\Models\BlogCategory::class)->constrained();
+                $table->foreignIdFor(Invoice::class, 'bill_id');
+                $table->timestamps();
+            });
+            Schema::table('ledger', fn (Blueprint $t) => $t->dropColumn(['legacy']));
+            Schema::table('ledger', function (Blueprint $table) {
+                $table->renameColumn('memo', 'note');
+                $table->dropTimestamps();
+                $table->string('code');
+                $table->renameColumn('code', 'reference');
+            });
+            Schema::create('drafts', function (Blueprint $table) {
+                $table->id();
+                $table->vector('embedding', 3);
+            });
+            Schema::create('nodes', function (Blueprint $table) {
+                $table->id();
+                \Kalnoy\Nestedset\NestedSet::columns($table);
+            });
+            Schema::create('odd', function (Blueprint $table) {
+                $table->id();
+                add_columns($table);
+            });
+        }
+        // A rollback changes nothing.
+        public function down(): void {
+            Schema::table('ledger', fn (Blueprint $t) => $t->dropColumn('amount'));
+            Schema::dropColumns('invoices', ['number']);
+        }
+    }
+}
+namespace App\Models {
+    use App\Support\{MoneyCast, Status};
+    use Illuminate\Database\Eloquent\Casts\AsCollection;
+    use Illuminate\Database\Eloquent\Model;
+    class Invoice extends Model {
+        protected $casts = [
+            'paid' => 'boolean',
+            'meta' => 'array',
+            'status' => Status::class,
+            'total' => MoneyCast::class . ':EUR',
+            'issued_at' => 'datetime:Y-m-d',
+        ];
+        public function getNumberAttribute(): int { return 0; }
+    }
+    class BlogCategory extends Model {
+        protected function casts(): array {
+            return ['tags' => AsCollection::class, 'title' => 'string', 'hits' => 'integer'];
+        }
+    }
+    class Entry extends Model {
+        protected $table = 'ledger';
+    }
+}
+"#;
+
+#[test]
+fn bindings_from_service_providers() {
+    let libs = [FRAMEWORK, APPLICATION, APP, PROJECT];
+    check(
+        &libs,
+        &[
+            ("app('payments')/*|*/;", "App\\Services\\PaymentGateway"),
+            ("app('payments')->charge(1)/*|*/;", "bool"),
+            ("app('clock')/*|*/;", "App\\Support\\Clock"),
+            ("resolve('reports')/*|*/;", "App\\Support\\Reports"),
+            ("app('typed')/*|*/;", "App\\Support\\Clock"),
+            ("app('report')/*|*/;", "App\\Support\\Reports"),
+            ("app('time')/*|*/;", "App\\Support\\Clock"),
+            ("app('gateway')/*|*/;", "App\\Services\\PaymentGateway"),
+            ("app()->make('clock')/*|*/;", "App\\Support\\Clock"),
+            ("App::make('payments')/*|*/;", "App\\Services\\PaymentGateway"),
+            // A facade whose accessor names a binding.
+            ("\\App\\Facades\\Clock::now()/*|*/;", "int"),
+            // Core aliases still win; unknown ids stay unknown.
+            ("app('cache')/*|*/;", "Illuminate\\Cache\\CacheManager"),
+            ("app('lonely')/*|*/;", "mixed"),
+        ],
+    );
+}
+
+#[test]
+fn model_attributes_from_casts_and_migrations() {
+    let libs = [FRAMEWORK, APPLICATION, APP, PROJECT];
+    let invoice = "(new \\App\\Models\\Invoice())";
+    let category = "(new \\App\\Models\\BlogCategory())";
+    let cases: Vec<(String, &str)> = vec![
+        // Casts, nullable when the column is.
+        (format!("{invoice}->paid/*|*/;"), "bool"),
+        (format!("{invoice}->meta/*|*/;"), "array"),
+        (format!("{invoice}->status/*|*/;"), "App\\Support\\Status"),
+        (format!("{invoice}->total/*|*/;"), "App\\Support\\Money"),
+        (format!("{invoice}->issued_at/*|*/;"), "Illuminate\\Support\\Carbon"),
+        // Columns without casts, `Schema::table` additions included.
+        (format!("{invoice}->id/*|*/;"), "int"),
+        (format!("{invoice}->note/*|*/;"), "?string"),
+        (format!("{invoice}->label/*|*/;"), "?string"),
+        (format!("{invoice}->user_id/*|*/;"), "int"),
+        (format!("{invoice}->rate/*|*/;"), "float"),
+        (format!("{invoice}->created_at/*|*/;"), "?Illuminate\\Support\\Carbon"),
+        (format!("{invoice}->deleted_at/*|*/;"), "?Illuminate\\Support\\Carbon"),
+        // An accessor wins over the column.
+        (format!("{invoice}->number/*|*/;"), "int"),
+        (format!("{invoice}->missing/*|*/;"), "mixed"),
+        // `casts()`, a table named by convention, morph columns.
+        (format!("{category}->tags/*|*/;"), "Illuminate\\Support\\Collection"),
+        (format!("{category}->hits/*|*/;"), "int"),
+        (format!("{category}->title/*|*/;"), "string"),
+        (format!("{category}->owner_type/*|*/;"), "string"),
+        (format!("{category}->owner_id/*|*/;"), "int"),
+        // `$table`.
+        ("(new \\App\\Models\\Entry())->amount/*|*/;".to_owned(), "int"),
+        // Dropped and renamed by later migrations.
+        ("(new \\App\\Models\\Entry())->legacy/*|*/;".to_owned(), "mixed"),
+        ("(new \\App\\Models\\Entry())->memo/*|*/;".to_owned(), "mixed"),
+        ("(new \\App\\Models\\Entry())->created_at/*|*/;".to_owned(), "mixed"),
+        ("(new \\App\\Models\\Entry())->note/*|*/;".to_owned(), "string"),
+        ("(new \\App\\Models\\Entry())->reference/*|*/;".to_owned(), "string"),
+    ];
+    let cases: Vec<(&str, &str)> = cases.iter().map(|(body, expected)| (body.as_str(), *expected)).collect();
+    check(&libs, &cases);
+    // Without laravel/framework, nothing.
+    check(&[FRAMEWORK, APP, PROJECT], &[("(new \\App\\Models\\Invoice())->paid/*|*/;", "mixed")]);
+}
+
+#[test]
+fn laravel_facts_are_summarised() {
+    let summary = FileSummary::extract(&ParsedFile::parse("project.php", PROJECT));
+    let rendered = summary.render();
+    let rendered: Vec<&str> = rendered.lines().filter(|line| line.starts_with("laravel ")).collect();
+    let expected = [
+        "laravel bind 'payments' => App\\Services\\PaymentGateway",
+        "laravel bind 'clock' => App\\Support\\Clock",
+        "laravel bind 'reports' => App\\Support\\Reports",
+        "laravel bind 'typed' => App\\Support\\Clock",
+        "laravel bind 'report' => App\\Support\\Reports",
+        "laravel bind 'time' => App\\Support\\Clock",
+        "laravel bind 'gateway' => App\\Services\\PaymentGateway",
+        "laravel table 'invoices' created: id: int, number: string, note: ?string, total: string, paid: bool, \
+         meta: string, status: string, user_id: int, rate: float, created_at: ?\\Illuminate\\Support\\Carbon, \
+         updated_at: ?\\Illuminate\\Support\\Carbon, deleted_at: ?\\Illuminate\\Support\\Carbon",
+        "laravel table 'invoices': label: ?string",
+        "laravel table 'blog_categories' created: owner_type: string, owner_id: int, title: string",
+        "laravel table 'ledger' created: amount: int, legacy: string, memo: string, blog_category_id: int, \
+         bill_id: int, created_at: ?\\Illuminate\\Support\\Carbon, updated_at: ?\\Illuminate\\Support\\Carbon",
+        "laravel table 'ledger': drops legacy",
+        "laravel table 'ledger': reference: string drops created_at, updated_at renames memo => note",
+        "laravel table 'drafts' created partial: id: int",
+        "laravel table 'nodes' created: id: int, _lft: int, _rgt: int, parent_id: ?int",
+        "laravel table 'odd' created partial: id: int",
+        "laravel casts App\\Models\\Invoice: paid => boolean, meta => array, status => \\App\\Support\\Status, \
+         total => \\App\\Support\\MoneyCast, issued_at => datetime:Y-m-d",
+        "laravel casts App\\Models\\BlogCategory: tags => \\Illuminate\\Database\\Eloquent\\Casts\\AsCollection, \
+         title => string, hits => integer",
+    ];
+    assert_eq!(rendered, expected);
+    // Created, and every statement understood (indexes and drops make no
+    // columns); not created here, or with a column type it doesn't know.
+    let facts = &summary.laravel;
+    assert!(facts.schema_certain("invoices") && facts.schema_certain("ledger"));
+    assert!(!facts.schema_certain("drafts") && !facts.schema_certain("unknown"));
+    // `NestedSet::columns($table)` is understood; another call given the
+    // blueprint may make anything.
+    assert!(facts.schema_certain("nodes") && !facts.schema_certain("odd"));
+
+    // Merged, later migrations drop and rename the columns of earlier ones;
+    // the rollback in `down()` changes nothing.
+    let merged = LaravelFacts::merge([facts]);
+    let names = |table: &str| -> Vec<String> {
+        merged.columns(table).into_iter().map(|(_, column)| column.name.clone()).collect()
+    };
+    assert_eq!(names("ledger"), ["amount", "blog_category_id", "bill_id", "reference", "note"]);
+    assert!(names("invoices").contains(&"number".to_owned()));
+    let (from, note) = merged.columns("ledger").into_iter().find(|(_, column)| column.name == "note").unwrap();
+    assert_eq!((from.name.as_str(), note.ty.0.as_str(), from.created), ("ledger", "string", false));
+}
+
+#[test]
+fn counted_relations_are_summarised() {
+    let source = r#"<?php
+namespace App\Models {
+    use Illuminate\Database\Eloquent\Model;
+    class Team extends Model {
+        protected $withCount = ['members', 'BlogPosts'];
+        public function run(): void {
+            self::withCount('projects')->get();
+            self::query()->withCount(['tasks', 'tasks as open_tasks' => fn ($q) => $q, 'a.b'])->get();
+            $this->loadCount('invites');
+        }
+    }
+}
+"#;
+    let summary = FileSummary::extract(&ParsedFile::parse("team.php", source));
+    let rendered = summary.render();
+    let counts: Vec<&str> = rendered.lines().filter(|line| line.contains(" counts ")).collect();
+    // Only `$withCount`, with its class: what the calls count follows
+    // their queries.
+    assert_eq!(
+        counts,
+        [
+            "laravel App\\Models\\Team counts members as members_count",
+            "laravel App\\Models\\Team counts BlogPosts as blog_posts_count",
+        ]
+    );
+}

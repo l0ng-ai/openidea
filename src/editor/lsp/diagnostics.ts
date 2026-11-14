@@ -37,10 +37,23 @@ type Listener = (publication?: DiagnosticPublication) => void;
 const byPath = new Map<string, Map<string, Diagnostic[]>>();
 const listeners = new Map<string, Set<Listener>>();
 
+/** Producers computing diagnostics in the UI (spelling, syntax errors): no language server has fixes for them. */
+const localProducers = new Set<string>();
+/** The editor's diagnostics of {@link localProducers}. */
+const localLint = new WeakSet<LintDiagnostic>();
+
+/** Whether a UI-side inspection (not a language server) reported `d`: its quick fixes are the UI's own. */
+export const isLocalDiagnostic = (d: LintDiagnostic) => localLint.has(d);
+
 /** Diagnostics a UI-side inspection computed for `path` (shown in the editor and Problems). */
 export function setFileDiagnostics(path: string, source: string, items: Diagnostic[]) {
+  localProducers.add(source);
   const had = byPath.get(path)?.has(source) ?? false;
-  storeDiagnostics(path, source, items);
+  storeDiagnostics(
+    path,
+    source,
+    items.map((d) => (d.server ? d : { ...d, server: source })),
+  );
   // `server` names the producer for views that see the diagnostic alone (inspection controls).
   if (items.length || had)
     publishLocalDiagnostics(
@@ -143,7 +156,7 @@ export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): Edit
       d.deprecated && "cm-lsp-deprecated",
       isTypoStyled(d) && "cm-lsp-typo",
     ].filter(Boolean);
-    return {
+    const lint: EditorDiagnostic = {
       from,
       to,
       problem: d,
@@ -152,6 +165,8 @@ export function toLintDiagnostics(doc: Text, items: readonly Diagnostic[]): Edit
       source: [d.source, isInternalCode(d.code) ? null : d.code].filter(Boolean).join(" ") || undefined,
       markClass: classes.length ? classes.join(" ") : undefined,
     };
+    if (d.server && localProducers.has(d.server)) localLint.add(lint);
+    return lint;
   });
   return out.sort((a, b) => a.from - b.from || SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
 }

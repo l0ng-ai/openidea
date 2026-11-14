@@ -1,0 +1,647 @@
+//! Summary-time types: what a file alone says about the type of a value
+//! expression, and what a function-like body returns, as [`LazyType`]s.
+//!
+//! Only the file is known here, so anything that depends on another
+//! declaration (a call, a member access, a constant) becomes a lazy recipe
+//! for the resolver. Local variables are tracked flow-insensitively for
+//! returns only ([`body_return`]): a variable only ever written by plain
+//! `$x = value` assignments has the union of those values; any other write
+//! (compound assignment, element write, destructuring, `foreach`, `global`,
+//! `static`, a by-reference closure capture) makes it `mixed`, as are all
+//! other variables.
+//! Calls go through the local step of the built-in type providers
+//! ([`TypeProviders::builtin`]), the core one giving the plain recipes.
+
+use mago_syntax::cst::{
+    Access, AnonymousClass, Argument, ArgumentList, ArrayElement, ArrowFunction, Assignment, AssignmentOperator,
+    BinaryOperator, Block, Call, Class, ClassLikeConstantSelector, ClassLikeMemberSelector, Closure, Construct,
+    DirectVariable, Enum, Expression, ForeachKeyValueTarget, ForeachValueTarget, Function, Global, Interface,
+    MagicConstant, MatchArm, Return, StaticAbstractItem, StaticConcreteItem, Trait, UnaryPrefixOperator, Variable,
+    Yield,
+};
+use mago_syntax::walker::Walker;
+
+use crate::names::{NameKind, NameScope, Resolution};
+use crate::types::expr::shape_key;
+use crate::types::ops::{Op, is_int, is_string, literal_type, op_type, unary_type};
+use crate::types::provider::{CallKind, CallSite, NO_NEXT, site_args};
+use crate::types::{LazyType, Relative, Shape, ShapeField, ShapeKey, Signature, Type, TypeProviders};
+
+/// The most fields an inferred array shape keeps (as the flow does).
+const MAX_SHAPE_FIELDS: usize = 32;
+
+/// Infers types from expressions in one name scope.
+pub(super) struct Infer<'s> {
+    pub scope: &'s NameScope,
+    /// The parameters in scope (name without `$`) and their declared types.
+    pub params: Vec<(String, Type)>,
+    /// Keep literal types (`'a'`, `1`) instead of widening them; used for
+    /// constant values, where the literal is the value.
+    pub literals: bool,
+    /// Local variables (name without `$`) only written by plain
+    /// assignments, and the union of the assigned values.
+    pub locals: Vec<(String, LazyType)>,
+    /// Infer array literals as shapes ([`Self::array_shape`]); for returned
+    /// values and constants (whose shapes keep literal values, for
+    /// `key-of<Foo::MAP>`), not for property defaults.
+    pub shapes: bool,
+    /// The file's tag, for the names of its anonymous classes.
+    pub tag: u64,
+}
+
+fn lossy(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn known(ty: Type) -> LazyType {
+    LazyType::Known(ty)
+}
+
+impl Infer<'_> {
+    /// The type of a value expression.
+    pub fn expr(&self, expr: &Expression<'_>) -> LazyType {
+        let ty = self.expr_inner(expr);
+        if self.literals {
+            return ty;
+        }
+        match ty {
+            LazyType::Known(ty) => known(ty.widen()),
+            LazyType::Union(members) => LazyType::union(members.into_iter().map(|member| match member {
+                LazyType::Known(ty) => known(ty.widen()),
+                other => other,
+            })),
+            other => other,
+        }
+    }
+
+    fn expr_inner(&self, expr: &Expression<'_>) -> LazyType {
+        match expr {
+            Expression::Parenthesized(inner) => self.expr_inner(inner.expression),
+            Expression::Literal(literal) => known(literal_type(literal)),
+            Expression::CompositeString(_) => known(Type::string()),
+            Expression::UnaryPrefix(unary) => self.unary(&unary.operator, unary.operand),
+            Expression::UnaryPostfix(unary) => self.expr_inner(unary.operand),
+            Expression::Binary(binary) => self.binary(&binary.operator, binary.lhs, binary.rhs),
+            Expression::Conditional(conditional) => {
+                let then = match conditional.then {
+                    Some(then) => self.expr_inner(then),
+                    None => self.expr_inner(conditional.condition),
+                };
+                LazyType::union([then, self.expr_inner(conditional.r#else)])
+            }
+            Expression::Match(r#match) => LazyType::union(r#match.arms.iter().map(|arm| match arm {
+                MatchArm::Expression(arm) => self.expr_inner(arm.expression),
+                MatchArm::Default(arm) => self.expr_inner(arm.expression),
+            })),
+            Expression::Clone(clone) => self.expr_inner(clone.object),
+            Expression::Assignment(assignment) => match assignment.operator {
+                AssignmentOperator::Assign(_) => self.expr_inner(assignment.rhs),
+                _ => LazyType::mixed(),
+            },
+            Expression::Array(array) => self.array(array.elements.iter()),
+            Expression::LegacyArray(array) => self.array(array.elements.iter()),
+            Expression::AnonymousClass(class) => known(Type::named(&crate::summary::anonymous_fqn(
+                self.tag,
+                mago_span::HasSpan::span(class).start.offset,
+            ))),
+            Expression::Closure(_) | Expression::ArrowFunction(_) => known(Type::Closure(None)),
+            Expression::Variable(variable) => self.variable(variable),
+            Expression::Construct(construct) => known(match construct {
+                Construct::Isset(_) | Construct::Empty(_) => Type::Bool,
+                Construct::Print(_) => Type::LiteralInt(1),
+                Construct::Exit(_) | Construct::Die(_) => Type::Never,
+                _ => Type::Mixed,
+            }),
+            Expression::Throw(_) => known(Type::Never),
+            Expression::MagicConstant(MagicConstant::Line(_)) => known(Type::Int),
+            Expression::MagicConstant(_) => known(Type::string()),
+            Expression::Instantiation(instantiation) => match self.class_ref(instantiation.class) {
+                LazyType::Known(ty @ (Type::Named { .. } | Type::Relative(_) | Type::Closure(_))) => known(ty),
+                _ => known(Type::Object),
+            },
+            Expression::Call(call) => self.call(call),
+            Expression::Access(access) => self.access(access),
+            Expression::ConstantAccess(constant) => {
+                match self.scope.resolve(NameKind::Constant, &lossy(constant.name.value())).resolution {
+                    Resolution::Fqn(fqn) => LazyType::Constant { fqn, fallback: None },
+                    Resolution::Fallback { namespaced, global } => {
+                        LazyType::Constant { fqn: namespaced, fallback: Some(global) }
+                    }
+                    Resolution::Relative(_) => LazyType::mixed(),
+                }
+            }
+            _ => LazyType::mixed(),
+        }
+    }
+
+    fn unary(&self, operator: &UnaryPrefixOperator<'_>, operand: &Expression<'_>) -> LazyType {
+        let value = self.expr_inner(operand);
+        match unary_type(operator, value.known()) {
+            Some(ty) => known(ty),
+            None => value,
+        }
+    }
+
+    fn binary(&self, operator: &BinaryOperator<'_>, lhs: &Expression<'_>, rhs: &Expression<'_>) -> LazyType {
+        match Op::of_binary(operator) {
+            Op::Coalesce => {
+                let left = match self.expr_inner(lhs) {
+                    LazyType::Known(ty) => known(ty.without_null()),
+                    other => other,
+                };
+                LazyType::union([left, self.expr_inner(rhs)])
+            }
+            op @ (Op::Add | Op::Sub | Op::Mul | Op::Exp) => {
+                let (left, right) = (self.expr_inner(lhs), self.expr_inner(rhs));
+                known(op_type(op, left.known(), right.known()))
+            }
+            op => known(op_type(op, None, None)),
+        }
+    }
+
+    fn array<'a, 'b: 'a>(&self, elements: impl Iterator<Item = &'a ArrayElement<'b>>) -> LazyType {
+        let elements: Vec<&'a ArrayElement<'b>> = elements.collect();
+        if self.shapes
+            && let Some(shape) = self.array_shape(&elements)
+        {
+            return known(shape);
+        }
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        let mut list = true;
+        let mut any = false;
+        for element in elements {
+            let (key, value) = match element {
+                ArrayElement::KeyValue(element) => (Some(element.key), element.value),
+                ArrayElement::Value(element) => (None, element.value),
+                ArrayElement::Variadic(_) => return known(Type::array()),
+                ArrayElement::Missing(_) => continue,
+            };
+            any = true;
+            if let Some(key) = key {
+                list = false;
+                keys.push(match self.expr_inner(key) {
+                    LazyType::Known(ty) if is_int(&ty) => Type::Int,
+                    LazyType::Known(ty) if is_string(&ty) => Type::string(),
+                    _ => Type::ArrayKey,
+                });
+            } else {
+                keys.push(Type::Int);
+            }
+            values.push(match self.expr_inner(value) {
+                LazyType::Known(ty) => ty.widen(),
+                _ => Type::Mixed,
+            });
+        }
+        if !any {
+            return known(Type::array());
+        }
+        let value = Box::new(Type::union(values));
+        known(if list {
+            Type::List { value, non_empty: true }
+        } else {
+            Type::Array { key: Box::new(Type::union(keys)), value, non_empty: true }
+        })
+    }
+
+    /// An array literal whose keys are all literals (or PHP's numbering) as
+    /// a shape, so that destructuring a returned literal
+    /// (`[$guard, $provider] = $this->getRealGuard()`) types each variable.
+    /// An element only known with other files is `mixed` here. `None` for
+    /// other literals, empty or larger ones.
+    fn array_shape(&self, elements: &[&ArrayElement<'_>]) -> Option<Type> {
+        let mut fields: Vec<ShapeField> = Vec::new();
+        let mut next: i64 = 0;
+        for element in elements {
+            let (key, value) = match element {
+                ArrayElement::KeyValue(element) => {
+                    let key = match self.expr_inner(element.key) {
+                        LazyType::Known(key) => shape_key(&key)?,
+                        _ => return None,
+                    };
+                    (key, element.value)
+                }
+                ArrayElement::Value(element) => (ShapeKey::Int(next), element.value),
+                ArrayElement::Variadic(_) => return None,
+                ArrayElement::Missing(_) => continue,
+            };
+            if let ShapeKey::Int(int) = key {
+                next = next.max(int.saturating_add(1));
+            }
+            let ty = match self.expr_inner(value) {
+                LazyType::Known(ty) if self.literals => ty,
+                LazyType::Known(ty) => ty.widen(),
+                _ => Type::Mixed,
+            };
+            fields.retain(|field| field.key != key);
+            fields.push(ShapeField { key, ty, optional: false });
+        }
+        if fields.is_empty() || fields.len() > MAX_SHAPE_FIELDS {
+            return None;
+        }
+        let list = fields.iter().enumerate().all(|(i, field)| field.key == ShapeKey::Int(i as i64));
+        Some(Type::Shape(Box::new(Shape { list, fields, rest: None })))
+    }
+
+    fn variable(&self, variable: &Variable<'_>) -> LazyType {
+        let Variable::Direct(direct) = variable else { return LazyType::mixed() };
+        let name = direct.name.strip_prefix(b"$").unwrap_or(direct.name);
+        if name == b"this" {
+            return known(Type::Relative(Relative::This));
+        }
+        let name = lossy(name);
+        if let Some((_, ty)) = self.params.iter().find(|(param, _)| *param == name) {
+            return known(ty.clone());
+        }
+        match self.locals.iter().find(|(local, _)| *local == name) {
+            Some((_, ty)) => ty.clone(),
+            None => LazyType::mixed(),
+        }
+    }
+
+    /// The class named before `::` or after `new`.
+    fn class_ref(&self, expr: &Expression<'_>) -> LazyType {
+        match expr {
+            Expression::Identifier(identifier) => {
+                match self.scope.resolve(NameKind::ClassLike, &lossy(identifier.value())).resolution {
+                    Resolution::Relative(relative) => known(Type::Relative(relative.into())),
+                    Resolution::Fqn(fqn) | Resolution::Fallback { namespaced: fqn, .. } => {
+                        if fqn.eq_ignore_ascii_case("Closure") {
+                            known(Type::Closure(None))
+                        } else {
+                            known(Type::named(&fqn))
+                        }
+                    }
+                }
+            }
+            Expression::Self_(_) => known(Type::Relative(Relative::Self_)),
+            Expression::Static(_) => known(Type::Relative(Relative::Static)),
+            Expression::Parent(_) => known(Type::Relative(Relative::Parent)),
+            other => self.expr_inner(other),
+        }
+    }
+
+    /// The lazy types of a call's arguments.
+    fn arg_types(&self, list: &ArgumentList<'_>) -> Vec<LazyType> {
+        list.arguments
+            .iter()
+            .map(|argument| {
+                let value = match argument {
+                    Argument::Positional(argument) => argument.value,
+                    Argument::Named(argument) => argument.value,
+                };
+                // A closure with a declared return type keeps it, for the
+                // providers (`Attribute::make(get: fn (): string => …)`).
+                let hint = match value {
+                    Expression::Closure(closure) => closure.return_type_hint.as_ref(),
+                    Expression::ArrowFunction(arrow) => arrow.return_type_hint.as_ref(),
+                    _ => None,
+                };
+                match hint {
+                    Some(hint) => {
+                        let return_type = Type::from_hint(&super::type_hint(self.scope, &hint.hint));
+                        known(Type::Closure(Some(Box::new(Signature {
+                            params: Vec::new(),
+                            return_type: Some(return_type),
+                        }))))
+                    }
+                    None => self.expr_inner(value),
+                }
+            })
+            .collect()
+    }
+
+    fn call(&self, call: &Call<'_>) -> LazyType {
+        let method = |kind: CallKind,
+                      receiver: LazyType,
+                      selector: &ClassLikeMemberSelector<'_>,
+                      arguments: &ArgumentList<'_>| match selector {
+            ClassLikeMemberSelector::Identifier(name) => {
+                let name = lossy(name.value);
+                let core = || LazyType::MethodReturn { receiver: Box::new(receiver.clone()), name: name.clone() };
+                let args = site_args(self.scope, arguments);
+                let arg_types = || self.arg_types(arguments);
+                let site = CallSite {
+                    kind,
+                    name: &name,
+                    receiver: Some(&receiver),
+                    args: &args,
+                    arg_types: &arg_types,
+                    stored: true,
+                    core: &core,
+                    next: NO_NEXT,
+                };
+                TypeProviders::builtin().call(&site)
+            }
+            _ => LazyType::mixed(),
+        };
+        match call {
+            Call::Function(call) => match call.function {
+                Expression::Identifier(identifier) => {
+                    let core = match self.scope.resolve(NameKind::Function, &lossy(identifier.value())).resolution {
+                        Resolution::Fqn(fqn) => LazyType::FunctionReturn { fqn, fallback: None },
+                        Resolution::Fallback { namespaced, global } => {
+                            LazyType::FunctionReturn { fqn: namespaced, fallback: Some(global) }
+                        }
+                        Resolution::Relative(_) => return LazyType::mixed(),
+                    };
+                    let LazyType::FunctionReturn { fqn, .. } = &core else { return LazyType::mixed() };
+                    let args = site_args(self.scope, &call.argument_list);
+                    let core_fn = || core.clone();
+                    let arg_types = || self.arg_types(&call.argument_list);
+                    let site = CallSite {
+                        kind: CallKind::Function,
+                        name: fqn,
+                        receiver: None,
+                        args: &args,
+                        arg_types: &arg_types,
+                        stored: true,
+                        core: &core_fn,
+                        next: NO_NEXT,
+                    };
+                    TypeProviders::builtin().call(&site)
+                }
+                _ => LazyType::mixed(),
+            },
+            Call::Method(call) => {
+                method(CallKind::Method, self.expr_inner(call.object), &call.method, &call.argument_list)
+            }
+            Call::NullSafeMethod(call) => LazyType::union([
+                method(CallKind::Method, self.expr_inner(call.object), &call.method, &call.argument_list),
+                known(Type::Null),
+            ]),
+            Call::StaticMethod(call) => {
+                method(CallKind::StaticMethod, self.class_ref(call.class), &call.method, &call.argument_list)
+            }
+        }
+    }
+
+    fn access(&self, access: &Access<'_>) -> LazyType {
+        let property = |receiver: LazyType, selector: &ClassLikeMemberSelector<'_>| match selector {
+            ClassLikeMemberSelector::Identifier(name) => {
+                LazyType::Property { receiver: Box::new(receiver), name: lossy(name.value) }
+            }
+            _ => LazyType::mixed(),
+        };
+        match access {
+            Access::Property(access) => property(self.expr_inner(access.object), &access.property),
+            Access::NullSafeProperty(access) => {
+                LazyType::union([property(self.expr_inner(access.object), &access.property), known(Type::Null)])
+            }
+            Access::StaticProperty(access) => match &access.property {
+                Variable::Direct(direct) => LazyType::Property {
+                    receiver: Box::new(self.class_ref(access.class)),
+                    name: lossy(direct.name.strip_prefix(b"$").unwrap_or(direct.name)),
+                },
+                _ => LazyType::mixed(),
+            },
+            Access::ClassConstant(access) => {
+                let ClassLikeConstantSelector::Identifier(name) = &access.constant else {
+                    return LazyType::mixed();
+                };
+                let class = self.class_ref(access.class);
+                if name.value.eq_ignore_ascii_case(b"class") {
+                    return known(Type::ClassString(class.known().cloned().map(Box::new)));
+                }
+                LazyType::ClassConstant { class: Box::new(class), name: lossy(name.value) }
+            }
+        }
+    }
+}
+
+/// What a function-like body returns, from its `return` statements (not
+/// those of nested closures, functions or classes):
+///
+/// - `Generator` when it `yield`s;
+/// - `void` when no `return` gives a value;
+/// - else the union of the returned values, with `null` for a bare
+///   `return;`.
+pub(super) fn body_return(infer: &Infer<'_>, body: &Block<'_>) -> LazyType {
+    let mut writes = Writes::default();
+    WriteWalker.walk_block(body, &mut writes);
+    let mut infer = Infer {
+        scope: infer.scope,
+        params: infer.params.clone(),
+        literals: infer.literals,
+        tag: infer.tag,
+        locals: Vec::new(),
+        // An accessor's literals aren't a constant's value.
+        shapes: !infer.literals,
+    };
+    // Two rounds, so `$a = new A; $b = $a; return $b;` sees `$a` in `$b`.
+    for _ in 0..2 {
+        infer.locals = writes
+            .assigned
+            .iter()
+            .filter(|(name, _)| !writes.other.contains(name) && !infer.params.iter().any(|(param, _)| param == name))
+            .map(|(name, values)| (name.clone(), LazyType::union(values.iter().map(|value| infer.expr(value)))))
+            .collect();
+    }
+    let infer = &infer;
+    let mut returns = Returns { infer, values: Vec::new(), bare: false, generator: false };
+    ReturnWalker.walk_block(body, &mut returns);
+    if returns.generator {
+        return known(Type::named("Generator"));
+    }
+    if returns.values.is_empty() {
+        return known(Type::Void);
+    }
+    if returns.bare {
+        returns.values.push(known(Type::Null));
+    }
+    LazyType::union(returns.values)
+}
+
+struct Returns<'i, 's> {
+    infer: &'i Infer<'s>,
+    values: Vec<LazyType>,
+    bare: bool,
+    generator: bool,
+}
+
+struct ReturnWalker;
+
+impl<'ast, 'arena, 'i, 's> Walker<'ast, 'arena, Returns<'i, 's>> for ReturnWalker {
+    fn walk_in_return(&self, node: &'ast Return<'arena>, cx: &mut Returns<'i, 's>) {
+        match node.value {
+            Some(value) => {
+                let ty = cx.infer.expr(value);
+                cx.values.push(ty);
+            }
+            None => cx.bare = true,
+        }
+    }
+
+    fn walk_in_yield(&self, _: &'ast Yield<'arena>, cx: &mut Returns<'i, 's>) {
+        cx.generator = true;
+    }
+
+    // Nested scopes return for themselves.
+    fn walk_closure(&self, _: &'ast Closure<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_arrow_function(&self, _: &'ast ArrowFunction<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_function(&self, _: &'ast Function<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_class(&self, _: &'ast Class<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Returns<'i, 's>) {}
+    fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Returns<'i, 's>) {}
+}
+
+/// The `$this->name = value` assignments in a method body (outside nested
+/// functions and classes), with the property name.
+pub(super) fn this_assignments<'ast, 'arena>(body: &'ast Block<'arena>) -> Assignments<'ast, 'arena> {
+    let mut found = Vec::new();
+    AssignmentWalker.walk_block(body, &mut found);
+    found
+}
+
+/// How a value is assigned to `$this->property`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Target {
+    /// `$this->property = value`.
+    Whole,
+    /// `$this->property[] = value`.
+    Appended,
+    /// `$this->property[$key] = value`.
+    Keyed,
+}
+
+/// The property, how it is assigned, and the value.
+type Assignments<'ast, 'arena> = Vec<(String, Target, &'ast Expression<'arena>)>;
+
+/// The property `$this->name` an assignment's left side writes, and how.
+fn this_target(lhs: &Expression<'_>) -> Option<(String, Target)> {
+    let (object, target) = match lhs {
+        Expression::ArrayAppend(append) => (append.array, Target::Appended),
+        Expression::ArrayAccess(access) => (access.array, Target::Keyed),
+        other => (other, Target::Whole),
+    };
+    if let Expression::Access(Access::Property(access)) = object
+        && let Expression::Variable(Variable::Direct(this)) = access.object
+        && this.name == b"$this"
+        && let ClassLikeMemberSelector::Identifier(name) = &access.property
+    {
+        return Some((lossy(name.value), target));
+    }
+    None
+}
+
+struct AssignmentWalker;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Assignments<'ast, 'arena>> for AssignmentWalker {
+    fn walk_in_assignment(&self, node: &'ast Assignment<'arena>, cx: &mut Assignments<'ast, 'arena>) {
+        if let AssignmentOperator::Assign(_) = node.operator
+            && let Some((name, target)) = this_target(node.lhs)
+        {
+            cx.push((name, target, node.rhs));
+        }
+    }
+
+    fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_function(&self, _: &'ast Function<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_class(&self, _: &'ast Class<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+    fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Assignments<'ast, 'arena>) {}
+}
+
+/// The local variables written in a function-like body (outside nested
+/// scopes): the values of plain `$x = value` assignments by name, and the
+/// names written any other way.
+#[derive(Default)]
+struct Writes<'ast, 'arena> {
+    assigned: Vec<(String, Vec<&'ast Expression<'arena>>)>,
+    other: Vec<String>,
+}
+
+fn variable_name(variable: &DirectVariable<'_>) -> String {
+    lossy(variable.name.strip_prefix(b"$").unwrap_or(variable.name))
+}
+
+impl Writes<'_, '_> {
+    fn mark(&mut self, expr: &Expression<'_>) {
+        VariableWalker.walk_expression(expr, &mut self.other);
+    }
+}
+
+struct WriteWalker;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Writes<'ast, 'arena>> for WriteWalker {
+    fn walk_in_assignment(&self, node: &'ast Assignment<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        match (node.lhs, &node.operator) {
+            (Expression::Variable(Variable::Direct(direct)), AssignmentOperator::Assign(_)) => {
+                let name = variable_name(direct);
+                match cx.assigned.iter_mut().find(|(assigned, _)| *assigned == name) {
+                    Some((_, values)) => values.push(node.rhs),
+                    None => cx.assigned.push((name, vec![node.rhs])),
+                }
+            }
+            // Compound assignments, `$a[…] = `, `$a[] = `, `[$a, $b] = `,
+            // `list(…) = `.
+            (
+                Expression::Variable(_)
+                | Expression::ArrayAccess(_)
+                | Expression::ArrayAppend(_)
+                | Expression::List(_)
+                | Expression::Array(_),
+                _,
+            ) => cx.mark(node.lhs),
+            _ => {}
+        }
+    }
+
+    fn walk_in_foreach_value_target(&self, node: &'ast ForeachValueTarget<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        cx.mark(node.value);
+    }
+
+    fn walk_in_foreach_key_value_target(
+        &self,
+        node: &'ast ForeachKeyValueTarget<'arena>,
+        cx: &mut Writes<'ast, 'arena>,
+    ) {
+        cx.mark(node.key);
+        cx.mark(node.value);
+    }
+
+    fn walk_in_global(&self, node: &'ast Global<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        for variable in node.variables.iter() {
+            if let Variable::Direct(direct) = variable {
+                cx.other.push(variable_name(direct));
+            }
+        }
+    }
+
+    fn walk_in_static_concrete_item(&self, node: &'ast StaticConcreteItem<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        cx.other.push(variable_name(&node.variable));
+    }
+
+    fn walk_in_static_abstract_item(&self, node: &'ast StaticAbstractItem<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        cx.other.push(variable_name(&node.variable));
+    }
+
+    // Nested scopes have their own variables, but a closure's `use (&$x)`
+    // can write the enclosing `$x`.
+    fn walk_closure(&self, node: &'ast Closure<'arena>, cx: &mut Writes<'ast, 'arena>) {
+        if let Some(uses) = &node.use_clause {
+            for used in uses.variables.iter().filter(|used| used.ampersand.is_some()) {
+                cx.other.push(variable_name(&used.variable));
+            }
+        }
+    }
+    fn walk_arrow_function(&self, _: &'ast ArrowFunction<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_anonymous_class(&self, _: &'ast AnonymousClass<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_function(&self, _: &'ast Function<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_class(&self, _: &'ast Class<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_interface(&self, _: &'ast Interface<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_trait(&self, _: &'ast Trait<'arena>, _: &mut Writes<'ast, 'arena>) {}
+    fn walk_enum(&self, _: &'ast Enum<'arena>, _: &mut Writes<'ast, 'arena>) {}
+}
+
+/// Every direct variable's name (without `$`) in an expression.
+struct VariableWalker;
+
+impl<'ast, 'arena> Walker<'ast, 'arena, Vec<String>> for VariableWalker {
+    fn walk_in_direct_variable(&self, node: &'ast DirectVariable<'arena>, cx: &mut Vec<String>) {
+        cx.push(variable_name(node));
+    }
+}

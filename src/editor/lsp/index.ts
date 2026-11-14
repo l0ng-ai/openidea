@@ -27,6 +27,11 @@ import { inlayExtension } from "./inlay";
 import { inlineCompletionExtension, registerInlineCompletionActions } from "./inlineCompletion";
 import { semanticExtension } from "./semantic";
 import { usagesLensExtension } from "./codeLens";
+import { serverLensExtension } from "./serverLens";
+import { CreateTranslationDialog, registerCreateTranslation } from "./createTranslation";
+import { ModelViewDialog, registerModelView } from "./modelView";
+import { NewModelDialog, registerLaravelGenerators } from "./laravelGenerate";
+import { NewClassDialog } from "./laravelGenerateClass";
 import { autoImportExtension } from "./autoImport";
 import { importsOnPasteExtension, registerImportsOnPasteActions } from "./importsOnPaste";
 import { installConfigurationNavigationEvents } from "./configurationNavigation";
@@ -42,7 +47,7 @@ import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
-import { HierarchyDialog } from "@/editor/refactor";
+import { ChangeSignatureDialog, ExtractMethodDialog, HierarchyDialog, MemberChooserDialog } from "@/editor/refactor";
 
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
@@ -62,6 +67,7 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     inlineCompletionExtension(),
     semanticExtension(),
     usagesLensExtension(),
+    serverLensExtension(),
     autoImportExtension(),
     importsOnPasteExtension(),
     unresolvedReferences(),
@@ -114,6 +120,20 @@ export function activate(): () => void {
     registerEditorContribution({ id: "lsp.parameterTab", order: 95, extensions: () => parameterTabKeys }),
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
+    registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
+    registerOverlay({ id: "editor-lsp.extractMethodDialog", component: ExtractMethodDialog }),
+    // Generate › Getters…, Constructor…, Override Methods…: the members to generate.
+    registerOverlay({ id: "editor-lsp.memberChooserDialog", component: MemberChooserDialog }),
+    // Laravel: "Create translation key…" asks for the text per locale.
+    registerOverlay({ id: "editor-lsp.createTranslationDialog", component: CreateTranslationDialog }),
+    registerCreateTranslation(),
+    // Laravel: the Eloquent model view, from the lens on a model class.
+    registerOverlay({ id: "editor-lsp.modelViewDialog", component: ModelViewDialog }),
+    registerModelView(),
+    // Laravel: the Generate menu, its actions, the New Model dialog and the other generators' one.
+    registerOverlay({ id: "editor-lsp.newModelDialog", component: NewModelDialog }),
+    registerOverlay({ id: "editor-lsp.newClassDialog", component: NewClassDialog }),
+    registerLaravelGenerators(),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.

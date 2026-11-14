@@ -1,0 +1,61 @@
+[package]
+name = "ide-php"
+description = "Native in-process PHP code intelligence: syntax, summaries, indexes, types and inspections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+ide-sdk.workspace = true
+ide-vfs.workspace = true
+ignore.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+self_cell.workspace = true
+serde.workspace = true
+postcard.workspace = true
+redb.workspace = true
+rayon.workspace = true
+blake3.workspace = true
+tracing.workspace = true
+# The `regex` of `ide.json` code generations.
+regex-lite = "0.1"
+# Fuzzy workspace symbols, ranked as ide-index ranks its symbols.
+nucleo-matcher.workspace = true
+# Reads the embedded phpstorm-stubs archive (stubs/phpstorm-stubs.zip).
+zip.workspace = true
+# Mago (MIT OR Apache-2.0) parses PHP. Pinned exactly: its AST API changes
+# between minor releases, and every phase builds on it.
+mago-allocator = "=1.59.0"
+mago-syntax = "=1.59.0"
+mago-names = "=1.59.0"
+mago-phpdoc-syntax = "=1.59.0"
+mago-span = "=1.59.0"
+mago-database = "=1.59.0"
+mago-syntax-core = "=1.59.0"
+# Reformat Code (`format`): the PSR-12 preset with the editor's indentation.
+mago-formatter = "=1.59.0"
+mago-php-version = "=1.59.0"
+# Twig templates (`twig`): outline, completion and template goto.
+mago-twig-syntax = "=1.59.0"
+# Mago's parsers recurse up to their 512-level cap; `syntax::stack` runs them on a
+# stack segment large enough for it (phase 8.29).
+stacker.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+# The differential test (tests/differential.rs) drives Intelephense through ide-lsp.
+ide-language.workspace = true
+ide-lsp.workspace = true
+ide-text.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+dunce.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# Performance budgets (benches/engine.rs, `pnpm perf:rust`).
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "engine"
+harness = false

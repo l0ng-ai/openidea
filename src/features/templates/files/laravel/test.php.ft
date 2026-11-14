@@ -1,0 +1,30 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+class $CLASS$ extends TestCase
+{
+    #if ($FEATURE$)
+    use RefreshDatabase;
+
+    /**
+     * A basic feature test example.
+     */
+    public function test_example(): void
+    {
+        $response = $this->get('/');
+
+        $response->assertStatus(200);
+    }
+    #else
+    /**
+     * A basic unit test example.
+     */
+    public function test_example(): void
+    {
+        $this->assertTrue(true);
+    }
+    #end
+}

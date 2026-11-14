@@ -1,0 +1,15 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Http/Controllers/Admin/DashboardController.php
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+
+class DashboardController extends Controller
+{
+    //
+}

@@ -15,7 +15,7 @@ import {
   unselectOccurrence,
 } from "./editing";
 import { caretExtension, pasteReindentFilter } from "./prefs";
-import { closesStringAt, skipClosingQuote } from "./smartKeys";
+import { closesBracketAt, closesStringAt, skipClosingBracket, skipClosingQuote } from "./smartKeys";
 import {
   collapseAllEffects,
   collapseRecursivelyEffects,
@@ -213,6 +213,53 @@ describe("closing quotes", () => {
     const handled = v.state.facet(EditorView.inputHandler).some((h) => h(v, 5, 5, '"', () => v.state.update({})));
     expect(handled).toBe(true);
     expect(show(v)).toBe('f("ab"|);');
+  });
+});
+
+describe("closing brackets", () => {
+  const type = (v: EditorView, ch: string) => {
+    const at = v.state.selection.main.head;
+    return v.state.facet(EditorView.inputHandler).some((h) => h(v, at, at, ch, () => v.state.update({})));
+  };
+
+  it("steps over an existing closing bracket instead of doubling it", () => {
+    const v = make("x->prefix('cart-rules-new'|);", [javascript, skipClosingBracket]);
+    expect(type(v, ")")).toBe(true);
+    expect(show(v)).toBe("x->prefix('cart-rules-new')|;");
+  });
+
+  it("steps over the closer of a call spread over lines", () => {
+    const v = make("foo(\n  a,\n  b|);", [javascript, skipClosingBracket]);
+    expect(type(v, ")")).toBe(true);
+    expect(show(v)).toBe("foo(\n  a,\n  b)|;");
+  });
+
+  it("inserts when the line is still missing a closer", () => {
+    const v = make("foo(bar(1|);", [javascript, skipClosingBracket]);
+    expect(closesBracketAt(v.state, v.state.selection.main.head, ")")).toBe(false);
+    expect(type(v, ")")).toBe(false);
+  });
+
+  it("ignores brackets inside strings and other characters", () => {
+    const v = make("f('(', 1|);", [javascript, skipClosingBracket]);
+    expect(closesBracketAt(v.state, v.state.selection.main.head, ")")).toBe(true);
+    expect(closesBracketAt(v.state, v.state.selection.main.head, "}")).toBe(false);
+  });
+
+  it("steps over a closing brace in PHP, whose whole file is a `Template` node", async () => {
+    const php = await languages.find((l) => l.name === "PHP")!.load();
+    const v = make("<?php\nfunction f() {\n    g();\n|}\n", [php, skipClosingBracket]);
+    expect(type(v, "}")).toBe(true);
+    expect(show(v)).toBe("<?php\nfunction f() {\n    g();\n}|\n");
+    // Inside a PHP string a brace is still text.
+    const s = make("<?php\n$a = 'x|}';\n", [php, skipClosingBracket]);
+    expect(type(s, "}")).toBe(false);
+  });
+
+  it("steps over a closing brace in a JavaScript template's interpolation", () => {
+    const v = make("const s = `a ${b|} c`;", [javascript, skipClosingBracket]);
+    expect(type(v, "}")).toBe(true);
+    expect(show(v)).toBe("const s = `a ${b}| c`;");
   });
 });
 

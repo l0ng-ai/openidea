@@ -4,6 +4,9 @@
  * `../languages/`; settings are `languages.*` / `projectStructure.*`.
  */
 import { GoPage, JavaPage, NodePage, PhpPage, RubyPage, RustPage, TypeScriptPage } from "../languages/LanguagePages";
+import { PhpInspectionsPage } from "../languages/PhpInspectionsPage";
+import { LaravelPage } from "../languages/LaravelPage";
+import { PHP_INSPECTIONS } from "@/platform/phpInspections";
 import { MarkdownPage } from "../languages/MarkdownPage";
 import { OxfmtPage, PrettierPage, RuffPage } from "../languages/FormatterPage";
 import { PythonInterpreterPage } from "../languages/PythonInterpreterPage";
@@ -226,8 +229,54 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "herd",
       "homebrew",
       "phpbrew",
+      "phpstan",
+      "psalm",
+      "static analysis",
     ],
     component: PhpPage,
+  },
+  {
+    id: "languages.php.laravel",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Laravel",
+    group: LANGUAGES_GROUP,
+    order: 403.22,
+    keywords: [
+      "laravel",
+      "laravel support",
+      "detection",
+      "modules",
+      "nwidart",
+      "route hints",
+      "routes",
+      "database",
+      "schema",
+      "inertia",
+      "pages",
+      "code generation",
+      "generators",
+      "namespace",
+      "suffix",
+    ],
+    component: LaravelPage,
+  },
+  {
+    id: "languages.php.inspections",
+    // Stored in the inspection profile in effect, which picks its own level (as Editor › Inspections).
+    title: "Inspections",
+    group: LANGUAGES_GROUP,
+    order: 403.25,
+    keywords: [
+      "php inspections",
+      "inspection profile",
+      "severity",
+      "strict",
+      "type checks",
+      "built-in engine",
+      ...PHP_INSPECTIONS.map((i) => i.name),
+    ],
+    component: PhpInspectionsPage,
   },
   {
     id: "languages.ruby",

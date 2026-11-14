@@ -1,0 +1,8 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== resources/views/posts/edit.blade.php
+<div>
+    <!-- posts.edit -->
+</div>

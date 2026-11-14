@@ -18,7 +18,7 @@ import {
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
-import { diagnosticsAt, type PlacedDiagnostic, type EditorDiagnostic } from "./diagnostics";
+import { diagnosticsAt, isLocalDiagnostic, type PlacedDiagnostic, type EditorDiagnostic } from "./diagnostics";
 import { isEmptyMarkup, languageForPath, renderMarkup } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
 import { docOf, lspRequest, reportLspError } from "./lsp";
@@ -128,7 +128,7 @@ function offerQuickFix(
   diagnostic: EditorDiagnostic,
 ) {
   const doc = view.state.doc;
-  void quickFixesAt(view, from, to, diagnostic.problem)
+  void quickFixesAt(view, from, to, diagnostic.problem, { localOnly: isLocalDiagnostic(diagnostic) })
     .then(([action]) => {
       if (!action || view.state.doc !== doc || !before.isConnected) return;
       const link = document.createElement("button");

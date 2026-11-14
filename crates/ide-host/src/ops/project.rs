@@ -264,6 +264,26 @@ pub fn set_settings(
             }
         });
     }
+    // Settings › PHP › Engine starts or stops the native engine; include paths and
+    // excluded folders rescan it; the inspection profile configures its inspections.
+    let php = ["languages", "languages.php", "files", "projectStructure", "inspections"]
+        .iter()
+        .any(|k| key == *k || key.starts_with(&format!("{k}.")));
+    if php {
+        let affected = affected();
+        let runtime = host.runtime.clone();
+        host.runtime.spawn_blocking(move || {
+            for project in affected.into_iter().filter(|p| !p.light) {
+                let settings = project.settings.effective();
+                project.php.apply(&settings);
+                if let Some(analyzers) = &project.php_analyzers {
+                    analyzers.apply(&settings);
+                }
+                // Settings › PHP › Laravel › Database: read the chosen data source's schema.
+                crate::ops::laravel::refresh_schema_if_changed(&project, &runtime);
+            }
+        });
+    }
     let roots_changed = current.as_ref().filter(|_| roots_changed && project_scope).map(|p| p.root.clone().into());
     Ok(SettingsApplied { settings: host.with_proxy_password(settings), project_scope, roots_changed })
 }

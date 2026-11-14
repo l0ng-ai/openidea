@@ -1,0 +1,18 @@
+# Tests that already fail on this machine before any engine work (Git's system core.autocrlf=true
+# turns the patched files' "\n" into "\r\n"). The loop's after-commit check ignores these names and
+# stops only on new failures. One name per line, as cargo prints it after "test ".
+patches_read_and_write_the_requested_repository
+shelf_at_repo_root
+shelf_in_non_git_project
+shelf_in_project_below_repository
+shelves_in_two_repositories
+# The same tests after ide-host's integration tests became one binary (tests/integration):
+vcs_roots::patches_read_and_write_the_requested_repository
+vcs_shelf_roots::shelf_at_repo_root
+vcs_shelf_roots::shelf_in_non_git_project
+vcs_shelf_roots::shelf_in_project_below_repository
+vcs_shelf_roots::shelves_in_two_repositories
+# Frontend tests (pnpm test) comparing files checked out with "\r\n" against generated "\n" output:
+theme token reference > is current in docs/plugins/themes.md (run pnpm gen:theme-docs)
+Angular templates > is generated from angular.grammar
+JSP pages > is generated from jsp.grammar

@@ -82,6 +82,8 @@ export const commentLine: Command = (view) => {
   );
   // Languages without line comments (CSS, HTML…): block comments.
   if (tokens.some((t) => !t)) {
+    // Only blank lines: an empty comment each, the caret inside it.
+    if (state.selection.ranges.every((r) => r.empty && !doc.lineAt(r.head).text.trim())) return blockCommentLine(view);
     const first = doc.line(blocks[0]!.startLine);
     return lineBound(state, first.from + leadingWs(first.text)) ? commentEachLine(view) : blockCommentLines(view);
   }
@@ -180,6 +182,37 @@ export const commentLine: Command = (view) => {
   afterComment.set(view, view.state);
   return true;
 };
+
+/**
+ * ⌘/ in a language with only block comments (Blade, HTML, CSS…). An empty
+ * line gets an empty comment with the caret inside it (`{{-- | --}}`), as in
+ * IDEA; anything else toggles the block comment around the lines.
+ */
+function blockCommentLine(view: EditorView): boolean {
+  const before = view.state;
+  const blank = before.selection.ranges.map((r) => r.empty && !before.doc.lineAt(r.head).text.trim());
+  if (!toggleComment(view)) return false;
+  const { state } = view;
+  if (state === before || !blank.some(Boolean)) return true;
+  let moved = false;
+  const ranges = state.selection.ranges.map((r, i) => {
+    if (!blank[i]) return r;
+    const line = state.doc.lineAt(r.head);
+    const block = state.languageDataAt<{ block?: { open: string; close: string } }>("commentTokens", r.head)[0]?.block;
+    if (!block) return r;
+    const m = /^([ \t]*)(.*)$/.exec(line.text)!;
+    const body = m[2]!.trimEnd();
+    if (!body.startsWith(block.open) || !body.endsWith(block.close)) return r;
+    const inner = body.slice(block.open.length, body.length - block.close.length);
+    if (inner.trim()) return r;
+    moved = true;
+    const open = line.from + m[1]!.length + block.open.length;
+    return EditorSelection.cursor(open + Math.min(1, inner.length));
+  });
+  if (moved)
+    view.dispatch({ selection: EditorSelection.create(ranges, state.selection.mainIndex), userEvent: "select" });
+  return true;
+}
 
 /** Smallest indent of the non-blank lines, also no deeper than a line comment right above. */
 function minIndent(state: EditorState, startLine: number, endLine: number, token: string): number {

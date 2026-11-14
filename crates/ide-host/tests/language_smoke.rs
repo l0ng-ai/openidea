@@ -1052,8 +1052,285 @@ const PHP: Checks = Checks {
     file_move: None,
 };
 
+/// The Intelephense fallback: Settings › PHP › Engine set to Intelephense (the native engine is
+/// the default).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "language smoke: needs intelephense"]
 async fn php() {
-    smoke("php", PHP).await;
+    let smoke = Smoke::start("php", &PHP).await;
+    ops::project::set_settings(
+        &smoke.host,
+        WINDOW,
+        ide_workspace::settings::SettingsScope::Project,
+        "languages.php.engine",
+        "\"intelephense\"",
+    )
+    .unwrap();
+    let project = smoke.host.project(WINDOW).unwrap();
+    smoke
+        .retry("native engine stopped", smoke.warm_up, || async {
+            project.php.engine().map_or(Ok(()), |_| Err("running"))
+        })
+        .await;
+    smoke.run(&PHP).await;
+}
+
+/// The native engine's checklist on its own fixture (`fixtures/php-library`): every check of the
+/// shared list, including the ones Intelephense leaves to its Premium licence (quick fix,
+/// intention, rename, Optimize Imports and moving a file).
+const PHP_NATIVE: Checks = Checks {
+    fixture: "php-library",
+    files: &[],
+    warm_up: Duration::from_secs(120),
+    definition: (
+        at("bin/library.php", "slugify($lent->title)", "slugify"),
+        at("src/functions.php", "function slugify(string $text)", "slugify"),
+    ),
+    references: (
+        at("src/functions.php", "function format_price(", "format_price"),
+        &["src/Library.php", "src/Reports/ShelfReport.php", "src/functions.php"],
+    ),
+    hover: (at("src/Library.php", "return format_price($cents);", "format_price"), "format_price(int $cents"),
+    completion: (typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $lent->"), "label"),
+    quick_fix: QuickFix {
+        typed: typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $g = Genre::Fiction;"),
+        diagnostic: "Undefined class 'Genre'",
+        fix: Some((r"Import class 'App\Model\Genre'", r"use App\Model\Genre;")),
+    },
+    intention: Some((
+        at("src/Library.php", "$lent = $book->withAvailability(false);", "$book->withAvailability(false)"),
+        "Extract variable",
+    )),
+    format: (
+        typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $shown=[1,2];"),
+        "        $shown = [1, 2];",
+    ),
+    indent: Indent::Spaces(4),
+    rename: Some((
+        // From a usage in another file: the declaration and every call are renamed.
+        at("src/Library.php", "return format_price($cents);", "format_price"),
+        "format_amount",
+        &["src/Library.php", "src/Reports/ShelfReport.php", "src/functions.php"],
+    )),
+    signature: (
+        typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $this->checkout("),
+        "$isbn",
+    ),
+    outline: ("src/Library.php", &["Library", "add", "checkout", "available"]),
+    auto_import: AutoImport {
+        typed: typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $genre = Genr"),
+        label: "Genre",
+        result: r"use App\Model\Genre;",
+    },
+    organize_imports: Some((
+        typed("src/Library.php", r"use App\Support\Collection;", r"use App\Model\Genre;"),
+        Imports::Removed,
+    )),
+    // A PSR-4 move changes the class's namespace and its imports.
+    file_move: Some((
+        "src/Support/Collection.php",
+        "src/Model/Collection.php",
+        "src/Library.php",
+        r"use App\Model\Collection;",
+    )),
+};
+
+/// The native engine (the default of Settings › PHP › Engine: nothing is set) on the same fixture,
+/// with no language server. It first checks what goes beyond the baseline: the Structure view's PHP signatures, go
+/// to definition of class names (in a `new`, an `extends` and a `use` import), of members and of
+/// variables, Find Usages of a class, hover on members and variables, the auto-import quick fix
+/// being preferred, syntax-error diagnostics, inlay hints and a class rename that renames its file.
+/// Then it runs the whole shared checklist ([`PHP_NATIVE`]: every check of the Intelephense case
+/// plus quick fix, intention, rename, Optimize Imports and moving a file). Not ignored: it needs
+/// nothing installed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn php_native() {
+    let smoke = Smoke::start("php", &PHP_NATIVE).await;
+    let project = smoke.host.project(WINDOW).unwrap();
+    let engine =
+        smoke.retry("native engine", smoke.warm_up, || async { project.php.engine().ok_or("not started") }).await;
+    assert!(engine.wait_idle(smoke.warm_up), "the native engine finishes indexing");
+
+    // The Structure view comes from the engine: its items carry PHP signatures.
+    let (file, symbols) = PHP_NATIVE.outline;
+    smoke.outline(file, symbols).await;
+    let (doc, _) = smoke.doc(file).await;
+    let items = ops::doc::doc_outline(&smoke.host, WINDOW, doc).await.unwrap();
+    let add = items.iter().flat_map(|i| &i.children).find(|i| i.name == "add").expect("Library::add");
+    assert_eq!(add.detail.as_deref(), Some(r"(App\Model\Book $book): void"));
+
+    smoke
+        .definition(
+            at("bin/library.php", "new Book('978-0441013593'", "Book"),
+            at("src/Model/Book.php", "final class Book", "Book"),
+        )
+        .await;
+    smoke
+        .definition(
+            at("src/Repository/BookRepository.php", "class BookRepository extends", "AbstractRepository"),
+            at("src/Repository/AbstractRepository.php", "abstract class AbstractRepository", "AbstractRepository"),
+        )
+        .await;
+    smoke
+        .definition(
+            at("src/Library.php", r"use App\Support\Collection;", "Collection"),
+            at("src/Support/Collection.php", "final class Collection", "Collection"),
+        )
+        .await;
+    // Members through the receiver's type, and variables.
+    smoke
+        .definition(
+            at("src/Library.php", "$lent = $book->withAvailability(false);", "withAvailability"),
+            at("src/Model/Book.php", "public function withAvailability", "withAvailability"),
+        )
+        .await;
+    smoke
+        .definition(
+            at("src/Library.php", "$book = $this->find($isbn);", "find"),
+            at("src/Library.php", "public function find(string $isbn)", "find"),
+        )
+        .await;
+    smoke
+        .definition(at("src/Library.php", "return $lent;", "$lent"), at("src/Library.php", "$lent = $book", "$lent"))
+        .await;
+    // Find usages of a class used across files and in PHPDoc.
+    smoke
+        .references(
+            at("src/Model/Book.php", "final class Book", "Book"),
+            &["bin/library.php", "src/Library.php", "src/Model/Book.php"],
+        )
+        .await;
+    // Hover: a method with its resolved signature, a variable's type.
+    smoke
+        .hover(
+            at("src/Library.php", "$lent = $book->withAvailability(false);", "withAvailability"),
+            "public function withAvailability(bool $available)",
+        )
+        .await;
+    smoke.hover(at("src/Library.php", "return $lent;", "$lent"), r"App\Model\Book $lent").await;
+    // The auto-import quick fix on an unresolved class name: the only candidate, preferred, and
+    // its import sorted among the others.
+    let (doc, pos, before) = smoke
+        .type_line(crate::typed(
+            "src/Library.php",
+            "$lent = $book->withAvailability(false);",
+            "        $g = Genre::Fiction;",
+        ))
+        .await;
+    let line = Range::new(Pos::new(pos.line, 0), pos);
+    let actions = ops::lsp::lsp_code_actions(&smoke.host, WINDOW, doc, line, vec!["quickfix".into()]).await.unwrap();
+    let fix =
+        actions.into_iter().find(|a| a.title == r"Import class 'App\Model\Genre'").expect("an import fix for Genre");
+    assert!(fix.is_preferred, "the only candidate is preferred (applied on the fly)");
+    ops::lsp::lsp_apply_code_action(&smoke.host, WINDOW, doc, fix).await.unwrap();
+    let text = smoke.doc("src/Library.php").await.1;
+    assert!(text.contains("use App\\Model\\Book;\nuse App\\Model\\Genre;\n"), "{text}");
+    smoke.restore(doc, &before).await;
+    // The engine inspects open documents in the background and publishes them under `php`; a
+    // syntax error typed into a file is reported on its line and goes away with the edit.
+    let (doc, pos, before) = smoke
+        .type_line(crate::typed("src/Library.php", "$lent = $book->withAvailability(false);", "        $broken = ;"))
+        .await;
+    let library = smoke.path("src/Library.php");
+    let latest_php = || {
+        smoke.events.lock().unwrap().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, source, items } if **path == *library && source == "php" => {
+                Some(items.clone())
+            }
+            _ => None,
+        })
+    };
+    smoke
+        .retry("php diagnostics", smoke.warm_up, || async {
+            match latest_php() {
+                Some(items)
+                    if items.iter().any(|d| {
+                        d.severity == ide_core::Severity::Error && d.range.start.line == pos.line && d.code.is_none()
+                    }) =>
+                {
+                    Ok(())
+                }
+                other => Err(other),
+            }
+        })
+        .await;
+    smoke.restore(doc, &before).await;
+    smoke
+        .retry("php diagnostics cleared", smoke.warm_up, || async {
+            match latest_php() {
+                Some(items) if items.is_empty() => Ok(()),
+                other => Err(other),
+            }
+        })
+        .await;
+    // The engine's parameter-name and type hints.
+    let (doc, text) = smoke.doc("src/Library.php").await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(text.lines().count() as u32, 0));
+    let hints = ops::lsp::lsp_inlay_hints(&smoke.host, WINDOW, doc, whole).await.unwrap();
+    let labels: Vec<&str> = hints.iter().map(|h| h.label.as_str()).collect();
+    assert!(labels.contains(&"available:"), "a parameter name hint on withAvailability(false): {labels:?}");
+    assert!(labels.contains(&": Book"), "a type hint on $lent: {labels:?}");
+    // Renaming a class renames its file (not applied: the checklist below uses the fixture).
+    let (doc, pos) = smoke.locate(at("src/Model/Book.php", "final class Book", "Book")).await;
+    let renamed = ops::lsp::lsp_rename(&smoke.host, WINDOW, RequestId(6), doc, pos, "Volume".into()).await.unwrap();
+    let moved = renamed.edit.files.iter().any(|f| {
+        matches!(f, ide_core::FileEdit::Rename { from, to }
+            if from.0.ends_with("src/Model/Book.php") && to.0.ends_with("src/Model/Volume.php"))
+    });
+    assert!(moved, "Book.php is renamed with its class: {:?}", renamed.edit);
+    let servers = ops::lsp::lsp_servers(&smoke.host, WINDOW).unwrap_or_default();
+    assert!(
+        !servers.iter().any(|s| s.name.to_ascii_lowercase().contains("intelephense")),
+        "Intelephense isn't started under the native engine: {:?}",
+        servers.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    // Full parity: every check of the Intelephense case, and the Premium ones, through the shared
+    // checklist (last: its rename and file move edit the fixture).
+    // The fixture's deliberate error, reported as the file opens.
+    let _ = smoke.doc("src/Reports/ShelfReport.php").await;
+    smoke.diagnostic("src/Reports/ShelfReport.php", "Undefined method 'count'").await;
+    smoke.run(&PHP_NATIVE).await;
+}
+
+/// The Laravel fixture (`fixtures/laravel-app`) on the native engine, with the minimal
+/// laravel/framework stand-ins of `fixtures/laravel-stubs` as its `vendor/`. Only what Laravel
+/// support adds: hover and completion of a model attribute (a column of the posts migration).
+const LARAVEL: Checks = Checks {
+    fixture: "laravel-app",
+    files: &[
+        ("vendor/composer/installed.json", include_str!("../../../fixtures/laravel-stubs/composer/installed.json")),
+        (
+            "vendor/laravel/framework/helpers.php",
+            include_str!("../../../fixtures/laravel-stubs/laravel/framework/helpers.php"),
+        ),
+        (
+            "vendor/laravel/framework/src/framework.php",
+            include_str!("../../../fixtures/laravel-stubs/laravel/framework/src/framework.php"),
+        ),
+    ],
+    hover: (
+        at("app/Console/Commands/PublishScheduledPosts.php", "$this->line($post->title);", "title"),
+        "Column `title` of table `posts`",
+    ),
+    completion: (
+        typed("app/Http/Controllers/PostController.php", "$published = $post->published_at;", "        $post->"),
+        "comments_count",
+    ),
+    ..PHP_NATIVE
+};
+
+/// Laravel support on the native engine. Ignored like the PHP case:
+/// `cargo test -p ide-host --test language_smoke -- --ignored --exact laravel`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: run with the other languages"]
+async fn laravel() {
+    let smoke = Smoke::start("laravel", &LARAVEL).await;
+    let project = smoke.host.project(WINDOW).unwrap();
+    let engine =
+        smoke.retry("native engine", smoke.warm_up, || async { project.php.engine().ok_or("not started") }).await;
+    assert!(engine.wait_idle(smoke.warm_up), "the native engine finishes indexing");
+    smoke.hover(LARAVEL.hover.0, LARAVEL.hover.1).await;
+    smoke.completion(LARAVEL.completion.0, LARAVEL.completion.1).await;
+    let shutdown = project.lsp.clone();
+    let _ = tokio::time::timeout(Duration::from_secs(20), shutdown.shutdown_all()).await;
 }

@@ -119,6 +119,15 @@ describe("matchActions", () => {
     ]);
   });
 
+  it("ranks a title naming the word above an exact keyword", () => {
+    const generators = [
+      act("laravel.observer", "New Observer…", { keywords: ["make:observer", "model", "events"] }),
+      act("laravel.model", "New Eloquent Model…", { keywords: ["make:model"] }),
+    ];
+    const r = matchActions(generators, "model", { isEnabled, recent: [] });
+    expect(r.map((a) => a.id)).toEqual(["laravel.model", "laravel.observer"]);
+  });
+
   it("boosts recently used actions", () => {
     const two = [act("a.one", "Show Diff Left"), act("a.two", "Show Diff Right")];
     expect(matchActions(two, "show diff", { isEnabled, recent: ["a.two"] })[0]!.id).toBe("a.two");
@@ -252,6 +261,8 @@ describe("items and rows", () => {
     expect(sectionsFor("classes", true)).toEqual([]);
     expect(sectionsFor("all", false)).toEqual(["classes", "files", "symbols", "endpoints", "actions", "text"]);
     expect(sectionsFor("text", false)).toEqual(["text"]);
+    expect(sectionsFor("routes", false)).toEqual(["endpoints"]);
+    expect(sectionsFor("routes", true)).toEqual([]);
   });
 });
 
@@ -333,6 +344,8 @@ describe("parseCommand", () => {
       "/classes",
       "/files",
       "/symbols",
+      "/routes",
+      "/generators",
       "/actions",
       "/text",
     ]);

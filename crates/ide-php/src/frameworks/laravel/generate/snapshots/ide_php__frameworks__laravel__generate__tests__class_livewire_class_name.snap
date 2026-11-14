@@ -1,0 +1,22 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Livewire/Counter.php
+<?php
+
+namespace App\Livewire;
+
+use Livewire\Component;
+
+class Counter extends Component
+{
+    public function render()
+    {
+        return view('livewire.counter');
+    }
+}
+== resources/views/livewire/counter.blade.php
+<div>
+    {{-- counter --}}
+</div>

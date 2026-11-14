@@ -1,0 +1,35 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+#if ($QUEUED$)
+class $CLASS$ implements ShouldQueue
+{
+    use InteractsWithQueue;
+
+#else
+class $CLASS$
+{
+#end
+    /**
+     * Create the event listener.
+     */
+    public function __construct()
+    {
+        //
+    }
+
+    /**
+     * Handle the event.
+     */
+    #if ($EVENT$)
+    public function handle($EVENT$ $event): void
+    #else
+    public function handle(object $event): void
+    #end
+    {
+        //
+    }
+}

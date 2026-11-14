@@ -7,7 +7,7 @@ let answer: () => unknown = () => ({ status: "ok", data: [] });
 const lspCodeActions = vi.fn(async () => answer());
 // applyCodeAction resolves the picked action, then executes it (interactive command support).
 const lspResolveCodeAction = vi.fn(async (_doc: number, action: CodeAction) => ({ status: "ok", data: action }));
-const lspExecuteCodeAction = vi.fn(async () => ({ status: "ok", data: [] }));
+const lspExecuteCodeAction = vi.fn(async () => ({ status: "ok", data: { created: [], open: null } }));
 
 vi.mock("@/platform/ipc", async (orig) => {
   const actual = await orig<typeof import("@/platform/ipc")>();

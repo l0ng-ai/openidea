@@ -1,6 +1,6 @@
 /**
  * Pull Members Up / Push Members Down, IDEA's class-hierarchy refactorings. The
- * language server (the app-owned JDT extension) lists the class's members and
+ * backend (the app-owned JDT extension for Java, the native engine for PHP) lists the class's members and
  * destinations, checks the chosen move and computes the edit; the dialog
  * (`HierarchyDialog.tsx`) picks the members, problems are confirmed like IDEA's
  * "Problems Detected", and the edit is applied as one change (or previewed first).

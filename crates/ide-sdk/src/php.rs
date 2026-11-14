@@ -2,6 +2,10 @@
 //! `composer.json` declares (`config.platform.php`, else the lowest version `require.php` allows);
 //! the Intelephense storage that goes with it; the stub sets and include paths Intelephense indexes;
 //! the PHPStan run that checks saved files; and whether an interpreter loads Xdebug.
+//!
+//! The native engine (the default, `ide-php`) reads the level, stub sets and include paths
+//! too. The Intelephense settings ([`configure_intelephense_storage`], [`intelephense_stubs`])
+//! serve the fallback: Intelephense runs only when Settings › PHP › Engine selects it.
 
 use crate::apply::{merge, merge_init_options, setting_path};
 use ide_core::settings::Settings;
@@ -135,8 +139,15 @@ const DEFAULT_STUBS: &[&str] = &[
 const MIXED_CASE_STUBS: &[&str] =
     &["Ev", "FFI", "LuaSandbox", "Parle", "SQLite", "SaxonC", "SplType", "ZendCache", "ZendDebugger", "ZendUtils"];
 
+/// The stub sets enabled when nothing else is configured: the extensions bundled with PHP
+/// itself and the common ones. They are folder names of
+/// [phpstorm-stubs](https://github.com/JetBrains/phpstorm-stubs), as Intelephense's are.
+pub fn default_stub_sets() -> &'static [&'static str] {
+    DEFAULT_STUBS
+}
+
 /// `Zend OPcache`, `zend-opcache` and `zend_opcache` name the same stubs.
-fn stub_key(name: &str) -> String {
+pub fn stub_key(name: &str) -> String {
     name.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
 
@@ -144,6 +155,15 @@ fn stub_key(name: &str) -> String {
 /// `composer.json` requires (`require`, `require-dev`) and those in Settings › PHP. `None` when
 /// that adds nothing to the defaults, so the server keeps its own.
 pub fn intelephense_stubs(root: &Path, s: &Settings) -> Option<Vec<String>> {
+    let stubs = stub_sets(root, s);
+    (stubs.len() > DEFAULT_STUBS.len()).then_some(stubs)
+}
+
+/// The stub sets a project uses, for Intelephense and the native engine alike: the
+/// [defaults](default_stub_sets), then a set for each `ext-*` that the root `composer.json`
+/// requires (`require`, `require-dev`), then those in Settings › PHP, without duplicates
+/// (compared by [`stub_key`]).
+pub fn stub_sets(root: &Path, s: &Settings) -> Vec<String> {
     let composer: Option<Value> =
         std::fs::read_to_string(root.join("composer.json")).ok().and_then(|t| serde_json::from_str(&t).ok());
     let extensions = ["require", "require-dev"]
@@ -166,7 +186,7 @@ pub fn intelephense_stubs(root: &Path, s: &Settings) -> Option<Vec<String>> {
             stubs.push(stub);
         }
     }
-    (stubs.len() > DEFAULT_STUBS.len()).then_some(stubs)
+    stubs
 }
 
 /// The folders in Settings › PHP › Include paths, resolved against the project.
@@ -492,6 +512,19 @@ mod tests {
             json!({"require": {"ext-pdo": "*", "ext-zend-opcache": "*", "ext-simplexml": "*", "ext-json": "*"}});
         assert_eq!(stubs(Some(defaults), &["SPL", "core"]), None);
         assert_eq!(stubs(Some(json!("not an object")), &[]), None);
+    }
+
+    #[test]
+    fn stub_sets_always_start_with_the_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut s = Settings::default();
+        assert_eq!(stub_sets(tmp.path(), &s), DEFAULT_STUBS);
+        std::fs::write(tmp.path().join("composer.json"), r#"{"require": {"ext-redis": "*"}}"#).unwrap();
+        s.languages.php.stubs = vec!["Zend_OPcache".into(), "wordpress".into()];
+        let sets = stub_sets(tmp.path(), &s);
+        assert_eq!(sets[..DEFAULT_STUBS.len()], *DEFAULT_STUBS);
+        assert_eq!(sets[DEFAULT_STUBS.len()..], ["redis", "wordpress"]);
+        assert_eq!(stub_key("Zend OPcache"), stub_key("zend-opcache"));
     }
 
     #[test]

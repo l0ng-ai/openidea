@@ -57,6 +57,9 @@ impl LifecycleCommand {
                         None => {}
                     }
                 }
+                // By name: the map's own order depends on whether some crate in the build enables
+                // serde_json's `preserve_order`.
+                named.sort_by(|a, b| a.0.cmp(&b.0));
                 (!named.is_empty()).then_some(Self::Parallel(named))
             }
             _ => return Err("expected a string, an array or an object".into()),

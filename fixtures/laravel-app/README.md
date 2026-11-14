@@ -1,0 +1,89 @@
+# laravel-app
+
+A small Laravel 11 blog: the test fixture of the engine's Laravel support
+(`docs/php-engine/LARAVEL-ROADMAP.md`, Plan 8). The skeleton files (`artisan`,
+`bootstrap/`, `public/index.php`, `config/app.php`, the users migration, `User`) follow
+the MIT `laravel/laravel` skeleton; the rest is hand-written.
+
+It has no `vendor/`. Tests copy it to a temporary folder with
+[`../laravel-stubs`](../laravel-stubs) as its `vendor/`: a Composer vendor directory
+(`composer/installed.json` plus `laravel/framework` and `nwidart/laravel-modules`) with
+minimal stand-ins for the framework classes and helpers the app uses, so no network or Composer is needed.
+It also holds stand-ins for `livewire/livewire` and `inertiajs/inertia-laravel`, which
+`installed.json` doesn't list: `refs/livewire_tests.rs` installs them in its own copy. For
+manual QA, do the same or run `composer install` on a copy.
+
+- `crates/ide-php/tests/laravel_app.rs` indexes it with the engine and inspects every
+  PHP file: no problems except the deliberate one below.
+- `crates/ide-php/src/frameworks/laravel/tests.rs` (`the_fixture_app_model`) checks the
+  Laravel project model: version, app namespace, route files with their prefixes, name
+  prefixes and middleware, and the module.
+- `crates/ide-php/src/frameworks/laravel/refs/route_tests.rs` and `view_tests.rs` check
+  route names, controller actions, middleware and view names (completion, goto, usages,
+  rename, the undefined route and view inspections, the variables passed to views).
+- `crates/ide-php/src/frameworks/laravel/refs/blade_tests.rs` checks Blade layouts, stacks,
+  components and custom directives (completion, goto, bound attributes, unclosed sections).
+- `crates/ide-php/src/frameworks/laravel/refs/data_tests.rs` checks config keys of packages,
+  environment keys, translations and Vite assets (completion, goto, hover, the undefined
+  inspections and their quick-fixes).
+- `crates/ide-php/src/frameworks/laravel/refs/eloquent_tests.rs` checks Eloquent columns and
+  nested relations in queries and model properties (completion, goto, hover, the unknown-column
+  inspection), relation closures, typed collections, factories and `*_count` properties.
+- `crates/ide-php/src/frameworks/laravel/refs/auth_tests.rs` checks gates, policies, guards and password
+  brokers (completion, goto, hover, usages and rename of gates, the unknown-ability inspection,
+  `can:`/`auth:` middleware parameters, `@can` in Blade).
+- `crates/ide-php/src/frameworks/laravel/refs/ide_json_tests.rs` checks `ide.json` support: the
+  app's `ide.json` (completion rules mapped onto route names, configuration keys with a prefix,
+  static strings, folder files and view names; Blade directives; an unsupported type and key that
+  are ignored) and the one of the stub package `vendor/acme/widgets` (a view namespace, a
+  component folder and a listed component).
+- `crates/ide-host/tests/php_engine.rs` (`inspect_code_over_the_laravel_fixture_app`) runs batch
+  Inspect Code over the app, PHP files and Blade templates: no problems except the deliberate one.
+- `crates/ide-host/tests/language_smoke.rs` (`laravel`) checks hover and completion on a
+  model attribute through the app's `ops`.
+
+**Deliberate problem:** `PostController::destroy()` calls the undefined method
+`forgetCachedFeed()` (`app/Http/Controllers/PostController.php`).
+
+## What each file exercises
+
+| File                                                                                        | Exercises                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `composer.json`                                                                             | detection (`laravel/framework` required), PSR-4 app namespace `App\`, `nwidart/laravel-modules` and `Modules\`                                                                                                                                                |
+| `artisan`, `public/index.php`                                                               | entry points (skeleton)                                                                                                                                                                                                                                       |
+| `bootstrap/app.php`                                                                         | `withRouting(web:, api:, commands:, health:, then:)` route files (`then:` loads `routes/admin.php` in a group), middleware alias `author`                                                                                                                     |
+| `bootstrap/providers.php`                                                                   | registered service providers                                                                                                                                                                                                                                  |
+| `routes/web.php`                                                                            | route names, an invokable controller, `Route::view`, `Route::resource()->only()`, a group with prefix, name prefix and middleware, `[Controller::class, 'method']` actions, a `Route::controller()` group with a method-name action and middleware parameters |
+| `routes/api.php`                                                                            | the `api` route file (prefix from `withRouting`)                                                                                                                                                                                                              |
+| `routes/admin.php`                                                                          | a route file loaded with prefix `admin`, name prefix `admin.` and `web`/`auth` middleware                                                                                                                                                                     |
+| `routes/console.php`                                                                        | `Artisan::command` closure command, `Schedule::command`                                                                                                                                                                                                       |
+| `Modules/Billing/*`, `modules_statuses.json`                                                | an nwidart module (`module.json`, enabled): its `RouteServiceProvider` loads `Routes/web.php` and `Routes/api.php` through `module_path()` with prefixes and name prefixes, and its views (`resources/views`, the `billing::` view namespace)                 |
+| `app/Models/Post.php`                                                                       | `$casts` (enum, `datetime`, `array`), relations (`belongsTo`, `hasMany`, `belongsToMany`), a local scope, an `Attribute` accessor, `SoftDeletes`, `HasFactory`                                                                                                |
+| `app/Models/User.php`                                                                       | `casts()` method, `Authenticatable`, relations with a custom foreign key                                                                                                                                                                                      |
+| `app/Models/Comment.php`, `Tag.php`                                                         | more relations, `$timestamps = false`                                                                                                                                                                                                                         |
+| `app/Enums/PostStatus.php`                                                                  | a backed enum cast, `__()` translation keys built from a prefix                                                                                                                                                                                               |
+| `app/Http/Controllers/PostController.php`                                                   | `view()` names and data (`compact`), `config()`, `route()`/`redirect()->route()`/`to_route()`, `Gate::authorize`, model attributes                                                                                                                            |
+| `app/Http/Controllers/HomeController.php`                                                   | an invokable controller                                                                                                                                                                                                                                       |
+| `app/Http/Controllers/Api/PostController.php`                                               | a controller in a sub-namespace, `route()` with a model parameter                                                                                                                                                                                             |
+| `app/Http/Middleware/EnsureUserIsAuthor.php`                                                | a middleware class with an alias                                                                                                                                                                                                                              |
+| `app/Http/Requests/StorePostRequest.php`                                                    | Form Request: string and array validation rules, `Rule::unique`/`Rule::enum`, custom messages                                                                                                                                                                 |
+| `app/Policies/PostPolicy.php`                                                               | a policy found by convention (`Post` → `PostPolicy`)                                                                                                                                                                                                          |
+| `app/Providers/AppServiceProvider.php`                                                      | a container binding (`blog.feed`), `Gate::define` abilities, custom Blade directives (`Blade::directive('money')`, `Blade::if('admin')`)                                                                                                                      |
+| `app/Services/FeedBuilder.php`                                                              | the bound service, a nested `config()` key                                                                                                                                                                                                                    |
+| `app/Console/Commands/PublishScheduledPosts.php`                                            | an Artisan command: `$signature` with an option, `$description`, `option()`                                                                                                                                                                                   |
+| `app/Console/Commands/PruneDrafts.php`                                                      | an Artisan command with `#[AsCommand]` and a `$signature` argument with a default; `$this->call('posts:publish')`                                                                                                                                             |
+| `app/View/Components/Alert.php`                                                             | a class-based Blade component                                                                                                                                                                                                                                 |
+| `config/auth.php`                                                                           | guards (`web`, `admin`) and the `users` password broker                                                                                                                                                                                                       |
+| `config/app.php`, `config/blog.php`                                                         | config keys, nested arrays, `env()` keys                                                                                                                                                                                                                      |
+| `lang/en/messages.php`, `lang/en.json`, `lang/fr/*`, `lang/fr.json`                         | PHP (nested) and JSON translation keys in two locales                                                                                                                                                                                                         |
+| `database/migrations/*`                                                                     | `Schema::create` and `Schema::table`, `foreignId()->constrained()`, `timestamps`, `softDeletes`, a pivot table                                                                                                                                                |
+| `database/factories/PostFactory.php`                                                        | a model factory found by convention (`Post::factory()`), a fluent state method                                                                                                                                                                                |
+| `database/seeders/DatabaseSeeder.php`                                                       | relation `create()`                                                                                                                                                                                                                                           |
+| `resources/views/layouts/app.blade.php`                                                     | `@yield`, `@stack`, `@vite`, `<x-alert>` with a bound attribute, `route()`/`__()`/`config()` in echoes                                                                                                                                                        |
+| `resources/views/posts/*.blade.php`                                                         | `@extends`/`@section`/`@push`, `@include` with data, `@forelse`, `@can`, `@error`, view variables                                                                                                                                                             |
+| `resources/views/components/alert.blade.php`, `badge.blade.php`                             | the class component's view, an anonymous component with `@props` and `@class`                                                                                                                                                                                 |
+| `resources/views/welcome.blade.php`, `about.blade.php`                                      | views named from a controller and from `Route::view`                                                                                                                                                                                                          |
+| `vite.config.js`, `resources/css/app.css`, `resources/js/app.js`                            | Vite entry points                                                                                                                                                                                                                                             |
+| `ide.json`                                                                                  | `ide.json` completion rules (`nav_link`, `blog_setting`, `feed_theme`, `feed_options`, `stylesheet`, `template()` of components), Blade directives `@price` and `@feature`, package settings, ignored entries |
+| `Modules/Billing/Providers/BillingServiceProvider.php`, `Modules/Billing/config/config.php` | a package-style config merged with `mergeConfigFrom` (`billing.*`)                                                                                                                                                                                            |
+| `.env.example`                                                                              | environment keys                                                                                                                                                                                                                                              |

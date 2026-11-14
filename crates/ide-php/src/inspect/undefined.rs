@@ -1,0 +1,564 @@
+//! Undefined symbols: class-likes, functions and constants that no project
+//! file, open buffer or bundled stub declares.
+//!
+//! - [`UndefinedClass`] (`PhpUndefinedClass`): names of classes,
+//!   interfaces, traits and enums in code (`new`, `::`, `instanceof`, type
+//!   hints, `catch`, `extends`/`implements`, trait `use`, attributes). The
+//!   message names the kind the place expects (`Undefined interface 'X'`
+//!   after `implements`).
+//! - [`UndefinedFunction`] (`PhpUndefinedFunction`): called functions,
+//!   including first-class callables. An unqualified name inside a
+//!   namespace is defined when either the namespaced or the global function
+//!   exists, as PHP falls back.
+//! - [`UndefinedConstant`] (`PhpUndefinedConstant`): global and namespaced
+//!   constants (`const` and `define()`), with the same fallback.
+//!
+//! - [`UndefinedDocClass`] (`PhpUndefinedDocClass`, information): the
+//!   classes named in the types of PHPDoc tags, read from the docblocks the
+//!   summary parsed ([`check_docs`]). Inline `@var` comments inside bodies
+//!   aren't in the summary and aren't checked.
+//!
+//! Imports (`use` lines) are checked too, by the three inspections above: a
+//! class import is fine when a class-like or a namespace of that name
+//! exists, and when a guard anywhere in the file names it. `self`,
+//! `static`, `parent`, `true`, `false` and `null` never are. A name is left
+//! alone after a guard naming it in the same function (or the rest of the
+//! file at the top level): `class_exists`, `interface_exists`,
+//! `trait_exists`, `enum_exists` for class-likes, `function_exists` and
+//! `is_callable` for functions, `defined` for constants, with a string or
+//! `X::class` argument. `.phpstorm.meta.php` files aren't checked (their
+//! calls are directives). The checks only run while the indexes are ready, so
+//! dumb mode doesn't flood the editor; open documents are inspected again
+//! once indexing finishes. `@noinspection` is handled by the framework.
+//!
+//! An undefined class-like gets the "Create class" quick-fix
+//! ([`super::fixes::create_class`]); the import fixes come from the code
+//! actions.
+//!
+//! The ids and the guard behaviour follow PhpStorm's documented
+//! inspections ("Undefined class", "Undefined function", "Undefined
+//! constant"); the rest is our own.
+
+use std::collections::HashMap;
+
+use ide_core::Severity;
+use mago_span::HasSpan;
+use mago_syntax::cst::{
+    Access, Argument, ArrowFunction, ClassConstantAccess, ClassLikeConstantSelector, Closure, Expression, Extends,
+    Function, FunctionCall, Implements, Interface, Literal, Method, TraitUse,
+};
+use mago_syntax::walker::Walker;
+
+use super::{Inspection, InspectionContext, Problems, fixes};
+use crate::engine::{EngineState, is_meta_path};
+use crate::names::{FileNames, NameKind, NameRole, Resolution, ResolvedName, fqn_eq};
+use crate::navigate::find_declaration;
+use crate::summary::{DocBlock, DocType};
+use crate::syntax::ParsedFile;
+use crate::types::Type;
+
+/// `PhpUndefinedClass`.
+pub struct UndefinedClass;
+
+/// `PhpUndefinedFunction`.
+pub struct UndefinedFunction;
+
+/// `PhpUndefinedConstant`.
+pub struct UndefinedConstant;
+
+/// `PhpUndefinedDocClass`: class names in the types of PHPDoc tags.
+pub struct UndefinedDocClass;
+
+impl Inspection for UndefinedDocClass {
+    fn id(&self) -> &'static str {
+        "PhpUndefinedDocClass"
+    }
+
+    /// A wrong type in a docblock doesn't break the program.
+    fn default_severity(&self) -> Severity {
+        Severity::Info
+    }
+
+    fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
+        check_docs(cx, out);
+    }
+}
+
+impl Inspection for UndefinedClass {
+    fn id(&self) -> &'static str {
+        "PhpUndefinedClass"
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+
+    fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
+        check(cx, NameKind::ClassLike, out);
+    }
+}
+
+impl Inspection for UndefinedFunction {
+    fn id(&self) -> &'static str {
+        "PhpUndefinedFunction"
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+
+    fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
+        check(cx, NameKind::Function, out);
+    }
+}
+
+impl Inspection for UndefinedConstant {
+    fn id(&self) -> &'static str {
+        "PhpUndefinedConstant"
+    }
+
+    fn default_severity(&self) -> Severity {
+        Severity::Warning
+    }
+
+    fn check(&self, cx: &InspectionContext<'_>, out: &mut Problems) {
+        check(cx, NameKind::Constant, out);
+    }
+}
+
+/// Attribute namespaces that tools read and PHP never loads.
+const IGNORED_NAMESPACES: [&str; 1] = ["JetBrains\\PhpStorm\\"];
+
+fn check(cx: &InspectionContext<'_>, kind: NameKind, out: &mut Problems) {
+    // In dumb mode everything would look undefined.
+    if cx.engine.status().state != EngineState::Ready {
+        return;
+    }
+    // Metadata: `override()`, `map()` and friends are directives, not calls.
+    if is_meta_path(cx.path) {
+        return;
+    }
+    let names = cx.names();
+    if !names.names().iter().any(|name| is_checked(name, kind) || is_import(name, kind)) {
+        return;
+    }
+    let scan = Scan::of(cx.parsed, names);
+    let summary = cx.summary();
+    let mut known: HashMap<String, bool> = HashMap::new();
+    for name in names.names() {
+        let import = is_import(name, kind);
+        if !import && !is_checked(name, kind) {
+            continue;
+        }
+        if cx.is_cancelled() {
+            return;
+        }
+        // A `use` line may import a namespace (`use App\Models;`, then
+        // `Models\User`).
+        if import
+            && kind == NameKind::ClassLike
+            && name.resolution.primary().is_some_and(|fqn| namespace_exists(cx, fqn))
+        {
+            continue;
+        }
+        let defined = name.resolution.candidates().any(|fqn| {
+            let key = match kind {
+                NameKind::Constant => fqn.to_owned(),
+                _ => fqn.to_ascii_lowercase(),
+            };
+            *known.entry(key).or_insert_with(|| {
+                find_declaration(summary, kind, fqn).is_some()
+                    || cx.engine.declares(kind, fqn)
+                    || (kind == NameKind::ClassLike && cx.engine.laravel_class_alias(fqn).is_some())
+            })
+        });
+        if defined || scan.guarded(kind, name) || (import && scan.guarded_anywhere(kind, name)) {
+            continue;
+        }
+        if kind == NameKind::ClassLike
+            && name.resolution.primary().is_some_and(|fqn| {
+                IGNORED_NAMESPACES.iter().any(|ns| fqn.len() > ns.len() && fqn[..ns.len()].eq_ignore_ascii_case(ns))
+            })
+        {
+            continue;
+        }
+        let what = match kind {
+            NameKind::ClassLike => scan.class_word(name.start),
+            NameKind::Function => "function",
+            _ => "constant",
+        };
+        let problem = out.report(name.start, name.end, format!("Undefined {what} '{}'", name.text));
+        if kind == NameKind::ClassLike
+            && let Resolution::Fqn(fqn) = &name.resolution
+            && let Some(fix) = fixes::create_class(cx, fqn, what)
+        {
+            problem.with_fix(fix);
+        }
+    }
+}
+
+/// The docblocks of the file's declarations, as the summary parsed them:
+/// the classes their tags' types name that nothing declares. Only what the
+/// summary understood as a type is looked at (`@param`, `@return`, `@var`,
+/// `@throws`, `@property`, `@method`, `@mixin`, `@extends`, `@implements`,
+/// `@use`, template bounds, type aliases, assertions), so `@see`, `@link`
+/// and free text never are; template parameters and type aliases aren't
+/// classes. Names that start lower case or hold a `-` are taken for
+/// pseudo-types the parser doesn't know.
+fn check_docs(cx: &InspectionContext<'_>, out: &mut Problems) {
+    if cx.engine.status().state != EngineState::Ready || is_meta_path(cx.path) {
+        return;
+    }
+    let summary = cx.summary();
+    if summary.has_errors {
+        return;
+    }
+    let scan = Scan::of(cx.parsed, cx.names());
+    let mut known: HashMap<String, bool> = HashMap::new();
+    let mut reported: Vec<(u32, u32)> = Vec::new();
+    let mut check = |doc: &DocBlock, at: u32, outer: &[&str], out: &mut Problems| {
+        let mut templates: Vec<&str> = outer.to_vec();
+        templates.extend(doc.local_type_names());
+        for method in &doc.methods {
+            templates.extend(method.templates.iter().map(|template| template.name.as_str()));
+        }
+        let mut named: Vec<String> = Vec::new();
+        for ty in doc_types(doc) {
+            Type::from_doc(ty, &templates).map(&mut |ty| {
+                if let Type::Named { fqn, .. } = ty
+                    && !named.contains(fqn)
+                {
+                    named.push(fqn.clone());
+                }
+                None
+            });
+        }
+        for fqn in named {
+            let fqn = fqn.trim_start_matches('\\');
+            let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+            if short.is_empty()
+                || short.contains('-')
+                || !short.starts_with(|first: char| first.is_ascii_uppercase())
+                || crate::summary::is_anonymous(fqn)
+                || IGNORED_NAMESPACES.iter().any(|ns| fqn.len() > ns.len() && fqn[..ns.len()].eq_ignore_ascii_case(ns))
+            {
+                continue;
+            }
+            let defined = *known.entry(fqn.to_ascii_lowercase()).or_insert_with(|| {
+                find_declaration(summary, NameKind::ClassLike, fqn).is_some()
+                    || cx.engine.declares(NameKind::ClassLike, fqn)
+                    || cx.engine.laravel_class_alias(fqn).is_some()
+                    || scan.guards.iter().any(|guard| fqn_eq(NameKind::ClassLike, fqn, &guard.fqn))
+            });
+            if defined {
+                continue;
+            }
+            let Some((start, end, written)) = doc_name_range(cx, at, fqn) else { continue };
+            if reported.contains(&(start, end)) {
+                continue;
+            }
+            reported.push((start, end));
+            out.report(start, end, format!("Undefined class '{written}'"));
+        }
+    };
+    for class in summary.class_likes.iter().chain(&summary.anonymous) {
+        let outer: Vec<&str> = class.doc.iter().flat_map(|doc| doc.local_type_names()).collect();
+        if let Some(doc) = &class.doc {
+            check(doc, class.loc.start, &[], out);
+        }
+        for method in &class.methods {
+            if let Some(doc) = &method.doc {
+                check(doc, method.loc.start, &outer, out);
+            }
+        }
+        for property in &class.properties {
+            if let Some(doc) = &property.doc {
+                check(doc, property.loc.start, &outer, out);
+            }
+        }
+        if cx.is_cancelled() {
+            return;
+        }
+    }
+    for function in &summary.functions {
+        if let Some(doc) = &function.doc {
+            check(doc, function.loc.start, &[], out);
+        }
+    }
+}
+
+/// Every type a docblock's tags carry.
+fn doc_types(doc: &DocBlock) -> Vec<&DocType> {
+    let mut out: Vec<&DocType> = Vec::new();
+    out.extend(doc.vars.iter().map(|var| &var.ty));
+    out.extend(doc.params.iter().map(|param| &param.ty));
+    out.extend(&doc.return_type);
+    out.extend(&doc.throws);
+    out.extend(doc.templates.iter().flat_map(|template| template.bound.iter().chain(&template.default)));
+    out.extend(doc.extends.iter().chain(&doc.implements).chain(&doc.uses).chain(&doc.mixins));
+    out.extend(doc.properties.iter().filter_map(|property| property.ty.as_ref()));
+    for method in &doc.methods {
+        out.extend(&method.return_type);
+        out.extend(method.params.iter().filter_map(|param| param.ty.as_ref()));
+    }
+    out.extend(doc.type_aliases.iter().filter_map(|alias| alias.ty.as_ref()));
+    out.extend(doc.asserts.iter().map(|assert| &assert.ty));
+    out
+}
+
+/// Where the docblock in front of the declaration at `at` writes class
+/// `fqn`: the byte range and the text of the first name in it resolving to
+/// the class, else of the first whole word that is its short name.
+fn doc_name_range(cx: &InspectionContext<'_>, at: u32, fqn: &str) -> Option<(u32, u32, String)> {
+    let trivia = cx.parsed.program().trivia.as_slice();
+    let comment = mago_syntax::comments::docblock::get_docblock_before_position(trivia, at)?;
+    let text = String::from_utf8_lossy(comment.value);
+    let base = comment.span.start.offset;
+    let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+    let scope = cx.names().scope_at(base);
+    let bytes = text.as_bytes();
+    let part = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\\';
+    let mut fallback = None;
+    let mut from = 0;
+    while let Some(found) = text[from..].find(short) {
+        let at = from + found;
+        let end = at + short.len();
+        from = end;
+        if bytes.get(end).is_some_and(|byte| part(*byte)) {
+            continue;
+        }
+        let mut start = at;
+        while start > 0 && part(bytes[start - 1]) {
+            start -= 1;
+        }
+        // A variable (`$Foo`) is not a type.
+        if start > 0 && bytes[start - 1] == b'$' {
+            continue;
+        }
+        let written = &text[start..end];
+        let range = (base + start as u32, base + end as u32, written.to_owned());
+        if scope.resolve(NameKind::ClassLike, written).resolution.matches(NameKind::ClassLike, fqn) {
+            return Some(range);
+        }
+        fallback.get_or_insert(range);
+    }
+    fallback
+}
+
+/// An imported name of `kind`: the item of a `use` line.
+fn is_import(name: &ResolvedName, kind: NameKind) -> bool {
+    name.kind == kind && name.role == NameRole::Import && name.resolution.primary().is_some()
+}
+
+/// Whether some declaration lives in namespace `fqn` (or below it): in the
+/// file itself or in the index.
+fn namespace_exists(cx: &InspectionContext<'_>, fqn: &str) -> bool {
+    let fqn = fqn.trim_start_matches('\\');
+    let prefix = format!("{}\\", fqn.to_ascii_lowercase());
+    let summary = cx.summary();
+    let here = summary
+        .class_likes
+        .iter()
+        .map(|class| &class.fqn)
+        .chain(summary.functions.iter().map(|function| &function.fqn))
+        .any(|declared| declared.to_ascii_lowercase().starts_with(&prefix));
+    here || cx.engine.index().is_some_and(|index| index.namespace_children(fqn).is_ok_and(|found| !found.is_empty()))
+}
+
+/// A reference of `kind` that names something (not a relative class or a
+/// special constant).
+fn is_checked(name: &ResolvedName, kind: NameKind) -> bool {
+    name.kind == kind
+        && name.role == NameRole::Reference
+        && name.resolution.primary().is_some()
+        && !(kind == NameKind::Constant
+            && ["true", "false", "null"].iter().any(|s| name.text.trim_start_matches('\\').eq_ignore_ascii_case(s)))
+}
+
+/// A `class_exists`-style check: names of `kind` matching `fqn` are fine
+/// from `start` to `end` (the end of the enclosing function, or the file).
+#[derive(Debug)]
+struct Guard {
+    kind: NameKind,
+    fqn: String,
+    start: u32,
+    end: u32,
+}
+
+/// What the AST adds to the names: guards, and the kind of class-like a
+/// position expects.
+#[derive(Default)]
+struct Scan {
+    guards: Vec<Guard>,
+    /// Name start → `interface` or `trait`.
+    class_words: HashMap<u32, &'static str>,
+}
+
+impl Scan {
+    fn of(parsed: &ParsedFile, names: &FileNames) -> Self {
+        let mut collector = Collector { names, scan: Scan::default(), function_ends: Vec::new(), in_interface: false };
+        ScanWalker.walk_program(parsed.program(), &mut collector);
+        collector.scan
+    }
+
+    fn guarded(&self, kind: NameKind, name: &ResolvedName) -> bool {
+        self.guards.iter().any(|guard| {
+            guard.kind == kind
+                && guard.start <= name.start
+                && name.end <= guard.end
+                && name.resolution.candidates().any(|fqn| fqn_eq(kind, fqn, &guard.fqn))
+        })
+    }
+
+    /// Whether some guard of the file names `name`: an import comes before
+    /// the check that makes using it safe.
+    fn guarded_anywhere(&self, kind: NameKind, name: &ResolvedName) -> bool {
+        self.guards
+            .iter()
+            .any(|guard| guard.kind == kind && name.resolution.candidates().any(|fqn| fqn_eq(kind, fqn, &guard.fqn)))
+    }
+
+    fn class_word(&self, start: u32) -> &'static str {
+        self.class_words.get(&start).copied().unwrap_or("class")
+    }
+}
+
+struct Collector<'n> {
+    names: &'n FileNames,
+    scan: Scan,
+    /// End offsets of the enclosing functions, methods and closures.
+    function_ends: Vec<u32>,
+    in_interface: bool,
+}
+
+impl Collector<'_> {
+    fn enter(&mut self, end: u32) {
+        self.function_ends.push(end);
+    }
+
+    fn leave(&mut self) {
+        self.function_ends.pop();
+    }
+
+    fn word(&mut self, start: u32, word: &'static str) {
+        self.scan.class_words.insert(start, word);
+    }
+}
+
+/// The kind a guard function checks.
+fn guard_kind(callee: &[u8]) -> Option<NameKind> {
+    let callee = callee.strip_prefix(b"\\").unwrap_or(callee);
+    let is = |name: &str| callee.eq_ignore_ascii_case(name.as_bytes());
+    if is("class_exists") || is("interface_exists") || is("trait_exists") || is("enum_exists") {
+        Some(NameKind::ClassLike)
+    } else if is("function_exists") || is("is_callable") {
+        Some(NameKind::Function)
+    } else if is("defined") {
+        Some(NameKind::Constant)
+    } else {
+        None
+    }
+}
+
+/// The name a string literal spells, unescaping `\\` and dropping a leading
+/// `\`.
+fn spelled_name(value: &[u8]) -> String {
+    let text = String::from_utf8_lossy(value).replace("\\\\", "\\");
+    text.trim_start_matches('\\').to_owned()
+}
+
+struct ScanWalker;
+
+impl<'ast, 'arena, 'n> Walker<'ast, 'arena, Collector<'n>> for ScanWalker {
+    fn walk_in_function(&self, node: &'ast Function<'arena>, cx: &mut Collector<'n>) {
+        cx.enter(node.span().end.offset);
+    }
+
+    fn walk_out_function(&self, _: &'ast Function<'arena>, cx: &mut Collector<'n>) {
+        cx.leave();
+    }
+
+    fn walk_in_method(&self, node: &'ast Method<'arena>, cx: &mut Collector<'n>) {
+        cx.enter(node.span().end.offset);
+    }
+
+    fn walk_out_method(&self, _: &'ast Method<'arena>, cx: &mut Collector<'n>) {
+        cx.leave();
+    }
+
+    fn walk_in_closure(&self, node: &'ast Closure<'arena>, cx: &mut Collector<'n>) {
+        cx.enter(node.span().end.offset);
+    }
+
+    fn walk_out_closure(&self, _: &'ast Closure<'arena>, cx: &mut Collector<'n>) {
+        cx.leave();
+    }
+
+    fn walk_in_arrow_function(&self, node: &'ast ArrowFunction<'arena>, cx: &mut Collector<'n>) {
+        cx.enter(node.span().end.offset);
+    }
+
+    fn walk_out_arrow_function(&self, _: &'ast ArrowFunction<'arena>, cx: &mut Collector<'n>) {
+        cx.leave();
+    }
+
+    fn walk_in_interface(&self, _: &'ast Interface<'arena>, cx: &mut Collector<'n>) {
+        cx.in_interface = true;
+    }
+
+    fn walk_out_interface(&self, _: &'ast Interface<'arena>, cx: &mut Collector<'n>) {
+        cx.in_interface = false;
+    }
+
+    fn walk_in_extends(&self, node: &'ast Extends<'arena>, cx: &mut Collector<'n>) {
+        if cx.in_interface {
+            for parent in &node.types {
+                cx.word(parent.span().start.offset, "interface");
+            }
+        }
+    }
+
+    fn walk_in_implements(&self, node: &'ast Implements<'arena>, cx: &mut Collector<'n>) {
+        for interface in &node.types {
+            cx.word(interface.span().start.offset, "interface");
+        }
+    }
+
+    fn walk_in_trait_use(&self, node: &'ast TraitUse<'arena>, cx: &mut Collector<'n>) {
+        for name in &node.trait_names {
+            cx.word(name.span().start.offset, "trait");
+        }
+    }
+
+    fn walk_in_function_call(&self, node: &'ast FunctionCall<'arena>, cx: &mut Collector<'n>) {
+        let Expression::Identifier(callee) = node.function else { return };
+        let Some(kind) = guard_kind(callee.value()) else { return };
+        let Some(first) = node.argument_list.arguments.iter().next() else { return };
+        let value = match first {
+            Argument::Positional(argument) => argument.value,
+            Argument::Named(argument) => argument.value,
+        };
+        let fqn = match value {
+            Expression::Literal(Literal::String(string)) => match string.value {
+                Some(value) => spelled_name(value),
+                None => return,
+            },
+            Expression::Access(Access::ClassConstant(ClassConstantAccess {
+                class: Expression::Identifier(class),
+                constant: ClassLikeConstantSelector::Identifier(constant),
+                ..
+            })) if kind == NameKind::ClassLike && constant.value.eq_ignore_ascii_case(b"class") => {
+                match cx.names.at_offset(class.span().start.offset).and_then(|name| name.resolution.primary()) {
+                    Some(fqn) => fqn.to_owned(),
+                    None => return,
+                }
+            }
+            _ => return,
+        };
+        if fqn.is_empty() {
+            return;
+        }
+        let end = cx.function_ends.last().copied().unwrap_or(u32::MAX);
+        cx.scan.guards.push(Guard { kind, fqn, start: node.span().start.offset, end });
+    }
+}

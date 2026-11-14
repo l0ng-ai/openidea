@@ -78,7 +78,15 @@ export async function runInteractiveCodeAction(doc: number, selected: CodeAction
       action = { ...action, command: form.command };
     }
   }
-  const created = await request(action.title, (r) => commands.lspExecuteCodeAction(r, doc, action, answers));
-  if (created[0]) await editorService().openFile(created[0]);
+  const applied = await request(action.title, (r) => commands.lspExecuteCodeAction(r, doc, action, answers));
+  // Where the action says to go next (the PHP engine's created controller at
+  // its new method), else the first file its command created.
+  const open = applied.open;
+  if (open) {
+    const { start, end } = open.range;
+    await editorService().openFile(open.path, {
+      selection: { line: start.line, col: start.col, endLine: end.line, endCol: end.col },
+    });
+  } else if (applied.created[0]) await editorService().openFile(applied.created[0]);
   return true;
 }

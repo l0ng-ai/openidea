@@ -1,0 +1,16 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+class $CLASS$
+{
+    /**
+     * Bind data to the view.
+     */
+    public function compose(View $view): void
+    {
+        //
+    }
+}

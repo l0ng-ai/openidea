@@ -40,9 +40,14 @@ import {
 } from "./serverIntroduce";
 import { safeDelete } from "./safeDelete";
 import { startHierarchyRefactoring } from "./hierarchy";
+import { startChangeSignature } from "./changeSignature";
+import { startExtractMethod } from "./extractMethod";
 
-/** Languages whose server runs the class-hierarchy refactorings (the app-owned JDT extension). */
-const HIERARCHY_LANGUAGES = new Set(["java"]);
+/**
+ * Languages with the class-hierarchy refactorings: Java (the app-owned JDT extension) and PHP (the
+ * native engine; with Intelephense the request says no server provides it).
+ */
+const HIERARCHY_LANGUAGES = new Set(["java", "php"]);
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =
@@ -83,10 +88,15 @@ export function groupActions(actions: readonly CodeAction[]): {
 
 /**
  * Applies the single action, or lets the user pick one. Introduce / Extract
- * actions offer IDEA's occurrences choice and rename the new name in place.
+ * actions offer IDEA's occurrences choice and rename the new name in place;
+ * Change Signature and Extract Method open their dialogs when the server asks
+ * for the choices.
  */
 function runActions(view: EditorView, title: string, actions: readonly CodeAction[], id: RefactoringId | null = null) {
   if (id && EXPRESSION_REFACTORINGS.has(id) && chooseOccurrences(view, actions, id)) return;
+  // Servers that compute the change from the new signature: IDEA's dialog first.
+  if (id === "changeSignature" && startChangeSignature(view, actions)) return;
+  if (id === "extractMethod" && startExtractMethod(view, actions)) return;
   const apply = (a: CodeAction) =>
     id && introducesName(id) ? applyIntroduceAction(view, a, id) : applyCodeAction(view, a);
   if (actions.length === 1) return apply(actions[0]!);

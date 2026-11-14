@@ -6,6 +6,12 @@
  *   pnpm perf:rust                       run benches, then check
  *   pnpm perf:rust -- --no-run           check the latest criterion results only
  *   pnpm perf:rust -- --package ide-text --save-baseline
+ *
+ * The PHP engine's `php_laravel/*` benches run on laravel/framework from the
+ * corpora (`scripts/php-corpus.sh`, `PHP_CORPUS_DIR`); without it they and
+ * their budgets are skipped. The `php_laravel_real/*` benches run on the
+ * Laravel application with `vendor/` that `LARAVEL_APP_DIR` points to, and
+ * are skipped the same way without it.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -16,7 +22,19 @@ import { evaluate, loadBudgets, printReport, type ScenarioResult } from "./lib/r
 const ROOT = resolve(import.meta.dirname, "..");
 const TARGET = resolve(ROOT, process.env.CARGO_TARGET_DIR ?? "target");
 const OUT = join(ROOT, "target", "perf");
-const PACKAGES = ["ide-text", "ide-language", "ide-index", "ide-search", "ide-host", "ide-heap"];
+const PACKAGES = ["ide-text", "ide-language", "ide-index", "ide-search", "ide-host", "ide-php"];
+/** Benches that need a corpus from `scripts/php-corpus.sh`; skipped (with their budgets) without it. */
+const CORPUS_BENCHES: Record<string, string> = { "php_laravel/": "laravel-framework" };
+const CORPUS_DIR = resolve(process.env.PHP_CORPUS_DIR ?? join(ROOT, "..", "php-corpus"));
+/** Benches on a real Laravel application with `vendor/`; skipped (with their budgets) without `LARAVEL_APP_DIR`. */
+const LARAVEL_APP_BENCHES = "php_laravel_real/";
+const LARAVEL_APP_DIR = process.env.LARAVEL_APP_DIR;
+const missingCorpus = (id: string) =>
+  Object.entries(CORPUS_BENCHES).some(
+    ([prefix, corpus]) => id.startsWith(prefix) && !existsSync(join(CORPUS_DIR, corpus, "composer.json")),
+  ) ||
+  (id.startsWith(LARAVEL_APP_BENCHES) &&
+    !(LARAVEL_APP_DIR && existsSync(join(LARAVEL_APP_DIR, "artisan")) && existsSync(join(LARAVEL_APP_DIR, "vendor"))));
 
 const { values: args } = parseArgs({
   options: {
@@ -67,7 +85,7 @@ const baseline = existsSync(baselineFile) ? (JSON.parse(readFileSync(baselineFil
 // Only budgets of benches that ran: `--package` may select a subset.
 const rustBudgets = Object.fromEntries(
   Object.entries(budgets.rust)
-    .filter(([id]) => args["no-run"] || id in metrics || !args.package)
+    .filter(([id]) => args["no-run"] || id in metrics || (!args.package && !missingCorpus(id)))
     .map(([id, v]) => [`rust.${id}`, v]),
 );
 const report = evaluate(results, rustBudgets, baseline, {

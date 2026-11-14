@@ -1,0 +1,20 @@
+<?php
+
+namespace $NAMESPACE$;
+
+$IMPORTS$
+
+class $CLASS$ extends Seeder
+{
+    /**
+     * Run the database seeds.
+     */
+    public function run(): void
+    {
+        #if ($FACTORY$)
+        $MODEL$::factory()->count(10)->create();
+        #else
+        //
+        #end
+    }
+}

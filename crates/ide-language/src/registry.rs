@@ -13,6 +13,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
+    ("blade", include_str!("../../../languages/blade.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
     ("cmake", include_str!("../../../languages/cmake.toml")),
@@ -87,6 +88,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("terraform", include_str!("../../../languages/terraform.toml")),
     ("terraform-vars", include_str!("../../../languages/terraform-vars.toml")),
     ("toml", include_str!("../../../languages/toml.toml")),
+    ("twig", include_str!("../../../languages/twig.toml")),
     ("typescript", include_str!("../../../languages/typescript.toml")),
     ("typescriptreact", include_str!("../../../languages/typescriptreact.toml")),
     ("vue", include_str!("../../../languages/vue.toml")),
@@ -630,6 +632,7 @@ mod tests {
         "JSP",
         "Astro",
         "GoMod",
+        "Blade",
     ];
 
     fn reg() -> LanguageRegistry {
@@ -1013,6 +1016,10 @@ mod tests {
             ("Gemfile", "ruby"),
             ("show.html.erb", "erb"),
             ("index.php", "php"),
+            ("welcome.blade.php", "blade"),
+            ("components/Alert.BLADE.PHP", "blade"),
+            ("base.html.twig", "twig"),
+            ("mail.txt.twig", "twig"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),
             ("build.zig", "zig"),

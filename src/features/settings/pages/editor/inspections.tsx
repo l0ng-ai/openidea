@@ -9,10 +9,10 @@ import { useEffect, useId, useMemo, useRef, useState, type MouseEvent } from "re
 import clsx from "clsx";
 import { commands, isTauri } from "@/platform/ipc";
 import {
-  BUILTIN_INSPECTIONS,
   copyProfileName,
   effectiveProfileId,
   inspectionOption,
+  inspectionOptions,
   listProfiles,
   overridesOf,
   profileLabel,
@@ -492,7 +492,7 @@ function InspectionOptions({
   overrides: ProfileOverrides;
   onChange: (o: ProfileOverrides) => void;
 }) {
-  const specs = BUILTIN_INSPECTIONS.find((b) => b.id === id)?.options;
+  const specs = inspectionOptions(id);
   if (!specs?.length) return null;
   return (
     <fieldset className={styles.options} disabled={!isEnabled(overrides, id)}>

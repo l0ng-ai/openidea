@@ -1,5 +1,5 @@
 {
-  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust` (`plugins/…`: the plugin runtime budgets).",
+  "$comment": "Upper bounds, lower is better. ui: `<scenario>.<metric>` from `pnpm perf` (medians of the measured runs; enforced at CPU 1x only). Latencies are input → start of the first frame showing the result, so ~16.7 ms is 'next frame'. rust: criterion bench id → mean in microseconds, from `pnpm perf:rust` (`plugins/…`: the plugin runtime budgets; `php_…`: the native PHP engine, `php_laravel/…` only with the corpora from `scripts/php-corpus.sh`; `php_laravel_app/…`: Laravel support on fixtures/laravel-app, `php_laravel_real/…` the same on the application of `LARAVEL_APP_DIR`, only when it is set).",
   "regressionTolerance": 0.2,
   "regressionFloor": 1,
   "ui": {
@@ -147,6 +147,32 @@
     "plugins/syntax_highlights_2k_lines": 50000,
 
     "heap/index_1m_objects": 400000,
-    "heap/dominators_1m_random": 1000000
+    "heap/dominators_1m_random": 1000000,
+
+    "php_fixture/cold_index": 500000,
+    "php_fixture/warm_start": 200000,
+    "php_fixture/hover_after_keystroke": 50000,
+    "php_fixture/completion_after_keystroke": 50000,
+    "php_fixture/diagnostics_after_edit": 300000,
+
+    "php_laravel/cold_index": 30000000,
+    "php_laravel/warm_start": 2000000,
+    "php_laravel/hover_after_keystroke": 50000,
+    "php_laravel/completion_after_keystroke": 50000,
+    "php_laravel/diagnostics_after_edit": 300000,
+
+    "php_laravel_app/model_cold": 2000000,
+    "php_laravel_app/model_warm": 200000,
+    "php_laravel_app/string_completion": 50000,
+    "php_laravel_app/route_hints": 100000,
+    "php_laravel_app/model_warm_start": 150000,
+    "php_laravel_app/inspect_code": 5000000,
+
+    "php_laravel_real/model_cold": 400000,
+    "php_laravel_real/model_warm_start": 150000,
+    "php_laravel_real/model_warm": 200000,
+    "php_laravel_real/string_completion": 50000,
+    "php_laravel_real/route_hints": 100000,
+    "php_laravel_real/inspect_code": 20000000
   }
 }

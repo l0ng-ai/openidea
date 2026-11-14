@@ -78,7 +78,7 @@ describe("PHPStan inspections", () => {
       [{ "builtin:phpstan:constant.notFound": { enabled: false }, "builtin:build:E1": { enabled: false } }],
     );
     const php = find(tree, "group:PHP")!;
-    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "builtin:phpstan"]);
+    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "lsp:php", "builtin:phpstan"]);
     const phpstan = find(tree, "PHP/builtin:phpstan")!;
     expect(phpstan.children.map((n) => [n.id, n.name])).toEqual([
       ["builtin:phpstan:constant.notFound", "constant.notFound"],

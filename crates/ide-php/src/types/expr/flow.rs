@@ -1,0 +1,2287 @@
+//! The flow of local variables through one function-like (or a file's top
+//! level): which variables exist, with which type, at every place a
+//! variable is read or written, and which statements can't be reached.
+//!
+//! Rather than lowering the body to basic blocks first, [`Builder`]
+//! interprets the syntax tree's structured control flow directly (PHP's only
+//! unstructured jump, `goto`, is approximated): it carries an environment
+//! ([`Env`]) through the statements, forks it at branches, merges it where
+//! paths meet, iterates loops to a fixed point (widening to `mixed` after a
+//! few passes), and routes `break`/`continue`/`return`/`throw` to their
+//! targets. The result ([`Flow`]) is the same information a flow graph
+//! would give per variable occurrence. This is the scope-walking design
+//! PHPStan and Psalm document for their analysers, written for this engine.
+//!
+//! What it covers:
+//!
+//! - assignments (plain and compound), `list()`/`[…]` destructuring
+//!   (nested, keyed), writes into array elements (`$a['k'] = …`, `$a[] =
+//!   …`), `++`/`--`, references and by-reference arguments;
+//! - `foreach` keys and values, `catch` variables, `global` and `static`
+//!   variables, `unset`;
+//! - closures' `use` captures and the whole enclosing scope of arrow
+//!   functions, at the point the function is created;
+//! - narrowing by conditions: `instanceof`, the `is_*` functions, `null`
+//!   comparisons, `isset`, `empty`, truthiness, `!`, `&&`/`||`, the ternary
+//!   and `assert()`; an early `return`/`throw`/`continue` leaves the other
+//!   branch's narrowing in force; `??=` removes `null`;
+//! - `if`/`elseif`/`else`, `switch` with fall-through, `match`, loops of
+//!   every kind, `try`/`catch`/`finally`, `exit`, `throw` and calls
+//!   returning `never`.
+
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::Range;
+use std::rc::Rc;
+
+use mago_span::HasSpan;
+use mago_syntax::cst::{
+    Access, Argument, ArgumentList, ArrayElement, Assignment, Binary, BinaryOperator, Call, ClassLikeMemberSelector,
+    Construct, DirectVariable, DoWhile, Expression, For, ForBody, Foreach, ForeachBody, ForeachTarget, FunctionCall,
+    FunctionLikeParameterList, If, IfBody, Literal, Match, MatchArm, MethodBody, Namespace, NamespaceBody, Node,
+    Statement, StaticItem, Switch, SwitchBody, SwitchCase, Try, UnaryPostfix, UnaryPrefix, UnaryPrefixOperator,
+    Variable, While, WhileBody,
+};
+
+use super::{ExprTypes, Frame, MAX_SHAPE_FIELDS, TOP_LEVEL, falsy_removed, is_closure_value, shape_key};
+use crate::summary::{AssertWhen, type_hint};
+use crate::types::ops::{Op, is_float, is_int, op_type};
+use crate::types::provider::MagicTarget;
+use crate::types::resolve::{Bindings, substitute};
+use crate::types::{Shape, ShapeField, ShapeKey, Signature, Type};
+
+/// How many passes a loop body gets before the variables still changing
+/// are generalised (literals widened, shapes made `list<V>`/`array<K, V>`);
+/// two passes later, those still changing become `mixed`, after which one
+/// more pass reaches the fixed point.
+const WIDEN_AFTER: usize = 2;
+
+/// Whether a variable holds a value at some point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Defined {
+    /// On every path.
+    Yes,
+    /// On some paths only.
+    Maybe,
+    /// On no path.
+    No,
+}
+
+/// A variable at one point of the flow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VarState {
+    /// The type on the paths where it is defined (`mixed` when it isn't).
+    pub ty: Type,
+    pub defined: Defined,
+}
+
+impl VarState {
+    fn undefined() -> Self {
+        Self { ty: Type::Mixed, defined: Defined::No }
+    }
+
+    fn defined(ty: Type) -> Self {
+        Self { ty, defined: Defined::Yes }
+    }
+}
+
+/// The local variables of one function-like or of a file's top level.
+#[derive(Clone, Debug, Default)]
+pub struct Flow {
+    /// By the offset of a variable read: its state just before the read.
+    reads: HashMap<u32, VarState>,
+    /// By the offset of a variable written (assigned, a parameter, a
+    /// `foreach`/`catch`/`global`/`static` target): its state after.
+    writes: HashMap<u32, VarState>,
+    /// By the start of a closure or arrow function: the variables of this
+    /// scope it can see (`use` captures, or all of them for `fn`).
+    captures: HashMap<u32, BTreeMap<Vec<u8>, VarState>>,
+    /// The first statement of each run of statements no path reaches,
+    /// after a statement of the same list that some path reaches.
+    unreachable: Vec<Range<u32>>,
+    /// Some path runs off the end of the body (an implicit `return`).
+    falls_through: bool,
+    /// Variables may come from where the flow can't see (`extract`,
+    /// `$$name`, `include`, `eval`, `get_defined_vars`, `parse_str`).
+    dynamic: bool,
+    /// By the offset of a read or write of [`PROBE_VARIABLE`]: every
+    /// variable of the scope there (for completion).
+    probes: HashMap<u32, BTreeMap<Vec<u8>, VarState>>,
+    /// Offsets of variable reads that may bind rather than read: by-reference
+    /// bindings (`&$x`, `use (&$x)`, arguments to by-reference parameters)
+    /// and arguments of calls whose signature isn't known.
+    bindings: HashSet<u32>,
+}
+
+/// The variable completion puts at the caret (`$__ideProbe`): the flow keeps
+/// the whole environment at it ([`Flow::variables_at`]).
+pub const PROBE_VARIABLE: &[u8] = b"__ideProbe";
+
+impl Flow {
+    /// The state of the variable read at byte `offset` (the `$`), before
+    /// the read.
+    pub fn read_at(&self, offset: u32) -> Option<&VarState> {
+        self.reads.get(&offset)
+    }
+
+    /// The state of the variable written at byte `offset`, after the write.
+    pub fn written_at(&self, offset: u32) -> Option<&VarState> {
+        self.writes.get(&offset)
+    }
+
+    /// The variable at byte `offset`: what a write there stores, else what
+    /// a read there sees.
+    pub fn variable_at(&self, offset: u32) -> Option<&VarState> {
+        self.writes.get(&offset).or_else(|| self.reads.get(&offset))
+    }
+
+    /// Byte ranges of the first statement of each unreachable run, in
+    /// source order. Only runs that follow a reachable statement of the
+    /// same list count: the body of `if (false) { … }` isn't one (a block
+    /// no path enters is a constant condition, not dead code after a jump).
+    pub fn unreachable(&self) -> &[Range<u32>] {
+        &self.unreachable
+    }
+
+    /// True when some path reaches the end of the body, returning without
+    /// a `return` statement.
+    pub fn falls_through(&self) -> bool {
+        self.falls_through
+    }
+
+    /// True when variables can appear in ways the flow doesn't follow.
+    pub fn is_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    /// Every variable of the scope where [`PROBE_VARIABLE`] is read or
+    /// written at byte `offset` (the `$`), as it is there; undefined ones
+    /// included (with [`Defined::No`]).
+    pub fn variables_at(&self, offset: u32) -> Option<&BTreeMap<Vec<u8>, VarState>> {
+        self.probes.get(&offset)
+    }
+
+    /// True when the variable at byte `offset` may be bound there rather
+    /// than read: a by-reference binding (`&$x`, `use (&$x)`, an argument
+    /// for a by-reference parameter, which may create the variable) or an
+    /// argument of a call whose signature isn't known.
+    pub fn is_binding(&self, offset: u32) -> bool {
+        self.bindings.contains(&offset)
+    }
+}
+
+/// The variables at one point, and whether the point is reachable. An
+/// unreachable environment keeps the variables it had, so code after a
+/// `return` still gets sensible types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Env {
+    vars: BTreeMap<Vec<u8>, VarState>,
+    reachable: bool,
+}
+
+impl Env {
+    fn new() -> Self {
+        Self { vars: BTreeMap::new(), reachable: true }
+    }
+
+    fn get(&self, name: &[u8]) -> VarState {
+        self.vars.get(name).cloned().unwrap_or_else(VarState::undefined)
+    }
+
+    fn unreachable(mut self) -> Self {
+        self.reachable = false;
+        self
+    }
+
+    /// Where paths meet: unreachable paths contribute nothing; a variable
+    /// missing on some path is only maybe defined.
+    fn merge(envs: impl IntoIterator<Item = Env>) -> Env {
+        let mut first_unreachable = None;
+        let mut merged: Option<Env> = None;
+        for env in envs {
+            if !env.reachable {
+                first_unreachable.get_or_insert(env);
+                continue;
+            }
+            merged = Some(match merged {
+                None => env,
+                Some(acc) => acc.join(env),
+            });
+        }
+        merged.or(first_unreachable).unwrap_or_else(|| Env::new().unreachable())
+    }
+
+    fn join(self, other: Env) -> Env {
+        let mut vars = BTreeMap::new();
+        let mut names: Vec<&Vec<u8>> = self.vars.keys().chain(other.vars.keys()).collect();
+        names.sort();
+        names.dedup();
+        for name in names {
+            let state = match (self.vars.get(name), other.vars.get(name)) {
+                (Some(a), Some(b)) => VarState {
+                    ty: capped(Type::union([a.ty.clone(), b.ty.clone()])),
+                    defined: if a.defined == Defined::Yes && b.defined == Defined::Yes {
+                        Defined::Yes
+                    } else {
+                        Defined::Maybe
+                    },
+                },
+                (Some(one), None) | (None, Some(one)) => VarState { ty: one.ty.clone(), defined: Defined::Maybe },
+                (None, None) => continue,
+            };
+            vars.insert(name.clone(), state);
+        }
+        Env { vars, reachable: true }
+    }
+}
+
+/// Where `break` and `continue` go.
+#[derive(Default)]
+struct Jumps {
+    breaks: Vec<Env>,
+    continues: Vec<Env>,
+    /// `continue` in a `switch` acts as `break`.
+    switch: bool,
+}
+
+/// Builds the [`Flow`] of one scope.
+pub(super) struct Builder<'t, 'a, 'r> {
+    types: &'t ExprTypes<'a, 'r>,
+    /// The scope's frames, ending with its function-like (empty for the
+    /// top level).
+    frames: &'t [Frame<'a>],
+    flow: Rc<RefCell<Flow>>,
+    env: Env,
+    loops: Vec<Jumps>,
+    /// For each enclosing `try` block: every environment a throw could
+    /// leave it with.
+    tries: Vec<Vec<Env>>,
+    /// The types an inline `/** @var T $x */` in front of the statement being
+    /// visited gives its variables: writes of those variables in it store
+    /// the documented type.
+    documented: Vec<(Vec<u8>, Type)>,
+    /// Variables bound by reference to an array element or a property of
+    /// unknown type (`$x = &$info['k']`): writes into them build a shape
+    /// from nothing, as if the element were new.
+    aliases: HashSet<Vec<u8>>,
+}
+
+fn name_of<'a>(variable: &DirectVariable<'a>) -> &'a [u8] {
+    variable.name.strip_prefix(b"$").unwrap_or(variable.name)
+}
+
+impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
+    pub(super) fn run(types: &'t ExprTypes<'a, 'r>, frames: &'t [Frame<'a>], flow: Rc<RefCell<Flow>>) {
+        let mut builder = Builder {
+            types,
+            frames,
+            flow,
+            env: Env::new(),
+            loops: Vec::new(),
+            tries: Vec::new(),
+            documented: Vec::new(),
+            aliases: HashSet::new(),
+        };
+        builder.body();
+        let mut flow = builder.flow.borrow_mut();
+        flow.falls_through = builder.env.reachable;
+        flow.unreachable.sort_by_key(|range| (range.start, range.end));
+        flow.unreachable.dedup();
+    }
+
+    fn body(&mut self) {
+        let Some(frame) = self.frames.last() else {
+            self.statements(self.types.program().statements.iter());
+            return;
+        };
+        match frame {
+            Frame::Function(function) => {
+                self.parameters(&function.parameter_list);
+                self.statements(function.body.statements.iter());
+            }
+            Frame::Method(method) => {
+                self.parameters(&method.parameter_list);
+                if let MethodBody::Concrete(body) = &method.body {
+                    self.statements(body.statements.iter());
+                }
+            }
+            Frame::Closure(closure) => {
+                let outer = self.types.flow_cell(outer_scope(&self.frames[..self.frames.len() - 1]));
+                for variable in closure.use_clause.iter().flat_map(|clause| clause.variables.iter()) {
+                    let state = outer.borrow().reads.get(&variable.variable.span.start.offset).cloned();
+                    // Inside, a captured variable always exists (`null` when
+                    // it didn't outside, which the `use` clause reports).
+                    let state = state.map_or_else(|| VarState::defined(Type::Mixed), |s| VarState::defined(s.ty));
+                    self.env.vars.insert(name_of(&variable.variable).to_vec(), state);
+                }
+                self.parameters(&closure.parameter_list);
+                self.statements(closure.body.statements.iter());
+            }
+            Frame::Arrow(arrow) => {
+                let outer = self.types.flow_cell(outer_scope(&self.frames[..self.frames.len() - 1]));
+                if let Some(vars) = outer.borrow().captures.get(&arrow.span().start.offset) {
+                    self.env.vars = vars.clone();
+                }
+                self.parameters(&arrow.parameter_list);
+                self.expr(arrow.expression);
+            }
+            Frame::Class(_) => {}
+        }
+    }
+
+    fn parameters(&mut self, list: &'a FunctionLikeParameterList<'a>) {
+        for parameter in list.parameters.iter() {
+            let name = name_of(&parameter.variable);
+            let ty = self.types.parameter(self.frames, name).unwrap_or(Type::Mixed);
+            self.write(&parameter.variable, ty);
+        }
+    }
+
+    // ------------------------------------------------------------ records
+
+    fn read(&mut self, variable: &DirectVariable<'a>) {
+        let name = name_of(variable);
+        if name == b"this" {
+            return;
+        }
+        let state = self.env.get(name);
+        let mut flow = self.flow.borrow_mut();
+        if name == PROBE_VARIABLE {
+            flow.probes.insert(variable.span.start.offset, self.env.vars.clone());
+        }
+        flow.reads.insert(variable.span.start.offset, state);
+    }
+
+    fn write(&mut self, variable: &DirectVariable<'a>, ty: Type) {
+        let name = name_of(variable);
+        if name == b"this" {
+            return;
+        }
+        let ty = match self.documented.iter().find(|(documented, _)| documented == name) {
+            Some((_, documented)) => documented.clone(),
+            None => ty,
+        };
+        let state = VarState::defined(ty);
+        if name == PROBE_VARIABLE {
+            self.flow.borrow_mut().probes.insert(variable.span.start.offset, self.env.vars.clone());
+        }
+        self.env.vars.insert(name.to_vec(), state.clone());
+        self.flow.borrow_mut().writes.insert(variable.span.start.offset, state);
+    }
+
+    fn dynamic(&mut self) {
+        self.flow.borrow_mut().dynamic = true;
+    }
+
+    fn binding(&mut self, variable: &DirectVariable<'a>) {
+        self.flow.borrow_mut().bindings.insert(variable.span.start.offset);
+    }
+
+    fn type_of(&self, expr: &'a Expression<'a>) -> Type {
+        self.types.expr(expr, self.frames)
+    }
+
+    // --------------------------------------------------------- statements
+
+    fn statements(&mut self, statements: impl Iterator<Item = &'a Statement<'a>>) {
+        // Whether a statement of this list was reached, and the current
+        // unreachable run reported (or not to be: no reached statement
+        // came before it).
+        let mut reached = false;
+        let mut reported = false;
+        for statement in statements {
+            if self.env.reachable {
+                reached = true;
+                reported = false;
+            } else if !reached {
+                reported = true;
+            } else if !reported && !is_inert(statement) {
+                let span = statement.span();
+                self.flow.borrow_mut().unreachable.push(span.start.offset..span.end.offset);
+                reported = true;
+            }
+            let outer = self.document(statement);
+            self.statement(statement);
+            self.documented = outer;
+            if let Some(points) = self.tries.last_mut() {
+                points.push(self.env.clone());
+            }
+        }
+    }
+
+    /// Applies an inline `/** @var T $x */` (or `/** @var T */` on an
+    /// assignment or `foreach`) in front of `statement`: an existing `$x` is
+    /// `T` from here, and writes of `$x` in the statement store `T`. Returns
+    /// the documented types in force before, to restore after the statement.
+    fn document(&mut self, statement: &'a Statement<'a>) -> Vec<(Vec<u8>, Type)> {
+        let start = statement.span().start.offset;
+        // The enclosing class's type aliases (`@phpstan-type Row …` read by
+        // `/** @var Row $row */` in its methods).
+        let class = self.types.frame_class(self.frames);
+        let aliases: Vec<String> = class
+            .and_then(|class| class.doc.as_deref())
+            .map(|doc| doc.type_aliases.iter().map(|alias| alias.name.clone()).collect())
+            .unwrap_or_default();
+        let vars = crate::summary::inline_vars(self.types.file, self.types.scope(start), start, &aliases);
+        if vars.is_empty() {
+            return std::mem::take(&mut self.documented);
+        }
+        let assigned = match statement {
+            Statement::Expression(statement) => match statement.expression {
+                Expression::Assignment(assignment) => direct(assignment.lhs),
+                _ => None,
+            },
+            Statement::Foreach(node) => match &node.target {
+                ForeachTarget::Value(target) => direct(target.value),
+                ForeachTarget::KeyValue(target) => direct(target.value),
+            },
+            _ => None,
+        };
+        let mut documented = Vec::new();
+        for (name, ty) in vars {
+            let Some(name) = name.map(String::into_bytes).or_else(|| assigned.map(|v| name_of(v).to_vec())) else {
+                continue;
+            };
+            let names: Vec<&str> = aliases.iter().map(String::as_str).collect();
+            let mut ty = Type::from_doc(&ty, &names);
+            if let Some(class) = class {
+                ty = self.types.resolver.expand_aliases(&ty, class);
+            }
+            let ty = ty.settle();
+            if let Some(state) = self.env.vars.get_mut(&name) {
+                state.ty = ty.clone();
+            }
+            documented.push((name, ty));
+        }
+        std::mem::replace(&mut self.documented, documented)
+    }
+
+    fn statement(&mut self, statement: &'a Statement<'a>) {
+        crate::syntax::stack::deep(|| self.statement_level(statement));
+    }
+
+    fn statement_level(&mut self, statement: &'a Statement<'a>) {
+        match statement {
+            Statement::Expression(statement) => {
+                self.expr(statement.expression);
+                if self.env.reachable
+                    && matches!(statement.expression, Expression::Call(_))
+                    && super::chain_depth(statement.expression) <= super::MAX_CHAIN
+                    && self.type_of(statement.expression) == Type::Never
+                {
+                    self.env.reachable = false;
+                }
+                self.refine_receiver(statement.expression);
+            }
+            Statement::Echo(echo) => echo.values.iter().for_each(|value| self.expr(value)),
+            Statement::EchoTag(echo) => echo.values.iter().for_each(|value| self.expr(value)),
+            Statement::Return(statement) => {
+                if let Some(value) = statement.value {
+                    self.expr(value);
+                }
+                self.env.reachable = false;
+            }
+            Statement::Block(block) => self.statements(block.statements.iter()),
+            Statement::Namespace(Namespace { body, .. }) => match body {
+                NamespaceBody::Implicit(body) => self.statements(body.statements.iter()),
+                NamespaceBody::BraceDelimited(block) => self.statements(block.statements.iter()),
+            },
+            Statement::Declare(declare) => {
+                declare.items.iter().for_each(|item| self.expr(item.value));
+                match &declare.body {
+                    mago_syntax::cst::DeclareBody::Statement(statement) => self.statement(statement),
+                    mago_syntax::cst::DeclareBody::ColonDelimited(body) => self.statements(body.statements.iter()),
+                }
+            }
+            Statement::If(node) => self.r#if(node),
+            Statement::While(node) => self.r#while(node),
+            Statement::DoWhile(node) => self.do_while(node),
+            Statement::For(node) => self.r#for(node),
+            Statement::Foreach(node) => self.foreach(node),
+            Statement::Switch(node) => self.switch(node),
+            Statement::Try(node) => self.r#try(node),
+            Statement::Break(node) => {
+                if let Some(level) = node.level {
+                    self.expr(level);
+                }
+                self.jump(node.level, true);
+            }
+            Statement::Continue(node) => {
+                if let Some(level) = node.level {
+                    self.expr(level);
+                }
+                self.jump(node.level, false);
+            }
+            Statement::Global(global) => {
+                for variable in global.variables.iter() {
+                    match variable {
+                        Variable::Direct(direct) => self.write(direct, Type::Mixed),
+                        other => self.variable(other),
+                    }
+                }
+            }
+            Statement::Static(statement) => {
+                for item in statement.items.iter() {
+                    match item {
+                        // The value persists between calls: the initial
+                        // value's type, widened.
+                        StaticItem::Concrete(item) => {
+                            self.expr(item.value);
+                            let ty = self.type_of(item.value).widen();
+                            self.write(&item.variable, ty);
+                        }
+                        StaticItem::Abstract(item) => self.write(&item.variable, Type::Mixed),
+                    }
+                }
+            }
+            Statement::Unset(unset) => {
+                for value in unset.values.iter() {
+                    match value {
+                        Expression::Variable(Variable::Direct(direct)) => {
+                            self.env.vars.remove(name_of(direct));
+                        }
+                        other => self.expr(other),
+                    }
+                }
+            }
+            Statement::Goto(_) => self.env.reachable = false,
+            Statement::Label(_) => {
+                // Any `goto` may land here: everything is only maybe set.
+                self.env.reachable = true;
+                for state in self.env.vars.values_mut() {
+                    state.defined = Defined::Maybe;
+                    state.ty = Type::Mixed;
+                }
+            }
+            // Declarations have their own scopes; the rest holds no code.
+            _ => {}
+        }
+    }
+
+    fn jump(&mut self, level: Option<&'a Expression<'a>>, is_break: bool) {
+        let level = match level {
+            Some(Expression::Literal(Literal::Integer(integer))) => {
+                integer.value.and_then(|value| usize::try_from(value).ok()).unwrap_or(1).max(1)
+            }
+            _ => 1,
+        };
+        let env = self.env.clone();
+        if let Some(index) = self.loops.len().checked_sub(level) {
+            let target = &mut self.loops[index];
+            if is_break || target.switch { target.breaks.push(env) } else { target.continues.push(env) }
+        }
+        self.env.reachable = false;
+    }
+
+    fn r#if(&mut self, node: &'a If<'a>) {
+        let (then, mut rest) = self.condition(node.condition);
+        let mut ends = Vec::new();
+        self.env = then;
+        match &node.body {
+            IfBody::Statement(body) => {
+                self.statement(body.statement);
+                ends.push(self.env.clone());
+                for clause in body.else_if_clauses.iter() {
+                    self.env = rest;
+                    let (then, other) = self.condition(clause.condition);
+                    self.env = then;
+                    self.statement(clause.statement);
+                    ends.push(self.env.clone());
+                    rest = other;
+                }
+                match &body.else_clause {
+                    Some(clause) => {
+                        self.env = rest;
+                        self.statement(clause.statement);
+                        ends.push(self.env.clone());
+                    }
+                    None => ends.push(rest),
+                }
+            }
+            IfBody::ColonDelimited(body) => {
+                self.statements(body.statements.iter());
+                ends.push(self.env.clone());
+                for clause in body.else_if_clauses.iter() {
+                    self.env = rest;
+                    let (then, other) = self.condition(clause.condition);
+                    self.env = then;
+                    self.statements(clause.statements.iter());
+                    ends.push(self.env.clone());
+                    rest = other;
+                }
+                match &body.else_clause {
+                    Some(clause) => {
+                        self.env = rest;
+                        self.statements(clause.statements.iter());
+                        ends.push(self.env.clone());
+                    }
+                    None => ends.push(rest),
+                }
+            }
+        }
+        self.env = Env::merge(ends);
+    }
+
+    /// Runs a loop to a fixed point. `pass` runs one iteration from the
+    /// entry environment (in `self.env`) and returns the environment that
+    /// goes back to the top and the one leaving through the condition.
+    fn fixed_point(&mut self, mut pass: impl FnMut(&mut Self) -> (Env, Env)) {
+        let pre = self.env.clone();
+        let mut entry = pre.clone();
+        let mut iteration = 0;
+        loop {
+            self.env = entry.clone();
+            self.loops.push(Jumps::default());
+            let (back, out) = pass(self);
+            let jumps = self.loops.pop().unwrap_or_default();
+            let mut next = Env::merge([pre.clone(), back]);
+            if iteration >= WIDEN_AFTER {
+                for (name, state) in &mut next.vars {
+                    if entry.vars.get(name).is_none_or(|old| old.ty != state.ty) {
+                        state.ty = if iteration >= WIDEN_AFTER + 2 { Type::Mixed } else { generalized(&state.ty) };
+                    }
+                }
+            }
+            iteration += 1;
+            if next == entry || iteration > WIDEN_AFTER + 4 {
+                self.env = Env::merge(std::iter::once(out).chain(jumps.breaks));
+                return;
+            }
+            entry = next;
+        }
+    }
+
+    /// The environment reaching the end of an iteration: the body's end and
+    /// every `continue`.
+    fn iteration_end(&mut self) -> Env {
+        let continues = self.loops.last_mut().map(|jumps| std::mem::take(&mut jumps.continues)).unwrap_or_default();
+        Env::merge(std::iter::once(self.env.clone()).chain(continues))
+    }
+
+    fn r#while(&mut self, node: &'a While<'a>) {
+        self.fixed_point(|this| {
+            let (then, out) = this.condition(node.condition);
+            this.env = then;
+            match &node.body {
+                WhileBody::Statement(statement) => this.statement(statement),
+                WhileBody::ColonDelimited(body) => this.statements(body.statements.iter()),
+            }
+            (this.iteration_end(), out)
+        });
+    }
+
+    fn do_while(&mut self, node: &'a DoWhile<'a>) {
+        self.fixed_point(|this| {
+            this.statement(node.statement);
+            this.env = this.iteration_end();
+            this.condition(node.condition)
+        });
+    }
+
+    fn r#for(&mut self, node: &'a For<'a>) {
+        node.initializations.iter().for_each(|init| self.expr(init));
+        self.fixed_point(|this| {
+            // Every condition runs; the last one decides. None loops forever.
+            let mut outcome = None;
+            for condition in node.conditions.iter() {
+                if let Some((then, _)) = outcome.take() {
+                    this.env = then;
+                }
+                outcome = Some(this.condition(condition));
+            }
+            let (then, out) = outcome.unwrap_or_else(|| (this.env.clone(), this.env.clone().unreachable()));
+            this.env = then;
+            match &node.body {
+                ForBody::Statement(statement) => this.statement(statement),
+                ForBody::ColonDelimited(body) => this.statements(body.statements.iter()),
+            }
+            this.env = this.iteration_end();
+            node.increments.iter().for_each(|increment| this.expr(increment));
+            (this.env.clone(), out)
+        });
+    }
+
+    fn foreach(&mut self, node: &'a Foreach<'a>) {
+        self.expr(node.expression);
+        let iterated = self.type_of(node.expression);
+        let (key_type, value_type) = self.types.iteration_types(&iterated, self.frames);
+        self.fixed_point(|this| {
+            // Zero iterations leave by the top, as does the last one.
+            let out = this.env.clone();
+            match &node.target {
+                ForeachTarget::Value(target) => this.assign_to(target.value, value_type.clone()),
+                ForeachTarget::KeyValue(target) => {
+                    this.assign_to(target.key, key_type.clone());
+                    this.assign_to(target.value, value_type.clone());
+                }
+            }
+            match &node.body {
+                ForeachBody::Statement(statement) => this.statement(statement),
+                ForeachBody::ColonDelimited(body) => this.statements(body.statements.iter()),
+            }
+            (this.iteration_end(), out)
+        });
+    }
+
+    fn switch(&mut self, node: &'a Switch<'a>) {
+        self.expr(node.expression);
+        let start = self.env.clone();
+        let cases = match &node.body {
+            SwitchBody::BraceDelimited(body) => &body.cases,
+            SwitchBody::ColonDelimited(body) => &body.cases,
+        };
+        self.loops.push(Jumps { switch: true, ..Jumps::default() });
+        let mut fall_through: Option<Env> = None;
+        let mut has_default = false;
+        for case in cases.iter() {
+            self.env = start.clone();
+            let statements = match case {
+                SwitchCase::Expression(case) => {
+                    self.expr(case.expression);
+                    &case.statements
+                }
+                SwitchCase::Default(case) => {
+                    has_default = true;
+                    &case.statements
+                }
+            };
+            if let Some(previous) = fall_through.take() {
+                self.env = Env::merge([self.env.clone(), previous]);
+            }
+            self.statements(statements.iter());
+            fall_through = Some(self.env.clone());
+        }
+        let jumps = self.loops.pop().unwrap_or_default();
+        let mut ends = jumps.breaks;
+        ends.extend(fall_through);
+        if !has_default {
+            ends.push(start);
+        }
+        self.env = Env::merge(ends);
+    }
+
+    fn r#try(&mut self, node: &'a Try<'a>) {
+        self.tries.push(vec![self.env.clone()]);
+        self.statements(node.block.statements.iter());
+        let points = self.tries.pop().unwrap_or_default();
+        let mut thrown = Env::merge(points);
+        thrown.reachable = true;
+        let mut ends = vec![self.env.clone()];
+        for clause in node.catch_clauses.iter() {
+            self.env = thrown.clone();
+            if let Some(variable) = &clause.variable {
+                let hint = type_hint(self.types.scope(clause.hint.span().start.offset), &clause.hint);
+                self.write(variable, Type::from_hint(&hint));
+            }
+            self.statements(clause.block.statements.iter());
+            ends.push(self.env.clone());
+        }
+        self.env = Env::merge(ends);
+        if let Some(finally) = &node.finally_clause {
+            // `finally` also runs when every path left early.
+            let reachable = self.env.reachable;
+            if !reachable {
+                self.env = Env::merge([thrown, self.env.clone()]);
+                self.env.reachable = true;
+            }
+            self.statements(finally.block.statements.iter());
+            if !reachable {
+                self.env.reachable = false;
+            }
+        }
+    }
+
+    // -------------------------------------------------------- expressions
+
+    /// Visits `expr`, one level of it per call of
+    /// [`crate::syntax::stack::deep`].
+    fn expr(&mut self, expr: &'a Expression<'a>) {
+        crate::syntax::stack::deep(|| self.expr_level(expr));
+    }
+
+    fn expr_level(&mut self, expr: &'a Expression<'a>) {
+        match expr {
+            Expression::Parenthesized(inner) => self.expr(inner.expression),
+            Expression::Variable(variable) => self.variable(variable),
+            Expression::Assignment(assignment) => self.assignment(assignment),
+            Expression::Binary(binary) => match binary.operator {
+                BinaryOperator::And(_)
+                | BinaryOperator::LowAnd(_)
+                | BinaryOperator::Or(_)
+                | BinaryOperator::LowOr(_) => {
+                    let (then, other) = self.condition(expr);
+                    self.env = Env::merge([then, other]);
+                }
+                BinaryOperator::NullCoalesce(_) => {
+                    self.expr(binary.lhs);
+                    let skipped = self.env.clone();
+                    self.expr(binary.rhs);
+                    self.env = Env::merge([skipped, self.env.clone()]);
+                }
+                _ => {
+                    self.expr(binary.lhs);
+                    self.expr(binary.rhs);
+                }
+            },
+            Expression::Conditional(conditional) => {
+                let (then, other) = self.condition(conditional.condition);
+                self.env = then;
+                if let Some(value) = conditional.then {
+                    self.expr(value);
+                }
+                let then = std::mem::replace(&mut self.env, other);
+                self.expr(conditional.r#else);
+                self.env = Env::merge([then, self.env.clone()]);
+            }
+            Expression::Match(r#match) => self.r#match(r#match),
+            Expression::Closure(closure) => {
+                let mut captured = BTreeMap::new();
+                for variable in closure.use_clause.iter().flat_map(|clause| clause.variables.iter()) {
+                    self.read(&variable.variable);
+                    let name = name_of(&variable.variable);
+                    if variable.ampersand.is_some() {
+                        self.binding(&variable.variable);
+                    }
+                    if variable.ampersand.is_some() && self.env.get(name).defined == Defined::No {
+                        // Captured by reference: it exists from now on.
+                        self.write(&variable.variable, Type::Null);
+                    }
+                    captured.insert(name.to_vec(), self.env.get(name));
+                }
+                self.created(closure.span().start.offset, closure.span().end.offset, captured);
+            }
+            Expression::ArrowFunction(arrow) => {
+                let span = arrow.span();
+                let vars = self.env.vars.clone();
+                self.created(span.start.offset, span.end.offset, vars);
+            }
+            Expression::AnonymousClass(class) => {
+                if let Some(arguments) = &class.argument_list {
+                    self.node(Node::PartialArgumentList(arguments));
+                }
+            }
+            Expression::UnaryPrefix(unary) => self.unary_prefix(unary),
+            Expression::UnaryPostfix(UnaryPostfix { operand, .. }) => self.increment(operand),
+            Expression::Construct(construct) => {
+                self.children(expr);
+                match construct {
+                    Construct::Exit(_) | Construct::Die(_) => self.env.reachable = false,
+                    Construct::Eval(_)
+                    | Construct::Include(_)
+                    | Construct::IncludeOnce(_)
+                    | Construct::Require(_)
+                    | Construct::RequireOnce(_) => self.dynamic(),
+                    _ => {}
+                }
+            }
+            Expression::Throw(_) => {
+                self.children(expr);
+                self.env.reachable = false;
+            }
+            Expression::Call(call) => self.call(call),
+            Expression::Access(Access::StaticProperty(access)) => {
+                // `Foo::$bar` names a property, not a variable.
+                self.expr(access.class);
+                match &access.property {
+                    Variable::Direct(_) => {}
+                    Variable::Indirect(indirect) => self.expr(indirect.expression),
+                    Variable::Nested(nested) => self.variable(nested.variable),
+                }
+            }
+            _ => self.children(expr),
+        }
+    }
+
+    /// `match`. Kept out of [`Self::expr`] so the recursion through long
+    /// method chains keeps small stack frames.
+    #[inline(never)]
+    fn r#match(&mut self, r#match: &'a Match<'a>) {
+        self.expr(r#match.expression);
+        let start = self.env.clone();
+        // `match (true)` runs the first arm with a true condition:
+        // each arm sees its condition true and the earlier ones false.
+        let mut rest = is_true(r#match.expression).then(|| start.clone());
+        let mut ends = Vec::new();
+        for arm in r#match.arms.iter() {
+            self.env = rest.clone().unwrap_or_else(|| start.clone());
+            let value = match arm {
+                MatchArm::Expression(arm) => {
+                    match &mut rest {
+                        Some(rest) => {
+                            let mut matched = Vec::new();
+                            for condition in arm.conditions.iter() {
+                                let (then, other) = self.condition(condition);
+                                matched.push(then);
+                                self.env = other;
+                            }
+                            *rest = self.env.clone();
+                            self.env = Env::merge(matched);
+                        }
+                        None => arm.conditions.iter().for_each(|condition| self.expr(condition)),
+                    }
+                    arm.expression
+                }
+                MatchArm::Default(arm) => arm.expression,
+            };
+            self.expr(value);
+            ends.push(self.env.clone());
+        }
+        self.env = if ends.is_empty() { start } else { Env::merge(ends) };
+    }
+
+    /// The children of an expression, in source order.
+    fn children(&mut self, expr: &'a Expression<'a>) {
+        self.nodes(Node::Expression(expr));
+    }
+
+    /// Visits the children of `node`. They are collected first: recursing
+    /// from inside `visit_children` kept its large frame (a match over every
+    /// node kind) alive at each level, and fifteen nested array literals
+    /// overflowed a 2 MB debug-build stack.
+    fn nodes(&mut self, node: Node<'a, 'a>) {
+        for child in node.children() {
+            self.node(child);
+        }
+    }
+
+    fn node(&mut self, node: Node<'a, 'a>) {
+        match node {
+            Node::Expression(expr) => self.expr(expr),
+            Node::Variable(variable) => self.variable(variable),
+            // Nested declarations have their own scopes.
+            Node::Statement(_)
+            | Node::Class(_)
+            | Node::Interface(_)
+            | Node::Trait(_)
+            | Node::Enum(_)
+            | Node::Function(_)
+            | Node::DirectVariable(_) => {}
+            other => self.nodes(other),
+        }
+    }
+
+    fn variable(&mut self, variable: &'a Variable<'a>) {
+        match variable {
+            Variable::Direct(direct) => self.read(direct),
+            Variable::Indirect(indirect) => {
+                self.dynamic();
+                self.expr(indirect.expression);
+            }
+            Variable::Nested(nested) => {
+                self.dynamic();
+                self.variable(nested.variable);
+            }
+        }
+    }
+
+    /// A closure or arrow function is created here, seeing `vars`.
+    fn created(&mut self, start: u32, end: u32, vars: BTreeMap<Vec<u8>, VarState>) {
+        self.flow.borrow_mut().captures.insert(start, vars);
+        // Flows already built inside it saw an older environment (an
+        // earlier pass over a loop).
+        self.types.flows.borrow_mut().retain(|key, _| !(start..=end).contains(key));
+    }
+
+    fn unary_prefix(&mut self, unary: &'a UnaryPrefix<'a>) {
+        match &unary.operator {
+            UnaryPrefixOperator::PreIncrement(_) | UnaryPrefixOperator::PreDecrement(_) => {
+                self.increment(unary.operand)
+            }
+            UnaryPrefixOperator::Reference(_) => match unary.operand {
+                // `&$x` creates `$x` (as `null`) when it doesn't exist.
+                Expression::Variable(Variable::Direct(direct)) => {
+                    self.read(direct);
+                    self.binding(direct);
+                    if self.env.get(name_of(direct)).defined == Defined::No {
+                        self.write(direct, Type::Null);
+                    }
+                }
+                operand => self.expr(operand),
+            },
+            _ => self.expr(unary.operand),
+        }
+    }
+
+    /// `++`/`--` on an operand.
+    fn increment(&mut self, operand: &'a Expression<'a>) {
+        let Expression::Variable(Variable::Direct(direct)) = operand else {
+            self.expr(operand);
+            return;
+        };
+        self.read(direct);
+        let state = self.env.get(name_of(direct));
+        let ty = if state.defined == Defined::No || state.ty == Type::Null {
+            Type::Int
+        } else if state.ty.members().iter().all(|ty| is_int(ty) || is_float(ty)) {
+            op_type(Op::Add, Some(&state.ty), Some(&Type::LiteralInt(1)))
+        } else {
+            state.ty.widen()
+        };
+        self.write(direct, ty);
+    }
+
+    fn assignment(&mut self, assignment: &'a Assignment<'a>) {
+        match Op::of_assignment(&assignment.operator) {
+            None => {
+                if is_destination(assignment.lhs) {
+                    self.expr(assignment.rhs);
+                    let ty = if is_empty_array(assignment.rhs) {
+                        empty_array()
+                    } else {
+                        self.types.assignment(assignment, self.frames)
+                    };
+                    if let Expression::Variable(Variable::Direct(direct)) = assignment.lhs {
+                        let name = name_of(direct).to_vec();
+                        if ty == Type::Mixed && is_element_reference(assignment.rhs) {
+                            self.aliases.insert(name);
+                        } else {
+                            self.aliases.remove(&name);
+                        }
+                    }
+                    self.assign_to(assignment.lhs, ty);
+                } else {
+                    self.expr(assignment.lhs);
+                    self.expr(assignment.rhs);
+                }
+            }
+            Some(op) => match assignment.lhs {
+                Expression::Variable(Variable::Direct(direct)) => {
+                    self.read(direct);
+                    let before = self.env.clone();
+                    self.expr(assignment.rhs);
+                    if op == Op::Coalesce {
+                        // The right side runs only when the left is null.
+                        self.env = Env::merge([before, self.env.clone()]);
+                    }
+                    let ty = self.types.assignment(assignment, self.frames);
+                    self.write(direct, ty);
+                }
+                lhs => {
+                    self.expr(lhs);
+                    self.expr(assignment.rhs);
+                    if matches!(lhs, Expression::ArrayAccess(_) | Expression::ArrayAppend(_)) {
+                        let ty = self.types.assignment(assignment, self.frames);
+                        self.store(lhs, ty);
+                    }
+                }
+            },
+        }
+    }
+
+    /// Assigns a value of type `ty` to `target`: a variable, a destructuring
+    /// pattern, an array element, or anything else (only visited).
+    fn assign_to(&mut self, target: &'a Expression<'a>, ty: Type) {
+        match target {
+            Expression::Parenthesized(inner) => self.assign_to(inner.expression, ty),
+            Expression::Variable(Variable::Direct(direct)) => self.write(direct, ty),
+            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => {
+                self.assign_to(operand, ty)
+            }
+            Expression::Array(array) => self.destructure(array.elements.iter(), &ty),
+            Expression::LegacyArray(array) => self.destructure(array.elements.iter(), &ty),
+            Expression::List(list) => self.destructure(list.elements.iter(), &ty),
+            Expression::ArrayAccess(_) | Expression::ArrayAppend(_) => {
+                self.indexes(target);
+                self.store(target, ty);
+            }
+            other => self.expr(other),
+        }
+    }
+
+    /// Visits what an array write evaluates besides the array variable at
+    /// the bottom: the index expressions, outermost array first.
+    fn indexes(&mut self, target: &'a Expression<'a>) {
+        match target {
+            Expression::Parenthesized(inner) => self.indexes(inner.expression),
+            Expression::ArrayAccess(access) => {
+                self.indexes(access.array);
+                self.expr(access.index);
+            }
+            Expression::ArrayAppend(append) => self.indexes(append.array),
+            Expression::Variable(Variable::Direct(_)) => {}
+            other => self.expr(other),
+        }
+    }
+
+    fn destructure<'b>(&mut self, elements: impl Iterator<Item = &'b ArrayElement<'a>>, ty: &Type)
+    where
+        'a: 'b,
+    {
+        let mut index: i64 = 0;
+        for element in elements {
+            match element {
+                ArrayElement::KeyValue(element) => {
+                    self.expr(element.key);
+                    let key = self.type_of(element.key);
+                    let value = self.types.element(ty, &key, self.frames);
+                    self.assign_to(element.value, value);
+                }
+                ArrayElement::Value(element) => {
+                    let value = self.types.element(ty, &Type::LiteralInt(index), self.frames);
+                    index += 1;
+                    self.assign_to(element.value, value);
+                }
+                ArrayElement::Missing(_) => index += 1,
+                ArrayElement::Variadic(element) => self.expr(element.value),
+            }
+        }
+    }
+
+    /// `$a[k] = value` / `$a[] = value` (nested to any depth): the array
+    /// variable at the bottom gets the updated type. The index expressions
+    /// must have been visited ([`Self::indexes`]).
+    fn store(&mut self, target: &'a Expression<'a>, value: Type) {
+        let (base, key) = match target {
+            Expression::ArrayAccess(access) => (access.array, Some(self.type_of(access.index))),
+            Expression::ArrayAppend(append) => (append.array, None),
+            Expression::Parenthesized(inner) => return self.store(inner.expression, value),
+            Expression::Variable(Variable::Direct(direct)) => return self.write(direct, value),
+            // A property or call result: no local variable changes.
+            _ => return,
+        };
+        let current = self.current(base);
+        let updated = put(current.as_ref(), key.as_ref(), value);
+        self.store(base, updated);
+    }
+
+    /// The current value of an array being written into; `None` when it
+    /// doesn't exist yet.
+    fn current(&self, base: &'a Expression<'a>) -> Option<Type> {
+        match base {
+            Expression::Variable(Variable::Direct(direct)) => {
+                let state = self.env.get(name_of(direct));
+                let fresh = state.ty == Type::Mixed && self.aliases.contains(name_of(direct));
+                (state.defined != Defined::No && !fresh).then_some(state.ty)
+            }
+            Expression::ArrayAccess(access) => {
+                let outer = self.current(access.array)?;
+                let element = self.types.element(&outer, &self.type_of(access.index), self.frames);
+                Some(element)
+            }
+            Expression::ArrayAppend(_) => None,
+            other => Some(self.type_of(other)),
+        }
+    }
+
+    fn call(&mut self, call: &'a Call<'a>) {
+        let (arguments, signature) = match call {
+            Call::Function(call) => return self.function_call(call),
+            // The receiver is only typed when an argument may be written
+            // through a by-reference parameter: typing goes through the
+            // whole call chain, which fluent builders make very long.
+            Call::Method(call) => {
+                self.expr(call.object);
+                self.selector(&call.method);
+                let signature = may_write(&call.argument_list, call.object).then(|| {
+                    let receiver = self.type_of(call.object);
+                    self.keyed_closures(&receiver, &call.method, &call.argument_list);
+                    self.method_signature(&receiver, &call.method, &call.argument_list)
+                });
+                (&call.argument_list, signature.flatten())
+            }
+            Call::NullSafeMethod(call) => {
+                self.expr(call.object);
+                self.selector(&call.method);
+                let signature = may_write(&call.argument_list, call.object).then(|| {
+                    let receiver = self.type_of(call.object).without_null();
+                    self.keyed_closures(&receiver, &call.method, &call.argument_list);
+                    self.method_signature(&receiver, &call.method, &call.argument_list)
+                });
+                (&call.argument_list, signature.flatten())
+            }
+            Call::StaticMethod(call) => {
+                self.expr(call.class);
+                self.selector(&call.method);
+                let class = self.types.class_ref(call.class, self.frames);
+                if may_write(&call.argument_list, call.class) {
+                    self.keyed_closures(&class, &call.method, &call.argument_list);
+                }
+                (&call.argument_list, self.method_signature(&class, &call.method, &call.argument_list))
+            }
+        };
+        self.arguments(arguments, signature.as_ref());
+    }
+
+    /// `f(…)`. Kept out of [`Self::call`] so the recursion through long
+    /// method chains keeps small stack frames.
+    #[inline(never)]
+    fn function_call(&mut self, call: &'a FunctionCall<'a>) {
+        let name = match call.function {
+            Expression::Identifier(identifier) => {
+                String::from_utf8_lossy(identifier.value()).trim_start_matches('\\').to_ascii_lowercase()
+            }
+            callee => {
+                self.expr(callee);
+                String::new()
+            }
+        };
+        match name.as_str() {
+            "assert" => {
+                let mut arguments = call.argument_list.arguments.iter();
+                if let Some(first) = arguments.next() {
+                    let (then, _) = self.condition(argument_value(first));
+                    self.env = then;
+                }
+                arguments.for_each(|argument| self.expr(argument_value(argument)));
+                return;
+            }
+            "extract" | "get_defined_vars" | "parse_str" | "eval" => self.dynamic(),
+            // `compact('a', 'b')` reads `$a` and `$b`: recorded at each
+            // name's literal, where their types are asked for (the
+            // variables a controller passes to its view).
+            "compact" => {
+                for argument in call.argument_list.arguments.iter() {
+                    if let Expression::Literal(Literal::String(string)) = argument_value(argument)
+                        && let Some(name) = string.value
+                    {
+                        let state = self.env.get(name);
+                        self.flow.borrow_mut().reads.insert(string.span.start.offset, state);
+                    }
+                }
+            }
+            _ => {}
+        }
+        let signature = match call.function {
+            Expression::Identifier(identifier) => {
+                let scope = self.types.scope(identifier.span().start.offset);
+                let name = String::from_utf8_lossy(identifier.value());
+                let resolved = scope.resolve(crate::names::NameKind::Function, &name);
+                resolved.resolution.candidates().find_map(|fqn| {
+                    let signature = self.types.function_signature(fqn)?;
+                    let bindings = if needs_bindings(&signature, &call.argument_list) {
+                        self.types.function_call_bindings(fqn, &call.argument_list, self.frames)
+                    } else {
+                        Bindings::new()
+                    };
+                    Some((signature, bindings))
+                })
+            }
+            _ => None,
+        };
+        self.arguments(&call.argument_list, signature.as_ref());
+        for (variable, target, when, negated) in self.asserts(call) {
+            if matches!(when, AssertWhen::Always) {
+                self.env = self.narrowed_env(&self.env, variable, &target, negated);
+            }
+        }
+    }
+
+    /// `$post->loadCount('tags');`: a call the providers say returns its
+    /// receiver, refined ([`crate::types::provider::TypeProvider::refines_receiver`]),
+    /// gives the variable the call's type from here on.
+    fn refine_receiver(&mut self, expression: &'a Expression<'a>) {
+        let Expression::Call(Call::Method(call)) = expression else { return };
+        let (Expression::Variable(Variable::Direct(variable)), ClassLikeMemberSelector::Identifier(method)) =
+            (call.object, &call.method)
+        else {
+            return;
+        };
+        let resolver = self.types.resolver;
+        let method = String::from_utf8_lossy(method.value);
+        if !self.env.reachable || !resolver.providers().may_refine_receiver(&method) {
+            return;
+        }
+        let receiver = self.type_of(call.object);
+        let context = self.types.context(self.frames);
+        if !resolver.providers().refines_receiver(&receiver, &method, resolver, &context) {
+            return;
+        }
+        let ty = self.type_of(expression);
+        if !matches!(ty, Type::Mixed | Type::Never) {
+            self.env = self.update(&self.env, variable, |_| ty.clone());
+        }
+    }
+
+    fn selector(&mut self, selector: &'a ClassLikeMemberSelector<'a>) {
+        self.node(Node::ClassLikeMemberSelector(selector));
+    }
+
+    /// Method `selector`'s signature on `receiver`, with its own templates
+    /// bound for this call when a closure passed to it needs them.
+    fn method_signature(
+        &self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        arguments: &'a ArgumentList<'a>,
+    ) -> Option<(Signature, Bindings)> {
+        let Some(signature) = self.types.method_signature(receiver, selector, self.frames) else {
+            return self.forwarded_signature(receiver, selector, arguments);
+        };
+        let bindings = if needs_bindings(&signature, arguments) {
+            self.types.method_call_bindings(receiver, selector, arguments, self.frames)
+        } else {
+            Bindings::new()
+        };
+        Some((signature, bindings))
+    }
+
+    /// The signature of the method a call `receiver` doesn't declare is
+    /// forwarded to through `__call`/`__callStatic`, as the type providers
+    /// know it (`Post::whereHas(…)` is the Eloquent builder's `whereHas`),
+    /// on the raw target class, so its templates take their fallbacks.
+    fn forwarded_signature(
+        &self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        arguments: &'a ArgumentList<'a>,
+    ) -> Option<(Signature, Bindings)> {
+        let ClassLikeMemberSelector::Identifier(name) = selector else { return None };
+        if arguments.arguments.iter().all(|argument| !is_closure_value(argument_value(argument))) {
+            return None;
+        }
+        let name = String::from_utf8_lossy(name.value);
+        let resolver = self.types.resolver;
+        let context = self.types.context(self.frames);
+        let member = resolver.providers().magic_member(receiver, &name, true, resolver, &context)?;
+        let MagicTarget::Method { class, method } = &member.target else { return None };
+        let target = Type::named(class);
+        let params = resolver.method_params_on(&target, method, &context)?;
+        let return_type = resolver.method_return(receiver, &name, &context);
+        let signature = Signature { params, return_type: Some(return_type) };
+        let bindings = if needs_bindings(&signature, arguments) {
+            let args = || self.types.template_args(arguments, self.frames);
+            resolver.method_call_bindings(&target, method, &args, &context)
+        } else {
+            Bindings::new()
+        };
+        Some((signature, bindings))
+    }
+
+    /// The closures passed to method `selector` of `receiver` with a string
+    /// (`whereHas('posts', fn ($q) => …)`, `with(['posts' => fn ($q) => …])`):
+    /// the parameter types the providers give them
+    /// ([`crate::types::provider::TypeProvider::closure_parameters`]).
+    fn keyed_closures(
+        &mut self,
+        receiver: &Type,
+        selector: &ClassLikeMemberSelector<'_>,
+        arguments: &'a ArgumentList<'a>,
+    ) {
+        let ClassLikeMemberSelector::Identifier(name) = selector else { return };
+        let method = String::from_utf8_lossy(name.value);
+        let mut keyed: Vec<(String, u32)> = Vec::new();
+        let mut previous: Option<String> = None;
+        for argument in arguments.arguments.iter() {
+            let value = argument_value(argument);
+            // Without a string before it, the key is empty
+            // (`scopeQuery(fn ($query) => …)`, `leftJoin($table, fn ($join) => …)`).
+            if let Some(start) = function_start(value) {
+                keyed.push((previous.clone().unwrap_or_default(), start));
+            }
+            if let Expression::Array(_) | Expression::LegacyArray(_) = value {
+                let elements: Vec<&ArrayElement<'_>> = match value {
+                    Expression::Array(array) => array.elements.iter().collect(),
+                    Expression::LegacyArray(array) => array.elements.iter().collect(),
+                    _ => Vec::new(),
+                };
+                for element in elements {
+                    if let ArrayElement::KeyValue(element) = element
+                        && let (Some(key), Some(start)) = (string_literal(element.key), function_start(element.value))
+                    {
+                        keyed.push((key, start));
+                    }
+                }
+            }
+            // A class named before the closure keys it too
+            // (`Mail::assertQueued(Welcome::class, fn ($mail) => …)`).
+            previous = string_literal(value).or_else(|| match value {
+                Expression::Access(Access::ClassConstant(_)) => match self.types.type_of(value, self.frames) {
+                    Type::ClassString(Some(class)) => match *class {
+                        Type::Named { fqn, .. } => Some(fqn),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            });
+        }
+        if keyed.is_empty() {
+            return;
+        }
+        let context = self.types.context(self.frames);
+        let resolver = self.types.resolver;
+        for (key, start) in keyed {
+            if let Some(params) = resolver.providers().closure_parameters(receiver, &method, &key, resolver, &context) {
+                self.types.expected.borrow_mut().insert(start, params);
+            }
+        }
+    }
+
+    /// The arguments of a call; those passed to a by-reference parameter
+    /// are written (`preg_match($p, $s, $matches)` creates `$matches`).
+    /// `signature` comes with the callee's own templates bound for this
+    /// call, which type the parameters of closures passed to it.
+    fn arguments(&mut self, arguments: &'a ArgumentList<'a>, signature: Option<&(Signature, Bindings)>) {
+        let (signature, bindings) = match signature {
+            Some((signature, bindings)) => (Some(signature), Some(bindings)),
+            None => (None, None),
+        };
+        for (position, argument) in arguments.arguments.iter().enumerate() {
+            let value = argument_value(argument);
+            let param = signature.and_then(|signature| match argument {
+                Argument::Named(named) => {
+                    let name = String::from_utf8_lossy(named.name.value);
+                    signature.params.iter().find(|param| param.name.as_deref() == Some(name.as_ref()))
+                }
+                Argument::Positional(_) => {
+                    signature.params.get(position).or_else(|| signature.params.last().filter(|param| param.variadic))
+                }
+            });
+            if let (Some(param), Some(start)) = (param, function_start(value))
+                && let Some(expected) = match bindings.filter(|bindings| !bindings.is_empty()) {
+                    Some(bindings) => expected_parameters(&substitute(&param.ty, bindings)),
+                    None => expected_parameters(&param.ty),
+                }
+            {
+                // A provider's answer (`whereHas('posts', fn ($q) …)`) wins.
+                self.types.expected.borrow_mut().entry(start).or_insert(expected);
+            }
+            match param {
+                Some(param) if param.by_ref && is_destination(value) => {
+                    self.expr(value);
+                    if let Some(variable) = direct(value) {
+                        self.binding(variable);
+                    }
+                    let current = match value {
+                        Expression::Variable(Variable::Direct(direct)) => {
+                            let state = self.env.get(name_of(direct));
+                            (state.defined != Defined::No).then_some(state.ty)
+                        }
+                        _ => None,
+                    };
+                    // A value that already fits the declared type keeps its
+                    // own (`escape(string|array &$data)` on an array), unless
+                    // it is a literal or a shape the callee may fill in
+                    // (`$m = []; preg_match($p, $s, $m)`).
+                    let ty = match (&param.ty, current) {
+                        (Type::Mixed, Some(current)) => current,
+                        (ty, Some(current))
+                            if current.widen() == current
+                                && !current.members().iter().any(|member| matches!(member, Type::Shape(_)))
+                                && current.is_subtype_of(ty, self.types.resolver) =>
+                        {
+                            current
+                        }
+                        (ty, _) => ty.clone(),
+                    };
+                    self.assign_to(value, ty);
+                }
+                Some(_) => self.expr(value),
+                None => {
+                    self.expr(value);
+                    // Unknown callee: it may take the argument by reference.
+                    if signature.is_none()
+                        && let Some(variable) = direct(value)
+                    {
+                        self.binding(variable);
+                        if self.env.get(name_of(variable)).defined != Defined::Yes {
+                            self.write(variable, Type::Mixed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------------- conditions
+
+    /// `a && b && …` or `a || b || …`: the operands left to right, each seen
+    /// where the ones before it let it run. The chain is a left-deep tree;
+    /// it is walked in a loop, not recursively, so a long chain keeps the
+    /// stack flat.
+    #[inline(never)]
+    fn logical(&mut self, binary: &'a Binary<'a>) -> (Env, Env) {
+        let is_and = |operator: &BinaryOperator<'_>| match operator {
+            BinaryOperator::And(_) | BinaryOperator::LowAnd(_) => Some(true),
+            BinaryOperator::Or(_) | BinaryOperator::LowOr(_) => Some(false),
+            _ => None,
+        };
+        let and = is_and(&binary.operator) == Some(true);
+        let mut rights = vec![binary.rhs];
+        let mut left = binary.lhs;
+        while let Expression::Binary(inner) = left
+            && is_and(&inner.operator) == Some(and)
+        {
+            rights.push(inner.rhs);
+            left = inner.lhs;
+        }
+        let (mut then, mut other) = self.condition(left);
+        for right in rights.into_iter().rev() {
+            if and {
+                self.env = then;
+                let (right_true, right_false) = self.condition(right);
+                then = right_true;
+                other = Env::merge([other, right_false]);
+            } else {
+                self.env = other;
+                let (right_true, right_false) = self.condition(right);
+                then = Env::merge([then, right_true]);
+                other = right_false;
+            }
+        }
+        (then, other)
+    }
+
+    /// Visits a condition and returns the environments where it is true
+    /// and where it is false.
+    fn condition(&mut self, condition: &'a Expression<'a>) -> (Env, Env) {
+        crate::syntax::stack::deep(|| self.condition_level(condition))
+    }
+
+    fn condition_level(&mut self, condition: &'a Expression<'a>) -> (Env, Env) {
+        match condition {
+            Expression::Parenthesized(inner) => self.condition(inner.expression),
+            Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Not(_), operand }) => {
+                let (then, other) = self.condition(operand);
+                (other, then)
+            }
+            Expression::Literal(Literal::True(_)) => (self.env.clone(), self.env.clone().unreachable()),
+            Expression::Literal(Literal::False(_)) => (self.env.clone().unreachable(), self.env.clone()),
+            Expression::Binary(binary) => match &binary.operator {
+                BinaryOperator::And(_)
+                | BinaryOperator::LowAnd(_)
+                | BinaryOperator::Or(_)
+                | BinaryOperator::LowOr(_) => self.logical(binary),
+                BinaryOperator::Instanceof(_) => {
+                    self.expr(binary.lhs);
+                    self.expr(binary.rhs);
+                    let Some(variable) = direct(binary.lhs) else { return self.split() };
+                    let class = self.types.class_ref(binary.rhs, self.frames);
+                    if class == Type::Mixed {
+                        return self.split();
+                    }
+                    self.narrow(variable, &class)
+                }
+                BinaryOperator::Identical(_)
+                | BinaryOperator::NotIdentical(_)
+                | BinaryOperator::Equal(_)
+                | BinaryOperator::NotEqual(_)
+                | BinaryOperator::AngledNotEqual(_) => {
+                    self.expr(binary.lhs);
+                    self.expr(binary.rhs);
+                    let literal = |expr: &Expression<'_>| match expr {
+                        Expression::Literal(Literal::Null(_)) => Some(Type::Null),
+                        Expression::Literal(Literal::False(_)) => Some(Type::LiteralBool(false)),
+                        Expression::Literal(Literal::True(_)) => Some(Type::LiteralBool(true)),
+                        _ => None,
+                    };
+                    let compared = match (literal(binary.lhs), literal(binary.rhs)) {
+                        (Some(ty), None) => direct(binary.rhs).map(|variable| (variable, ty)),
+                        (None, Some(ty)) => direct(binary.lhs).map(|variable| (variable, ty)),
+                        _ => None,
+                    };
+                    let Some((variable, target)) = compared else { return self.split() };
+                    let strict =
+                        matches!(binary.operator, BinaryOperator::Identical(_) | BinaryOperator::NotIdentical(_));
+                    if target != Type::Null {
+                        // `=== false` / `!== true` (`strpos()`, WordPress's
+                        // `T|false` returns); loose comparisons with a bool
+                        // are truthiness checks.
+                        if !strict {
+                            return self.split();
+                        }
+                        let (is, is_not) = self.narrow(variable, &target);
+                        return match binary.operator {
+                            BinaryOperator::Identical(_) => (is, is_not),
+                            _ => (is_not, is),
+                        };
+                    }
+                    let (mut is_null, mut not_null) = self.narrow(variable, &Type::Null);
+                    if !strict {
+                        // `== null` holds for every falsy value.
+                        is_null = self.env.clone();
+                        not_null = self.update(&not_null, variable, falsy_removed);
+                    }
+                    match binary.operator {
+                        BinaryOperator::Identical(_) | BinaryOperator::Equal(_) => (is_null, not_null),
+                        _ => (not_null, is_null),
+                    }
+                }
+                _ => {
+                    self.expr(condition);
+                    self.split()
+                }
+            },
+            Expression::Call(Call::Function(call)) => {
+                let target = match call.function {
+                    Expression::Identifier(identifier) => type_check(identifier.value()),
+                    _ => None,
+                };
+                if target.is_none() {
+                    // `call()` applies the unconditional assertions.
+                    self.expr(condition);
+                    let asserts = self.asserts(call);
+                    if asserts.is_empty() {
+                        return self.split();
+                    }
+                    let (mut then, mut other) = self.split();
+                    // An assertion for one outcome is negated for the other,
+                    // as PHPStan does (`is_wp_error()`).
+                    for (variable, target, when, negated) in asserts {
+                        let (holds, fails) = match when {
+                            AssertWhen::IfTrue => (&mut then, &mut other),
+                            AssertWhen::IfFalse => (&mut other, &mut then),
+                            AssertWhen::Always => continue,
+                        };
+                        *holds = self.narrowed_env(holds, variable, &target, negated);
+                        *fails = self.narrowed_env(fails, variable, &target, !negated);
+                    }
+                    return (then, other);
+                }
+                self.expr(condition);
+                let mut arguments = call.argument_list.arguments.iter();
+                match (target, arguments.next().map(argument_value).and_then(direct)) {
+                    (Some((target, negatable)), Some(variable)) => {
+                        let (then, other) = self.narrow(variable, &target);
+                        (then, if negatable { other } else { self.env.clone() })
+                    }
+                    _ => self.split(),
+                }
+            }
+            Expression::Construct(Construct::Isset(isset)) => {
+                self.expr(condition);
+                let mut then = self.env.clone();
+                for value in isset.values.iter() {
+                    if let Some(variable) = direct(value) {
+                        let name = name_of(variable);
+                        let ty = then.get(name).ty.without_null();
+                        then.vars.insert(name.to_vec(), VarState::defined(ty));
+                    } else if let Some(variable) = base_variable(value) {
+                        // `isset($a['k'])`, `isset($o->p)`: `$a`/`$o` exists.
+                        defined_in(&mut then, variable);
+                    }
+                }
+                (then, self.env.clone())
+            }
+            Expression::Construct(Construct::Empty(empty)) => {
+                self.expr(condition);
+                match direct(empty.value) {
+                    Some(variable) => {
+                        let mut other = self.update(&self.env, variable, falsy_removed);
+                        defined_in(&mut other, variable);
+                        (self.env.clone(), other)
+                    }
+                    None => match base_variable(empty.value) {
+                        Some(variable) => {
+                            let mut other = self.env.clone();
+                            defined_in(&mut other, variable);
+                            (self.env.clone(), other)
+                        }
+                        None => self.split(),
+                    },
+                }
+            }
+            Expression::Variable(Variable::Direct(variable)) => {
+                self.read(variable);
+                (self.update(&self.env, variable, falsy_removed), self.env.clone())
+            }
+            Expression::Assignment(assignment) => {
+                self.expr(condition);
+                match (Op::of_assignment(&assignment.operator), direct(assignment.lhs)) {
+                    (None, Some(variable)) => (self.update(&self.env, variable, falsy_removed), self.env.clone()),
+                    _ => self.split(),
+                }
+            }
+            _ => {
+                self.expr(condition);
+                self.split()
+            }
+        }
+    }
+
+    /// No narrowing: both outcomes are the current environment.
+    fn split(&self) -> (Env, Env) {
+        (self.env.clone(), self.env.clone())
+    }
+
+    /// `env` with `variable`'s type mapped (a no-op for variables that don't
+    /// exist).
+    fn update(&self, env: &Env, variable: &DirectVariable<'_>, map: impl Fn(&Type) -> Type) -> Env {
+        let mut env = env.clone();
+        if let Some(state) = env.vars.get_mut(name_of(variable)) {
+            state.ty = map(&state.ty);
+        }
+        env
+    }
+
+    /// `env` with `variable` narrowed to `target` (or, `negated`, to what
+    /// isn't one): an assertion.
+    fn narrowed_env(&self, env: &Env, variable: &DirectVariable<'_>, target: &Type, negated: bool) -> Env {
+        let name = name_of(variable);
+        let state = env.get(name);
+        if state.defined == Defined::No {
+            return env.clone();
+        }
+        let ty = if negated { self.narrowed_away(&state.ty, target) } else { self.narrowed_to(&state.ty, target) };
+        let mut env = env.clone();
+        env.vars.insert(name.to_vec(), VarState::defined(ty));
+        env
+    }
+
+    /// The assertion tags (`@phpstan-assert`, `-if-true`, `-if-false` and
+    /// the `@psalm-` ones) of the function `call` calls, on arguments that
+    /// are variables: the variable, the asserted type, when it holds and
+    /// whether it is negated. Assertions naming templates are left out.
+    fn asserts(&self, call: &'a FunctionCall<'a>) -> Vec<(&'a DirectVariable<'a>, Type, AssertWhen, bool)> {
+        let Expression::Identifier(identifier) = call.function else { return Vec::new() };
+        let scope = self.types.scope(identifier.span().start.offset);
+        let name = String::from_utf8_lossy(identifier.value());
+        let resolved = scope.resolve(crate::names::NameKind::Function, &name);
+        let declarations = self.types.resolver.declarations();
+        let Some(function) = resolved.resolution.candidates().find_map(|fqn| declarations.function(fqn)) else {
+            return Vec::new();
+        };
+        let Some(doc) = function.doc.as_deref().filter(|doc| !doc.asserts.is_empty()) else { return Vec::new() };
+        let templates: Vec<&str> = doc.local_type_names().collect();
+        let mut found = Vec::new();
+        for assert in &doc.asserts {
+            let Some(position) = function.params.iter().position(|param| param.name == assert.param) else {
+                continue;
+            };
+            let argument = call.argument_list.arguments.iter().enumerate().find_map(|(at, argument)| match argument {
+                Argument::Named(named) if named.name.value == assert.param.as_bytes() => Some(named.value),
+                Argument::Positional(positional) if at == position => Some(positional.value),
+                _ => None,
+            });
+            let Some(variable) = argument.and_then(direct) else { continue };
+            let ty = Type::from_doc(&assert.ty, &templates).settle();
+            let mut generic = false;
+            ty.map(&mut |member| {
+                generic |= matches!(member, Type::Template(_));
+                None
+            });
+            if !generic {
+                found.push((variable, ty, assert.when, assert.negated));
+            }
+        }
+        found
+    }
+
+    /// The environments where `variable` is / is not of type `target`.
+    fn narrow(&self, variable: &DirectVariable<'_>, target: &Type) -> (Env, Env) {
+        let name = name_of(variable);
+        let state = self.env.get(name);
+        let mut then = self.env.clone();
+        then.vars.insert(name.to_vec(), VarState::defined(self.narrowed_to(&state.ty, target)));
+        let other = self.update(&self.env, variable, |ty| self.narrowed_away(ty, target));
+        (then, other)
+    }
+
+    /// The part of `ty` that is a `target`.
+    fn narrowed_to(&self, ty: &Type, target: &Type) -> Type {
+        let hierarchy = self.types.resolver;
+        let mut kept = Vec::new();
+        for member in ty.members() {
+            if member.is_subtype_of(target, hierarchy) {
+                kept.push(member.clone());
+            } else if target.is_subtype_of(member, hierarchy) {
+                kept.push(target.clone());
+            }
+        }
+        if kept.is_empty() { target.clone() } else { Type::union(kept) }
+    }
+
+    /// The part of `ty` that is not a `target`.
+    fn narrowed_away(&self, ty: &Type, target: &Type) -> Type {
+        let hierarchy = self.types.resolver;
+        match ty {
+            Type::Mixed => Type::Mixed,
+            Type::Bool => match target {
+                Type::LiteralBool(value) => Type::LiteralBool(!value),
+                _ if Type::Bool.is_subtype_of(target, hierarchy) => Type::Never,
+                _ => Type::Bool,
+            },
+            _ => Type::union(ty.members().iter().filter(|member| !member.is_subtype_of(target, hierarchy)).cloned()),
+        }
+    }
+}
+
+/// The frames of the scope around the end of `frames`: up to and including
+/// its innermost function-like (none for the top level).
+pub(super) fn outer_scope<'f, 'a>(frames: &'f [Frame<'a>]) -> &'f [Frame<'a>] {
+    &frames[..frames.iter().rposition(Frame::is_function_like).map_or(0, |i| i + 1)]
+}
+
+/// The key a scope's flow is stored under.
+pub(super) fn scope_key(scope: &[Frame<'_>]) -> u32 {
+    scope.last().map_or(TOP_LEVEL, Frame::key)
+}
+
+fn argument_value<'a>(argument: &'a Argument<'a>) -> &'a Expression<'a> {
+    match argument {
+        Argument::Positional(argument) => argument.value,
+        Argument::Named(argument) => argument.value,
+    }
+}
+
+/// `true`, maybe parenthesized.
+fn is_true(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_true(inner.expression),
+        Expression::Literal(Literal::True(_)) => true,
+        _ => false,
+    }
+}
+
+fn direct<'a>(expr: &'a Expression<'a>) -> Option<&'a DirectVariable<'a>> {
+    match expr {
+        Expression::Parenthesized(inner) => direct(inner.expression),
+        Expression::Variable(Variable::Direct(variable)) if variable.name != b"$this" => Some(variable),
+        _ => None,
+    }
+}
+
+/// The variable at the bottom of an element or property access
+/// (`$a['k']['l']`, `$o->p`, `$o?->p[0]`); not of a bare variable.
+fn base_variable<'a>(expr: &'a Expression<'a>) -> Option<&'a DirectVariable<'a>> {
+    let mut current = expr;
+    let mut nested = false;
+    loop {
+        current = match current {
+            Expression::Parenthesized(inner) => inner.expression,
+            Expression::ArrayAccess(access) => access.array,
+            Expression::Access(Access::Property(access)) => access.object,
+            Expression::Access(Access::NullSafeProperty(access)) => access.object,
+            _ => break,
+        };
+        nested = true;
+    }
+    if nested { direct(current) } else { None }
+}
+
+/// `env` with `variable` known to exist (its type kept).
+fn defined_in(env: &mut Env, variable: &DirectVariable<'_>) {
+    let name = name_of(variable);
+    let ty = env.vars.get(name).map_or(Type::Mixed, |state| state.ty.clone());
+    env.vars.insert(name.to_vec(), VarState::defined(ty));
+}
+
+/// Members a type joined from several paths keeps before its arrays are
+/// collapsed.
+const MAX_JOINED: usize = 16;
+
+/// A joined type kept small: past [`MAX_JOINED`] members its array shapes,
+/// arrays and lists become one `array<K, V>`, and if that isn't enough it
+/// is `mixed`. Without it, a variable gaining a key under each of `n`
+/// consecutive `if`s (`if (…) { $meta['a'] = …; } if (…) { $meta['b'] = …; }`)
+/// would be a union of 2^n shapes.
+fn capped(ty: Type) -> Type {
+    if ty.members().len() <= MAX_JOINED {
+        if size(&ty, MAX_JOINED_SIZE) <= MAX_JOINED_SIZE {
+            return ty;
+        }
+        // Nested shapes grown too big (`$schema['properties'][…] = …` on a
+        // large literal across branches): plain arrays.
+        return ty.map(&mut |member| match member {
+            Type::Shape(_) | Type::Array { .. } | Type::List { .. } => Some(Type::array()),
+            _ => None,
+        });
+    }
+    let (mut keys, mut values, mut others) = (Vec::new(), Vec::new(), Vec::new());
+    for member in ty.members() {
+        match member {
+            Type::Shape(shape) => {
+                keys.push(shape.key_type());
+                values.push(shape.value_type());
+            }
+            Type::Array { key, value, .. } => {
+                keys.push((**key).clone());
+                values.push((**value).clone());
+            }
+            Type::List { value, .. } => {
+                keys.push(Type::Int);
+                values.push((**value).clone());
+            }
+            other => others.push(other.clone()),
+        }
+    }
+    if !keys.is_empty() {
+        others.push(Type::array_of(Type::union(keys).widen(), Type::union(values).widen()));
+    }
+    let out = Type::union(others);
+    if out.members().len() > MAX_JOINED { Type::Mixed } else { out }
+}
+
+/// Nodes a type joined from several paths may have before its arrays
+/// become plain `array`s.
+const MAX_JOINED_SIZE: usize = 256;
+
+/// The number of nodes of `ty`, counted up to a little past `limit`.
+fn size(ty: &Type, limit: usize) -> usize {
+    fn count(ty: &Type, total: &mut usize, limit: usize) {
+        *total += 1;
+        if *total > limit {
+            return;
+        }
+        match ty {
+            Type::Union(members) | Type::Intersection(members) => {
+                members.iter().for_each(|member| count(member, total, limit))
+            }
+            Type::Shape(shape) => {
+                for field in &shape.fields {
+                    count(&field.ty, total, limit);
+                }
+                if let Some((key, value)) = &shape.rest {
+                    count(key, total, limit);
+                    count(value, total, limit);
+                }
+            }
+            Type::Array { key, value, .. } | Type::Iterable { key, value } => {
+                count(key, total, limit);
+                count(value, total, limit);
+            }
+            Type::List { value, .. } => count(value, total, limit),
+            Type::Named { args, .. } => args.iter().for_each(|arg| count(arg, total, limit)),
+            _ => {}
+        }
+    }
+    let mut total = 0;
+    count(ty, &mut total, limit);
+    total
+}
+
+/// Whether a method call on `object` may write one of its arguments
+/// (one is a possible by-reference destination and the receiver's chain
+/// is short enough to type).
+fn may_write(arguments: &ArgumentList<'_>, object: &Expression<'_>) -> bool {
+    arguments
+        .arguments
+        .iter()
+        .any(|argument| is_destination(argument_value(argument)) || has_untyped_parameter(argument_value(argument)))
+        && super::chain_depth(object) <= super::MAX_CHAIN
+}
+
+/// A closure or arrow function with a parameter without a type hint: its
+/// type comes from the parameter the function is passed to.
+fn has_untyped_parameter(expr: &Expression<'_>) -> bool {
+    let list = match expr {
+        Expression::Parenthesized(inner) => return has_untyped_parameter(inner.expression),
+        Expression::Closure(closure) => &closure.parameter_list,
+        Expression::ArrowFunction(arrow) => &arrow.parameter_list,
+        _ => return false,
+    };
+    list.parameters.iter().any(|parameter| parameter.hint.is_none())
+}
+
+/// The value of a plain string literal.
+fn string_literal(expr: &Expression<'_>) -> Option<String> {
+    match expr {
+        Expression::Literal(Literal::String(string)) => string.value.map(|v| String::from_utf8_lossy(v).into_owned()),
+        _ => None,
+    }
+}
+
+/// The closure or arrow function `expr` is, maybe parenthesized: its start.
+fn function_start(expr: &Expression<'_>) -> Option<u32> {
+    match expr {
+        Expression::Parenthesized(inner) => function_start(inner.expression),
+        Expression::Closure(closure) => Some(closure.span().start.offset),
+        Expression::ArrowFunction(arrow) => Some(arrow.span().start.offset),
+        _ => None,
+    }
+}
+
+/// True when a closure with an untyped parameter is passed where the
+/// signature names a template: binding the callee's templates may type it
+/// (`whereHas('posts', fn ($q) …)` expects `Closure(Builder<TRelatedModel>)`).
+fn needs_bindings(signature: &Signature, arguments: &ArgumentList<'_>) -> bool {
+    let generic = signature.params.iter().any(|param| {
+        let mut found = false;
+        param.ty.map(&mut |member| {
+            found |= matches!(member, Type::Template(_));
+            None
+        });
+        found
+    });
+    generic && arguments.arguments.iter().any(|argument| has_untyped_parameter(argument_value(argument)))
+}
+
+/// The parameter types of the callable a parameter of type `ty` expects
+/// (`callable(T): U`, `Closure(T): U`, either of them in a union); a type
+/// naming a template or a relative class is unknown (`mixed`) here.
+fn expected_parameters(ty: &Type) -> Option<Vec<Type>> {
+    let signature = ty.members().iter().find_map(|member| match member {
+        Type::Callable(Some(signature)) | Type::Closure(Some(signature)) => Some(signature),
+        _ => None,
+    })?;
+    let concrete = |ty: &Type| {
+        let mut open = false;
+        ty.map(&mut |member| {
+            open |= matches!(member, Type::Template(_) | Type::Relative(_) | Type::GenericRelative { .. });
+            None
+        });
+        if open { Type::Mixed } else { ty.clone() }
+    };
+    Some(signature.params.iter().map(|param| concrete(&param.ty)).collect())
+}
+
+/// `&$a['k']` or `&$o->p`: a reference to an array element or a property.
+fn is_element_reference(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_element_reference(inner.expression),
+        Expression::UnaryPrefix(UnaryPrefix { operator: UnaryPrefixOperator::Reference(_), operand }) => {
+            matches!(operand, Expression::ArrayAccess(_) | Expression::Access(_))
+        }
+        _ => false,
+    }
+}
+
+/// Something a value can be stored into.
+fn is_destination(expr: &Expression<'_>) -> bool {
+    matches!(
+        expr,
+        Expression::Variable(Variable::Direct(_))
+            | Expression::Array(_)
+            | Expression::LegacyArray(_)
+            | Expression::List(_)
+            | Expression::ArrayAccess(_)
+            | Expression::ArrayAppend(_)
+    ) || matches!(expr, Expression::Parenthesized(inner) if is_destination(inner.expression))
+}
+
+/// Statements that are never "reached" as code.
+fn is_inert(statement: &Statement<'_>) -> bool {
+    matches!(
+        statement,
+        Statement::OpeningTag(_)
+            | Statement::ClosingTag(_)
+            | Statement::Inline(_)
+            | Statement::Noop(_)
+            | Statement::Use(_)
+            | Statement::Class(_)
+            | Statement::Interface(_)
+            | Statement::Trait(_)
+            | Statement::Enum(_)
+            | Statement::Function(_)
+            | Statement::Constant(_)
+            | Statement::HaltCompiler(_)
+            | Statement::Label(_)
+    )
+}
+
+/// The type a type-checking function tests for, and whether its negation
+/// narrows too (`!is_numeric($x)` says little about `$x`).
+fn type_check(name: &[u8]) -> Option<(Type, bool)> {
+    let name = String::from_utf8_lossy(name).trim_start_matches('\\').to_ascii_lowercase();
+    Some(match name.as_str() {
+        "is_null" => (Type::Null, true),
+        "is_string" => (Type::string(), true),
+        "is_int" | "is_integer" | "is_long" => (Type::Int, true),
+        "is_float" | "is_double" => (Type::Float, true),
+        "is_bool" => (Type::Bool, true),
+        "is_array" => (Type::array(), true),
+        "is_object" => (Type::Object, true),
+        "is_resource" => (Type::Resource, true),
+        "is_scalar" => (Type::Scalar, true),
+        "is_iterable" => (Type::iterable(), false),
+        "is_numeric" => (Type::Numeric, false),
+        "is_callable" => (Type::Callable(None), false),
+        _ => return None,
+    })
+}
+
+/// `array{}`: what `[]` stores, so elements written later make a shape.
+fn empty_array() -> Type {
+    Type::Shape(Box::new(Shape { list: false, fields: Vec::new(), rest: None }))
+}
+
+fn is_empty_array(expr: &Expression<'_>) -> bool {
+    match expr {
+        Expression::Parenthesized(inner) => is_empty_array(inner.expression),
+        Expression::Array(array) => array.elements.is_empty(),
+        Expression::LegacyArray(array) => array.elements.is_empty(),
+        _ => false,
+    }
+}
+
+/// Shapes with the same keys (and rest), and nothing else: one shape with
+/// each field [`generalized`], so an element growing in a loop
+/// (`$s['toc'][] = …`) keeps its key: `array{toc: list<V>}`.
+fn same_keys(ty: &Type) -> Option<Shape> {
+    let members = ty.members();
+    let mut shapes = members.iter().map(|member| match member {
+        Type::Shape(shape) if !shape.fields.is_empty() => Some(shape),
+        _ => None,
+    });
+    let first = shapes.next()??;
+    let keys = |shape: &Shape| {
+        let mut keys: Vec<ShapeKey> = shape.fields.iter().map(|field| field.key.clone()).collect();
+        keys.sort_by_key(|key| format!("{key:?}"));
+        keys
+    };
+    let expected = keys(first);
+    let mut all = vec![first];
+    for shape in shapes {
+        let shape = shape?;
+        if keys(shape) != expected || shape.rest != first.rest || shape.list != first.list {
+            return None;
+        }
+        all.push(shape);
+    }
+    let fields = first
+        .fields
+        .iter()
+        .map(|field| {
+            let same = all.iter().filter_map(|shape| shape.field(&field.key));
+            let ty = Type::union(same.clone().map(|other| other.ty.clone()));
+            ShapeField {
+                key: field.key.clone(),
+                ty: generalized(&ty),
+                optional: same.clone().any(|other| other.optional),
+            }
+        })
+        .collect();
+    Some(Shape { list: first.list, fields, rest: first.rest.clone() })
+}
+
+/// A type that changes from one loop pass to the next, made general so the
+/// passes converge: literals widened, shapes turned into `list<V>` or
+/// `array<K, V>` (possibly empty when `array{}` was among them).
+fn generalized(ty: &Type) -> Type {
+    if let Some(shape) = same_keys(ty) {
+        return Type::Shape(Box::new(shape));
+    }
+    let mut out = Vec::new();
+    let mut empty = false;
+    for member in ty.widen().members() {
+        match member {
+            Type::Shape(shape) if shape.fields.is_empty() && shape.rest.is_none() => empty = true,
+            Type::Shape(shape) => {
+                let value = Box::new(shape.value_type().widen());
+                let non_empty = shape.is_non_empty();
+                out.push(if shape.list {
+                    Type::List { value, non_empty }
+                } else {
+                    Type::Array { key: Box::new(shape.key_type().widen()), value, non_empty }
+                });
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    if empty {
+        let mut arrays = false;
+        for member in &mut out {
+            if let Type::List { non_empty, .. } | Type::Array { non_empty, .. } = member {
+                *non_empty = false;
+                arrays = true;
+            }
+        }
+        if !arrays {
+            out.push(empty_array());
+        }
+    }
+    Type::union(out)
+}
+
+/// The type of an array after `[key] = value` (`None` key: `[] = value`);
+/// `None` base: the array didn't exist.
+fn put(base: Option<&Type>, key: Option<&Type>, value: Type) -> Type {
+    let Some(base) = base else {
+        return put(Some(&Type::Null), key, value);
+    };
+    Type::union(base.members().iter().map(|member| put_one(member, key, value.clone())))
+}
+
+fn put_one(base: &Type, key: Option<&Type>, value: Type) -> Type {
+    let literal = key.and_then(shape_key);
+    let key_type = |key: &Type| {
+        if key.members().iter().all(is_int) {
+            Type::Int
+        } else if key.members().iter().all(crate::types::ops::is_string) {
+            Type::string()
+        } else {
+            Type::ArrayKey
+        }
+    };
+    match base {
+        Type::Null => match (key, literal) {
+            (None, _) => Type::Shape(Box::new(Shape {
+                list: true,
+                fields: vec![ShapeField { key: ShapeKey::Int(0), ty: value, optional: false }],
+                rest: None,
+            })),
+            (Some(_), Some(literal)) => Type::Shape(Box::new(Shape {
+                list: literal == ShapeKey::Int(0),
+                fields: vec![ShapeField { key: literal, ty: value, optional: false }],
+                rest: None,
+            })),
+            (Some(key), None) => {
+                Type::Array { key: Box::new(key_type(key)), value: Box::new(value.widen()), non_empty: true }
+            }
+        },
+        // A known key written into an array whose values aren't known is
+        // remembered (`$a['k'] = []; … foreach ($a['k'] as …)`), the rest
+        // kept as it was.
+        Type::Array { key: old_key, value: old, .. } if **old == Type::Mixed && literal.is_some() && key.is_some() => {
+            let literal = literal.unwrap_or(ShapeKey::Int(0));
+            Type::Shape(Box::new(Shape {
+                list: false,
+                fields: vec![ShapeField { key: literal, ty: value, optional: false }],
+                rest: Some(((**old_key).clone(), Type::Mixed)),
+            }))
+        }
+        Type::Shape(shape) => {
+            let next = shape
+                .fields
+                .iter()
+                .filter_map(|field| match field.key {
+                    ShapeKey::Int(int) => Some(int.saturating_add(1)),
+                    ShapeKey::String(_) => None,
+                })
+                .max()
+                .unwrap_or(0)
+                .max(0);
+            let literal = match key {
+                // Past an unknown rest the next index isn't known.
+                None if shape.rest.is_some() => None,
+                None => Some(ShapeKey::Int(next)),
+                Some(_) => literal,
+            };
+            match literal {
+                Some(literal) => {
+                    let mut fields = shape.fields.clone();
+                    let appended = !fields.iter().any(|field| field.key == literal);
+                    let list = (shape.list || shape.fields.is_empty())
+                        && (!appended || literal == ShapeKey::Int(next))
+                        && shape.rest.is_none();
+                    match fields.iter_mut().find(|field| field.key == literal) {
+                        Some(field) => *field = ShapeField { key: literal, ty: value, optional: false },
+                        None => fields.push(ShapeField { key: literal, ty: value, optional: false }),
+                    }
+                    if fields.len() > MAX_SHAPE_FIELDS {
+                        let shape = Shape { list, fields, rest: shape.rest.clone() };
+                        return Type::Array {
+                            key: Box::new(shape.key_type().widen()),
+                            value: Box::new(shape.value_type().widen()),
+                            non_empty: true,
+                        };
+                    }
+                    Type::Shape(Box::new(Shape { list, fields, rest: shape.rest.clone() }))
+                }
+                None => Type::Array {
+                    key: Box::new(Type::union([shape.key_type().widen(), key.map_or(Type::Int, key_type)])),
+                    value: Box::new(Type::union([shape.value_type().widen(), value.widen()])),
+                    non_empty: true,
+                },
+            }
+        }
+        Type::List { value: old, .. } if key.is_none() => {
+            Type::List { value: Box::new(Type::union([(**old).clone(), value.widen()])), non_empty: true }
+        }
+        Type::Array { key: old_key, value: old, .. } => Type::Array {
+            key: Box::new(Type::union([(**old_key).clone(), key.map_or(Type::Int, key_type)])),
+            value: Box::new(Type::union([(**old).clone(), value.widen()])),
+            non_empty: true,
+        },
+        Type::List { value: old, .. } => Type::Array {
+            key: Box::new(Type::union([Type::Int, key.map_or(Type::Int, key_type)])),
+            value: Box::new(Type::union([(**old).clone(), value.widen()])),
+            non_empty: true,
+        },
+        // `ArrayAccess` objects, strings and the unknown keep their type.
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

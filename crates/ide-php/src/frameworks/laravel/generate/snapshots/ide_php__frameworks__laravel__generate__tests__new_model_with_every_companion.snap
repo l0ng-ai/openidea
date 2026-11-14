@@ -1,0 +1,420 @@
+---
+source: crates/ide-php/src/frameworks/laravel/generate/tests.rs
+expression: app.golden(&files)
+---
+== app/Models/Article.php
+<?php
+
+namespace App\Models;
+
+use Database\Factories\ArticleFactory;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
+
+class Article extends Model
+{
+    /** @use HasFactory<ArticleFactory> */
+    use HasFactory;
+    use SoftDeletes;
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var list<string>
+     */
+    protected $fillable = [
+        'title',
+        'slug',
+        'body',
+        'featured',
+        'views',
+        'published_at',
+        'price',
+        'author_id',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     *
+     * @return array<string, string>
+     */
+    protected function casts(): array
+    {
+        return [
+            'featured' => 'boolean',
+            'published_at' => 'datetime',
+            'price' => 'decimal:2',
+        ];
+    }
+
+    /**
+     * @return BelongsTo<User, $this>
+     */
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'author_id');
+    }
+
+    /**
+     * @return HasMany<Comment, $this>
+     */
+    public function comments(): HasMany
+    {
+        return $this->hasMany(Comment::class);
+    }
+
+    /**
+     * @return BelongsToMany<Tag, $this>
+     */
+    public function tags(): BelongsToMany
+    {
+        return $this->belongsToMany(Tag::class);
+    }
+}
+== database/migrations/2024_06_01_120000_create_articles_table.php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('articles', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+            $table->string('slug')->unique();
+            $table->text('body')->nullable();
+            $table->boolean('featured')->default(false);
+            $table->unsignedInteger('views')->default(0)->index();
+            $table->timestamp('published_at')->nullable();
+            $table->decimal('price', 8, 2);
+            $table->foreignId('author_id')->constrained('users')->cascadeOnDelete();
+            $table->index(['featured', 'published_at']);
+            $table->timestamps();
+            $table->softDeletes();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('articles');
+    }
+};
+== database/migrations/2024_06_01_120001_create_article_tag_table.php
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::create('article_tag', function (Blueprint $table) {
+            $table->foreignId('article_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('tag_id')->constrained()->cascadeOnDelete();
+            $table->primary(['article_id', 'tag_id']);
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::dropIfExists('article_tag');
+    }
+};
+== database/factories/ArticleFactory.php
+<?php
+
+namespace Database\Factories;
+
+use App\Models\Article;
+use App\Models\User;
+use Illuminate\Database\Eloquent\Factories\Factory;
+
+/**
+ * @extends Factory<Article>
+ */
+class ArticleFactory extends Factory
+{
+    /**
+     * Define the model's default state.
+     *
+     * @return array<string, mixed>
+     */
+    public function definition(): array
+    {
+        return [
+            'title' => fake()->sentence(),
+            'slug' => fake()->unique()->slug(),
+            'body' => fake()->paragraph(),
+            'featured' => fake()->boolean(),
+            'views' => fake()->numberBetween(1, 1000),
+            'published_at' => fake()->dateTime(),
+            'price' => fake()->randomFloat(2, 0, 1000),
+            'author_id' => User::factory(),
+        ];
+    }
+}
+== database/seeders/ArticleSeeder.php
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Article;
+use Illuminate\Database\Seeder;
+
+class ArticleSeeder extends Seeder
+{
+    /**
+     * Run the database seeds.
+     */
+    public function run(): void
+    {
+        Article::factory()->count(10)->create();
+    }
+}
+== app/Http/Requests/StoreArticleRequest.php
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StoreArticleRequest extends FormRequest
+{
+    /**
+     * Determine if the user is authorized to make this request.
+     */
+    public function authorize(): bool
+    {
+        return false;
+    }
+
+    /**
+     * Get the validation rules that apply to the request.
+     *
+     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
+     */
+    public function rules(): array
+    {
+        return [
+            'title' => ['required', 'string', 'max:255'],
+            'slug' => ['required', 'string', 'max:255', 'unique:articles,slug'],
+            'body' => ['nullable', 'string'],
+            'featured' => ['required', 'boolean'],
+            'views' => ['required', 'integer', 'min:0'],
+            'published_at' => ['nullable', 'date'],
+            'price' => ['required', 'numeric'],
+            'author_id' => ['required', 'integer', 'exists:users,id'],
+        ];
+    }
+}
+== app/Http/Requests/UpdateArticleRequest.php
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class UpdateArticleRequest extends FormRequest
+{
+    /**
+     * Determine if the user is authorized to make this request.
+     */
+    public function authorize(): bool
+    {
+        return false;
+    }
+
+    /**
+     * Get the validation rules that apply to the request.
+     *
+     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
+     */
+    public function rules(): array
+    {
+        return [
+            'title' => ['required', 'string', 'max:255'],
+            'slug' => ['required', 'string', 'max:255', 'unique:articles,slug'],
+            'body' => ['nullable', 'string'],
+            'featured' => ['required', 'boolean'],
+            'views' => ['required', 'integer', 'min:0'],
+            'published_at' => ['nullable', 'date'],
+            'price' => ['required', 'numeric'],
+            'author_id' => ['required', 'integer', 'exists:users,id'],
+        ];
+    }
+}
+== app/Http/Controllers/ArticleController.php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\StoreArticleRequest;
+use App\Http\Requests\UpdateArticleRequest;
+use App\Models\Article;
+
+class ArticleController extends Controller
+{
+    /**
+     * Display a listing of the resource.
+     */
+    public function index()
+    {
+        //
+    }
+
+    /**
+     * Show the form for creating a new resource.
+     */
+    public function create()
+    {
+        //
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(StoreArticleRequest $request)
+    {
+        //
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(Article $article)
+    {
+        //
+    }
+
+    /**
+     * Show the form for editing the specified resource.
+     */
+    public function edit(Article $article)
+    {
+        //
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(UpdateArticleRequest $request, Article $article)
+    {
+        //
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(Article $article)
+    {
+        //
+    }
+}
+== app/Http/Resources/ArticleResource.php
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class ArticleResource extends JsonResource
+{
+    /**
+     * Transform the resource into an array.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray(Request $request): array
+    {
+        return parent::toArray($request);
+    }
+}
+== app/Policies/ArticlePolicy.php
+<?php
+
+namespace App\Policies;
+
+use App\Models\Article;
+use App\Models\User;
+
+class ArticlePolicy
+{
+    /**
+     * Determine whether the user can view any models.
+     */
+    public function viewAny(User $user): bool
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can view the model.
+     */
+    public function view(User $user, Article $article): bool
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can create models.
+     */
+    public function create(User $user): bool
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can update the model.
+     */
+    public function update(User $user, Article $article): bool
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can delete the model.
+     */
+    public function delete(User $user, Article $article): bool
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can restore the model.
+     */
+    public function restore(User $user, Article $article): bool
+    {
+        return false;
+    }
+
+    /**
+     * Determine whether the user can permanently delete the model.
+     */
+    public function forceDelete(User $user, Article $article): bool
+    {
+        return false;
+    }
+}
