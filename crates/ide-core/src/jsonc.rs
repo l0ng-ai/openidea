@@ -1,8 +1,10 @@
 //! JSON with comments (`devcontainer.json`, `deno.jsonc`, `tsconfig.json`): turned
 //! into plain JSON for `serde_json`.
 
-/// Strips `//` and `/* */` comments and trailing commas so JSONC parses as JSON.
+/// Strips `//` and `/* */` comments, trailing commas and a leading byte order mark (Visual
+/// Studio writes one into `launchSettings.json`) so JSONC parses as JSON.
 pub fn strip(src: &str) -> String {
+    let src = src.strip_prefix('\u{feff}').unwrap_or(src);
     let mut out = String::with_capacity(src.len());
     let mut chars = src.chars().peekable();
     let mut in_str = false;
@@ -86,5 +88,11 @@ mod tests {
         assert_eq!(v["a"], serde_json::json!([1, 2]));
         assert_eq!(v["url"], "https://x.dev//y /* no */");
         assert_eq!(v["q"], "say \"hi\",");
+    }
+
+    #[test]
+    fn drops_a_byte_order_mark() {
+        let v: serde_json::Value = serde_json::from_str(&strip("\u{feff}{ \"a\": 1 }")).unwrap();
+        assert_eq!(v["a"], 1);
     }
 }
