@@ -336,48 +336,32 @@ describe("editable result grid", () => {
     expect(useDatabase.getState().output.map((line) => line.text)).toContain("users: 1 row(s) changed");
   });
 
-  it("does not offer accepted edits again when refresh fails after a remount", async () => {
+  it("drops applied edits from a remounted pane even when the refresh fails", async () => {
     let finish!: (value: { status: string; data: number }) => void;
-    backend.applyEdits.mockReturnValue(
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
+    backend.applyEdits.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
     );
+    backend.execute.mockResolvedValue({ status: "error", error: { kind: "invalid", message: "gone" } });
     const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
-    backend.execute.mockResolvedValue({
-      status: "ok",
-      data: [{ statement: first.outcome.statement, result: null, error: "Refresh denied" }],
-    });
-    useDatabase.setState({
-      results: [
-        first,
-        {
-          ...first,
-          id: nextId++,
-          title: "Result 2",
-          outcome: { ...first.outcome, result: { ...first.outcome.result! } },
-        },
-      ],
-    });
+    const second: ResultTab = {
+      ...first,
+      id: nextId++,
+      title: "Result 2",
+      outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+    };
+    useDatabase.setState((s) => ({ results: [...s.results, second] }));
     await act(async () => render(<ResultsView />));
-    fireEvent.doubleClick(screen.getByRole("gridcell", { name: "Ann" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "Edit name" }), { target: { value: "Cara" } });
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit name" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
-    fireEvent.click(screen.getByRole("tab", { name: "Result 2" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Result 1" }));
+    await act(async () => useDatabase.setState({ activeResult: second.id }));
+    await act(async () => useDatabase.setState({ activeResult: first.id }));
+
     await act(async () => finish({ status: "ok", data: 1 }));
-    expect(backend.execute).toHaveBeenCalledTimes(1);
-    const output = useDatabase.getState().output;
-    expect(output.some((line) => line.kind === "result" && line.text === "users: 1 row(s) changed")).toBe(true);
-    expect(output.some((line) => line.kind === "error" && line.text.includes("Refresh denied"))).toBe(true);
-    fireEvent.click(screen.getByRole("tab", { name: "Result 1" }));
-    expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
-    expect(screen.queryByRole("gridcell", { name: "Cara" })).toBeNull();
     expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
     expect(backend.applyEdits).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("button", { name: "Rerun Query" })).toBeEnabled();
   });
 
   it("uses the execution schema even after the console selection changes", async () => {

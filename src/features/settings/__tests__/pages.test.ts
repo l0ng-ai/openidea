@@ -8,6 +8,7 @@ import {
   highlightIndices,
   matchesTerms,
   queryTerms,
+  titledPage,
 } from "../model/pages";
 import { BEHAVIOR_PAGES } from "../pages/behavior";
 import { EDITOR_PAGES } from "../pages/editor";
@@ -89,4 +90,25 @@ it("indexes toolbar and status bar visibility in Appearance settings", () => {
   const labels = specLabels(appearance);
   expect(labels).toContain("Show main toolbar");
   expect(labels).toContain("Show status bar");
+});
+
+describe("the page a search names", () => {
+  const notifications = page({
+    id: "notifications",
+    title: "Notifications",
+    keywords: ["Plugins", "Language Servers"],
+  });
+  const tree = buildPageTree([...pages, notifications]);
+  const named = (q: string) => titledPage(filterPageTree(tree, q), q)?.key ?? null;
+
+  it("is the page titled like the query, not one that only mentions it", () => {
+    expect(named("Plugins")).toBe("plugins");
+    expect(named("language servers")).toBe("languages.servers");
+    expect(named("Plu")).toBe("plugins");
+  });
+
+  it("is none when no title starts with the query", () => {
+    expect(named("shortcut")).toBeNull();
+    expect(named("")).toBeNull();
+  });
 });

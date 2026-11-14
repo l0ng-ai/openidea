@@ -538,6 +538,19 @@ pub struct AgentChanges {
     pub commits: Vec<AgentCommit>,
 }
 
+/// Authoritative choices for new tasks, independent of any running session's settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelCatalog {
+    pub provider: String,
+    pub config: Vec<AgentConfigOption>,
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
+    pub refreshing: bool,
+    pub refreshed_at_ms: Option<f64>,
+    pub retry_at_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
 /// Streamed to the window that subscribed (`AgentManager::subscribe`).
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -574,6 +587,10 @@ pub enum AgentEvent {
     Limits {
         provider: String,
         limits: Vec<AgentLimit>,
+    },
+    /// A model lookup started or completed, including unsuccessful lookups.
+    ModelCatalog {
+        catalog: AgentModelCatalog,
     },
     /// The installed or configured agent providers changed.
     Providers,

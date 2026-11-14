@@ -75,6 +75,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "debugger.showOnBreakpoint",
   "debugger.focusAppOnBreakpoint",
   "debugger.hideOnTermination",
+  "debugger.variablesOnBreakpoint",
   "debugger.runToCursorInlay",
   "debugger.inlineValues",
   "debugger.sortValues",

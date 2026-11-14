@@ -123,6 +123,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::log_frontend,
         agent::agent_subscribe,
         agent::agent_providers,
+        agent::agent_refresh_models,
         agent::agent_set_command,
         agent::agent_set_env,
         agent::agent_custom_save,
@@ -248,6 +249,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::web_goto,
         nav::nav_resolve_module,
         nav::nav_index_definitions,
+        nav::nav_inheritance,
         nav::fs_resolve_reference,
         nav::path_completions,
         nav::web_unresolved_references,
@@ -746,5 +748,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_table_page,
         db::db_apply_edits,
         db::db_console_path,
+        db::db_consoles,
     ])
 }

@@ -155,6 +155,7 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
             custom_agents_dir: None,
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,

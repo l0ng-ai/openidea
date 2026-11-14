@@ -40,6 +40,18 @@ vi.mock("@/platform/ipc", async (original) => ({
     agentPrompt: backend.prompt,
     agentSubscribe: async () => ({ status: "ok", data: [] }),
     agentProviders: async () => ({ status: "ok", data: [provider] }),
+    agentRefreshModels: async (id: string) => ({
+      status: "ok",
+      data: {
+        provider: id,
+        config: provider.config,
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      },
+    }),
     agentProbe: async () => ({ status: "ok", data: null }),
     agentEntries: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),

@@ -3,7 +3,7 @@ import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
-import { relativePath, useProject } from "@/platform/project";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
 import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
@@ -31,6 +31,7 @@ import {
   vcsArg,
 } from "./operations";
 import { isSameOrInside } from "./paths";
+import { useProjectTree } from "./store";
 import { tx } from "@/platform/i18n";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
@@ -105,7 +106,12 @@ function showProjectView() {
 
 /** File kinds contributed to the `new` menu group (templates, HTTP Request, Scratch File…). */
 function contributedNewItems(parent: string | null): MenuItem[] {
-  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true] } : { paths: [] });
+  const owner = parent ? projectFolder(useProject.getState().project, parent) : null;
+  const projectType =
+    parent && owner && isSameOrInside(parent, owner.root)
+      ? useProjectTree.getState().projectTypes.get(owner.root)
+      : undefined;
+  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true], projectType } : { paths: [] });
   return items.length ? [{ kind: "separator" }, ...items] : [];
 }
 
