@@ -17,7 +17,7 @@ vi.mock("@/editor/navigation/inheritanceGraph", async (orig) => {
   return {
     ...real,
     pythonInheritanceGraph: async () => graph,
-    projectPythonIndex: async () => ({ classes: graph, index, subclasses }),
+    projectPythonIndex: async () => ({ classes: graph, index, subclasses: async () => subclasses }),
   };
 });
 

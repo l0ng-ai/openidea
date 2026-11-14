@@ -90,6 +90,8 @@ export interface InheritanceIndex {
   exact(name: string, from: string): ClassInheritance[];
   /** `exact`, else the declaration the file's imports point at (empty when unknown). */
   resolve(name: string, from: string): Promise<ClassInheritance[]>;
+  /** Reads the imports of `paths` in one batch, ahead of the `resolve` calls that need them. */
+  readImports(paths: readonly string[]): Promise<void>;
 }
 
 /**
@@ -124,20 +126,38 @@ export function inheritanceIndex(graph: readonly ClassInheritance[], deps: Inher
   return {
     byName,
     exact,
+    readImports: async (paths) => {
+      // Without a module lookup an import never resolves a base: nothing to read for it.
+      const unread = deps.moduleFile ? [...new Set(paths)].filter((p) => !imports.has(p)) : [];
+      if (!unread.length) return;
+      const files = deps.readFiles(unread).catch(() => new Map<string, string[] | null>());
+      for (const p of unread) {
+        imports.set(
+          p,
+          files.then((f) => {
+            const lines = f.get(p);
+            return lines ? importBindings(lines) : null;
+          }),
+        );
+      }
+      await files;
+    },
     resolve: (name, from) => {
       const found = exact(name, from);
-      if (found.length) return Promise.resolve(found);
+      if (found.length || !deps.moduleFile) return Promise.resolve(found);
+      const moduleFile = deps.moduleFile;
       // No class of that name at all: it may be an import alias (`import X as Y`).
       const key = `${from}\u0000${name}`;
       let pending = answers.get(key);
       if (!pending) {
         pending = (async () => {
           const binding = (await bindingsOf(from))?.get(name);
-          if (!binding || !deps.moduleFile) return [];
+          // The graph has no class under the imported name: no module lookup can find one.
+          if (!binding || !byName.get(binding.name)?.length) return [];
           // `from . import X` names the package itself: resolve its `__init__`.
           const module = binding.module;
           const named = /^\.+$/.test(module) ? `${module.endsWith(".") ? module : `${module}.`}__init__` : module;
-          const file = await deps.moduleFile(named, from).catch(() => null);
+          const file = await moduleFile(named, from).catch(() => null);
           // The declaration carries the imported (pre-alias) name.
           return file ? (byName.get(binding.name) ?? []).filter((c) => c.path === file) : [];
         })();
@@ -152,8 +172,11 @@ export function inheritanceIndex(graph: readonly ClassInheritance[], deps: Inher
 export interface PythonIndex {
   classes: readonly ClassInheritance[];
   index: InheritanceIndex;
-  /** Direct subclasses, keyed by [`declarationKey`] of the base they write. */
-  subclasses: Map<string, ClassInheritance[]>;
+  /**
+   * Direct subclasses, keyed by [`declarationKey`] of the base they write. Built on first use:
+   * it resolves every base of the project, which supertype lookups never need.
+   */
+  subclasses: () => Promise<Map<string, ClassInheritance[]>>;
 }
 
 let indexCache: { source: Promise<ClassInheritance[]>; pending: Promise<PythonIndex> } | null = null;
@@ -174,7 +197,8 @@ export function projectPythonIndex(): Promise<PythonIndex> {
   if (!indexCache || indexCache.source !== source) {
     const pending = source.then(async (graph) => {
       const index = inheritanceIndex(graph, PROJECT_DEPS);
-      return { classes: graph, index, subclasses: await subclassMap(index) };
+      let subclasses: Promise<Map<string, ClassInheritance[]>> | null = null;
+      return { classes: graph, index, subclasses: () => (subclasses ??= subclassMap(index)) };
     });
     indexCache = { source, pending };
     pending.catch(() => {
@@ -220,17 +244,20 @@ export function methodInOutline(
 
 /** Direct subclasses, keyed by [`declarationKey`] of the base they write. */
 export async function subclassMap(index: InheritanceIndex): Promise<Map<string, ClassInheritance[]>> {
-  const out = new Map<string, ClassInheritance[]>();
+  const pairs: Array<[ClassInheritance, string]> = [];
   for (const sameNamed of index.byName.values()) {
-    for (const cls of sameNamed) {
-      for (const base of new Set(cls.bases)) {
-        for (const decl of await index.resolve(base, cls.path)) {
-          const key = declarationKey(decl);
-          out.set(key, [...(out.get(key) ?? []), cls]);
-        }
-      }
-    }
+    for (const cls of sameNamed) for (const base of new Set(cls.bases)) pairs.push([cls, base]);
   }
+  // The files whose imports decide a base: read together, not one request per class.
+  await index.readImports(pairs.filter(([cls, base]) => !index.exact(base, cls.path).length).map(([cls]) => cls.path));
+  const resolved = await Promise.all(pairs.map(([cls, base]) => index.resolve(base, cls.path)));
+  const out = new Map<string, ClassInheritance[]>();
+  pairs.forEach(([cls], i) => {
+    for (const decl of resolved[i]!) {
+      const key = declarationKey(decl);
+      out.set(key, [...(out.get(key) ?? []), cls]);
+    }
+  });
   return out;
 }
 

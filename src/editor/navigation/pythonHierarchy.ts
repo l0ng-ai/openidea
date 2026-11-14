@@ -25,7 +25,7 @@ export interface PythonHierarchy {
   /** Classes by `path:line`, so a position lookup does not scan the whole project graph. */
   byLine: ReadonlyMap<string, ClassInheritance[]>;
   /** Direct subclasses by [`declarationKey`] of the base they write (from the shared index). */
-  subclasses?: ReadonlyMap<string, ClassInheritance[]>;
+  subclasses?: () => Promise<ReadonlyMap<string, ClassInheritance[]>>;
 }
 
 /** Indexes `classes`; `deps` reads the files an ambiguous base name's imports point at. */
@@ -94,8 +94,8 @@ export async function pythonSupertypeItems(
 const subclassMaps = new WeakMap<PythonHierarchy, Promise<Map<string, ClassInheritance[]>>>();
 
 /** Direct subclasses: the shared index's map, or one derived for a hand-built hierarchy. */
-function subclassesOf(hierarchy: PythonHierarchy): Promise<Map<string, ClassInheritance[]>> {
-  if (hierarchy.subclasses) return Promise.resolve(new Map(hierarchy.subclasses));
+function subclassesOf(hierarchy: PythonHierarchy): Promise<ReadonlyMap<string, ClassInheritance[]>> {
+  if (hierarchy.subclasses) return hierarchy.subclasses();
   let map = subclassMaps.get(hierarchy);
   if (!map) subclassMaps.set(hierarchy, (map = subclassMap(hierarchy.index)));
   return map;

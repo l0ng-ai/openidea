@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClassInheritance, OutlineItem } from "@/platform/ipc";
 import { superMethods } from "./structureNav";
+import { inheritanceIndex, subclassMap } from "./inheritanceGraph";
 import {
   classAt,
   classItem,
@@ -120,5 +121,40 @@ describe("Python Go to Implementation", () => {
     // The graph's own answer: a class without descendants has no implementation.
     const targets = await pythonImplementationTargets(hierarchy, "/p/puppy.py", { line: 4, col: 6 }, outlineOf);
     expect(targets).toEqual([]);
+  });
+});
+
+describe("the project's subclass map", () => {
+  it("reads the deciding imports in one batch and looks up only modules that can name a class", async () => {
+    const graph = [
+      cls("/p/a.py", 0, "Base"),
+      cls("/p/b.py", 0, "Base"),
+      cls("/p/c.py", 0, "Child", ["Base"]),
+      cls("/p/d.py", 0, "Model", ["BaseModel"]),
+      cls("/p/e.py", 0, "Other", ["Base"]),
+    ];
+    const files: Record<string, string[]> = {
+      "/p/c.py": ["from .a import Base"],
+      "/p/d.py": ["from pydantic import BaseModel"],
+      "/p/e.py": ["from .b import Base"],
+    };
+    const reads: string[][] = [];
+    const lookups: string[] = [];
+    const index = inheritanceIndex(graph, {
+      readFiles: async (paths) => {
+        reads.push([...paths]);
+        return new Map(paths.map((p) => [p, files[p] ?? null]));
+      },
+      moduleFile: async (module) => {
+        lookups.push(module);
+        return module === ".a" ? "/p/a.py" : module === ".b" ? "/p/b.py" : null;
+      },
+    });
+    const map = await subclassMap(index);
+    expect(reads).toEqual([["/p/c.py", "/p/d.py", "/p/e.py"]]);
+    // pydantic's BaseModel is no class of the project: its module is never looked up.
+    expect(lookups.sort()).toEqual([".a", ".b"]);
+    expect(map.get("/p/a.py:0:6")?.map((c) => c.name)).toEqual(["Child"]);
+    expect(map.get("/p/b.py:0:6")?.map((c) => c.name)).toEqual(["Other"]);
   });
 });
