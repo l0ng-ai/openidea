@@ -18,6 +18,7 @@ import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import {
+  beginDrag,
   dragRequiresAlt,
   Icon,
   IconButton,
@@ -366,6 +367,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
   const button = e.currentTarget;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
+  let endDrag: (() => void) | null = null;
   const place = (x: number, y: number) => {
     if (ghost) ghost.style.transform = `translate(${x - start.x}px, ${y - start.y}px)`;
   };
@@ -385,6 +387,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
         height: `${r.height}px`,
       });
       document.body.appendChild(ghost);
+      endDrag = beginDrag();
       useStripeDrag.setState({ id, drop: null });
     }
     if (!(ev.buttons & 1)) return;
@@ -400,6 +403,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
     window.removeEventListener("keydown", onKey, true);
     if (!ghost) return;
     ghost.remove();
+    endDrag?.();
     const { drop } = useStripeDrag.getState();
     useStripeDrag.setState({ id: null, drop: null });
     dragEnded = true;

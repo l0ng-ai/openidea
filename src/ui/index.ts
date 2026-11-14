@@ -13,6 +13,7 @@ export {
   FILES_DRAG,
   REMOTE_FILES_DRAG,
   dragRequiresAlt,
+  beginDrag,
   dragSession,
   dropZoneAt,
   registerDropTarget,
