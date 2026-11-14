@@ -1259,6 +1259,11 @@ export const commands = {
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
 	/**  The body of a response a debugged page received. */
 	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
+	/**
+	 *  The responses a debugged page gets in place of the server's, by a part of the URL; none
+	 *  switches the replacing off.
+	 */
+	debugJsResponseOverrides: (session: DebugSessionId, rules: JsResponseRule[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_response_overrides", { session, rules })),
 	/**  Starts recording a debugged page's CPU profile. */
 	debugJsStartProfile: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_start_profile", { session })),
 	/**  Ends the recording: a directory holding the profile as `page.cpuprofile`. */
@@ -6569,6 +6574,14 @@ export type JsResponseBody = {
 	base64Encoded: boolean,
 	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
 	truncated: boolean,
+};
+
+/**  A response given in place of the server's to every request whose URL contains `url_contains`. */
+export type JsResponseRule = {
+	urlContains: string,
+	status: number,
+	contentType: string,
+	body: string,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */

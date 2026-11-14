@@ -533,6 +533,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         debug::debug_capabilities,
         debug::debug_js_custom_breakpoints,
         debug::debug_js_response_body,
+        debug::debug_js_response_overrides,
         debug::debug_js_start_profile,
         debug::debug_js_stop_profile,
         debug::debug_set_function_breakpoints,
