@@ -3,7 +3,15 @@ import type { RunConfig } from "@/platform/ipc";
 import { registerRunConfigType } from "@/workbench/contributions";
 import { validateConfig } from "@/features/run/configs";
 import { isDebugOnly, missingParams, newConfigOfType, terminalApplies, withParams } from "@/features/run/types";
-import { browserLaunchConfig, browserUrl, isBrowserConfig, jsBrowserType } from "../browser";
+import {
+  browserLaunch,
+  browserLaunchConfig,
+  browserUrl,
+  isBrowserConfig,
+  isNodeLaunch,
+  jsBrowserType,
+  loopbackUrls,
+} from "../browser";
 
 function configOf(params: Record<string, string> = {}): RunConfig {
   const c = newConfigOfType(jsBrowserType, []);
@@ -60,5 +68,41 @@ describe("JavaScript Debug configuration", () => {
 
   it("has no launch without a URL", () => {
     expect(browserLaunchConfig(configOf({ url: "  " }), "/p")).toBeNull();
+  });
+});
+
+describe("the page of a debugged server", () => {
+  it("is looked for among the addresses of this machine the program prints", () => {
+    expect(loopbackUrls("  VITE v8.3.4  ready in 88 ms\n\n  ➜  Local:   http://localhost:5173/\n")).toEqual([
+      "http://localhost:5173/",
+    ]);
+    expect(loopbackUrls("Server running at http://localhost:1234.\n")).toEqual(["http://localhost:1234"]);
+    expect(loopbackUrls("[11ty] Server at https://127.0.0.1:8080/blog/ (press q)\n")).toEqual([
+      "https://127.0.0.1:8080/blog/",
+    ]);
+    expect(loopbackUrls("Loopback: http://localhost:8080/, http://[::1]:8080/\n")).toEqual([
+      "http://localhost:8080/",
+      "http://[::1]:8080/",
+    ]);
+  });
+
+  it("reaches a server bound to every interface through localhost, each address once", () => {
+    expect(loopbackUrls("listening on http://0.0.0.0:4200/ and http://[::]:4200/\nhttp://localhost:4200/\n")).toEqual([
+      "http://localhost:4200/",
+    ]);
+  });
+
+  it("is never another machine", () => {
+    expect(loopbackUrls("  ➜  Network: http://192.168.1.5:5173/\nDocs: https://example.com/docs\n")).toEqual([]);
+    expect(loopbackUrls("http://localhost.evil.example/\n")).toEqual([]);
+  });
+
+  it("belongs to Node.js launches only", () => {
+    const node = { ...browserLaunch("dev", "http://localhost:5173", "chrome", "/p"), extraJson: '{"type":"pwa-node"}' };
+    expect(isNodeLaunch(node)).toBe(true);
+    expect(isNodeLaunch({ ...node, request: "attach" })).toBe(false);
+    expect(isNodeLaunch(browserLaunch("page", "http://localhost:5173", "edge", "/p"))).toBe(false);
+    expect(isNodeLaunch({ ...node, adapter: "debugpy" })).toBe(false);
+    expect(isNodeLaunch(null)).toBe(false);
   });
 });

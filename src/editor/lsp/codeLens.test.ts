@@ -175,6 +175,49 @@ describe("background usage counts", () => {
     expect(titles(view)).toEqual(["2 usages"]);
   });
 
+  it("keeps the shown lens while the server is busy and corrects the count once it settles", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Editing while the server is indexing: the re-computed count comes back incomplete.
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "rust-analyzer", status: "busy", message: null });
+    ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await settle();
+    await settle();
+    await settle();
+    await settle();
+    // The lens stays on its (mapped) line instead of blinking away and shifting the layout.
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Once it settles, a complete answer replaces the stale count.
+    ipc.lspReferences.mockResolvedValue(refs(0));
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "rust-analyzer", status: "ready", message: null });
+    await settle();
+    expect(titles(view)).toEqual(["no usages"]);
+  });
+
+  it("opens usages at the lens's current position after edits above it", async () => {
+    // The lens anchors on the identifier (`f0` at column 3), as in a real outline.
+    const decl = item("f0", "function", 0);
+    decl.selection_range = { start: { line: 0, col: 3 }, end: { line: 0, col: 5 } };
+    ipc.docOutline.mockResolvedValue(ok([decl]));
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Insert a line above the declaration. The lens maps down with its line, and a
+    // pass with an identical count is suppressed by `sameLenses` — the click must
+    // still land on the identifier, not where it was when the lens was created.
+    view.dispatch({ changes: { from: 0, insert: "\n" } });
+    const declAfter = item("f0", "function", 1);
+    declAfter.selection_range = { start: { line: 1, col: 3 }, end: { line: 1, col: 5 } };
+    ipc.docOutline.mockResolvedValue(ok([declAfter]));
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.kind === "usages")!;
+    expect(lens.pos).toBe(4);
+    lens.run!(view, new MouseEvent("click"));
+    expect(view.state.selection.main.head).toBe(4);
+  });
+
   it("cancels obsolete requests immediately on edits and ignores their late replies", async () => {
     const old = deferred<ReturnType<typeof refs>>();
     ipc.lspReferences.mockReturnValueOnce(old.promise);

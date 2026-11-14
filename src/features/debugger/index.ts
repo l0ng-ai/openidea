@@ -20,6 +20,7 @@ import {
 import { registerDebugActions } from "./actions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
+import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
@@ -63,6 +64,7 @@ export function activate(): () => void {
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
+  loadJsBreakpoints(useProject.getState().project?.root ?? null);
   const disposers = [
     () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
     registerDebugActions(),
@@ -142,8 +144,10 @@ export function activate(): () => void {
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);
+        loadJsBreakpoints(root);
       }
     }),
+    watchPageSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

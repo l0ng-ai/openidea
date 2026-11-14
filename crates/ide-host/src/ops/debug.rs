@@ -372,6 +372,16 @@ pub async fn debug_restart_frame(host: &Host, _window: &str, session: DebugSessi
     host.debugger.restart_frame(session, frame_id).await
 }
 
+pub async fn debug_js_custom_breakpoints(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    ids: Vec<String>,
+    xhr: Vec<String>,
+) -> IdeResult<()> {
+    host.debugger.js_set_custom_breakpoints(session, ids, xhr).await
+}
+
 pub fn debug_capabilities(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
     host.debugger.capabilities(session)
 }
@@ -588,6 +598,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
         debug_restart_frame(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await
     });
     d.add("debug_capabilities", |c| async move { debug_capabilities(&c.host, &c.window, c.arg("session")?) });
+    d.add("debug_js_custom_breakpoints", |c| async move {
+        debug_js_custom_breakpoints(&c.host, &c.window, c.arg("session")?, c.arg("ids")?, c.arg("xhr")?).await
+    });
     d.add("debug_set_function_breakpoints", |c| async move {
         debug_set_function_breakpoints(&c.host, &c.window, c.arg("breakpoints")?).await
     });

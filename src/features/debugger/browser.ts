@@ -3,7 +3,7 @@
  * in their sources (through source maps), like WebStorm's JavaScript Debug configuration.
  * Only Debug applies (`debugOnly`): the server behind the URL is another configuration's.
  */
-import type { LaunchConfig, RunConfig } from "@/platform/ipc";
+import { call, commands, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import type { RunConfigTypeContribution } from "@/workbench/contributions";
 
@@ -99,6 +99,31 @@ export function browserLaunchConfig(rc: RunConfig, root: string): LaunchConfig |
   return { ...browserLaunch(rc.name, url, p.browser === "edge" ? "edge" : "chrome", webRootOf(p, root)), cwd: root };
 }
 
+/** Chrome, or Edge when that is the one installed. */
+export async function installedDebugBrowser(): Promise<DebugBrowser> {
+  const ids = (await call(commands.webBrowsers()).catch(() => [])).map((b) => b.id);
+  return !ids.includes("chrome") && ids.includes("edge") ? "edge" : "chrome";
+}
+
+// The lookahead keeps `localhost.example.com` and `127.0.0.10` from matching as their prefix.
+const LOOPBACK_URL =
+  /\bhttps?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\])(?::\d+)?(?![\w-]|\.\w)(?:\/[^\s"'<>`)\],]*)?/g;
+
+/**
+ * The URLs of this machine that `output` (console text without colour codes) mentions, as a
+ * browser reaches them. Whether one is a page is asked of the server itself (`webServesPage`),
+ * so nothing here depends on how a particular dev server words its "ready" line.
+ */
+export function loopbackUrls(output: string): string[] {
+  const urls = [...output.matchAll(LOOPBACK_URL)].map((m) =>
+    m[0]
+      .replace(/[.;:!?]+$/, "")
+      // A server bound to every interface is reached through localhost.
+      .replace(/^(https?:\/\/)(?:0\.0\.0\.0|\[::\])/, "$1localhost"),
+  );
+  return [...new Set(urls)];
+}
+
 /** The js-debug `type` of a launch request started under js-debug, or null. */
 function jsDebugType(launch: LaunchConfig | null): unknown {
   if (launch?.adapter !== "js-debug" || launch.request !== "launch" || !launch.extraJson) return null;
@@ -107,6 +132,11 @@ function jsDebugType(launch: LaunchConfig | null): unknown {
   } catch {
     return null;
   }
+}
+
+/** Whether `launch` starts a Node.js program under js-debug (an npm script, `node server.js`). */
+export function isNodeLaunch(launch: LaunchConfig | null): boolean {
+  return jsDebugType(launch) === "pwa-node";
 }
 
 /** The browser `launch` opens under js-debug, or null. */

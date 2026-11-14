@@ -1214,6 +1214,8 @@ export const commands = {
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
 	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
+	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
+	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -1256,6 +1258,8 @@ export const commands = {
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
 	/**  Opens `url` in `browser` (an id from `web_browsers`), or the default browser. */
 	webOpen: (url: string, browser: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("web_open", { url, browser })),
+	/**  Whether `url` (a server on this machine) answers with an HTML document, i.e. has a page to open. */
+	webServesPage: (url: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("web_serves_page", { url })),
 	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  Reads the profile a profiled run left behind. */
@@ -3956,6 +3960,11 @@ export type DebugCapabilities = {
 	jvmInstances: boolean,
 	/**  The session can be asked for a heap dump ([`DebugManager::jvm_heap_dump`]). */
 	jvmHeap: boolean,
+	/**
+	 *  The session debugs a page in a browser: js-debug's requests for pages apply
+	 *  ([`DebugManager::js_set_custom_breakpoints`]).
+	 */
+	jsPage: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -4013,6 +4022,8 @@ export type DebuggerSettings = {
 	valueTooltipDelay?: number,
 	/**  Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`). */
 	skipLibraryCode?: boolean,
+	/**  JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session. */
+	debugServerPage?: boolean,
 	python?: PythonDebuggerSettings,
 };
 

@@ -52,26 +52,35 @@ fn search_dirs(file: Option<&Path>, root: Option<&Path>) -> Vec<PathBuf> {
 }
 
 fn parse_env(text: &str) -> IdeResult<EnvMap> {
+    use serde_json::value::RawValue;
+
+    let invalid = |e| IdeError::invalid(format!("invalid environment file: {e}"));
     // Editors on Windows (Notepad) save UTF-8 with a byte order mark, which serde_json rejects.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let value: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("invalid environment file: {e}")))?;
+    let value: Box<RawValue> = serde_json::from_str(text).map_err(invalid)?;
     let mut out = EnvMap::new();
-    let Some(envs) = value.as_object() else { return Ok(out) };
+    if !value.get().starts_with('{') {
+        return Ok(out);
+    }
+    let envs: BTreeMap<String, Box<RawValue>> = serde_json::from_str(value.get()).map_err(invalid)?;
     for (env, vars) in envs {
-        let Some(vars) = vars.as_object() else { continue };
+        if !vars.get().starts_with('{') {
+            continue;
+        }
+        let vars: BTreeMap<String, Box<RawValue>> = serde_json::from_str(vars.get()).map_err(invalid)?;
         let mut map = BTreeMap::new();
         for (k, v) in vars {
-            let s = match v {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                serde_json::Value::Bool(b) => b.to_string(),
+            let raw = v.get();
+            let s = match raw.as_bytes().first() {
+                Some(b'"') => serde_json::from_str::<String>(raw).map_err(invalid)?,
+                // Keep numeric tokens: Value::Number would round decimals and large integers.
+                Some(b'-' | b'0'..=b'9' | b't' | b'f') => raw.to_owned(),
                 // Objects configure SSL / auth in IDEA; not variables.
                 _ => continue,
             };
-            map.insert(k.clone(), s);
+            map.insert(k, s);
         }
-        out.insert(env.clone(), map);
+        out.insert(env, map);
     }
     Ok(out)
 }
@@ -303,6 +312,85 @@ impl Resolver<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_exact_numeric_environment_tokens() {
+        for token in [
+            "0",
+            "-0",
+            "0.0",
+            "-0.000",
+            "1",
+            "-1",
+            "9007199254740991",
+            "9007199254740992",
+            "9007199254740993",
+            "9223372036854775807",
+            "-9223372036854775808",
+            "18446744073709551615",
+            "18446744073709551616",
+            "123456789012345678901234567890",
+            "-123456789012345678901234567890",
+            "1.0000000000000000002",
+            "-1.0000000000000000002",
+            "0.12345678901234567890123456789",
+            "-0.0000000000000000000000000001",
+            "1e-400",
+            "-1e-400",
+            "1e400",
+            "-1e400",
+            "1.2300e+20",
+            "1.2300E+020",
+        ] {
+            let json = format!(r#"{{"dev":{{"value":{token}}}}}"#);
+            let envs = Environments::from_json(&json, "").unwrap();
+            let vars = envs.variables(Some("dev"));
+            assert_eq!(vars["value"], token);
+            let resolver = Resolver { file_vars: &[], env: vars };
+            let mut missing = BTreeSet::new();
+            assert_eq!(resolver.substitute("{\"value\":{{value}}}", &mut missing), format!(r#"{{"value":{token}}}"#));
+            assert!(missing.is_empty());
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_numeric_environment_tokens() {
+        for token in ["01", "+1", "1.", ".1", "NaN", "Infinity", "--1", "1e", "1e+", "1e--2", "0xFF"] {
+            let json = format!(r#"{{"dev":{{"value":{token}}}}}"#);
+            assert!(Environments::from_json(&json, "").is_err(), "accepted {token}");
+        }
+        assert!(Environments::from_json(r#"{"dev":{"ssl":{"invalid":01}}}"#, "").is_err());
+    }
+
+    #[test]
+    fn reads_numeric_tokens_with_whitespace_and_escaped_names() {
+        let envs = Environments::from_json(
+            "\u{feff} \n { \"de\\u0076\": \n {\"va\\u006cue\": \t 1.2300E+020, \"value\": 1.0000000000000000002 }} \n",
+            "",
+        )
+        .unwrap();
+        assert_eq!(envs.names(), vec!["dev"]);
+        assert_eq!(envs.variables(Some("dev"))["value"], "1.0000000000000000002");
+    }
+
+    #[test]
+    fn exact_environment_parsing_keeps_types_and_precedence() {
+        let envs = Environments::from_json(
+            r#"{"$shared":{"shared":1.0000000000000000002},"dev":{"v":1,"v":9007199254740993,"enabled":true,"disabled":false,"s":"a\n\"b","null":null,"ssl":{},"arr":[]},"other":42}"#,
+            r#"{"dev":{"v":9223372036854775807}}"#,
+        ).unwrap();
+        let vars = envs.variables(Some("dev"));
+        assert_eq!(vars["v"], "9223372036854775807");
+        assert_eq!(vars["shared"], "1.0000000000000000002");
+        assert_eq!(vars["enabled"], "true");
+        assert_eq!(vars["disabled"], "false");
+        assert_eq!(vars["s"], "a\n\"b");
+        assert!(!vars.contains_key("null"));
+        assert!(!vars.contains_key("ssl"));
+        assert!(!vars.contains_key("arr"));
+        assert_eq!(Environments::from_json("[]", "").unwrap().names(), Vec::<String>::new());
+        assert!(Environments::from_json(r#"{"dev":{"v":01}}"#, "").is_err());
+    }
 
     #[test]
     fn finds_variable_keys_in_every_environment_private_first() {

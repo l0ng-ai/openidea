@@ -40,6 +40,7 @@ import {
 } from "../state";
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
+import { stopNote } from "../js/eventBreakpoints";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
@@ -102,6 +103,9 @@ function MoreActions() {
 
 type Tab = "variables" | "console" | "memory";
 
+/** The view the user last picked; the tool window opens on it again (Console until one is picked). */
+let chosenTab: Tab = "console";
+
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
   if (s.status === "starting") return "Starting…";
@@ -148,7 +152,7 @@ export function DebugToolWindow() {
     session: number | undefined;
     status: DebugSession["status"] | undefined;
     tab: Tab;
-  }>({ session: undefined, status: undefined, tab: "variables" });
+  }>({ session: undefined, status: undefined, tab: chosenTab });
   if (active && (view.session !== active.startedAt || view.status !== active.status))
     setView({
       session: active.startedAt,
@@ -231,7 +235,10 @@ export function DebugToolWindow() {
               aria-selected={tab === id}
               aria-controls={`debug-panel-${id}`}
               className={clsx(styles.tab, tab === id && styles.tabActive)}
-              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
+              onClick={() => {
+                chosenTab = id;
+                setView({ session: active.startedAt, status: active.status, tab: id });
+              }}
             >
               {tx(label)}
             </button>
@@ -329,6 +336,7 @@ function FramesPane({ session }: { session: DebugSession }) {
               : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
           </div>
         )}
+        {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}
         {items.map((item) =>
           item.kind === "hidden" ? (
             <button
