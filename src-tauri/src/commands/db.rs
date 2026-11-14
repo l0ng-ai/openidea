@@ -362,3 +362,10 @@ pub async fn db_apply_edits(
 pub fn db_console_path(state: State<'_, AppState>, id: String) -> IdeResult<IpcPath> {
     ide_host::ops::db::console_path(&state.host, &id)
 }
+
+/// The query consoles of data source `id`; `create` adds the next one first.
+#[tauri::command]
+#[specta::specta]
+pub fn db_consoles(state: State<'_, AppState>, id: String, create: bool) -> IdeResult<Vec<IpcPath>> {
+    ide_host::ops::db::consoles(&state.host, &id, create)
+}

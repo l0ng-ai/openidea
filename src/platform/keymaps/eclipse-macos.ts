@@ -7,6 +7,7 @@ import { intellijMacos } from "./intellij-macos";
 
 export const eclipseMacos: Record<string, string[]> = {
   ...intellijMacos,
+  "agents.focusInput": ["Meta+L"],
   // $Undo / $Redo stay unbound as in the parent keymap: the focused editor or view handles them.
   "code.autoIndentLines": ["Meta+I"],
   "navigate.back": ["Meta+[", "Button4", "SwipeRight"],

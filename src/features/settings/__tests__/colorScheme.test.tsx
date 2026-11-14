@@ -404,4 +404,15 @@ describe("Git colors", () => {
     act(() => fireEvent.click(within(preview).getByText("feature/login")));
     expect(screen.getByRole("treeitem", { name: "Local branch decoration", selected: true })).toBeInTheDocument();
   });
+
+  it("lets a project view branch decoration be set bold and italic (#3385)", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.git");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("feature/login")));
+    const bold = screen.getByRole("checkbox", { name: "Bold" });
+    expect(bold).toBeEnabled();
+    act(() => fireEvent.click(bold));
+    expect(value("colorOverrides")).toEqual({ dark: { gitLocalBranch: { bold: true } } });
+  });
 });

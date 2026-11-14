@@ -3501,7 +3501,6 @@
   "edits your files directly": "edita tus archivos directamente",
   "from": "desde",
   "on": "en",
-  "Models and modes appear after this agent's first task.": "Los modelos y modos aparecen después de la primera tarea de este agente.",
   "Queue a message for when the agent is done (⌘↵ sends it now)": "Pon en cola un mensaje para cuando el agente termine (⌘↵ lo envía ahora)",
   "Couldn't send the message": "No se pudo enviar el mensaje",
   "Couldn't change the setting": "No se pudo cambiar la configuración",

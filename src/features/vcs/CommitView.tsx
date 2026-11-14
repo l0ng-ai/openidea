@@ -184,12 +184,12 @@ export function StashContent({ tab }: { tab: CommitTab }) {
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   if (combine)
     return (
-      <SplitGroup orientation="vertical" className={styles.split}>
-        <SplitPanel defaultSize="50%" minSize="80px">
+      <SplitGroup orientation="vertical" className={styles.split} storageKey="openidea.vcs.stashShelfSplit">
+        <SplitPanel id="stashes" defaultSize="50%" minSize="80px">
           <StashesPanel />
         </SplitPanel>
         <SplitHandle />
-        <SplitPanel defaultSize="50%" minSize="80px">
+        <SplitPanel id="shelf" defaultSize="50%" minSize="80px">
           <ShelfPanel />
         </SplitPanel>
       </SplitGroup>
@@ -486,14 +486,18 @@ function ChangesPanel() {
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
   const hasChanges = useVcs((s) => s.status.length > 0);
   return (
-    <SplitGroup orientation="horizontal" className={styles.split}>
-      <SplitPanel defaultSize="62%" minSize="20%">
-        <SplitGroup orientation="vertical" className={styles.split}>
-          <SplitPanel defaultSize="62%" minSize="20%">
+    <SplitGroup
+      orientation="horizontal"
+      className={styles.split}
+      storageKey={preview ? "openidea.vcs.commitPreviewSplit" : undefined}
+    >
+      <SplitPanel id="commit" defaultSize="62%" minSize="20%">
+        <SplitGroup orientation="vertical" className={styles.split} storageKey="openidea.vcs.commitMessageSplit">
+          <SplitPanel id="changes" defaultSize="62%" minSize="20%">
             <ChangesTree mode="commit" />
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel defaultSize="38%" minSize="120px">
+          <SplitPanel id="message" defaultSize="38%" minSize="120px">
             <CommitPanel included={included} />
           </SplitPanel>
         </SplitGroup>
@@ -501,7 +505,7 @@ function ChangesPanel() {
       {preview && (
         <>
           <SplitHandle />
-          <SplitPanel defaultSize="38%" minSize="120px">
+          <SplitPanel id="preview" defaultSize="38%" minSize="120px">
             {path ? (
               <DiffEditor input={diffInput(workingDiffData(path))} />
             ) : (
@@ -525,14 +529,20 @@ export function LocalChangesView() {
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
   const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
   return (
-    <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
-      <SplitPanel defaultSize="50%" minSize="20%">
+    <SplitGroup
+      orientation={anchor === "bottom" ? "horizontal" : "vertical"}
+      className={styles.split}
+      storageKey={
+        preview ? `openidea.vcs.localChangesSplit.${anchor === "bottom" ? "horizontal" : "vertical"}` : undefined
+      }
+    >
+      <SplitPanel id="changes" defaultSize="50%" minSize="20%">
         <ChangesTree mode="local" />
       </SplitPanel>
       {preview && (
         <>
           <SplitHandle />
-          <SplitPanel defaultSize="50%" minSize="120px">
+          <SplitPanel id="preview" defaultSize="50%" minSize="120px">
             {path ? (
               <DiffEditor input={diffInput(workingDiffData(path))} />
             ) : (
@@ -1309,8 +1319,8 @@ export function StashesPanel() {
                 {repos.length > 1 && s.repo ? `${repoName(s.repo)} · ` : ""}
                 {text}
               </span>
-              {branch && <span className={styles.detail}>{branch}</span>}
-              <span className={styles.detail}>{formatTime(s.timeMs)}</span>
+              {branch && <span className={clsx(styles.detail, styles.stashBranch)}>{branch}</span>}
+              <span className={clsx(styles.detail, styles.stashTime)}>{formatTime(s.timeMs)}</span>
             </span>
           );
         }}

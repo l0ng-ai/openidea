@@ -478,7 +478,11 @@ export function TodoView() {
       {tab === "scope" && <ScopeBar />}
       {tab === "changes" && <ChangelistBar />}
       <div className={styles.body}>
-        <SplitGroup orientation="horizontal" id="todo-preview-split">
+        <SplitGroup
+          orientation="horizontal"
+          id="todo-preview-split"
+          storageKey={showPreview ? "openidea.todo.previewSplit" : undefined}
+        >
           <SplitPanel id="items" minSize={160} className={styles.panel}>
             <Tree<Node>
               handleRef={tree}

@@ -25,6 +25,7 @@ fn paths(dir: &Path) -> AgentPaths {
         custom_agents_dir: None,
         home_dir: None,
         env_secrets: None,
+        catalogs: Arc::default(),
     }
 }
 

@@ -666,6 +666,7 @@ impl Host {
                         .join(project_key)
                 }),
                 models_file: self.data_dir.join("agents").join("models.json"),
+                catalogs: self.agent_catalogs.clone(),
                 custom_agents_dir: Some(self.config_dir.join("agents")),
                 home_dir: dirs::home_dir(),
                 env_secrets: Some(Arc::new(AgentEnvSecrets {
