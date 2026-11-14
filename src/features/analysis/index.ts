@@ -1,7 +1,9 @@
 /**
  * Code analysis: Inspect Code (batch language-server diagnostics), Locate
- * Duplicates and Search / Replace Structurally.
+ * Duplicates and Search / Replace Structurally, and the Python inheritance
+ * inspections the IDE computes from its own graph.
  */
+import { registerEditorContribution } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { registerOverlay, registerToolWindow } from "@/workbench/contributions";
@@ -14,12 +16,14 @@ import {
 import { AnalysisDialogHost } from "./dialogs";
 import { resetDuplicates } from "./duplicates";
 import { DuplicatesHeaderActions, DuplicatesView } from "./DuplicatesView";
+import { pythonInheritanceExtension } from "./inheritanceInspections";
 import { installInspectionProfileSync, resetInspection, runInspection } from "./inspect";
 import { defaultScope } from "./scope";
 import { InspectionHeaderActions, InspectionView, useInspectionHeaderMenu } from "./InspectionView";
 
 export function activate(): () => void {
   const disposers = [
+    registerEditorContribution({ id: "analysis.python-inheritance", extensions: pythonInheritanceExtension }),
     installInspectionProfileSync(),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
