@@ -1216,6 +1216,8 @@ export const commands = {
 	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
 	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
+	/**  The body of a response a debugged page received. */
+	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -4002,7 +4004,11 @@ export type DebugEvent =
  *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
  *  `variables`; empty means all) is stale and has to be fetched again.
  */
-{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState } | 
+/**  A step in the life of one request of a debugged page. */
+{ kind: "jsNetwork"; event: JsNetworkEvent } | 
+/**  The adapter does not report the requests of this page: there will be no `JsNetwork`. */
+{ kind: "jsNetworkUnavailable" };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -6421,6 +6427,49 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
 	files: { [key in string]: string },
+};
+
+/**  The script frame that made a request, where the browser ran it (0-based line and column). */
+export type JsInitiator = {
+	function: string,
+	url: string,
+	line: number,
+	column: number,
+};
+
+/**
+ *  What a debugged page's browser reports about a request, reduced to what the Network view
+ *  shows. Events of one request share `request_id`; each kind fills its own fields.
+ */
+export type JsNetworkEvent = {
+	kind: JsNetworkKind,
+	requestId: string,
+	/**  The browser's monotonic clock, comparable between the events of a page. */
+	timestampMs: number,
+	/**  Request and response. */
+	url: string | null,
+	method: string | null,
+	/**  `Fetch`, `XHR`, `Script`, `Document`, … */
+	resourceType: string | null,
+	status: number | null,
+	mimeType: string | null,
+	/**  The request's headers, or the response's. */
+	headers: { [key in string]: string },
+	/**  Bytes received over the network, once finished. */
+	encodedLength: number | null,
+	errorText: string | null,
+	initiator: JsInitiator | null,
+};
+
+/**  Which step of a request a [`JsNetworkEvent`] reports. */
+export type JsNetworkKind = "request" | "response" | "finished" | "failed";
+
+/**  The body of a response, as text or as the browser's base64 for binary content. */
+export type JsResponseBody = {
+	body: string,
+	base64Encoded: boolean,
+	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
+	truncated: boolean,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */

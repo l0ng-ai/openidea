@@ -41,6 +41,7 @@ import {
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
 import { stopNote } from "../js/eventBreakpoints";
+import { NetworkView } from "../js/NetworkView";
 import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
@@ -103,7 +104,7 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console" | "memory";
+type Tab = "variables" | "console" | "memory" | "network";
 
 /** The view the user last picked; the tool window opens on it again (Console until one is picked). */
 let chosenTab: Tab = "console";
@@ -169,8 +170,10 @@ export function DebugToolWindow() {
             : view.tab,
     });
   const hasMemory = !!active && sessionSupports("jvmMemory", active);
-  // The selected session may be one without the Memory tab.
-  const tab: Tab = view.tab === "memory" && !hasMemory ? "variables" : view.tab;
+  const hasNetwork = !!active && sessionSupports("jsPage", active);
+  // The selected session may be one without the Memory or the Network tab.
+  const tab: Tab =
+    (view.tab === "memory" && !hasMemory) || (view.tab === "network" && !hasNetwork) ? "variables" : view.tab;
 
   if (!active) {
     return (
@@ -227,6 +230,7 @@ export function DebugToolWindow() {
               ["variables", "Threads & Variables"],
               ["console", "Console"],
               ...(hasMemory ? [["memory", "Memory"] as const] : []),
+              ...(hasNetwork ? [["network", "Network"] as const] : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -252,6 +256,8 @@ export function DebugToolWindow() {
           <ThreadsAndVariables session={active} />
         ) : tab === "memory" ? (
           <MemoryView key={active.id} session={active} />
+        ) : tab === "network" ? (
+          <NetworkView key={active.id} session={active.id} />
         ) : (
           <DebugConsole key={active.id} session={active} />
         )}

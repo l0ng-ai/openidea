@@ -160,7 +160,12 @@ struct Script {
     launch_after_configuration: bool,
     /// Requests of the adapter's own (js-debug's `setCustomBreakpoints`…) answered with an empty body.
     accept: &'static [&'static str],
+    /// Requests of the adapter's own answered with a body and followed by events.
+    custom: Option<fn(&Value) -> Option<CustomReply>>,
 }
+
+/// The answer to a request of the adapter's own: the response body, then events (name, body).
+type CustomReply = (Value, Vec<(&'static str, Value)>);
 
 impl Default for Script {
     fn default() -> Self {
@@ -194,6 +199,7 @@ impl Default for Script {
             gdb15_starts_at_launch: false,
             launch_after_configuration: false,
             accept: &[],
+            custom: None,
         }
     }
 }
@@ -511,6 +517,16 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     log.lock().push(json!({"type": "dropped", "command": other}));
                 }
                 ok!(msg, json!({}))
+            }
+            other if script.custom.and_then(|custom| custom(&msg)).is_some() => {
+                if starting.load(Ordering::Acquire) {
+                    log.lock().push(json!({"type": "dropped", "command": other}));
+                }
+                let (body, events) = script.custom.and_then(|custom| custom(&msg)).unwrap();
+                ok!(msg, body);
+                for (event, body) in events {
+                    send!(json!({"type": "event", "event": event, "body": body}));
+                }
             }
             other => send!(
                 json!({"type": "response", "request_seq": msg["seq"], "command": other, "success": false, "message": "unsupported"})
@@ -1015,6 +1031,77 @@ async fn a_page_gets_its_requests_once_its_session_has_started() {
     assert_eq!(requests(&h, "setCustomBreakpoints"), [json!({"ids": ["listener:click"], "xhr": []})]);
     let dropped = h.log.lock().iter().filter(|m| m["type"] == "dropped").count();
     assert_eq!(dropped, 0, "the request reached the page before it took requests");
+}
+
+/// js-debug's network requests: `enableNetworking` is followed by one mirrored browser event.
+fn network_adapter(msg: &Value) -> Option<CustomReply> {
+    match msg["command"].as_str()? {
+        "enableNetworking" => Some((
+            json!({}),
+            vec![(
+                "networkEvent",
+                json!({ "event": "requestWillBeSent", "data": {
+                    "requestId": "7", "timestamp": 1.5, "type": "Fetch",
+                    "request": { "method": "GET", "url": "http://localhost:5173/api/items", "headers": {} }
+                } }),
+            )],
+        )),
+        "networkCall" => Some((json!({ "body": "é".repeat(600_000), "base64Encoded": false }), Vec::new())),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn a_page_reports_its_requests_and_their_bodies() {
+    let h = harness(Script {
+        start_debugging: true,
+        custom: Some(network_adapter),
+        child_launch_delay: Duration::from_millis(100),
+        ..Script::default()
+    });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+
+    // Recording is asked for by the session itself, as soon as js-debug takes the request:
+    // once it has answered the page's `launch` (before that, the request is never answered).
+    let DebugEvent::JsNetwork { event } = h.wait_event(|e| matches!(e, DebugEvent::JsNetwork { .. })).await else {
+        unreachable!()
+    };
+    assert_eq!(
+        requests(&h, "enableNetworking"),
+        [json!({ "mirrorEvents": ["requestWillBeSent", "responseReceived", "loadingFinished", "loadingFailed"] })]
+    );
+    let dropped = h.log.lock().iter().filter(|m| m["type"] == "dropped").count();
+    assert_eq!(dropped, 0, "recording was asked for before the page took requests");
+    assert_eq!((event.request_id.as_str(), event.timestamp_ms), ("7", 1500));
+    assert_eq!(event.url.as_deref(), Some("http://localhost:5173/api/items"));
+
+    let body = h.manager.js_response_body(page, "7".into()).await.unwrap();
+    assert_eq!(requests(&h, "networkCall"), [json!({ "method": "getResponseBody", "params": { "requestId": "7" } })]);
+    // 1.2 MB of two-byte characters: cut at the limit, on a character.
+    assert!(body.truncated && !body.base64_encoded);
+    assert_eq!(body.body.len(), 1_048_576);
+    assert!(body.body.chars().all(|c| c == 'é'));
+
+    assert_eq!(
+        h.manager.js_response_body(browser, "7".into()).await.unwrap_err().kind,
+        ide_core::error::ErrorKind::Unavailable
+    );
+
+    // A Node.js program is not a page: nothing is asked of it.
+    let node = h.start(js_config("pwa-node")).await.unwrap();
+    child_of(&h, node).await;
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert_eq!(requests(&h, "enableNetworking").len(), 1);
+}
+
+#[tokio::test]
+async fn a_page_whose_requests_the_adapter_does_not_report_says_so() {
+    // A js-debug build without `enableNetworking`.
+    let h = harness(Script { start_debugging: true, ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    child_of(&h, browser).await;
+    h.wait_event(|e| matches!(e, DebugEvent::JsNetworkUnavailable)).await;
 }
 
 #[test]
