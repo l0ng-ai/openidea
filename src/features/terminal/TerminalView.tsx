@@ -128,7 +128,9 @@ function paneMenu(e: MouseEvent, key: string) {
       icon: "close",
       run: () =>
         void requestCloseSession(key).then((closed) => {
-          if (closed) requestAnimationFrame(() => activeSession()?.focus());
+          if (!closed) return;
+          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+          else requestAnimationFrame(() => activeSession()?.focus());
         }),
     },
   ];
