@@ -27,14 +27,26 @@ fn git_dir(root: &Path) -> Option<std::path::PathBuf> {
     Some(if path.is_absolute() { path.to_owned() } else { root.join(path) })
 }
 
+/// The config and exclude file of the Git directory `git`; a linked worktree's directory
+/// (`.git/worktrees/<name>`) reads the shared ones its `commondir` names as well.
+fn insert_git_inputs(out: &mut std::collections::BTreeSet<std::path::PathBuf>, git: &Path) {
+    out.insert(git.join("config"));
+    out.insert(git.join("info/exclude"));
+    if let Ok(common) = std::fs::read_to_string(git.join("commondir")) {
+        let common = Path::new(common.trim());
+        let common = if common.is_absolute() { common.to_owned() } else { git.join(common) };
+        out.insert(common.join("config"));
+        out.insert(common.join("info/exclude"));
+    }
+}
+
 /// External ignore/config inputs, including candidates that do not exist yet.
 /// These are outside the directory manifest (`.git` is skipped), so the full
 /// path set must match at warm start.
 pub(crate) fn external_ignore_candidates(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = std::collections::BTreeSet::new();
     if let Some(git) = git_dir(root) {
-        out.insert(git.join("config"));
-        out.insert(git.join("info/exclude"));
+        insert_git_inputs(&mut out, &git);
     }
     out.insert(root.join(".git/config"));
     out.insert(root.join(".git/info/exclude"));
@@ -44,8 +56,7 @@ pub(crate) fn external_ignore_candidates(root: &Path) -> Vec<std::path::PathBuf>
         out.insert(dir.join(".gitignore"));
         out.insert(dir.join(".ignore"));
         if let Some(git) = git_dir(dir) {
-            out.insert(git.join("config"));
-            out.insert(git.join("info/exclude"));
+            insert_git_inputs(&mut out, &git);
         }
     }
     if let Some(path) = ignore::gitignore::gitconfig_excludes_path() {
