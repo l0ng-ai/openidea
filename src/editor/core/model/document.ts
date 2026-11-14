@@ -98,6 +98,11 @@ export const useDocMeta = create<Record<string, DocMeta>>(() => ({}));
 export const useOutline = create<Record<string, OutlineItem[]>>(() => ({}));
 
 const REFRESH_DELAY = 450;
+/**
+ * Languages whose stream mode works from word lists, so the grammar's highlights are drawn
+ * over it: Kotlin declaration roles, Shell commands, function names and `local`.
+ */
+const GRAMMAR_SUPPLEMENTED = new Set(["kotlin", "shellscript"]);
 function bannerFor(info: DocumentInfo): Banner {
   // Virtual documents (library classes) get their own notice from the editor area.
   if (info.uri) return null;
@@ -574,8 +579,7 @@ export class DocModel {
     const [folds, outline, highlights] = await Promise.allSettled([
       backend.folding(this.doc),
       backend.outline(this.doc),
-      // Kotlin's stream mode lacks declaration categories; the grammar supplements it.
-      !this.desc || this.meta.language === "kotlin" ? backend.highlights(this.doc) : null,
+      !this.desc || GRAMMAR_SUPPLEMENTED.has(this.meta.language) ? backend.highlights(this.doc) : null,
     ]);
     if (this.closed) return;
     if (counter !== this.changeCounter) {
