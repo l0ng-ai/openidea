@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { useProject } from "@/platform/project";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const adapterData = vi.hoisted(() => ({
@@ -395,6 +396,10 @@ describe("variables the adapter computes after the stop", () => {
     const caps = { liveEvaluate: true } as DebugSession["caps"];
     const running: DebugSession = { ...session, id: 5, status: "running", frames: [], selectedFrame: null, caps };
     useDebug.setState({ sessions: { 5: running }, active: 5, watches: ["count"] });
+    const settings = useProject.getState().settings;
+    useProject.setState({
+      settings: { debugger: { liveWatches: true } } as ReturnType<typeof useProject.getState>["settings"],
+    });
     const watched = () => debugEvaluateIn.mock.calls.filter((c) => c[0] === 5 && c[3] === "watch");
     const shown = (value: boolean) => {
       const view = render(
@@ -416,6 +421,7 @@ describe("variables the adapter computes after the stop", () => {
       await waitFor(() => expect(watched()).toEqual([[5, null, "count", "watch"]]));
     } finally {
       useDebug.setState({ watches: [] });
+      useProject.setState({ settings });
     }
   });
 });

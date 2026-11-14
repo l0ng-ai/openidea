@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   asked.length = 0;
   answer = (expression) => Promise.resolve(value(`<${expression}>`));
-  setLiveWatches(null);
+  setLiveWatches(true);
 });
 afterEach(() => vi.useRealTimers());
 
@@ -85,6 +85,13 @@ describe("watches while the program runs", () => {
     finish();
     await act(async () => void (await vi.advanceTimersByTimeAsync(1000)));
     expect(asked.slice(1).map((a) => a[2])).toEqual(["slow", "other"]);
+  });
+
+  it("is off until turned on in the settings", () => {
+    setLiveWatches(null);
+    expect(liveWatchesApply(session())).toBe(false);
+    setLiveWatches(true);
+    expect(liveWatchesApply(session())).toBe(true);
   });
 
   it("stops when hidden, paused, terminated, switched off or unsupported", async () => {

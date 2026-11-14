@@ -289,7 +289,7 @@ impl Default for DebuggerSettings {
             run_to_cursor_inlay: true,
             inline_values: true,
             sort_values: false,
-            live_watches: true,
+            live_watches: false,
             value_tooltip: true,
             value_tooltip_on_selection: true,
             value_tooltip_delay: 700,

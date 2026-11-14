@@ -294,7 +294,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     runToCursorInlay: true,
     inlineValues: true,
     sortValues: false,
-    liveWatches: true,
+    liveWatches: false,
     valueTooltip: true,
     valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
