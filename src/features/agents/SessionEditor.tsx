@@ -62,6 +62,7 @@ import { isImeKey } from "@/platform/ime";
 import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { setChangesOptions, useChangesOptions } from "./changesOptions";
+import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
 import { selectionIn } from "./selection";
@@ -156,6 +157,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     project?.workspace ? (task?.projectRoot ?? project.root) : null,
   );
   const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null, docked);
+  const changesWidth = useChangesWidthStyle();
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -229,7 +231,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   return (
     <div
       ref={sessionRoot}
-      className={clsx(styles.session, docked && styles.docked)}
+      className={clsx(styles.session, docked && styles.docked, changesOpen && !docked && styles.withChanges)}
+      style={changesWidth}
       onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -3151,6 +3154,7 @@ function ChangesPane({
   };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
+      {!docked && <ChangesResizer />}
       <div className={styles.changesHeader}>
         {docked && <IconButton icon="arrow-left" title="Back to conversation" onClick={onHide} />}
         <span className={styles.changesTitle}>
