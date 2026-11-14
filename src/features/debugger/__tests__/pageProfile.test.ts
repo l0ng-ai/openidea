@@ -80,6 +80,7 @@ describe("CPU profile of a debugged page", () => {
       name: "page 4",
       dir: "/tmp/openidea-js-profile-1",
       root: "/work/shop",
+      profiler: "js-debug",
     });
     expect(isPageProfiled(4)).toBe(false);
   });
