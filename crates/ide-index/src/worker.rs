@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime};
 /// Files larger than this are listed but not parsed for symbols.
 pub const MAX_SYMBOL_FILE: u64 = 2 * 1024 * 1024;
 const CHUNK: usize = 512;
+/// Insert/persist batch of the initial scan's streaming pass.
+const SCAN_BATCH: usize = 2048;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
@@ -436,10 +438,13 @@ impl Shared {
         });
 
         let filter = self.filter();
+        let walk_started = Instant::now();
         let found = prewalked.unwrap_or_else(|| self.walk_roots(dirs));
+        let walk = walk_started.elapsed();
         if self.is_cancelled() {
             return self.end_scan(task);
         }
+        let classify_started = Instant::now();
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
         let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
             let d = self.data.read();
@@ -452,6 +457,7 @@ impl Shared {
                 .collect();
             (todo, stale)
         };
+        let classify = classify_started.elapsed();
         if !stale.is_empty() {
             let mut d = self.data.write();
             for path in &stale {
@@ -462,33 +468,74 @@ impl Shared {
         self.persist(&[], &stale, false);
 
         let total = todo.len();
-        let mut done = 0usize;
-        let mut last_progress = Instant::now();
-        for chunk in todo.chunks(CHUNK) {
-            if self.is_cancelled() {
-                return self.end_scan(task);
-            }
-            self.index_files(chunk.iter().copied(), false);
-            done += chunk.len();
-            if last_progress.elapsed() >= PROGRESS_EVERY {
-                last_progress = Instant::now();
-                self.sink.emit(IdeEvent::Task {
-                    id: task,
-                    title: "Indexing".into(),
-                    message: Some(format!("{done} / {total} files")),
-                    fraction: Some(done as f32 / total.max(1) as f32),
-                    done: false,
-                    cancellable: false,
+        let mut laps = ChunkLaps::default();
+        {
+            // One streaming parallel pass: parse on the rayon pool without
+            // per-chunk joins (a straggler file at a join's tail idles every
+            // other core), while parsed files flow to this thread to be
+            // inserted and persisted in batches. `filter` moves into the
+            // parse thread; this thread keeps the outer one.
+            let filter = self.filter();
+            let (tx, rx) = std::sync::mpsc::channel::<ParsedFile>();
+            let cancelled = &self.cancelled;
+            let mut done = 0usize;
+            let mut last_progress = Instant::now();
+            let pass_started = Instant::now();
+            std::thread::scope(|scope| -> () {
+                scope.spawn(move || {
+                    todo.par_iter().for_each(|f| {
+                        if cancelled.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let Some(out) = self.parse_found(f, &filter, false) else { return };
+                        let _ = tx.send(out);
+                    });
+                    // `tx` drops here: the consumer's loop ends with the channel.
                 });
-            }
+                let mut batch: Vec<ParsedFile> = Vec::with_capacity(SCAN_BATCH);
+                for out in rx {
+                    if self.is_cancelled() {
+                        break;
+                    }
+                    batch.push(out);
+                    if batch.len() < SCAN_BATCH {
+                        continue;
+                    }
+                    done += batch.len();
+                    laps.add(self.publish(batch.drain(..)));
+                    if last_progress.elapsed() >= PROGRESS_EVERY {
+                        last_progress = Instant::now();
+                        self.sink.emit(IdeEvent::Task {
+                            id: task,
+                            title: "Indexing".into(),
+                            message: Some(format!("{done} / {total} files")),
+                            fraction: Some(done as f32 / total.max(1) as f32),
+                            done: false,
+                            cancellable: false,
+                        });
+                    }
+                }
+                if !batch.is_empty() && !self.is_cancelled() {
+                    done += batch.len();
+                    laps.add(self.publish(batch.drain(..)));
+                }
+            });
+            laps.extract = pass_started.elapsed();
         }
+        if self.is_cancelled() {
+            return self.end_scan(task);
+        }
+        let durable_started = Instant::now();
         self.persist(&[], &[], true);
+        let durable = durable_started.elapsed();
         if let Some(store) = &self.store {
             let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
             let d = self.data.read();
+            let snapshot_started = Instant::now();
             if let Err(e) = store.save_snapshot(&d, &filter, guard) {
                 tracing::warn!("index snapshot: {e}");
             }
+            tracing::info!("index snapshot: written in {:?}", snapshot_started.elapsed());
             if let Err(e) = store.save_recent_file(&recent) {
                 tracing::warn!("index recent snapshot: {e}");
             }
@@ -506,54 +553,85 @@ impl Shared {
         self.emit_state();
         let d = self.data.read();
         tracing::info!(
-            "indexed {} files ({} parsed, {} symbols) in {:?}",
+            "indexed {} files ({} parsed, {} symbols) in {:?} (walk {:?}, classify {:?}, extract {:?}, insert {:?}, persist {:?}, durable {:?})",
             d.file_count,
             total,
             d.symbol_count,
-            started.elapsed()
+            started.elapsed(),
+            walk,
+            classify,
+            laps.extract,
+            laps.insert,
+            laps.persist,
+            durable
         );
     }
 
     /// Extracts records in parallel, then publishes them to memory and disk.
     /// `force` re-parses files whose content is unchanged (their language changed).
-    fn index_files<'a>(&self, files: impl Iterator<Item = &'a Found>, force: bool) {
+    fn index_files<'a>(&self, files: impl Iterator<Item = &'a Found>, force: bool) -> ChunkLaps {
+        let mut laps = ChunkLaps::default();
         let files: Vec<&Found> = files.collect();
         let filter = self.filter();
-        let extracted: Vec<(String, FileRecord, PathBuf)> = files
-            .par_iter()
-            .filter_map(|f| {
-                if self.is_cancelled() {
-                    return None;
-                }
-                let rel = filter.rel(&f.path)?;
-                let prev_hash = if force { None } else { self.data.read().get(&f.path).map(|e| e.hash) };
-                match self.extract(f, prev_hash) {
-                    Extracted::Unchanged => {
-                        // Same content, new mtime: keep the symbols, refresh metadata.
-                        let mut rec = self.data.read().record_of(&f.path)?;
-                        rec.mtime = f.mtime;
-                        rec.size = f.size;
-                        rec.ignored = f.ignored;
-                        Some((rel, rec, f.path.clone()))
-                    }
-                    Extracted::New(rec) => Some((rel, rec, f.path.clone())),
-                }
-            })
-            .collect();
+        let started = Instant::now();
+        let extracted: Vec<ParsedFile> = files.par_iter().filter_map(|f| self.parse_found(f, &filter, force)).collect();
+        laps.extract = started.elapsed();
         if extracted.is_empty() {
-            return;
+            return laps;
         }
-        let puts: Vec<(String, FileRecord)> =
-            extracted.iter().filter_map(|(_, rec, path)| Some((filter.store_key(path)?, rec.clone()))).collect();
+        laps.add(self.publish(extracted.into_iter()));
+        laps
+    }
+
+    /// Reads and parses one file (parallel-safe), serializing its record for
+    /// the cache alongside the parse. `None` when the file is outside the
+    /// scope or the scan was cancelled.
+    fn parse_found(&self, f: &Found, filter: &std::sync::Arc<PathFilter>, force: bool) -> Option<ParsedFile> {
+        if self.is_cancelled() {
+            return None;
+        }
+        let rel = filter.rel(&f.path)?;
+        let prev_hash = if force { None } else { self.data.read().get(&f.path).map(|e| e.hash) };
+        let rec = match self.extract(f, prev_hash) {
+            Extracted::Unchanged => {
+                // Same content, new mtime: keep the symbols, refresh metadata.
+                let mut rec = self.data.read().record_of(&f.path)?;
+                rec.mtime = f.mtime;
+                rec.size = f.size;
+                rec.ignored = f.ignored;
+                rec
+            }
+            Extracted::New(rec) => rec,
+        };
+        let key = filter.store_key(&f.path);
+        let bytes = postcard::to_allocvec(&rec).ok();
+        Some(ParsedFile { rel, rec, key, bytes, path: f.path.clone() })
+    }
+
+    /// Inserts a parsed batch into the in-memory index and persists the records.
+    fn publish(&self, batch: impl Iterator<Item = ParsedFile>) -> ChunkLaps {
+        let mut laps = ChunkLaps::default();
+        let started = Instant::now();
+        let mut entries: Vec<(FileEntry, Vec<StoredSymbol>)> = Vec::new();
+        let mut puts: Vec<(String, Vec<u8>)> = Vec::new();
+        for out in batch {
+            let ParsedFile { rel, rec, key, bytes, path } = out;
+            if let (Some(key), Some(bytes)) = (key, bytes) {
+                puts.push((key, bytes));
+            }
+            entries.push(FileEntry::new(path, rel, rec));
+        }
         {
-            let entries: Vec<(FileEntry, Vec<StoredSymbol>)> =
-                extracted.into_iter().map(|(rel, rec, path)| FileEntry::new(path, rel, rec)).collect();
             let mut d = self.data.write();
             for (e, symbols) in entries {
                 d.insert(e, symbols);
             }
         }
-        self.persist(&puts, &[], false);
+        laps.insert = started.elapsed();
+        let started = Instant::now();
+        self.persist_raw(&puts, &[], false);
+        laps.persist = started.elapsed();
+        laps
     }
 
     fn schedule_snapshot(&self) {
@@ -589,6 +667,15 @@ impl Shared {
     fn persist(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) {
         if let Some(store) = &self.store
             && let Err(e) = store.apply(puts, deletes, durable)
+        {
+            tracing::warn!("index cache write failed: {e}");
+        }
+    }
+
+    /// [`Self::persist`] for records already serialized by the parse pool.
+    fn persist_raw(&self, puts: &[(String, Vec<u8>)], deletes: &[String], durable: bool) {
+        if let Some(store) = &self.store
+            && let Err(e) = store.apply_raw(puts, deletes, durable)
         {
             tracing::warn!("index cache write failed: {e}");
         }
@@ -791,6 +878,33 @@ enum Extracted {
     /// Content hash matches the indexed version.
     Unchanged,
     New(FileRecord),
+}
+
+/// Wall-time laps of one `index_files` chunk, accumulated by the scan.
+#[derive(Default)]
+struct ChunkLaps {
+    extract: Duration,
+    insert: Duration,
+    persist: Duration,
+}
+
+impl ChunkLaps {
+    fn add(&mut self, other: ChunkLaps) {
+        self.extract += other.extract;
+        self.insert += other.insert;
+        self.persist += other.persist;
+    }
+}
+
+/// One file parsed off the index thread: its record ready to publish, already
+/// serialized for the cache (in parallel with the parse).
+struct ParsedFile {
+    rel: String,
+    rec: FileRecord,
+    /// Cache key and postcard bytes; `None` when outside the persisted root.
+    key: Option<String>,
+    bytes: Option<Vec<u8>>,
+    path: PathBuf,
 }
 
 #[cfg(test)]
