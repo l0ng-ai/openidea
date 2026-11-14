@@ -1,6 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { setInvokeRoute } from "@/platform/tauriCore";
+import { describe, expect, it, vi } from "vitest";
 import { SourceDialog } from "./SourceDialog";
 
 const ipc = vi.hoisted(() => ({ call: vi.fn() }));
@@ -8,8 +7,6 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
   call: ipc.call,
 }));
-
-afterEach(() => setInvokeRoute(null));
 
 const savePassword = () => screen.getByRole("checkbox", { name: "Save password" }) as HTMLInputElement;
 
@@ -55,9 +52,6 @@ describe("new data source", () => {
 describe("Test SSH Tunnel", () => {
   it("tests the tunnel typed in the SSH/SSL tab, without the database login", async () => {
     ipc.call.mockResolvedValue("dev@bastion:22 reaches 127.0.0.1:5432");
-    // `commands.dbTestTunnel(…)` starts its real invoke before the mocked `call` is
-    // entered; keep that stray promise settled so nothing rejects unhandled.
-    setInvokeRoute(() => Promise.resolve(null));
     render(<SourceDialog initial={null} preset={{ driver: "postgres", host: "127.0.0.1" }} />);
     fireEvent.click(screen.getByRole("tab", { name: "SSH/SSL" }));
     const button = () => screen.getByRole("button", { name: "Test SSH Tunnel" }) as HTMLButtonElement;

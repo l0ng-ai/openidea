@@ -20,8 +20,7 @@ test("Search Everywhere finds and runs an action", async ({ workbench: page }) =
   await expect(option).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
-  // The page's own language list (the per-language tool tables depend on the machine's tools).
-  await expect(page.getByRole("list", { name: "Languages" })).toBeVisible();
+  await expect(page.getByRole("list", { name: /language servers/i })).toBeVisible();
 });
 
 const ROOT = "/dev/acme-api";

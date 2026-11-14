@@ -142,12 +142,7 @@ test("terminal ⌘F highlights active/inactive search matches and seeds with a n
     const s = activeSession()!;
     s.term.reset();
     await new Promise<void>((resolve) => s.term.write("needle other needle\r\nneedle gamma gamma\r\n", resolve));
-    // `term.select` applies asynchronously; ⌘F reads `getSelection()`, so wait until it lands.
     s.term.select(0, 0, 6);
-    await new Promise<void>((resolve) => {
-      const check = () => (s.term.getSelection() === "needle" ? resolve() : setTimeout(check, 10));
-      check();
-    });
   });
 
   // Pressing ⌘F seeds the Find bar with "needle" and highlights all 3 matches + 1 active top-layer match.
@@ -166,12 +161,7 @@ test("terminal ⌘F highlights active/inactive search matches and seeds with a n
   await page.evaluate(async () => {
     const path = "/src/features/terminal/runtime.ts";
     const { activeSession } = await import(path);
-    const s = activeSession()!;
-    s.term.select(7, 1, 5);
-    await new Promise<void>((resolve) => {
-      const check = () => (s.term.getSelection() === "gamma" ? resolve() : setTimeout(check, 10));
-      check();
-    });
+    activeSession()!.term.select(7, 1, 5);
   });
   await page.keyboard.press("Meta+f");
   await expect(input).toHaveValue("gamma");
