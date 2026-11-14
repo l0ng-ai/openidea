@@ -1545,11 +1545,15 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
+	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
+	 *  Ends a process OpenIDEA started (a row of the memory breakdown) and its
+	 *  children; its owner (language server, run, terminal) sees it exit. Returns
+	 *  false for a process that isn't ours.
 	 */
-	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
+	endProcess: (pid: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("end_process", { pid })),
 	/**
 	 *  Inspect Code: diagnostics of every file in `scope` that a language server
 	 *  serves. Files stream through `on_event` as they finish; ends with `Done`.
@@ -8534,9 +8538,16 @@ export type ProcessMemory = {
 	label: string,
 	/**  Project, run kind or similar. */
 	detail: string | null,
+	/**  The row's top process (the language server, run or terminal shell). */
+	pid: number,
 	/**  Number of processes counted in this row. */
 	processes: number,
 	bytes: number | null,
+	/**
+	 *  CPU use since the previous measurement, in percent of one core (Activity
+	 *  Monitor's "% CPU"); `None` on the first measurement of every process.
+	 */
+	cpuPercent: number | null,
 };
 
 export type Profile = {

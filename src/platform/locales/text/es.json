@@ -4040,7 +4040,6 @@
   "Headers ({count})": "Encabezados ({count})",
   "Headers": "Encabezados",
   "Delete the macro '{name}'?": "¿Eliminar la macro '{name}'?",
-  "{count} processes": "{count} procesos",
   "Memory: {usage}": "Memoria: {usage}",
   " Memory {before} → {after}.": " Memoria {before} → {after}.",
   "{count} syntax tree dropped, index compacted.{memory}": "{count} árbol sintáctico descartado, índice compactado.{memory}",

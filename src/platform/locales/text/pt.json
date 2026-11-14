@@ -4005,7 +4005,6 @@
   "Headers ({count})": "Cabeçalhos ({count})",
   "Headers": "Cabeçalhos",
   "Delete the macro '{name}'?": "Excluir a macro '{name}'?",
-  "{count} processes": "{count} processos",
   "Memory: {usage}": "Memória: {usage}",
   " Memory {before} → {after}.": " Memória {before} → {after}.",
   "{count} syntax tree dropped, index compacted.{memory}": "{count} árvore sintática descartada, índice compactado.{memory}",
