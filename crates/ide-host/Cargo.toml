@@ -62,7 +62,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
-tokio = { workspace = true, features = ["io-std"] }
+tokio = { workspace = true, features = ["io-std", "net"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
