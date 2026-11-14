@@ -217,14 +217,18 @@ pub fn spec(os: Os) -> Vec<Entry> {
     }
 
     let mut file = vec![
-        act("file.newProject", "New Project…"),
-        act("workspace.create", "New Workspace…"),
-        act("workspace.open", "Open Workspace…"),
-        act("workspace.manage", "Manage Workspace…"),
-        act("file.new", "New…"),
-        act("file.newScratchFile", "New Scratch File…"),
+        sub(
+            "new",
+            "New",
+            vec![
+                act("file.newProject", "Project…"),
+                act("workspace.create", "Workspace…"),
+                SEP,
+                act("file.new", "File…"),
+                act("file.newScratchFile", "Scratch File"),
+            ],
+        ),
         act("file.openProject", "Open…"),
-        act("project.attach", "Attach Project…"),
         act("file.openFile", "Open File…"),
         act("file.openInNewWindow", "Open in New Window…"),
         sub(
@@ -232,6 +236,11 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "Open Recent",
             vec![Entry::RecentProjects, SEP, act("welcome.recentProjects", "Manage Projects…")],
         ),
+        act("project.attach", "Attach Project…"),
+        SEP,
+        act("workspace.open", "Open Workspace…"),
+        act("workspace.manage", "Manage Workspace…"),
+        SEP,
         act("file.closeProject", "Close Project"),
         act("file.renameProject", "Rename Project…"),
         SEP,
@@ -1969,6 +1978,26 @@ mod tests {
         }
         for os in ALL_OS {
             walk(&spec(os), &mut HashSet::new());
+        }
+    }
+
+    #[test]
+    fn file_menu_starts_with_a_new_submenu() {
+        for os in ALL_OS {
+            let menus = spec(os);
+            let Some(Entry::Submenu { children: file, .. }) =
+                menus.iter().find(|e| matches!(e, Entry::Submenu { id: "file", .. }))
+            else {
+                panic!("File menu missing on {os:?}")
+            };
+            let Some(Entry::Submenu { id: "new", children: new, .. }) = file.first() else {
+                panic!("File menu does not start with New on {os:?}")
+            };
+            assert_eq!(
+                action_ids(new),
+                ["file.newProject", "workspace.create", "file.new", "file.newScratchFile"],
+                "{os:?}"
+            );
         }
     }
 
