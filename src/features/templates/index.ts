@@ -78,7 +78,7 @@ function directoryOf(arg: unknown): string | null {
 function newFileAction(t: FileTemplate): Action {
   return {
     id: `templates.new.${t.id}`,
-    title: t.id === "file" ? "New Empty File…" : tx`New ${t.name}…`,
+    title: t.id === "file" ? "New Empty File…" : tx`New ${tx(t.name)}…`,
     category: "File",
     icon: t.icon,
     when: "projectOpen",
