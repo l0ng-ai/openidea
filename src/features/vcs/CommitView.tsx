@@ -1310,7 +1310,7 @@ export function StashesPanel() {
                 {text}
               </span>
               {branch && <span className={clsx(styles.detail, styles.stashBranch)}>{branch}</span>}
-              <span className={styles.detail}>{formatTime(s.timeMs)}</span>
+              <span className={clsx(styles.detail, styles.stashTime)}>{formatTime(s.timeMs)}</span>
             </span>
           );
         }}

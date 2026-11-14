@@ -197,9 +197,12 @@
   align-items: center;
   gap: 8px;
 }
-/* The message identifies a stash: branch and time give way first. */
+/* The message identifies a stash: the branch gives way first, the time stays whole. */
 .stashRow > .detail {
   white-space: nowrap;
+}
+.stashRow > .stashTime {
+  flex: none;
 }
 .stashMessage {
   flex: 1 1 auto;
