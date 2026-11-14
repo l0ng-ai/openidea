@@ -163,9 +163,23 @@ function books() { yield new Book(); }
 
 /** @return ?Book */
 function maybe_book() { return null; }
+
+/**
+ * Laravel's `collect()`.
+ *
+ * @template TKey of array-key
+ * @template TValue
+ * @param LCollection<TKey, TValue>|iterable<TKey, TValue>|null $value
+ * @return LCollection<TKey, TValue>
+ */
+function gather($value = []) { return new LCollection($value); }
+
+function anything(): mixed { return null; }
+
+function untyped() { return $GLOBALS['x']; }
 "#;
 
-const LIB_HEADER: &str = "<?php\nnamespace Main;\nuse Lib\\{Book, Author, LCollection, BookCollection, Shelf, Box};\nuse function Lib\\{make, head, or_fail, to_array, list_of, books, maybe_book};\n";
+const LIB_HEADER: &str = "<?php\nnamespace Main;\nuse Lib\\{Book, Author, LCollection, BookCollection, Shelf, Box};\nuse function Lib\\{make, head, or_fail, to_array, list_of, books, maybe_book, gather, anything, untyped};\n";
 
 fn type_in(libs: &[&str], header: &str, body: &str) -> String {
     let source = format!("{header}{body}");
@@ -357,6 +371,22 @@ fn function_templates_from_arguments() {
             // No arguments to infer from: the template's bound.
             ("head([])/*|*/;", "mixed"),
             ("make('nope')/*|*/;", "nope"),
+        ],
+    );
+}
+
+#[test]
+fn an_argument_of_unknown_type_leaves_the_rest_of_the_return_type() {
+    check(
+        &[LIB],
+        LIB_HEADER,
+        &[
+            ("gather([1, 2])/*|*/;", "Lib\\LCollection<int, int>"),
+            ("gather()/*|*/;", "Lib\\LCollection<array-key, mixed>"),
+            ("gather(anything())/*|*/;", "Lib\\LCollection<array-key, mixed>"),
+            ("gather(untyped())/*|*/;", "Lib\\LCollection<array-key, mixed>"),
+            ("gather($nope)/*|*/;", "Lib\\LCollection<array-key, mixed>"),
+            ("gather(anything())->map(fn ($v) => new Book())/*|*/;", "Lib\\LCollection<array-key, Lib\\Book>"),
         ],
     );
 }

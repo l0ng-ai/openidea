@@ -431,7 +431,22 @@ impl Resolver<'_> {
                     && !users.is_empty()
                     && users.iter().all(|&i| params[i].optional && !passed[i]) =>
                 {
-                    Type::Null
+                    // A default that isn't `null` binds what it holds; an
+                    // empty array holds nothing (`collect($value = [])`),
+                    // which leaves the template's bound.
+                    let mut from_defaults = Bindings::new();
+                    let mut null = true;
+                    for &i in &users {
+                        if let Some(default) = params[i].default.as_ref().filter(|ty| !matches!(ty, Type::Null)) {
+                            null = false;
+                            self.infer(&params[i].ty, default, &only, &mut from_defaults);
+                        }
+                    }
+                    match from_defaults.remove(&param.name) {
+                        Some(ty) if !matches!(ty, Type::Never) => ty,
+                        _ if null => Type::Null,
+                        _ => substitute(&param.fallback(), bindings),
+                    }
                 }
                 None => substitute(&param.fallback(), bindings),
             };
