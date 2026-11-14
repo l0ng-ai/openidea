@@ -395,7 +395,16 @@ export function Tree<T>(props: TreeProps<T>) {
     if (!row.expandable || row.expanded === open) return;
     const next = new Set(expanded);
     if (open) next.add(row.key);
-    else next.delete(row.key);
+    else {
+      // Collapsing a node also collapses everything expanded below it, so expanding it again
+      // shows only its direct children.
+      next.delete(row.key);
+      const stack = [...(getChildren(row.node) ?? [])];
+      while (next.size && stack.length) {
+        const n = stack.pop()!;
+        if (next.delete(getKey(n)) || isExpandable(n)) stack.push(...(getChildren(n) ?? []));
+      }
+    }
     if (!expandedControlled) setExpandedInner(next);
     props.onExpandedChange?.(next, row.node, open);
     if (open && getChildren(row.node) === undefined) void loadChildren?.(row.node);
