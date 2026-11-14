@@ -98,10 +98,14 @@ function createSession(cwd: string, command?: SessionOptions["command"], fallbac
     onExit: (k) => {
       const tab = tabOfSession(k);
       if (!tab || !workflowSettings().terminal.closeOnExit) return;
+      // A session ending on its own only takes the caret back when the terminal had it: a
+      // background shell exiting must not pull focus out of the editor.
+      const focus = document.activeElement;
+      const hadFocus = !!focus && [...sessions.values()].some((s) => s.host?.contains(focus));
       closeTab(tab.id);
       if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
       // Wait for the surviving pane to re-mount before giving xterm the caret.
-      else requestAnimationFrame(() => activeSession()?.focus());
+      else if (hadFocus) requestAnimationFrame(() => activeSession()?.focus());
     },
   });
   sessions.set(key, session);
