@@ -23,6 +23,7 @@ import { registerHistoryActions, trackOperationContext } from "./historyActions"
 import { registerLogPaneActions } from "./logPaneActions";
 import { controlLabel, controlOperation, inProgress } from "./operations";
 import { annotationsShown, blameSlot } from "./blame";
+import { activateRevisionAnnotations } from "./annotateRevisionProvider";
 import { inlineBlame } from "./inlineBlame";
 import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidget";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
@@ -289,6 +290,7 @@ export function activate(): () => void {
       restorable: true,
     }),
     activateDiffViewer(),
+    activateRevisionAnnotations(),
     registerEditorKind({
       kind: MERGE_KIND,
       component: lazyComponent(() => import("./MergeEditor").then((m) => m.MergeEditor)),
