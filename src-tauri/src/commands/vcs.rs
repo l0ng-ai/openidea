@@ -439,8 +439,10 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index).await
+    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index, paths)
+        .await
 }
 
 #[tauri::command]

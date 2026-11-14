@@ -807,12 +807,19 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
+    let paths = paths.unwrap_or_default();
     blocking(move || {
-        project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
-            r.stash_push(message.as_deref(), include_untracked, keep_index)
+        if paths.is_empty() {
+            return project.with_repo_recorded(repo.as_deref(), Some("Git stash"), |r| {
+                r.stash_push(message.as_deref(), include_untracked, keep_index, &[])
+            });
+        }
+        per_repo(&project, &paths, Some("Git stash"), |r, paths| {
+            r.stash_push(message.as_deref(), include_untracked, keep_index, paths)
         })
     })
     .await
@@ -1538,6 +1545,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("message")?,
             c.arg("includeUntracked")?,
             c.arg("keepIndex")?,
+            c.arg("paths")?,
         )
         .await
     });
