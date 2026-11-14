@@ -87,16 +87,49 @@ export function affectsMarkers(paths: readonly string[]): boolean {
   return paths.some((p) => !OUTPUT_PATH.test(p));
 }
 
+/**
+ * The Python inheritance graph of the open project, shared by every document and kept
+ * across edits: it is a whole-project index answer, not a per-document one, so scanning
+ * it again for each edit would walk every Python file again. Dropped when other files
+ * change or a server settles (the index may have moved on).
+ */
+let inheritanceGraphCache: { root: string; promise: Promise<ClassInheritance[]> } | null = null;
+
+/** The project whose graph is cached; `""` for no project (a loose file). */
+function projectRoot(): string {
+  return useProject.getState().project?.root ?? "";
+}
+
+/** Forgets the cached graph (files changed, a server settled, or tests). */
+export function forgetInheritanceGraph() {
+  inheritanceGraphCache = null;
+}
+
+function inheritanceGraph(): Promise<ClassInheritance[]> {
+  const root = projectRoot();
+  if (!inheritanceGraphCache || inheritanceGraphCache.root !== root) {
+    inheritanceGraphCache = { root, promise: lspRequest(() => commands.navInheritance()) };
+    // A failed request must not stick: the next pass retries it.
+    inheritanceGraphCache.promise.catch(() => {
+      if (inheritanceGraphCache?.root === root) inheritanceGraphCache = null;
+    });
+  }
+  return inheritanceGraphCache.promise;
+}
+
 /** Subscribes once per window and stays subscribed, so the settle echo guard survives remounts. */
 function watchChanges() {
   if (watching) return;
   watching = true;
   onIdeEvent("fsChanged", (e) => {
-    if (affectsMarkers([...e.created, ...e.modified, ...e.removed])) changes++;
+    if (!affectsMarkers([...e.created, ...e.modified, ...e.removed])) return;
+    changes++;
+    forgetInheritanceGraph();
   });
   // Answers (outlines too) given while a server was starting or indexing may be incomplete.
   onServerSettled(() => {
     docMarkers.clear();
+    forgetInheritanceGraph();
     for (const plugin of live) plugin.refreshSoon();
   });
 }
@@ -760,7 +793,7 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
     readFiles: readManyFileLines,
     // Python servers answer no type hierarchy (basedpyright, pyrefly): the IDE's
     // own index knows every `class X(Base)` of the project, attached roots included.
-    inheritance: ctx.language === "python" ? () => lspRequest(() => commands.navInheritance()) : undefined,
+    inheritance: ctx.language === "python" ? inheritanceGraph : undefined,
   };
 }
 
