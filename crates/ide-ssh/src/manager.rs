@@ -110,6 +110,11 @@ impl SshManager {
         self.entered.lock().get(key).cloned().or_else(|| self.saved.get(key))
     }
 
+    /// Whether a password is saved under `key` (not one only entered this session).
+    pub fn password_saved(&self, key: &str) -> bool {
+        self.saved.get(key).is_some()
+    }
+
     /// The known password / passphrase of configuration `id`.
     pub fn secret(&self, config: &SshConfiguration) -> Option<String> {
         if let Some(s) = self.entered.lock().get(&config.id) {

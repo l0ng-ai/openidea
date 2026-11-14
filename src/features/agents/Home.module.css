@@ -31,7 +31,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  /* The chips' own padding spaces them. */
+  gap: 2px;
   padding: 0 2px;
   font-size: var(--fs-small);
 }
@@ -67,7 +68,6 @@
 .docked .where {
   flex-wrap: nowrap;
   min-width: 0;
-  gap: 6px;
 }
 .docked .projectPicker,
 .docked .projectChip {
@@ -87,4 +87,17 @@
   min-width: 0;
   max-width: 45%;
   margin-left: auto;
+}
+
+.notes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 0;
+}
+.docked .notes {
+  height: auto;
+}
+.docked .notes:empty {
+  display: none;
 }

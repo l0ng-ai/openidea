@@ -5,9 +5,9 @@ wit_bindgen::generate!({
     inline: "
         package fixture:misbehave;
         world misbehave {
-            include openidea:plugin/plugin-syntax@1.7.0;
-            export openidea:plugin/providers@1.7.0;
-            export openidea:plugin/file-actions@1.7.0;
+            include openidea:plugin/plugin-syntax@1.8.0;
+            export openidea:plugin/providers@1.8.0;
+            export openidea:plugin/file-actions@1.8.0;
         }
     ",
     path: "../../../../../wit",

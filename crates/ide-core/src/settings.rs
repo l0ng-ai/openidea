@@ -291,7 +291,7 @@ pub enum NewTaskApprovals {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct McpServerSettings {
-    /// Serve the tools on 127.0.0.1 while the IDE runs.
+    /// Serve the tools on [`Self::address`] while the IDE runs.
     pub enabled: bool,
     /// Run the tools that change the project or start processes without asking first
     /// (IDEA's brave mode). Read from the IDE's own settings only, never a project's.
@@ -300,6 +300,9 @@ pub struct McpServerSettings {
     pub agent_tab_limit: u32,
     /// Archived agent tabs kept; older ones are closed.
     pub agent_archive_limit: u32,
+    /// The IP address to listen on: `127.0.0.1` (this computer only, the default), another
+    /// address of this computer, or `0.0.0.0` / `::` for every address.
+    pub address: String,
     /// Listen on [`Self::port`] in every run, rather than a free port each time, so HTTP clients and
     /// port forwards keep working after a restart.
     pub fixed_port: bool,
@@ -312,6 +315,8 @@ pub struct McpServerSettings {
 
 /// The default of [`McpServerSettings::port`].
 pub const DEFAULT_MCP_PORT: u16 = 26371;
+/// The default of [`McpServerSettings::address`]: this computer only.
+pub const DEFAULT_MCP_ADDRESS: &str = "127.0.0.1";
 
 impl Default for McpServerSettings {
     fn default() -> Self {
@@ -320,6 +325,7 @@ impl Default for McpServerSettings {
             run_without_confirmation: false,
             agent_tab_limit: 1,
             agent_archive_limit: 999,
+            address: DEFAULT_MCP_ADDRESS.to_owned(),
             fixed_port: true,
             port: DEFAULT_MCP_PORT,
             fixed_token: false,
@@ -673,6 +679,28 @@ pub struct AppearanceSettings {
     pub status_bar_widgets: BTreeMap<String, bool>,
     /// Customize Main Toolbar; `None` = the default toolbar.
     pub main_toolbar: Option<MainToolbarSettings>,
+    /// Appearance › Background Image: an image shown through the IDE window.
+    pub background_image: BackgroundImageSettings,
+}
+
+/// Appearance › Background Image. An empty `path` shows no image.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BackgroundImageSettings {
+    pub path: String,
+    /// Percent, 0–100.
+    pub opacity: u8,
+    /// `scale` (cover the window) | `plain` (original size) | `tile`.
+    pub fill: String,
+    /// Where the image is anchored: `center`, `top-left`, `top`, `top-right`, `left`, `right`,
+    /// `bottom-left`, `bottom`, `bottom-right`.
+    pub anchor: String,
+}
+
+impl Default for BackgroundImageSettings {
+    fn default() -> Self {
+        Self { path: String::new(), opacity: 15, fill: "scale".into(), anchor: "center".into() }
+    }
 }
 
 /// Main toolbar entries per side, in order: title widget ids (`project`,
@@ -743,6 +771,7 @@ impl Default for AppearanceSettings {
             navigation_bar: NavigationBarPosition::StatusBar,
             status_bar_widgets: BTreeMap::new(),
             main_toolbar: None,
+            background_image: BackgroundImageSettings::default(),
         }
     }
 }
@@ -1130,6 +1159,9 @@ pub struct NodeSettings {
     pub run_target: String,
     /// `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`.
     pub package_manager: String,
+    /// Runtime for running JavaScript / TypeScript files: `node` | `bun` | `deno`; empty = from the
+    /// project (`deno.json` → Deno, `bun.lock` → Bun, else Node.js).
+    pub runtime: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -1326,11 +1358,15 @@ pub struct TypeScriptSettings {
     /// `bundled` (the server's own TypeScript), `workspace` (`node_modules/typescript`),
     /// or a path to a TypeScript `lib` directory.
     pub version: String,
+    /// tsserver heap limit in MB. `0` = automatic: 8192 when vtsls hosts the Vue
+    /// plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
+    /// vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
+    pub tsserver_max_memory: u32,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into() }
+        Self { version: "bundled".into(), tsserver_max_memory: 0 }
     }
 }
 

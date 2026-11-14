@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,7 +26,7 @@ import {
   uncollapseUnchanged,
   Chunk,
 } from "@codemirror/merge";
-import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -465,6 +466,8 @@ export function DiffEditor({
       lang,
       blameSlot(),
       att?.extension ?? [],
+      // The file's open document: quick docs and ⌘/Ctrl-click navigation, as in its editor.
+      att ? diffSideExtensions(att.context()) : [],
       editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
       notes
         ? diffAnnotations(
@@ -677,6 +680,21 @@ export function DiffEditor({
   }, [softWrap, wrapSlot]);
 
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
+
+  // The editor area focuses the tab's host (`[data-editor-focus]`), e.g. after F7 opened the next
+  // file: hand that focus on to the diff, so its keymap and Jump to Source apply right away.
+  useEffect(() => {
+    const host = rootRef.current?.closest<HTMLElement>("[data-editor-focus]");
+    const views = viewsRef.current;
+    if (!host || !views) return;
+    const forward = () => (focusedSide.current === "a" && views.a ? views.a : views.b).focus();
+    const onFocus = (e: FocusEvent) => {
+      if (e.target === host) forward();
+    };
+    host.addEventListener("focus", onFocus);
+    if (document.activeElement === host) forward();
+    return () => host.removeEventListener("focus", onFocus);
+  }, [viewsGen]);
 
   useEffect(
     () => () => {
@@ -1106,8 +1124,10 @@ export function DiffEditor({
     showSettings,
     viewer: viewerOf,
   });
-  useEffect(() => {
-    // Keep the registered navigator's identity while refreshing its handlers.
+  useLayoutEffect(() => {
+    // Keep the registered navigator's identity while refreshing its handlers. Before paint, so a
+    // shortcut pressed as the toolbar updates (Jump to Source once the working copy is found) runs
+    // the handlers that toolbar shows.
     Object.assign(nav.current, {
       next: () => step(1),
       prev: () => step(-1),

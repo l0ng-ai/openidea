@@ -5,9 +5,15 @@
  */
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerMenuGroup, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import {
+  registerAgentContextSource,
+  registerMenuGroup,
+  registerOverlay,
+  registerStatusItem,
+  registerToolWindow,
+} from "@/workbench/contributions";
 import { getContext } from "@/platform/context";
-import { clearProblems, installProblemsEvents, useProblems } from "./problemsStore";
+import { clearProblems, installProblemsEvents, problemsReport, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
 import { ProblemsHeaderActions, ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
@@ -20,7 +26,7 @@ import { ServerStatus } from "./ServerStatus";
 import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
 
-const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 function useErrorBadge(): number | null {
   return useProblems((s) => {
@@ -45,6 +51,17 @@ export function activate(): () => void {
   const disposers = [
     unsubProject,
     installProblemsEvents(),
+    registerAgentContextSource({
+      id: "problems",
+      title: "Problems",
+      description: "The project's errors and warnings",
+      icon: "problems",
+      resolve: async () => {
+        const root = useProject.getState().project?.root;
+        const text = root ? problemsReport(useProblems.getState().map, root) : null;
+        return text ? { kind: "block", info: "problems", text } : null;
+      },
+    }),
     reportProblems(),
     installProblemDecorations(),
     installServerEvents(),

@@ -2554,7 +2554,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
     f.install(&official("git-toolbox"));
     // Focusing an editor wakes it to show the branch (nothing fetched yet).
     let now = Instant::now();
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some("src/notes.txt".into()))]);
+    let focused = f.project.join("src/notes.txt").to_string_lossy().into_owned();
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(focused))]);
     f.host.flush_events_at(now + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(10)));
     let item = |host: &PluginHost| {
@@ -2992,13 +2993,18 @@ fn official_csv_editor_edits_the_shared_document() {
     f.host.view_event("openidea.csv-editor", "table", cell, inv.clone()).unwrap();
     assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n");
 
+    // Add Row appends, also on wasm32 (where its row index used to wrap to the header).
+    let add = ide_plugin::ViewEvent::Button { id: "add-row".into() };
+    f.host.view_event("openidea.csv-editor", "table", add, inv.clone()).unwrap();
+    assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n,\n");
+
     // Settings: without a header row every record is a row.
     let mut values = serde_json::Map::new();
     values.insert("firstRowIsHeader".into(), serde_json::Value::Bool(false));
     f.workspace.settings.lock().insert("openidea.csv-editor".into(), values);
     let view = f.host.render_view("openidea.csv-editor", "table", None, inv.clone()).unwrap();
     let ide_plugin::ViewBody::Table(t) = &view.body else { panic!("{view:?}") };
-    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 3));
+    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 4));
 
     // Undeclared views are refused before any code runs.
     let err = f.host.render_view("openidea.csv-editor", "other", None, inv).unwrap_err();
@@ -3752,6 +3758,43 @@ path = "templates/new.draw"
     f.host.set_enabled("web-demo", false).unwrap();
     assert!(file(&format!("{rev}/web/index.html")).is_err());
     assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+#[test]
+fn file_icons_without_patterns_require_api_1_8_and_project_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("dynamic-icons");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/helm-dir.svg"), r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>"#)
+        .unwrap();
+    let write_manifest = |api: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "dynamic-icons"
+name = "Dynamic Icons"
+version = "0.1.0"
+engines.openidea = "{api}"
+
+[[contributes.fileIcons]]
+id = "helm-dir"
+icon = "icons/helm-dir.svg"
+"#
+            ),
+        )
+        .unwrap();
+    };
+    write_manifest("^1.7");
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("1.8"), "{err:?}");
+
+    write_manifest("^1.8");
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("dynamic-icons", "fileIcon/helm-dir/").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("<circle"));
 }
 
 #[test]

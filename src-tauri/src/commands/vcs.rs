@@ -16,6 +16,16 @@ use tauri::{AppHandle, Manager, State, Window};
 pub async fn vcs_status(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<FileStatus>> {
     ide_host::ops::vcs::status(&state.host, window.label()).await
 }
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_status_paths(
+    window: Window,
+    paths: Vec<PathBuf>,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::status_paths(&state.host, window.label(), paths).await
+}
 /// The project's repositories, the primary one first.
 #[tauri::command]
 #[specta::specta]
@@ -231,6 +241,17 @@ pub async fn vcs_add_to_ignore(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_ignore_blame_revision(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_ignore_blame_revision(&state.host, window.label(), path, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_unstage(window: Window, state: State<'_, AppState>, paths: Vec<PathBuf>) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_unstage(&state.host, window.label(), paths).await
 }
@@ -418,8 +439,10 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index).await
+    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index, paths)
+        .await
 }
 
 #[tauri::command]

@@ -27,7 +27,7 @@ import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog
 import { tx } from "@/platform/i18n";
 import type { ProjectType } from "@/platform/projectType";
 
-const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || !toolWindowFocus)";
 const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
 
 async function updateTagWithEmmet() {

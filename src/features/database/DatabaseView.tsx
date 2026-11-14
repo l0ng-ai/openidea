@@ -5,33 +5,24 @@
  * with counts and column types, loaded lazily. Double-click a table to open its data, a data
  * source to open its query console.
  */
-import { useEffect, useMemo, useRef, type CSSProperties } from "react";
-import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
+import { useEffect, useMemo, useRef } from "react";
+import type { DbColor, DbDatabases, DbTableDetails } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
   Button,
   EmptyState,
+  HighlightedText,
   Icon,
   IconButton,
   Menu,
-  SearchField,
   Tree,
   showContextMenu,
   tooltipAttrs,
   type TreeHandle,
   T,
 } from "@/ui";
-import {
-  colorVar,
-  databaseKey,
-  passesObjectFilter,
-  passesTreeFilter,
-  shownNames,
-  sourceIcon,
-  splitTarget,
-  targetOf,
-} from "./model";
+import { databaseKey, passesObjectFilter, shownNames, sourceIcon, splitTarget, targetOf } from "./model";
 import {
   nodeTarget,
   isOtherFolder,
@@ -62,6 +53,16 @@ import { DB_VIEW_FOCUS, databaseTree, openTableData } from "./treeActions";
 import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest } from "./requests";
+
+const ROW_TINTS: Record<DbColor, string | undefined> = {
+  red: styles.tintRed,
+  orange: styles.tintOrange,
+  yellow: styles.tintYellow,
+  green: styles.tintGreen,
+  blue: styles.tintBlue,
+  violet: styles.tintViolet,
+};
 
 const GROUP_LABELS: Record<Group, string> = {
   columns: "columns",
@@ -143,12 +144,12 @@ export function DatabaseView() {
   useEffect(() => {
     if (!st.loaded) void loadSources();
   }, [st.loaded]);
-  // Go to Declaration from a console: the rows exist once the expanded nodes render.
+  // Go to Declaration from a console, Select Opened File: the rows exist once the expanded nodes render.
   useEffect(() => {
     if (!st.treeReveal) return;
-    const key = st.treeReveal.key;
+    const path = st.treeReveal.path;
     const frame = requestAnimationFrame(() => {
-      tree.current?.reveal(key);
+      path.toReversed().some((key) => tree.current?.reveal(key));
       tree.current?.focus();
     });
     return () => cancelAnimationFrame(frame);
@@ -159,25 +160,10 @@ export function DatabaseView() {
     [st.sources],
   );
 
-  // While a quick filter is on, the schemas of expanded sources load their objects, so
-  // tables / routines matching the filter show up without expanding every schema node.
-  useEffect(() => {
-    if (!st.treeFilter.trim()) return;
-    const s = useDatabase.getState();
-    for (const [target, list] of Object.entries(s.schemas)) {
-      if (list.status !== "ok") continue;
-      const { id, database } = splitTarget(target);
-      if (!s.treeExpanded.has(database ? databaseKey(id, database) : id)) continue;
-      for (const schema of list.value) {
-        if (!s.tables[tablesKey(target, schema)]) void loadTables(target, schema);
-      }
-    }
-  }, [st.treeFilter, st.treeExpanded, st.schemas]);
-
-  /** Schemas tab › Object filter, plus the toolbar's quick filter, of the data source of target `id`. */
+  /** Schemas tab › Object filter of the data source of target `id`. */
   const shown = (id: string) => {
     const filter = sourceOf(id)?.introspection?.objectFilter;
-    return (o: { name: string }) => passesObjectFilter(o.name, filter) && passesTreeFilter(o.name, st.treeFilter);
+    return (o: { name: string }) => passesObjectFilter(o.name, filter);
   };
   const tablesOf = (id: string, schema: string) => {
     const t = st.tables[tablesKey(id, schema)];
@@ -191,7 +177,7 @@ export function DatabaseView() {
     (st.objects[tablesKey(id, schema)]?.packages ?? []).filter(shown(id));
   const othersOf = (id: string, schema: string, folder: Folder) =>
     (st.objects[tablesKey(id, schema)]?.others ?? []).filter((o) => otherFolder(o.kind) === folder).filter(shown(id));
-  /** Members of a schema folder, after object and quick filtering. */
+  /** Members of a schema folder, after object filtering. */
   const folderSize = (id: string, schema: string, folder: Folder): number => {
     if (isOtherFolder(folder)) return othersOf(id, schema, folder).length;
     if (folder === "routines" || folder === "procedures" || folder === "functions")
@@ -218,19 +204,9 @@ export function DatabaseView() {
     return shownNames(v.names, i?.allDatabases, i?.databases, v.current);
   };
 
-  /** Under a quick filter a schema shows when its name matches, or its loaded objects do. */
-  const schemaVisible = (id: string, schema: string) =>
-    passesTreeFilter(schema, st.treeFilter) ||
-    !!tablesOf(id, schema)?.length ||
-    routinesOf(id, schema).length > 0 ||
-    packagesOf(id, schema).length > 0 ||
-    sequencesOf(id, schema).length > 0;
-
   const schemasOf = (key: string, id: string) =>
     status(key, st.schemas[id], (v) =>
-      shownSchemas(id, v)
-        .filter((schema) => schemaVisible(id, schema))
-        .map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
+      shownSchemas(id, v).map((schema) => ({ kind: "schema", key: `${id}/${schema}`, id, schema }) as Node),
     );
 
   const children = (n: Node): readonly Node[] | undefined => {
@@ -346,7 +322,10 @@ export function DatabaseView() {
   const load = async (n: Node) => {
     if (n.kind === "source") {
       const id = n.source.id ?? "";
-      if (!(await connect(id))) {
+      const current = databaseRequest(id);
+      const connected = await connect(id);
+      if (!current()) return;
+      if (!connected) {
         const err = { status: "error" as const, message: tx("Cannot connect") };
         if (listsDatabases(n.source)) useDatabase.setState((s) => ({ databases: { ...s.databases, [id]: err } }));
         else useDatabase.setState((s) => ({ schemas: { ...s.schemas, [id]: err } }));
@@ -355,7 +334,10 @@ export function DatabaseView() {
       if (listsDatabases(n.source)) await loadDatabases(id);
       else await loadSchemas(id);
     } else if (n.kind === "database") {
-      if (!(await connect(n.id))) {
+      const current = databaseRequest(n.id);
+      const connected = await connect(n.id);
+      if (!current()) return;
+      if (!connected) {
         useDatabase.setState((s) => ({
           schemas: { ...s.schemas, [n.id]: { status: "error", message: tx("Cannot connect") } },
         }));
@@ -542,7 +524,14 @@ export function DatabaseView() {
           getIcon={(n) => icon(n)}
           getDetail={detail}
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
-          renderNode={(n: Node) => {
+          rowClassName={(n) => {
+            // IDEA tints every row of a coloured data source across its full width and height.
+            const target = nodeTarget(n);
+            const color = target ? sourceOf(target)?.color : null;
+            return color ? `${styles.tintedRow} ${ROW_TINTS[color]}` : undefined;
+          }}
+          speedSearchField
+          renderNode={(n: Node, state) => {
             const i = icon(n);
             const d = detail(n);
             const counted = n.kind === "source" || n.kind === "database" || n.kind === "folder" || n.kind === "group";
@@ -553,13 +542,9 @@ export function DatabaseView() {
                   ? styles.keyLabel
                   : styles.nodeLabel;
             const live = n.kind === "source" && [...st.connected].some((t) => splitTarget(t).id === n.source.id);
-            const target = nodeTarget(n);
-            // IDEA tints every row of a coloured data source.
-            const tint = colorVar(target ? sourceOf(target)?.color : null);
             return (
               <span
-                className={tint ? `${styles.nodeRow} ${styles.tinted}` : styles.nodeRow}
-                style={tint ? ({ "--db-tint": tint } as CSSProperties) : undefined}
+                className={styles.nodeRow}
                 title={n.kind === "source" && n.source.comment ? n.source.comment : undefined}
               >
                 {i && (
@@ -569,7 +554,7 @@ export function DatabaseView() {
                     {live && <span className={styles.connectedDot} title={tx("Connected")} />}
                   </span>
                 )}
-                <span className={labelClass}>{label(n)}</span>
+                <HighlightedText className={labelClass} text={label(n)} indices={state.matches} />
                 {n.kind === "source" && n.source.global && (
                   <span className={styles.treeDetail} title={tx("Available in all projects")}>
                     {tx("global")}
@@ -626,7 +611,6 @@ function DatabaseToolbar() {
   const node = useDatabase((s) => s.selectedNode);
   const connected = useDatabase((s) => s.connected);
   const sources = useDatabase((s) => s.sources);
-  const treeFilter = useDatabase((s) => s.treeFilter);
   const plus = useRef<HTMLButtonElement>(null);
   const newOpen = useDatabase((s) => s.newMenuOpen);
   const setNewOpen = (v: boolean) => useDatabase.setState({ newMenuOpen: v });
@@ -672,21 +656,15 @@ function DatabaseToolbar() {
       >
         <T>DDL</T>
       </button>
-      <SearchField
-        className={styles.treeFilter}
-        value={treeFilter}
-        onChange={(treeFilter) => useDatabase.setState({ treeFilter })}
-        placeholder={tx("Filter objects")}
-        aria-label={tx("Filter objects")}
-      />
     </div>
   );
 }
 
-/** Header controls (shown on hover, like IDEA's): Expand All, Collapse All. */
+/** Header controls (shown on hover, like IDEA's): Select Opened File, Expand All, Collapse All. */
 export function DatabaseHeaderActions() {
   return (
     <>
+      <IconButton icon="locate" action="db.selectOpened" size="small" iconSize={16} />
       <IconButton icon="expand-all" action="db.expandAll" size="small" iconSize={16} />
       <IconButton icon="collapse-all" action="db.collapseAll" size="small" iconSize={16} />
     </>

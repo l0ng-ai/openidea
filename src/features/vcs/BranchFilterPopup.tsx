@@ -1,34 +1,76 @@
-import { useMemo, useState, type KeyboardEvent } from "react";
+import clsx from "clsx";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { tx } from "@/platform/i18n";
-import { sortLocal, sortRemote } from "./branches";
+import { isFavoriteBranch, sortLocal, sortRemote } from "./branches";
+import { loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import styles from "./GitLog.module.css";
+
+type Group = "local" | "remote";
 
 type Row =
   | { type: "section"; key: string; label: string }
-  | { type: "ref"; key: string; value: string; label: string; current: boolean; matches: number[] | null };
+  | { type: "group"; key: string; group: Group; label: string; expanded: boolean }
+  | {
+      type: "ref";
+      key: string;
+      value: string;
+      label: string;
+      current: boolean;
+      favorite: boolean;
+      nested: boolean;
+      matches: number[] | null;
+    };
 
 const ROW_HEIGHT = 24;
 const MAX_LIST_HEIGHT = 320;
 
-/** HEAD, then Local and Remote groups; groups without a match are left out. */
-function buildRows(branches: readonly Branch[], query: string): Row[] {
+/**
+ * IDEA's branch filter: HEAD, the favorite branches (★), then Local and Remote collapsed like its
+ * submenus. A query lists every match under Local and Remote instead.
+ */
+function buildRows(
+  branches: readonly Branch[],
+  favorites: readonly string[] | null,
+  query: string,
+  expanded: ReadonlySet<Group>,
+): Row[] {
   const q = query.trim();
   const rows: Row[] = [];
-  const push = (value: string, label: string, current: boolean, out: Row[]) => {
+  const ref = (value: string, label: string, b: Branch | null, key: string, nested: boolean): Row[] => {
     const matches = q ? fuzzyMatch(label, q) : null;
-    if (q && !matches) return;
-    out.push({ type: "ref", key: `ref:${value}`, value, label, current, matches });
+    if (q && !matches) return [];
+    const favorite = !!b && isFavoriteBranch(b, favorites);
+    return [{ type: "ref", key, value, label, current: !!b?.current, favorite, nested, matches }];
   };
-  push("HEAD", tx("HEAD (Current Branch)"), false, rows);
-  const group = (key: string, label: string, list: readonly Branch[]) => {
-    const items: Row[] = [];
-    for (const b of list) push(b.name, b.name, b.current, items);
-    if (items.length) rows.push({ type: "section", key: `section:${key}`, label }, ...items);
-  };
-  group("local", tx("Local"), sortLocal(branches));
-  group("remote", tx("Remote"), sortRemote(branches));
+  rows.push(...ref("HEAD", tx("HEAD (Current Branch)"), null, "ref:HEAD", false));
+  const lists: Array<[Group, string, Branch[]]> = [
+    ["local", tx("Local"), sortLocal(branches, favorites)],
+    ["remote", tx("Remote"), sortRemote(branches, favorites)],
+  ];
+  if (q) {
+    for (const [group, label, list] of lists) {
+      const items = list.flatMap((b) => ref(b.name, b.name, b, `ref:${b.name}`, false));
+      if (items.length) rows.push({ type: "section", key: `section:${group}`, label }, ...items);
+    }
+    return rows;
+  }
+  const favorite = lists
+    .flatMap(([, , list]) => list)
+    .filter((b) => isFavoriteBranch(b, favorites))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (favorite.length)
+    rows.push(
+      { type: "section", key: "section:favorites", label: tx("Favorites") },
+      ...favorite.flatMap((b) => ref(b.name, b.name, b, `favorite:${b.name}`, false)),
+    );
+  for (const [group, label, list] of lists) {
+    if (!list.length) continue;
+    const open = expanded.has(group);
+    rows.push({ type: "group", key: `group:${group}`, group, label, expanded: open });
+    if (open) rows.push(...list.flatMap((b) => ref(b.name, b.name, b, `ref:${b.name}`, true)));
+  }
   return rows;
 }
 
@@ -51,15 +93,32 @@ export function BranchFilterPopup({
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const rows = useMemo(() => buildRows(branches, query), [branches, query]);
+  const [expanded, setExpanded] = useState<ReadonlySet<Group>>(new Set());
+  const favorites = useFavoriteBranches((s) => s.names);
+  useEffect(() => loadFavoriteBranches(), []);
+  const rows = useMemo(() => buildRows(branches, favorites, query, expanded), [branches, favorites, query, expanded]);
   const activeIndex = rows[active] && !isSection(rows[active]!) ? active : firstSelectable(rows, isSection);
+  const toggle = (group: Group, open: boolean) =>
+    setExpanded((s) => {
+      const next = new Set(s);
+      if (open) next.add(group);
+      else next.delete(group);
+      return next;
+    });
   const activate = (row: Row | undefined) => {
     if (row?.type === "ref") onSelect(row.value);
+    else if (row?.type === "group") toggle(row.group, !row.expanded);
   };
   const onKeyDown = (e: KeyboardEvent) => {
+    const row = rows[activeIndex];
     if (e.key === "Enter") {
       e.preventDefault();
-      activate(rows[activeIndex]);
+      activate(row);
+      return;
+    }
+    if (row?.type === "group" && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
+      e.preventDefault();
+      toggle(row.group, e.key === "ArrowRight");
       return;
     }
     const next = listNavigate(e.key, { items: rows, active: activeIndex, isSection, wrap: true });
@@ -113,10 +172,19 @@ export function BranchFilterPopup({
             </span>
           }
           renderItem={(r) =>
-            r.type === "ref" ? (
-              <span className={styles.branchFilterRow}>
+            r.type === "group" ? (
+              <span className={styles.branchFilterRow} aria-expanded={r.expanded}>
                 <Icon
-                  name={r.current ? "current-branch" : "branch"}
+                  name={r.expanded ? "chevron-down" : "chevron-right"}
+                  size={12}
+                  className={styles.branchFilterIcon}
+                />
+                <span className={styles.branchFilterLabel}>{r.label}</span>
+              </span>
+            ) : r.type === "ref" ? (
+              <span className={clsx(styles.branchFilterRow, r.nested && styles.branchFilterNested)}>
+                <Icon
+                  name={r.current ? "current-branch" : r.favorite ? "star" : "branch"}
                   size={14}
                   className={r.current ? styles.branchFilterCurrent : styles.branchFilterIcon}
                 />

@@ -15,6 +15,8 @@ const all = new Set<Map<number, number>>();
 export interface FeatureBackoff {
   /** Stop asking about `doc` for a while. */
   mark(doc: number): void;
+  /** Allow `doc` to ask again right away. */
+  clear(doc: number): void;
   /** Whether `doc` is still being left alone. */
   active(doc: number): boolean;
 }
@@ -27,6 +29,9 @@ export function featureBackoff(ms = DEFAULT_BACKOFF_MS): FeatureBackoff {
     mark(doc) {
       until.set(doc, Date.now() + ms);
     },
+    clear(doc) {
+      until.delete(doc);
+    },
     active(doc) {
       const t = until.get(doc);
       if (t === undefined) return false;
@@ -37,7 +42,7 @@ export function featureBackoff(ms = DEFAULT_BACKOFF_MS): FeatureBackoff {
   };
 }
 
-function clearBackoffs() {
+export function clearBackoffs() {
   for (const until of all) until.clear();
 }
 
@@ -107,6 +112,16 @@ function trackSpells() {
       readyAfterStart.delete(e.server);
     }
   });
+}
+
+/**
+ * Whether any language server is mid-spell (starting or busy): answers given
+ * meanwhile may be partial, so background features keep what they show until
+ * it settles instead of replacing it with an empty or incomplete answer.
+ */
+export function anyServerBusy(): boolean {
+  trackSpells();
+  return spells.size > 0;
 }
 
 /**

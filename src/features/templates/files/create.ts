@@ -10,8 +10,12 @@ import { activeEditor, editorsFor, type TextEditorHandle } from "@/editor/api";
 import { editorService, maybeEditorService, notifications, resolveFileEditor } from "@/workbench/contributions";
 import {
   GO_PACKAGE_RE,
+  blockScopedNamespace,
   caretAfterReformat,
   composerPsr4,
+  csprojFileScoped,
+  csprojRootNamespace,
+  inferCsharpNamespace,
   inferGoPackage,
   inferJvmPackage,
   inferPhpNamespace,
@@ -68,6 +72,26 @@ async function composerNamespace(directory: string, root: string | null): Promis
   }
 }
 
+/** C# namespace from the nearest .csproj between `directory` and the project root. */
+async function csharpNamespace(directory: string, root: string | null): Promise<{ name: string; fileScoped: boolean }> {
+  const none = { name: "", fileScoped: true };
+  if (!isTauri()) return none;
+  const start = directory.replace(/\/+$/, "");
+  const top = root?.replace(/\/+$/, "") ?? null;
+  for (let dir = start; ; dir = dirname(dir)) {
+    const csproj = await call(commands.fsReadDir(dir)).then(
+      (entries) => entries.find((e) => e.kind === "file" && /\.csproj$/i.test(e.name)),
+      () => undefined,
+    );
+    if (csproj) {
+      const text = await call(commands.fsReadText(csproj.path)).catch(() => "");
+      const rootNamespace = csprojRootNamespace(text, csproj.name);
+      return { name: inferCsharpNamespace(start.slice(dir.length), rootNamespace), fileScoped: csprojFileScoped(text) };
+    }
+    if (!top || dir === top || !dir.startsWith(`${top}/`)) return none;
+  }
+}
+
 export function packageStyleFor(t: FileTemplate): FileTemplate["packageStyle"] {
   const dot = t.fileName?.lastIndexOf(".") ?? -1;
   const extension = t.fileName === undefined ? t.extension : dot > 0 ? t.fileName.slice(dot + 1) : "";
@@ -86,6 +110,7 @@ export async function packageFor(t: FileTemplate, directory: string): Promise<st
   if (style === "jvm") return inferJvmPackage(directory, root, packageRoots());
   if (style === "go") return inferGoPackage(directory, root, await siblingGoPackage(directory));
   if (style === "php") return composerNamespace(directory, root);
+  if (style === "csharp") return (await csharpNamespace(directory, root)).name;
   return "";
 }
 
@@ -143,9 +168,15 @@ export async function createFromTemplate(
   const plan = planFile(withKind(t, kind), directory, input);
   if (!plan) throw new Error(tx("Invalid file name"));
   const project = useProject.getState().project;
-  const packageName = await packageFor(withKind(t, kind), plan.directory);
+  let body = kind.body;
+  let packageName: string;
+  if (packageStyleFor(withKind(t, kind)) === "csharp") {
+    const ns = await csharpNamespace(plan.directory, project?.root ?? null);
+    packageName = ns.name;
+    if (ns.name && !ns.fileScoped) body = blockScopedNamespace(body);
+  } else packageName = await packageFor(withKind(t, kind), plan.directory);
   const { text, caret } = renderFileTemplate(
-    kind.body,
+    body,
     {
       variables,
       name: plan.name,

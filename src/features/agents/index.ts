@@ -7,12 +7,15 @@ import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { call, commands } from "@/platform/ipc";
 import {
+  registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerOverlay,
   registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
@@ -30,7 +33,7 @@ import {
   TOOL_WINDOW,
   providerIcon,
 } from "./model";
-import { sendPaths, sendSelection } from "./references";
+import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
@@ -77,6 +80,17 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    trackEditorCopies(),
+    registerAgentContextSource({
+      id: "changes",
+      title: "Changes",
+      description: "Files with uncommitted changes",
+      icon: "diff",
+      resolve: async () => {
+        const changed = await call(commands.vcsStatus());
+        return changed.length ? { kind: "files", paths: changed.map((f) => f.path) } : null;
+      },
+    }),
     // The performance harness (`perf/`): long conversations to switch between and scroll.
     import.meta.env.DEV || import.meta.env.MODE === "perf"
       ? registerActions([
@@ -115,6 +129,13 @@ export function activate(): () => void {
         );
         return n || null;
       },
+    }),
+    registerOverlay({
+      id: "agents.importSessions",
+      component: lazyWhen(
+        () => useAgents((s) => s.importOpen),
+        () => import("./ImportSessionsDialog").then((m) => m.ImportSessionsOverlay),
+      ),
     }),
     registerEditorKind({
       kind: SESSION_KIND,

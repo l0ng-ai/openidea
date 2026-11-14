@@ -7,6 +7,7 @@ use ide_host::mcp::{FileProblems, FocusedEditor};
 use parking_lot::Mutex;
 use serde::Serialize;
 use specta::Type;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{State, Window};
@@ -20,16 +21,18 @@ pub struct McpService {
     error: Mutex<Option<String>>,
 }
 
-/// What the port and token settings ask the server for.
+/// What the address, port and token settings ask the server for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Listen {
+    /// `mcpServer.address`.
+    address: IpAddr,
     /// `mcpServer.port` with `mcpServer.fixedPort`; otherwise a free port.
     port: Option<u16>,
     fixed_token: bool,
 }
 
 /// Starts, stops or restarts the server to match the global `mcpServer` settings: `enabled`,
-/// and the port and token it listens with.
+/// and the address, port and token it listens with.
 pub fn apply(state: &AppState) {
     let settings = state.global_settings.effective().mcp_server;
     let mut server = state.mcp.server.lock();
@@ -43,18 +46,29 @@ pub fn apply(state: &AppState) {
         *state.mcp.error.lock() = None;
         return;
     }
+    let Ok(address) = settings.address.trim().parse::<IpAddr>() else {
+        if let Some(running) = server.take() {
+            running.stop();
+        }
+        *state.mcp.running_with.lock() = None;
+        *state.mcp.error.lock() =
+            Some(format!("the listen address `{}` is not an IP address", settings.address.trim()));
+        return;
+    };
     let wanted = Listen {
+        address,
         port: settings.fixed_port.then_some(settings.port).filter(|p| *p != 0),
         fixed_token: settings.fixed_token,
     };
     if server.is_some() && *state.mcp.running_with.lock() == Some(wanted) {
         return;
     }
-    // Another port or token: clients connect anew.
+    // Another address, port or token: clients connect anew.
     if let Some(running) = server.take() {
+        let held = (running.address(), running.port());
         running.stop();
-        if let Some(port) = wanted.port {
-            wait_until_free(port);
+        if let Some(port) = port_to_wait_for(held, wanted.port) {
+            wait_until_free(address, port);
         }
     }
     let token = if wanted.fixed_token {
@@ -73,7 +87,7 @@ pub fn apply(state: &AppState) {
         Arc::new(ide_host::mcp::Registry::new(state.host.clone())),
         Some(discovery),
         &state.host.runtime,
-        ide_mcp::ServerOptions { port: wanted.port, token },
+        ide_mcp::ServerOptions { address: Some(address), port: wanted.port, token },
     ) {
         Ok(started) => {
             let exe = std::env::current_exe().unwrap_or_default();
@@ -91,10 +105,18 @@ pub fn apply(state: &AppState) {
     }
 }
 
+/// The port a restart listening on `wanted` waits for after stopping the server that listened
+/// on `held`: only its own, at any address (`127.0.0.1` and `0.0.0.0` overlap). A port another
+/// program holds (the run fell back to a free one) stays taken, and waiting for it would block
+/// the window.
+fn port_to_wait_for(held: (IpAddr, u16), wanted: Option<u16>) -> Option<u16> {
+    wanted.filter(|port| held.1 == *port)
+}
+
 /// Waits briefly for a stopped server's port to close, so the restart gets it again.
-fn wait_until_free(port: u16) {
+fn wait_until_free(address: IpAddr, port: u16) {
     for _ in 0..100 {
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        if std::net::TcpListener::bind((address, port)).is_ok() {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -118,13 +140,15 @@ pub struct McpServerStatus {
     pub running: bool,
     /// Why it isn't running though turned on.
     pub error: Option<String>,
+    /// The address listened on (`0.0.0.0` / `::`: every address).
+    pub address: Option<String>,
     pub port: Option<u16>,
     /// Why the fixed port (`mcpServer.port`) isn't the one listened on: it was in use or
     /// reserved, so a free port was taken for this run.
     pub port_unavailable: Option<String>,
     /// The window's local project, which the URL and command below are for.
     pub project: Option<IpcPath>,
-    /// `http://127.0.0.1:<port>/mcp?project=<root>`.
+    /// `http://<address>:<port>/mcp?project=<root>`, with loopback for every address.
     pub url: Option<String>,
     /// Bearer token of `url` (changes with every run unless `mcpServer.fixedToken` is on).
     pub token: Option<String>,
@@ -141,6 +165,7 @@ pub fn mcp_server_status(window: Window, state: State<'_, AppState>) -> IdeResul
     Ok(McpServerStatus {
         running: server.is_some(),
         error: state.mcp.error.lock().clone(),
+        address: server.as_ref().map(|s| s.address().to_string()),
         port: server.as_ref().map(|s| s.port()),
         port_unavailable: server.as_ref().and_then(|s| s.port_unavailable().map(str::to_owned)),
         url: server.as_ref().zip(root.as_ref()).map(|(s, r)| s.url(r)),
@@ -226,4 +251,22 @@ pub fn mcp_respond(
     error: Option<String>,
 ) -> IdeResult<()> {
     state.host.mcp_requests.answer(window.label(), id, allow, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn a_restart_waits_only_for_the_port_the_stopped_server_held() {
+        let local = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        assert_eq!(port_to_wait_for((local, 64342), Some(64342)), Some(64342));
+        // Another address on the same port overlaps the old listener: wait for it too.
+        assert_eq!(port_to_wait_for((any, 64342), Some(64342)), Some(64342));
+        // The fixed port was taken by another program: the server ran on a free one.
+        assert_eq!(port_to_wait_for((local, 51234), Some(64342)), None);
+        assert_eq!(port_to_wait_for((local, 64342), None), None);
+    }
 }

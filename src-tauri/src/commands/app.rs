@@ -189,22 +189,44 @@ pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
 #[specta::specta]
 pub fn settings_set(
     window: Window,
-    state: State<'_, AppState>,
+    app: tauri::AppHandle,
     scope: SettingsScope,
     key: String,
     value: String,
 ) -> IdeResult<Settings> {
-    let applied = ide_host::ops::project::set_settings(&state.host, window.label(), scope, &key, &value)?;
+    let window = window.label().to_owned();
+    // The merge validates its result by deserializing the whole `Settings`, which needs
+    // ~250 KiB of stack in a debug build (measured by bisecting a thread's stack size; the
+    // same with and without a settings file, so it is the type, not the data). A WebView2
+    // IPC callback reaches this command with ~750 KiB of the main thread's 1 MiB already
+    // used, so the merge — and anything else called from that callback — can overflow it.
+    // A worker thread starts from a clean stack, where the default 2 MiB is ample.
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        settings_set_now(&state, &window, scope, &key, &value)
+    })
+    .join()
+    .map_err(|_| IdeError::internal("settings worker panicked"))?
+}
+
+fn settings_set_now(
+    state: &AppState,
+    window: &str,
+    scope: SettingsScope,
+    key: &str,
+    value: &str,
+) -> IdeResult<Settings> {
+    let applied = ide_host::ops::project::set_settings(&state.host, window, scope, key, value)?;
     if key == "mcpServer" || key.starts_with("mcpServer.") {
-        crate::commands::mcp::apply(&state);
+        crate::commands::mcp::apply(state);
     }
     if !applied.project_scope {
         state.updates.wake.notify_one();
     }
     // A project value concerns only that project's window (and its settings window).
-    let event = ide_core::IdeEvent::SettingsChanged { key };
+    let event = ide_core::IdeEvent::SettingsChanged { key: key.to_owned() };
     if applied.project_scope {
-        let owner = AppState::owner_window(window.label());
+        let owner = AppState::owner_window(window);
         for label in [owner.to_owned(), crate::windows::settings_label(owner)] {
             let sink = crate::events::TauriSink { app: state.app.clone(), window: Some(label) };
             sink.emit(event.clone());

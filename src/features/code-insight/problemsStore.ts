@@ -188,3 +188,25 @@ export function installProblemsEvents(): () => void {
     offProfile();
   };
 }
+
+/**
+ * Errors and warnings as `rel:line:col: severity: message (source)` lines, errors first, at most
+ * `max`; null when there are none. For an agent's context.
+ */
+export function problemsReport(map: ProblemsMap, root: string, max = 60): string | null {
+  const rows: { severity: Severity; text: string }[] = [];
+  for (const path of map.keys()) {
+    const rel = path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+    for (const d of fileDiagnostics(map, path)) {
+      if (d.severity !== "error" && d.severity !== "warning") continue;
+      const at = `${rel}:${d.range.start.line + 1}:${d.range.start.col + 1}`;
+      const source = d.source ? ` (${d.source})` : "";
+      rows.push({ severity: d.severity, text: `${at}: ${d.severity}: ${d.message.split("\n")[0]}${source}` });
+    }
+  }
+  if (!rows.length) return null;
+  rows.sort((a, b) => Number(a.severity !== "error") - Number(b.severity !== "error"));
+  const shown = rows.slice(0, max).map((r) => r.text);
+  if (rows.length > max) shown.push(`… ${rows.length - max} more`);
+  return shown.join("\n");
+}

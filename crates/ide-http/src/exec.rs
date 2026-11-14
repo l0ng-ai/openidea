@@ -250,6 +250,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sends_exact_environment_numbers_to_a_local_server() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let (headers, body) = loop {
+                let mut buffer = [0u8; 4096];
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "request ended before its body");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if request.len() >= end + 4 + length {
+                    break (
+                        String::from_utf8(request[..end].to_vec()).unwrap(),
+                        String::from_utf8(request[end + 4..end + 4 + length].to_vec()).unwrap(),
+                    );
+                }
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            (headers, body)
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(crate::env::PUBLIC_FILE),
+            r#"{"dev":{"id":123456789012345678901234567890,"amount":1.0000000000000000002,"tiny":1e-400}}"#,
+        )
+        .unwrap();
+        let file = tmp.path().join("precision.http");
+        let text = format!(
+            "POST http://{addr}/echo?id={{{{id}}}}\nContent-Type: application/json\nX-Exact-Amount: {{{{amount}}}}\n\n{{\"id\":{{{{id}}}},\"amount\":{{{{amount}}}},\"tiny\":{{{{tiny}}}}}}\n"
+        );
+        let input =
+            crate::RunInput { text: &text, index: 0, file: Some(&file), root: Some(tmp.path()), env: Some("dev") };
+        let exchange =
+            tokio::time::timeout(std::time::Duration::from_secs(5), crate::run(input, &CancellationToken::new()))
+                .await
+                .unwrap()
+                .unwrap();
+        let expected = r#"{"id":123456789012345678901234567890,"amount":1.0000000000000000002,"tiny":1e-400}"#;
+        let (headers, body) = server.await.unwrap();
+        assert_eq!(headers.lines().next().unwrap(), "POST /echo?id=123456789012345678901234567890 HTTP/1.1");
+        assert!(headers.lines().any(|line| line.eq_ignore_ascii_case("x-exact-amount: 1.0000000000000000002")));
+        assert_eq!(body, expected);
+        assert_eq!(exchange.request.body.as_deref(), Some(expected));
+        assert_eq!(exchange.response.unwrap().body.as_deref(), Some(expected));
+    }
+
+    #[tokio::test]
     async fn executes_against_a_local_server() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

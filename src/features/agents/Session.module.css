@@ -50,11 +50,13 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
+/* The facts on the bar's line are as tall as its chips, so their text shares one centre line. */
 .agent {
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
   gap: 4px;
+  height: 22px;
   min-width: 0;
   color: var(--fg-secondary);
 }
@@ -69,7 +71,8 @@
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
-  gap: 6px;
+  /* The chips' own padding spaces them. */
+  gap: 2px;
   min-width: 0;
   overflow: hidden;
 }
@@ -78,7 +81,10 @@
   color: var(--fg-subtle);
 }
 .state {
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  height: 22px;
   white-space: nowrap;
 }
 /* The changes sit above the meter, time and terminal; those keep their one row at the right. */
@@ -96,6 +102,7 @@
   display: inline-flex;
   flex: 0 1 auto;
   align-items: center;
+  height: 22px;
   gap: 8px;
   max-width: 100%;
   min-width: 0;
@@ -134,8 +141,8 @@
 }
 .statusChip:hover,
 .statusChip[aria-expanded="true"] {
-  background: var(--bg-hover);
-  color: var(--fg);
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
 }
 /* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */
 .statusChipLabel {
@@ -308,6 +315,14 @@
 @container (max-width: 640px) {
   .stream {
     --session-card-width: 96%;
+  }
+}
+/* A narrow docked session: rather than cut every fact to a letter or two, the bar keeps the
+   agent's icon and its state; where it works is in the task's tooltip and Changes. */
+@container (max-width: 420px) {
+  .where,
+  .agentName {
+    display: none;
   }
 }
 .messageActions {

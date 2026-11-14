@@ -4,6 +4,8 @@
  * minute per directory. Without that command (an older backend) Node.js and
  * Rust come from SDK discovery and everything else resolves at launch.
  */
+import { validateLanguages } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
 import { withRunTarget } from "@/platform/runTargetSelection";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isWindows } from "./jvmTypes";
@@ -95,7 +97,16 @@ async function projectPhp(): Promise<string | null> {
   }
 }
 
-export async function rootMarkers(root: string | null, file: string | null): Promise<{ deno: boolean; bun: boolean }> {
+/**
+ * Which runtime runs a JavaScript / TypeScript file: the preferred runtime when one is set, else
+ * the nearest `deno.json` / `bun.lock` up to the project root (Node.js otherwise).
+ */
+export async function rootMarkers(
+  root: string | null,
+  file: string | null,
+): Promise<{ deno: boolean; bun: boolean; preferred?: boolean }> {
+  const runtime = validateLanguages(useProject.getState().settings?.languages).node.runtime;
+  if (runtime) return { deno: runtime === "deno", bun: runtime === "bun", preferred: true };
   if (!root) return { deno: false, bun: false };
   let dir = file && file.startsWith(root + "/") ? dirOf(file) : root;
   while (dir === root || dir.startsWith(root + "/")) {

@@ -360,6 +360,8 @@ html {
   --h-control-small: 20px;
   --w-project-panel: 240px;
   --z-panel: 10;
+  /* Appearance › Background Image: over panels, under dialogs and popups. */
+  --z-background-image: 20;
   --z-dialog: 900;
   --z-popup: 1000;
   --z-toast: 1100;

@@ -43,7 +43,6 @@ import {
   Icon,
   IconButton,
   Input,
-  InlineTag,
   Radio,
   SearchField,
   Spinner,
@@ -64,6 +63,7 @@ import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/featur
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { setChangesOptions, useChangesOptions } from "./changesOptions";
 import { Composer } from "./Composer";
+import { ReferencedText } from "./ReferenceChip";
 import { selectionIn } from "./selection";
 import { SubmitButton } from "./SubmitButton";
 import {
@@ -72,6 +72,7 @@ import {
   emptyDraft,
   limitLabel,
   messageTokens,
+  parseMention,
   retryParts,
   usageLabel,
   workTime,
@@ -351,7 +352,7 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <span className={styles.agent} title={task.cwd}>
+      <span className={styles.agent} title={`${providerName(task.provider)} · ${task.cwd}`}>
         <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
         <span className={styles.agentName}>
           {providerName(task.provider)}
@@ -920,7 +921,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
               const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
               const laidOut =
                 el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
-              seenHeight.current = { content: el.scrollHeight, view: el.clientHeight };
+              seenHeight.current = {
+                content: el.scrollHeight,
+                view: el.clientHeight,
+              };
               const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
               const movedDown = el.scrollTop > position.current.top;
               const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
@@ -1008,23 +1012,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
 }
 
 type UserEntry = Extract<AgentEntry, { type: "user" }>;
-
-/** Message text with file references and skills as tags, distinct from prose. */
-function MessageText({ text }: { text: string }) {
-  return (
-    <>
-      {messageTokens(text).map((token, i) =>
-        token.kind === "text" ? (
-          <Fragment key={i}>{token.value}</Fragment>
-        ) : (
-          <InlineTag key={i} accent={token.kind === "command"}>
-            {token.value}
-          </InlineTag>
-        ),
-      )}
-    </>
-  );
-}
 
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
 function MessageTime({
@@ -1430,7 +1417,7 @@ const Entry = memo(function Entry({
             <T>Task from the parent agent</T>
           </div>
           <div className={styles.user}>
-            <MessageText text={entry.text} />
+            <ReferencedText text={entry.text} cwd={task.cwd} />
           </div>
         </div>
       ) : (
@@ -1494,7 +1481,14 @@ function UserMessage({
   }
   const images = entry.images ?? [];
   // Images are listed after the files in `attachments` and shown as thumbnails instead.
-  const files = entry.attachments.slice(0, entry.attachments.length - images.length);
+  // Files mentioned in the text are chips there already.
+  const mentioned = new Set(
+    messageTokens(entry.text).flatMap((t) => {
+      const m = t.kind === "file" ? parseMention(t.value) : null;
+      return m ? [basename(m.rel.replace(/\/$/, ""))] : [];
+    }),
+  );
+  const files = entry.attachments.slice(0, entry.attachments.length - images.length).filter((a) => !mentioned.has(a));
   return (
     <div className={clsx(styles.message, styles.userMessage)}>
       {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
@@ -1541,7 +1535,7 @@ function UserMessage({
         </span>
       </div>
       <div className={styles.user}>
-        <MessageText text={entry.text} />
+        <ReferencedText text={entry.text} cwd={task.cwd} />
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
@@ -2673,7 +2667,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
       if (!el?.contains(document.activeElement) && document.activeElement !== document.body) return;
       requestAnimationFrame(() => {
         if (document.activeElement === document.body || !document.activeElement?.isConnected)
-          area?.querySelector<HTMLElement>("textarea")?.focus({ preventScroll: true });
+          area?.querySelector<HTMLElement>(".cm-content")?.focus({ preventScroll: true });
       });
     };
   }, []);
@@ -2952,7 +2946,12 @@ function changeRows(
   commits: readonly AgentCommit[],
   grouped: boolean,
 ): ChangeRow[] {
-  if (!grouped) return uncommitted.map((change) => ({ key: change.path, type: "file" as const, change }));
+  if (!grouped)
+    return uncommitted.map((change) => ({
+      key: change.path,
+      type: "file" as const,
+      change,
+    }));
   const roots: ChangeRow[] = [];
   if (uncommitted.length) {
     roots.push({
@@ -2961,7 +2960,11 @@ function changeRows(
       label: "Uncommitted",
       count: uncommitted.length,
       ...statsOf(uncommitted),
-      children: uncommitted.map((change) => ({ key: `uncommitted:${change.path}`, type: "file", change })),
+      children: uncommitted.map((change) => ({
+        key: `uncommitted:${change.path}`,
+        type: "file",
+        change,
+      })),
     });
   }
   if (commits.length) {
@@ -3006,7 +3009,10 @@ function ChangesPane({
   onHide: () => void;
 }) {
   // The two views key their rows differently: a selection doesn't carry over.
-  const [selection, setSelection] = useState<{ grouped: boolean; keys: ReadonlySet<string> }>(() => ({
+  const [selection, setSelection] = useState<{
+    grouped: boolean;
+    keys: ReadonlySet<string>;
+  }>(() => ({
     grouped,
     keys: NO_SELECTION,
   }));
@@ -3110,7 +3116,10 @@ function ChangesPane({
           body: tx`You changed them yourself, accept them by hand: ${skippedNames}.`,
         });
       } else {
-        notifications().notify({ level: "info", title: tx("Changes accepted") });
+        notifications().notify({
+          level: "info",
+          title: tx("Changes accepted"),
+        });
       }
     } catch (e) {
       notifications().notify({
@@ -3307,7 +3316,10 @@ function uncommittedDiffData(task: AgentTask, change: AgentChange): DiffData {
   const right: DiffData["right"] =
     change.kind === "deleted"
       ? { type: "text", text: "", label: "(deleted)", absent: true }
-      : { type: "worktree", label: task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree" };
+      : {
+          type: "worktree",
+          label: task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree",
+        };
   return { path: change.path, left, right };
 }
 
@@ -3336,7 +3348,12 @@ async function openUncommittedDiff(task: AgentTask, path: string) {
 async function openCommitDiff(task: AgentTask, commit: AgentCommit, path: string) {
   const diffs = commit.files.map((file) =>
     commitFileDiffData(
-      { id: commit.id, shortId: commit.shortId, parents: commit.parent ? [commit.parent] : [], repo: task.cwd },
+      {
+        id: commit.id,
+        shortId: commit.shortId,
+        parents: commit.parent ? [commit.parent] : [],
+        repo: task.cwd,
+      },
       { path: file.relPath, kind: file.kind, oldPath: file.oldPath },
     ),
   );

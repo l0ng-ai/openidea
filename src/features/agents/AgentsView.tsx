@@ -32,11 +32,13 @@ import {
 } from "./model";
 import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
 import {
+  externalKey,
   importExternalSession,
   moveTasksToGroup,
   openHome,
   pinTasks,
   refreshExternalSessions,
+  showImportSessions,
   useAgents,
 } from "./store";
 import { groupMenu, taskMenu } from "./taskActions";
@@ -174,17 +176,11 @@ export function AgentsView() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const external = useAgents((s) => s.external);
   const externalError = useAgents((s) => s.externalError);
-  const [importing, setImporting] = useState<string | null>(null);
+  const importing = useAgents((s) => s.importing);
   // Sessions started elsewhere (a terminal, another editor) list on demand (#312).
   useEffect(() => {
     if (historyOpen) void refreshExternalSessions();
   }, [historyOpen]);
-  const importSession = (provider: string, sessionId: string) => {
-    setImporting(`${provider}:${sessionId}`);
-    void importExternalSession(provider, sessionId)
-      .catch(() => {})
-      .finally(() => setImporting(null));
-  };
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
@@ -272,6 +268,7 @@ export function AgentsView() {
       {tasks.size > 0 && (
         <SearchField
           className={styles.taskSearch}
+          variant="bare"
           value={query}
           onChange={setQuery}
           clearable
@@ -411,6 +408,12 @@ export function AgentsView() {
               <button type="button" className={styles.link} onClick={() => openHome()}>
                 <T>New Task…</T>
               </button>
+              {/* Docked, the list shows in the history popup, which lists the sessions itself. */}
+              {!inline && (
+                <button type="button" className={styles.link} onClick={showImportSessions}>
+                  <T>Import Sessions from Other Apps…</T>
+                </button>
+              )}
             </div>
           )
         }
@@ -484,7 +487,7 @@ export function AgentsView() {
                 ) : (
                   <div className={styles.external}>
                     {external.map((s) => {
-                      const key = `${s.provider}:${s.sessionId}`;
+                      const key = externalKey(s.provider, s.sessionId);
                       return (
                         <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
                           <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
@@ -493,8 +496,8 @@ export function AgentsView() {
                           <button
                             type="button"
                             className={styles.link}
-                            disabled={importing === key}
-                            onClick={() => importSession(s.provider, s.sessionId)}
+                            disabled={importing.has(key)}
+                            onClick={() => void importExternalSession(s.provider, s.sessionId).catch(() => {})}
                           >
                             <T>Import</T>
                           </button>

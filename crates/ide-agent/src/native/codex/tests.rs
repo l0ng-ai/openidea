@@ -535,8 +535,10 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     .unwrap()
                     .unwrap_or_else(|| panic!("the shim closed before {frame}"));
                 let actual: Value = serde_json::from_str(&line).unwrap();
-                // Older recordings predate skill discovery; play an unsupported server.
-                if actual["method"] == "skills/list" && frame["method"] != "skills/list" {
+                // Older recordings predate skill discovery and thread naming; play an
+                // unsupported server.
+                let method = actual["method"].as_str().unwrap_or_default();
+                if matches!(method, "skills/list" | "thread/sample") && frame["method"] != method {
                     let reply = json!({ "id": actual["id"], "error": { "code": -32601, "message": "unsupported" } });
                     write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
                     continue;
@@ -574,7 +576,14 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 /// Runs `scenario` against its transcript; returns the ACP results, the client and
 /// the frames the shim sent.
 async fn replay(scenario: Scenario) -> (Results, Arc<Client>, Vec<Value>, Value) {
-    let t = load(scenario.file());
+    let (results, client, sent, meta, _codex) = replay_transcript(scenario, load(scenario.file())).await;
+    (results, client, sent, meta)
+}
+
+/// Both connections of a replay, which stay open while it is held.
+type CodexEnd = Box<dyn std::any::Any>;
+
+async fn replay_transcript(scenario: Scenario, t: Transcript) -> (Results, Arc<Client>, Vec<Value>, Value, CodexEnd) {
     let (ours, theirs) = tokio::io::duplex(1 << 20);
     let (tr, tw) = tokio::io::split(theirs);
     let client = Arc::new(Client::default());
@@ -590,8 +599,8 @@ async fn replay(scenario: Scenario) -> (Results, Arc<Client>, Vec<Value>, Value)
         .await
         .expect("the scenario finished");
     // Codex stays up until the scenario is over.
-    let (sent, _read, _write) = player.await.unwrap();
-    (results, client, sent, meta)
+    let (sent, read, write) = player.await.unwrap();
+    (results, client, sent, meta, Box::new((acp, read, write)))
 }
 
 fn sent<'a>(frames: &'a [Value], method: &str) -> Vec<&'a Value> {
@@ -799,6 +808,42 @@ async fn a_simple_turn_streams_reasoning_text_and_usage() {
     assert!(kinds.contains(&"usage_update".to_owned()));
     let info = client.of(&session).into_iter().find(|u| u["sessionUpdate"] == "session_info_update").unwrap();
     assert_eq!(info["title"], "Say hi");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unnamed_thread_is_named_after_its_first_turn() {
+    let mut t = load(Scenario::Simple.file());
+    t.frames.retain(|(_, f)| f["method"] != "thread/name/updated");
+    let thread = "01a18300-0000-7000-8000-000000000001";
+    t.frames.extend([
+        (true, json!({"id": 90, "method": "thread/sample"})),
+        (false, json!({"id": 90, "result": {"responseId": "r", "sourceTurnId": thread, "text": "\"Say hi.\"\n"}})),
+        (true, json!({"id": 91, "method": "thread/name/set"})),
+        (false, json!({"id": 91, "result": {}})),
+        (false, json!({"method": "thread/name/updated", "params": {"threadId": thread, "threadName": "Say hi"}})),
+    ]);
+    let (results, client, frames, _, _codex) = replay_transcript(Scenario::Simple, t).await;
+    let session = session_of(&results, "new");
+    let sample = &sent(&frames, "thread/sample")[0]["params"];
+    assert_eq!((sample["threadId"].as_str(), sample["expectedTurnId"].as_str()), (Some(thread), Some(thread)));
+    assert_eq!(sent(&frames, "thread/name/set")[0]["params"], json!({"threadId": thread, "name": "Say hi"}));
+    let mut info = Vec::new();
+    for _ in 0..100 {
+        info = client.of(&session).into_iter().filter(|u| u["sessionUpdate"] == "session_info_update").collect();
+        if !info.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(info.iter().map(|u| u["title"].clone()).collect::<Vec<_>>(), [json!("Say hi")]);
+}
+
+#[test]
+fn thread_names_are_the_first_line_of_the_reply() {
+    assert_eq!(thread_name("  \n“修复登录表单。”\nmore").as_deref(), Some("修复登录表单"));
+    assert_eq!(thread_name("**Fix the login form.**").as_deref(), Some("Fix the login form"));
+    assert_eq!(thread_name(" \n\"\" "), None);
+    assert_eq!(thread_name(&"x".repeat(100)).map(|n| n.chars().count()), Some(80));
 }
 
 #[tokio::test(flavor = "multi_thread")]

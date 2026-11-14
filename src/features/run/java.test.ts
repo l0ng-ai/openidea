@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { JavaLaunchInfo, RunConfig } from "@/platform/ipc";
+import type { JavaLaunchInfo, RunConfig, TestCaseReport } from "@/platform/ipc";
 import {
   formatCompileErrors,
   joinJavaArgs,
@@ -16,7 +16,8 @@ import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
 import { DELEGATED_DEBUG } from "./gradleRun";
 import { firstTopLevelType, jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
-import { adoptTemporary, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
+import { adoptTemporary, applyTestReports, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
+import { TestResults } from "./testing";
 import { detectRunTargets, targetConfig } from "./targets";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
@@ -484,7 +485,7 @@ describe("debugging build tool configurations", () => {
 describe("JUnit XML reports", () => {
   it("become tree results with failure output and source location", () => {
     const events = testReportEvents([
-      { className: "a.B", name: "ok", status: "passed", durationMs: 3, message: null, output: null },
+      { className: "a.B", name: "ok", status: "passed", durationMs: 3, message: null, output: null, stdout: null },
       {
         className: "a.B$Inner",
         name: "bad",
@@ -492,6 +493,7 @@ describe("JUnit XML reports", () => {
         durationMs: null,
         message: "expected 1",
         output: "AssertionError\n\tat org.junit.Assert.fail(Assert.java:1)\n\tat a.B$Inner.bad(B.java:42)",
+        stdout: null,
       },
     ]);
     expect(events[0]).toEqual({ type: "result", path: ["a.B", "ok"], status: "passed", durationMs: 3 });
@@ -512,6 +514,7 @@ describe("JUnit XML reports", () => {
         durationMs: null,
         message: null,
         output: "AssertionFailedError\n\tat app//a.LibraryTest.cannot lend twice(LibraryTest.kt:43)",
+        stdout: null,
       },
     ]);
     expect(events).toContainEqual({
@@ -519,6 +522,58 @@ describe("JUnit XML reports", () => {
       path: ["a.LibraryTest", "cannot lend twice"],
       location: { path: "a/LibraryTest.kt", line: 43, resolve: "name", className: "a.LibraryTest" },
     });
+  });
+});
+
+describe("what JUnit XML reports say a test printed", () => {
+  const report = (over: Partial<TestCaseReport> & { name: string }): TestCaseReport => ({
+    className: "a.B",
+    status: "passed",
+    durationMs: null,
+    message: null,
+    output: null,
+    stdout: null,
+    ...over,
+  });
+  const output = (r: TestResults, name: string) => r.get(["a.B", name].join("\u0000"))?.output;
+
+  it("is shown for passed tests, and before a failure", () => {
+    const r = new TestResults();
+    applyTestReports(r, [
+      report({ name: "ok", stdout: "setUp\nok says hi" }),
+      report({
+        name: "bad",
+        status: "failed",
+        message: "boom",
+        output: "Error: boom\n\tat a.B.bad(B.java:3)",
+        stdout: "bad says hi",
+      }),
+    ]);
+    expect(output(r, "ok")).toEqual(["setUp", "ok says hi"]);
+    expect(output(r, "bad")).toEqual(["bad says hi", "boom", "Error: boom", "\tat a.B.bad(B.java:3)"]);
+  });
+
+  it("goes before the failure Surefire's console reported, once", () => {
+    const r = new TestResults();
+    r.apply([
+      { type: "result", path: ["a.B", "bad"], status: "failed" },
+      { type: "output", path: ["a.B", "bad"], line: "Error: boom" },
+    ]);
+    const reports = [report({ name: "bad", status: "failed", output: "Error: boom", stdout: "bad says hi" })];
+    applyTestReports(r, reports);
+    expect(output(r, "bad")).toEqual(["bad says hi", "Error: boom"]);
+    applyTestReports(r, reports);
+    expect(output(r, "bad")).toEqual(["bad says hi", "Error: boom"]);
+  });
+
+  it("is not repeated for tests the Gradle init script reported with their output", () => {
+    const r = new TestResults();
+    r.apply([
+      { type: "output", path: ["a.B", "ok"], line: "ok says hi" },
+      { type: "result", path: ["a.B", "ok"], status: "passed" },
+    ]);
+    applyTestReports(r, [report({ name: "ok", stdout: "ok says hi" })]);
+    expect(output(r, "ok")).toEqual(["ok says hi"]);
   });
 });
 

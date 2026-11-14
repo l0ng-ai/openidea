@@ -266,12 +266,16 @@ pub struct DebuggerSettings {
     pub inline_values: bool,
     /// Data Views: list variables by name instead of the adapter's order.
     pub sort_values: bool,
+    /// Data Views: evaluate watches while the program runs, where the debugger can (JavaScript).
+    pub live_watches: bool,
     pub value_tooltip: bool,
     /// While suspended, selecting an expression shows its value.
     pub value_tooltip_on_selection: bool,
     pub value_tooltip_delay: u32,
     /// Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`).
     pub skip_library_code: bool,
+    /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
+    pub debug_server_page: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -285,10 +289,12 @@ impl Default for DebuggerSettings {
             run_to_cursor_inlay: true,
             inline_values: true,
             sort_values: false,
+            live_watches: false,
             value_tooltip: true,
             value_tooltip_on_selection: true,
             value_tooltip_delay: 700,
             skip_library_code: true,
+            debug_server_page: false,
             python: PythonDebuggerSettings::default(),
         }
     }

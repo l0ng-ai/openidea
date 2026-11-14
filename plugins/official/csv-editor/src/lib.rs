@@ -143,8 +143,9 @@ impl CsvEditor {
         let d = csv.delimiter;
         let width = csv.records.iter().map(|r| r.fields.len()).max().unwrap_or(1).max(1);
         let empty_record = d.to_string().repeat(width - 1);
-        let record = |row: u32| csv.records.get(row as usize + skip);
-        let insert = |before: u32| match record(before) {
+        let record = |row: u32| csv.records.get(usize::try_from(row).ok()?.checked_add(skip)?);
+        // Before row `before`; at the end for `None` or a row past the end.
+        let insert = |before: Option<u32>| match before.and_then(record) {
             Some(r) => vec![edit(text, r.span.start..r.span.start, format!("{empty_record}\n"))],
             None => {
                 // Append; the last record may lack its line break.
@@ -166,8 +167,8 @@ impl CsvEditor {
                     }
                 }
             }
-            ViewEvent::InsertRow(before) => insert(*before),
-            ViewEvent::Button(b) if b == "add-row" => insert(u32::MAX),
+            ViewEvent::InsertRow(before) => insert(Some(*before)),
+            ViewEvent::Button(b) if b == "add-row" => insert(None),
             ViewEvent::DeleteRows(rows) => {
                 let mut rows: Vec<u32> = rows.clone();
                 rows.sort_unstable();

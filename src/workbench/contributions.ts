@@ -144,6 +144,12 @@ export interface EditorKindContribution {
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
   /**
+   * Whether the tab is busy (a process is running, like a terminal session's):
+   * closing its last tab asks first, and tab-limit eviction skips it. May be
+   * async; both the close confirmation and the eviction await the answer.
+   */
+  isBusy?(input: EditorInput): boolean | Promise<boolean>;
+  /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
    * `input.key` (splits) share one document.
@@ -811,6 +817,35 @@ export interface CommitService {
 let commitServiceImpl: CommitService | undefined;
 export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
 export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/**
+ * Context a feature offers the agent composer's `@` menu (`@problems`, `@terminal`): what
+ * choosing it inserts, a ``` block (`info` names its kind: `problems`, `terminal <title>`)
+ * or references to files.
+ */
+export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
+
+export interface AgentContextSource {
+  /** Typed after `@`. */
+  id: string;
+  /** English: shown through the text catalog. */
+  title: string;
+  description: string;
+  icon: string;
+  /** What to insert now; null when there is nothing (no problems, no terminal). */
+  resolve(): Promise<AgentContext | null>;
+}
+
+const agentContextSources = new Map<string, AgentContextSource>();
+
+export function registerAgentContextSource(source: AgentContextSource): () => void {
+  agentContextSources.set(source.id, source);
+  return () => {
+    if (agentContextSources.get(source.id) === source) agentContextSources.delete(source.id);
+  };
+}
+
+export const getAgentContextSources = (): AgentContextSource[] => [...agentContextSources.values()];
 
 /** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
 export interface ContributedCommitCheck {

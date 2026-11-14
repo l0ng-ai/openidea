@@ -43,6 +43,70 @@ fn run_paths(r: &Repo, args: &[&str], paths: &[String]) -> IdeResult<()> {
     cli::run_paths(r.root(), &base, paths).map(|_| ())
 }
 
+/// The annotate ignore list at the worktree root: git's conventional `blame.ignoreRevsFile`.
+pub const BLAME_IGNORE_REVS_FILE: &str = ".git-blame-ignore-revs";
+
+/// The file `blame.ignoreRevsFile` names, resolved from the worktree root as git does (it may not
+/// exist). The value comes from the gitoxide config snapshot, which Restricted Mode still parses,
+/// so resolving it starts no program.
+fn configured_ignore_revs(r: &Repo) -> Option<PathBuf> {
+    let repo = r.gix().ok()?;
+    let configured = repo.config_snapshot().string("blame.ignoreRevsFile")?;
+    let configured = configured.to_str_lossy();
+    let configured = configured.trim();
+    if configured.is_empty() {
+        return None;
+    }
+    let path = Path::new(configured);
+    Some(if path.is_absolute() { path.to_path_buf() } else { r.root().join(path) })
+}
+
+/// Arguments for the file `blame.ignoreRevsFile` names, which git does not accept as an
+/// absent file: with a value configured but missing from disk, `--no-ignore-revs-file`
+/// clears it so annotate still works.
+fn ignore_revs_args(r: &Repo) -> Vec<String> {
+    match configured_ignore_revs(r) {
+        Some(path) if path.is_file() => vec!["--ignore-revs-file".to_string(), path.to_string_lossy().into_owned()],
+        Some(_) => vec!["--no-ignore-revs-file".to_string()],
+        None => Vec::new(),
+    }
+}
+
+/// `existing` (an ignore list's text) with `commit` appended: lines keep their text and order, a
+/// listed commit isn't repeated, and the result ends with a newline in the list's line ending.
+fn append_revision(existing: &str, commit: &str) -> String {
+    let revision = commit.trim();
+    let newline = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<&str> = existing.lines().collect();
+    if !revision.is_empty() && !lines.iter().any(|line| line.trim() == revision) {
+        lines.push(revision);
+    }
+    if lines.is_empty() { String::new() } else { lines.join(newline) + newline }
+}
+
+/// Adds `commit` to the list `blame.ignoreRevsFile` names; with none configured, to
+/// `.git-blame-ignore-revs` at the worktree root, which the local config then names.
+pub(crate) fn ignore_blame_revision(r: &Repo, commit: &str) -> IdeResult<()> {
+    let configured = configured_ignore_revs(r);
+    let path = configured.clone().unwrap_or_else(|| r.root().join(BLAME_IGNORE_REVS_FILE));
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let updated = append_revision(&existing, commit);
+    if updated != existing {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, updated)?;
+    }
+    if configured.is_none() {
+        cli::run(r.root(), &["config", "--local", "blame.ignoreRevsFile", BLAME_IGNORE_REVS_FILE], None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn blame(
     r: &Repo,
     path: &Path,
@@ -61,8 +125,9 @@ pub(crate) fn blame(
         Err(error) => return Err(error.into()),
     };
     let text = current_text.map(str::to_owned).unwrap_or_else(|| decode(&disk, encoding).into_owned());
+    let ignore = ignore_revs_args(r);
     if encoding.has_ascii_conversion() {
-        return converted_blame(r, path, &rel, &text, revision, encoding);
+        return converted_blame(r, path, &rel, &text, revision, encoding, &ignore);
     }
     let contents = match current_text {
         Some(_) if crate::diff::normalize_eol(&text) == crate::diff::normalize_eol(&decode(&disk, encoding)) => disk,
@@ -94,23 +159,32 @@ pub(crate) fn blame(
     // older releases reject the pair (`fatal: cannot use --contents with final
     // commit object name`) and take the same plain path — the edited lines are
     // marked uncommitted below either way (issue #755).
-    let contents_args = ["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel];
-    let plain_args: &[&str] = if crate::execution_allowed() {
-        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", &rel]
-    } else {
-        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", &rel]
+    let contents_args = {
+        let mut args = vec!["--literal-pathspecs", "blame", "--porcelain"];
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--contents", "-", revision, "--", &rel]);
+        args
+    };
+    let plain_args: Vec<&str> = {
+        let mut args = vec!["--literal-pathspecs", "blame"];
+        if !crate::execution_allowed() {
+            args.push("--no-textconv");
+        }
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--porcelain", revision, "--", &rel]);
+        args
     };
     let (out, contents_blame) = if crate::execution_allowed() {
         let out = cli::run_raw(r.root(), &contents_args, Some(&contents))?;
         if out.code == Some(0) {
             (out, true)
         } else if String::from_utf8_lossy(&out.stderr).contains("cannot use --contents") {
-            (run(r.root(), plain_args, None)?, false)
+            (run(r.root(), &plain_args, None)?, false)
         } else {
             return Err(cli::failure(&contents_args, &out.stderr, &out.stdout, out.code));
         }
     } else {
-        (run(r.root(), plain_args, None)?, false)
+        (run(r.root(), &plain_args, None)?, false)
     };
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());
     for line in &mut lines {
@@ -142,16 +216,21 @@ fn converted_blame(
     text: &str,
     revision: &str,
     encoding: TextEncoding,
+    ignore: &[String],
 ) -> IdeResult<Vec<BlameLine>> {
     let current = crate::diff::normalize_eol(text);
     let mut result = uncommitted_lines(current.split_inclusive('\n').count());
     let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
-    let args: &[&str] = if crate::execution_allowed() {
-        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel]
-    } else {
-        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", rel]
+    let args: Vec<&str> = {
+        let mut args = vec!["--literal-pathspecs", "blame"];
+        if !crate::execution_allowed() {
+            args.push("--no-textconv");
+        }
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--porcelain", revision, "--", rel]);
+        args
     };
-    let out = run(r.root(), args, None)?;
+    let out = run(r.root(), &args, None)?;
     let physical = crate::blame::parse_porcelain(&out.stdout_str());
     let raw = crate::text_encoding::decode_raw(&base, encoding);
     let raw = crate::diff::normalize_eol(&raw);
@@ -1049,8 +1128,18 @@ pub(crate) fn rebase(r: &Repo, onto: &str) -> IdeResult<()> {
     })
 }
 
-pub(crate) fn stash_push(r: &Repo, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {
-    let mut args = vec!["stash", "push", "-q"];
+pub(crate) fn stash_push(
+    r: &Repo,
+    message: Option<&str>,
+    include_untracked: bool,
+    keep_index: bool,
+    paths: &[PathBuf],
+) -> IdeResult<()> {
+    let rel = r.rel_paths(paths)?;
+    // Literal pathspecs only for the chosen files: git's whole-tree stash passes itself `:/`,
+    // which a literal pathspec turns into a file of that name.
+    let mut args = if rel.is_empty() { vec![] } else { vec!["--literal-pathspecs"] };
+    args.extend(["stash", "push", "-q"]);
     if include_untracked {
         args.push("--include-untracked");
     }
@@ -1059,6 +1148,10 @@ pub(crate) fn stash_push(r: &Repo, message: Option<&str>, include_untracked: boo
     }
     if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
         args.extend(["-m", m]);
+    }
+    if !rel.is_empty() {
+        args.push("--");
+        args.extend(rel.iter().map(String::as_str));
     }
     run(r.root(), &args, None).map(|_| ())
 }
@@ -1382,4 +1475,20 @@ fn decode_diff(bytes: &[u8], encoding: TextEncoding) -> String {
         }
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_revision;
+
+    #[test]
+    fn a_revision_is_appended_once_keeping_the_list() {
+        let (a, b) = ("a".repeat(40), "b".repeat(40));
+        assert_eq!(append_revision("", &b), format!("{b}\n"));
+        assert_eq!(append_revision(&format!("{a}\n# comment\n"), &b), format!("{a}\n# comment\n{b}\n"));
+        assert_eq!(append_revision(&a, &b), format!("{a}\n{b}\n"));
+        let listed = format!("# reformat\n  {b}  \n{a}\n");
+        assert_eq!(append_revision(&listed, &b), listed);
+        assert_eq!(append_revision(&format!("{a}\r\n"), &b), format!("{a}\r\n{b}\r\n"));
+    }
 }
