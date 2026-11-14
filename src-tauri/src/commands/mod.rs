@@ -715,6 +715,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         crate::remote_dev::remote_import_local,
         env::env_reload,
         db::db_test,
+        db::db_test_tunnel,
         db::db_connected,
         db::db_connect,
         db::db_disconnect,

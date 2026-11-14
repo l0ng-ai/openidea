@@ -341,6 +341,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_save_sources",
         "db_set_password",
         "db_test",
+        "db_test_tunnel",
         "db_set_ssh_secret",
         "db_trust_ssh_host",
         "db_connected",

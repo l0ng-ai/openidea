@@ -7989,5 +7989,8 @@
   "This build of {display} no longer starts. Choose a newer build in Language Servers.": "此版本的 {display} 已无法启动。请在“语言服务器”中选择更新的版本。",
   "This build of {display} no longer starts. Update it to the latest release?": "此版本的 {display} 已无法启动。要更新到最新版本吗？",
   "This build of {display} no longer starts. Install the latest release for the IDE? It is used instead of {path}.": "此版本的 {display} 已无法启动。要为 IDE 安装最新版本吗？安装后将代替 {path} 使用。",
-  "Install Latest": "安装最新版本"
+  "Install Latest": "安装最新版本",
+  "SSH tunnel works: {route}": "SSH 隧道可用：{route}",
+  "Test SSH Tunnel": "测试 SSH 隧道",
+  "Logs in to the SSH host and checks that it reaches the database host and port.": "登录 SSH 主机，并检查它能否连到数据库的主机和端口。"
 }
