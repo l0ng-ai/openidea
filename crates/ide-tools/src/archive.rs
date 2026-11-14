@@ -331,8 +331,8 @@ pub fn env_wrapper(bin_dir: &Path, command: &str, target: &Path, env: &[(&str, &
     #[cfg(not(unix))]
     {
         let link = bin_dir.join(format!("{command}.cmd"));
-        let vars: String = env.iter().map(|(k, v)| format!("set \"{k}={}\"\r\n", v.display())).collect();
-        fs::write(&link, format!("@echo off\r\nsetlocal\r\n{vars}\"{}\" %*\r\n", target.display()))?;
+        let vars: String = env.iter().map(|(k, v)| format!("set \"{k}={}\"\r\n", cmd_path(bin_dir, v))).collect();
+        fs::write(&link, format!("@echo off\r\nsetlocal\r\n{vars}\"{}\" %*\r\n", cmd_path(bin_dir, target)))?;
         Ok(link)
     }
 }
@@ -357,8 +357,22 @@ pub fn link_executable(bin_dir: &Path, command: &str, target: &Path) -> IdeResul
     {
         let link = bin_dir.join(format!("{command}.cmd"));
         let runner = if target.extension().is_some_and(|e| e == "js") { "node " } else { "" };
-        fs::write(&link, format!("@echo off\r\n{runner}\"{}\" %*\r\n", target.display()))?;
+        fs::write(&link, format!("@echo off\r\n{runner}\"{}\" %*\r\n", cmd_path(bin_dir, target)))?;
         Ok(link)
+    }
+}
+
+/// `path` as a `.cmd` shim in `bin_dir` names it: relative to the shim (`%~dp0..\…`) when it
+/// is in the tool's own directory. cmd.exe reads a batch file in the console's code page, so
+/// an absolute path through a non-ASCII user directory, written as UTF-8, isn't found (#3338).
+#[cfg_attr(unix, allow(dead_code))]
+fn cmd_path(bin_dir: &Path, path: &Path) -> String {
+    match bin_dir.parent().and_then(|tool| path.strip_prefix(tool).ok()) {
+        Some(rest) => {
+            let rest: Vec<_> = rest.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+            format!("%~dp0..\\{}", rest.join("\\"))
+        }
+        None => path.display().to_string(),
     }
 }
 
@@ -741,6 +755,17 @@ mod tests {
         fs::write(root.join("extension/package.json"), "").unwrap();
         let found = locate(root, &["com.microsoft.java.debug.plugin-*.jar".into()]).unwrap();
         assert!(found.ends_with("server/com.microsoft.java.debug.plugin-0.53.2.jar"));
+    }
+
+    #[test]
+    fn windows_shims_name_the_tool_relative_to_themselves() {
+        let tool = Path::new("/Users/张三/AppData/Local/ai.l0ng.openidea/tools/taplo");
+        let bin = tool.join("bin");
+        assert_eq!(cmd_path(&bin, &tool.join("taplo.exe")), "%~dp0..\\taplo.exe");
+        assert_eq!(cmd_path(&bin, &tool.join("gems/bin/solargraph")), "%~dp0..\\gems\\bin\\solargraph");
+        // Outside the tool's directory (a system SDK) stays absolute.
+        let sdk = Path::new("/usr/local/share/dotnet");
+        assert_eq!(cmd_path(&bin, sdk), sdk.display().to_string());
     }
 
     #[cfg(unix)]
