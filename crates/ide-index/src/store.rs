@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
-/// Bump when [`FileRecord`] or its encoding changes.
-const SCHEMA: &str = "openidea-index-3";
+/// Bump when [`FileRecord`] or its encoding changes. 4: a symbol's base names.
+const SCHEMA: &str = "openidea-index-4";
 
 /// The real Git directory for a checkout/worktree (`root/.git` may be a file
 /// containing `gitdir: ...`).
@@ -113,6 +113,9 @@ struct FlatSymbol {
     name_len: u32,
     container_start: u32,
     container_len: u32,
+    /// Base names joined with `'\0'` (`bases_len` 0 when the symbol has none).
+    bases_start: u32,
+    bases_len: u32,
     kind: SymbolKind,
     range: Range,
 }
@@ -324,11 +327,14 @@ impl Snapshot {
                     let start = s.container_start as usize;
                     &self.text[start..start + s.container_len as usize]
                 });
+                let bases_start = s.bases_start as usize;
+                let bases = &self.text[bases_start..bases_start + s.bases_len as usize];
                 StoredSymbol {
                     name: name.to_owned(),
                     kind: s.kind,
                     container: container.map(str::to_owned),
                     range: s.range,
+                    bases: bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
                 }
             })
             .collect();
@@ -498,11 +504,15 @@ impl Store {
                     }
                     None => (u32::MAX, 0),
                 };
+                let bases_start = fit(snap.text.len())?;
+                snap.text.push_str(s.bases);
                 snap.symbols.push(FlatSymbol {
                     name_start,
                     name_len: fit(s.name.len())?,
                     container_start,
                     container_len,
+                    bases_start,
+                    bases_len: fit(s.bases.len())?,
                     kind: s.kind,
                     range: s.range,
                 });
@@ -717,6 +727,7 @@ mod tests {
                 kind: SymbolKind::Class,
                 container: Some("Order".into()),
                 range: Range::default(),
+                bases: vec!["Base".into()],
             }],
             ..Default::default()
         };
@@ -740,6 +751,7 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "OrderController");
         assert_eq!(symbols[0].container.as_deref(), Some("Order"));
+        assert_eq!(symbols[0].bases, vec!["Base".to_string()], "bases survive the snapshot");
 
         store.apply(&[], &[], false).unwrap();
         assert!(store.load_snapshot().is_none(), "a file change invalidates the snapshot");
