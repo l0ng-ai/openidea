@@ -295,39 +295,139 @@ impl crate::Host {
     }
 }
 
-/// Commands which only inspect/edit source or operate user-owned application state.
-/// New execution commands are denied until deliberately classified here.
+/// Commands allowed in Restricted Mode, by exact name: those which only inspect/edit source or
+/// operate user-owned application state. A new command is denied until deliberately listed here.
 pub fn restricted_command_allowed(cmd: &str) -> bool {
-    if [
-        "fs_",
-        "doc_",
-        "syntax_",
-        "search_",
-        "nav_",
-        "history_",
-        "spell_",
-        "analysis_",
-        "structural_",
-        "refactor_",
-        "bytes_",
-        "window_",
-        "window_group_",
-        "term_",
-        "settings_",
-        "project_trust_",
-        // New Project writes only where the user chose and runs no code of an open project.
-        "scaffold_",
-        "ssh_",
-        "git_credential",
-    ]
-    .iter()
-    .any(|p| cmd.starts_with(p))
-    {
-        return true;
-    }
     matches!(
         cmd,
-        "app_info"
+        "fs_compare_directories"
+            | "fs_copy"
+            | "fs_copy_merge"
+            | "fs_create_dir"
+            | "fs_create_file"
+            | "fs_create_file_bytes"
+            | "fs_delete"
+            | "fs_entry_kind"
+            | "fs_open_with_system"
+            | "fs_probe"
+            | "fs_read_dir"
+            | "fs_read_image"
+            | "fs_read_range"
+            | "fs_read_text"
+            | "fs_rename"
+            | "fs_resolve_reference"
+            | "fs_set_writable"
+            | "doc_close"
+            | "doc_edit"
+            | "doc_folding"
+            | "doc_highlights"
+            | "doc_open"
+            | "doc_open_virtual"
+            | "doc_outline"
+            | "doc_save"
+            | "doc_save_all"
+            | "doc_selection_ranges"
+            | "doc_set_bom"
+            | "doc_set_encoding"
+            | "doc_set_line_ending"
+            | "doc_snapshot"
+            | "doc_sync_from_disk"
+            | "doc_ui_mode"
+            | "syntax_errors"
+            | "syntax_expression_at"
+            | "syntax_identifiers"
+            | "syntax_identifiers_in_files"
+            | "syntax_locals"
+            | "syntax_node_at"
+            | "syntax_structural_ranges"
+            | "syntax_support"
+            | "search_start"
+            | "search_validate"
+            | "nav_index_definitions"
+            | "nav_inheritance"
+            | "nav_resolve_module"
+            | "history_content"
+            | "history_list"
+            | "history_list_dir"
+            | "history_put_label"
+            | "history_restore"
+            | "spell_check"
+            | "spell_suggest"
+            | "analysis_locate_duplicates"
+            | "structural_languages"
+            | "structural_search"
+            | "structural_validate"
+            | "refactor_can_undo_file_move"
+            | "refactor_file_move_edits"
+            | "refactor_file_move_text_edits"
+            | "refactor_move_files"
+            | "refactor_undo_file_move"
+            | "window_close_context"
+            | "window_complete_launch"
+            | "window_cycle"
+            | "window_flash_taskbar"
+            | "window_group_cancel_close"
+            | "window_group_close"
+            | "window_group_close_tabs"
+            | "window_group_current"
+            | "window_group_detach"
+            | "window_group_merge"
+            | "window_group_reorder"
+            | "window_group_restore"
+            | "window_group_select"
+            | "window_is_fullscreen"
+            | "window_new"
+            | "window_open_comparison"
+            | "window_open_deployment"
+            | "window_open_diff"
+            | "window_open_file_in_new_window"
+            | "window_open_files"
+            | "window_open_project"
+            | "window_open_projects"
+            | "window_open_remote"
+            | "window_open_settings"
+            | "window_set_titlebar_height"
+            | "window_start_drag"
+            | "window_take_launch"
+            | "window_toggle_fullscreen"
+            | "window_toggle_zoom"
+            | "term_available_shells"
+            | "term_default_shell"
+            | "term_is_busy"
+            | "term_kill"
+            | "term_resize"
+            | "term_spawn"
+            | "term_store_image"
+            | "term_write"
+            | "settings_export"
+            | "settings_get"
+            | "settings_get_global"
+            | "settings_import"
+            | "settings_list_jetbrains_ides"
+            | "settings_read_jetbrains"
+            | "settings_set"
+            | "project_trust_add_location"
+            | "project_trust_list"
+            | "project_trust_remove_location"
+            | "project_trust_set"
+            | "project_trust_status"
+            // New Project writes only where the user chose and runs no code of an open project.
+            | "scaffold_catalog"
+            | "scaffold_create"
+            | "scaffold_options"
+            | "scaffold_requirements"
+            | "ssh_askpass_answer"
+            | "ssh_connected"
+            | "ssh_disconnect"
+            | "ssh_needs_secret"
+            | "ssh_open_terminal"
+            | "ssh_password_saved"
+            | "ssh_set_secret"
+            | "ssh_test"
+            | "ssh_trust_host"
+            | "git_credential_forget"
+            | "git_credentials"
+            | "app_info"
             | "app_build_info"
             | "app_cli_install"
             | "app_cli_uninstall"
@@ -568,6 +668,14 @@ mod tests {
     #[test]
     fn restricted_mode_allows_clipboard_write_text() {
         assert!(super::restricted_command_allowed("clipboard_write_text"));
+    }
+
+    #[test]
+    fn restricted_mode_denies_new_commands_whatever_their_name() {
+        for cmd in ["fs_new_command", "term_new_command", "ssh_new_command", "settings_new_command", "git_credential_x"]
+        {
+            assert!(!super::restricted_command_allowed(cmd), "{cmd} is allowed without being listed");
+        }
     }
 
     #[test]
