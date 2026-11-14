@@ -2091,6 +2091,14 @@ fn status_paths_reads_only_the_named_paths() {
     let dir = repo.status_paths(&[fx.path("dir")]).unwrap();
     assert_eq!(dir.iter().map(|s| s.rel_path.as_str()).collect::<Vec<_>>(), ["dir/c.txt"]);
 
+    // A nested file: the path a watcher hands over is spelled by the platform, and the pathspec
+    // needs `/` whatever the platform's separator is.
+    let nested = repo.status_paths(&[fx.path("dir").join("c.txt")]).unwrap();
+    assert_eq!(nested.iter().map(|s| s.rel_path.as_str()).collect::<Vec<_>>(), ["dir/c.txt"]);
+
+    // The repository root itself names everything, not a path called "".
+    assert_eq!(repo.status_paths(&[fx.path("")]).unwrap().len(), 4);
+
     // A new file the batch names is reported as untracked, not as a directory entry.
     let new = repo.status_paths(&[fx.path("new.txt")]).unwrap();
     assert_eq!((new[0].rel_path.as_str(), new[0].unstaged), ("new.txt", Some(ChangeKind::Untracked)));

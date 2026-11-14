@@ -20,7 +20,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
-    let (map, conflicts) = gix_status(r, &ignored, &[]).or_else(|e| {
+    let (map, conflicts) = gix_status(r, &ignored).or_else(|e| {
         tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
         cli_status(r, &ignored)
     })?;
@@ -33,16 +33,18 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
 /// pathspec filtering keeps that batch proportional to what changed. An empty list is the
 /// full status, so a caller that lost the paths still gets a correct answer.
 pub(crate) fn status_paths(r: &Repo, paths: &[String]) -> IdeResult<Vec<FileStatus>> {
-    if paths.is_empty() {
+    // Pathspecs always take `/`, and a path that *is* the repository root names everything: both
+    // matter, because `Repo::status_paths` hands over paths as the platform spells them.
+    let patterns: Vec<String> =
+        paths.iter().map(|path| path.replace('\\', "/")).filter(|path| !path.is_empty()).collect();
+    if patterns.is_empty() {
         return status(r);
     }
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
-    // gitoxide's status takes the pathspec in-process: no `git` process, so a watcher batch on a
-    // large repository costs the index check for its paths and nothing else.
-    let (map, conflicts) = gix_status(r, &ignored, paths).or_else(|e| {
-        tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
-        cli_status_paths(r, &ignored, paths)
-    })?;
+    // `git status` with the pathspec, for the same reason the full read falls back to it: gitoxide's
+    // in-process pathspec matched nothing for a plain relative path here, and a silent empty
+    // answer is worse than the ~40 ms a `git` process costs on Windows.
+    let (map, conflicts) = cli_status_paths(r, &ignored, &patterns)?;
     Ok(collect(r, &ignored, map, conflicts))
 }
 
@@ -121,7 +123,7 @@ impl DiskSpelling {
 
 type Entries = (BTreeMap<String, Entry>, HashSet<String>);
 
-fn gix_status(r: &Repo, ignored: &IgnoredNames, pathspec: &[String]) -> IdeResult<Entries> {
+fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
     let repo = r.gix()?;
     let mut map: BTreeMap<String, Entry> = BTreeMap::new();
     let mut conflicts: HashSet<String> = HashSet::new();
@@ -139,8 +141,7 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames, pathspec: &[String]) -> IdeResul
         .index_worktree_rewrites(None)
         .index_worktree_submodules(gix::status::Submodule::AsConfigured { check_dirty: true })
         .tree_index_track_renames(gix::status::tree_index::TrackRenames::Given(gix::diff::Rewrites::default()));
-    let patterns: Vec<gix::bstr::BString> = pathspec.iter().map(|path| path.as_bytes().into()).collect();
-    let mut iter = platform.into_iter(patterns).map_err(gx)?;
+    let mut iter = platform.into_iter(Vec::<gix::bstr::BString>::new()).map_err(gx)?;
     for item in iter.by_ref() {
         let item = item.map_err(gx)?;
         match item {
@@ -442,7 +443,7 @@ mod tests {
             (m, c)
         };
         let from_git = show(cli_status(&repo, &ignored).unwrap());
-        assert_eq!(from_git, show(gix_status(&repo, &ignored, &[]).unwrap()));
+        assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
         assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
         assert_eq!(from_git.1, ["conflict.txt"]);
     }
