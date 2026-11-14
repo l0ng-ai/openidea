@@ -27,12 +27,14 @@ import {
   isCancelled,
   nextRequestId,
   onIdeEvent,
+  type ClassInheritance,
   type HierarchyItem,
   type Location,
   type OutlineItem,
   type Pos,
   type RequestId,
 } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { editorPrefs, type EditorExtras } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup } from "@/ui";
@@ -48,7 +50,7 @@ import {
   type MarkerCandidate,
   type MarkerGroup,
 } from "./lineMarkers";
-import { overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
+import { baseName, overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
 import styles from "./LineMarkers.module.css";
 
 /** Lines above / below the viewport that are asked with it. */
@@ -85,16 +87,49 @@ export function affectsMarkers(paths: readonly string[]): boolean {
   return paths.some((p) => !OUTPUT_PATH.test(p));
 }
 
+/**
+ * The Python inheritance graph of the open project, shared by every document and kept
+ * across edits: it is a whole-project index answer, not a per-document one, so scanning
+ * it again for each edit would walk every Python file again. Dropped when other files
+ * change or a server settles (the index may have moved on).
+ */
+let inheritanceGraphCache: { root: string; promise: Promise<ClassInheritance[]> } | null = null;
+
+/** The project whose graph is cached; `""` for no project (a loose file). */
+function projectRoot(): string {
+  return useProject.getState().project?.root ?? "";
+}
+
+/** Forgets the cached graph (files changed, a server settled, or tests). */
+export function forgetInheritanceGraph() {
+  inheritanceGraphCache = null;
+}
+
+function inheritanceGraph(): Promise<ClassInheritance[]> {
+  const root = projectRoot();
+  if (!inheritanceGraphCache || inheritanceGraphCache.root !== root) {
+    inheritanceGraphCache = { root, promise: lspRequest(() => commands.navInheritance()) };
+    // A failed request must not stick: the next pass retries it.
+    inheritanceGraphCache.promise.catch(() => {
+      if (inheritanceGraphCache?.root === root) inheritanceGraphCache = null;
+    });
+  }
+  return inheritanceGraphCache.promise;
+}
+
 /** Subscribes once per window and stays subscribed, so the settle echo guard survives remounts. */
 function watchChanges() {
   if (watching) return;
   watching = true;
   onIdeEvent("fsChanged", (e) => {
-    if (affectsMarkers([...e.created, ...e.modified, ...e.removed])) changes++;
+    if (!affectsMarkers([...e.created, ...e.modified, ...e.removed])) return;
+    changes++;
+    forgetInheritanceGraph();
   });
   // Answers (outlines too) given while a server was starting or indexing may be incomplete.
   onServerSettled(() => {
     docMarkers.clear();
+    forgetInheritanceGraph();
     for (const plugin of live) plugin.refreshSoon();
   });
 }
@@ -131,6 +166,13 @@ export interface MarkerDeps {
   implementations: (positions: Pos[]) => Promise<Location[][]>;
   supers: SuperDeps;
   readFiles: (paths: readonly string[]) => Promise<Map<string, string[] | null>>;
+  /**
+   * Every Python class of the project and its base names (the IDE index, attached
+   * dependency roots included). Some servers (basedpyright, pyrefly) answer no
+   * `typeHierarchyProvider`, so ↑/↓ are computed from this graph instead.
+   * Absent for languages whose servers do provide one (Java, Go, ...).
+   */
+  inheritance?: () => Promise<ClassInheritance[]>;
 }
 
 interface CacheEntry {
@@ -142,6 +184,8 @@ interface CacheEntry {
 export interface MarkerCache {
   entries: Map<string, CacheEntry>;
   unsupported: Set<MarkerGroup>;
+  /** The Python inheritance graph for this document version, fetched once per cache. */
+  inheritance?: Promise<ClassInheritance[] | null>;
 }
 
 export const emptyCache = (): MarkerCache => ({ entries: new Map(), unsupported: new Set() });
@@ -164,11 +208,16 @@ export async function fillMarkers(
     if (!e) cache.entries.set(key, (e = {}));
     return e;
   };
+  // A Python inheritance graph answers both groups even when the language server
+  // has no type hierarchy: it must keep the candidates alive through the LSP
+  // "unsupported" bookkeeping, or the fallback would never get to run.
+  const graph = deps.inheritance ? await (cache.inheritance ??= deps.inheritance().catch(() => null)) : null;
+  const fallback = (graph?.length ?? 0) > 0;
   const down =
-    groups.has("inheritors") && !cache.unsupported.has("inheritors")
+    groups.has("inheritors") && (fallback || !cache.unsupported.has("inheritors"))
       ? candidates.filter((c) => c.inheritable && cache.entries.get(candidateKey(c))?.inheritors === undefined)
       : [];
-  const askSupers = groups.has("supers") && !cache.unsupported.has("supers");
+  const askSupers = groups.has("supers") && (fallback || !cache.unsupported.has("supers"));
   const up = askSupers
     ? candidates.filter((c) => c.overriding && c.owner && cache.entries.get(candidateKey(c))?.supers === undefined)
     : [];
@@ -186,8 +235,11 @@ export async function fillMarkers(
         asked = await deps.implementations(ask.map((c) => ({ line: c.line, col: c.col })));
       } catch (e) {
         if (isCancelled(e)) throw e;
-        if (isUnavailable(e)) cache.unsupported.add("inheritors");
-        for (let i = down.length - 1; i >= 0; i--) if (!known.has(down[i]!)) down.splice(i, 1);
+        // With a fallback the candidates stay: the graph may still answer them.
+        if (!fallback) {
+          if (isUnavailable(e)) cache.unsupported.add("inheritors");
+          for (let i = down.length - 1; i >= 0; i--) if (!known.has(down[i]!)) down.splice(i, 1);
+        }
       }
     }
     implementations = down.map((c) => withoutSelf(path, c, known.get(c) ?? asked[ask.indexOf(c)] ?? []));
@@ -208,8 +260,79 @@ export async function fillMarkers(
       }),
     );
   }
+  // Python without a type-hierarchy provider: the IDE's inheritance graph holds every
+  // `class X(A)` of the project, so ↑/↓ are computed from it instead.
+  const byName = new Map<string, ClassInheritance[]>();
+  if (graph) for (const cls of graph) byName.set(cls.name, [...(byName.get(cls.name) ?? []), cls]);
+  // The inheritance graph's direct subclasses, keyed by the *declaration* each base
+  // resolves to (path + position), so classes sharing a bare name never mix up.
+  const subclassesOf = new Map<string, ClassInheritance[]>();
+  for (const cls of graph ?? []) {
+    for (const base of new Set(cls.bases)) {
+      for (const decl of resolveBase(byName, base, cls.path)) {
+        const key = declarationKey(decl);
+        subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
+      }
+    }
+  }
+  const classOf = (c: MarkerCandidate): ClassInheritance | null => {
+    // A class candidate is its own declaration; a method's is the `owner` it records.
+    const at = c.method ? c.owner : { line: c.line, col: c.col };
+    if (!at) return null;
+    const cls = candidates.find((k) => !k.method && k.line === at.line && k.col === at.col) ?? (c.method ? null : c);
+    if (!cls) return null;
+    return byName.get(cls.name)?.find((x) => x.path === path && x.line === cls.line && x.col === cls.col) ?? null;
+  };
+  /** The declarations a subclass overrides: the subclass itself, or its same-named method. */
+  const subclassDeclarations = async (c: MarkerCandidate, owner: ClassInheritance): Promise<Location[]> => {
+    const subs = subclassesOf.get(declarationKey(owner)) ?? [];
+    if (!c.method) return subs.map(classLocation);
+    const bare = c.symbol.replace(/\s*[(<].*$/, "");
+    const targets: Location[] = [];
+    for (const sub of subs) {
+      const outline = await deps.supers.outline(sub.path).catch(() => [] as OutlineItem[]);
+      const m = methodInOutline(outline, sub, bare);
+      if (m) targets.push({ path: sub.path, range: m.selection_range });
+    }
+    return targets;
+  };
+  if (byName.size) {
+    for (let i = 0; i < down.length; i++) {
+      const c = down[i]!;
+      const owner = classOf(c);
+      if (!owner) continue;
+      // Merge, never replace: a server that answers sees one root, so its list can miss
+      // the subclasses living in an attached project while still being non-empty.
+      implementations[i] = withoutSelf(
+        path,
+        c,
+        mergeLocations(implementations[i] ?? [], await subclassDeclarations(c, owner)),
+      );
+    }
+  }
   const supers: SuperMethod[][] = [];
   for (const c of up) supers.push(await superMethodTargets(path, c.owner!, c.symbol, deps.supers));
+  if (byName.size) {
+    for (let i = 0; i < up.length; i++) {
+      const c = up[i]!;
+      const self = classOf(c);
+      if (!self) continue;
+      const found = await superMethodsFrom(byName, self.name, c.symbol, deps);
+      if (!found.length) continue;
+      const known = supers[i]!;
+      // Same merge rule as ↓: add the graph's super methods to what the server answered.
+      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameLocation(s.location, l)));
+      const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
+      entry(c).supers = {
+        kind: "overriding",
+        line: c.line,
+        name: c.name,
+        targets: [...known.map((s) => s.location), ...extra],
+        tooltip: tx`Overrides method in ${owners.join(", ")}`,
+        chooserTitle: tx`Choose Super Method of ${c.name} (${known.length + extra.length} found)`,
+      };
+    }
+  }
   // Go: an implementation request on a type or method answers the interfaces it satisfies.
   let satisfied: Location[][] = [];
   if (implicit.length) {
@@ -228,8 +351,101 @@ export async function fillMarkers(
     ...satisfied.flat().map((l) => l.path),
   ]);
   down.forEach((c, i) => (entry(c).inheritors = inheritorsMarker(c, implementations[i] ?? [], files)));
-  up.forEach((c, i) => (entry(c).supers = supersMarker(c, supers[i]!, files)));
+  // A candidate the graph answered already has its marker: don't null it out here.
+  up.forEach((c, i) => {
+    if (supers[i]!.length) entry(c).supers = supersMarker(c, supers[i]!, files);
+  });
   implicit.forEach((c, i) => (entry(c).supers = implementsMarker(c, withoutSelf(path, c, satisfied[i] ?? []), files)));
+}
+
+// One entry per declaration line: the server and the graph may point at the same
+// declaration with different columns (the name vs the whole statement).
+const sameLocation = (a: Location, b: Location) => a.path === b.path && a.range.start.line === b.range.start.line;
+
+/** `first`, then the locations of `more` not already in it. */
+function mergeLocations(first: readonly Location[], more: readonly Location[]): Location[] {
+  return [...first, ...more.filter((l) => !first.some((f) => sameLocation(f, l)))];
+}
+
+/** Identifies one class declaration in the inheritance graph. */
+function declarationKey(cls: ClassInheritance): string {
+  return `${cls.path}:${cls.line}:${cls.col}`;
+}
+
+/**
+ * The classes a base name names. A bare name is only trusted when it is unique in the
+ * project, or names a class in the subclass's own file: a `Config` declared in hundreds
+ * of modules must not make every one of them a subclass of every other.
+ */
+function resolveBase(byName: ReadonlyMap<string, ClassInheritance[]>, name: string, from: string): ClassInheritance[] {
+  const found = byName.get(name) ?? [];
+  if (found.length <= 1) return found;
+  return found.filter((c) => c.path === from);
+}
+
+/** The class declaration itself as a navigation target (its name identifier). */
+function classLocation(cls: ClassInheritance): Location {
+  const start = { line: cls.line, col: cls.col };
+  return { path: cls.path, range: { start, end: start } };
+}
+
+/** The method `method` (bare name) directly inside the class at `cls`'s position. */
+function methodInOutline(outline: readonly OutlineItem[], cls: ClassInheritance, method: string): OutlineItem | null {
+  const at = cls;
+  const find = (items: readonly OutlineItem[]): OutlineItem | null => {
+    for (const it of items) {
+      if (it.kind === "class" && it.selection_range.start.line === at.line && it.selection_range.start.col === at.col) {
+        return it.children.find((ch) => ch.kind === "method" && baseName(ch.name) === method) ?? null;
+      }
+      const deeper = find(it.children);
+      if (deeper) return deeper;
+    }
+    return null;
+  };
+  return find(outline);
+}
+
+/**
+ * Super methods of `method` declared by a class in `byName`, walking the inheritance
+ * graph's bases up to a few levels. Empty when no base declares the method.
+ */
+async function superMethodsFrom(
+  byName: ReadonlyMap<string, ClassInheritance[]>,
+  start: string,
+  method: string,
+  deps: MarkerDeps,
+  depth = 3,
+): Promise<{ location: Location; owner: string }[]> {
+  const bare = method.replace(/\s*[(<].*$/, "");
+  const seen = new Set<string>([start]);
+  let level = [start];
+  for (let d = 0; d < depth && level.length; d++) {
+    const next: string[] = [];
+    const found: { location: Location; owner: string }[] = [];
+    for (const name of level) {
+      for (const cls of byName.get(name) ?? []) {
+        for (const base of cls.bases) {
+          if (!seen.add(base)) continue;
+          // Same rule as the graph: only a base that names one class is followed.
+          const declarations = resolveBase(byName, base, cls.path);
+          let answered = false;
+          for (const baseCls of declarations) {
+            const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
+            const m = methodInOutline(outline, baseCls, bare);
+            if (m) {
+              found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
+              answered = true;
+            }
+          }
+          // Not found in a base that declares nothing: keep walking its own bases.
+          if (!answered) next.push(base);
+        }
+      }
+    }
+    if (found.length) return found;
+    level = next;
+  }
+  return [];
 }
 
 /**
@@ -575,6 +791,9 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
       },
     },
     readFiles: readManyFileLines,
+    // Python servers answer no type hierarchy (basedpyright, pyrefly): the IDE's
+    // own index knows every `class X(Base)` of the project, attached roots included.
+    inheritance: ctx.language === "python" ? inheritanceGraph : undefined,
   };
 }
 

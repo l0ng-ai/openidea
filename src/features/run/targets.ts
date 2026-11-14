@@ -361,7 +361,8 @@ export function zigTargets(content: string): RunTarget[] {
     if (/^pub\s+fn\s+main\s*\(/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
     const test = /^\s*test\s+(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_]\w*))\s*\{/.exec(line);
     if (test) {
-      const name = test[1] ?? test[2]!;
+      // Unescape for display and for `--test-filter`: the runner reports the raw name.
+      const name = test[1]?.replace(/\\(.)/g, "$1") ?? test[2]!;
       out.push({ line: i, kind: "test", name, path: [name] });
     }
   });

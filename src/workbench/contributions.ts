@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
+import type { ProjectType } from "@/platform/projectType";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -770,6 +771,7 @@ const services: {
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
   runOutput?: RunOutputService;
+  hasRunConfiguration?: (kind: string, directory: string) => boolean;
 } = {};
 
 function need<T>(s: T | undefined, name: string): T {
@@ -782,6 +784,10 @@ export const provideToolWindowService = (s: ToolWindowService) => void (services
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
 export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
+export const provideRunConfigurationLookup = (lookup: typeof services.hasRunConfiguration) =>
+  void (services.hasRunConfiguration = lookup);
+export const hasRunConfiguration = (kind: string, directory: string): boolean =>
+  services.hasRunConfiguration?.(kind, directory) ?? false;
 
 export const editorService = (): EditorService => need(services.editor, "editor");
 export const toolWindowService = (): ToolWindowService => need(services.toolWindows, "toolWindows");
@@ -1226,6 +1232,8 @@ export interface MenuGroupContext {
   paths: string[];
   /** Per path: whether it is a directory (project view). */
   dirs?: boolean[];
+  /** New menu: the detected type of the project owning the target directory. */
+  projectType?: ProjectType;
   /** The document text, when the menu is for an open document. */
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
