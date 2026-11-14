@@ -476,6 +476,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "vcs_init"
             | "vcs_status"
             | "vcs_roots"
+            | "vcs_unregistered_roots"
+            | "vcs_refresh_roots"
             | "vcs_branch_info"
             | "vcs_line_hunks"
             | "vcs_file_at"

@@ -864,6 +864,20 @@ fn scan_repositories(
     sink: &SharedSink,
     build_cache: &Path,
 ) {
+    match discover_repositories(root, settings, build_cache) {
+        Ok(found) => {
+            if found.roots() != repos.read().roots() {
+                *repos.write() = found;
+                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
+            }
+        }
+        Err(e) => tracing::warn!("looking for git repositories: {e}"),
+    }
+}
+
+/// The repository containing `root` and those nested below it or below a content root.
+/// The project-open scan and the unregistered-root check share these skip rules.
+fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path) -> IdeResult<Repos> {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
@@ -875,20 +889,27 @@ fn scan_repositories(
     };
     let mut roots = vec![root.to_path_buf()];
     roots.extend(content_roots(&settings.effective(), root, build_cache));
-    match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => {
-            if found.roots() != repos.read().roots() {
-                *repos.write() = found;
-                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
-            }
-        }
-        Err(e) => tracing::warn!("looking for git repositories: {e}"),
-    }
+    Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {
     pub fn refresh_repositories(&self) {
         scan_repositories(&self.root, &self.repos, &self.settings, &self.sink, &self.build_cache_dir());
+    }
+
+    /// Git worktree roots below the project that [`Project::repos`] does not hold: a
+    /// repository the background scan missed (cloned or initialised where the watcher does
+    /// not watch, e.g. an excluded folder) or has not reached yet. The scan and its skip
+    /// rules are the ones [`Project::refresh_repositories`] registers by, so a rescan
+    /// picks these up.
+    pub fn unregistered_roots(&self) -> IdeResult<Vec<PathBuf>> {
+        let found = discover_repositories(&self.root, &self.settings, &self.build_cache_dir())?;
+        let registered = self.repos();
+        Ok(found
+            .roots()
+            .into_iter()
+            .filter(|root| root.starts_with(&self.root) && registered.at_root(root).is_none())
+            .collect())
     }
 
     /// The project's git repositories.

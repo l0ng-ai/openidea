@@ -46,6 +46,8 @@ There is no action to run `git init` in a project that is already open; run it i
 
 OpenIDEA finds the repository that contains the project and nested repositories up to four levels deep (skipping folders such as `node_modules`, `target` and `build`). Status, commit, fetch and update cover all of them; branch and log actions work on the selected repository. Submodules show as nested repositories, without submodule commands.
 
+A repository inside the project that the scan missed — one cloned into a folder the IDE does not watch, for example — shows up in an **Unregistered Git repositories** notification; **Add to Project** picks it up.
+
 ## Commit changes
 
 The **Commit** tool window lists your changes in groups: **Merge Conflicts**, **Changes** (one group per changelist) and **Unversioned Files**. With **View Options › Group By › Staging State**, the changes split into **Staged Changes** and **Unstaged Changes**.

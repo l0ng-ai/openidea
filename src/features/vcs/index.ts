@@ -49,6 +49,7 @@ import { installIncomingCheck } from "./incoming";
 import { closeLogTab, installGitLog, selectGitTab, useGitLog } from "./logStore";
 import { installVcsStore, onConflictsAppeared, onConflictsCleared, useVcs } from "./store";
 import { installRootSync } from "./rootSync";
+import { installUnregisteredRoots } from "./unregisteredRoots";
 import { tx } from "@/platform/i18n";
 import { openOnRemoteActions, registerOpenOnRemote } from "./openOnRemote";
 
@@ -218,6 +219,7 @@ export function activate(): () => void {
   const disposers = [
     installVcsStore(),
     installRootSync(),
+    installUnregisteredRoots(),
     installGitLog(),
     installDiagnosticsTracking(),
     installPreparedMessage(),
