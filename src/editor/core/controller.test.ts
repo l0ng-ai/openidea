@@ -13,6 +13,7 @@ import { evaluateWhen, getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
 import { EDITOR_WHEN } from "@/editor/lsp/actions";
+import { setShownLine } from "@/editor/api";
 
 let ctrl: EditorController | null = null;
 
@@ -31,6 +32,24 @@ describe("EditorController", () => {
     setProjectViewLead({ path: "/p/src", dir: true });
     await ctrl.openInput({ kind: "agent-session", key: "task" });
     expect(useProjectViewLead.getState().lead).toBeNull();
+  });
+
+  it("goes back to the line a stand-in view shows (Markdown Preview only), not the hidden caret", async () => {
+    const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.md": text, "/p/b.md": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.md", { selection: { line: 45, col: 0 }, focus: false });
+    // The preview was scrolled after the file opened; then a link opens another file.
+    setShownLine("/p/a.md", 20);
+    try {
+      await ctrl.openFile("/p/b.md", { focus: false });
+      await ctrl.back();
+      const slot = ctrl.activeSlot!;
+      expect(slot.model.path).toBe("/p/a.md");
+      expect(slot.caret().line).toBe(20);
+    } finally {
+      setShownLine("/p/a.md", null);
+    }
   });
 
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {

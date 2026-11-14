@@ -42,7 +42,8 @@ export function useLiveWatches(
   const [data, setData] = useState<{ session: number; rows: LiveWatch[] }>({ session: -1, rows: NONE });
   const apply = visible && watches.length > 0 && liveWatchesApply(session);
   const id = session?.id ?? -1;
-  const expressions = watches.join("\n");
+  // A stable dependency for the list; a watch may span several lines.
+  const expressions = JSON.stringify(watches);
   useEffect(() => {
     if (!apply) return;
     let current = true;
@@ -51,7 +52,7 @@ export function useLiveWatches(
       if (evaluating.has(id)) return;
       evaluating.add(id);
       const rows = await Promise.all(
-        expressions.split("\n").map(async (expression): Promise<LiveWatch> => {
+        (JSON.parse(expressions) as string[]).map(async (expression): Promise<LiveWatch> => {
           try {
             return {
               expression,

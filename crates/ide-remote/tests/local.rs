@@ -403,7 +403,7 @@ async fn download_into_copies_only_the_selected_items() {
         assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written through the links");
     }
 
-    let missing = [server.join("gone").to_str().unwrap().to_owned()];
+    let missing = [server.join("gone").to_str().unwrap().replace('\\', "/")];
     let report = service
         .download_into(&FsConnection::Local, &missing, &project, &CancellationToken::new(), &mut |_, _, _| {})
         .await

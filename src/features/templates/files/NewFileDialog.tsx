@@ -99,7 +99,7 @@ function TemplateStep({
           renderItem={(t) => (
             <span className={styles.templateRow}>
               <Icon name={t.icon} size={16} className={styles.icon} />
-              {t.name}
+              {tx(t.name)}
             </span>
           )}
         />
@@ -230,10 +230,10 @@ function NameStep({
     <Dialog
       open
       onClose={close}
-      title={tx`New ${template.name}`}
+      title={tx`New ${tx(template.name)}`}
       width={380}
       position="top"
-      aria-label={tx`New ${template.name}`}
+      aria-label={tx`New ${tx(template.name)}`}
       className={variables.length ? styles.variableDialog : undefined}
       buttons={
         variables.length
@@ -293,7 +293,7 @@ function NameStep({
                 onDoubleClick={() => void submit()}
               >
                 <Icon name={template.icon} size={14} className={styles.icon} />
-                {k.label}
+                {tx(k.label)}
               </div>
             ))}
           </div>

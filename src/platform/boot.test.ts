@@ -35,7 +35,7 @@ it.each(resizeObserverMessages)("keeps waiting for boot-ready after %s", (messag
   expect(document.getElementById("boot-error")).toBeNull();
   expect(document.documentElement.dataset.boot).toBeUndefined();
   window.dispatchEvent(new Event("openidea:boot-ready"));
-  vi.advanceTimersByTime(30_000);
+  vi.advanceTimersByTime(60_000);
   expect(document.getElementById("boot-error")).toBeNull();
 });
 
@@ -48,10 +48,10 @@ it.each(resizeObserverMessages)("still reports a real failure after %s", (messag
 });
 
 it.each(resizeObserverMessages)("still times out an unresolved startup after %s", (message) => {
-  vi.advanceTimersByTime(15_000);
+  vi.advanceTimersByTime(30_000);
   window.dispatchEvent(new ErrorEvent("error", { message }));
-  vi.advanceTimersByTime(15_000);
-  expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
+  vi.advanceTimersByTime(30_000);
+  expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 60 seconds.");
 });
 
 it.each(resizeObserverMessages)("ignores the loop notification delivered as an Error: %s", (message) => {
@@ -62,7 +62,7 @@ it.each(resizeObserverMessages)("ignores the loop notification delivered as an E
   expect(document.getElementById("boot-error")).toBeNull();
   expect(document.documentElement.dataset.boot).toBeUndefined();
   window.dispatchEvent(new Event("openidea:boot-ready"));
-  vi.advanceTimersByTime(30_000);
+  vi.advanceTimersByTime(60_000);
   expect(document.getElementById("boot-error")).toBeNull();
 });
 
@@ -78,7 +78,7 @@ it("keeps starting after an unhandled rejection", () => {
   expect(document.getElementById("boot-error")).toBeNull();
   expect(document.documentElement.dataset.boot).toBeUndefined();
   window.dispatchEvent(new Event("openidea:boot-ready"));
-  vi.advanceTimersByTime(30_000);
+  vi.advanceTimersByTime(60_000);
   expect(document.getElementById("boot-error")).toBeNull();
 });
 
@@ -88,9 +88,9 @@ it("reports the first rejection when startup then times out", () => {
   Object.defineProperty(error, "stack", { value: undefined });
   reject(error);
   reject({ message: "later rejection" });
-  vi.advanceTimersByTime(30_000);
+  vi.advanceTimersByTime(60_000);
   const details = document.querySelector("textarea")?.value;
-  expect(details).toContain("Startup did not finish within 30 seconds.");
+  expect(details).toContain("Startup did not finish within 60 seconds.");
   expect(details).toContain("TypeError: Load failed");
   expect(details).not.toContain("later rejection");
 });
@@ -101,7 +101,7 @@ it("counts the startup timeout only while the window shows", () => {
     document.dispatchEvent(new Event("visibilitychange"));
   };
   try {
-    vi.advanceTimersByTime(20_000);
+    vi.advanceTimersByTime(50_000);
     // Behind another window: no frames, so the splash can't finish; that isn't a failure.
     hidden(true);
     vi.advanceTimersByTime(60_000);
@@ -110,7 +110,7 @@ it("counts the startup timeout only while the window shows", () => {
     vi.advanceTimersByTime(9_000);
     expect(document.getElementById("boot-error")).toBeNull();
     vi.advanceTimersByTime(1_000);
-    expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
+    expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 60 seconds.");
   } finally {
     Object.defineProperty(document, "hidden", { configurable: true, value: false });
   }
@@ -156,14 +156,14 @@ it("surfaces initial React render failures through the boot error event", () => 
 });
 
 it("reports an unresolved startup instead of waiting forever", () => {
-  vi.advanceTimersByTime(30_000);
-  expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 30 seconds.");
+  vi.advanceTimersByTime(60_000);
+  expect(document.querySelector("textarea")?.value).toContain("Startup did not finish within 60 seconds.");
 });
 
 it("stops intercepting failures after a successful startup", () => {
   window.dispatchEvent(new Event("openidea:boot-ready"));
   window.dispatchEvent(new ErrorEvent("error", { message: "runtime failure" }));
-  vi.advanceTimersByTime(30_000);
+  vi.advanceTimersByTime(60_000);
   expect(document.getElementById("boot-error")).toBeNull();
 });
 

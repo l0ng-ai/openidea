@@ -67,7 +67,12 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
   return {
     ...base(rc, adapter, cwd),
     args: programArgs,
-    extraJson: JSON.stringify({ cargo: filter ? { args, filter } : { args }, sourceLanguages: ["rust"] }),
+    extraJson: JSON.stringify({
+      cargo: filter ? { args, filter } : { args },
+      ...(adapter === "codelldb" ? { sourceLanguages: ["rust"] } : {}),
+      // lldb-dap takes the environment as `KEY=VALUE` strings.
+      ...(adapter === "lldb-dap" ? { env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`) } : {}),
+    }),
   };
 }
 
@@ -95,10 +100,11 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const dbg = workflowSettings().debugger;
   const extra: Record<string, unknown> = {
     python: pythonFor(rc, cwd),
-    console: "internalConsole",
+    // On a terminal the program reads what is typed in the debug console (`input()`); its
+    // output reaches the console from there, so debugpy doesn't capture it a second time.
+    console: "integratedTerminal",
     justMyCode: dbg.skipLibraryCode,
     subProcess: dbg.python.attachSubprocess,
-    redirectOutput: true,
   };
   if (dbg.python.gevent) extra.gevent = true;
   const name = (rc.command.split("/").pop() ?? rc.command).replace(/\.exe$/, "");

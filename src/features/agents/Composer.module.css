@@ -438,7 +438,10 @@
 .suggestion:focus-visible {
   outline: 2px solid var(--focus-ring);
 }
+/* The file name truncates first; the hint stays on one line. */
 .suggestionHint {
+  flex: none;
+  white-space: nowrap;
   color: var(--fg-faint);
 }
 .removeChip {
@@ -458,6 +461,7 @@
   color: var(--fg-strong);
 }
 .attachmentName {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

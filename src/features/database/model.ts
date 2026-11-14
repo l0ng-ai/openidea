@@ -206,15 +206,6 @@ export function passesObjectFilter(name: string, filter: string | null | undefin
 }
 
 /**
- * The tree's quick filter (the toolbar's field): `name` contains it,
- * case-insensitively (`*` / `?` still work through `matchesPattern` callers).
- */
-export function passesTreeFilter(name: string, filter: string | null | undefined): boolean {
-  const q = (filter ?? "").trim().toLowerCase();
-  return !q || name.toLowerCase().includes(q);
-}
-
-/**
  * Whether a console of `driver` gets the active-schema dropdown (a server with
  * several schemas / databases to switch between; SQLite has one database only).
  */

@@ -173,6 +173,14 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByLabelText("Toolchains file")).toBeInTheDocument();
   });
 
+  it("selects the page a search names over pages that mention it", async () => {
+    const dialog = await openDialog("appearance");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Font" } });
+    const tree = within(dialog).getByRole("tree", { name: "Settings pages" });
+    expect(within(tree).getAllByRole("treeitem").length).toBeGreaterThan(1);
+    expect(within(tree).getByRole("treeitem", { selected: true }).textContent).toBe("Font");
+  });
+
   it("searches pages and highlights matching option labels", async () => {
     const dialog = await openDialog("appearance");
     fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "soft wrap" } });
