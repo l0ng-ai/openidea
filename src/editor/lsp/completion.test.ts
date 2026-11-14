@@ -602,6 +602,45 @@ describe("explicit completion", () => {
   });
 });
 
+describe("completion footer", () => {
+  let view: EditorView | null = null;
+  afterEach(() => {
+    view?.destroy();
+    view = null;
+  });
+
+  it("stays below the list after CodeMirror rebuilds the options", async () => {
+    const source: CompletionSource = (ctx) => ({
+      from: ctx.pos,
+      options: [{ label: "println" }, { label: "print" }],
+    });
+    view = new EditorView({
+      state: EditorState.create({
+        doc: "pri",
+        selection: { anchor: 3 },
+        extensions: [completionExtension(), EditorState.languageData.of(() => [{ openideaCompletion: source }])],
+      }),
+      parent: document.body,
+    });
+    startCompletion(view);
+    await vi.waitFor(() =>
+      expect(document.querySelector(".cm-tooltip-autocomplete > .cm-lsp-completion-footer")).not.toBeNull(),
+    );
+    const tooltip = document.querySelector<HTMLElement>(".cm-tooltip-autocomplete")!;
+    const footer = tooltip.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer")!;
+    expect(footer.previousElementSibling?.tagName).toBe("UL");
+
+    // CodeMirror removes the <ul> and appends a fresh one when the results change.
+    tooltip.querySelector(":scope > ul")!.remove();
+    tooltip.appendChild(document.createElement("ul"));
+    expect(footer.previousElementSibling).toBeNull();
+
+    view.dispatch({});
+    await vi.waitFor(() => expect(footer.previousElementSibling?.tagName).toBe("UL"));
+    expect(tooltip.querySelectorAll(":scope > .cm-lsp-completion-footer")).toHaveLength(1);
+  });
+});
+
 describe("typeColumnText", () => {
   const edit = (new_text: string) => [{ range: { start: { line: 0, col: 0 }, end: { line: 0, col: 0 } }, new_text }];
 
