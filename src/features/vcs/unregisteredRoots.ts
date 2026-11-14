@@ -16,13 +16,12 @@ const OPEN_DELAY_MS = 1500;
 /** After a VCS refresh the project's repositories are up to date. */
 const VCS_DELAY_MS = 300;
 /**
- * A repository the watcher does not see triggers no event, so the check polls: often just after
- * the project opens (a folder moved in right then has no `.git` event), rarely afterwards, since
- * every check walks the project.
+ * A repository brought in as a folder (moved, restored) produces no `.git` event of its own: the
+ * creation of the path is the signal. A new path is checked shortly after it settles, and every
+ * check walks the project, so they are rate limited. The project is idle => nothing runs.
  */
-const EARLY_POLL_MS = 30_000;
-const EARLY_POLLS = 4;
-const LATE_POLL_MS = 300_000;
+const CREATE_DELAY_MS = 2_000;
+const MIN_INTERVAL_MS = 30_000;
 /** Paths listed in the balloon; the rest become `+N more`. */
 const LISTED = 3;
 
@@ -69,19 +68,18 @@ async function addUnregisteredRoots(): Promise<void> {
 }
 
 /**
- * Reports unregistered repositories while a project is open: on open, after VCS refreshes, and on
- * a poll that is frequent just after the project opens and rare afterwards (every check walks the
- * project). Returns a disposer.
+ * Reports unregistered repositories while a project is open: at open, after VCS refreshes, and when
+ * a path is created below the project (a folder moved in has no `.git` event). Returns a disposer.
  */
 export function installUnregisteredRoots(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let poll: ReturnType<typeof setTimeout> | undefined;
-  /** How many polls the project has had; the first few are the frequent ones. */
-  let polls = 0;
   /** The paths the current notification lists; empty when none is shown. */
   let shown = "";
+  /** When the last walk started, for the rate limit. */
+  let lastCheck = 0;
 
   const check = async () => {
+    lastCheck = Date.now();
     const project = useProject.getState().project;
     if (!project || !isTauri()) return;
     const paths = await call(commands.vcsUnregisteredRoots()).catch(() => null);
@@ -102,31 +100,26 @@ export function installUnregisteredRoots(): () => void {
     clearTimeout(timer);
     timer = setTimeout(() => void check(), delay);
   };
-  const pollNext = () => {
-    poll = setTimeout(
-      () => {
-        polls += 1;
-        void check();
-        pollNext();
-      },
-      polls < EARLY_POLLS ? EARLY_POLL_MS : LATE_POLL_MS,
-    );
-  };
 
   checkSoon(OPEN_DELAY_MS);
-  pollNext();
   const unsubProject = useProject.subscribe((state, previous) => {
     if (state.project !== previous.project) {
       shown = "";
-      polls = 0;
+      lastCheck = 0;
       checkSoon(OPEN_DELAY_MS);
     }
   });
   const offVcs = onIdeEvent("vcsChanged", () => checkSoon(VCS_DELAY_MS));
+  const offFs = onIdeEvent("fsChanged", (e) => {
+    // Only a new path can bring a repository in, and a burst of them (a build writing output) must
+    // not become a walk each: at most one check per MIN_INTERVAL_MS.
+    if (!e.created.length || Date.now() - lastCheck < MIN_INTERVAL_MS) return;
+    checkSoon(CREATE_DELAY_MS);
+  });
   return () => {
     clearTimeout(timer);
-    clearTimeout(poll);
     unsubProject();
     offVcs();
+    offFs();
   };
 }
