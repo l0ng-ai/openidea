@@ -214,9 +214,10 @@ class UsagesLensPlugin {
     const doc = docOf(view);
     if (!doc) return;
     const gen = this.generation;
-    const usages = usagesEnabled() && !usagesBackoff.active(doc.doc);
+    const usagesWanted = usagesEnabled();
+    const usages = usagesWanted && !usagesBackoff.active(doc.doc);
     const authors = authorEnabled() && !doc.virtual;
-    if (!usages && !authors) {
+    if (!usagesWanted && !authors) {
       if (view.state.field(lensField).length) view.dispatch({ effects: setLenses.of([]) });
       return;
     }
@@ -287,6 +288,15 @@ class UsagesLensPlugin {
       if (retry) this.schedule();
       const lines = await blame;
       if (!wanted()) return;
+      // Usages lenses already shown (the field keeps them on their lines through
+      // edits): reused when a target's count is still computing or came back
+      // incomplete while the server was busy, so the row doesn't blink away and
+      // shift the layout below it.
+      const shown = new Map<number, CodeLens>();
+      for (const l of view.state.facet(codeLenses)) {
+        if (l.kind === "usages") shown.set(view.state.doc.lineAt(l.pos).number - 1, l);
+      }
+      const allowNoUsages = editorPrefs().inlay.codeVisionNoUsages;
       const lenses: CodeLens[] = [];
       for (const t of visible) {
         const offset = posToOffset(text, { line: t.line, col: t.col });
@@ -302,15 +312,27 @@ class UsagesLensPlugin {
             run: showAnnotations,
           });
         const n = usages ? this.cache.get(key(t)) : undefined;
-        if (n === undefined || (n === 0 && !editorPrefs().inlay.codeVisionNoUsages)) continue;
-        lenses.push({
-          pos: offset,
-          title: usagesLabel(n),
-          tooltip: tx`Show usages of ${t.name}`,
-          order: 10,
-          kind: "usages",
-          run: (v) => openUsages(v, Math.min(offset, v.state.doc.length)),
-        });
+        if (n !== undefined) {
+          if (n === 0 && !allowNoUsages) continue;
+          const run: NonNullable<CodeLens["run"]> = (v) => {
+            const current = v.state.facet(codeLenses).find((l) => l.run === run);
+            if (current) openUsages(v, Math.min(current.pos, v.state.doc.length));
+          };
+          lenses.push({
+            pos: offset,
+            title: usagesLabel(n),
+            tooltip: tx`Show usages of ${t.name}`,
+            order: 10,
+            kind: "usages",
+            run,
+          });
+          continue;
+        }
+        // No fresh count: keep the lens already shown (with its mapped position)
+        // until a complete answer replaces it.
+        if (!usagesWanted) continue;
+        const stale = shown.get(t.line);
+        if (stale && (allowNoUsages || stale.title !== usagesLabel(0))) lenses.push(stale);
       }
       if (!sameLenses(view.state.field(lensField), lenses)) view.dispatch({ effects: setLenses.of(lenses) });
     } catch (e) {

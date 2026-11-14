@@ -191,10 +191,14 @@ function sumDecimal(texts: readonly string[]): Decimal | null {
 /** a / divisor (divisor > 0): exact when the division terminates, else the fraction rounds half-up at `SIGNIFICANT` digits. */
 function divideDecimal(a: Decimal, divisor: bigint): Decimal {
   if (!a.digits) return { negative: false, digits: 0n, exponent: 0 };
+  // A finite decimal requires the coefficient to cancel every divisor factor except 2 and 5.
+  let denominator = divisor;
+  for (const factor of [2n, 5n]) while (denominator % factor === 0n) denominator /= factor;
+  const terminating = a.digits % denominator === 0n;
   let rest = a.digits % divisor;
   let text = (a.digits / divisor).toString();
   let fraction = "";
-  while (rest && fraction.length < SIGNIFICANT) {
+  while (rest && (terminating || fraction.length < SIGNIFICANT)) {
     rest *= 10n;
     fraction += (rest / divisor).toString();
     rest %= divisor;
