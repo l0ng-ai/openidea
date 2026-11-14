@@ -71,6 +71,7 @@ import { setLocale } from "@/platform/i18n";
 import { ToolWindowShownProvider } from "@/workbench/contributions";
 import { handleDebugEvent, setVariableValue, useDebug, type DebugSession } from "../state";
 import { DebugTabs, DebugToolWindow } from "../ui/DebugToolWindow";
+import { hideContextMenu, useContextMenuStore } from "@/ui/Menu";
 import { DebuggerOverlays } from "../ui/Overlays";
 import { useOverlays } from "../ui/popoverStore";
 
@@ -238,6 +239,32 @@ describe("debug tool window", () => {
     act(() => useDebug.setState({ sessions: { 1: { ...session, status: "running" } } }));
     act(() => useDebug.setState({ sessions: { 1: { ...session, stopReason: "step" } } }));
     expect(console.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("keeps the chosen tab on a breakpoint hit when Focus On Breakpoint is off", () => {
+    const settings = useProject.getState().settings;
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
+    render(<DebugToolWindow />);
+    const variables = screen.getByRole("tab", { name: "Threads & Variables" });
+    fireEvent.contextMenu(variables);
+    const item = useContextMenuStore.getState().menu?.items[0];
+    expect(item).toMatchObject({ label: "Focus On Breakpoint", checked: true });
+    act(() => hideContextMenu());
+    try {
+      act(() =>
+        useProject.setState({
+          settings: { debugger: { variablesOnBreakpoint: false } } as ReturnType<
+            typeof useProject.getState
+          >["settings"],
+        }),
+      );
+      const console = screen.getByRole("tab", { name: "Console" });
+      fireEvent.click(console);
+      act(() => useDebug.setState({ sessions: { 1: session } }));
+      expect(console.getAttribute("aria-selected")).toBe("true");
+    } finally {
+      act(() => useProject.setState({ settings }));
+    }
   });
 
   it("opens on Console for a running session, and on the view last picked when shown again", () => {
