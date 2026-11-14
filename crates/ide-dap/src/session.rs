@@ -94,6 +94,8 @@ pub(crate) struct Session {
     /// The `type` of the launch or attach request (js-debug's `pwa-node`, `pwa-chrome`); a child
     /// session's comes from the configuration the adapter started it with.
     pub launch_type: std::sync::OnceLock<String>,
+    /// The file js-debug records the page's CPU profile into, while one is being recorded.
+    pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -255,6 +257,7 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             jdwp_link: parking_lot::Mutex::new(None),
             launch_type: std::sync::OnceLock::new(),
+            js_profile: parking_lot::Mutex::new(None),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),
@@ -841,6 +844,10 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
             if let Some(event) = crate::js_debug::network_event(&body) {
                 s.emit(DebugEvent::JsNetwork { event });
             }
+        }
+        // js-debug, after `startProfile`: where it records the profile.
+        "profileStarted" => {
+            *s.js_profile.lock() = str_("file").map(std::path::PathBuf::from);
         }
         _ => tracing::trace!("dap: ignored event {event}"),
     }

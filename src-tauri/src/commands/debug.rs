@@ -267,6 +267,23 @@ pub async fn debug_js_custom_breakpoints(
     ide_host::ops::debug::debug_js_custom_breakpoints(&state.host, "", session, ids, xhr).await
 }
 
+/// Starts recording a debugged page's CPU profile.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_start_profile(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
+    ide_host::ops::debug::debug_js_start_profile(&state.host, "", session).await
+}
+
+/// Ends the recording: a directory holding the profile as `page.cpuprofile`.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_stop_profile(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+) -> IdeResult<ide_core::IpcPath> {
+    ide_host::ops::debug::debug_js_stop_profile(&state.host, "", session).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn debug_capabilities(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<DebugCapabilities> {

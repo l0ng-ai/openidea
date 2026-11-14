@@ -41,6 +41,7 @@ import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
+import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
@@ -583,6 +584,26 @@ export function registerDebugActions(): () => void {
         const s = activeSession();
         if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
       },
+    },
+    {
+      id: "debug.startPageProfile",
+      title: "Start CPU Profile",
+      description: "Record where the debugged page spends its time",
+      category: "Debug",
+      icon: "profile",
+      keywords: ["profiler", "performance", "flame graph", "browser"],
+      when: "debugHasJsPage && !debugPageProfiled",
+      run: () => startPageProfile(),
+    },
+    {
+      id: "debug.stopPageProfile",
+      title: "Stop CPU Profile",
+      description: "Stop recording the page and open the profile",
+      category: "Debug",
+      icon: "profile",
+      keywords: ["profiler", "performance", "flame graph", "browser"],
+      when: "debugPageProfiled",
+      run: () => stopPageProfile(),
     },
     {
       // The host opens dumps for a trusted project only (F21).
