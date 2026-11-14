@@ -170,6 +170,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-kotlin";
     case "kotlin":
       return "file-kotlin-script";
+    case "zig":
+    case "zig-application":
+      return "file-zig";
     case "native":
       return "file-binary";
     case "python":

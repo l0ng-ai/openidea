@@ -5,6 +5,7 @@
 
 pub(crate) mod cmake;
 mod dotnet;
+mod zig;
 
 use crate::RunConfig;
 use ide_core::project_roots::expand_members;
@@ -72,6 +73,7 @@ pub(crate) fn detect_with_profiles(
             }
         }
     }
+    detect_projects(root, &["build.zig"], zig::detect, &mut out);
     dotnet::detect(root, &mut out);
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);

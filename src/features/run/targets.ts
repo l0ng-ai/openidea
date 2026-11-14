@@ -353,6 +353,21 @@ function jvmTargets(lines: string[], relPath: string): RunTarget[] {
  * Run targets of a file (relative path picks the language). `django`: a Django project, where
  * `tests.py` (Django's default test module) holds tests too.
  */
+/** Zig: a top-level `pub fn main` and `test "name" {` / `test name {` blocks, nested ones too. */
+export function zigTargets(content: string): RunTarget[] {
+  if (content.length > MAX_SCAN) return [];
+  const out: RunTarget[] = [];
+  content.split("\n").forEach((line, i) => {
+    if (/^pub\s+fn\s+main\s*\(/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
+    const test = /^\s*test\s+(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_]\w*))\s*\{/.exec(line);
+    if (test) {
+      const name = test[1] ?? test[2]!;
+      out.push({ line: i, kind: "test", name, path: [name] });
+    }
+  });
+  return out;
+}
+
 export function detectRunTargets(text: string, relPath: string, django = false): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");

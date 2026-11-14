@@ -38,6 +38,7 @@ import { isPythonPackage, loadPythonPackages } from "./pythonPackages";
 import { remoteDebugBlocked } from "./remote";
 import { toolEnv } from "./runtimes";
 import { adoptTemporary, loadConfigs, modifyTemporary, startRun, useRun } from "./store";
+import { zigTargets } from "./targets";
 import { tx } from "@/platform/i18n";
 
 const CONTENT_LIMIT = 400_000;
@@ -177,11 +178,11 @@ export async function launchProduced(p: Produced, debug: boolean, show?: boolean
 }
 
 /**
- * The debug plan of a compiled single-file configuration (kinds `rustc` / `cc`)
+ * The debug plan of a compiled single-file configuration (kinds `rustc` / `cc` / `zig`)
  * picked from the Run widget: re-produced from the source file in its id.
  */
 export async function compiledDebugPlan(config: RunConfig): Promise<Produced | null> {
-  if (config.kind !== "rustc" && config.kind !== "cc") return null;
+  if (config.kind !== "rustc" && config.kind !== "cc" && config.kind !== "zig") return null;
   const m = /^context:file:(.+?)(?:#(.+))?$/.exec(config.id);
   if (!m) return null;
   const root = useProject.getState().project?.root ?? null;
@@ -196,6 +197,10 @@ export async function compiledDebugPlan(config: RunConfig): Promise<Produced | n
   const env = await toolEnv(neededTools(input), path, root, false);
   if (m[2]) {
     // A test: find the target by name again.
+    if (config.kind === "zig") {
+      const test = zigTargets(content ?? "").find((t) => t.name.replace(/\\(.)/g, "$1") === m[2]);
+      return test ? produceContext({ ...input, line: test.line }, env) : null;
+    }
     const lines = (content ?? "").split("\n");
     const line = lines.findIndex((l) =>
       new RegExp(`\\bfn\\s+${m[2]!.split("::").pop()}\\b|\\bmod\\s+${m[2]}\\b`).test(l),

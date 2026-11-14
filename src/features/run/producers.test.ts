@@ -393,6 +393,77 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(scratch("calc.rs", src, 0), ALL)!.name).toBe("calc.rs");
   });
 
+  it("Zig: zig run a main, zig test one test with --test-filter; debugging builds the binary first", () => {
+    const src = [
+      'const std = @import("std");',
+      "pub fn main() !void {}",
+      'test "adds two numbers" {',
+      "    try std.testing.expect(true);",
+      "}",
+      "const S = struct {",
+      "    test named {}",
+      "};",
+    ].join("\n");
+    const e = env({ zig: "0.17.1" });
+    const main = produceContext(scratch("calc.zig", src, 1), e)!;
+    expect(main).toMatchObject({ name: "calc.zig", scope: "element" });
+    expect(main.config).toMatchObject({ kind: "zig", command: "/bin/zig", args: ["run", "calc.zig"], cwd: SCRATCH });
+    expect(main.debug!.build.command).toMatch(
+      /^mkdir -p \/tmp\/openidea-run && \/bin\/zig build-exe calc\.zig -femit-bin=\/tmp\/openidea-run\/calc-\w+$/,
+    );
+    expect(main.debug!.config).toMatchObject({ kind: "native", debugAdapter: "codelldb", args: [] });
+
+    const test = produceContext(scratch("calc.zig", src, 3), e)!;
+    expect(test).toMatchObject({ name: "adds two numbers", scope: "element" });
+    expect(test.config).toMatchObject({
+      args: ["test", "calc.zig", "--test-filter", "adds two numbers"],
+      isTest: true,
+    });
+    expect(test.debug!.build.command).toMatch(
+      /zig test calc\.zig --test-filter 'adds two numbers' --test-no-exec -femit-bin=\S+-test$/,
+    );
+    expect(produceContext(scratch("calc.zig", src, 6), e)!.config!.args).toEqual([
+      "test",
+      "calc.zig",
+      "--test-filter",
+      "named",
+    ]);
+    expect(fileTargets(scratch("calc.zig"), src).map((t) => [t.kind, t.name, t.line])).toEqual([
+      ["main", "main", 1],
+      ["test", "adds two numbers", 2],
+      ["test", "named", 6],
+    ]);
+    // A file with tests only runs them all; without Zig, how to install it.
+    expect(produceFile(scratch("lib.zig", 'test "x" {}'), e)!.config!.args).toEqual(["test", "lib.zig"]);
+    expect(produceContext(scratch("calc.zig", src, 1), env({}))!.missing!.body).toMatch(/ziglang\.org/);
+  });
+
+  it("Zig in a build.zig project: a file's main runs its executable, built first", () => {
+    const configs = [
+      cfg({ id: "zig:build", kind: "zig", command: "zig", args: ["build"] }),
+      cfg({
+        id: "zig:exe:app",
+        name: "app",
+        kind: "zig-application",
+        command: "./zig-out/bin/app",
+        debugAdapter: "codelldb",
+        params: { source: "src/main.zig" },
+      }),
+    ];
+    const input = (path: string): ContextInput => ({
+      path: `${ROOT}/${path}`,
+      root: ROOT,
+      configs,
+      content: "pub fn main() void {}",
+    });
+    expect(produceFile(input("src/main.zig"), env({ zig: null }))!.config!.id).toBe("zig:exe:app");
+    // Not an executable's root: the file on its own.
+    expect(produceFile(input("tools/gen.zig"), env({ zig: null }))!.config).toMatchObject({
+      args: ["run", "tools/gen.zig"],
+      cwd: null,
+    });
+  });
+
   it("Rust in a Cargo project: cargo run --bin / --example, not rustc", () => {
     const cargo = [
       cfg({ id: "cargo:run:server", kind: "cargo", command: "cargo", args: ["run", "--bin", "server"] }),
