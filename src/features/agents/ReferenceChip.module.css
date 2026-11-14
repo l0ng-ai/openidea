@@ -43,6 +43,27 @@
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
+/* In the composer: a × at the end removes the reference, as on the attached blocks. */
+.removable {
+  padding-right: 2px;
+}
+.chipRemove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.chipRemove:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
 /* The file is gone (renamed or deleted since it was referenced). */
 .missing {
   color: var(--fg-muted);

@@ -11,7 +11,7 @@
         copied: "已复制",
         manual: "无法复制。请选择下方详情并手动复制。",
         details: "启动错误详情",
-        timeout: "启动未在 30 秒内完成。",
+        timeout: "启动未在 60 秒内完成。",
         outdatedMac:
           "这台 Mac 的系统网页引擎过旧：OpenIDEA 的界面运行在 macOS 自带的 WebKit 引擎上，需要 macOS 13 Ventura 或更高版本。在 macOS 11、12 上更新 Safari 不会更新其他应用使用的引擎，需要升级 macOS。",
         outdated:
@@ -25,7 +25,7 @@
         copied: "Copied",
         manual: "Could not copy. Select the details below and copy them.",
         details: "Startup error details",
-        timeout: "Startup did not finish within 30 seconds.",
+        timeout: "Startup did not finish within 60 seconds.",
         outdatedMac:
           "The system web engine on this Mac is too old: OpenIDEA's interface runs on macOS's built-in WebKit and needs macOS 13 Ventura or later. On macOS 11 and 12 a Safari update doesn't update the engine other apps use, so macOS itself needs upgrading.",
         outdated:
@@ -146,7 +146,7 @@
   };
   // The timeout counts only while the window shows: a hidden or covered window gets no
   // animation frames, and the splash waits for those to finish startup.
-  let remaining = 30_000;
+  let remaining = 60_000;
   let armedAt = 0;
   let timer;
   const arm = () => {

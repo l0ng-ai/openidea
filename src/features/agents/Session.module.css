@@ -41,9 +41,11 @@
 /* The task's state and its terminal and changes, just above the composer. */
 .statusBar {
   display: flex;
+  /* What doesn't fit moves to the next line whole, instead of every fact shrinking to a letter. */
+  flex-wrap: wrap;
   /* The changes chip sits above the line; the facts stay on that line's baseline. */
   align-items: flex-end;
-  gap: 6px;
+  gap: 2px 6px;
   min-width: 0;
   padding: 0 2px;
   overflow: hidden;
@@ -54,6 +56,7 @@
 .agent {
   display: inline-flex;
   flex: 0 1 auto;
+  max-width: 100%;
   align-items: center;
   gap: 4px;
   height: 22px;
@@ -70,6 +73,7 @@
 .where {
   display: inline-flex;
   flex: 0 1 auto;
+  max-width: 100%;
   align-items: center;
   /* The chips' own padding spaces them. */
   gap: 2px;
@@ -87,20 +91,21 @@
   height: 22px;
   white-space: nowrap;
 }
-/* The changes sit above the meter, time and terminal; those keep their one row at the right. */
+/* The rest of the line: the changes at its start, the meter, time and terminal at its end.
+   On a line of its own (a narrow session) the changes line up with the facts above. */
 .statusEnd {
   display: inline-flex;
-  flex: 0 1 auto;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
   min-width: 0;
-  margin-left: auto;
 }
 /* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
 .statusMeters {
   display: inline-flex;
   flex: 0 1 auto;
+  margin-left: auto;
   align-items: center;
   height: 22px;
   gap: 8px;

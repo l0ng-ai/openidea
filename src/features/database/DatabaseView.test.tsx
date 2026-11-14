@@ -41,7 +41,6 @@ beforeEach(() => {
         sequences: [],
       },
     },
-    treeFilter: "",
     separateProceduresAndFunctions: false,
     treeExpanded: new Set(["pg", "pg/public", "pg/public/routines"]),
   });
@@ -60,9 +59,6 @@ describe("routine grouping", () => {
     expect(tree.queryByText("functions")).toBeNull();
     fireEvent.mouseDown(tree.getAllByText("calculate")[1]!, { button: 0 });
     expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/routines/calculate(text)");
-    act(() => useDatabase.setState({ treeFilter: "refresh" }));
-    expect(tree.queryAllByText("calculate")).toHaveLength(0);
-    expect(tree.getByText("refresh_data")).toBeInTheDocument();
   });
 
   it("toggles through the action, persists the option, and restores the old expansion", async () => {
@@ -91,7 +87,7 @@ describe("routine grouping", () => {
     });
   });
 
-  it.each([false, true])("applies object and quick filters before grouping (separate: %s)", (separate) => {
+  it.each([false, true])("applies the object filter before grouping (separate: %s)", (separate) => {
     const source = useDatabase.getState().sources[0]!;
     useDatabase.setState({
       separateProceduresAndFunctions: separate,
@@ -105,10 +101,6 @@ describe("routine grouping", () => {
     expect(tree.getAllByText("calculate")).toHaveLength(2);
     const folder = tree.getByText(separate ? "functions" : "routines").closest('[role="treeitem"]')!;
     expect(within(folder as HTMLElement).getByText("2")).toBeInTheDocument();
-    act(() => useDatabase.setState({ treeFilter: "refresh" }));
-    expect(tree.queryByText("public")).toBeNull();
-    expect(tree.queryByText("routines")).toBeNull();
-    expect(tree.queryByText("functions")).toBeNull();
   });
 });
 
