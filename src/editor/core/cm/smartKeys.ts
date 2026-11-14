@@ -12,7 +12,14 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
-import { getIndentUnit, getIndentation, indentString, indentUnit, syntaxTree } from "@codemirror/language";
+import {
+  getIndentUnit,
+  getIndentation,
+  indentService,
+  indentString,
+  indentUnit,
+  syntaxTree,
+} from "@codemirror/language";
 import { indentMore } from "@codemirror/commands";
 import { visibleColumn } from "./visibleColumn";
 
@@ -244,4 +251,79 @@ export const skipClosingQuote = EditorView.inputHandler.of((view, _from, _to, te
     userEvent: "input.type",
   });
   return true;
+});
+
+// --- indentation after a bracket that ends its line ---------------------------------------------
+
+const CLOSE_OF: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** How far back the opening bracket around a position is looked for. */
+const BRACKET_SCAN = 20_000;
+
+/**
+ * Indentation inside a bracket that is the last thing on its line while
+ * another bracket before it on that line is still open (`$this->add([`,
+ * `foo(function () {`). A language mode then aligns the content under the
+ * outer bracket's content, columns to the right; IDEA indents one unit from
+ * the line instead:
+ *
+ * - the line right after the opening bracket: one unit deeper than its line;
+ * - a line starting with its closing bracket: that line's indentation;
+ * - in `[…]` and `(…)`, a line after one ending in `,`: that line's
+ *   indentation (the next element or argument).
+ *
+ * Everything else is left to the language mode.
+ */
+export const trailingBracketIndent = indentService.of((cx, pos) => {
+  const { state } = cx;
+  const from = Math.max(0, pos - BRACKET_SCAN);
+  const text = state.sliceDoc(from, pos);
+  let depth = 0;
+  let open = -1;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch !== "(" && ch !== ")" && ch !== "[" && ch !== "]" && ch !== "{" && ch !== "}") continue;
+    if (inLiteral(state, from + i)) continue;
+    if (OPEN_OF[ch]) depth++;
+    else if (depth > 0) depth--;
+    else {
+      open = from + i;
+      break;
+    }
+  }
+  if (open < 0) return undefined;
+  const line = state.doc.lineAt(open);
+  // The bracket ends its line (up to the caret, when the break is on it).
+  const lineEnd = pos <= line.to ? pos : line.to;
+  if (state.sliceDoc(open + 1, lineEnd).trim()) return undefined;
+  // Another bracket before it on the line is still open.
+  let outer = false;
+  let nested = 0;
+  for (let i = open - 1; i >= line.from && !outer; i--) {
+    const ch = state.sliceDoc(i, i + 1);
+    if (!CLOSE_OF[ch] && !OPEN_OF[ch]) continue;
+    if (inLiteral(state, i)) continue;
+    if (OPEN_OF[ch]) nested++;
+    else if (nested > 0) nested--;
+    else outer = true;
+  }
+  if (!outer) return undefined;
+  const base = cx.lineIndent(line.from);
+  const bracket = state.sliceDoc(open, open + 1);
+  const close = CLOSE_OF[bracket];
+  if (close && cx.textAfterPos(pos).trimStart().startsWith(close)) return base;
+  // The last line with text before the position.
+  const here = state.doc.lineAt(pos);
+  let before = here.from === pos || !state.sliceDoc(here.from, pos).trim() ? null : state.sliceDoc(here.from, pos);
+  let beforeFrom = here.from;
+  for (let n = here.number - 1; before === null && n >= line.number; n--) {
+    const prev = state.doc.line(n);
+    if (prev.text.trim()) {
+      before = prev.text;
+      beforeFrom = prev.from;
+    }
+  }
+  if (before === null || beforeFrom === line.from) return base + cx.unit;
+  if (bracket !== "{" && before.trimEnd().endsWith(",")) return cx.lineIndent(beforeFrom);
+  return undefined;
 });

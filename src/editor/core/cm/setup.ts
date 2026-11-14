@@ -46,7 +46,7 @@ import { commentTokens } from "./languages";
 import { multiCaretMouse } from "./multiCaret";
 import { columnModeExtension } from "./columnMode";
 import { visibleGoalColumns } from "./verticalMotion";
-import { tabKeymap } from "./smartKeys";
+import { tabKeymap, trailingBracketIndent } from "./smartKeys";
 import { editorBaseKeymap } from "./baseKeymap";
 import { occurrenceSearch } from "./editing";
 import { gutterLineDrag } from "./gutterDrag";
@@ -365,6 +365,8 @@ export function baseExtensions(o: SetupOptions): Extension {
     syntaxHighlighting(openideaHighlightStyle),
     syntaxHighlightField,
     closeBrackets(),
+    // Before the language mode's own indentation, which aligns under the outer bracket.
+    Prec.high(trailingBracketIndent),
     caretRowHighlight,
     fontZoom,
     methodLinesField,
