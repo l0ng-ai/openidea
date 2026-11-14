@@ -43,6 +43,8 @@ import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
 export const MCP_PORT_LIMITS = { min: 1, max: 65535 };
+/** Agents › IDE MCP Server › Listen address: its default (`ide-core::settings::DEFAULT_MCP_ADDRESS`). */
+export const DEFAULT_MCP_ADDRESS = "127.0.0.1";
 
 /** A built-in theme, a plugin's (`plugin:<id>/<theme>`) or the legacy `"system"`. */
 export type ThemeId = ThemeChoiceId | "system";
@@ -121,6 +123,8 @@ export interface ValidSettings extends WorkflowSettings {
     runWithoutConfirmation: boolean;
     agentTabLimit: number;
     agentArchiveLimit: number;
+    /** The IP address to listen on (`127.0.0.1`: this computer only); the backend checks it. */
+    address: string;
     /** Listen on `port` in every run rather than a free port each time. */
     fixedPort: boolean;
     port: number;
@@ -222,6 +226,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     runWithoutConfirmation: false,
     agentTabLimit: DEFAULT_AGENT_RUNS.tabLimit,
     agentArchiveLimit: DEFAULT_AGENT_RUNS.archiveLimit,
+    address: DEFAULT_MCP_ADDRESS,
     fixedPort: true,
     port: DEFAULT_MCP_PORT,
     fixedToken: false,
@@ -400,6 +405,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       runWithoutConfirmation: bool(obj(root.mcpServer).runWithoutConfirmation, d.mcpServer.runWithoutConfirmation),
       agentTabLimit: validateAgentRuns(root.mcpServer).tabLimit,
       agentArchiveLimit: validateAgentRuns(root.mcpServer).archiveLimit,
+      address: str(obj(root.mcpServer).address, d.mcpServer.address).trim(),
       fixedPort: bool(obj(root.mcpServer).fixedPort, d.mcpServer.fixedPort),
       port: num(obj(root.mcpServer).port, d.mcpServer.port, MCP_PORT_LIMITS, true),
       fixedToken: bool(obj(root.mcpServer).fixedToken, d.mcpServer.fixedToken),

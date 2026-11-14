@@ -7,7 +7,7 @@ import { useTx } from "@/platform/i18n";
 import { Button, Input, T, copyText } from "@/ui";
 import { Row } from "../components/Form";
 import { useSetting } from "../components/context";
-import { MCP_PORT_LIMITS } from "../model/schema";
+import { DEFAULT_MCP_ADDRESS, MCP_PORT_LIMITS } from "../model/schema";
 import type { PageSpec } from "./spec";
 import styles from "./McpServer.module.css";
 
@@ -67,11 +67,15 @@ function McpServerEndpoint() {
   };
   const regenerate = () => void call(commands.mcpRegenerateToken()).then(reload, reload);
   const { port, error } = status;
+  // Another address than this computer's only: say so, as other computers may connect.
+  const at = status.address && status.address !== DEFAULT_MCP_ADDRESS ? status.address : null;
   const busy = status.portUnavailable;
   const state = status.running
     ? busy
       ? tx`Running on port ${port}: the fixed port is unavailable (${busy})`
-      : tx`Running on port ${port}`
+      : at
+        ? tx`Running on ${at}, port ${port}`
+        : tx`Running on port ${port}`
     : error
       ? tx`Failed to start: ${error}`
       : tx("Not running");
@@ -134,7 +138,20 @@ export const MCP_SERVER_PAGE: PageSpec = {
   title: "IDE MCP Server",
   group: "Agents",
   order: 470,
-  keywords: ["mcp", "model context protocol", "ai", "agent", "claude", "codex", "tools", "stdio", "port", "token"],
+  keywords: [
+    "mcp",
+    "model context protocol",
+    "ai",
+    "agent",
+    "claude",
+    "codex",
+    "tools",
+    "stdio",
+    "address",
+    "listen",
+    "port",
+    "token",
+  ],
   sections: [
     {
       options: [
@@ -142,13 +159,20 @@ export const MCP_SERVER_PAGE: PageSpec = {
           kind: "toggle",
           key: "mcpServer.enabled",
           label: "Enable MCP server",
-          hint: "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 only and requires a token.",
+          hint: "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 unless Listen address says otherwise, and requires a token.",
         },
         {
           kind: "toggle",
           key: "mcpServer.runWithoutConfirmation",
           label: "Run tools without confirmation (brave mode)",
           hint: "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
+        },
+        {
+          kind: "text",
+          key: "mcpServer.address",
+          label: "Listen address",
+          placeholder: DEFAULT_MCP_ADDRESS,
+          hint: "The IP address the server listens on: 127.0.0.1 for this computer only (the default); another address of this computer, such as a LAN or VPN one, or 0.0.0.0 for every address, so that agents on other computers can connect. Anyone who can reach the address and has the token can use the tools.",
         },
         {
           kind: "toggle",
@@ -162,7 +186,7 @@ export const MCP_SERVER_PAGE: PageSpec = {
           label: "Port",
           ...MCP_PORT_LIMITS,
           integer: true,
-          hint: "The fixed port on 127.0.0.1, used while Use a fixed port is on.",
+          hint: "The fixed port, used while Use a fixed port is on.",
         },
         {
           kind: "toggle",

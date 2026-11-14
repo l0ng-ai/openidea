@@ -8,6 +8,7 @@ import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { tx } from "@/platform/i18n";
 import type { Diagnostic } from "@/bindings";
 import { call, commands, isCancelled, nextRequestId, type RequestId } from "@/platform/ipc";
+import type { JsonValue } from "@/platform/losslessJson";
 import { basename, dirname, useProject } from "@/platform/project";
 import { editorService, notifications, toolWindowService } from "@/workbench/contributions";
 import { confirm, showError } from "@/workbench/messages";
@@ -336,7 +337,7 @@ function notifyRequestFailed(configured: Endpoint, error: string, retry: () => v
   });
 }
 
-async function send(configured: Endpoint, query: string, variables: Record<string, unknown> | null) {
+async function send(configured: Endpoint, query: string, variables: JsonValue | null) {
   const endpoint = resolveEndpoint(configured);
   const busy = useGraphQL.getState().running;
   if (busy) void commands.cancelRequest(busy);
