@@ -1789,6 +1789,13 @@ export class EditorController implements SlotHost {
     return useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId)?.input ?? null;
   }
 
+  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
+  paneOf(key: string): string | null {
+    for (const [paneId, pane] of Object.entries(useTabs.getState().panes))
+      if (pane.tabs.some((t) => t.input.key === key)) return paneId;
+    return null;
+  }
+
   closePath(path: string): Promise<boolean> {
     return this.removeGuarded((s) => {
       const keys = new Set<string>();

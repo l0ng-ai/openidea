@@ -651,6 +651,8 @@ export interface EditorService {
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
+  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
+  paneOf?(key: string): string | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */

@@ -201,6 +201,11 @@ export const commands = {
 	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	/**
+	 *  Creates a temporary side conversation of `source`: lives in memory only, never
+	 *  persisted, not listed, and its session starts with the first message sent to it.
+	 */
+	agentCreateEphemeral: (request: NewAgentTask, source: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create_ephemeral", { request, source })),
 	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
 	agentRollback: (task: string, turns: number) => typedError<{
 	text: string,
