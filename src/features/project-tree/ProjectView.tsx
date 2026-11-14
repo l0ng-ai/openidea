@@ -39,6 +39,7 @@ import {
   HighlightedText,
   Icon,
   Popup,
+  beginDrag,
   dragSession,
   registerDropTarget,
   Tree,
@@ -65,7 +66,7 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "./projectType";
+import { PROJECT_TYPES } from "@/platform/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
@@ -285,7 +286,9 @@ const Row = memo(function Row({
   const root = useProjectTree((s) => s.root);
   const detected = useDetectedRoots();
   const build = useProjectPresentation();
-  const projectType = useProjectTree((s) => (node.root && !node.icon ? s.projectTypes.get(node.path) : undefined));
+  const projectType = useProjectTree((s) =>
+    s.members && node.root && !node.icon ? s.projectTypes.get(node.path) : undefined,
+  );
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
@@ -641,6 +644,7 @@ export function ProjectView() {
     // editor opens only files, so folders carry the trailing slash `findDirs`
     // uses and the editor leaves them out.
     let files: DragSession | null = null;
+    let endDrag: (() => void) | null = null;
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
       if (!(ev.buttons & 1)) {
@@ -651,6 +655,7 @@ export function ProjectView() {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
         dragged.current = true;
+        endDrag = beginDrag();
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
@@ -697,6 +702,7 @@ export function ProjectView() {
       window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
+      endDrag?.();
       setDropTarget(null);
       setDrag(null);
     };

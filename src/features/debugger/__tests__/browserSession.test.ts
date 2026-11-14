@@ -79,7 +79,8 @@ function run(expression: string): string | null {
       pageAt = url;
     },
   };
-  new Function("location", `return ${expression}`)(location);
+  // The page's own globals may shadow the browser's (`const URL = "/api"`).
+  new Function("location", "URL", `return ${expression}`)(location, "/api");
   return went;
 }
 

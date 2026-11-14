@@ -272,6 +272,34 @@ describe("custom editor document lifetime", () => {
     }
   });
 
+  it("asks about a tab that becomes busy while changes are discarded", async () => {
+    let busyNow = false;
+    const busy = registerEditorKind({
+      kind: "busy-test",
+      component: () => null,
+      title: (i) => i.key,
+      isBusy: () => busyNow,
+    });
+    try {
+      const doc = await open();
+      doc.discard = async () => {
+        busyNow = true;
+        doc.pending = "";
+        doc.text = doc.saved;
+      };
+      await ctrl.openInput({ kind: "busy-test", key: "busy:1" }, { focus: false });
+      vi.mocked(ask).mockResolvedValue({ button: "discard", checked: false });
+      vi.mocked(confirm).mockResolvedValue(false);
+      const pane = useTabs.getState().activePane;
+      expect(await ctrl.closeAll(pane)).toBe(false);
+      expect(confirm).toHaveBeenCalledOnce();
+      expect(useTabs.getState().panes[pane]!.tabs.map((tab) => tab.input.key)).toContain("busy:1");
+    } finally {
+      busy();
+      vi.mocked(confirm).mockReset();
+    }
+  });
+
   it("discards without a removal-triggered autosave", async () => {
     const doc = await open();
     useProject.setState({ settings: { files: { autoSave: true } } as never });

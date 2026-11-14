@@ -41,7 +41,8 @@ const LOOSE: &AsciiSet = &CONTROLS
     .add(b'}');
 
 /// Fields of LSP messages whose value is a URI.
-const URI_FIELDS: [&str; 8] = ["uri", "targetUri", "newUri", "oldUri", "baseUri", "scopeUri", "rootUri", "target"];
+const URI_FIELDS: [&str; 9] =
+    ["uri", "targetUri", "newUri", "oldUri", "baseUri", "scopeUri", "rootUri", "target", "href"];
 
 /// Percent-encodes the characters URIs don't allow in the `file:` URIs of `value`: the URI
 /// fields and the keys of a workspace edit's `changes`. Eclipse's jdtls sends a path as is
@@ -193,6 +194,10 @@ mod tests {
         assert_eq!(v["result"][1]["documentation"], "file: the input");
         let changes = &v["edit"]["changes"]["file:///tmp/a%20b.yaml"];
         assert_eq!(changes[0]["newText"], "file: x y");
+        // A diagnostic's help link is a URI too.
+        let mut d = serde_json::json!({ "codeDescription": { "href": "file:///tmp/help files/rule.html" } });
+        encode_loose_file_uris(&mut d);
+        assert_eq!(d["codeDescription"]["href"], "file:///tmp/help%20files/rule.html");
     }
 
     #[cfg(unix)]

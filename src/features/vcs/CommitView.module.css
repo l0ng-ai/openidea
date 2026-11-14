@@ -188,6 +188,7 @@
 }
 .stashList {
   flex: 1;
+  container: stash-list / inline-size;
 }
 .stashRow {
   flex: 1;
@@ -196,15 +197,24 @@
   align-items: center;
   gap: 8px;
 }
+/* The message identifies a stash: the branch gives way first, the time stays whole. */
 .stashRow > .detail {
-  flex-shrink: 1;
+  white-space: nowrap;
+}
+.stashRow > .stashTime {
+  flex: none;
 }
 .stashMessage {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 4em;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+@container stash-list (max-width: 320px) {
+  .stashBranch {
+    display: none;
+  }
 }
 /* Settings › Commit › Show right margin off. */
 .noMargin {
