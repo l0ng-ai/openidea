@@ -148,6 +148,19 @@ describe("JavaScript event and request breakpoints", () => {
     stop();
   });
 
+  it("gives a new page the breakpoints when its id was used before, as after a backend restart", async () => {
+    loadJsBreakpoints("/a");
+    setEventBreakpoint("listener:click", true);
+    const stop = watchPageSessions();
+    sessions([{ id: 1, page: true }]);
+    sessions([]);
+    sent.length = 0;
+    sessions([{ id: 1, page: true }]);
+    await Promise.resolve();
+    expect(sent).toEqual([[1, ["listener:click"], []]]);
+    stop();
+  });
+
   it("says why a session stopped at an event or request breakpoint", () => {
     const stop = (stopReason: string, stopDescription: string | null, status = "paused") =>
       stopNote({ status, stopReason, stopDescription } as Parameters<typeof stopNote>[0]);

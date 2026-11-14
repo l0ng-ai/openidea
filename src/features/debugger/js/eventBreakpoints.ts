@@ -140,6 +140,8 @@ export function watchPageSessions(): () => void {
   const seen = new Set<number>();
   return useDebug.subscribe((s) => {
     for (const id of Object.keys(useJsRefusals.getState().refused)) if (!s.sessions[+id]) forgetRefusals(+id);
+    // Ids start over after the backend restarts: a removed session's id may come back as a new page.
+    for (const id of seen) if (!s.sessions[id]) seen.delete(id);
     for (const session of Object.values(s.sessions)) {
       if (seen.has(session.id) || !session.caps?.jsPage || !isLive(session)) continue;
       seen.add(session.id);
