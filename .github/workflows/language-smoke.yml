@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin, php, c, cpp]
+        language: [typescript, python, rust, go, java, kotlin, php, c, cpp, zig]
     # C/C++ debug with GDB, whose DAP interpreter needs 14+: 22.04 ships 12.1, 24.04 ships 15.
     runs-on: ${{ (matrix.language == 'c' || matrix.language == 'cpp') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     timeout-minutes: 40
@@ -116,6 +116,10 @@ jobs:
       - if: matrix.language == 'php'
         run: npm install --global "intelephense@$INTELEPHENSE"
 
+      - if: matrix.language == 'zig'
+        uses: mlugg/setup-zig@v2
+        with: { version: "${{ env.ZIG }}" }
+
       - run: cargo test --locked -p ide-host --test language_smoke --no-run
       - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
       - if: matrix.language == 'java'
@@ -127,7 +131,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: cargo build --locked -p ide-host --bin openidea-server
+      # The smokes each open their own copy of the fixture: with setup-zig's job-wide cache
+      # the debug smoke would reuse the run smoke's zig build, whose debug info still names
+      # the first copy's paths — its breakpoint can't resolve. One cache per smoke.
       - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-cache-run
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache-run
       - run: pnpm smoke smoke/debug.test.ts -t "^${{ matrix.language }}$"
-        # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
+        env:
+          ZIG_LOCAL_CACHE_DIR: ${{ runner.temp }}/zig-cache-debug
+          ZIG_GLOBAL_CACHE_DIR: ${{ runner.temp }}/zig-cache-debug
+          # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
+          GITHUB_TOKEN: ${{ github.token }}

@@ -12,6 +12,7 @@ pub(super) fn detect(dir: &Path, out: &mut Vec<RunConfig>) {
     let Some(src) = read(&dir.join("build.zig")) else { return };
     let src = code_only(&src);
     out.push(config(BUILD_ID, "zig build", "zig", "zig", &["build"]));
+    let roots = test_roots(&src);
     for step in steps(&src) {
         // `install` is what plain `zig build` runs.
         if step == "install" || step == "uninstall" {
@@ -20,6 +21,9 @@ pub(super) fn detect(dir: &Path, out: &mut Vec<RunConfig>) {
         let mut c = config(format!("zig:{step}"), format!("zig build {step}"), "zig", "zig", &["build", &step]);
         if step == "test" || step.starts_with("test-") || step.starts_with("test_") {
             c = c.test();
+            if let Some((_, root)) = roots.iter().find(|(name, _)| *name == step) {
+                c.extras.params.insert("testRoot".into(), root.clone());
+            }
         }
         out.push(c);
     }
@@ -161,6 +165,137 @@ fn executables(src: &str) -> Vec<Executable> {
     out
 }
 
+/// The call's argument text: from just after its `(` to the matching `)`.
+fn call_body(src: &str, start: usize) -> &str {
+    let (mut depth, mut in_string, mut escaped) = (1usize, false, false);
+    for (i, c) in src[start..].char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &src[start..start + i];
+                }
+            }
+            _ => {}
+        }
+    }
+    src
+}
+
+/// The first `.root_source_file = <receiver>.path("…")` in `body`.
+fn root_source_file(body: &str) -> Option<String> {
+    for (i, _) in body.match_indices(".root_source_file") {
+        let Some(v) = body[i + ".root_source_file".len()..].trim_start().strip_prefix('=') else { continue };
+        let v = v.trim_start();
+        if let Some(call) = v.find(".path(")
+            && v[..call].chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            return string_at(&v[call + ".path(".len()..]);
+        }
+    }
+    None
+}
+
+/// The identifier assigned just before `at`: `const mod = b.addModule(…` → `mod`.
+fn assigned_var(src: &str, at: usize) -> Option<&str> {
+    let before = src[..at].trim_end();
+    let before = before.strip_suffix('.')?.trim_end();
+    // Drop the receiver (`b`) that sits between the `=` and the call.
+    let receiver =
+        before.char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_').last().map(|(i, _)| i)?;
+    let before = before[..receiver].trim_end();
+    let before = before.strip_suffix('=')?.trim_end();
+    let start =
+        before.char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_').last().map(|(i, _)| i)?;
+    Some(&before[start..])
+}
+
+/// The test root behind each test-named step (`zig build <step>`): the step's `dependOn` runs
+/// an `addTest` artifact — a variable (`const tests = b.addTest(…)`) or an inline call — whose
+/// module's `root_source_file` this resolves (through `addModule`/`createModule` variables).
+/// `zig build` forwards no args to the test binary, so rerunning a single failed test goes
+/// through a standalone `zig test <root> --test-filter …` on the step's own test module.
+fn test_roots(src: &str) -> Vec<(String, String)> {
+    let mut modules: Vec<(String, String)> = Vec::new();
+    for key in ["addModule(", "createModule("] {
+        for (i, _) in src.match_indices(key) {
+            let Some(root) = root_source_file(call_body(src, i + key.len())) else { continue };
+            if let Some(var) = assigned_var(src, i)
+                && !modules.iter().any(|(m, _)| *m == var)
+            {
+                modules.push((var.to_owned(), root));
+            }
+        }
+    }
+    let module_root = |body: &str| -> Option<String> {
+        root_source_file(body).or_else(|| {
+            let at = body.find(".root_module")?;
+            let v = body[at + ".root_module".len()..].trim_start().strip_prefix('=')?.trim_start();
+            let var: String = v.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            modules.iter().find(|(m, _)| *m == var).map(|(_, root)| root.clone())
+        })
+    };
+    let mut tests: Vec<(String, String)> = Vec::new();
+    for (i, _) in src.match_indices("addTest(") {
+        let Some(root) = module_root(call_body(src, i + "addTest(".len())) else { continue };
+        if let Some(var) = assigned_var(src, i)
+            && !tests.iter().any(|(v, _)| *v == var)
+        {
+            tests.push((var.to_owned(), root));
+        }
+    }
+    let mut steps: Vec<(String, String)> = Vec::new();
+    for (i, _) in src.match_indices(".step(\"") {
+        let Some(name) = string_at(&src[i + ".step(".len()..]) else { continue };
+        // The match includes the dot, so the assignment ends one character earlier.
+        if let Some(var) = assigned_var(src, i + 1) {
+            steps.push((var.to_owned(), name));
+        }
+    }
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (i, _) in src.match_indices(".dependOn(&") {
+        let Some(step) = receiver_var(src, i + 1) else { continue };
+        let Some((_, name)) = steps.iter().find(|(v, _)| v == step) else { continue };
+        let after = &src[i + ".dependOn(&".len()..];
+        let artifact = if let Some(at) = after.find("addRunArtifact(") {
+            let v = &after[at + "addRunArtifact(".len()..];
+            let var: String = v.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            tests.iter().find(|(v, _)| *v == var).map(|(_, root)| root.clone())
+        } else if let Some(at) = after.find("addTest(") {
+            module_root(call_body(after, at + "addTest(".len()))
+        } else {
+            None
+        };
+        if let Some(root) = artifact
+            && name.starts_with("test")
+            && !out.iter().any(|(n, _)| n == name)
+        {
+            out.push((name.clone(), root));
+        }
+    }
+    out
+}
+
+/// The identifier a method is called on just before `at`: `test_step.dependOn(…` → `test_step`.
+fn receiver_var(src: &str, at: usize) -> Option<&str> {
+    let before = src[..at].trim_end();
+    let before = before.strip_suffix('.')?;
+    let start =
+        before.char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_').last().map(|(i, _)| i)?;
+    Some(&before[start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,7 +325,9 @@ pub fn build(b: *std.Build) void {
     }) });
     _ = tool;
     const run_step = b.step("run", "Run the app");
+    const tests = b.addTest(.{ .root_module = mod });
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
     const docs = b.step("docs", "Generate docs // not a comment");
     _ = .{ run_step, test_step, docs };
 }
@@ -228,5 +365,39 @@ pub fn build(b: *std.Build) void {
         assert_eq!(app.extras.before_launch[0].kind, "run");
         assert_eq!(app.extras.before_launch[0].target, BUILD_ID);
         assert_eq!(app.extras.params.get("source").map(String::as_str), Some("src/main.zig"));
+        assert_eq!(test.extras.params.get("testRoot").map(String::as_str), Some("src/root.zig"));
+    }
+
+    const TEST_ROOTS: &str = r#"const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const tally = b.addModule("tally", .{ .root_source_file = b.path("src/tally.zig") });
+    const unit = b.addTest(.{ .root_module = tally });
+    const test_step = b.step("test", "Run the unit tests");
+    test_step.dependOn(&b.addRunArtifact(unit).step);
+    const failing = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/failing.zig"),
+    }) });
+    const test_failing_step = b.step("test-failing", "Run the failing tests");
+    test_failing_step.dependOn(&b.addRunArtifact(failing).step);
+    const direct = b.addTest(.{ .root_source_file = b.path("src/direct.zig") });
+    const test_direct_step = b.step("test-direct", "Run the direct tests");
+    test_direct_step.dependOn(&b.addRunArtifact(direct).step);
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&b.addRunArtifact(unit).step);
+}
+"#;
+
+    #[test]
+    fn test_roots_come_from_the_step_s_own_artifact() {
+        let src = code_only(TEST_ROOTS);
+        assert_eq!(
+            test_roots(&src),
+            [
+                ("test".to_owned(), "src/tally.zig".to_owned()),
+                ("test-failing".to_owned(), "src/failing.zig".to_owned()),
+                ("test-direct".to_owned(), "src/direct.zig".to_owned()),
+            ]
+        );
     }
 }

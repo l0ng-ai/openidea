@@ -167,6 +167,30 @@ describe("rerunFailedConfig", () => {
     expect(new Set(configs.map((config) => config.id)).size).toBe(2);
   });
 
+  it("zig: --test-filter per failed test, straight for `zig test` and via the module root for `zig build`", async () => {
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig"]), [
+        ["calc", "adds"],
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "adds", "--test-filter", "subs"]);
+    // Existing filters are replaced, not stacked.
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig", "--test-filter", "adds"]), [
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "subs"]);
+    // `zig build` forwards no args to the test binary: rerun goes through the module root
+    // the detection recorded.
+    expect(
+      (await rerunFailedConfig({ ...cfg("zig", "zig", ["build", "test"]), params: { testRoot: "src/tally.zig" } }, [
+        ["tally", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/tally.zig", "--test-filter", "subs"]);
+    // Without a recorded root a build-based run can't narrow.
+    expect(await rerunFailedConfig(cfg("zig", "zig", ["build", "test"]), [["tally", "subs"]])).toBeNull();
+  });
+
   it("gradle and maven filters", async () => {
     expect((await rerunFailedConfig(cfg("gradle", "./gradlew", ["test"]), [["com.a.FooTest", "bar()"]]))!.args).toEqual(
       ["test", "--tests", "com.a.FooTest.bar"],
