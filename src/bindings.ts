@@ -475,6 +475,11 @@ export const commands = {
 	 *  plus its configured dependencies).
 	 */
 	navIndexDefinitions: (name: string, from: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("nav_index_definitions", { name, from })),
+	/**
+	 *  Every Python class in the project (attached dependency roots included) and its base names,
+	 *  for native inheritance gutter markers.
+	 */
+	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
@@ -2887,6 +2892,25 @@ export type CheckoutOutcome = { kind: "done" } |
 export type ChoiceOption = {
 	value: string,
 	label: string,
+};
+
+/**
+ *  A Python class definition and the base names written in its source. The UI builds a
+ *  name → locations index from every class in the project (attached dependency roots
+ *  included) to compute ↑ overrides / ↓ overridden gutter markers without a language
+ *  server's type-hierarchy provider.
+ */
+export type ClassInheritance = {
+	/**  Start of the class definition's selection range (0-based line, UTF-16 column). */
+	path: IpcPath,
+	line: number,
+	col: number,
+	name: string,
+	/**
+	 *  Base names as written in source (bare name, e.g. `AllToAllTokenDispatcher`; a
+	 *  qualified name keeps only its last segment).
+	 */
+	bases: string[],
 };
 
 export type ClassifiedReference = {

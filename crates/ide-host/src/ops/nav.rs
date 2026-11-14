@@ -2,7 +2,7 @@ use super::doc::blocking;
 use crate::Host;
 use crate::Project;
 use crate::rpc::Dispatcher;
-use ide_core::{DocId, IdeResult, IpcPath, Location, Pos};
+use ide_core::{DocId, IdeResult, IpcPath, LanguageId, Location, Pos};
 use ide_index::{ExtensionCount, FileMatch, IndexStatus, SymbolFilter, SymbolMatch};
 use ide_language::{FileReference, WebReference};
 use ide_workspace::file_refs::{self, PathCompletion};
@@ -21,6 +21,23 @@ pub struct WebGoto {
 }
 
 const MAX_WEB_TARGETS: usize = 200;
+
+/// A Python class definition and the base names written in its source. The UI builds a
+/// name → locations index from every class in the project (attached dependency roots
+/// included) to compute ↑ overrides / ↓ overridden gutter markers without a language
+/// server's type-hierarchy provider.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ClassInheritance {
+    /// Start of the class definition's selection range (0-based line, UTF-16 column).
+    pub path: IpcPath,
+    pub line: u32,
+    pub col: u32,
+    pub name: String,
+    /// Base names as written in source (bare name, e.g. `AllToAllTokenDispatcher`; a
+    /// qualified name keeps only its last segment).
+    pub bases: Vec<String>,
+}
 
 /// The project root and its resource roots (served at `/`), for file references.
 fn reference_roots(project: &Project) -> (PathBuf, Vec<PathBuf>) {
@@ -174,6 +191,34 @@ pub async fn nav_index_definitions(
     .await
 }
 
+/// Every Python class in the project (attached dependency roots included) and its base
+/// names. The index covers content roots, so this is the whole-project answer the UI uses
+/// for inheritance gutter markers when no type-hierarchy provider exists.
+pub async fn nav_inheritance(host: &Host, window: &str) -> IdeResult<Vec<ClassInheritance>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    blocking(move || {
+        let python = LanguageId::new("python");
+        let files = project.index.files_with_extensions(&["py".into(), "pyi".into()], 20_000);
+        let mut out = Vec::new();
+        for path in files {
+            // Prefer the open (possibly unsaved) buffer, else the file on disk.
+            let Ok(text) = project.text_of(&path) else { continue };
+            for class in syntax.class_bases(&python, &text) {
+                out.push(ClassInheritance {
+                    path: IpcPath::from(path.clone()),
+                    line: class.line,
+                    col: class.col,
+                    name: class.name,
+                    bases: class.bases,
+                });
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
 pub async fn fs_resolve_reference(
     host: &Host,
@@ -249,6 +294,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("nav_index_definitions", |c| async move {
         nav_index_definitions(&c.host, &c.window, c.arg("name")?, c.arg("from")?).await
     });
+    d.add("nav_inheritance", |c| async move { nav_inheritance(&c.host, &c.window).await });
     d.add("fs_resolve_reference", |c| async move {
         fs_resolve_reference(&c.host, &c.window, c.arg("from")?, c.arg("value")?).await
     });
