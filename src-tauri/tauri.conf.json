@@ -17,7 +17,7 @@
         "title": "OpenIDEA",
         "width": 1440,
         "height": 900,
-        "minWidth": 800,
+        "minWidth": 400,
         "minHeight": 500,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
