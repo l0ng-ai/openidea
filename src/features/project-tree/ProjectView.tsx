@@ -39,6 +39,7 @@ import {
   HighlightedText,
   Icon,
   Popup,
+  beginDrag,
   dragSession,
   registerDropTarget,
   Tree,
@@ -643,6 +644,7 @@ export function ProjectView() {
     // editor opens only files, so folders carry the trailing slash `findDirs`
     // uses and the editor leaves them out.
     let files: DragSession | null = null;
+    let endDrag: (() => void) | null = null;
     const move = (ev: PointerEvent) => {
       // A press with no button held is a reordered macOS tap, not a drag (see pointerDrag.ts).
       if (!(ev.buttons & 1)) {
@@ -653,6 +655,7 @@ export function ProjectView() {
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_THRESHOLD) return;
         active = true;
         dragged.current = true;
+        endDrag = beginDrag();
         const m = selectModel(useProjectTree.getState());
         const keys = before.has(node.key) ? [...before] : [node.key];
         if (before.has(node.key)) setSelection(before, lead);
@@ -699,6 +702,7 @@ export function ProjectView() {
       window.removeEventListener("pointercancel", cleanup);
       window.removeEventListener("keydown", key, true);
       files?.cancel();
+      endDrag?.();
       setDropTarget(null);
       setDrag(null);
     };

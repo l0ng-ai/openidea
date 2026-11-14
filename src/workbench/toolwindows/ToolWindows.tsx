@@ -18,6 +18,7 @@ import { call, commands } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import {
+  beginDrag,
   dragRequiresAlt,
   Icon,
   IconButton,
@@ -60,7 +61,7 @@ import {
 } from "./store";
 import { contentTabRegistry } from "./content";
 import styles from "./ToolWindows.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useI18n } from "@/platform/i18n";
 
 /** The window's title in the UI language; a plugin's stays as written. */
 function titleOf(tw: ToolWindowContribution): string {
@@ -366,6 +367,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
   const button = e.currentTarget;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
+  let endDrag: (() => void) | null = null;
   const place = (x: number, y: number) => {
     if (ghost) ghost.style.transform = `translate(${x - start.x}px, ${y - start.y}px)`;
   };
@@ -385,6 +387,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
         height: `${r.height}px`,
       });
       document.body.appendChild(ghost);
+      endDrag = beginDrag();
       useStripeDrag.setState({ id, drop: null });
     }
     if (!(ev.buttons & 1)) return;
@@ -400,6 +403,7 @@ function startStripeDrag(e: PointerEvent<HTMLButtonElement>, id: string) {
     window.removeEventListener("keydown", onKey, true);
     if (!ghost) return;
     ghost.remove();
+    endDrag?.();
     const { drop } = useStripeDrag.getState();
     useStripeDrag.setState({ id: null, drop: null });
     dragEnded = true;
@@ -756,6 +760,8 @@ function HeaderRow({
   const [titleOpen, setTitleOpen] = useState(false);
   const titleRef = useRef<HTMLButtonElement>(null);
   const showTitle = title && !(tw.headerContent && tw.tabsReplaceTitle);
+  // The title is translated here: show it in a language chosen while the window is open.
+  useI18n((s) => s.texts);
 
   const useHeaderMenu = typeof tw.headerMenu === "function" ? tw.headerMenu : staticHeaderMenu(tw.headerMenu);
   const own = useHeaderMenu(tw.id);

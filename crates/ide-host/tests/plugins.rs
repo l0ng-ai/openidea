@@ -821,8 +821,10 @@ fn a_reporting_task_outlives_its_background_budget() {
 
 #[test]
 fn background_tasks_scale_and_renew_cpu_fuel_budget() {
+    // Room for activation (about 3_100 on macOS, more on Windows) but not for `patient`'s
+    // whole run (about 9_000) without the refill on each report.
     let f = fixture(Limits {
-        fuel: 3_500,
+        fuel: 6_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
@@ -831,14 +833,14 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     if f.host.set_capability("misbehave", "process:git", true).is_err() {
         return;
     }
-    // Warm up activation in its own call so `patient` starts with a fresh 3_500-fuel budget.
+    // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
     let out = f.run("misbehave", "patient", None).expect("background task succeeds").expect("output");
     assert_eq!(out, "still here");
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
-    assert!(err.contains("exceeded its CPU budget (3500 fuel per call)"), "{err}");
+    assert!(err.contains("exceeded its CPU budget (6000 fuel per call)"), "{err}");
 }
 
 #[test]
