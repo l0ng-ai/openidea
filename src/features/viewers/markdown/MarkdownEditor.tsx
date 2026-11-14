@@ -233,8 +233,12 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         }
       }
     }
-    root.scrollTop = previewOffsetForLine(blocksOf(root), caretLine, root.scrollHeight);
-    scrolledTo.current = root.scrollTop;
+    const blocks = blocksOf(root);
+    // Back / Forward return to the line on screen: keep the restored offset within it.
+    if (previewLineAtOffset(blocks, root.scrollTop) !== caretLine) {
+      root.scrollTop = previewOffsetForLine(blocks, caretLine, root.scrollHeight);
+      scrolledTo.current = root.scrollTop;
+    }
     setShownLine(path, caretLine);
   }, [caretSeq, caretLine, sync, path, find]);
 

@@ -35,6 +35,43 @@ describe("copyMenuFor", () => {
     expect(items![0]).toMatchObject({ label: "Copy", disabled: false });
   });
 
+  it.each([
+    ["link", "none"],
+    ["nested", "link"],
+    ["text", "elsewhere"],
+  ])("offers Copy Link Address on a %s target with %s selected", async (target, selection) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const url = "https://example.com/pull/42?tab=files#diff";
+    mount(
+      `<div class="${selectableText}"><a id="link" href="${url}"><strong id="nested">Review changes</strong></a><p id="elsewhere">Other text</p></div>`,
+    );
+    if (selection !== "none") select(document.getElementById(selection)!);
+    const node = target === "text" ? document.getElementById("nested")!.firstChild : document.getElementById(target);
+    const items = copyMenuFor(node)!;
+    expect(items.map((i) => ("label" in i ? i.label : null))).toEqual(["Copy", "Copy Link Address"]);
+    const link = items[1]!;
+    if ("run" in link) link.run?.();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith(url);
+  });
+
+  it("keeps Copy on a link copying the selected text", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mount(`<div class="${selectableText}"><a id="link" href="https://example.com">Review changes</a></div>`);
+    select(document.getElementById("link")!);
+    const copy = copyMenuFor(document.getElementById("link"))![0]!;
+    if ("run" in copy) copy.run?.();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith("Review changes");
+  });
+
+  it("offers no Copy Link Address on an anchor without a destination or with an in-page one", () => {
+    mount(`<div class="${selectableText}"><a id="anchor">Section</a><a id="local" href="#top">Top</a></div>`);
+    for (const id of ["anchor", "local"]) expect(copyMenuFor(document.getElementById(id))).toHaveLength(1);
+  });
+
   it("offers a disabled Copy in a selectable pane with nothing selected", () => {
     mount(`<div class="${selectableText}"><p id="p">Hello</p></div>`);
     expect(copyMenuFor(document.getElementById("p"))![0]).toMatchObject({ label: "Copy", disabled: true });
