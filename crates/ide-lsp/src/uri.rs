@@ -40,22 +40,36 @@ const LOOSE: &AsciiSet = &CONTROLS
     .add(b'|')
     .add(b'}');
 
-/// Percent-encodes the characters URIs don't allow in every `file:` URI in `value`, string
-/// values and object keys alike (a workspace edit's `changes`). Eclipse's jdtls sends a path
-/// as is (`file:///H:/项目/…`), which `lsp_types::Uri` rejects, failing the whole response.
+/// Fields of LSP messages whose value is a URI.
+const URI_FIELDS: [&str; 8] = ["uri", "targetUri", "newUri", "oldUri", "baseUri", "scopeUri", "rootUri", "target"];
+
+/// Percent-encodes the characters URIs don't allow in the `file:` URIs of `value`: the URI
+/// fields and the keys of a workspace edit's `changes`. Eclipse's jdtls sends a path as is
+/// (`file:///H:/项目/…`), which `lsp_types::Uri` rejects, failing the whole response. Other
+/// strings stay as sent: an edit's `newText` may well start with `file:` (YAML, `.env`).
 pub fn encode_loose_file_uris(value: &mut Value) {
     match value {
-        Value::String(s) => {
-            if let Some(encoded) = encode_loose(s) {
-                *s = encoded;
-            }
-        }
         Value::Array(items) => items.iter_mut().for_each(encode_loose_file_uris),
         Value::Object(map) => {
-            if map.keys().any(|k| encode_loose(k).is_some()) {
-                *map = std::mem::take(map).into_iter().map(|(k, v)| (encode_loose(&k).unwrap_or(k), v)).collect();
+            for (key, value) in map.iter_mut() {
+                match value {
+                    Value::String(s) if URI_FIELDS.contains(&key.as_str()) => {
+                        if let Some(encoded) = encode_loose(s) {
+                            *s = encoded;
+                        }
+                    }
+                    Value::Object(changes) if key == "changes" => {
+                        if changes.keys().any(|k| encode_loose(k).is_some()) {
+                            *changes = std::mem::take(changes)
+                                .into_iter()
+                                .map(|(k, v)| (encode_loose(&k).unwrap_or(k), v))
+                                .collect();
+                        }
+                        changes.values_mut().for_each(encode_loose_file_uris);
+                    }
+                    _ => encode_loose_file_uris(value),
+                }
             }
-            map.values_mut().for_each(encode_loose_file_uris);
         }
         _ => {}
     }
@@ -161,9 +175,24 @@ mod tests {
         assert!(v["edit"]["changes"].get("file:///tmp/%E7%9B%AE%E5%BD%95/b.java").is_some());
         assert_eq!(v["text"], "项目", "only file: URIs change");
         // Already encoded: untouched.
-        let mut encoded = serde_json::json!("file:///a%20b/%E9%A1%B9.java");
+        let mut encoded = serde_json::json!({ "uri": "file:///a%20b/%E9%A1%B9.java" });
         encode_loose_file_uris(&mut encoded);
-        assert_eq!(encoded, "file:///a%20b/%E9%A1%B9.java");
+        assert_eq!(encoded["uri"], "file:///a%20b/%E9%A1%B9.java");
+    }
+
+    #[test]
+    fn text_that_starts_with_file_is_not_a_uri() {
+        // A YAML formatting edit and a completion whose text begins with `file:`.
+        let mut v = serde_json::json!({ "result": [
+            { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } }, "newText": "file: a b\n  - c\n" },
+            { "label": "file:", "insertText": "file: ${1:path}", "documentation": "file: the input" }
+        ], "edit": { "changes": { "file:///tmp/a b.yaml": [{ "newText": "file: x y" }] } } });
+        encode_loose_file_uris(&mut v);
+        assert_eq!(v["result"][0]["newText"], "file: a b\n  - c\n");
+        assert_eq!(v["result"][1]["insertText"], "file: ${1:path}");
+        assert_eq!(v["result"][1]["documentation"], "file: the input");
+        let changes = &v["edit"]["changes"]["file:///tmp/a%20b.yaml"];
+        assert_eq!(changes[0]["newText"], "file: x y");
     }
 
     #[cfg(unix)]
