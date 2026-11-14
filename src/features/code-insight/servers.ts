@@ -10,6 +10,8 @@ import { tx } from "@/platform/i18n";
 export interface ServerEntry {
   id: ServerId;
   name: string;
+  /** What the user sees as the server when another program serves in its place (TypeScript 7 for vtsls). */
+  label?: string | null;
   status: ServerStatus;
   message: string | null;
   languages: string[];
@@ -35,6 +37,11 @@ const removedAt = new Map<ServerId, number>();
  */
 export const BUSY_SHOW_DELAY_MS = 500;
 const pendingBusy = new Map<ServerId, ReturnType<typeof setTimeout>>();
+
+/** The name shown for a server. */
+export function serverLabel(s: Pick<ServerEntry, "name" | "label">): string {
+  return s.label ?? s.name;
+}
 
 function notifyMissing(e: ServerEntry) {
   if (notifiedMissing.has(e.name)) return;
@@ -81,6 +88,7 @@ export async function refreshServers() {
       map.set(s.id, {
         id: s.id,
         name: s.name,
+        label: newer ? p.label : s.label,
         status: newer ? p.status : s.status,
         languages: s.languages,
         root: s.root,
@@ -122,7 +130,7 @@ export function installServerEvents(): () => void {
     lastEvent.set(e.server, ++eventSeq);
     clearTimeout(pendingBusy.get(e.server));
     pendingBusy.delete(e.server);
-    const entry = { id: e.server, name: e.name, status: e.status, message: e.message };
+    const entry = { id: e.server, name: e.name, label: e.label, status: e.status, message: e.message };
     if (e.status === "busy" && useServers.getState().servers.get(e.server)?.status === "ready") {
       pendingBusy.set(
         e.server,
@@ -200,7 +208,7 @@ export function serversSummary(
   const tone = bad.length ? "error" : busy.length ? "busy" : servers.some((s) => s.status === "ready") ? "ok" : "idle";
   // A stopped server (one a preferred server took over from) isn't worth naming next to running ones.
   const active = servers.filter((s) => s.status !== "stopped");
-  const names = [...new Set((active.length ? active : servers).map((s) => s.name))];
+  const names = [...new Set((active.length ? active : servers).map(serverLabel))];
   const text = names.length === 1 ? names[0]! : `${names[0]} +${names.length - 1}`;
   return { text, tone };
 }

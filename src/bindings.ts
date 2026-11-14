@@ -6055,7 +6055,9 @@ cancellable: boolean } |
 /**  Project indexing state changed (dumb mode on/off). */
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
-{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; 
+/**  What the user sees as the server when another program serves in its place. */
+label?: string | null; status: ServerStatus; message: string | null } | 
 /**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
 { type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
@@ -9530,6 +9532,8 @@ export type ServerInfo = {
 	status: ServerStatus,
 	/**  OS process of the running instance (for memory attribution). */
 	pid: number | null,
+	/**  What the user sees as the server when another program serves in its place. */
+	label?: string | null,
 };
 
 export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped" | "missing" | 
