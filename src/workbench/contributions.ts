@@ -531,6 +531,8 @@ export interface ExternalFileOpenHandler {
   id: string;
   /** Lower asks first. Default 100. */
   order?: number;
+  /** Whether `path` goes to another application. */
+  matches(path: string): boolean;
   /** Opens `path` outside the IDE; true when it was handed over. */
   open(path: string): boolean | Promise<boolean>;
 }
@@ -544,6 +546,11 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Whether opening `path` would hand it to another application. */
+export function opensExternally(path: string): boolean {
+  return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
+}
+
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
   const handlers = [...externalFileOpenHandlers.values()].sort(
@@ -551,7 +558,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
   );
   for (const handler of handlers) {
     try {
-      if (await handler.open(path)) return true;
+      if (handler.matches(path) && (await handler.open(path))) return true;
     } catch (e) {
       console.warn(`external file opener ${handler.id} failed`, e);
     }
@@ -619,6 +626,8 @@ export interface OpenOptions {
   focus?: boolean;
   /** Open in the text editor even when a file editor provider claims the file (SVG as text). */
   asText?: boolean;
+  /** False: leave files that go to another application unopened (autoscroll must not launch apps). */
+  external?: boolean;
 }
 
 export interface OpenEditorTab {

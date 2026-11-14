@@ -127,14 +127,14 @@ function expandFolder(path: string) {
 // ---------------------------------------------------------------------------
 // Open
 
-export async function openFile(path: string, opts: { preview?: boolean; focus?: boolean } = {}) {
+export async function openFile(path: string, opts: { preview?: boolean; focus?: boolean; external?: boolean } = {}) {
   const editor = maybeEditorService();
   if (!editor) {
     notifications().notify({ level: "warning", title: "No editor available", body: path, key: "project.noEditor" });
     return;
   }
   try {
-    await editor.openFile(path, { preview: opts.preview, focus: opts.focus ?? true });
+    await editor.openFile(path, { preview: opts.preview, focus: opts.focus ?? true, external: opts.external });
   } catch (e) {
     fail(`Cannot open ${nameOf(path)}`, e);
   }

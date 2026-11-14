@@ -613,6 +613,20 @@ describe("Show Members", () => {
     },
   );
 
+  it("autoscrolls to source without handing files to another application", async () => {
+    const { rows, row } = setup();
+    act(() => {
+      setViewOption("autoscrollToSource", true);
+      setViewOption("singleClickOpen", false);
+      setViewOption("previewTab", false);
+    });
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    await waitFor(() =>
+      expect(openFile).toHaveBeenLastCalledWith("/w/acme/README.md", expect.objectContaining({ external: false })),
+    );
+  });
+
   it("honours member single-click options and double-click focus", async () => {
     ipc.docOpen.mockResolvedValue(ok({ id: 7 }));
     ipc.docClose.mockResolvedValue(ok(null));
