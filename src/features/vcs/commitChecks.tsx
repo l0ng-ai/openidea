@@ -446,20 +446,22 @@ const builtinChecks: readonly CommitCheck[] = [
 ];
 
 /**
- * Whether the file on disk has CRLF line separators. The editor's text is LF-normalised, so the
- * check has to read bytes (`fsReadRange` returns base64), and a CRLF can straddle two chunks.
+ * Whether the text file on disk has CRLF line separators; false for a binary file. The editor's text
+ * is LF-normalised, so the check reads bytes (`fsReadRange` returns base64), and a CRLF can straddle
+ * two chunks.
  */
 export async function containsCrlf(path: string): Promise<boolean> {
-  const CHUNK = 64 * 1024;
+  if ((await call(commands.fsProbe(path))).binary) return false;
+  const CHUNK = 1024 * 1024;
   let offset = 0;
   let carry = "";
   for (;;) {
     const range = await call(commands.fsReadRange(path, offset, CHUNK));
-    const text = carry + atob(range.data);
-    if (text.includes("\r\n")) return true;
-    offset = range.offset + atob(range.data).length;
-    if (offset >= range.total) return false;
-    carry = text.slice(-1);
+    const bytes = atob(range.data);
+    if ((carry + bytes).includes("\r\n")) return true;
+    offset = range.offset + bytes.length;
+    if (!bytes || offset >= range.total) return false;
+    carry = bytes.slice(-1);
   }
 }
 

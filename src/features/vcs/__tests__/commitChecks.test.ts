@@ -87,12 +87,20 @@ describe("the commit check registry", () => {
 });
 
 describe("containsCrlf", () => {
+  const text = async () => {
+    const { commands } = await import("@/platform/ipc");
+    vi.spyOn(commands, "fsProbe").mockResolvedValue({
+      status: "ok",
+      data: { size: 10, binary: false, tooLarge: false },
+    });
+  };
   const range = (offset: number, text: string, total: number) => ({
     status: "ok" as const,
     data: { offset, data: btoa(text), total },
   });
 
   it("reads bytes, because the editor text is LF-normalised", async () => {
+    await text();
     const { commands } = await import("@/platform/ipc");
     const calls: Array<{ offset: number; len: number }> = [];
     vi.spyOn(commands, "fsReadRange").mockImplementation(async (_path, offset, len) => {
@@ -104,6 +112,7 @@ describe("containsCrlf", () => {
   });
 
   it("finds a CRLF that straddles two chunks", async () => {
+    await text();
     const { commands } = await import("@/platform/ipc");
     vi.spyOn(commands, "fsReadRange").mockImplementation(async (_path, offset) =>
       range(offset, offset === 0 ? "aaaa\r" : "\nbbbb", 10),
@@ -112,10 +121,22 @@ describe("containsCrlf", () => {
   });
 
   it("is false for LF-only content", async () => {
+    await text();
     const { commands } = await import("@/platform/ipc");
     vi.spyOn(commands, "fsReadRange").mockImplementation(async (_path, offset) =>
       range(offset, offset === 0 ? "one\ntwo" : "", 7),
     );
     expect(await containsCrlf("/p/a.txt")).toBe(false);
+  });
+
+  it("skips a binary file, whose bytes may happen to hold CR LF", async () => {
+    const { commands } = await import("@/platform/ipc");
+    vi.spyOn(commands, "fsProbe").mockResolvedValue({
+      status: "ok",
+      data: { size: 10, binary: true, tooLarge: false },
+    });
+    const read = vi.spyOn(commands, "fsReadRange");
+    expect(await containsCrlf("/p/logo.png")).toBe(false);
+    expect(read).not.toHaveBeenCalled();
   });
 });
