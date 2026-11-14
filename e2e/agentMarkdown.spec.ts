@@ -198,6 +198,37 @@ test("copies reply Markdown with the keyboard and keeps code copying separate", 
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("const a = 1;");
 });
 
+test("copies a reply link's address from its context menu and keeps Copy for the selected text", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const url = "https://example.com/pull/42?tab=files#diff";
+  const reply = await openReply(page, `[**Review changes**](${url})\n\nOrdinary reply text`);
+  const link = reply.getByRole("link", { name: "Review changes" });
+  await link.locator("strong").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Copy Link Address" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(url);
+
+  await link.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+  });
+  await link.click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: /^Copy\b/ })
+    .first()
+    .click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Review changes");
+
+  const paragraph = reply.getByText("Ordinary reply text", { exact: true });
+  await paragraph.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Copy Link Address" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+});
+
 test("keeps latest reply actions visible and quotes into the draft without shifting content", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
