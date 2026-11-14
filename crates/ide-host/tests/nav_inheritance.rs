@@ -130,4 +130,12 @@ async fn returns_all_python_classes_and_bases() {
 
     // Every returned entry is a Python file.
     assert!(all.iter().all(|c| { matches!(c.path.0.extension().and_then(|e| e.to_str()), Some("py" | "pyi")) }));
+
+    // A file changed on disk is parsed again; the others come from the cache.
+    let extra = p.root.join("src/extra.pyi");
+    std::fs::write(&extra, "class Stub(Child): ...\nclass Added(Base): ...\n").unwrap();
+    let again = ops::nav::nav_inheritance(&p.host, WINDOW).await.unwrap();
+    assert_eq!(find(&again, "Stub").bases, vec!["Child".to_string()]);
+    assert_eq!(find(&again, "Added").bases, vec!["Base".to_string()]);
+    assert_eq!(find(&again, "Child").bases, child.bases);
 }

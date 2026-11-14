@@ -200,24 +200,64 @@ pub async fn nav_inheritance(host: &Host, window: &str) -> IdeResult<Vec<ClassIn
     blocking(move || {
         let python = LanguageId::new("python");
         let files = project.index.files_with_extensions(&["py".into(), "pyi".into()], 20_000);
+        let mut cache = CLASS_BASES.lock();
         let mut out = Vec::new();
         for path in files {
-            // Prefer the open (possibly unsaved) buffer, else the file on disk.
-            let Ok(text) = project.text_of(&path) else { continue };
-            for class in syntax.class_bases(&python, &text) {
-                out.push(ClassInheritance {
-                    path: IpcPath::from(path.clone()),
-                    line: class.line,
-                    col: class.col,
-                    name: class.name,
-                    bases: class.bases,
-                });
-            }
+            // The open (possibly unsaved) buffer is keyed by its text, a file on disk by its
+            // size and modification time, so only changed files are parsed again.
+            let open = project.documents.text_of(&path);
+            let stamp = match &open {
+                Some(text) => Stamp::Text(text_hash(text)),
+                None => match std::fs::metadata(&path) {
+                    Ok(m) => Stamp::Disk(m.len(), m.modified().ok()),
+                    Err(_) => continue,
+                },
+            };
+            let classes = match cache.get(&path) {
+                Some((cached, classes)) if *cached == stamp => classes,
+                _ => {
+                    let text = match open {
+                        Some(text) => text,
+                        None => match project.text_of(&path) {
+                            Ok(text) => text,
+                            Err(_) => continue,
+                        },
+                    };
+                    let classes = syntax.class_bases(&python, &text);
+                    &cache.entry(path.clone()).insert_entry((stamp, classes)).into_mut().1
+                }
+            };
+            out.extend(classes.iter().map(|class| ClassInheritance {
+                path: IpcPath::from(path.clone()),
+                line: class.line,
+                col: class.col,
+                name: class.name.clone(),
+                bases: class.bases.clone(),
+            }));
         }
         Ok(out)
     })
     .await
 }
+
+#[derive(Clone, PartialEq, Eq)]
+enum Stamp {
+    Text(u64),
+    Disk(u64, Option<std::time::SystemTime>),
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    h.finish()
+}
+
+type ClassBasesCache = std::collections::HashMap<PathBuf, (Stamp, Vec<ide_language::ClassBases>)>;
+
+/// Class bases per Python file, reused while the file is unchanged.
+static CLASS_BASES: std::sync::LazyLock<parking_lot::Mutex<ClassBasesCache>> =
+    std::sync::LazyLock::new(Default::default);
 
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
 pub async fn fs_resolve_reference(
