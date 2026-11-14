@@ -102,12 +102,13 @@ describe("background inlay hints", () => {
     expect(shown(view)).toBe(0);
   });
 
-  it("keeps the shown hints while the server is unavailable instead of wiping them", async () => {
+  it("keeps the shown hints while the server restarts instead of wiping them", async () => {
     ipc.lspInlayHints.mockResolvedValue(ok([hint]));
     const view = editor();
     await afterPass();
     expect(shown(view)).toBe(1);
-    // A failed pass marks the back-off; further refreshes keep what is shown.
+    // A failed pass while the server is starting marks the back-off; further refreshes keep what is shown.
+    emitLocalIdeEvent({ type: "languageServer", server: 2, name: "zls", status: "starting", message: null });
     ipc.lspInlayHints.mockResolvedValue(unavailable);
     view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
     await afterPass();
@@ -115,9 +116,24 @@ describe("background inlay hints", () => {
     await afterPass();
     expect(shown(view)).toBe(1);
     // Once the back-off expires (DEFAULT_BACKOFF_MS in availability.ts), the next refresh applies the fresh answer.
+    emitLocalIdeEvent({ type: "languageServer", server: 2, name: "zls", status: "ready", message: null });
     ipc.lspInlayHints.mockResolvedValue(ok([]));
     await vi.advanceTimersByTimeAsync(15_100);
     view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await afterPass();
+    expect(shown(view)).toBe(0);
+  });
+
+  it("clears the hints of a server that is down and not coming back", async () => {
+    ipc.lspInlayHints.mockResolvedValue(ok([hint]));
+    const view = editor();
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    emitLocalIdeEvent({ type: "languageServer", server: 3, name: "zls", status: "stopped", message: null });
+    ipc.lspInlayHints.mockResolvedValue(unavailable);
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await afterPass();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
     await afterPass();
     expect(shown(view)).toBe(0);
   });

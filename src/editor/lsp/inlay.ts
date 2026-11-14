@@ -195,10 +195,14 @@ const inlayPlugin = ViewPlugin.fromClass(
         if (view.state.field(inlayField).size) view.dispatch({ effects: setInlays.of(Decoration.none) });
         return;
       }
-      // The server is unavailable (down / restarting): keep the hints shown — they map
-      // through edits, and a ready event or the next edit re-queries — instead of
-      // wiping them on every pass while the back-off lasts.
-      if (inlayBackoff.active(doc.doc)) return;
+      // The server is unavailable. While a server is starting or busy (a restart), keep the
+      // hints shown — they map through edits, and the settled refresh re-queries — instead of
+      // wiping them on every pass; a server that stays down takes its hints with it.
+      if (inlayBackoff.active(doc.doc)) {
+        if (!anyServerBusy() && view.state.field(inlayField).size)
+          view.dispatch({ effects: setInlays.of(Decoration.none) });
+        return;
+      }
       const state = view.state;
       const { from, to } = view.viewport;
       const first = state.doc.lineAt(from).from;

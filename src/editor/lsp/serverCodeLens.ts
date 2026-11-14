@@ -84,7 +84,10 @@ export function serverCodeLenses(ctx: EditorDocContext): Extension {
               if (!fresh.length && view.state.field(field).length && anyServerBusy()) return;
               view.dispatch({ effects: set.of(fresh) });
             } catch {
-              // A failed request says nothing about the lenses shown: keep them until it settles.
+              // A failed request while a server is starting or busy: keep the lenses until it
+              // settles. Otherwise the server is gone and so are its lenses.
+              if (gen === this.generation && view.dom.isConnected && !anyServerBusy())
+                view.dispatch({ effects: set.of([]) });
             }
           }
           destroy() {
