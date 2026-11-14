@@ -54,6 +54,8 @@ The model is rebuilt incrementally: an edit or a file change re-reads only the f
 
 Most features work on string literals in known places. In each place the string completes, Ctrl+click (goto) opens its declaration, Find Usages lists every string naming the same thing, and where it makes sense, Rename edits the declaration and every caller. The examples below show one place each; the others are listed after them.
 
+The keys for these actions (completion, goto, Find Usages, Rename, quick-fixes, Generate, running Artisan commands) are in [Keyboard shortcuts for PHP and Laravel](shortcuts.md).
+
 ### Routes
 
 ```php
