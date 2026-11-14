@@ -529,8 +529,11 @@ export async function startBrowserSession(
   if (!page) return running.id;
   selectSession(page.id);
   const url = launchedUrl(launch);
-  if (url && url !== launchedUrl(running.launch!)) {
-    const go = `location.assign(${JSON.stringify(url)})`;
+  if (url) {
+    // The page may have moved on since the browser started (an earlier launch, a link): it
+    // compares its own address, so a page already there isn't reloaded.
+    const target = JSON.stringify(url);
+    const go = `(() => { const u = new URL(${target}, location.href).href; if (location.href !== u) location.assign(u); })()`;
     await call(commands.debugEvaluateIn(page.id, null, go, "repl")).catch(() => undefined);
   }
   return running.id;
