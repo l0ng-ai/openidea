@@ -398,9 +398,10 @@ fn promotes_inline_rules_to_a_form_request() {
         content.contains("        return ['title' => 'required|max:255', 'post' => Rule::exists('posts')];\n"),
         "{content}"
     );
-    // The controller: the import, the parameter's type, the call removed.
+    // The controller: the imports only the moved code used (`Request`,
+    // `Rule`) removed, the new import, the parameter's type, the call removed.
     assert_eq!(edits[1].0, PROBE);
-    assert_eq!(edits[1].1, ["\nuse App\\Http\\Requests\\RunProbeRequest;", "RunProbeRequest", ""]);
+    assert_eq!(edits[1].1, ["", "", "\nuse App\\Http\\Requests\\RunProbeRequest;", "RunProbeRequest", ""]);
 
     // A used value becomes `validated()`.
     let found = project.refactorings(
@@ -410,7 +411,7 @@ fn promotes_inline_rules_to_a_form_request() {
     );
     assert_eq!(
         found[0].1[1].1,
-        ["use App\\Http\\Requests\\RunProbeRequest;\n", "RunProbeRequest", "$request->validated()"]
+        ["use App\\Http\\Requests\\RunProbeRequest;\n", "", "RunProbeRequest", "$request->validated()"]
     );
 
     // Not for a Form Request already, nor outside a validate call.

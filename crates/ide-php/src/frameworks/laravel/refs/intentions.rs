@@ -195,7 +195,7 @@ fn references<'n>(
 }
 
 /// The `use` statement importing only `fqn`, from `use` through `;`.
-fn sole_import(text: &str, names: &FileNames, fqn: &str) -> Option<(u32, u32)> {
+pub(super) fn sole_import(text: &str, names: &FileNames, fqn: &str) -> Option<(u32, u32)> {
     let import = names.names().iter().find(|name| {
         name.kind == NameKind::ClassLike
             && name.role == NameRole::Import

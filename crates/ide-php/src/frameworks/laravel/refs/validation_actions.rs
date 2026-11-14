@@ -412,15 +412,53 @@ impl PhpEngine {
         };
         match statement {
             Some((from, to)) => {
-                let (from, to) = removal(text, from, to);
+                let (from, mut to) = removal(text, from, to);
+                // First in its block: the blank line after it goes too.
+                let rest = &text[to as usize..];
+                let blank = rest.find('\n').filter(|&at| rest[..at].trim().is_empty());
+                if let Some(at) = blank
+                    && text[..from as usize].trim_end().ends_with('{')
+                {
+                    to += at as u32 + 1;
+                }
                 edits.push((from, to, String::new()));
             }
             None => edits.push((call_start, call_end, format!("{variable}->validated()"))),
         }
-        if let Some(import) = import {
-            let (at, line) = import_insertion(parsed, hint_start, NameKind::ClassLike, &import);
-            edits.push((at, at, line));
+        // The imports only the moved code used (`Request`, `Rule`) go with it.
+        let moved = |name: &crate::names::ResolvedName| {
+            (hint_start <= name.start && name.end <= hint_end) || (array_start <= name.start && name.end <= array_end)
+        };
+        let mut unused: Vec<(u32, u32)> = Vec::new();
+        for name in names.names().iter().filter(|name| name.role == NameRole::Reference && moved(name)) {
+            let Some(target) = name.resolution.primary().map(|fqn| fqn.trim_start_matches('\\').to_owned()) else {
+                continue;
+            };
+            let elsewhere = names.names().iter().any(|other| {
+                other.role == NameRole::Reference && !moved(other) && other.resolution.matches(name.kind, &target)
+            });
+            if elsewhere || name.kind != NameKind::ClassLike {
+                continue;
+            }
+            if let Some((from, to)) = super::intentions::sole_import(text, &names, &target) {
+                let range = removal(text, from, to);
+                if !unused.contains(&range) {
+                    unused.push(range);
+                }
+            }
         }
+        let insertion = import.map(|import| import_insertion(parsed, hint_start, NameKind::ClassLike, &import));
+        if let Some((at, line)) = insertion {
+            // The new import lands on a line being removed: one edit.
+            match unused.iter().position(|&(from, to)| from <= at && at <= to) {
+                Some(index) => {
+                    let (from, to) = unused.remove(index);
+                    edits.push((from, to, line));
+                }
+                None => edits.push((at, at, line)),
+            }
+        }
+        edits.extend(unused.into_iter().map(|(from, to)| (from, to, String::new())));
         let mut edit = WorkspaceEdit {
             files: vec![
                 FileEdit::Create { path: file.clone().into(), overwrite: false },
