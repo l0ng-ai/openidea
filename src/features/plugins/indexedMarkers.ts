@@ -1,7 +1,8 @@
 /**
  * Gutter markers from plugins' document indexers, resolved by the host from
  * its cached graph. A click goes to the marker's targets (a chooser when there
- * are several); an edit hides the markers until the edited text is indexed.
+ * are several); an edit keeps them on their lines until the edited text is indexed,
+ * so the column keeps its width while typing.
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
@@ -52,7 +53,8 @@ const setMarkers = StateEffect.define<RangeSet<GutterMarker>>();
 const markersField = StateField.define<RangeSet<GutterMarker>>({
   create: () => RangeSet.empty,
   update(value, tr) {
-    if (tr.docChanged) value = RangeSet.empty;
+    // Markers move with the text; a deleted line drops its own.
+    if (tr.docChanged) value = value.map(tr.changes);
     for (const effect of tr.effects) if (effect.is(setMarkers)) value = effect.value;
     return value;
   },
