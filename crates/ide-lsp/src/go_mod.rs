@@ -7,6 +7,7 @@
 use crate::LspManager;
 use crate::server::Server;
 use ide_core::{DocId, Pos, Range};
+use ide_language::LanguageServerConfig;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,10 +76,9 @@ impl LspManager {
             return;
         }
         let config = server.effective_config();
-        let search = crate::launch::server_search_path(&config);
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         let modules: Vec<String> = required.iter().map(|r| r.path.clone()).collect();
-        let listed = tokio::task::spawn_blocking(move || list_deprecations(&dir, &search, &modules)).await;
+        let listed = tokio::task::spawn_blocking(move || list_deprecations(&dir, &config, &modules)).await;
         let Ok(Some(deprecated)) = listed else { return };
         // The document changed meanwhile: its own save runs again.
         if self.docs.lock().get(&doc).is_none_or(|d| d.text.as_str() != text) {
@@ -157,22 +157,34 @@ struct ListedModule {
 }
 
 /// `(module, message)` of each deprecated module in `modules`; `None` when `go` failed.
-fn list_deprecations(dir: &Path, search: &std::ffi::OsStr, modules: &[String]) -> Option<Vec<(String, String)>> {
-    let go: PathBuf = ide_core::tool_path::find_command("go", search, dir)?;
-    let output = ide_core::process::prepare(&mut std::process::Command::new(go))
-        .args(["list", "-m", "-u", "-e", "-json"])
-        .args(modules)
-        .current_dir(dir)
-        .env("PATH", search)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+fn list_deprecations(dir: &Path, config: &LanguageServerConfig, modules: &[String]) -> Option<Vec<(String, String)>> {
+    let search = crate::launch::server_search_path(config);
+    let go: PathBuf = ide_core::tool_path::find_command("go", &search, dir)?;
+    let output = deprecations_command(&go, dir, config, modules).output().ok()?;
     if output.stdout.is_empty() {
         tracing::debug!("go list -m -u in {}: {}", dir.display(), output.status);
         return None;
     }
     Some(parse_deprecations(&output.stdout))
+}
+
+fn deprecations_command(
+    go: &Path,
+    dir: &Path,
+    config: &LanguageServerConfig,
+    modules: &[String],
+) -> std::process::Command {
+    let search = crate::launch::server_search_path(config);
+    let mut command = std::process::Command::new(go);
+    ide_core::process::prepare(&mut command)
+        .args(["list", "-m", "-u", "-e", "-json"])
+        .args(modules)
+        .current_dir(dir)
+        .envs(&config.env)
+        .env("PATH", search)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command
 }
 
 fn parse_deprecations(json: &[u8]) -> Vec<(String, String)> {
@@ -186,6 +198,25 @@ fn parse_deprecations(json: &[u8]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deprecation_command_inherits_server_environment() {
+        let config: LanguageServerConfig = serde_json::from_value(serde_json::json!({
+            "name": "gopls", "command": "gopls", "env": {
+                "PATH": "selected-toolchain", "GOPROXY": "off", "GOPRIVATE": "example.invalid/*",
+                "GOTOOLCHAIN": "local", "GOWORK": "off"
+            }
+        }))
+        .unwrap();
+        let command =
+            deprecations_command(Path::new("go"), Path::new("workspace"), &config, &["example.invalid/lib".into()]);
+        let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
+        for (key, value) in &config.env {
+            assert_eq!(env.get(std::ffi::OsStr::new(key)), Some(&Some(std::ffi::OsStr::new(value))), "missing {key}");
+        }
+        assert_eq!(command.get_current_dir(), Some(Path::new("workspace")));
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["list", "-m", "-u", "-e", "-json", "example.invalid/lib"]);
+    }
 
     fn at(line: u32, from: u32, to: u32) -> Range {
         Range { start: Pos { line, col: from }, end: Pos { line, col: to } }
