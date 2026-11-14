@@ -788,29 +788,49 @@ describe("python inheritance fallback", () => {
   });
 
   it("resolves a base through an aliased import", async () => {
-    const outline = [item("Config", "class", 0, 1, [], 6)];
+    // c.py: `class Child(Cfg)` (line 3) with `m` (line 4); b.py's Config declares `m` too.
+    const outline = [item("Child", "class", 3, 5, [item("m", "method", 4, 4)], 6)];
     const graph: ClassInheritance[] = [
       { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
       { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
       { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Cfg"] },
     ];
-    const files = { "/p/c.py": ["from pkg.b import Config as Cfg", "", "", "class Child(Cfg):"] };
-    const { deps } = pythonServer(graph, { "/p/b.py": outline }, files, { "pkg.b@/p/c.py": "/p/b.py" });
+    const files = {
+      "/p/c.py": ["from pkg.b import Config as Cfg", "", "", "class Child(Cfg):", "    def m(self): ..."],
+    };
+    const outlines = {
+      "/p/c.py": outline,
+      "/p/a.py": [item("Config", "class", 0, 2, [item("m", "method", 1, 1)], 6)],
+      "/p/b.py": [item("Config", "class", 0, 2, [item("m", "method", 1, 1)], 6)],
+    };
+    const { deps } = pythonServer(graph, outlines, files, { "pkg.b@/p/c.py": "/p/b.py" });
+    const candidates = markerCandidates(outline, () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/c.py", candidates, ALL, deps(), cache);
+    expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind, m.targets.map((t) => t.path)])).toEqual([
+      [4, "overriding", ["/p/b.py"]],
+    ]);
+  });
+
+  it("reads no other file's imports for a shared base this file does not declare", async () => {
+    const outline = [item("Other", "class", 0, 1, [], 6)];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/b.py", line: 0, col: 6, name: "Config", bases: [] },
+      { path: "/p/c.py", line: 3, col: 6, name: "Child", bases: ["Config", "BaseModel"] },
+      { path: "/p/d.py", line: 0, col: 6, name: "Other", bases: [] },
+    ];
+    const files = { "/p/c.py": ["from pkg.b import Config", "", "", "class Child(Config, BaseModel):"] };
+    const { deps, calls } = pythonServer(graph, { "/p/d.py": outline }, files, { "pkg.b@/p/c.py": "/p/b.py" });
     const cache = emptyCache();
     await fillMarkers(
-      "/p/b.py",
+      "/p/d.py",
       markerCandidates(outline, () => ""),
       ALL,
       deps(),
       cache,
     );
-    expect(
-      cachedMarkers(
-        markerCandidates(outline, () => ""),
-        ALL,
-        cache,
-      ).map((m) => [m.line, m.targets.map((t) => t.path)]),
-    ).toEqual([[0, ["/p/c.py"]]]);
+    expect(calls.modules).toEqual([]);
   });
 
   it("keeps ignoring a shared base name when no import names it", async () => {

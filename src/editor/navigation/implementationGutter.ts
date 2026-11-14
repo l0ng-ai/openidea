@@ -275,7 +275,11 @@ export async function fillMarkers(
   const subclassesOf = new Map<string, ClassInheritance[]>();
   for (const cls of graph ?? []) {
     for (const base of new Set(cls.bases)) {
-      for (const decl of await resolver.resolve(base, cls.path)) {
+      // Only this file's classes are looked up below: read another file's imports only
+      // when its base may name one of them, not for every shared or library base name.
+      const exact = resolver.exact(base, cls.path);
+      const named = exact.length || !byName.get(base)?.some((c) => c.path === path) ? exact : null;
+      for (const decl of named ?? (await resolver.resolve(base, cls.path))) {
         const key = declarationKey(decl);
         subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
       }
