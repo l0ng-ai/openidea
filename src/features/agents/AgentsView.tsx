@@ -222,7 +222,7 @@ export function AgentsView() {
     return [
       ...(pinned.length ? [{ kind: "pinned", tasks: pinned } as Node] : []),
       ...organize.groups.flatMap((group): Node[] => {
-        const members = groupMembers(listed.values(), organize, group.id);
+        const members = groupMembers(all, organize, group.id);
         return matches && !members.length ? [] : [{ kind: "custom", group, tasks: members }];
       }),
       ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
