@@ -289,6 +289,8 @@ describe("catalogs", () => {
     "f-string",
     "Tailwind CSS",
     "Bun",
+    "Deno",
+    "Node.js",
     "bun-dap (Bun)",
   ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();

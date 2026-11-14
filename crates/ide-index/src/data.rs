@@ -24,6 +24,19 @@ pub(crate) fn char_mask(s: &str) -> u64 {
     m
 }
 
+/// A relative index key must stay below the project root.
+pub(crate) fn safe_rel(rel: &str) -> bool {
+    let mut any = false;
+    for component in Path::new(rel).components() {
+        if matches!(component, std::path::Component::Normal(_)) {
+            any = true;
+        } else {
+            return false;
+        }
+    }
+    any
+}
+
 #[inline]
 pub(crate) fn mask_bit(b: u8) -> u64 {
     match b.to_ascii_lowercase() {
@@ -553,6 +566,67 @@ impl IndexData {
         self.by_path.get(path).copied()
     }
 
+    /// Reserves the flat tables for a bulk warm-start hydration.
+    pub(crate) fn reserve(&mut self, files: usize, symbols: usize, dirs: usize) {
+        self.files.reserve(files);
+        self.by_path.reserve(files);
+        self.dirs.reserve(dirs);
+        self.hot.rows.reserve(files);
+        self.dirs_hot.rows.reserve(dirs);
+        self.syms.head.reserve(symbols);
+        self.syms.container.reserve(symbols);
+        self.syms.kind.reserve(symbols);
+        self.syms.range.reserve(symbols);
+    }
+
+    /// Hydrates a validated warm-start snapshot in one pass, without per-file
+    /// duplicate checks, ancestor walks or compaction checks.
+    pub(crate) fn load_bulk(
+        &mut self,
+        entries: Vec<(FileEntry, Vec<StoredSymbol>)>,
+        dirs: Vec<(Box<str>, PathBuf, u32)>,
+    ) {
+        self.files = Vec::with_capacity(entries.len());
+        self.by_path = HashMap::with_capacity(entries.len());
+        self.hot = HotFiles::default();
+        self.dirs_hot = HotDirs::default();
+        self.syms = SymTable::default();
+        self.dirs = HashMap::with_capacity(dirs.len());
+        let symbols: usize = entries.iter().map(|(_, symbols)| symbols.len()).sum();
+        self.reserve(entries.len(), symbols, dirs.len());
+        self.symbol_count = 0;
+        for (slot, (mut entry, symbols)) in entries.into_iter().enumerate() {
+            let (sym_start, sym_mask) = self.syms.push(&symbols);
+            entry.sym_start = sym_start;
+            entry.sym_len = symbols.len() as u32;
+            self.symbol_count += entry.sym_len;
+            let rel = self.hot.append(&entry.rel);
+            self.hot.set(
+                slot as u32,
+                FileRow {
+                    rel,
+                    name_start: entry.name_start,
+                    sym_start,
+                    sym_len: entry.sym_len,
+                    sym_mask,
+                    rel_mask: entry.rel_mask,
+                    name_mask: entry.name_mask,
+                    dir_mask: char_mask(entry.dir()),
+                    ascii: entry.rel.is_ascii(),
+                    live: true,
+                },
+            );
+            self.by_path.insert(entry.path.clone(), slot as u32);
+            self.files.push(Some(entry));
+        }
+        self.file_count = self.files.len() as u32;
+        for (rel, path, count) in dirs {
+            let row = self.dirs_hot.push(&rel, &path);
+            self.dirs.insert(rel, (path, count, row));
+        }
+        self.free.clear();
+    }
+
     /// The persisted form of a file, rebuilt from [`IndexData::syms`].
     pub(crate) fn record(&self, e: &FileEntry) -> FileRecord {
         FileRecord {
@@ -791,6 +865,23 @@ mod tests {
         }
         assert_eq!(d.dirs.len(), d.dirs_hot.rows.len());
         assert_eq!(d.symbol_count, d.files.iter().flatten().map(|e| e.sym_len).sum::<u32>());
+    }
+
+    #[test]
+    fn bulk_load_matches_incremental_insert() {
+        let mut incremental = IndexData::default();
+        insert(&mut incremental, "a/b.rs", 2);
+        insert(&mut incremental, "c.rs", 1);
+        assert_consistent(&incremental);
+
+        let mut bulk = IndexData::default();
+        bulk.load_bulk(vec![entry("a/b.rs", 2), entry("c.rs", 1)], vec![("a/".into(), PathBuf::from("/r/a"), 1)]);
+        assert_consistent(&bulk);
+        assert_eq!((bulk.file_count, bulk.symbol_count), (2, 3));
+        assert_eq!(bulk.hot.text(), incremental.hot.text());
+        assert_eq!(bulk.files.len(), incremental.files.len());
+        assert_eq!(bulk.slot(Path::new("/r/a/b.rs")), incremental.slot(Path::new("/r/a/b.rs")));
+        assert_eq!(bulk.dirs["a/"].1, 1);
     }
 
     #[test]

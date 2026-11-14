@@ -49,10 +49,11 @@ All servers, debuggers and formatters are listed in **Settings › Languages & F
 
 The Astro and Angular servers also run from the project's own `node_modules/.bin` when it has them.
 
-### Node.js
+### JavaScript runtime
 
-**Settings › Languages & Frameworks › Node.js** has:
+**Settings › Languages & Frameworks › JavaScript Runtime** has:
 
+- **Preferred runtime**: what runs JavaScript and TypeScript files from the gutter and the editor's **Run** action: Node.js, Bun or Deno. **Auto** looks for the nearest `deno.json` / `deno.jsonc` (Deno) or `bun.lock` / `bun.lockb` (Bun) up to the project root, and otherwise uses Node.js.
 - **Node interpreter**: the `node` that runs npm scripts, Node files and the Node-based language servers. **Default** uses `node` on `PATH`. The list shows every Node.js found on `PATH` and those installed by nvm, Volta, fnm, mise and asdf.
 - **Run in target**: run Node and package-manager commands locally or in one of the run targets from **Settings › Build, Execution, Deployment › Run Targets**.
 - **Package manager**: `npm`, `pnpm`, `yarn` or `bun` for the detected script configurations. **Auto** reads `packageManager` in `package.json`, then the lock file (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock` / `bun.lockb`, `package-lock.json`), and otherwise uses npm.
@@ -98,7 +99,7 @@ With **Do not step into library scripts** (**Settings › Build, Execution, Depl
 - **React**: JSX and TSX get their own highlighting modes and full TypeScript server support. There is no React-specific tooling beyond that.
 - **Vue**: `.vue` files are highlighted per block and served by Vue Language Server in hybrid mode. In a Vue CLI project without `tsconfig.json`, webpack's `resolve.alias` entries (such as `@/`) are read so imports resolve. Prettier formats `.vue` files. Emmet works in templates.
 - **Svelte**: Svelte Language Server; highlighting uses the HTML mode (script as TypeScript, style as CSS). Emmet works in markup.
-- **Astro**: Astro Language Server with its own highlighting mode. It needs Node.js; if it can't find one, select it in **Settings › Languages & Frameworks › Node.js**.
+- **Astro**: Astro Language Server with its own highlighting mode. It needs Node.js; if it can't find one, select it in **Settings › Languages & Frameworks › JavaScript Runtime**.
 - **Angular**: in projects with `angular.json` or `@angular/core` installed, templates in HTML files and inline `template:` strings get Angular highlighting, and the Angular Language Server adds template completion, navigation and rename. The server is configured for the project's Angular version.
 
 ## Limitations

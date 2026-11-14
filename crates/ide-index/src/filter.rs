@@ -138,12 +138,33 @@ impl PathFilter {
         &self.config.0 == extra_roots && self.config.1 == excludes
     }
 
+    /// Stable fingerprint of the persisted-scope configuration; a start-up
+    /// snapshot is only trusted when this still matches.
+    pub(crate) fn stamp(&self) -> String {
+        let mut stamp = format!("include_root={}\n", self.config.0.include_root);
+        for folder in &self.config.0.folders {
+            stamp.push_str(&folder.to_string_lossy());
+            stamp.push('\n');
+        }
+        stamp.push_str("--\n");
+        for exclude in &self.config.1 {
+            stamp.push_str(exclude);
+            stamp.push('\n');
+        }
+        stamp
+    }
+
     pub(crate) fn reload(&self) -> Self {
         Self::new(&self.root, &self.config.0, &self.config.1)
     }
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Whether content roots outside the project root are indexed with it.
+    pub(crate) fn has_extra_roots(&self) -> bool {
+        !self.extra.is_empty()
     }
 
     /// The project root, then the extra content roots.
@@ -225,6 +246,30 @@ impl PathFilter {
         }
         let dir = if is_dir { Some(path) } else { path.parent().filter(|p| *p != base) };
         dir.is_some_and(|d| gitignore.matched_path_or_any_parents(d, true).is_ignore())
+    }
+
+    /// All directories at or below `dir` that the index would walk, in walk order.
+    pub(crate) fn dirs(&self, dir: &Path) -> Vec<PathBuf> {
+        let Some((root, _, _)) = self.base_of(dir) else { return Vec::new() };
+        let root = root.to_path_buf();
+        let excludes = self.excludes.clone();
+        let walk_root = root.clone();
+        let walk_excludes = excludes.clone();
+        let walker = WalkBuilder::new(dir)
+            .hidden(false)
+            .parents(true)
+            .ignore(true)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .require_git(ide_core::ignored::inside_git_repo(dir))
+            .follow_links(false)
+            .filter_entry(move |e| {
+                let name = e.file_name().to_string_lossy();
+                !Self::skip_name(&name) && !glob_excluded(&walk_excludes, &walk_root, e.path())
+            })
+            .build();
+        walker.flatten().filter(|e| e.file_type().is_some_and(|t| t.is_dir())).map(|e| e.into_path()).collect()
     }
 
     /// All indexable files at or below `dir`, walked in parallel.

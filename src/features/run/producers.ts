@@ -50,9 +50,11 @@ export interface ToolEnv {
   python?: string | null;
   /** The PHP interpreter chosen in settings (else the `php` on `PATH`). */
   php?: string | null;
-  /** The project root has `deno.json(c)` / `bun.lock(b)`. */
+  /** Run JavaScript / TypeScript with Deno / Bun: the project has `deno.json(c)` / `bun.lock(b)`, or `preferred`. */
   deno?: boolean;
   bun?: boolean;
+  /** Deno / Bun was chosen as the preferred runtime, so it also runs files outside the project. */
+  preferred?: boolean;
 }
 
 /** Names only: every tool unknown. */
@@ -523,16 +525,27 @@ function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { comman
   return t ? { command: t.command, prefix: [] } : null;
 }
 
+/** The preferred runtime is not installed: say so rather than run the file with another one. */
+function preferredMissing(file: string, runtime: string, command: string, site: string): Missing {
+  return {
+    title: tx`Cannot run '${file}'`,
+    body: `${runtime} was not found (looked for \`${command}\`). Install it from ${site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.`,
+  };
+}
+
 function jsRuntime(lang: "js" | "ts", env: ToolEnv, s: FileSite): Produced {
   const name = s.file;
   const ok = (config: RunConfig): Produced => ({ name, scope: "file", config });
-  if (s.inProject && env.deno) {
+  if ((s.inProject || env.preferred) && env.deno) {
     const deno = pick(env, ["deno"]);
     if (deno) return ok(fileConfig(s, "deno", deno.command, ["run", s.arg], "js-debug"));
+    if (env.preferred)
+      return { name, scope: "file", missing: preferredMissing(name, "Deno", "deno", "https://deno.com") };
   }
-  if (s.inProject && env.bun) {
+  if ((s.inProject || env.preferred) && env.bun) {
     const bun = pick(env, ["bun"]);
     if (bun) return ok(fileConfig(s, "bun", bun.command, ["run", s.arg], "bun-dap"));
+    if (env.preferred) return { name, scope: "file", missing: preferredMissing(name, "Bun", "bun", "https://bun.sh") };
   }
   const node = env.tool("node");
   const nodeCmd = node === undefined ? "node" : (node?.path ?? null);

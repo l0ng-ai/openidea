@@ -1159,6 +1159,9 @@ pub struct NodeSettings {
     pub run_target: String,
     /// `npm` | `pnpm` | `yarn`; empty = detect from the lock file / `packageManager`.
     pub package_manager: String,
+    /// Runtime for running JavaScript / TypeScript files: `node` | `bun` | `deno`; empty = from the
+    /// project (`deno.json` → Deno, `bun.lock` → Bun, else Node.js).
+    pub runtime: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
