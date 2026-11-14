@@ -1168,6 +1168,22 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         let plugin = vue::tsserver_plugin(&vue);
         merge_init_options(cfg, json!({ "vtsls": { "tsserver": { "globalPlugins": [plugin] } } }));
         cfg.tsserver_project_extras.extensions = vec![vue::EXTENSION.into()];
+        // Hybrid mode: one program holds every .vue's virtual TypeScript, so the
+        // heap must clear it (vtsls' default 3072 dies in a GC death spiral), and
+        // the syntax tsserver duplicates the plugin and its file watching.
+        let memory = match s.languages.typescript.tsserver_max_memory {
+            0 => 8192,
+            n => n,
+        };
+        merge_init_options(
+            cfg,
+            json!({ "typescript": { "tsserver": { "useSyntaxServer": "never", "maxTsServerMemory": memory } } }),
+        );
+        // A configured project resolves its own types; the typings installer only
+        // serves inferred projects and keeps scanning npm in the background.
+        if server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file()) {
+            merge_init_options(cfg, json!({ "typescript": { "disableAutomaticTypeAcquisition": true } }));
+        }
     }
     if name == "vtsls"
         && cfg.tsserver_project
@@ -2103,6 +2119,67 @@ mod gradle_runtime_tests {
 #[cfg(test)]
 mod maven_linkage_tests {
     use super::*;
+
+    #[test]
+    fn hybrid_vtsls_gets_one_server_a_full_heap_and_no_type_acquisition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // The Vue package the hybrid block finds through the command's package dir.
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        std::fs::write(root.join("tsconfig.json"), "{}").unwrap();
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/useSyntaxServer"), Some(&json!("never")));
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(8192)));
+        assert_eq!(options.pointer("/typescript/disableAutomaticTypeAcquisition"), Some(&json!(true)));
+        // A user-set limit wins over the automatic one.
+        s.languages.typescript.tsserver_max_memory = 6144;
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(6144)));
+    }
+
+    #[test]
+    fn hybrid_without_a_config_keeps_type_acquisition_and_plain_vtsls_stays_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bin = root.join("tools/node_modules/.bin/vue-language-server");
+        let pkg = root.join("tools/node_modules/@vue/language-server/package.json");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pkg.parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        std::fs::write(&pkg, "{}").unwrap();
+        let mut s = Settings::default();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: bin.to_string_lossy().into_owned() });
+        // No tsconfig/jsconfig anywhere: inferred projects still want the typings installer.
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert!(options.pointer("/typescript/disableAutomaticTypeAcquisition").is_none());
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(8192)));
+        // Without the Vue package there is no hybrid mode: nothing is injected. The
+        // command points at a bare binary, so the package lookup finds nothing
+        // (a bare name would resolve on the host's PATH and break the test).
+        std::fs::write(root.join("bare-vue-language-server"), "#!/bin/sh\n").unwrap();
+        s.tools
+            .insert(vue::SERVER.into(), ide_core::settings::ToolSettings { path: "bare-vue-language-server".into() });
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
+        assert!(options.pointer("/typescript/tsserver/maxTsServerMemory").is_none());
+    }
 
     #[test]
     fn default_maven_repository_reads_the_user_settings() {
