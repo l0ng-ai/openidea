@@ -196,6 +196,16 @@ it("stays silent when a base is outside the project", async () => {
   expect(await project.run()).toEqual([]);
 });
 
+it("knows a chain that ends in ABC or object", async () => {
+  // `ABC` declares nothing a method could override, so `@override` on a method no class of
+  // the chain declares is still a mistake.
+  const project = withBase(
+    { name: "Circle", line: 0, bases: ["Shape"], methods: [{ name: "describ", line: 1, override: true }] },
+    [{ name: "Shape", line: 0, bases: ["ABC", "object"], methods: [{ name: "describe", line: 1 }] }],
+  );
+  expect(codes(await project.run())).toEqual([["builtin:python-override", "warning", 1]]);
+});
+
 it("reports an unimplemented abstract method", async () => {
   const project = withBase({ name: "Half", line: 0, bases: ["Base"] }, [
     { name: "Base", line: 0, bases: [], methods: [{ name: "dispatch", line: 1, abstract: true }] },
@@ -210,6 +220,16 @@ it("still reports an abstract method whose declarer has a foreign base", async (
     { name: "Base", line: 0, bases: ["ABC"], methods: [{ name: "dispatch", line: 1, abstract: true }] },
   ]);
   expect(codes(await project.run())).toEqual([["builtin:python-abstract-method", "warning", 0]]);
+});
+
+it("accepts a class that is itself abstract", async () => {
+  const base = { name: "Base", line: 0, bases: [], methods: [{ name: "dispatch", line: 1, abstract: true }] };
+  const declaresOwn = withBase(
+    { name: "Middle", line: 0, bases: ["Base"], methods: [{ name: "sides", line: 1, abstract: true }] },
+    [base],
+  );
+  expect(await declaresOwn.run()).toEqual([]);
+  expect(await withBase({ name: "Middle", line: 0, bases: ["Base", "ABC"] }, [base]).run()).toEqual([]);
 });
 
 it("accepts a class that implements the abstract method", async () => {

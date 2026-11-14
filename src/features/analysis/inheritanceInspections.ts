@@ -248,6 +248,10 @@ async function unusedOverride(view: ProjectView, cls: ClassView): Promise<Diagno
 
 /** Abstract methods of the ancestry that no class on the way down implements. */
 async function missingAbstractMethods(view: ProjectView, cls: ClassView): Promise<Diagnostic[]> {
+  // A class that is itself abstract (it declares abstract methods, or names `ABC` or
+  // `Protocol` as a base) leaves the implementing to its subclasses.
+  if (cls.facts.methods.some((m) => m.abstractMethod) || cls.facts.bases.some((b) => b === "ABC" || b === "Protocol"))
+    return [];
   const out: Diagnostic[] = [];
   const reported = new Set<string>();
   for (const ancestor of await view.ancestors(cls)) {

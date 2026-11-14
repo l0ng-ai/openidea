@@ -268,6 +268,12 @@ export async function baseDeclarations(index: InheritanceIndex, cls: ClassInheri
   return out;
 }
 
+/**
+ * Standard bases that declare no method a project class could override or implement (only
+ * dunders), so a chain ending in them is still fully known: `class Shape(ABC)`.
+ */
+const EMPTY_BASES: ReadonlySet<string> = new Set(["object", "ABC", "Generic", "Protocol"]);
+
 /** One class `cls` inherits from, and how far up it sits (its direct bases are depth 1). */
 export interface AncestorNode {
   decl: ClassInheritance;
@@ -306,7 +312,7 @@ export async function ancestryResolution(
       for (const base of current.bases) {
         const found = await index.resolve(base, current.path);
         if (!found.length) {
-          firstUnresolvedDepth = Math.min(firstUnresolvedDepth, d);
+          if (!EMPTY_BASES.has(base)) firstUnresolvedDepth = Math.min(firstUnresolvedDepth, d);
           continue;
         }
         for (const parent of found) {
