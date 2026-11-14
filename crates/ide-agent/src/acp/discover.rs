@@ -3,6 +3,7 @@
 //! `initialize` alone).
 
 use super::{Conn, Dialect};
+use crate::catalogs::Discovered;
 use crate::config;
 use crate::model::AgentConfigOption;
 use crate::provider::ProviderSpec;
@@ -15,7 +16,7 @@ use std::time::Duration;
 const DISCOVER_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(3) } else { Duration::from_secs(120) };
 
 /// Opens `session/new`, reads `configOptions`, and records per-model `thought_level` choices.
-pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<(), String> {
+pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<Discovered, String> {
     let root = shared.paths.project_root.clone();
     let launch = spec.clone();
     let launch = tokio::task::spawn_blocking({
@@ -25,12 +26,12 @@ pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<(),
     .await
     .map_err(|e| e.to_string())?;
     let cwd = dunce::canonicalize(&root).unwrap_or(root);
-    let stderr: Arc<Mutex<Vec<String>>> = Arc::default();
-    let lines = stderr.clone();
-    let on_stderr: Box<dyn Fn(String) + Send + Sync> = Box::new(move |l| lines.lock().push(l));
-    let client = Dialect::wrap(Arc::new(ide_jsonrpc::NoopHandler));
+    let updates = Arc::new(DiscoveryUpdates { provider: spec.id.clone(), commands: Mutex::new(None) });
+    let client = Dialect::wrap(updates.clone());
+    let on_stderr: Box<dyn Fn(String) + Send + Sync> = Box::new(|_| {});
     let peer = (shared.connector)(&launch, &cwd, client.clone(), on_stderr)
         .map_err(|e| format!("Couldn't start {} (`{}`): {e}", launch.name, launch.command))?;
+    let _stop = crate::catalogs::KillPeer(peer.clone());
     let conn = Conn::new(peer.clone(), client);
     let work = async {
         conn.initialize(&client_info()).await.map_err(|e| e.to_string())?;
@@ -51,33 +52,40 @@ pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<(),
             (Some(model), Some(effort)) => model.current.clone().map(|m| vec![(m, effort)]).unwrap_or_default(),
             _ => Vec::new(),
         };
-        let option_ids: Vec<_> = options.iter().map(|o| o.id.as_str()).collect();
-        tracing::info!(
-            "agent {}: settings discovery got {} config option(s) {:?}, {} model effort list(s)",
-            launch.id,
-            options.len(),
-            option_ids,
-            levels.len()
-        );
-        shared.remember_discovered(&launch.id, &options, &[], &levels);
-        Ok::<(), String>(())
+        let commands = updates
+            .commands
+            .lock()
+            .clone()
+            .or_else(|| new.get("availableCommands").map(|_| config::commands_of(&new, &launch.id)));
+        Ok::<_, String>(Discovered { config: options, commands, levels: levels.into_iter().collect() })
     };
     let result = tokio::time::timeout(DISCOVER_TIMEOUT, work).await;
     peer.kill();
     match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(match stderr.lock().last() {
-            Some(line) => format!("{e}: {line}"),
-            None => e,
-        }),
-        Err(_) => {
-            let tail = stderr.lock().join("\n");
-            if tail.is_empty() {
-                Err("the agent did not answer in time".into())
-            } else {
-                Err(format!("the agent did not answer in time:\n{tail}"))
-            }
+        Ok(result) => result,
+        Err(_) => Err("the agent did not answer in time".into()),
+    }
+}
+
+#[derive(Default)]
+struct DiscoveryUpdates {
+    provider: String,
+    commands: Mutex<Option<Vec<crate::AgentCommand>>>,
+}
+
+impl ide_jsonrpc::Handler for DiscoveryUpdates {
+    fn on_notification(&self, method: &str, params: Value) {
+        if method == "session/update"
+            && let Some(update) = params.get("update")
+            && update["sessionUpdate"] == "available_commands_update"
+        {
+            // Commands are protocol data, not stderr (which may contain credentials).
+            *self.commands.lock() = Some(config::commands_of(update, &self.provider));
         }
+    }
+
+    fn on_request(&self, method: &str, _: Value) -> Result<Value, (i64, String)> {
+        Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unsupported discovery request {method}")))
     }
 }
 

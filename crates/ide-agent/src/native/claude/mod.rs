@@ -85,6 +85,8 @@ pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<Discove
         let (spec, cwd) = spec.await.map_err(|e| e.to_string())?;
         let mut args = spec.args;
         args.extend(Start::New { id: uuid::Uuid::new_v4().to_string() }.args());
+        // Metadata discovery must not launch project-configured MCP servers.
+        args.extend(["--strict-mcp-config".into(), "--mcp-config".into(), "{\"mcpServers\":{}}".into()]);
         let launch = Launch { program: spec.command, args, cwd, env: spec.env };
         let mut io = cli::Process.launch(&launch, Arc::new(|_| {})).map_err(|e| e.to_string())?;
         let _stop = io.kill.clone().drop_guard();

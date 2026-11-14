@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 encoding_rs.workspace = true
+blake3.workspace = true
 ide-vfs.workspace = true
 ide-core.workspace = true
 ide-mcp.workspace = true
@@ -24,3 +25,6 @@ dunce.workspace = true
 uuid.workspace = true
 tempfile.workspace = true
 which = "8"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

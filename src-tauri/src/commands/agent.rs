@@ -4,8 +4,8 @@ use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
-    AgentEvent, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession,
-    McpServer, McpServerInput, NewAgentTask,
+    AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
+    ExternalSession, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -35,6 +35,18 @@ pub fn agent_subscribe(
 #[specta::specta]
 pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<AgentProvider>> {
     agent::providers(&state.host, window.label())
+}
+
+/// Refreshes the model catalog; force bypasses freshness, not the cooldown.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_refresh_models(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    force: bool,
+) -> IdeResult<AgentModelCatalog> {
+    agent::refresh_models(&state.host, window.label(), provider, force)
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the

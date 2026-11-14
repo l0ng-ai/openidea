@@ -92,6 +92,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "vcs_git_version",
         "docker_compose_op",
         "db_execute",
+        "agent_refresh_models",
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
