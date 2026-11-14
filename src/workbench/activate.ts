@@ -15,6 +15,7 @@ import {
 } from "./contributions";
 import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
+import { installNarrowWindow } from "./narrowWindow";
 import { installFileDrop } from "./fileDrop";
 import { installFocusTracking } from "./focus";
 import { installFocusScopeTracking } from "@/ui/focusScope";
@@ -74,6 +75,7 @@ export function activateWorkbench(): () => void {
     installToolWindowActions(),
     installToolWindowLayoutSync(),
     installDistractionFree(),
+    installNarrowWindow(),
     installFocusTracking(setFocusedToolWindow),
     installFocusScopeTracking(),
     installTaskEvents(),

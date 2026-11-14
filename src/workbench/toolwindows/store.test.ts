@@ -5,6 +5,12 @@ import { registerToolWindow } from "../contributions";
 import { installToolWindowActions } from "./actions";
 import {
   activateToolWindow,
+  applyToolWindowLayout,
+  collapseSidesForNarrowWindow,
+  enterDistractionFreeLayout,
+  exitDistractionFreeLayout,
+  toolWindowLayoutSnapshot,
+  restoreSidesAfterNarrowWindow,
   hideActiveToolWindow,
   hideAllToolWindows,
   hideToolWindow,
@@ -538,5 +544,108 @@ describe("view modes", () => {
     await executeAction("toolwindow.viewMode.dockPinned", "terminal");
     expect(useToolWindowLayout.getState().viewModes).toEqual({ project: "dockUnpinned" });
     dispose();
+  });
+});
+
+describe("narrow window", () => {
+  const saved = () => JSON.parse(localStorage.getItem("openidea.layout.v1:/work/a") ?? "{}").visible;
+
+  it("hides the side windows, keeps the bottom one, and puts the sides back", () => {
+    showToolWindow("terminal");
+    collapseSidesForNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(false);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    expect(useToolWindowLayout.getState().stripeButtons.project).not.toBe(false);
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+    expect(isToolWindowVisible("terminal")).toBe(true);
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+  });
+
+  it("reopens a window from its stripe button while narrow", () => {
+    collapseSidesForNarrowWindow();
+    toggleToolWindow("project");
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("does not save the collapse, but does save changes made meanwhile", () => {
+    showToolWindow("terminal");
+    collapseSidesForNarrowWindow();
+    expect(saved().left).toBe("project");
+    showToolWindow("problems");
+    expect(saved()).toMatchObject({ left: "project", bottom: "problems" });
+  });
+
+  it("keeps a side window the user opened while narrow over the remembered one", () => {
+    collapseSidesForNarrowWindow();
+    showToolWindow("structure");
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("structure")).toBe(true);
+    expect(isToolWindowVisible("project")).toBe(false);
+  });
+
+  it("collapses once, ignores a layout without sides or a project, and clears a maximized side", () => {
+    toggleMaximizeToolWindow("project");
+    collapseSidesForNarrowWindow();
+    const stash = useToolWindowLayout.getState().narrowStash;
+    expect(useToolWindowLayout.getState().maximized).toBeNull();
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().narrowStash).toBe(stash);
+
+    resetToolWindowLayout();
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    loadToolWindowLayout("/work/a");
+    hideToolWindow("project");
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+  });
+
+  it("saves what the user does to a side area while narrow, not the remembered window", () => {
+    collapseSidesForNarrowWindow();
+    toggleToolWindow("project");
+    hideToolWindow("project");
+    expect(saved().left).toBeNull();
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(false);
+  });
+
+  it("keeps the hidden sides in the saved layout through Distraction Free Mode", () => {
+    collapseSidesForNarrowWindow();
+    enterDistractionFreeLayout();
+    expect(saved().left).toBe("project");
+    exitDistractionFreeLayout();
+    expect(saved().left).toBe("project");
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("includes the hidden sides in a saved layout snapshot and drops them when a layout is applied", () => {
+    collapseSidesForNarrowWindow();
+    const snapshot = toolWindowLayoutSnapshot();
+    expect(snapshot.visible.left).toBe("project");
+    applyToolWindowLayout({ ...snapshot, visible: { ...snapshot.visible, left: "structure" } });
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("structure")).toBe(true);
+    expect(saved().left).toBe("structure");
+  });
+
+  it("forgets the hidden sides when another project's layout loads", () => {
+    collapseSidesForNarrowWindow();
+    loadToolWindowLayout("/work/b");
+    expect(useToolWindowLayout.getState().narrowStash).toBeNull();
+    expect(isToolWindowVisible("project")).toBe(true);
+    restoreSidesAfterNarrowWindow();
+    expect(isToolWindowVisible("project")).toBe(true);
+  });
+
+  it("leaves a maximized bottom window maximized", () => {
+    showToolWindow("terminal");
+    toggleMaximizeToolWindow("terminal");
+    collapseSidesForNarrowWindow();
+    expect(useToolWindowLayout.getState().maximized).toBe("bottom");
+    expect(isToolWindowVisible("terminal")).toBe(true);
   });
 });
