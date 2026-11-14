@@ -237,6 +237,7 @@ pub struct LspManager {
     shown_messages: Mutex<HashSet<(String, String)>>,
     /// go.mod files whose upgrades gopls has been asked to check this session.
     go_mod_checked: Mutex<HashSet<PathBuf>>,
+    go_mod_queries: Mutex<go_mod::Queries>,
     /// Virtual (non-`file:`) URIs a server returned, by the server that owns them.
     virtual_origins: Mutex<HashMap<String, ide_core::ServerId>>,
     /// Contents fetched for virtual URIs.
@@ -509,6 +510,7 @@ impl LspManager {
             configuration_cache: Arc::new(Mutex::new(Default::default())),
             shown_messages: Mutex::new(HashSet::new()),
             go_mod_checked: Mutex::new(HashSet::new()),
+            go_mod_queries: Mutex::new(go_mod::Queries::default()),
             virtual_origins: Mutex::new(HashMap::new()),
             virtual_docs: Mutex::new(HashMap::new()),
             virtual_stamps: Mutex::new(HashMap::new()),
@@ -1358,6 +1360,7 @@ impl LspManager {
     }
 
     fn close_document(&self, doc: DocId) {
+        self.go_mod_queries.lock().cancel(doc);
         let (d, compose_removed) = {
             let mut docs = self.docs.lock();
             let Some(d) = docs.remove(&doc) else { return };
@@ -3605,6 +3608,7 @@ impl LspManager {
     pub fn set_execution_allowed(&self, allowed: bool) {
         let previous = self.execution_allowed.swap(allowed, Ordering::AcqRel);
         if !allowed {
+            self.go_mod_queries.lock().cancel_all();
             for server in self.servers.lock().iter() {
                 server.start_token().cancel();
             }
@@ -3930,6 +3934,7 @@ impl LspManager {
 
     pub async fn shutdown_all(&self) {
         self.shutting_down.store(true, Ordering::Release);
+        self.go_mod_queries.lock().cancel_all();
         let _reconfigure = self.reconfigure_lock.lock().await;
         let servers: Vec<Arc<Server>> = self.servers.lock().clone();
         join_all(servers.iter().map(|s| self.stop_instance(s, true))).await;

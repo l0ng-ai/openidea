@@ -6,11 +6,15 @@
 
 use crate::LspManager;
 use crate::server::Server;
-use ide_core::{DocId, Pos, Range};
+use ide_core::{CancellationToken, DocId, Pos, Range};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
 pub(crate) const CHECK_UPGRADES: &str = "gopls.check_upgrades";
 /// gopls answers code lenses once it has loaded the module.
@@ -18,6 +22,43 @@ const ATTEMPTS: u32 = 10;
 const RETRY: Duration = Duration::from_secs(2);
 /// Producer of the deprecation diagnostics (one full set per go.mod).
 const DEPRECATIONS: &str = "go-mod-deprecations";
+// This optional background check must not wait indefinitely on a proxy or toolchain download.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+const OUTPUT_LIMIT: u64 = 8 * 1024 * 1024;
+
+#[derive(Default)]
+pub(crate) struct Queries {
+    generation: u64,
+    running: HashMap<DocId, (u64, CancellationToken)>,
+}
+
+impl Queries {
+    fn begin(&mut self, doc: DocId) -> (u64, CancellationToken) {
+        self.cancel(doc);
+        self.generation += 1;
+        let cancel = CancellationToken::new();
+        self.running.insert(doc, (self.generation, cancel.clone()));
+        (self.generation, cancel)
+    }
+
+    fn finish(&mut self, doc: DocId, generation: u64) {
+        if self.running.get(&doc).is_some_and(|(current, _)| *current == generation) {
+            self.running.remove(&doc);
+        }
+    }
+
+    pub(crate) fn cancel(&mut self, doc: DocId) {
+        if let Some((_, cancel)) = self.running.remove(&doc) {
+            cancel.cancel();
+        }
+    }
+
+    pub(crate) fn cancel_all(&mut self) {
+        for (_, (_, cancel)) in self.running.drain() {
+            cancel.cancel();
+        }
+    }
+}
 
 fn is_go_mod(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "go.mod")
@@ -66,6 +107,15 @@ impl LspManager {
     }
 
     async fn report_deprecated_modules(&self, doc: DocId, server: &Server) {
+        let (generation, cancel) = self.go_mod_queries.lock().begin(doc);
+        self.report_deprecated_modules_query(doc, server, &cancel).await;
+        self.go_mod_queries.lock().finish(doc, generation);
+    }
+
+    async fn report_deprecated_modules_query(&self, doc: DocId, server: &Server, cancel: &CancellationToken) {
+        if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
+            return;
+        }
         let Some((path, text)) = self.docs.lock().get(&doc).map(|d| (d.path.clone(), d.text.as_str().to_owned()))
         else {
             return;
@@ -78,10 +128,9 @@ impl LspManager {
         let search = crate::launch::server_search_path(&config);
         let Some(dir) = path.parent().map(Path::to_path_buf) else { return };
         let modules: Vec<String> = required.iter().map(|r| r.path.clone()).collect();
-        let listed = tokio::task::spawn_blocking(move || list_deprecations(&dir, &search, &modules)).await;
-        let Ok(Some(deprecated)) = listed else { return };
+        let Some(deprecated) = list_deprecations(&dir, &search, &modules, cancel).await else { return };
         // The document changed meanwhile: its own save runs again.
-        if self.docs.lock().get(&doc).is_none_or(|d| d.text.as_str() != text) {
+        if cancel.is_cancelled() || self.docs.lock().get(&doc).is_none_or(|d| d.text.as_str() != text) {
             return;
         }
         let items = required
@@ -157,22 +206,100 @@ struct ListedModule {
 }
 
 /// `(module, message)` of each deprecated module in `modules`; `None` when `go` failed.
-fn list_deprecations(dir: &Path, search: &std::ffi::OsStr, modules: &[String]) -> Option<Vec<(String, String)>> {
-    let go: PathBuf = ide_core::tool_path::find_command("go", search, dir)?;
-    let output = ide_core::process::prepare(&mut std::process::Command::new(go))
-        .args(["list", "-m", "-u", "-e", "-json"])
-        .args(modules)
-        .current_dir(dir)
-        .env("PATH", search)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if output.stdout.is_empty() {
-        tracing::debug!("go list -m -u in {}: {}", dir.display(), output.status);
+async fn list_deprecations(
+    dir: &Path,
+    search: &std::ffi::OsStr,
+    modules: &[String],
+    cancel: &CancellationToken,
+) -> Option<Vec<(String, String)>> {
+    let (dir, search, modules) = (dir.to_path_buf(), search.to_owned(), modules.to_vec());
+    let command = tokio::task::spawn_blocking(move || {
+        let go: PathBuf = ide_core::tool_path::find_command("go", &search, &dir)?;
+        let mut command = Command::new(go);
+        command.args(["list", "-m", "-u", "-e", "-json"]).args(modules).current_dir(dir).env("PATH", search);
+        Some(command)
+    })
+    .await
+    .ok()??;
+    let output = run_query(command, cancel, QUERY_TIMEOUT).await?;
+    if output.is_empty() {
         return None;
     }
-    Some(parse_deprecations(&output.stdout))
+    tokio::task::spawn_blocking(move || parse_deprecations(&output)).await.ok()
+}
+
+async fn run_query(command: Command, cancel: &CancellationToken, timeout: Duration) -> Option<Vec<u8>> {
+    let cancel = cancel.child_token();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    // The supervisor owns cleanup even if the caller's future is dropped.
+    tokio::spawn(async move { supervise_query(command, &cancel, timeout).await }).await.ok().flatten()
+}
+
+async fn supervise_query(mut command: Command, cancel: &CancellationToken, timeout: Duration) -> Option<Vec<u8>> {
+    if cancel.is_cancelled() {
+        return None;
+    }
+    ide_core::process::prepare(&mut command);
+    ide_core::process::own_group(&mut command);
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    let mut child = command.spawn().ok()?;
+    #[cfg(windows)]
+    let job = child.id().and_then(ide_core::process::Job::for_pid);
+    let stdout = child.stdout.take()?;
+    let mut reader = tokio::spawn(async move {
+        let mut output = Vec::new();
+        stdout.take(OUTPUT_LIMIT + 1).read_to_end(&mut output).await.ok()?;
+        if output.len() as u64 > OUTPUT_LIMIT {
+            tracing::debug!("go module query exceeded stdout budget");
+            return None;
+        }
+        Some(output)
+    });
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    // Drain before reaping: if a descendant holds stdout open, the root's id
+    // still belongs to this child when cancellation kills its process tree.
+    let output = tokio::select! {
+        biased;
+        () = cancel.cancelled() => None,
+        () = &mut deadline => {
+            tracing::debug!("go module query timed out");
+            None
+        },
+        result = &mut reader => result.ok().flatten(),
+    };
+    if let Some(bytes) = output {
+        let status = tokio::select! {
+            biased;
+            () = cancel.cancelled() => None,
+            () = &mut deadline => {
+            tracing::debug!("go module query timed out");
+            None
+        },
+            status = child.wait() => Some(status),
+        };
+        if let Some(status) = status {
+            return status.ok().map(|_| bytes);
+        }
+    }
+    // The root is still unreaped here, so its process/group id cannot be reused.
+    if let Some(pid) = child.id() {
+        let _ = tokio::task::spawn_blocking(move || {
+            #[cfg(windows)]
+            if let Some(job) = job {
+                job.terminate();
+                return;
+            }
+            ide_core::process::kill_tree_of(pid);
+        })
+        .await;
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    reader.abort();
+    None
 }
 
 fn parse_deprecations(json: &[u8]) -> Vec<(String, String)> {
@@ -186,6 +313,231 @@ fn parse_deprecations(json: &[u8]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queries_cancel_only_the_superseded_document() {
+        let mut queries = Queries::default();
+        let (first, old) = queries.begin(DocId(1));
+        let (_, other) = queries.begin(DocId(2));
+        let (second, new) = queries.begin(DocId(1));
+        assert!(old.is_cancelled());
+        assert!(!other.is_cancelled());
+        assert!(!new.is_cancelled());
+        queries.finish(DocId(1), first);
+        assert_eq!(queries.running.len(), 2);
+        queries.finish(DocId(1), second);
+        assert_eq!(queries.running.len(), 1);
+        queries.cancel_all();
+        assert!(other.is_cancelled());
+        assert!(queries.running.is_empty());
+    }
+
+    #[test]
+    fn closing_one_document_does_not_cancel_another() {
+        let mut queries = Queries::default();
+        let (_, closed) = queries.begin(DocId(1));
+        let (_, other) = queries.begin(DocId(2));
+        queries.cancel(DocId(1));
+        assert!(closed.is_cancelled());
+        assert!(!other.is_cancelled());
+        assert_eq!(queries.running.len(), 1);
+    }
+
+    #[cfg(unix)]
+    fn shell(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", script]);
+        command
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn assert_stopped(pid: u32) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                if stat.rsplit_once(") ").unwrap().1.split_whitespace().next() == Some("Z") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_query_never_spawns() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut command = shell("touch started");
+        command.current_dir(dir.path());
+        assert!(run_query(command, &cancel, Duration::from_secs(5)).await.is_none());
+        assert!(!dir.path().join("started").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn queries_keep_working_directories_and_environments_separate() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(a.path().join("value"), "directory-a").unwrap();
+        std::fs::write(b.path().join("value"), "directory-b").unwrap();
+        let mut ca = shell("printf '%s:' \"$QUERY_VALUE\"; cat value");
+        ca.current_dir(a.path()).env("QUERY_VALUE", "env-a");
+        let mut cb = shell("printf '%s:' \"$QUERY_VALUE\"; cat value");
+        cb.current_dir(b.path()).env("QUERY_VALUE", "env-b");
+        let cancel = CancellationToken::new();
+        let (a, b) = tokio::join!(
+            run_query(ca, &cancel, Duration::from_secs(5)),
+            run_query(cb, &cancel, Duration::from_secs(5)),
+        );
+        assert_eq!(a.unwrap(), b"env-a:directory-a");
+        assert_eq!(b.unwrap(), b"env-b:directory-b");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_and_reaps_the_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = shell("echo $$ > pid; exec sleep 2");
+        command.current_dir(dir.path());
+        let output = run_query(command, &CancellationToken::new(), Duration::from_secs(1)).await;
+        assert!(output.is_none());
+        let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap().trim().parse().unwrap();
+        assert!(!ide_core::process::process_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_kills_the_running_query_and_its_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = shell("sleep 30 & echo $$ $! > pids; wait");
+        command.current_dir(dir.path());
+        let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let task = tokio::spawn(async move { run_query(command, &token, Duration::from_secs(10)).await });
+        let pids = dir.path().join("pids");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !std::fs::read_to_string(&pids).is_ok_and(|s| s.split_whitespace().count() == 2) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let text = std::fs::read_to_string(pids).unwrap();
+        let pids: Vec<u32> = text.split_whitespace().map(|p| p.parse().unwrap()).collect();
+        cancel.cancel();
+        assert!(task.await.unwrap().is_none());
+        assert!(!ide_core::process::process_alive(pids[0]));
+        // An orphaned child may remain a zombie until the host's init reaps it.
+        #[cfg(target_os = "linux")]
+        assert_stopped(pids[1]).await;
+        #[cfg(not(target_os = "linux"))]
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while ide_core::process::process_alive(pids[1]) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_caller_still_reaps_its_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = shell("sleep 30 & echo $$ $! > pid; wait");
+        command.current_dir(dir.path());
+        let task =
+            tokio::spawn(async move { run_query(command, &CancellationToken::new(), Duration::from_secs(10)).await });
+        let file = dir.path().join("pid");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !std::fs::read_to_string(&file).is_ok_and(|s| s.split_whitespace().count() == 2) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let text = std::fs::read_to_string(file).unwrap();
+        let pids: Vec<u32> = text.split_whitespace().map(|p| p.parse().unwrap()).collect();
+        let pid = pids[0];
+        task.abort();
+        let _ = task.await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while ide_core::process::process_alive(pid) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        #[cfg(target_os = "linux")]
+        assert_stopped(pids[1]).await;
+        #[cfg(not(target_os = "linux"))]
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while ide_core::process::process_alive(pids[1]) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn timeout_cleans_up_a_child_holding_stdout_after_root_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = shell("sleep 30 & echo $! > pid; exit 0");
+        command.current_dir(dir.path());
+        assert!(run_query(command, &CancellationToken::new(), Duration::from_secs(1)).await.is_none());
+        let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap();
+        assert_stopped(pid.trim().parse().unwrap()).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_at_the_limit_is_not_truncated() {
+        let output = run_query(shell("head -c 8388608 /dev/zero"), &CancellationToken::new(), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(output.len() as u64, OUTPUT_LIMIT);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_output_kills_the_query() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = shell("echo $$ > pid; head -c 8388609 /dev/zero; exec sleep 30");
+        command.current_dir(dir.path());
+        assert!(run_query(command, &CancellationToken::new(), Duration::from_secs(5)).await.is_none());
+        let pid = std::fs::read_to_string(dir.path().join("pid")).unwrap().trim().parse().unwrap();
+        assert!(!ide_core::process::process_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preserves_output_from_a_nonzero_exit() {
+        assert_eq!(
+            run_query(shell("printf partial; exit 1"), &CancellationToken::new(), Duration::from_secs(5))
+                .await
+                .unwrap(),
+            b"partial"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_spawn_does_not_poison_a_following_query() {
+        assert!(
+            run_query(Command::new("/no/such/go-query"), &CancellationToken::new(), Duration::from_secs(5))
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            run_query(shell("printf ok"), &CancellationToken::new(), Duration::from_secs(5)).await.unwrap(),
+            b"ok"
+        );
+    }
 
     fn at(line: u32, from: u32, to: u32) -> Range {
         Range { start: Pos { line, col: from }, end: Pos { line, col: to } }
