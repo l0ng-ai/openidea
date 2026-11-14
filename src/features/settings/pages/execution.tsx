@@ -261,6 +261,17 @@ export const EXECUTION_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "JavaScript",
+        options: [
+          {
+            kind: "toggle",
+            key: "debugger.debugServerPage",
+            label: "Debug a dev server's page in the browser",
+            hint: "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.",
+          },
+        ],
+      },
+      {
         title: "Breakpoints",
         options: [
           {

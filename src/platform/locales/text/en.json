@@ -1625,5 +1625,9 @@
   "Web root": "Web root",
   "Folder whose files the URL serves": "Folder whose files the URL serves",
   "JavaScript Debug isn't available in a remote project yet.": "JavaScript Debug isn't available in a remote project yet.",
-  "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.": "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime."
+  "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.": "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.",
+  "Debug a dev server's page in the browser": "Debug a dev server's page in the browser",
+  "Debug in Browser": "Debug in Browser",
+  "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).": "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).",
+  "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.": "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached."
 }
