@@ -315,7 +315,7 @@ export async function fillMarkers(
       if (!found.length) continue;
       const known = supers[i]!;
       // Same merge rule as ↓: add the graph's super methods to what the server answered.
-      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameLocation(s.location, l)));
+      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameDeclarationLine(s.location, l)));
       const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
       entry(c).supers = {
         kind: "overriding",
@@ -354,11 +354,12 @@ export async function fillMarkers(
 
 // One entry per declaration line: the server and the graph may point at the same
 // declaration with different columns (the name vs the whole statement).
-const sameLocation = (a: Location, b: Location) => a.path === b.path && a.range.start.line === b.range.start.line;
+const sameDeclarationLine = (a: Location, b: Location) =>
+  a.path === b.path && a.range.start.line === b.range.start.line;
 
 /** `first`, then the locations of `more` not already in it. */
 function mergeLocations(first: readonly Location[], more: readonly Location[]): Location[] {
-  return [...first, ...more.filter((l) => !first.some((f) => sameLocation(f, l)))];
+  return [...first, ...more.filter((l) => !first.some((f) => sameDeclarationLine(f, l)))];
 }
 
 /** Identifies one class declaration in the inheritance graph. */
