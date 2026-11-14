@@ -136,6 +136,11 @@ buttons can act on what the user is editing.
 Toolbar buttons: `View::new(body).button(Button::new("refresh", "Refresh").icon("refresh"))`
 and `.status("12 items")`.
 
+An item or button `icon` is an IDE icon name, a registered plugin icon, or a small raster image as a `data:` URI
+(`data:image/png;base64,…`; PNG, JPEG, GIF or WebP, at most 64 KiB), drawn at the icon's size: an avatar or a pipeline
+status badge. Fetch the image yourself (a `net` grant) and pass it inline; the IDE never loads URLs for an icon. Older
+hosts show the generic file icon in its place.
+
 ### Events
 
 `ViewEvent` carries `Button(id)`, `Activate(key)` (double click or Enter), `Select(key)`,

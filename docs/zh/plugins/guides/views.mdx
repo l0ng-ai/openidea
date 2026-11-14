@@ -126,6 +126,8 @@ register_plugin!(TodoFinder, views);
 
 工具栏按钮：`View::new(body).button(Button::new("refresh", "Refresh").icon("refresh"))`，状态行：`.status("12 items")`。
 
+条目和按钮的 `icon` 可以是 IDE 图标名、已注册的插件图标，或者以 `data:` URI 给出的小尺寸位图（`data:image/png;base64,…`，支持 PNG、JPEG、GIF、WebP，最大 64 KiB），按图标尺寸绘制，适合头像或流水线状态徽章。图片由插件自己获取（需要 `net` 授权）后内联传入，IDE 不会为图标加载 URL。较旧的宿主会在该位置显示通用文件图标。
+
 ### 事件
 
 `ViewEvent` 包括 `Button(id)`、`Activate(key)`（双击或回车）、`Select(key)`、`Expand(key)`、`Collapse(key)`、
