@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow";
 import type {
   AgentChange,
   AgentCommit,
+  AgentConfigOption,
   AgentEntry,
   AgentImage,
   AgentLimit,
@@ -78,6 +79,8 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useEffortControl } from "./effortControl";
+import { useEffortFocus } from "./effortFocus";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
@@ -134,6 +137,8 @@ import {
 import { setFocusedSession, focusedSession, type FocusedSession } from "./sessionFocus";
 import { taskMenu } from "./taskActions";
 import styles from "./Session.module.css";
+
+const NO_CONFIG: readonly AgentConfigOption[] = [];
 
 export function SessionEditor({ input, docked = false }: { input: EditorInput; docked?: boolean }) {
   const id = (input.data as { task: string }).task;
@@ -204,6 +209,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [inputFocus, setInputFocus] = useState(0);
   const sessionRoot = useRef<HTMLDivElement>(null);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
+  const effort = useEffortControl(task?.config ?? NO_CONFIG, (option, value) => setTaskConfig(id, option, value), id);
+  useEffortFocus(sessionRoot, canFocusInput, effort.cycle);
   const session = useMemo<FocusedSession>(
     () => ({
       openFind: () => {
@@ -262,6 +269,10 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <SessionComposer
               task={task}
               focusRequest={inputFocus}
+              config={effort.config}
+              onConfig={effort.onChange}
+              effortAnnouncement={effort.announcement}
+              configPending={effort.pending}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -339,6 +350,7 @@ function SessionStatus({
   changes,
   commits,
   changesOpen,
+  effortAnnouncement,
   onToggleChanges,
 }: {
   task: AgentTask;
@@ -347,6 +359,7 @@ function SessionStatus({
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
   changesOpen: boolean;
+  effortAnnouncement: string | null;
   onToggleChanges: () => void;
 }) {
   const tx = useTx();
@@ -400,6 +413,9 @@ function SessionStatus({
       <span className={styles.state}>
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
+      </span>
+      <span className={styles.state} role="status" aria-live="polite" aria-atomic="true">
+        {effortAnnouncement ? tx("Effort: {level}").replace("{level}", effortAnnouncement) : ""}
       </span>
       {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
@@ -2695,6 +2711,10 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 function SessionComposer({
   task,
   focusRequest,
+  config,
+  onConfig,
+  effortAnnouncement,
+  configPending,
   entries,
   head,
   changes,
@@ -2705,6 +2725,10 @@ function SessionComposer({
 }: {
   task: AgentTask;
   focusRequest: number;
+  config: readonly AgentConfigOption[];
+  onConfig: (id: string, value: string) => void;
+  effortAnnouncement: string | null;
+  configPending: boolean;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2732,7 +2756,7 @@ function SessionComposer({
     task.status === "running" &&
     (composer.images.length === 0 || !!task.capabilities.images);
   const send = (now: boolean) => {
-    if (!canSend(composer) || sending || task.status === "archived") return;
+    if (!canSend(composer) || sending || configPending || task.status === "archived") return;
     setSending(true);
     sendMessage(task.id, now && (whileRunning !== "steer" || steers))
       .catch((e: unknown) =>
@@ -2744,14 +2768,6 @@ function SessionComposer({
       )
       .finally(() => setSending(false));
   };
-  const setOption = (id: string, value: string) =>
-    void setTaskConfig(task.id, id, value).catch((e: unknown) =>
-      notifications().notify({
-        level: "error",
-        title: "Couldn't change the setting",
-        body: String(e),
-      }),
-    );
   return (
     <div className={styles.composerArea}>
       <SessionStatus
@@ -2762,6 +2778,7 @@ function SessionComposer({
         commits={commits}
         changesOpen={changesOpen}
         onToggleChanges={onToggleChanges}
+        effortAnnouncement={effortAnnouncement}
       />
       {task.status === "archived" && (
         <div className={styles.banner}>
@@ -2798,19 +2815,19 @@ function SessionComposer({
         projectRoot={project?.root ?? task.cwd}
         commands={agentCommands}
         history={history}
-        config={task.config}
-        onConfig={setOption}
+        config={config}
+        onConfig={onConfig}
         onSubmit={send}
         disabled={task.status === "archived"}
-        toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
+        toolbar={<ConfigPickers config={config} onChange={onConfig} />}
         actions={
           <>
             {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
             <SubmitButton
               label={busy ? "Queue" : "Send"}
-              pending={sending}
+              pending={sending || configPending}
               variant={busy ? "secondary" : "primary"}
-              disabled={!canSend(composer) || sending || task.status === "archived"}
+              disabled={!canSend(composer) || sending || configPending || task.status === "archived"}
               onClick={() => send(false)}
             />
           </>

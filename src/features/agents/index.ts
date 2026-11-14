@@ -35,6 +35,7 @@ import {
 } from "./model";
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
+import { cycleFocusedEffort } from "./effortFocus";
 import {
   closeActiveTask,
   closeAndNewTask,
@@ -208,6 +209,15 @@ export function activate(): () => void {
         when: "agentSessionFocus && agentInputAvailable",
         keyWhen: "agentSessionFocus && !popupOpen",
         run: () => focusedSession()?.focusInput?.(),
+      },
+      {
+        id: "agents.cycleEffort",
+        title: "Cycle Agent Effort",
+        description: "Cycles the current model's supported effort levels without changing the message.",
+        category: "Agents",
+        when: "agentEffortAvailable",
+        keyWhen: "agentEffortAvailable && !popupOpen",
+        run: cycleFocusedEffort,
       },
       {
         id: "agents.newTask",

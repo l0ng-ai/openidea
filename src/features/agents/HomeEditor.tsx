@@ -1,6 +1,6 @@
 /** New Task page: one prompt box with the agent and its settings; where it works under it. */
 import clsx from "clsx";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -8,11 +8,13 @@ import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
 import { Chip, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useEffortControl } from "./effortControl";
+import { useEffortFocus } from "./effortFocus";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import {
@@ -94,12 +96,16 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [provider?.id, provider?.installed, launch, project?.root]);
   const defaults = useAgentSettings().defaults;
   const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const effort = useEffortControl(config, setDraftOption, provider?.id ?? "");
+  const homeRoot = useRef<HTMLDivElement>(null);
+  const shown = useEditorShown();
   const unavailableModel = config.some(
     (o) =>
       o.category === "model" &&
       draft.config[o.id] !== undefined &&
       !o.values.some((v) => v.value === draft.config[o.id]),
   );
+  useEffortFocus(homeRoot, shown && !starting && !unavailableModel, effort.cycle);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -111,6 +117,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
     !!provider?.installed &&
     !unavailableModel &&
     !starting &&
+    !effort.pending &&
     (!project?.workspace || repoState?.root === root);
 
   const start = () => {
@@ -123,7 +130,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   };
 
   return (
-    <div className={clsx(styles.home, docked && styles.docked)}>
+    <div ref={homeRoot} className={clsx(styles.home, docked && styles.docked)}>
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>
@@ -215,8 +222,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           projectRoot={root}
           commands={agentCommands}
           history={history}
-          config={config}
-          onConfig={setDraftOption}
+          config={effort.config}
+          onConfig={effort.onChange}
           onSubmit={start}
           disabled={!canStart}
           toolbar={
@@ -232,8 +239,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
               />
               <ConfigPickers
                 key={provider?.id}
-                config={config}
-                onChange={setDraftOption}
+                config={effort.config}
+                onChange={effort.onChange}
                 modelRefresh={
                   provider?.installed
                     ? {
@@ -250,7 +257,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
           actions={
             <SubmitButton
               label={starting ? "Starting…" : "Start"}
-              pending={starting}
+              pending={starting || effort.pending}
               disabled={!canStart}
               onClick={start}
             />
@@ -258,6 +265,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
         />
         {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
         <div className={styles.notes}>
+          {effort.announcement && (
+            <p className={styles.note} role="status" aria-live="polite" aria-atomic="true">
+              {tx("Effort: {level}").replace("{level}", effort.announcement)}
+            </p>
+          )}
           {unavailableModel && (
             <p className={styles.warning} role="alert">
               <T>Choose another model before starting.</T>

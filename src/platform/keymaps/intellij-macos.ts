@@ -373,6 +373,7 @@ export const intellijMacos: Record<string, string[]> = {
   "db.showToolWindow": [],
   "agents.newTask": ["Meta+Shift+I"],
   "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
