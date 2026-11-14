@@ -1057,7 +1057,7 @@ const EXT_ICONS = table({
   "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-rst": "rst",
-  "file-yaml": "yaml yml",
+  "file-yaml": "yaml yml gotmpl",
   "file-toml": "toml",
   "file-text": "txt text",
   "file-log": "log",
