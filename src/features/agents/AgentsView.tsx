@@ -167,6 +167,7 @@ export function AgentsView() {
   const loaded = useAgents((s) => s.loaded);
   const error = useAgents((s) => s.error);
   const tasks = useAgents((s) => s.tasks);
+  const ephemeral = useAgents((s) => s.ephemeral);
   const unread = useAgents((s) => s.unread);
   const providers = useAgents((s) => s.providers);
   const docked = useAgents((s) => s.docked);
@@ -214,17 +215,19 @@ export function AgentsView() {
     return found;
   }, [tasks, query]);
   const roots = useMemo<Node[]>(() => {
-    const all = [...tasks.values()].filter((t) => !matches || matches.has(t.id));
+    // Side conversations live beside the conversation they forked, never in this list.
+    const listed = ephemeral.size ? new Map([...tasks].filter(([id]) => !ephemeral.has(id))) : tasks;
+    const all = [...listed.values()].filter((t) => !matches || matches.has(t.id));
     const pinned = pinnedMembers(all, organize);
     return [
       ...(pinned.length ? [{ kind: "pinned", tasks: pinned } as Node] : []),
       ...organize.groups.flatMap((group): Node[] => {
-        const members = groupMembers(all, organize, group.id);
+        const members = groupMembers(listed.values(), organize, group.id);
         return matches && !members.length ? [] : [{ kind: "custom", group, tasks: members }];
       }),
       ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
     ];
-  }, [tasks, organize, matches]);
+  }, [tasks, organize, matches, ephemeral]);
   const expanded = useMemo(
     () => new Set(roots.map(nodeKey).filter((k) => matches || !collapsed.has(k))),
     [roots, collapsed, matches],

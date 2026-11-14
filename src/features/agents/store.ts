@@ -123,6 +123,8 @@ interface AgentsState {
   sessionLocation: SessionLocation;
   lastTask: string | null;
   homeOpen: boolean;
+  /** Side conversations by task id: kept out of the task list, discarded when their view closes. */
+  ephemeral: ReadonlySet<string>;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
@@ -191,6 +193,7 @@ export const useAgents = create<AgentsState>(() => ({
   sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
   lastTask: null,
   homeOpen: false,
+  ephemeral: new Set<string>(),
   scrollPositions: new Map(),
 }));
 
@@ -521,6 +524,7 @@ export function disconnect() {
     externalError: null,
     importOpen: false,
     importing: new Set(),
+    ephemeral: new Set<string>(),
     scrollPositions: new Map(),
   });
 }
@@ -814,11 +818,19 @@ function showDockedTask(task: string) {
 }
 
 function saveSessionLocation(location: SessionLocation) {
+  const previous = useAgents.getState().sessionLocation;
   useAgents.setState({ sessionLocation: location });
   save(SESSION_LOCATION_KEY, location);
   if (location === "toolWindow") {
     for (const { input } of editorService().openTabs?.() ?? []) {
       if (input.kind === SESSION_KIND || input.kind === HOME_KIND) void editorService().closeInput?.(input.key);
+    }
+  } else {
+    // Leaving the tool window closes the docked view: a side conversation has no view left.
+    const docked = useAgents.getState().docked;
+    if (docked && previous === "toolWindow" && useAgents.getState().ephemeral.has(docked)) {
+      useAgents.setState({ docked: null });
+      void discardEphemeral(docked);
     }
   }
 }
@@ -835,7 +847,7 @@ export function setSessionLocation(location: SessionLocation) {
     activeTask ??
     (s.lastTask && s.tasks.has(s.lastTask) ? s.lastTask : null) ??
     [...s.tasks.values()]
-      .filter((t) => t.status !== "archived")
+      .filter((t) => t.status !== "archived" && !s.ephemeral.has(t.id))
       .sort((a, b) => (b.updatedMs ?? b.createdMs ?? 0) - (a.updatedMs ?? a.createdMs ?? 0))[0]?.id;
   saveSessionLocation(location);
   useAgents.setState({ docked: null, homeOpen: false });
@@ -1096,6 +1108,161 @@ export async function forkTask(task: string, turns: number | null): Promise<void
   } catch (e) {
     if (generation === started) throw e;
   }
+}
+
+/**
+ * The side-conversation marks survive a page reload (which wipes the store) in
+ * `sessionStorage`: they live exactly as long as the window and its backend tasks —
+ * an app restart clears both. Keeps the conversations out of the task list after a
+ * reload and lets closing their tab still discard them.
+ */
+const SIDE_MARKS_KEY = "openidea.agents.sideMarks";
+
+function sideMarkIds(): string[] {
+  try {
+    return JSON.parse(globalThis.sessionStorage?.getItem(SIDE_MARKS_KEY) ?? "[]") as string[];
+  } catch {
+    return [];
+  }
+}
+
+function rememberSideMark(task: string) {
+  try {
+    const ids = sideMarkIds().filter((id) => id !== task);
+    ids.push(task);
+    globalThis.sessionStorage?.setItem(SIDE_MARKS_KEY, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+function forgetSideMark(task: string) {
+  try {
+    globalThis.sessionStorage?.setItem(SIDE_MARKS_KEY, JSON.stringify(sideMarkIds().filter((id) => id !== task)));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/**
+ * Restores the marks when the store refills after a page reload, and drops marks of
+ * tasks that are gone (the host's memory copy died with a restart, or was discarded).
+ * Call once per window; the returned function unsubscribes.
+ */
+export function watchEphemeralTasks(): () => void {
+  return useAgents.subscribe((s) => {
+    if (!s.loaded) return;
+    const saved = sideMarkIds();
+    const missing = saved.filter((id) => s.tasks.has(id) && !s.ephemeral.has(id));
+    const stale = [...s.ephemeral].filter((id) => !s.tasks.has(id) || !saved.includes(id));
+    if (!missing.length && !stale.length) return;
+    useAgents.setState((state) => {
+      const ephemeral = new Set(state.ephemeral);
+      missing.forEach((id) => ephemeral.add(id));
+      stale.forEach((id) => {
+        ephemeral.delete(id);
+        forgetSideMark(id);
+      });
+      return { ephemeral };
+    });
+  });
+}
+
+/**
+ * Opens a temporary side conversation of `task`, with `task`'s conversation as its
+ * context — nothing is copied or persisted; the host sends the context to the agent
+ * with its first message. Closing the pane discards it (`discardEphemeral`). Opening
+ * one from inside a side conversation keeps it in that same column.
+ */
+export async function startSideConversation(task: string, text: string): Promise<string> {
+  const s = useAgents.getState();
+  const source = s.tasks.get(task);
+  if (!source) throw new Error("the task is gone");
+  const created = await call(
+    commands.agentCreateEphemeral(
+      {
+        projectRoot: source.projectRoot,
+        // Only the side conversation's title comes from it; the context rides in memory.
+        prompt: { text, files: [], images: [] },
+        provider: source.provider,
+        config: source.config.filter((o) => o.current != null).map((o) => ({ id: o.id, value: o.current as string })),
+        isolation: "local" as const,
+        base: null,
+      },
+      task,
+    ),
+  );
+  // One frame: the watcher must never see the mark without the task (it would drop it
+  // again as stale before the task lands).
+  useAgents.setState((s) => ({
+    tasks: s.tasks.has(created.id) ? s.tasks : new Map(s.tasks).set(created.id, created),
+    ephemeral: new Set(s.ephemeral).add(created.id),
+  }));
+  rememberSideMark(created.id);
+  // Nested side conversations open in their parent's column; fresh ones split beside the task.
+  const nested = s.ephemeral.has(task);
+  const options: { focus: boolean; side?: boolean; pane?: string } = { focus: true };
+  if (nested) {
+    // The click that launched this didn't move the active pane (the toolbar keeps the
+    // selection), so anchor explicitly: a new tab in the parent side conversation's pane.
+    const pane = editorService().paneOf?.(sessionKey(task));
+    if (pane) options.pane = pane;
+    else options.side = true;
+  } else {
+    options.side = true;
+  }
+  await editorService().openInput(
+    { kind: SESSION_KIND, key: sessionKey(created.id), data: { task: created.id, title: created.title } },
+    options,
+  );
+  quoteInComposer(created.id, text);
+  return created.id;
+}
+
+/** Stops a side conversation and deletes it, its context included. */
+export async function discardEphemeral(task: string): Promise<void> {
+  const s = useAgents.getState();
+  if (!s.ephemeral.has(task)) return;
+  forgetSideMark(task);
+  useAgents.setState((state) => {
+    const ephemeral = new Set(state.ephemeral);
+    ephemeral.delete(task);
+    return { ephemeral };
+  });
+  try {
+    if (isBusy(s.tasks.get(task)?.status ?? "ready")) {
+      await cancelTask(task);
+      await settled(task);
+    }
+    await deleteTask(task, s.tasks.get(task)?.isolation === "worktree");
+  } catch (e) {
+    console.warn("Couldn't discard the side conversation", e);
+  }
+  useAgents.setState((state) => {
+    const without = <V>(map: Map<string, V>) => {
+      const next = new Map(map);
+      next.delete(task);
+      return next;
+    };
+    const entries = new Map(state.entries);
+    for (const key of [...entries.keys()]) if (key === task || key.startsWith(`${task}/`)) entries.delete(key);
+    const entryLoads = new Map(state.entryLoads);
+    for (const key of [...entryLoads.keys()]) if (key === task || key.startsWith(`${task}/`)) entryLoads.delete(key);
+    return {
+      tasks: without(state.tasks),
+      entries,
+      entryLoads,
+      changes: without(state.changes),
+      groupedChanges: without(state.groupedChanges),
+      composers: without(state.composers),
+      scrollPositions: without(state.scrollPositions),
+      unread: state.unread.has(task) ? new Set([...state.unread].filter((id) => id !== task)) : state.unread,
+      docked: state.docked === task ? null : state.docked,
+      lastTask: state.lastTask === task ? null : state.lastTask,
+      lastComposer: state.lastComposer === task ? HOME : state.lastComposer,
+    };
+  });
+  void editorService().closeInput?.(sessionKey(task));
 }
 
 /** Puts a message back in the task's composer, above anything typed meanwhile. */
