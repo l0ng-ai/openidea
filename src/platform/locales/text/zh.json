@@ -1762,6 +1762,7 @@
   "No HTTP request at the caret": "光标处没有 HTTP 请求",
   "No Spring controller at the caret": "光标处没有 Spring 控制器",
   "No Spring request mapping at the caret": "光标处没有 Spring 请求映射",
+  "No type at the caret": "光标处没有类型",
   "No Maven projects": "没有 Maven 项目",
   "No profile for '{name}'": "没有 '{name}' 的分析数据",
   "No Python found": "未找到 Python",
