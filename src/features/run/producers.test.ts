@@ -144,6 +144,18 @@ describe("single-file producers (scratches)", () => {
     expect(run(scratch("x.ts"), { ...ALL, deno: true })).toMatchObject({ command: "/bin/node" });
   });
 
+  it("a preferred runtime runs scratches too, and a missing one is reported, not replaced", () => {
+    expect(run(scratch("x.ts"), { ...ALL, bun: true, preferred: true })).toMatchObject({
+      command: "/bin/bun",
+      args: ["run", "x.ts"],
+    });
+    const noBun = env({ node: "24.11.0" }, { bun: true, preferred: true });
+    expect(produceContext(scratch("x.ts"), noBun)!.missing!.body).toContain("Bun was not found");
+    // From project markers only, a missing runtime still falls back to Node.js.
+    const input: ContextInput = { path: `${ROOT}/scripts/x.js`, root: ROOT, configs: [] };
+    expect(run(input, env({ node: "24.11.0" }, { deno: true }))).toMatchObject({ command: "/bin/node" });
+  });
+
   it("Python: the interpreter from settings, then the project's, then python3", () => {
     expect(run(scratch("hi.py"), { ...ALL, python: "/work/app/.venv/bin/python" })).toMatchObject({
       command: "/work/app/.venv/bin/python",

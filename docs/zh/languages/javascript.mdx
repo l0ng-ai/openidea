@@ -49,10 +49,11 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 如果项目自己的 `node_modules/.bin` 里有 Astro 或 Angular 服务器，会优先使用项目里的。
 
-### Node.js
+### JavaScript 运行时
 
-**设置 › 语言和框架 › Node.js** 包含：
+**设置 › 语言和框架 › JavaScript 运行时** 包含：
 
+- **首选运行时**：从行号栏和编辑器的 **运行** 操作运行 JavaScript、TypeScript 文件时用 Node.js、Bun 还是 Deno。**自动** 会从文件所在目录向上找到项目根目录，最近的 `deno.json` / `deno.jsonc` 用 Deno，`bun.lock` / `bun.lockb` 用 Bun，都没有时用 Node.js。
 - **Node 解释器**：运行 npm 脚本、Node 文件以及基于 Node 的语言服务器所用的 `node`。**默认** 表示使用 `PATH` 上的 `node`。列表会列出 `PATH` 上找到的所有 Node.js，以及 nvm、Volta、fnm、mise、asdf 安装的版本。
 - **在目标中运行**：在本机，或在 **设置 › 构建、执行、部署 › 运行目标** 中配置的某个运行目标里执行 Node 和包管理器命令。
 - **软件包管理器**：检测出的脚本配置使用 `npm`、`pnpm`、`yarn` 还是 `bun`。**自动** 先读 `package.json` 的 `packageManager`，再看锁文件（`pnpm-lock.yaml`、`yarn.lock`、`bun.lock` / `bun.lockb`、`package-lock.json`），都没有时用 npm。
@@ -98,7 +99,7 @@ Jest 和 Vitest 的输出会解析成测试树，支持 **重新运行失败的�
 - **React**：JSX 和 TSX 有各自的高亮模式，并获得完整的 TypeScript 服务器支持；除此之外没有 React 专属功能。
 - **Vue**：`.vue` 文件按块高亮，由 Vue Language Server 以 hybrid 模式提供支持。没有 `tsconfig.json` 的 Vue CLI 项目会读取 webpack 的 `resolve.alias`（如 `@/`），让 import 能正确解析。Prettier 可格式化 `.vue` 文件，模板中可用 Emmet。
 - **Svelte**：使用 Svelte Language Server；高亮沿用 HTML 模式（script 按 TypeScript、style 按 CSS），标记部分可用 Emmet。
-- **Astro**：使用 Astro Language Server，有专门的高亮模式。它需要 Node.js，找不到时请在 **设置 › 语言和框架 › Node.js** 中选择。
+- **Astro**：使用 Astro Language Server，有专门的高亮模式。它需要 Node.js，找不到时请在 **设置 › 语言和框架 › JavaScript 运行时** 中选择。
 - **Angular**：在含 `angular.json` 或已安装 `@angular/core` 的项目中，HTML 模板和组件里内联的 `template:` 字符串使用 Angular 高亮，Angular Language Server 提供模板补全、跳转和重命名，并按项目的 Angular 版本配置。
 
 ## 已知限制

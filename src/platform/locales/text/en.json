@@ -246,7 +246,7 @@
   "Loading the conversation timed out. Try again.": "Loading the conversation timed out. Try again.",
   "Couldn't load the conversation: {0}": "Couldn't load the conversation: {0}",
   "Astro Language Server": "Astro Language Server",
-  "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js.": "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › Node.js.",
+  "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › JavaScript Runtime.": "Astro Language Server needs Node.js. Install it or select its executable in Settings › Languages & Frameworks › JavaScript Runtime.",
   "Astro Language Server needs a TypeScript language-service library. Install typescript@6 in the project or select a TypeScript lib directory in Settings.": "Astro Language Server needs a TypeScript language-service library. Install typescript@6 in the project or select a TypeScript lib directory in Settings.",
   "Cannot show current revision": "Cannot show current revision",
   "Compare": "Compare",
@@ -1611,5 +1611,11 @@
   "This build of {display} no longer starts. Choose a newer build in Language Servers.": "This build of {display} no longer starts. Choose a newer build in Language Servers.",
   "This build of {display} no longer starts. Update it to the latest release?": "This build of {display} no longer starts. Update it to the latest release?",
   "This build of {display} no longer starts. Install the latest release for the IDE? It is used instead of {path}.": "This build of {display} no longer starts. Install the latest release for the IDE? It is used instead of {path}.",
-  "Install Latest": "Install Latest"
+  "Install Latest": "Install Latest",
+  "JavaScript Runtime": "JavaScript Runtime",
+  "Preferred runtime": "Preferred runtime",
+  "Runs JavaScript and TypeScript files from the gutter and the editor's Run action.": "Runs JavaScript and TypeScript files from the gutter and the editor's Run action.",
+  "deno.json → Deno, bun.lock → Bun, else Node.js": "deno.json → Deno, bun.lock → Bun, else Node.js",
+  "Node.js": "Node.js",
+  "Deno": "Deno"
 }

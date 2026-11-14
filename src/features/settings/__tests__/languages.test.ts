@@ -333,8 +333,8 @@ describe("language pages", () => {
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
+      "JavaScript Runtime",
       "Markdown",
-      "Node.js",
       "Python",
       "PHP",
       "Prettier",

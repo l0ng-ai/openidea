@@ -5931,7 +5931,6 @@
   "Pin": "고정",
   "Unpin": "고정 해제",
   "Project default": "프로젝트 기본값",
-  "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.": "이 스크립트를 실행할 node 실행 파일입니다. 비워 두면 설정 › 언어 및 프레임워크 › Node.js의 값을 사용합니다.",
   "Loading repositories…": "저장소 로드 중…",
   "GitHub repositories are listed with the": "GitHub 저장소 목록을 가져오려면",
   "Search repositories": "저장소 검색",

@@ -5863,7 +5863,6 @@
   "Pin": "Fijar",
   "Unpin": "Desfijar",
   "Project default": "Predeterminado del proyecto",
-  "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.": "El ejecutable de node en el que se ejecuta este script; vacío usa Configuración › Lenguajes y frameworks › Node.js.",
   "Loading repositories…": "Cargando repositorios…",
   "GitHub repositories are listed with the": "Los repositorios de GitHub se listan con el",
   "Search repositories": "Buscar repositorios",
