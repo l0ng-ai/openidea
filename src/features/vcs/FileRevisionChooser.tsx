@@ -1,6 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import type { Commit } from "@/bindings";
 import { call, commands, nextRequestId } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
 import { Dialog, List, SearchField, Spinner, T, listNavigate } from "@/ui";
 import { openDialog } from "./dialogs";
 import { annotateAtRevision } from "./annotatePrevious";
@@ -39,13 +40,16 @@ export function compareWithFileRevision(path: string | null | undefined) {
 
 /** Annotate the file as of a revision the user picks: who last changed each line up to there. */
 export function annotateFileRevision(path: string | null | undefined) {
-  if (!path || !hasFileHistory(path)) return;
+  // No `hasFileHistory` gate: the chooser lists the file's revisions itself, and a menu item
+  // that silently does nothing is worse than one that opens an empty list.
+  if (!path) return;
   const repo = repoOf(path);
   openDialog((close) => (
     <FileRevisionChooser
       path={path}
       repo={repo}
       onClose={close}
+      title={tx("Annotate at Revision…")}
       onChoose={(commit) => {
         close();
         if (repoOf(path) !== repo) return;
@@ -60,11 +64,14 @@ function FileRevisionChooser({
   repo,
   onClose,
   onChoose,
+  title,
 }: {
   path: string;
   repo: string | null;
   onClose: () => void;
   onChoose: (commit: Commit) => void;
+  /** "Compare with Revision…" unless the chooser asks for another sentence. */
+  title?: string;
 }) {
   const [commits, setCommits] = useState<Commit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +122,7 @@ function FileRevisionChooser({
     }
   };
   return (
-    <Dialog open title="Compare with Revision…" onClose={onClose} width={720} position="top">
+    <Dialog open title={title ?? "Compare with Revision…"} onClose={onClose} width={720} position="top">
       <div className={styles.search}>
         <SearchField
           data-autofocus
