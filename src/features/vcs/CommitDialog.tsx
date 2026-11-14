@@ -69,14 +69,18 @@ function CommitDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.body}>
-        <SplitGroup orientation="vertical" className={styles.split}>
-          <SplitPanel defaultSize="58%" minSize="25%">
-            <SplitGroup orientation="horizontal" className={styles.split}>
-              <SplitPanel defaultSize="64%" minSize="35%">
+        <SplitGroup orientation="vertical" className={styles.split} storageKey="openidea.vcs.commitDialogSplit">
+          <SplitPanel id="top" defaultSize="58%" minSize="25%">
+            <SplitGroup
+              orientation="horizontal"
+              className={styles.split}
+              storageKey="openidea.vcs.commitDialogOptionsSplit"
+            >
+              <SplitPanel id="changes" defaultSize="64%" minSize="35%">
                 <ChangesTree mode="dialog" />
               </SplitPanel>
               <SplitHandle />
-              <SplitPanel defaultSize="36%" minSize="200px">
+              <SplitPanel id="options" defaultSize="36%" minSize="200px">
                 <div className={styles.options} role="group" aria-label={tx("Commit Options")}>
                   <CommitOptionsBody />
                 </div>
@@ -84,7 +88,7 @@ function CommitDialog({ onClose }: { onClose: () => void }) {
             </SplitGroup>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel defaultSize="42%" minSize="120px">
+          <SplitPanel id="message" defaultSize="42%" minSize="120px">
             <div className={viewStyles.commit}>
               <CommitMessageField included={included} runner={runner} autoFocus />
             </div>
