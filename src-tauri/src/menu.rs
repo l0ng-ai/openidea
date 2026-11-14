@@ -1621,7 +1621,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
 
     const ALL_OS: [Os; 3] = [Os::Mac, Os::Windows, Os::Linux];
 
@@ -1998,6 +1998,36 @@ mod tests {
                 ["file.newProject", "workspace.create", "file.new", "file.newScratchFile"],
                 "{os:?}"
             );
+        }
+    }
+
+    #[test]
+    fn every_menu_item_has_a_catalog_label() {
+        fn walk(entries: &[Entry], out: &mut BTreeSet<&'static str>) {
+            for e in entries {
+                match e {
+                    Entry::Submenu { id, children, .. } => {
+                        out.insert(id);
+                        walk(children, out);
+                    }
+                    Entry::Action { id, .. } => {
+                        out.insert(id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut ids = BTreeSet::new();
+        for os in ALL_OS {
+            walk(&spec(os), &mut ids);
+        }
+        for (locale, catalog) in [
+            ("en", include_str!("../../src/platform/locales/en.json")),
+            ("zh", include_str!("../../src/platform/locales/zh.json")),
+        ] {
+            let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(catalog).unwrap();
+            let missing: Vec<_> = ids.iter().filter(|id| !catalog.contains_key(&format!("menu.{id}"))).collect();
+            assert!(missing.is_empty(), "{locale}.json lacks menu labels for {missing:?}");
         }
     }
 
