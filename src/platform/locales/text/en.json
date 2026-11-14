@@ -1718,7 +1718,7 @@
   "Stop recording the page and open the profile": "Stop recording the page and open the profile",
   "Cannot record a CPU profile": "Cannot record a CPU profile",
   "No CPU profile to show": "No CPU profile to show",
-  "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root }).": "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root }).",
+  "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).": "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).",
   "Show Only Matches": "Show Only Matches",
   "Docker Compose service {service}": "Docker Compose service {service}",
   "Docker image {image}": "Docker image {image}",

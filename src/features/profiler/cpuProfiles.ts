@@ -9,11 +9,18 @@ interface CpuProfiles {
   dir: string;
   /** The project root, which tells the project's frames from library ones. */
   root: string;
+  /** What recorded the profile, shown in the snapshot's header (default: `node --cpu-prof`). */
+  profiler?: string;
 }
 
 function isCpuProfiles(arg: unknown): arg is CpuProfiles {
   const a = arg as Partial<CpuProfiles> | null | undefined;
-  return typeof a?.name === "string" && typeof a.dir === "string" && typeof a.root === "string";
+  return (
+    typeof a?.name === "string" &&
+    typeof a.dir === "string" &&
+    typeof a.root === "string" &&
+    (a.profiler === undefined || typeof a.profiler === "string")
+  );
 }
 
 /** Opens the recording as a snapshot in the Profiler tool window (`profiler.showCpuProfiles`). */
@@ -21,7 +28,7 @@ export async function showCpuProfiles(arg: unknown): Promise<void> {
   if (!isCpuProfiles(arg)) return;
   try {
     const profile = await call(commands.profilerCollect({ kind: "cpuProfiles", dir: arg.dir, root: arg.root }));
-    addSnapshot(arg.name, profile);
+    addSnapshot(arg.name, arg.profiler ? { ...profile, profiler: arg.profiler } : profile);
   } catch (e) {
     notifications().notify({
       group: "run",

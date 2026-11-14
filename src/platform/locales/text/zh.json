@@ -8104,7 +8104,7 @@
   "Stop recording the page and open the profile": "停止记录页面并打开性能分析结果",
   "Cannot record a CPU profile": "无法记录 CPU 性能分析",
   "No CPU profile to show": "没有可显示的 CPU 性能分析",
-  "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root }).": "将目录中的 V8 .cpuprofile 文件作为快照打开（参数：{ name, dir, root }）。",
+  "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).": "将目录中的 V8 .cpuprofile 文件作为快照打开（参数：{ name, dir, root, profiler? }）。",
   "Show Only Matches": "仅显示匹配项",
   "Docker Compose service {service}": "Docker Compose 服务 {service}",
   "Docker image {image}": "Docker 镜像 {image}",
