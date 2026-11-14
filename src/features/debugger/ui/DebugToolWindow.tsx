@@ -41,12 +41,15 @@ import {
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
 import { stopNote } from "../js/eventBreakpoints";
+import { NetworkView } from "../js/NetworkView";
+import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { useToolWindowShown } from "@/workbench/contributions";
 import styles from "./DebugToolWindow.module.css";
 import { tx, useTx } from "@/platform/i18n";
 
@@ -101,7 +104,10 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console" | "memory";
+type Tab = "variables" | "console" | "memory" | "network";
+
+/** The view the user last picked; the tool window opens on it again (Console until one is picked). */
+let chosenTab: Tab = "console";
 
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
@@ -149,7 +155,7 @@ export function DebugToolWindow() {
     session: number | undefined;
     status: DebugSession["status"] | undefined;
     tab: Tab;
-  }>({ session: undefined, status: undefined, tab: "variables" });
+  }>({ session: undefined, status: undefined, tab: chosenTab });
   if (active && (view.session !== active.startedAt || view.status !== active.status))
     setView({
       session: active.startedAt,
@@ -164,8 +170,10 @@ export function DebugToolWindow() {
             : view.tab,
     });
   const hasMemory = !!active && sessionSupports("jvmMemory", active);
-  // The selected session may be one without the Memory tab.
-  const tab: Tab = view.tab === "memory" && !hasMemory ? "variables" : view.tab;
+  const hasNetwork = !!active && sessionSupports("jsPage", active);
+  // The selected session may be one without the Memory or the Network tab.
+  const tab: Tab =
+    (view.tab === "memory" && !hasMemory) || (view.tab === "network" && !hasNetwork) ? "variables" : view.tab;
 
   if (!active) {
     return (
@@ -222,6 +230,7 @@ export function DebugToolWindow() {
               ["variables", "Threads & Variables"],
               ["console", "Console"],
               ...(hasMemory ? [["memory", "Memory"] as const] : []),
+              ...(hasNetwork ? [["network", "Network"] as const] : []),
             ] as const
           ).map(([id, label]) => (
             <button
@@ -232,7 +241,10 @@ export function DebugToolWindow() {
               aria-selected={tab === id}
               aria-controls={`debug-panel-${id}`}
               className={clsx(styles.tab, tab === id && styles.tabActive)}
-              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
+              onClick={() => {
+                chosenTab = id;
+                setView({ session: active.startedAt, status: active.status, tab: id });
+              }}
             >
               {tx(label)}
             </button>
@@ -244,6 +256,8 @@ export function DebugToolWindow() {
           <ThreadsAndVariables session={active} />
         ) : tab === "memory" ? (
           <MemoryView key={active.id} session={active} />
+        ) : tab === "network" ? (
+          <NetworkView key={active.id} session={active.id} />
         ) : (
           <DebugConsole key={active.id} session={active} />
         )}
@@ -430,6 +444,9 @@ function VariablesPane({ session }: { session: DebugSession }) {
     rows: [],
   });
   const frame = session.status === "paused" ? session.selectedFrame : null;
+  const live = liveWatchesApply(session);
+  // A hidden tool window stays mounted: its watches must not go on running in the page.
+  const liveWatches = useLiveWatches(session, watches, useToolWindowShown());
   // Same thread and stack depth across stops: compare like with like.
   const changeScope = `${session.id}:${session.selectedThread}:${session.frames.findIndex((f) => f.id === frame)}`;
 
@@ -491,7 +508,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
         variable: lastEval.result,
         error: lastEval.error,
       });
-    const watchRows = watchData.frame === frame ? watchData.rows : [];
+    // While the program runs, a debugger that evaluates without suspending gives the values.
+    const watchRows = frame == null ? liveWatches : watchData.frame === frame ? watchData.rows : [];
     for (const w of watches) {
       const r = watchRows.find((x) => x.expression === w);
       out.push({
@@ -499,7 +517,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         kind: "watch",
         name: w,
         variable: r?.result ?? null,
-        error: frame == null ? "Not suspended" : (r?.error ?? null),
+        error: frame == null && !live ? "Not suspended" : (r?.error ?? null),
       });
     }
     if (frame != null && scopeData.frame === frame) {
@@ -527,7 +545,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
       }
     }
     return out;
-  }, [lastEval, watches, watchData, scopeData, frame]);
+  }, [lastEval, watches, watchData, scopeData, frame, live, liveWatches]);
 
   const run = async () => {
     const e = expression.trim();

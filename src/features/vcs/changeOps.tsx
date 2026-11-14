@@ -305,7 +305,7 @@ export async function addToVcs(paths: readonly string[]) {
 }
 
 /** Stash Changes dialog: message, Keep index (staged changes stay), include untracked files. */
-export function stashChanges(repo = currentRepo()): Promise<void> {
+export function stashChanges(paths: readonly string[] = [], repo = currentRepo()): Promise<void> {
   return new Promise((resolve) => {
     const close = openDialog(() => (
       <StashDialog
@@ -315,7 +315,16 @@ export function stashChanges(repo = currentRepo()): Promise<void> {
             await saveAll();
             await runOp(
               tx("Stash changes"),
-              () => call(commands.vcsStashPush(repo, r.message || null, r.includeUntracked, r.keepIndex)),
+              () =>
+                call(
+                  commands.vcsStashPush(
+                    repo,
+                    r.message || null,
+                    r.includeUntracked,
+                    r.keepIndex,
+                    paths.length ? [...paths] : null,
+                  ),
+                ),
               { success: tx("Changes stashed") },
             );
             void loadStashes().catch(() => undefined);

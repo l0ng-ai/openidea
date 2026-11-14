@@ -884,6 +884,12 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
     }
+    /// Adds `commit` to the list `blame.ignoreRevsFile` names, so annotate skips it; with none
+    /// configured, to `.git-blame-ignore-revs` at the worktree root, which the local config then names.
+    pub fn ignore_blame_revision(&self, commit: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::ignore_blame_revision(self, commit)
+    }
     /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
     /// current text: `current_text`, or the file on disk), mapped to HEAD's lines first.
     pub fn block_history(
@@ -1262,10 +1268,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::rebase(self, onto)
     }
+    /// `paths` (absolute) stashes only those files; empty stashes the whole working tree.
     /// `keep_index`: changes already staged stay in the index (and the working tree).
-    pub fn stash_push(&self, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {
+    pub fn stash_push(
+        &self,
+        message: Option<&str>,
+        include_untracked: bool,
+        keep_index: bool,
+        paths: &[PathBuf],
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::stash_push(self, message, include_untracked, keep_index)
+        write::stash_push(self, message, include_untracked, keep_index, paths)
     }
     /// `reinstate_index`: also restore what was staged when the stash was made.
     pub fn stash_apply(&self, index: u32, pop: bool, reinstate_index: bool) -> IdeResult<()> {

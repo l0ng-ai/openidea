@@ -21,6 +21,7 @@ import { registerDebugActions } from "./actions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
+import { watchNetworkSessions } from "./js/networkSessions";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
@@ -148,6 +149,7 @@ export function activate(): () => void {
       }
     }),
     watchPageSessions(),
+    watchNetworkSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

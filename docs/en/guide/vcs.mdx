@@ -196,7 +196,7 @@ Limits: interactive rebase doesn't support ranges with merge commits, and **Undo
 
 **Stash** uses `git stash`:
 
-- **Stash Changes…**: a message, **Keep index** and **Include untracked files**. Stashes always include all changes; there is no per-file stash.
+- **Stash Changes…**: a message, **Keep index** and **Include untracked files**; it stashes the whole working tree. **Stash Selected Files…** in the changes tree's context menu stashes only the selected files.
 - **Unstash Changes…**: apply or pop a stash, reinstate the index, or create a branch from it.
 - The **Stash** tab of the Commit tool window lists stashes with apply, pop and drop.
 
@@ -218,6 +218,8 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 - **Show History** opens the file's history in a tab of the Git tool window.
 - **Show History for Selection** shows the commits that changed the selected lines.
 - **Show Current Revision** reveals the commit of the caret line in the log.
+
+Annotate skips the commits listed in the file `blame.ignoreRevsFile` names — git's convention is `.git-blame-ignore-revs` at the repository root — so a reformatting or mass-rename commit does not claim every line. **Ignore This Commit** in an annotated line's menu adds the current line's commit to that file and refreshes the annotations.
 
 ### Local history
 
@@ -248,5 +250,5 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 
 - Mercurial, Subversion, Perforce and other systems.
 - Submodule commands and editable directory mappings.
-- Per-line partial commits (block level only) and per-file stashes.
+- Per-line partial commits (block level only).
 - Git LFS beyond the large-file warning.

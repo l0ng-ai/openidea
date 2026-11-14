@@ -650,6 +650,25 @@ export function registerVcsActions(): () => void {
       run: () => void stashChanges(),
     },
     {
+      id: "vcs.stashSelected",
+      title: "Stash Selected Files…",
+      category: "Git",
+      icon: "stash",
+      when: VCS,
+      run: ({ arg }) => {
+        const paths = changedPaths(arg);
+        if (!paths.length) {
+          notifications().notify({
+            group: "vcs",
+            level: "info",
+            title: tx("Select the files to stash in the Commit view first"),
+          });
+          return;
+        }
+        void stashChanges(paths);
+      },
+    },
+    {
       id: "vcs.unstash",
       title: "Unstash Changes…",
       category: "Git",

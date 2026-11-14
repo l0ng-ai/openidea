@@ -244,6 +244,17 @@ pub async fn debug_restart_frame(state: State<'_, AppState>, session: DebugSessi
     ide_host::ops::debug::debug_restart_frame(&state.host, "", session, frame_id).await
 }
 
+/// The body of a response a debugged page received.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_response_body(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+    request_id: String,
+) -> IdeResult<ide_dap::JsResponseBody> {
+    ide_host::ops::debug::debug_js_response_body(&state.host, "", session, request_id).await
+}
+
 /// Breakpoints of a debugged page on DOM events and on requests (js-debug).
 #[tauri::command]
 #[specta::specta]

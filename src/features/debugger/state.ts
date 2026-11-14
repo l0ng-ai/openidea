@@ -40,6 +40,8 @@ import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { flashTaskbarForBreakpoint, stopTaskbarFlash } from "./taskbarFlash";
 import { useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
+import { queueNetworkEvent } from "./js/network";
+import { setRefused } from "./js/refusals";
 import {
   browserLaunch,
   installedDebugBrowser,
@@ -1312,6 +1314,12 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       break;
     case "jvmBackend":
       patch(id, { jvmBackend: event.state });
+      break;
+    case "jsNetwork":
+      queueNetworkEvent(id, event.event);
+      break;
+    case "jsNetworkUnavailable":
+      setRefused(id, "network", "");
       break;
     case "invalidated":
       if (s.status !== "paused") break;

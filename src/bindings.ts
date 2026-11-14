@@ -657,6 +657,7 @@ export const commands = {
 	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
 	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
+	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	vcsUnstage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_unstage", { paths })),
 	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
 	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
@@ -690,7 +691,7 @@ export const commands = {
 	vcsRenameBranch: (repo: string | null, from: string, to: string, unsetUpstream: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to, unsetUpstream })),
 	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
 	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
-	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex })),
+	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex, paths })),
 	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
 	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
 	/**  Network operation; progress lines stream through `on_output`. Cancellable. */
@@ -1215,6 +1216,8 @@ export const commands = {
 	debugCapabilities: (session: DebugSessionId) => typedError<DebugCapabilities, IdeError>(__TAURI_INVOKE("debug_capabilities", { session })),
 	/**  Breakpoints of a debugged page on DOM events and on requests (js-debug). */
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
+	/**  The body of a response a debugged page received. */
+	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -3964,6 +3967,8 @@ export type DebugCapabilities = {
 	 *  ([`DebugManager::js_set_custom_breakpoints`]).
 	 */
 	jsPage: boolean,
+	/**  The adapter evaluates expressions while the program runs, without a stack frame. */
+	liveEvaluate: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -3999,7 +4004,11 @@ export type DebugEvent =
  *  The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
  *  `variables`; empty means all) is stale and has to be fetched again.
  */
-{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState };
+{ kind: "invalidated"; areas: string[] } | { kind: "jvmBackend"; state: JvmBackendState } | 
+/**  A step in the life of one request of a debugged page. */
+{ kind: "jsNetwork"; event: JsNetworkEvent } | 
+/**  The adapter does not report the requests of this page: there will be no `JsNetwork`. */
+{ kind: "jsNetworkUnavailable" };
 
 /**  A debug adapter session. */
 export type DebugSessionId = number;
@@ -4015,6 +4024,8 @@ export type DebuggerSettings = {
 	inlineValues?: boolean,
 	/**  Data Views: list variables by name instead of the adapter's order. */
 	sortValues?: boolean,
+	/**  Data Views: evaluate watches while the program runs, where the debugger can (JavaScript). */
+	liveWatches?: boolean,
 	valueTooltip?: boolean,
 	/**  While suspended, selecting an expression shows its value. */
 	valueTooltipOnSelection?: boolean,
@@ -6416,6 +6427,49 @@ export type JetBrainsSettings = {
 	entries: string[],
 	/**  Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads. */
 	files: { [key in string]: string },
+};
+
+/**  The script frame that made a request, where the browser ran it (0-based line and column). */
+export type JsInitiator = {
+	function: string,
+	url: string,
+	line: number,
+	column: number,
+};
+
+/**
+ *  What a debugged page's browser reports about a request, reduced to what the Network view
+ *  shows. Events of one request share `request_id`; each kind fills its own fields.
+ */
+export type JsNetworkEvent = {
+	kind: JsNetworkKind,
+	requestId: string,
+	/**  The browser's monotonic clock, comparable between the events of a page. */
+	timestampMs: number,
+	/**  Request and response. */
+	url: string | null,
+	method: string | null,
+	/**  `Fetch`, `XHR`, `Script`, `Document`, … */
+	resourceType: string | null,
+	status: number | null,
+	mimeType: string | null,
+	/**  The request's headers, or the response's. */
+	headers: { [key in string]: string },
+	/**  Bytes received over the network, once finished. */
+	encodedLength: number | null,
+	errorText: string | null,
+	initiator: JsInitiator | null,
+};
+
+/**  Which step of a request a [`JsNetworkEvent`] reports. */
+export type JsNetworkKind = "request" | "response" | "finished" | "failed";
+
+/**  The body of a response, as text or as the browser's base64 for binary content. */
+export type JsResponseBody = {
+	body: string,
+	base64Encoded: boolean,
+	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
+	truncated: boolean,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
@@ -10297,6 +10351,12 @@ export type TypeScriptSettings = {
 	 *  or a path to a TypeScript `lib` directory.
 	 */
 	version?: string,
+	/**
+	 *  tsserver heap limit in MB. `0` = automatic: 8192 when vtsls hosts the Vue
+	 *  plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
+	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
+	 */
+	tsserverMaxMemory?: number,
 };
 
 /**  A misspelt word. */

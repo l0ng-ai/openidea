@@ -13,7 +13,11 @@ describe("JavaScript events and requests section", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "The debugger of the running page does not take these breakpoints: unknown request",
     );
-    act(() => setRefused(4, "eventBreakpoints", null));
+    // Another tool's refusal is not about breakpoints.
+    act(() => {
+      setRefused(4, "eventBreakpoints", null);
+      setRefused(4, "network", "");
+    });
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });

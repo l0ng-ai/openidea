@@ -307,6 +307,12 @@ export const EXECUTION_PAGES: PageSpec[] = [
           { kind: "toggle", key: "debugger.sortValues", label: "Sort values alphabetically" },
           {
             kind: "toggle",
+            key: "debugger.liveWatches",
+            label: "Evaluate watches while the program runs",
+            hint: "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
+          },
+          {
+            kind: "toggle",
             key: "debugger.valueTooltip",
             label: "Show value tooltip on mouse hover",
             hint: "Hovering a variable while suspended evaluates it in the selected frame.",

@@ -102,7 +102,7 @@ async fn stash_and_unstash_reload_clean_open_documents_before_returning() {
     let f = Fixture::new().await;
     let edited = format!("{ORIGINAL}\n");
     f.saved_edit(&edited);
-    vcs::vcs_stash_push(&f.host, "main", None, None, false, false).await.unwrap();
+    vcs::vcs_stash_push(&f.host, "main", None, None, false, false, None).await.unwrap();
     f.assert_clean(ORIGINAL);
     vcs::vcs_stash_apply(&f.host, "main", None, 0, true, false, None).await.unwrap();
     f.assert_clean(&edited);

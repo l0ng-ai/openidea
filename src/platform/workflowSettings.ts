@@ -101,6 +101,7 @@ export interface DebuggerSettingsValid {
   runToCursorInlay: boolean;
   inlineValues: boolean;
   sortValues: boolean;
+  liveWatches: boolean;
   valueTooltip: boolean;
   valueTooltipOnSelection: boolean;
   valueTooltipDelay: number;
@@ -293,6 +294,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     runToCursorInlay: true,
     inlineValues: true,
     sortValues: false,
+    liveWatches: false,
     valueTooltip: true,
     valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
@@ -451,6 +453,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     runToCursorInlay: bool(v.runToCursorInlay, d.runToCursorInlay),
     inlineValues: bool(v.inlineValues, d.inlineValues),
     sortValues: bool(v.sortValues, d.sortValues),
+    liveWatches: bool(v.liveWatches, d.liveWatches),
     valueTooltip: bool(v.valueTooltip, d.valueTooltip),
     valueTooltipOnSelection: bool(v.valueTooltipOnSelection, d.valueTooltipOnSelection),
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
