@@ -56,7 +56,7 @@ describe("problems the UI finds", () => {
       }),
     });
     const from = text.indexOf("--dryrun") + 2;
-    expect(await quickFixesAt(view, from, from + 6, { localOnly: true })).toEqual([]);
+    expect(await quickFixesAt(view, from, from + 6, undefined, { localOnly: true })).toEqual([]);
     expect(lspCodeActions).not.toHaveBeenCalled();
     expect((await quickFixesAt(view, from, from + 6)).map((fix) => fix.title)).toEqual([suppress.title]);
     view.destroy();

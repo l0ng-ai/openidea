@@ -181,13 +181,18 @@ export async function pullRequestTemplates(): Promise<GHRepositoryPullRequestTem
  * A page of the commit's status check rollup (`getRepositoryCommitStatusContexts`).
  * @public
  */
-export async function commitStatusContextsPage(oid: string, cursor: string | null, pageSize = 100) {
+export async function commitStatusContextsPage(
+  oid: string,
+  cursor: string | null,
+  pageSize = 100,
+  target?: GHRepositoryCoordinates & { root: string },
+) {
   const data = await graphql<{
     repository: {
       object: { statusCheckRollup: { contexts: GHConnection<GHCommitStatusRollupContext> } | null } | null;
-    };
-  }>(Q.getRepositoryCommitStatusContexts, { ...repoVariables(), oid, pageSize, cursor });
-  return data.repository.object?.statusCheckRollup?.contexts ?? null;
+    } | null;
+  }>(Q.getRepositoryCommitStatusContexts, { ...repoVariables(target), oid, pageSize, cursor }, target?.root);
+  return data.repository?.object?.statusCheckRollup?.contexts ?? null;
 }
 
 /**

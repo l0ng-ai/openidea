@@ -1,0 +1,16 @@
+package openidea:plugin@1.7.0;
+
+/// Discovery of the IDE's built-in MCP server; never exposes its URL or token.
+interface mcp {
+    /// Stdio bridge argv for the invoking project; none without a window/project or while off.
+    stdio-command: func() -> option<list<string>>;
+}
+
+/// Optional tools declared by contributes.mcpTools, under the plugin's grants and command budget.
+interface mcp-provider {
+    use types.{error};
+    use invocation.{invocation};
+    /// Calls the declared local tool name with JSON arguments and the project's window context.
+    /// Returns text; tools may encode structured data as JSON text.
+    call: func(tool: string, arguments: string, ctx: borrow<invocation>) -> result<string, error>;
+}

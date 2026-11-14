@@ -8,6 +8,7 @@ import {
   closeCompletion,
   completionStatus,
   nextSnippetField,
+  pickedCompletion,
   prevSnippetField,
   snippet,
   snippetKeymap,
@@ -28,7 +29,7 @@ import {
   type Transaction,
 } from "@codemirror/state";
 import { EditorView, keymap, type Command } from "@codemirror/view";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure, type StructuralRanges } from "@/editor/structure";
@@ -48,6 +49,8 @@ import {
 import { usePostfixSettings } from "./postfix/store";
 import { showChooser, type ChooserItem } from "./popup/store";
 import { expandEmmetAtCaret } from "./emmet/editor";
+import { hasEmmet, loadEmmet } from "./emmet/model";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 export interface TemplateDocInfo {
   path: string;
@@ -80,7 +83,7 @@ function userName(): string {
 
 async function readClipboard(): Promise<string> {
   try {
-    return (await navigator.clipboard?.readText()) ?? "";
+    return await readClipboardPlainText();
   } catch {
     return "";
   }
@@ -189,10 +192,22 @@ const unlessLookup =
   (view) =>
     completionStatus(view.state) === "active" ? false : cmd(view);
 
-/** Tab and Enter both move to the next field (Enter is the lookup's while it is open). */
+/**
+ * Whether the active snippet came from a live template or Emmet, where Enter moves to the
+ * next field. A completion's snippet (an LSP `<tag>$1</tag>$0`) keeps Enter for new lines.
+ */
+const templateSnippet = StateField.define<boolean>({
+  create: () => false,
+  update: (value, tr) => (movedToField(tr) === 0 && tr.docChanged ? !tr.annotation(pickedCompletion) : value),
+});
+
+/** Tab moves to the next field; Enter too in templates (the lookup's while it is open). */
 const templateFieldKeys = snippetKeymap.of([
   { key: "Tab", run: unlessLookup(nextSnippetField), shift: prevSnippetField },
-  { key: "Enter", run: unlessLookup(nextSnippetField) },
+  {
+    key: "Enter",
+    run: unlessLookup((view) => view.state.field(templateSnippet, false) === true && nextSnippetField(view)),
+  },
   { key: "Escape", run: escapeTemplate },
 ]);
 
@@ -479,6 +494,12 @@ export function applyPostfix(view: EditorView, t: PostfixTemplate, target: Postf
     const expr = t.wrapCompound && isCompound(c.text) ? `(${c.text})` : c.text;
     // The key may have grown since the target was computed (completion).
     const end = Math.max(target.end, view.state.selection.main.head);
+    if (t.action && getAction(t.action)) {
+      void runPostfixAction(view, t.action, c.from, target.dot, end, !!t.statement).then(async (ran) => {
+        if (!ran) await expandInto(view, t, c.from, target.dot, { predefined: { EXPR: expr }, expression: c.text });
+      });
+      return;
+    }
     void expandInto(view, t, c.from, end, { predefined: { EXPR: expr }, expression: c.text });
   };
   if (candidates.length <= 1) {
@@ -495,6 +516,28 @@ export function applyPostfix(view: EditorView, t: PostfixTemplate, target: Postf
     },
     onCancel: () => view.focus(),
   });
+}
+
+/**
+ * Removes the `.key`, selects the expression and runs `action` on it. A statement is
+ * ended with `;` first, so the language server sees complete code. False when the
+ * action is unavailable here (the expression stays selected for the template).
+ */
+async function runPostfixAction(
+  view: EditorView,
+  action: string,
+  from: number,
+  dot: number,
+  end: number,
+  statement: boolean,
+): Promise<boolean> {
+  const after = view.state.doc.sliceString(end, Math.min(view.state.doc.length, end + 80));
+  const insert = statement && !/^[ \t]*;/.test(after) ? ";" : "";
+  view.dispatch({ changes: { from: dot, to: end, insert }, selection: EditorSelection.range(from, dot) });
+  if (await executeAction(action)) return true;
+  if (insert)
+    view.dispatch({ changes: { from: dot, to: dot + insert.length }, selection: EditorSelection.range(from, dot) });
+  return false;
 }
 
 function postfixAt(state: EditorState, pos: number): { target: PostfixTarget; templates: PostfixTemplate[] } | null {
@@ -557,9 +600,11 @@ export const templateCompletionSource: CompletionSource = (ctx: CompletionContex
 // Extension
 
 export function templateEditorExtension(ctx: EditorDocContext): Extension {
+  if (hasEmmet(ctx.language)) void loadEmmet().catch(() => {});
   return [
     templateDoc.of({ path: ctx.path, language: ctx.language }),
     fieldCompletion,
+    templateSnippet,
     completeOnFieldMove,
     templateFieldKeys,
     templateLookup,

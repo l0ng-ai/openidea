@@ -9,7 +9,7 @@ const CARET: &str = "/*|*/";
 
 macro_rules! fixture {
     ($path:literal) => {
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/php-app/", $path))
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/php-library/", $path))
     };
 }
 

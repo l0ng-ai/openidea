@@ -5,6 +5,7 @@ interface PlatformInfo {
   /** `macos` | `windows` | `linux` | `web`. */
   os: string;
   version: string | null;
+  windowsBuildNumber: number | null;
   /** Native traffic lights overlay the title bar (Tauri, macOS, Overlay style). */
   overlayTitleBar: boolean;
   /** Frameless window: the title bar draws the main menu and caption buttons (Tauri, Windows and Linux). */
@@ -28,11 +29,20 @@ export const usePlatform = create<PlatformInfo>(() => {
   return {
     os,
     version: null,
+    windowsBuildNumber: null,
     overlayTitleBar: isTauri() && os === "macos",
     framelessTitleBar: isTauri() && (os === "windows" || os === "linux"),
     wayland: false,
   };
 });
+
+let dataDir: Promise<string> | undefined;
+
+/** The user data directory (scratches, plugins, Local History), which `OPENIDEA_DATA_DIR` can move. */
+export function appDataDir(): Promise<string> {
+  dataDir ??= commands.appInfo().then((info) => info.dataDir.replace(/\/+$/, ""));
+  return dataDir;
+}
 
 export async function loadPlatformInfo() {
   if (!isTauri()) return;
@@ -41,6 +51,7 @@ export async function loadPlatformInfo() {
     usePlatform.setState({
       os: info.platform,
       version: info.version,
+      windowsBuildNumber: info.windowsBuildNumber,
       overlayTitleBar: info.platform === "macos",
       framelessTitleBar: info.platform === "windows" || info.platform === "linux",
       wayland: info.wayland,

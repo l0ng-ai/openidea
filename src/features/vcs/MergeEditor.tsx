@@ -21,6 +21,7 @@ import { syncMergeScroll } from "./mergeScroll";
 import { mergeTitles } from "./conflicts";
 import {
   mergeChanged,
+  mergeStripe,
   mergeTheme,
   resultControls,
   resultMarks,
@@ -29,7 +30,7 @@ import {
   type MergeControls,
 } from "./mergeGutters";
 import { COMPARISONS, showCompareMenu, showResultMenu, showSettingsMenu, showSideMenu } from "./mergeMenus";
-import { openDiff } from "./diffInput";
+import { openVcsDiff } from "./diffInput";
 import {
   clearFocusedMergeEditor,
   refreshMergeActions,
@@ -61,6 +62,7 @@ import { refreshNow } from "./store";
 import styles from "./MergeEditor.module.css";
 
 import type { MergeData } from "./mergeKind";
+import { readClipboardPlainText } from "@/platform/clipboard";
 export { MERGE_KIND, mergeInput, type MergeData } from "./mergeKind";
 
 const NOTHING_LEFT: MergeSummary = {
@@ -176,6 +178,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       }),
       state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
       sideControls(which, controls),
+      mergeStripe(which),
       mergeTheme,
     ];
     const ours = new EditorView({ doc: state.ours, parent: oursRef.current, extensions: side("left") });
@@ -192,6 +195,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         embeddedEditorExtensions(path),
         lang,
         resultMarks,
+        mergeStripe("result"),
         resultControls(controls),
         mergeTheme,
         EditorView.updateListener.of((u) => {
@@ -228,9 +232,14 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     };
   }, [state, lang, path, actionHost]);
 
-  /** Puts the caret at a change and brings it into view. */
-  const moveTo = (view: EditorView, at: number) =>
+  /**
+   * Puts the caret at a change, brings it into view and focuses the pane: CodeMirror draws the
+   * caret only in a focused editor, so a move made by a toolbar button would be invisible.
+   */
+  const moveTo = (view: EditorView, at: number) => {
     view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
+    view.focus();
+  };
 
   const goto = (dir: 1 | -1) => {
     const v = resultView.current;
@@ -243,7 +252,6 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         ? (open.find((c) => c.from > head) ?? open[0]!)
         : ([...open].reverse().find((c) => c.from < head) ?? open[open.length - 1]!);
     moveTo(v, target.from);
-    v.focus();
   };
 
   /** Runs a command on the result; `reveal` then moves to what is left to decide. */
@@ -490,7 +498,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
         const { from, to } = view.state.selection.main;
         if (id === "selectAll") view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
         else if (id === "paste") {
-          const text = await navigator.clipboard?.readText().catch(() => undefined);
+          const text = await readClipboardPlainText().catch(() => undefined);
           if (text !== undefined) view.dispatch({ ...view.state.replaceSelection(text), userEvent: "input.paste" });
         } else {
           await copyText(view.state.sliceDoc(from, to));
@@ -508,7 +516,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           theirs: { text: state.theirs, label: txt(titles.theirs) },
         };
         const [a, b] = COMPARISONS[id as keyof typeof COMPARISONS];
-        await openDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
+        await openVcsDiff({ path, left: { type: "text", ...versions[a] }, right: { type: "text", ...versions[b] } });
       }
     }
   };
@@ -533,6 +541,10 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   }, [actionHost]);
 
   const focusProps = {
+    // WebKit doesn't focus a clicked button: focus then moves to the nearest focusable
+    // ancestor, which must be this editor for the footer and toolbar buttons to keep it the
+    // focused merge editor their actions run in.
+    tabIndex: -1,
     onFocusCapture: (e: React.FocusEvent<HTMLDivElement>) => {
       const target = e.target as Node;
       if (oursRef.current?.contains(target)) paneRef.current = "left";

@@ -8,7 +8,8 @@ import { isPowerSaveMode } from "@/platform/editorSettings";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications, registerEditorBanner } from "@/workbench/contributions";
-import { promptInput } from "@/workbench/inputDialogs";
+import { pickItems, promptInput } from "@/workbench/inputDialogs";
+import { importJetBrainsSettings } from "./jetbrainsSettings";
 import { showNewProject } from "./NewProject";
 import { tx } from "@/platform/i18n";
 
@@ -55,7 +56,7 @@ function errorText(e: unknown) {
 }
 
 async function exportSettings() {
-  const { save } = await import("@tauri-apps/plugin-dialog");
+  const { save } = await import("@/platform/dialog");
   const path = await save({
     title: "Export Settings",
     defaultPath: "openidea-settings.json",
@@ -76,15 +77,16 @@ async function exportSettings() {
 }
 
 async function importSettings() {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     title: "Import Settings",
     multiple: false,
-    filters: [{ name: "OpenIDEA settings", extensions: ["json"] }],
+    filters: [{ name: "OpenIDEA or JetBrains settings", extensions: ["json", "zip"] }],
   });
   const path = Array.isArray(picked) ? picked[0] : picked;
   if (!path) return;
   try {
+    if (/\.zip$/i.test(path)) return await importJetBrainsSettings(path);
     const result = await call(commands.settingsImport(path));
     for (const [key, value] of Object.entries(result.storage))
       if (isExported(key))
@@ -112,6 +114,34 @@ async function importSettings() {
   }
 }
 
+/** Import Settings from a JetBrains IDE installed on this computer, without exporting a `settings.zip` first. */
+export async function importFromJetBrainsIde() {
+  try {
+    const ides = await call(commands.settingsListJetbrainsIdes());
+    if (!ides.length) {
+      notifications().notify({
+        level: "warning",
+        title: "No JetBrains IDE settings were found on this computer",
+        key: "app.settingsImport",
+      });
+      return;
+    }
+    const picked = await pickItems({
+      title: tx("Import Settings from JetBrains IDE"),
+      items: ides.map((ide) => ({ key: ide.path, label: ide.ide })),
+      multiple: false,
+    });
+    if (picked?.[0]) await importJetBrainsSettings(picked[0]);
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot import settings",
+      body: errorText(e),
+      key: "app.settingsImport",
+    });
+  }
+}
+
 async function renameProject() {
   const project = useProject.getState().project;
   if (!project) return;
@@ -127,7 +157,7 @@ async function renameProject() {
   if (name === null) return;
   try {
     const info = await call(commands.projectRename(name));
-    useProject.setState((s) => ({ project: s.project && { ...s.project, name: info.name }, settings: info.settings }));
+    useProject.setState((s) => ({ project: s.project && info, settings: info.settings }));
     void commands.menuRefresh();
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot rename project", body: errorText(e) });
@@ -181,6 +211,13 @@ export function projectActions(): Action[] {
       category: "File",
       keywords: ["restore settings", "keymap", "templates", "manage ide settings"],
       run: desktop(importSettings),
+    },
+    {
+      id: "file.importJetBrainsSettings",
+      title: "Import Settings from JetBrains IDE…",
+      category: "File",
+      keywords: ["intellij", "pycharm", "webstorm", "android studio", "migrate", "manage ide settings"],
+      run: desktop(importFromJetBrainsIde),
     },
     {
       id: "file.togglePowerSave",

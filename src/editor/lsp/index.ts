@@ -1,3 +1,4 @@
+import { serverCodeLenses } from "./serverCodeLens";
 /**
  * LSP-backed editor features: completion, diagnostics, hover / quick docs,
  * parameter info, navigation, document highlights, intentions, rename,
@@ -32,6 +33,8 @@ import { ModelViewDialog, registerModelView } from "./modelView";
 import { NewModelDialog, registerLaravelGenerators } from "./laravelGenerate";
 import { NewClassDialog } from "./laravelGenerateClass";
 import { autoImportExtension } from "./autoImport";
+import { importsOnPasteExtension, registerImportsOnPasteActions } from "./importsOnPaste";
+import { installConfigurationNavigationEvents } from "./configurationNavigation";
 import { installAvailabilityEvents } from "./availability";
 import { registerActionsOnSave, registerFormatOnSave, registerLspActions } from "./actions";
 import { lspTheme } from "./theme";
@@ -49,6 +52,7 @@ import { ChangeSignatureDialog, ExtractMethodDialog, HierarchyDialog, MemberChoo
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
     lspDoc.of(ctx),
+    serverCodeLenses(ctx),
     lspTheme,
     hintExtension(),
     diagnosticsExtension(),
@@ -65,17 +69,51 @@ export function lspExtensions(ctx: EditorDocContext): Extension[] {
     usagesLensExtension(),
     serverLensExtension(),
     autoImportExtension(),
+    importsOnPasteExtension(),
     unresolvedReferences(),
     syntaxErrorsExtension(),
     spellingExtension(),
   ];
 }
 
+/**
+ * A notebook code cell: completion, hover / quick docs, parameter info, diagnostics, highlights
+ * and ⌘/Ctrl-click navigation. Features that edit other files or need an editor tab (rename,
+ * intentions, inlay hints, lenses) stay with text editors.
+ */
+export function cellLspExtensions(ctx: EditorDocContext): Extension[] {
+  return [
+    lspDoc.of(ctx),
+    lspTheme,
+    hintExtension(),
+    diagnosticsExtension(),
+    hoverExtension(),
+    signatureExtension(),
+    completionExtension(),
+    navigationExtension(),
+  ];
+}
+
+/**
+ * A diff pane showing a file's open document: hover / quick docs and ⌘/Ctrl-click navigation,
+ * so references can be followed while reviewing. Editing features stay with text editors.
+ */
+export function diffLspExtensions(ctx: EditorDocContext): Extension[] {
+  return [lspDoc.of(ctx), lspTheme, hintExtension(), hoverExtension(), navigationExtension()];
+}
+
 export function activate(): () => void {
   const disposers = [
     installDiagnosticsEvents(),
     installAvailabilityEvents(),
-    registerEditorContribution({ id: "lsp", order: 50, extensions: lspExtensions }),
+    installConfigurationNavigationEvents(),
+    registerEditorContribution({
+      id: "lsp",
+      order: 50,
+      extensions: lspExtensions,
+      cellExtensions: cellLspExtensions,
+      diffExtensions: diffLspExtensions,
+    }),
     // After the run icons (order 55), as their own gutter column.
     registerEditorContribution({ id: "lsp.lineMarkers", order: 56, extensions: implementationGutter }),
     // After the templates (order 90): live template / postfix expansion keeps ⇥ first.
@@ -110,6 +148,7 @@ export function activate(): () => void {
       component: DocumentationWindow,
     }),
     registerLspActions(),
+    registerImportsOnPasteActions(),
     registerInlineCompletionActions(),
     registerNavigationActions(),
     registerFormatOnSave(),

@@ -2,9 +2,10 @@
 //! `<config>/agents/<id>.toml` (written by hand, or by installing one from the ACP
 //! Registry, see `registry`).
 
-use crate::{AgentCommandReadOnlyReason, AgentProvider, AgentSource};
+use crate::{AcpImportOutcome, AgentCommandReadOnlyReason, AgentProvider, AgentSource, CustomAgentInput, EnvSecrets};
 use ide_core::{IdeError, IdeResult};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -58,11 +59,14 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
     ("qwen", "Qwen Code", Driver::Acp, &["qwen", "--experimental-acp"], "Run `qwen` in a terminal and sign in."),
+    ("qoder", "Qoder", Driver::Acp, &["qodercli", "--acp"], "Run `qodercli login` in a terminal."),
+    ("qodercn", "Qoder CN", Driver::Acp, &["qoderclicn", "--acp"], "Run `qoderclicn login` in a terminal."),
     ("kimi", "Kimi CLI", Driver::Acp, &["kimi", "acp"], "Run `kimi` in a terminal and sign in."),
     ("goose", "Goose", Driver::Acp, &["goose", "acp"], "Run `goose configure` in a terminal."),
     ("auggie", "Auggie", Driver::Acp, &["auggie", "--acp"], "Run `auggie login` in a terminal."),
     ("kiro", "Kiro", Driver::Acp, &["kiro-cli", "acp"], "Run `kiro-cli login` in a terminal."),
     ("vibe", "Mistral Vibe", Driver::Acp, &["vibe-acp"], "Run `vibe` in a terminal and sign in."),
+    ("omp", "OMP", Driver::Acp, &["omp", "acp"], "Run `omp` in a terminal and sign in."),
 ];
 
 fn builtins() -> Vec<ProviderSpec> {
@@ -81,6 +85,91 @@ fn builtins() -> Vec<ProviderSpec> {
         .collect()
 }
 
+impl ProviderSpec {
+    pub(crate) fn login_hint(&self, program: &Path) -> String {
+        if !program.is_absolute() {
+            return self.login_hint.clone();
+        }
+        let search = ide_core::process::host_var_os("PATH").unwrap_or_default();
+        let builtin = builtin_spec(&self.id);
+        let on_path = builtin.as_ref().and_then(|b| ide_core::process::find_executable(&b.command, &search));
+        render_login_hint(self, program, on_path.as_deref(), cfg!(windows))
+    }
+
+    pub(crate) fn sign_in_message(&self, auth_methods: &[Value]) -> String {
+        let name = &self.name;
+        let program = Path::new(&self.command);
+        let terminal_args = matches!(self.source, AgentSource::Registry { .. })
+            .then(|| {
+                auth_methods.iter().find_map(|method| {
+                    if method.get("type").and_then(Value::as_str) != Some("terminal") {
+                        return None;
+                    }
+                    method.get("args")?.as_array()?.iter().map(Value::as_str).collect::<Option<Vec<_>>>()
+                })
+            })
+            .flatten();
+        let hint = match terminal_args {
+            Some(args) => {
+                let command = render_login_command(program, args, cfg!(windows));
+                format!("Run `{command}` in a terminal.")
+            }
+            None => self.login_hint(program),
+        };
+        format!("{name} needs you to sign in. {hint}")
+    }
+
+    /// Resolve once before connecting, so authentication guidance names that same install.
+    pub(crate) fn resolve_for_launch(mut self, cwd: &Path) -> Self {
+        if self.driver != Driver::Acp {
+            self.command = crate::native::newest_install(&self.command);
+        }
+        let program = ide_jsonrpc::resolve_spawn_program(&self.command, &self.env);
+        self.command =
+            if program.components().count() > 1 && !program.is_absolute() { cwd.join(program) } else { program }
+                .to_string_lossy()
+                .into_owned();
+        self
+    }
+}
+
+fn render_login_hint(spec: &ProviderSpec, program: &Path, on_path: Option<&Path>, windows: bool) -> String {
+    let Some(builtin) = builtin_spec(&spec.id) else { return spec.login_hint.clone() };
+    let prefix = format!("Run `{}", builtin.command);
+    let Some(rest) = spec.login_hint.strip_prefix(&prefix).filter(|rest| rest.starts_with([' ', '`'])) else {
+        return spec.login_hint.clone();
+    };
+    let same_path = |a: &Path, b: &Path| {
+        a == b || dunce::canonicalize(a).ok().zip(dunce::canonicalize(b).ok()).is_some_and(|(a, b)| a == b)
+    };
+    if on_path.is_some_and(|path| same_path(path, program)) {
+        return spec.login_hint.clone();
+    }
+    let (args, suffix) = rest.split_once('`').expect("built-in login hints delimit their command");
+    let command = render_login_command(program, args.split_whitespace(), windows);
+    match suffix {
+        " in a terminal." => format!("Run `{command}` in a terminal."),
+        " in a terminal and sign in." => format!("Run `{command}` in a terminal and sign in."),
+        _ => spec.login_hint.clone(),
+    }
+}
+
+fn render_login_command<'a>(program: &Path, args: impl IntoIterator<Item = &'a str>, windows: bool) -> String {
+    let quote = |word: &str| {
+        if windows { format!("'{}'", word.replace('\'', "''")) } else { format!("'{}'", word.replace('\'', "'\\''")) }
+    };
+    let mut command = format!("{}{}", if windows { "& " } else { "" }, quote(&program.to_string_lossy()));
+    for arg in args {
+        command.push(' ');
+        if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_=./".contains(c)) {
+            command.push_str(arg);
+        } else {
+            command.push_str(&quote(arg));
+        }
+    }
+    command
+}
+
 /// Whether `id` names a built-in agent that needs no registry install (native drivers
 /// and `npx -y` adapters). CLI built-ins (`copilot`, `gemini`, …) can be installed and
 /// updated from the ACP Registry into `<config>/agents/<id>.toml`.
@@ -96,6 +185,14 @@ pub(crate) fn builtin_name(id: &str) -> Option<&'static str> {
 /// The built-in spec of `id`.
 pub(crate) fn builtin_spec(id: &str) -> Option<ProviderSpec> {
     builtins().into_iter().find(|s| s.id == id)
+}
+
+/// The ACP adapters of Claude Code and Codex, which the native drivers replace: they still
+/// launch, but are listed only once customized through an agent file or used by a task.
+const UNLISTED: &[&str] = &["claude-acp", "codex-acp"];
+
+pub(crate) fn is_unlisted(spec: &ProviderSpec) -> bool {
+    UNLISTED.contains(&spec.id.as_str()) && builtin_spec(&spec.id).as_ref() == Some(spec)
 }
 
 /// Public launch metadata, keeping the built-in defaults separate from agent-file overrides.
@@ -119,13 +216,14 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         args: spec.args.clone(),
         default_program: builtin.as_ref().map(|b| b.command.clone()),
         default_args: builtin.as_ref().map(|b| b.args.clone()).unwrap_or_default(),
-        login_hint: Some(spec.login_hint.clone()),
+        login_hint: Some(spec.login_hint(&ide_jsonrpc::resolve_spawn_program(&spec.command, &spec.env))),
         command_overridden: builtin.as_ref().is_some_and(|b| b.command != spec.command),
         command_editable: reason.is_none(),
         command_read_only_reason: reason,
         installed: installed(&spec.command),
         env: spec.env.iter().cloned().collect(),
         config: vec![],
+        thought_levels: BTreeMap::new(),
         commands: vec![],
         source: spec.source.clone(),
     }
@@ -133,23 +231,40 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
 
 /// Overrides built-in `id`'s command through its agent file, preserving other
 /// customizations. `None` restores the built-in command and removes a redundant file.
-pub(crate) fn set_builtin_command(custom_dir: &Path, id: &str, command: Option<&str>) -> IdeResult<()> {
-    update_builtin(custom_dir, id, |agent, builtin| agent.command = command.unwrap_or(&builtin.command).to_owned())
+pub(crate) fn set_builtin_command(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    command: Option<&str>,
+) -> IdeResult<()> {
+    update_builtin(custom_dir, secrets, id, |agent, builtin| {
+        agent.command = command.unwrap_or(&builtin.command).to_owned()
+    })
 }
 
 /// The environment built-in `id` starts with, through its agent file (empty clears it).
-pub(crate) fn set_builtin_env(custom_dir: &Path, id: &str, env: BTreeMap<String, String>) -> IdeResult<()> {
-    update_builtin(custom_dir, id, |agent, _| agent.env = env)
+pub(crate) fn set_builtin_env(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    env: BTreeMap<String, String>,
+) -> IdeResult<()> {
+    update_builtin(custom_dir, secrets, id, |agent, _| agent.env = env)
 }
 
 /// Changes built-in `id`'s agent file; a file left with only the built-in's values is removed.
-fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAgent, &ProviderSpec)) -> IdeResult<()> {
+fn update_builtin(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    change: impl FnOnce(&mut CustomAgent, &ProviderSpec),
+) -> IdeResult<()> {
     let Some(builtin) = builtin_spec(id) else {
         return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
     };
     let file = custom_dir.join(format!("{id}.toml"));
     let mut agent = if file.try_exists()? {
-        CustomAgent::read(&file).map_err(IdeError::invalid)?
+        CustomAgent::read_with(&file, id, secrets).map_err(IdeError::invalid)?
     } else {
         CustomAgent {
             name: Some(builtin.name.clone()),
@@ -174,14 +289,145 @@ fn update_builtin(custom_dir: &Path, id: &str, change: impl FnOnce(&mut CustomAg
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
+        forget_env(secrets, id, &[]);
         return Ok(());
     }
-    agent.write(&file)?;
-    Ok(())
+    agent.write_with(&file, id, secrets)
+}
+
+/// Saves a new custom agent; refuses built-in and ACP Registry ids, taken ids
+/// and an empty command. The id is also the agent file's name, so it must be
+/// a safe file stem.
+pub(crate) fn save_custom(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    input: &CustomAgentInput,
+) -> IdeResult<()> {
+    let id = validated_custom_id(&input.id)?;
+    if builtin_spec(&id).is_some() {
+        return Err(IdeError::invalid(format!("{id} is a built-in agent; change its command instead")));
+    }
+    if input.command.trim().is_empty() {
+        return Err(IdeError::invalid("the agent command must not be empty"));
+    }
+    let file = custom_dir.join(format!("{id}.toml"));
+    if file.try_exists()? {
+        if CustomAgent::read(&file).is_ok_and(|a| a.registry.is_some()) {
+            return Err(IdeError::invalid(format!(
+                "{id} is installed from the ACP Registry; uninstall it there to replace it"
+            )));
+        }
+        return Err(IdeError::invalid(format!("there is already a custom agent '{id}'")));
+    }
+    CustomAgent {
+        name: Some(input.name.clone()),
+        driver: Driver::Acp,
+        command: input.command.clone(),
+        args: input.args.clone(),
+        env: input.env.clone(),
+        registry: None,
+    }
+    .write_with(&file, &id, secrets)
+}
+
+/// Removes a custom agent's file; refuses built-in, ACP Registry and missing ids.
+pub(crate) fn remove_custom(custom_dir: &Path, secrets: Option<&dyn EnvSecrets>, id: &str) -> IdeResult<()> {
+    let id = validated_custom_id(id)?;
+    let id = id.as_str();
+    if builtin_spec(id).is_some() {
+        return Err(IdeError::invalid(format!("{id} is a built-in agent and cannot be removed")));
+    }
+    let file = custom_dir.join(format!("{id}.toml"));
+    let agent =
+        CustomAgent::read(&file).map_err(|_| IdeError::not_found(format!("there is no custom agent '{id}'")))?;
+    if agent.registry.is_some() {
+        return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry; uninstall it there")));
+    }
+    match std::fs::remove_file(&file) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => {
+            forget_env(secrets, id, &[]);
+            Ok(())
+        }
+    }
+}
+
+/// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom
+/// agents, one outcome per entry; entries that collide, lack a command or
+/// have no usable name are skipped with a reason.
+pub(crate) fn import_acp(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    text: &str,
+) -> IdeResult<Vec<AcpImportOutcome>> {
+    #[derive(Deserialize)]
+    struct AcpJson {
+        #[serde(default)]
+        agent_servers: BTreeMap<String, AcpServer>,
+    }
+    #[derive(Deserialize)]
+    struct AcpServer {
+        #[serde(default)]
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        env: BTreeMap<String, String>,
+    }
+    let parsed: AcpJson =
+        serde_json::from_str(text).map_err(|e| IdeError::invalid(format!("not an acp.json file: {e}")))?;
+    let mut outcomes = Vec::with_capacity(parsed.agent_servers.len());
+    for (name, server) in parsed.agent_servers {
+        let id = slugify_id(&name);
+        let mut outcome = AcpImportOutcome { name, id: id.clone(), saved: false, reason: String::new() };
+        if id.is_empty() {
+            outcome.reason = "the name has no usable characters for an id".to_owned();
+        } else if builtin_spec(&id).is_some() {
+            outcome.reason = format!("{id} is a built-in agent");
+        } else if server.command.trim().is_empty() {
+            outcome.reason = "the entry has no command".to_owned();
+        } else if custom_dir.join(format!("{id}.toml")).try_exists()? {
+            outcome.reason = format!("there is already a custom agent '{id}'");
+        } else {
+            CustomAgent {
+                name: Some(outcome.name.clone()),
+                driver: Driver::Acp,
+                command: server.command,
+                args: server.args,
+                env: server.env,
+                registry: None,
+            }
+            .write_with(&custom_dir.join(format!("{id}.toml")), &id, secrets)?;
+            outcome.saved = true;
+        }
+        outcomes.push(outcome);
+    }
+    Ok(outcomes)
+}
+
+/// A custom agent id doubles as a file stem: letters, digits, `-` and `_` only.
+fn validated_custom_id(id: &str) -> IdeResult<String> {
+    if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Ok(id.to_owned());
+    }
+    Err(IdeError::invalid(format!("'{id}' is not a usable agent id (letters, digits, '-' and '_' only)")))
+}
+
+/// Turns an `acp.json` server name into a file-stem id (`"My Agent!"` → `"my-agent"`).
+fn slugify_id(name: &str) -> String {
+    let mut id = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            id.push(c.to_ascii_lowercase());
+        } else if !id.ends_with('-') {
+            id.push('-');
+        }
+    }
+    id.trim_matches('-').to_owned()
 }
 
 /// An agent file, `<config>/agents/<id>.toml`.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CustomAgent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -228,11 +474,67 @@ impl CustomAgent {
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, path)
     }
+
+    /// Reads agent `id`'s file with its environment values filled in from `secrets`; values
+    /// still written in the file (by hand, by an older version) move there first. A registry
+    /// install keeps the environment its registry entry gives it in the file.
+    pub(crate) fn read_with(path: &Path, id: &str, secrets: Option<&dyn EnvSecrets>) -> Result<Self, String> {
+        let mut agent = Self::read(path)?;
+        let Some(secrets) = secrets.filter(|_| agent.registry.is_none()) else {
+            return Ok(agent);
+        };
+        let written = agent.env.values().any(|v| !v.is_empty());
+        for (name, value) in agent.env.iter_mut() {
+            if value.is_empty()
+                && let Some(saved) = secrets.get(&env_key(id, name))
+            {
+                *value = saved;
+            }
+        }
+        if written && let Err(e) = agent.write_with(path, id, Some(secrets)) {
+            tracing::warn!("agent {id}: could not move environment values out of {}: {}", path.display(), e.message);
+        }
+        Ok(agent)
+    }
+
+    /// Writes agent `id`'s file with the environment's names only, its values saved in `secrets`.
+    pub(crate) fn write_with(&self, path: &Path, id: &str, secrets: Option<&dyn EnvSecrets>) -> IdeResult<()> {
+        let Some(secrets) = secrets.filter(|_| self.registry.is_none()) else {
+            return Ok(self.write(path)?);
+        };
+        let mut keys = Vec::with_capacity(self.env.len());
+        for (name, value) in &self.env {
+            let key = env_key(id, name);
+            if value.is_empty() {
+                secrets.delete(&key);
+            } else if secrets.get(&key).as_deref() != Some(value.as_str()) {
+                secrets.set(&key, value)?;
+            }
+            keys.push(key);
+        }
+        forget_env(Some(secrets), id, &keys);
+        let names = self.env.keys().map(|name| (name.clone(), String::new())).collect();
+        Ok(Self { env: names, ..self.clone() }.write(path)?)
+    }
+}
+
+fn env_key(id: &str, name: &str) -> String {
+    format!("agent/{id}/env/{}", name.replace('%', "%25").replace('/', "%2F"))
+}
+
+/// Forgets agent `id`'s saved environment values, except `keep`.
+fn forget_env(secrets: Option<&dyn EnvSecrets>, id: &str, keep: &[String]) {
+    let Some(secrets) = secrets else { return };
+    for key in secrets.keys(&format!("agent/{id}/env/")) {
+        if !keep.contains(&key) {
+            secrets.delete(&key);
+        }
+    }
 }
 
 /// Built-in agents, then the `*.toml` agents of `custom_dir`; a custom agent with a
 /// built-in id replaces it.
-pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
+pub(crate) fn load(custom_dir: Option<&Path>, secrets: Option<&dyn EnvSecrets>) -> Vec<ProviderSpec> {
     let mut specs = builtins();
     let mut files: Vec<PathBuf> = custom_dir
         .and_then(|d| std::fs::read_dir(d).ok())
@@ -245,7 +547,7 @@ pub(crate) fn load(custom_dir: Option<&Path>) -> Vec<ProviderSpec> {
     files.sort();
     for path in files {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else { continue };
-        let agent = match CustomAgent::read(&path) {
+        let agent = match CustomAgent::read_with(&path, &id, secrets) {
             Ok(a) => a,
             Err(e) => {
                 tracing::warn!("skipping agent {}: {e}", path.display());
@@ -311,11 +613,157 @@ fn is_executable(p: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn qoder_global_and_cn_editions_are_both_built_in() {
+        let info = |id: &str| describe(&load(None, None).into_iter().find(|s| s.id == id).unwrap());
+        let (global, cn) = (info("qoder"), info("qodercn"));
+        assert_eq!((global.name.as_str(), global.command.as_str()), ("Qoder", "qodercli --acp"));
+        assert_eq!((cn.name.as_str(), cn.command.as_str()), ("Qoder CN", "qoderclicn --acp"));
+        assert_eq!(global.login_hint.as_deref(), Some("Run `qodercli login` in a terminal."));
+    }
+
+    #[test]
+    fn qodercn_is_available_without_a_file_and_preserves_existing_customizations() {
+        let dir = tempfile::tempdir().unwrap();
+        let qodercn = load(None, None).into_iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(qodercn.driver, Driver::Acp);
+        assert!(!is_unlisted(&qodercn));
+        let info = describe(&qodercn);
+        assert_eq!(info.name, "Qoder CN");
+        assert_eq!(info.command, "qoderclicn --acp");
+        assert_eq!(info.source, AgentSource::Builtin);
+        assert!(info.command_editable);
+        assert_eq!(info.login_hint.as_deref(), Some("Run `qoderclicn login` in a terminal."));
+
+        std::fs::write(
+            dir.path().join("qodercn.toml"),
+            "command = \"/custom/qoderclicn\"\nargs = [\"--acp\"]\n[env]\nK = \"v\"\n",
+        )
+        .unwrap();
+        let specs = load(Some(dir.path()), None);
+        assert_eq!(specs.iter().filter(|s| s.id == "qodercn").count(), 1);
+        let custom = specs.iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(custom.command, "/custom/qoderclicn");
+        assert_eq!(custom.env, [("K".into(), "v".into())]);
+        set_builtin_command(dir.path(), None, "qodercn", None).unwrap();
+        let reset = load(Some(dir.path()), None).into_iter().find(|s| s.id == "qodercn").unwrap();
+        assert_eq!(reset.command, "qoderclicn");
+        assert_eq!(reset.args, ["--acp"]);
+        assert_eq!(reset.env, custom.env);
+    }
+
+    #[test]
+    fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {
+        for spec in builtins() {
+            let separate = matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe");
+            for windows in [false, true] {
+                let program =
+                    if windows { Path::new(r"C:\Agent Tools\renamed.cmd") } else { Path::new("/agent tools/renamed") };
+                let hint = render_login_hint(&spec, program, None, windows);
+                if separate {
+                    assert_eq!(hint, spec.login_hint, "{}", spec.id);
+                } else {
+                    let prefix =
+                        if windows { "Run `& 'C:\\Agent Tools\\renamed.cmd'" } else { "Run `'/agent tools/renamed'" };
+                    assert!(hint.starts_with(prefix), "{}: {hint}", spec.id);
+                    assert_eq!(
+                        render_login_hint(&spec, program, Some(program), windows),
+                        spec.login_hint,
+                        "a PATH-resolved command stays bare: {}",
+                        spec.id
+                    );
+                    assert_eq!(render_login_hint(&spec, program, Some(Path::new("/other/install")), windows), hint);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn login_commands_quote_shell_metacharacters_and_keep_arguments() {
+        let cursor = builtin_spec("cursor").unwrap();
+        assert_eq!(
+            render_login_hint(&cursor, Path::new("/agent's tools/$cli"), None, false),
+            "Run `'/agent'\\''s tools/$cli' login` in a terminal."
+        );
+        assert_eq!(
+            render_login_hint(&cursor, Path::new(r"C:\agent's tools\$cli.cmd"), None, true),
+            r"Run `& 'C:\agent''s tools\$cli.cmd' login` in a terminal."
+        );
+        let opencode = builtin_spec("opencode").unwrap();
+        assert_eq!(
+            render_login_hint(&opencode, Path::new("/registry/opencode"), None, false),
+            "Run `'/registry/opencode' auth login` in a terminal."
+        );
+        let mut custom = cursor;
+        custom.id = "custom".into();
+        custom.login_hint = "Sign in with the agent's own command line first.".into();
+        assert_eq!(render_login_hint(&custom, Path::new("/custom"), None, false), custom.login_hint);
+    }
+
+    #[test]
+    fn launch_resolution_uses_the_child_path_and_absolutizes_relative_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cursor = builtin_spec("cursor").unwrap();
+        let command = if cfg!(windows) { "cursor-agent.cmd" } else { "cursor-agent" };
+        let program = dir.path().join(command);
+        std::fs::write(&program, "").unwrap();
+        cursor.env.push(("PATH".into(), dir.path().to_string_lossy().into_owned()));
+        let resolved = cursor.clone().resolve_for_launch(dir.path());
+        assert_eq!(Path::new(&resolved.command), program);
+        assert!(resolved.sign_in_message(&[]).contains(&*program.to_string_lossy()));
+        cursor.command = format!("tools/{command}");
+        let resolved = cursor.resolve_for_launch(dir.path());
+        assert_eq!(Path::new(&resolved.command), dir.path().join("tools").join(command));
+    }
+
+    #[test]
+    fn terminal_login_commands_quote_the_binary_and_each_argument() {
+        for (windows, expected) in [
+            (false, "'/agent'\\''s tools/$cli' auth login --account 'user name' 'a'\\''b' '$token' ''"),
+            (true, "& '/agent''s tools/$cli' auth login --account 'user name' 'a''b' '$token' ''"),
+        ] {
+            assert_eq!(
+                render_login_command(
+                    Path::new("/agent's tools/$cli"),
+                    ["auth", "login", "--account", "user name", "a'b", "$token", ""],
+                    windows
+                ),
+                expected
+            );
+        }
+        let mut spec = builtin_spec("cursor").unwrap();
+        spec.id = "custom".into();
+        spec.source = AgentSource::Registry { version: "1.4.5".into(), update: None };
+        spec.login_hint = "Sign in with the agent's own command line first.".into();
+        for method in [
+            json!({"type": "terminal"}),
+            json!({"type": "terminal", "args": ["login", null]}),
+            json!({"type": "agent", "args": ["login"]}),
+        ] {
+            assert_eq!(
+                spec.sign_in_message(&[method]),
+                "Cursor needs you to sign in. Sign in with the agent's own command line first."
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_login_hint_names_the_installed_executable() {
+        let mut spec = builtin_spec("cursor").unwrap();
+        spec.command = "/registry path/dist-package/cursor-agent".into();
+        assert_eq!(
+            describe(&spec).login_hint.as_deref(),
+            Some("Run `'/registry path/dist-package/cursor-agent' login` in a terminal.")
+        );
+    }
 
     #[test]
     fn launch_metadata_distinguishes_defaults_overrides_and_read_only_agents() {
         let dir = tempfile::tempdir().unwrap();
-        let list = || load(Some(dir.path())).iter().map(describe).collect::<Vec<_>>();
+        let list = || load(Some(dir.path()), None).iter().map(describe).collect::<Vec<_>>();
         let defaults = list();
         let codex = defaults.iter().find(|p| p.id == "codex").unwrap();
         assert_eq!(codex.program, "codex");
@@ -335,14 +783,14 @@ mod tests {
                 p.id.ends_with("-acp").then_some(AgentCommandReadOnlyReason::PackageRunner)
             );
         }
-        set_builtin_command(dir.path(), "codex", Some("/path with spaces/codex")).unwrap();
+        set_builtin_command(dir.path(), None, "codex", Some("/path with spaces/codex")).unwrap();
         let overridden = list().into_iter().find(|p| p.id == "codex").unwrap();
         assert_eq!(overridden.program, "/path with spaces/codex");
         assert_eq!(overridden.args, codex.args);
         assert_eq!(overridden.default_program, codex.default_program);
         assert!(overridden.command_overridden && overridden.command_editable);
         assert_eq!(overridden.source, AgentSource::Builtin);
-        set_builtin_command(dir.path(), "codex", Some("codex")).unwrap();
+        set_builtin_command(dir.path(), None, "codex", Some("codex")).unwrap();
         assert!(!list().iter().find(|p| p.id == "codex").unwrap().command_overridden);
         std::fs::write(
             dir.path().join("gemini.toml"),
@@ -367,7 +815,7 @@ mod tests {
         write("mine.toml", "name = \"Mine\"\ncommand = \"/opt/mine\"\nargs = [\"acp\"]\n[env]\nK = \"v\"\n");
         write("gemini.toml", "command = \"gemini\"\nargs = [\"--acp\"]\n");
         write("broken.toml", "nope = 1\n");
-        let specs = load(Some(dir.path()));
+        let specs = load(Some(dir.path()), None);
         let mine = specs.iter().find(|s| s.id == "mine").unwrap();
         assert_eq!((mine.name.as_str(), mine.command.as_str()), ("Mine", "/opt/mine"));
         assert_eq!(mine.env, vec![("K".to_owned(), "v".to_owned())]);
@@ -383,25 +831,35 @@ mod tests {
     fn set_builtin_env_writes_and_clears_the_environment() {
         let dir = tempfile::tempdir().unwrap();
         let env = BTreeMap::from([("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
-        set_builtin_env(dir.path(), "claude", env.clone()).unwrap();
-        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        set_builtin_env(dir.path(), None, "claude", env.clone()).unwrap();
+        let claude = load(Some(dir.path()), None).into_iter().find(|s| s.id == "claude").unwrap();
         assert_eq!(claude.env, vec![("CLAUDE_CODE_ENTRYPOINT".to_owned(), "openidea".to_owned())]);
         assert_eq!(describe(&claude).env, env);
         // The command override and the environment are kept independently.
-        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
-        set_builtin_command(dir.path(), "claude", None).unwrap();
+        set_builtin_command(dir.path(), None, "claude", Some("/opt/claude")).unwrap();
+        set_builtin_command(dir.path(), None, "claude", None).unwrap();
         assert!(dir.path().join("claude.toml").is_file());
-        set_builtin_env(dir.path(), "claude", BTreeMap::new()).unwrap();
+        set_builtin_env(dir.path(), None, "claude", BTreeMap::new()).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
-        set_builtin_env(dir.path(), "not-a-builtin", env).unwrap_err();
+        set_builtin_env(dir.path(), None, "not-a-builtin", env).unwrap_err();
+    }
+
+    #[test]
+    fn acp_adapters_of_native_agents_are_unlisted_until_customized() {
+        let dir = tempfile::tempdir().unwrap();
+        let unlisted =
+            |dir: &Path| load(Some(dir), None).into_iter().filter(is_unlisted).map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(unlisted(dir.path()), ["claude-acp", "codex-acp"]);
+        set_builtin_env(dir.path(), None, "codex-acp", BTreeMap::from([("A".to_owned(), "1".to_owned())])).unwrap();
+        assert_eq!(unlisted(dir.path()), ["claude-acp"]);
     }
 
     #[test]
     fn set_builtin_command_overrides_and_clears_a_builtin() {
         let dir = tempfile::tempdir().unwrap();
-        set_builtin_command(dir.path(), "not-a-builtin", Some("/x")).unwrap_err();
-        set_builtin_command(dir.path(), "claude", Some("/opt/claude")).unwrap();
-        let claude = load(Some(dir.path())).into_iter().find(|s| s.id == "claude").unwrap();
+        set_builtin_command(dir.path(), None, "not-a-builtin", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), None, "claude", Some("/opt/claude")).unwrap();
+        let claude = load(Some(dir.path()), None).into_iter().find(|s| s.id == "claude").unwrap();
         assert_eq!((claude.command.as_str(), claude.driver), ("/opt/claude", Driver::Claude));
         assert!(claude.args.is_empty());
         // A registry install is neither overwritten nor removed by a command override.
@@ -416,14 +874,14 @@ mod tests {
         }
         .write(&path)
         .unwrap();
-        set_builtin_command(dir.path(), "codex", Some("/x")).unwrap_err();
-        set_builtin_command(dir.path(), "codex", None).unwrap_err();
+        set_builtin_command(dir.path(), None, "codex", Some("/x")).unwrap_err();
+        set_builtin_command(dir.path(), None, "codex", None).unwrap_err();
         assert!(path.exists());
         // Clearing (twice) returns the built-in to auto-detection.
-        set_builtin_command(dir.path(), "claude", None).unwrap();
-        set_builtin_command(dir.path(), "claude", None).unwrap();
+        set_builtin_command(dir.path(), None, "claude", None).unwrap();
+        set_builtin_command(dir.path(), None, "claude", None).unwrap();
         assert!(!dir.path().join("claude.toml").exists());
-        assert_eq!(load(Some(dir.path())).iter().find(|s| s.id == "claude").unwrap().command, "claude");
+        assert_eq!(load(Some(dir.path()), None).iter().find(|s| s.id == "claude").unwrap().command, "claude");
     }
 
     #[test]
@@ -451,11 +909,11 @@ mod tests {
             }
             agent.write(&path).unwrap();
 
-            set_builtin_command(dir.path(), "claude", Some("/new/claude")).unwrap();
+            set_builtin_command(dir.path(), None, "claude", Some("/new/claude")).unwrap();
             agent.command = "/new/claude".into();
             assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
 
-            set_builtin_command(dir.path(), "claude", None).unwrap();
+            set_builtin_command(dir.path(), None, "claude", None).unwrap();
             agent.command = "claude".into();
             assert_eq!(CustomAgent::read(&path).unwrap(), agent, "{field}");
         }
@@ -471,11 +929,11 @@ mod tests {
         )
         .unwrap();
 
-        set_builtin_command(dir.path(), "codex", None).unwrap();
+        set_builtin_command(dir.path(), None, "codex", None).unwrap();
 
         assert!(!path.exists());
         assert_eq!(
-            load(Some(dir.path())).into_iter().find(|s| s.id == "codex").unwrap(),
+            load(Some(dir.path()), None).into_iter().find(|s| s.id == "codex").unwrap(),
             builtin_spec("codex").unwrap()
         );
     }
@@ -496,8 +954,151 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[registry]") && !text.contains("driver"), "{text}");
         assert_eq!(CustomAgent::read(&path).unwrap(), agent);
-        let spec = load(Some(path.parent().unwrap())).into_iter().find(|s| s.id == "amp-acp").unwrap();
+        let spec = load(Some(path.parent().unwrap()), None).into_iter().find(|s| s.id == "amp-acp").unwrap();
         assert_eq!(spec.source, AgentSource::Registry { version: "0.10.0".into(), update: None });
         assert!(toml::from_str::<CustomAgent>("command = \"x\"\n[registry]\nid = \"x\"\n").is_err());
+    }
+
+    fn custom_input(id: &str) -> CustomAgentInput {
+        CustomAgentInput {
+            id: id.into(),
+            name: "Mine".into(),
+            command: "/opt/mine".into(),
+            args: vec!["acp".into()],
+            env: BTreeMap::from([("K".to_owned(), "v".to_owned())]),
+        }
+    }
+
+    #[test]
+    fn custom_agents_save_list_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        save_custom(dir.path(), None, &custom_input("mine")).unwrap();
+        let mine = load(Some(dir.path()), None).into_iter().find(|s| s.id == "mine").unwrap();
+        assert_eq!((mine.name.as_str(), mine.command.as_str()), ("Mine", "/opt/mine"));
+        assert_eq!(mine.env, vec![("K".to_owned(), "v".to_owned())]);
+        assert_eq!(mine.source, AgentSource::Custom);
+        remove_custom(dir.path(), None, "mine").unwrap();
+        assert!(!load(Some(dir.path()), None).iter().any(|s| s.id == "mine"));
+        remove_custom(dir.path(), None, "mine").unwrap_err();
+    }
+
+    #[test]
+    fn custom_agents_refuse_builtin_registry_and_bad_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        save_custom(dir.path(), None, &custom_input("claude")).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("../evil")).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("")).unwrap_err();
+        let mut empty_command = custom_input("mine");
+        empty_command.command = "  ".into();
+        save_custom(dir.path(), None, &empty_command).unwrap_err();
+        save_custom(dir.path(), None, &custom_input("mine")).unwrap();
+        save_custom(dir.path(), None, &custom_input("mine")).unwrap_err();
+        remove_custom(dir.path(), None, "claude").unwrap_err();
+        // An id that isn't a plain file stem never reaches outside the agents directory.
+        let outside = dir.path().join("outside.toml");
+        std::fs::write(&outside, "command = \"/bin/sh\"\n").unwrap();
+        let agents = dir.path().join("agents");
+        std::fs::create_dir(&agents).unwrap();
+        remove_custom(&agents, None, "../outside").unwrap_err();
+        assert!(outside.exists());
+        std::fs::write(
+            dir.path().join("amp-acp.toml"),
+            "command = \"/registry/amp\"\n[registry]\nid = \"amp-acp\"\nversion = \"1.0\"\n",
+        )
+        .unwrap();
+        save_custom(dir.path(), None, &custom_input("amp-acp")).unwrap_err();
+        remove_custom(dir.path(), None, "amp-acp").unwrap_err();
+    }
+
+    #[derive(Default)]
+    struct MemorySecrets(parking_lot::Mutex<BTreeMap<String, String>>);
+
+    impl EnvSecrets for MemorySecrets {
+        fn get(&self, key: &str) -> Option<String> {
+            self.0.lock().get(key).cloned()
+        }
+        fn set(&self, key: &str, value: &str) -> IdeResult<()> {
+            self.0.lock().insert(key.to_owned(), value.to_owned());
+            Ok(())
+        }
+        fn delete(&self, key: &str) {
+            self.0.lock().remove(key);
+        }
+        fn keys(&self, prefix: &str) -> Vec<String> {
+            self.0.lock().keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+        }
+    }
+
+    #[test]
+    fn environment_values_go_to_the_secrets_and_the_files_keep_the_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemorySecrets::default();
+        let s = Some(&secrets as &dyn EnvSecrets);
+        let env = BTreeMap::from([("API_KEY".to_owned(), "v-91f".to_owned()), ("A/B".to_owned(), String::new())]);
+        set_builtin_env(dir.path(), s, "claude", env.clone()).unwrap();
+        save_custom(dir.path(), s, &CustomAgentInput { env: env.clone(), ..custom_input("mine") }).unwrap();
+        for id in ["claude", "mine"] {
+            let text = std::fs::read_to_string(dir.path().join(format!("{id}.toml"))).unwrap();
+            assert!(text.contains("API_KEY") && !text.contains("v-91f"), "{text}");
+            let spec = load(Some(dir.path()), s).into_iter().find(|p| p.id == id).unwrap();
+            assert_eq!(describe(&spec).env, env);
+        }
+        assert_eq!(secrets.keys("agent/"), ["agent/claude/env/API_KEY", "agent/mine/env/API_KEY"]);
+
+        set_builtin_command(dir.path(), s, "claude", Some("/opt/claude")).unwrap();
+        assert_eq!(secrets.get("agent/claude/env/API_KEY").as_deref(), Some("v-91f"));
+        set_builtin_env(dir.path(), s, "claude", BTreeMap::from([("OTHER".to_owned(), "x".to_owned())])).unwrap();
+        assert_eq!(secrets.keys("agent/claude/"), ["agent/claude/env/OTHER"]);
+        set_builtin_command(dir.path(), s, "claude", None).unwrap();
+        set_builtin_env(dir.path(), s, "claude", BTreeMap::new()).unwrap();
+        remove_custom(dir.path(), s, "mine").unwrap();
+        assert_eq!(secrets.keys("agent/"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn values_written_in_agent_files_move_to_the_secrets_unless_installed_from_the_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemorySecrets::default();
+        let s = Some(&secrets as &dyn EnvSecrets);
+        std::fs::write(dir.path().join("mine.toml"), "command = \"/opt/mine\"\n[env]\nK = \"v-91f\"\nS = \"\"\n")
+            .unwrap();
+        secrets.set("agent/mine/env/S", "saved").unwrap();
+        let registry =
+            "command = \"/registry/amp\"\n[env]\nR = \"1\"\n[registry]\nid = \"amp-acp\"\nversion = \"1.0\"\n";
+        std::fs::write(dir.path().join("amp-acp.toml"), registry).unwrap();
+        let specs = load(Some(dir.path()), s);
+        assert_eq!(
+            specs.iter().find(|p| p.id == "mine").unwrap().env,
+            [("K".to_owned(), "v-91f".to_owned()), ("S".to_owned(), "saved".to_owned())]
+        );
+        assert!(!std::fs::read_to_string(dir.path().join("mine.toml")).unwrap().contains("v-91f"));
+        assert_eq!(secrets.keys("agent/"), ["agent/mine/env/K", "agent/mine/env/S"]);
+        assert_eq!(std::fs::read_to_string(dir.path().join("amp-acp.toml")).unwrap(), registry);
+    }
+
+    #[test]
+    fn acp_json_imports_servers_and_skips_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        save_custom(dir.path(), None, &custom_input("taken")).unwrap();
+        let outcomes = import_acp(
+            dir.path(),
+            None,
+            r#"{"agent_servers": {
+                "My Agent!": {"command": "/opt/agent", "args": ["--acp"], "env": {"K": "v"}},
+                "taken": {"command": "/opt/taken"},
+                "claude": {"command": "/opt/claude"},
+                "!!!": {"command": "/opt/noname"},
+                "silent": {"args": []}
+            }}"#,
+        )
+        .unwrap();
+        let saved: Vec<&str> = outcomes.iter().filter(|o| o.saved).map(|o| o.id.as_str()).collect();
+        assert_eq!(saved, ["my-agent"]);
+        assert!(outcomes.iter().filter(|o| !o.saved).all(|o| !o.reason.is_empty()));
+        let mine = load(Some(dir.path()), None).into_iter().find(|s| s.id == "my-agent").unwrap();
+        assert_eq!((mine.name.as_str(), mine.command.as_str()), ("My Agent!", "/opt/agent"));
+        assert_eq!(mine.source, AgentSource::Custom);
+        import_acp(dir.path(), None, "not json").unwrap_err();
+        assert!(import_acp(dir.path(), None, "{}").unwrap().is_empty());
     }
 }

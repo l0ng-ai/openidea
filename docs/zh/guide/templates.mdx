@@ -1,0 +1,84 @@
+---
+title: "Live Templates 与宏"
+description: "展开缩写、包围代码、使用后缀补全和 Emmet、编写自己的模板，以及录制编辑器宏。"
+---
+
+## 实时模板
+
+实时模板（Live Template）是一段缩写，展开后变成带待填字段的代码片段。输入缩写后按 `⇥` / `Tab`，或者在补全列表里选中它。例如在 Java 中 `sout` 会变成 `System.out.println();`，光标停在括号里；在 Rust 中 `fn` 会展开成函数骨架。
+
+| 操作                | macOS | Windows / Linux |
+| ------------------- | ----- | --------------- |
+| **插入实时模板…**   | `⌘J`  | `Ctrl+J`        |
+| **包围方式…**       | `⌥⌘T` | `Ctrl+Alt+T`    |
+| **用实时模板包围…** | `⌥⌘J` | `Ctrl+Alt+J`    |
+
+展开后光标位于第一个字段，`⇥` / `Tab` 跳到下一个字段，同名字段会同步变化，`Esc` 退出模板。
+
+内置模板覆盖 Rust、JavaScript / TypeScript、Python、Go、Java、Kotlin、PHP 和 SQL，另有几个通用模板（`todo`、`fixme`、`hack`、`date`）。**插入实时模板…** 列出在光标处适用的模板。默认情况下模板只在代码中展开，在注释和字符串中不会展开。
+
+### 包围
+
+选中代码后按 `⌥⌘T` / `Ctrl+Alt+T`。列表最前面是该语言的包围结构（`if`、`while`、`try` 等），后面是使用了 `$SELECTION$` 的实时模板。**用实时模板包围…** 只显示后者。
+
+## 后缀补全
+
+后缀模板会改写点号前面的表达式。输入表达式、点号和模板关键字，然后按 `⇥` / `Tab`：
+
+```java
+user.name.nn      →  if (user.name != null) { … }
+items.for         →  for (var item : items) { … }
+```
+
+后缀模板支持 JavaScript / TypeScript、Rust、Python、Go、Java 和 Kotlin。常用关键字有 `if`、`else`、`not`、`var`、`return`、`for`、`fori`、`nn`（非空判断）、`null`、`par`（加括号）和 `try`；各语言还有自己的关键字，例如 Rust 的 `match`、`ok`、`some`，Java 和 Kotlin 的 `sout`，Kotlin 的 `when`，JavaScript / TypeScript 和 Python 的 `await`。
+
+在 **设置 › 编辑器 › 常规 › 后缀补全** 中可以开关后缀补全和单个模板，设置是否用 `Tab` 展开，以及是否在补全列表中显示后缀模板。
+
+## Emmet
+
+在 HTML、Vue、Svelte 文件以及 CSS、SCSS、Less、Sass 中，`⇥` / `Tab` 会展开 Emmet 缩写，例如 `ul>li*3` 或 `m10`。在标记语言文件中，编辑器右键菜单还提供 **使用 Emmet 更新标签**，用一个缩写改写光标所在的标签。
+
+## 编写自己的模板
+
+模板在 **设置 › 编辑器 › 实时模板** 中编辑。
+
+<Steps>
+  <Step title="添加模板">单击 **添加模板**，填写 **缩写**、**描述** 和 **组**。</Step>
+  <Step title="编写模板正文">
+    用 `$NAME$` 表示字段（同名字段会联动），`$END$` 表示最终光标位置，`$SELECTION$` 表示被包围的文本，`$$`
+    表示字面量美元符号。正文中行首的 Tab 表示缩进单位。
+  </Step>
+  <Step title="选择上下文">选择模板适用的语言。如果也想在注释和字符串中展开，勾选 **也在注释和字符串中展开**。</Step>
+  <Step title="为字段设置值（可选）">
+    在变量表中设置 **表达式**、**默认值**，勾选 **已定义时跳过** 可以在表达式已经算出值时跳过该字段。
+  </Step>
+</Steps>
+
+表达式可以是字符串字面量、对其他变量的引用或函数：`className()`、`methodName()`、`fileName()`、`fileNameWithoutExtension()`、`date("yyyy-MM-dd")`、`time()`、`user()`、`clipboard()`、`complete()`、`suggestVariableName()`、`commentStart()`、`capitalize(…)`、`camelCase(…)` 和 `snakeCase(…)`。
+
+例如，下面这个模板用来打印变量：
+
+```text
+缩写：  logv
+正文：  console.log("$EXPR$ =", $EXPR$);$END$
+```
+
+页面上还有 **使用 Tab 展开缩写** 和 **在代码补全中显示实时模板** 两个选项。改过的内置模板可以用 **恢复默认值** 还原。插件提供的模板以只读方式显示。
+
+实时模板、后缀补全设置和宏都按用户保存在本机，不保存在项目里。
+
+新建文件用的模板（**文件 › 新建…** 创建的内容）在 **设置 › 编辑器 › 文件和代码模板** 中设置。
+
+## 宏
+
+宏会录下你执行的命令、输入的文本以及在编辑器中按下的编辑键，之后可以重放。相关命令在 **编辑 › 宏** 中：
+
+<Steps>
+  <Step title="录制">选择 **开始录制宏**，状态栏会显示正在录制。</Step>
+  <Step title="停止">选择 **停止录制宏** 并输入名称；名称留空则只作为“上一个宏”保留。</Step>
+  <Step title="回放">**回放上一个宏** 重放最近一次录制，**播放已保存的宏…** 选择一个已保存的宏。</Step>
+</Steps>
+
+**编辑宏…** 用来重命名或删除已保存的宏。每个保存的宏也是一个以宏名命名的命令，可以在查找操作中找到，并在 **设置 › 按键映射** 中为它分配快捷键。宏相关命令默认都没有快捷键。
+
+如果某个录制的步骤在当前上下文中无法执行，回放会停止并给出通知。带有无法保存的参数的命令（例如作用于树中选中节点的菜单项）不会被录制。

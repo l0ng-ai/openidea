@@ -23,6 +23,10 @@ export interface CustomColorScheme {
 
 export type CustomColorSchemes = Record<string, CustomColorScheme>;
 
+/** Python docstring markup formats (PyCharm's Python Integrated Tools › Docstring format). */
+export const DOCSTRING_FORMATS = ["plain", "rest", "epytext", "google", "numpy"] as const;
+export type DocstringFormat = (typeof DOCSTRING_FORMATS)[number];
+
 export interface LanguageCodeStyle {
   /** Java formatter; relative XML paths start at the project root. */
   formatter?: "default" | "intellij" | "custom";
@@ -70,6 +74,8 @@ export const EDITOR_EXTRA_DEFAULTS = {
   colorOverrides: {} as Record<string, Record<string, TextAttributesOverride>>,
   /** Color Scheme › Language Defaults › Semantic highlighting (rainbow locals / parameters). */
   semanticHighlighting: false,
+  /** Docstring markup format the Python editor highlights (`plain` disables tag parsing). */
+  docstringFormat: "rest" as DocstringFormat,
   /** Color Scheme › Language Defaults › Rainbow brackets. */
   rainbowBrackets: false,
   ligatures: false,
@@ -99,13 +105,16 @@ export const EDITOR_EXTRA_DEFAULTS = {
     smoothCaretMovement: false,
     caretMovementStyle: "snappy",
     lineNumbers: true,
+    lineNumberMode: "absolute",
     methodSeparators: false,
     whitespaceLeading: true,
     whitespaceInner: true,
     whitespaceTrailing: true,
     indentGuides: true,
+    rainbowIndentGuides: false,
     hardWrapGuides: true,
     intentionBulb: true,
+    renderDocComments: false,
     distractionFreeWidth: 80,
   },
   breadcrumbs: { show: true, placement: "bottom", disabledLanguages: [] as string[] },
@@ -122,7 +131,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameterInfo: true,
     parameterInfoDelay: 1000,
   },
-  autoImport: { addUnambiguous: false, optimizeOnTheFly: false },
+  autoImport: { addUnambiguous: false, optimizeOnTheFly: false, importsOnPaste: "ask" as "ask" | "always" | "never" },
   folding: { showOutline: true, fileHeader: true, imports: true, docComments: false },
   tabs: {
     placement: "top",
@@ -150,8 +159,11 @@ export const EDITOR_EXTRA_DEFAULTS = {
     pairQuotes: true,
     surroundSelection: true,
     tabOutOfPair: true,
+    simultaneousTagEditing: true,
     reformatOnPaste: "indentEachLine",
+    escapeOnPaste: true,
     smartIndent: true,
+    insertDocStub: true,
     backspaceUnindent: "autoindent",
   },
   codeEditing: {
@@ -170,6 +182,9 @@ export const EDITOR_EXTRA_DEFAULTS = {
     disabledLanguages: [] as string[],
     codeVisionUsages: true,
     codeVisionAuthor: true,
+    codeVisionNoUsages: true,
+    codeVisionUsagesPosition: "top" as "top" | "right",
+    codeVisionAuthorPosition: "top" as "top" | "right",
   },
   inlineCompletion: { enabled: true, onlyOnPause: false, pauseMs: 500, disabledLanguages: [] as string[] },
   gutterIconsDisabled: [] as string[],
@@ -249,6 +264,10 @@ export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code"
 
 export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
+  if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
+  for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
+    if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);
   out.boldFontWeight = fontWeightOf(out.boldFontWeight, EDITOR_EXTRA_DEFAULTS.boldFontWeight);
   return out;

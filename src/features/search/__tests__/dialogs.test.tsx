@@ -53,9 +53,9 @@ vi.mock("../find/windowStore", async (orig) => ({
 }));
 
 const contributions = await import("@/workbench/contributions");
-const { commands } = await import("@/platform/ipc");
+const { commands, emitLocalIdeEvent } = await import("@/platform/ipc");
 const { RecentPopupsOverlay } = await import("../recent/RecentPopups");
-const { showRecentPopup, hideRecentPopup, useRecentPopup } = await import("../recent/store");
+const { cycleSwitcher, showRecentPopup, hideRecentPopup, useRecentPopup } = await import("../recent/store");
 const { openLocation } = await import("../common/open");
 const { usePlatform } = await import("@/platform/platformInfo");
 const { allActions } = await import("@/platform/actions");
@@ -108,6 +108,17 @@ describe("Search Everywhere dialog", () => {
     expect(useSearchEverywhere.getState().open).toBe(false);
     expect(run).toHaveBeenCalled();
     dispose();
+  });
+
+  it("refreshes the current file query after index invalidation finishes", async () => {
+    render(<SearchEverywhereOverlay />);
+    act(() => showSearchEverywhere("files", { query: "order" }));
+    await tick();
+    expect(document.getElementById("se-results")!.textContent).toContain("OrderController");
+    findFiles = async () => [];
+    act(() => emitLocalIdeEvent({ type: "indexState", indexing: false, files: 0, symbols: 0 }));
+    await tick();
+    expect(document.getElementById("se-results")!.textContent).not.toContain("OrderController");
   });
 
   it("the preview toggle is remembered", async () => {
@@ -473,6 +484,44 @@ describe("Recent Files multi-selection", () => {
     click(1, {});
     await tick();
     expect(openLocation).toHaveBeenCalledExactlyOnceWith("/p/two/index.ts", null, { side: false });
+  });
+});
+
+describe("Switcher", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("opens the selection when Ctrl is released, once the popup closed, in the same task", async () => {
+    const tab = (key: string, lastActive: number) => ({
+      input: { kind: "agent-session", key },
+      title: key,
+      icon: "toolwindow-agents",
+      lastActive,
+    });
+    const seen: Array<{ key: string; popup: boolean; focus: Element | null }> = [];
+    vi.spyOn(commands, "recentFiles").mockResolvedValue({ status: "ok", data: [] });
+    vi.spyOn(contributions, "maybeEditorService").mockReturnValue({
+      openTabs: () => [tab("task-b", 2), tab("task-a", 1)],
+      openPaths: () => [],
+      activePath: () => null,
+      openInput: async (input: { key: string }) => {
+        seen.push({ key: input.key, popup: !!screen.queryByRole("dialog"), focus: document.activeElement });
+      },
+    } as unknown as import("@/workbench/contributions").EditorService);
+    render(
+      <>
+        <button type="button">editor</button>
+        <RecentPopupsOverlay />
+      </>,
+    );
+    const editor = screen.getByRole("button", { name: "editor" });
+    editor.focus();
+    act(() => cycleSwitcher(1));
+    await tick();
+    expect(screen.getByRole("dialog", { name: "Switcher" })).toBeInTheDocument();
+    act(() => void fireEvent.keyUp(window, { key: "Control" }));
+    // The editor opened takes focus itself: the one left behind doesn't get it back first.
+    expect(seen).toEqual([{ key: "task-a", popup: false, focus: document.body }]);
+    expect(editor).not.toHaveFocus();
   });
 });
 

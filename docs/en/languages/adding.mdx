@@ -1,0 +1,166 @@
+---
+title: "Add a language"
+description: "The language definition format: file detection, comments, highlighting, language servers, debugger and formatter."
+---
+
+Every language OpenIDEA knows is a TOML file in the format described here. You can use it in three ways:
+
+- **Change a built-in language for yourself**: put a file with the same `id` in the `languages` folder of the configuration directory. It replaces the built-in definition as a whole (fields are not merged), so start from a copy of the built-in file.
+- **Add a language for yourself**: put a new file with a new `id` in the same folder.
+- **Ship a language to others**: add it to a plugin (see [Contributing a language from a plugin](#contributing-a-language-from-a-plugin)), or to the repository's `languages/` folder.
+
+The configuration directory is:
+
+| OS      | Folder                                                      |
+| ------- | ----------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/ai.l0ng.openidea/languages/` |
+| Windows | `%APPDATA%\ai.l0ng.openidea\languages\`                     |
+| Linux   | `~/.config/ai.l0ng.openidea/languages/`                     |
+
+The folder is read once at startup, so restart the IDE after changing a file. A file that does not parse is skipped and the reason is written to the log.
+
+## Example
+
+A complete definition for a language with a tree-sitter grammar, a language server and a debugger:
+
+```toml languages/zig.toml
+id = "zig"
+name = "Zig"
+extensions = ["zig", "zon"]
+line-comment = "//"
+indent = { tab-size = 4, insert-spaces = true }
+tree-sitter = "zig"
+
+[[language-servers]]
+name = "zls"
+command = "zls"
+root-markers = ["build.zig", "build.zig.zon"]
+install-hint = "Install ZLS matching your Zig version (https://github.com/zigtools/zls/releases)"
+
+[debugger]
+adapter = "codelldb"
+command = "codelldb"
+args = ["--port", "${port}"]
+transport = "tcp"
+install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Language Servers"
+```
+
+All keys are kebab-case. Only `id` and `name` are required; a definition with nothing else still gives the files a name in the UI.
+
+## Language fields
+
+| Field                | Type            | Description                                                                                                                                                                                                                                          |
+| -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                 | string          | Stable language id, e.g. `python`. Use letters, digits, `-`, `_`, `.` or `+` (at most 64 characters).                                                                                                                                                |
+| `name`               | string          | Name shown in the UI.                                                                                                                                                                                                                                |
+| `extensions`         | string array    | Extensions without the dot, matched case-insensitively. Compound extensions work: `html.erb`, `tftest.hcl`.                                                                                                                                          |
+| `filenames`          | string array    | Exact file names (`Dockerfile`, `go.mod`) or patterns with `*` and `?` (`Dockerfile.*`).                                                                                                                                                             |
+| `first-line`         | string          | Regular expression tried against the first line when name and extension don't match, e.g. `^#!.*\\bpython[0-9.]*\\b`.                                                                                                                                |
+| `line-comment`       | string          | Line comment token, e.g. `//`. Used by **Comment with Line Comment**.                                                                                                                                                                                |
+| `block-comment`      | `[open, close]` | Block comment tokens, e.g. `["/*", "*/"]`.                                                                                                                                                                                                           |
+| `indent`             | table           | `{ tab-size = 4, insert-spaces = true }`. Both keys are required when the table is present.                                                                                                                                                          |
+| `ui-mode`            | string          | CodeMirror mode used for instant highlighting. The name of a mode from `@codemirror/language-data` (`Rust`, `Python`, `C++`, `Properties files`, ...) or one of the IDE's own modes (such as `CMake`, `Vue`, `Astro`, `ERB`, `JSP`, `Log`, `GoMod`). |
+| `framework-ui-modes` | array of tables | Modes that replace `ui-mode` in a framework's projects; see below.                                                                                                                                                                                   |
+| `tree-sitter`        | string          | Bundled tree-sitter grammar for outline, folding and project symbols. When there is no `ui-mode`, it also highlights. See the list below.                                                                                                            |
+| `language-servers`   | array of tables | Language servers, in order; see below.                                                                                                                                                                                                               |
+| `debugger`           | table           | Debug adapter; see below.                                                                                                                                                                                                                            |
+| `formatter`          | table           | External formatter; see below.                                                                                                                                                                                                                       |
+| `scratch-template`   | string          | Content of a new scratch file of this language. `$END$` marks where the caret goes.                                                                                                                                                                  |
+
+Bundled tree-sitter grammars: `bash`, `c`, `cmake`, `cpp`, `csharp`, `css`, `dart`, `elixir`, `gdscript`, `go`, `graphql`, `haskell`, `hcl`, `html`, `java`, `javascript`, `json`, `kotlin`, `lua`, `make`, `markdown`, `nix`, `ocaml`, `ocaml_interface`, `php`, `prisma`, `proto`, `python`, `ruby`, `rust`, `scala`, `swift`, `toml`, `tsx`, `typescript`, `xml`, `yaml`, `zig`. A new grammar has to be compiled into the IDE; a plugin can provide highlighting and structure for a language without a grammar instead (see [Language features](/en/plugins/guides/language-features)).
+
+### `[[framework-ui-modes]]`
+
+| Field          | Type         | Description                                                                                                                                          |
+| -------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui-mode`      | string       | The mode to use instead of `ui-mode`.                                                                                                                |
+| `root-markers` | string array | The mode applies to a file when one of these exists in a folder above it, up to the project folder. Matched like a language server's `root-markers`. |
+
+The first entry whose marker is found wins. HTML uses this for Angular templates:
+
+```toml
+[[framework-ui-modes]]
+ui-mode = "Angular Template"
+root-markers = ["angular.json", "node_modules/@angular/core"]
+```
+
+## `[[language-servers]]`
+
+Each entry starts one LSP server. Servers are listed in order; all regular servers run side by side, and a `fallback` server runs only while every server listed before it is missing.
+
+| Field                     | Type         | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                    | string       | Stable name, e.g. `rust-analyzer`. Users' settings refer to it (`languageServers.<name>`), and it selects the IDE's installer when one exists.                                                                                                                                                                                                                                                                                                                                  |
+| `command`                 | string       | Executable to start. Looked up in the IDE's tools folder, then on `PATH`.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `args`                    | string array | Arguments, e.g. `["--stdio"]`.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `env`                     | table        | Extra environment variables.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `requires-env`            | string array | Environment variables the server needs, e.g. the folder of a downloaded bundle. While one is unset or empty (in `env` and in the IDE's environment), the server counts as missing and `install-hint` is shown instead of starting it.                                                                                                                                                                                                                                           |
+| `root-markers`            | string array | Files that mark a workspace root. The outermost folder above the file (within the project) that contains one becomes the server's root. A marker can be a relative path, a pattern with one `*` (`*.csproj`), or `file#table` to require a TOML table (`pyproject.toml#tool.ruff`).                                                                                                                                                                                             |
+| `require-root-marker`     | bool         | Serve only files below a root marker, not the whole project. Use it for a framework's server next to the language's own one.                                                                                                                                                                                                                                                                                                                                                    |
+| `initialization-options`  | table        | Sent as `initializationOptions` when the server starts.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `settings`                | table        | Answers the server's `workspace/configuration` requests. Without it, the requested sections are looked up in `initialization-options`.                                                                                                                                                                                                                                                                                                                                          |
+| `install-hint`            | string       | Shown when the server is missing and the IDE cannot install it.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `fallback`                | bool         | An alternative to the servers listed before it; used only while none of them is installed.                                                                                                                                                                                                                                                                                                                                                                                      |
+| `features`                | string array | Use the server only for these features; empty means everything. Values: `completion`, `inline-completion`, `hover`, `signature-help`, `definition`, `declaration`, `type-definition`, `implementation`, `references`, `document-highlight`, `document-symbol`, `workspace-symbol`, `code-action`, `code-lens`, `rename`, `formatting`, `inlay-hint`, `semantic-tokens`, `document-link`, `call-hierarchy`, `type-hierarchy`, `folding-range`, `selection-range`, `diagnostics`. |
+| `code-action-kinds`       | string array | Keep only these code action kinds, matched by prefix (`refactor` keeps `refactor.extract`); empty keeps all.                                                                                                                                                                                                                                                                                                                                                                    |
+| `connect`                 | string       | `host:port` of a server that speaks LSP over TCP. See [TCP servers](#tcp-servers).                                                                                                                                                                                                                                                                                                                                                                                              |
+| `max-java`                | integer      | Newest Java release the server runs on. A newer `JAVA_HOME` is replaced by the newest installed JDK that fits.                                                                                                                                                                                                                                                                                                                                                                  |
+| `tsserver-project`        | bool         | For TypeScript servers: register source files with tsserver when the folder has no `tsconfig.json` / `jsconfig.json`.                                                                                                                                                                                                                                                                                                                                                           |
+| `resync-on-configuration` | bool         | Send the open documents again once `workspace/configuration` has been answered, for servers that apply some settings only when they parse a document.                                                                                                                                                                                                                                                                                                                           |
+
+Users can override most of these per server in **Settings › Languages & Frameworks › Language Servers** (executable, arguments, environment, initialization options, workspace configuration), without editing the definition.
+
+### TCP servers
+
+Some servers only listen on a TCP port, such as the one inside the Godot editor. With `connect`, the IDE connects to that address when something listens there. Otherwise it starts `command` (when installed) and connects once it accepts connections: to `127.0.0.1:${port}` when the arguments contain `${port}` (the IDE picks a free port), else to the `connect` address. `${root}` in the arguments is the workspace root. A server the IDE reached without starting it is never shut down by the IDE.
+
+```toml
+[[language-servers]]
+name = "godot"
+command = "godot"
+args = ["--headless", "--editor", "--path", "${root}", "--lsp-port", "${port}"]
+connect = "127.0.0.1:6005"
+root-markers = ["project.godot"]
+```
+
+## `[debugger]`
+
+| Field          | Type         | Description                                                                                                                                                  |
+| -------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `adapter`      | string       | Debug adapter name, e.g. `codelldb`, `debugpy`, `js-debug`, `delve`. It also selects the IDE's installer when one exists.                                    |
+| `command`      | string       | Executable that starts the adapter.                                                                                                                          |
+| `args`         | string array | Arguments. With `tcp`, `${port}` is replaced by a free port.                                                                                                 |
+| `transport`    | string       | `stdio` (default) or `tcp`.                                                                                                                                  |
+| `connect`      | string       | `tcp` only: `host:port` of an adapter that runs inside another program (the Godot editor). Used when it accepts connections; otherwise `command` is started. |
+| `install-hint` | string       | Shown when the adapter is missing.                                                                                                                           |
+
+A language with a `[debugger]` lets you set breakpoints in its files.
+
+## `formatter`
+
+An external formatter, used when no language server can format the file, or when selected in settings:
+
+```toml
+formatter = { tool = "prettier", parser = "typescript", range = true }
+```
+
+| Field    | Type   | Description                                                                                  |
+| -------- | ------ | -------------------------------------------------------------------------------------------- |
+| `tool`   | string | `prettier`, `oxfmt` or `ruff`.                                                               |
+| `parser` | string | The tool's parser for this language (Prettier's `--parser`, e.g. `css`, `markdown`, `yaml`). |
+| `range`  | bool   | The tool can format a selection. Prettier and Ruff only; oxfmt always formats whole files.   |
+
+## Contributing a language from a plugin
+
+A plugin ships the same file and declares it in its manifest:
+
+```toml plugin.toml
+[[contributes.languages]]
+path = "languages/solidity.toml"
+```
+
+Every program the definition starts (`language-servers.command`, `debugger.command`) needs a `process:<program>` capability; a server whose program is not granted is left out, while the language itself still works. Built-in and user definitions win: a plugin cannot reuse their ids, extensions or file names. See [Language features](/en/plugins/guides/language-features) for the plugin side, and the Solidity example in [`plugins/official/solidity`](https://github.com/l0ng-ai/openidea/blob/main/plugins/official/solidity).
+
+## Adding a built-in language
+
+To add a language to OpenIDEA itself, add `languages/<id>.toml` and register it in the `BUILTIN` table in [`crates/ide-language/src/registry.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-language/src/registry.rs), where the files are embedded at build time. One-click installation of its server needs an entry in [`crates/ide-tools/src/registry.rs`](https://github.com/l0ng-ai/openidea/blob/main/crates/ide-tools/src/registry.rs) under the same `name`.

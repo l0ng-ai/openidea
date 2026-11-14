@@ -11,9 +11,10 @@ import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
 export { compareFilesData, displayPath } from "./compareData";
-import { openDiff, type DiffData } from "./diffInput";
+import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
 import { tx } from "@/platform/i18n";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -75,7 +76,7 @@ function info(title: string) {
 
 async function pickFile(near: string): Promise<string | null> {
   if (!isTauri()) return null;
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const dir = near.slice(0, near.lastIndexOf("/")) || undefined;
   const picked = await open({ multiple: false, directory: false, title: "Compare With", defaultPath: dir });
   return (Array.isArray(picked) ? picked[0] : picked) ?? null;
@@ -129,7 +130,7 @@ async function pickDirectory(near: string): Promise<string | null> {
     const picked = await promptText({ title: "Compare With", label: "Directory path", initial: near, mono: true });
     return picked?.value ?? null;
   }
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({ multiple: false, directory: true, title: tx("Compare With"), defaultPath: near });
   return (Array.isArray(picked) ? picked[0] : picked) ?? null;
 }
@@ -238,9 +239,9 @@ export function registerCompareActions(): () => void {
         if (!other) return;
         if (other.type === "file") {
           if (other.path === path) return;
-          await openDiff(compareFilesData(path, other.path));
+          await openVcsDiff(compareFilesData(path, other.path));
         } else {
-          await openDiff({
+          await openVcsDiff({
             path,
             left: { type: "text", text: other.text, label: other.label },
             right: { type: "worktree", label: displayPath(path) },
@@ -271,7 +272,7 @@ export function registerCompareActions(): () => void {
       run: async ({ arg }) => {
         const paths = argPaths(arg).filter((p) => !p.endsWith("/"));
         if (paths.length !== 2) return info("Select two files to compare");
-        await openDiff(compareFilesData(paths[0]!, paths[1]!));
+        await openVcsDiff(compareFilesData(paths[0]!, paths[1]!));
       },
     },
     {
@@ -285,14 +286,14 @@ export function registerCompareActions(): () => void {
         if (!path) return info("Open or select a file to compare with the clipboard");
         let clipboard: string;
         try {
-          clipboard = (await navigator.clipboard?.readText()) ?? "";
+          clipboard = await readClipboardPlainText();
         } catch {
           return info("The clipboard could not be read");
         }
         const ed = activeEditor();
         const sel = ed && ed.ctx.path === path ? ed.view.state.selection.main : null;
         const selection = sel && !sel.empty ? ed!.view.state.sliceDoc(sel.from, sel.to) : null;
-        await openDiff(clipboardDiffData(path, clipboard, selection));
+        await openVcsDiff(clipboardDiffData(path, clipboard, selection));
       },
     },
     {
@@ -304,7 +305,7 @@ export function registerCompareActions(): () => void {
       run: async ({ arg }) => {
         const a = parseTextsArg(arg);
         if (!a) return;
-        await openDiff({
+        await openVcsDiff({
           path: a.path,
           title: a.title,
           line: a.line,

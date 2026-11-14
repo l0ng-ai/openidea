@@ -5,7 +5,7 @@
  * its source (as IDEA: selection shows, navigation jumps).
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -34,9 +34,13 @@ import {
   rootNode,
   type BuildNode,
   type BuildStatus,
+  type ConsoleLine,
 } from "./model";
+import { findOutputLinks, type OutputLink } from "@/features/run/links";
+import { openTarget, openUrl } from "@/features/run/navigate";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
+import { WidestColumns } from "@/platform/consoleColumns";
 import { tx } from "@/platform/i18n";
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
@@ -201,10 +205,50 @@ function BuildTree() {
 
 const LINE_HEIGHT = 20;
 
+/**
+ * One console line: file locations and URLs (compiler diagnostics, stack
+ * frames) are links, resolved against the directory of the step that printed
+ * the line (Maven reactor modules run in their own directory), then the
+ * project root and a name search as in the run console.
+ */
+function ConsoleLineText({ line, root }: { line: ConsoleLine; root: string }) {
+  const links = useMemo(() => (line.kind === "system" ? [] : findOutputLinks(line.text)), [line.text, line.kind]);
+  const activate = (e: MouseEvent, link: OutputLink) => {
+    e.preventDefault();
+    if (window.getSelection()?.toString()) return;
+    if (link.kind === "url") void openUrl(link.url);
+    else void openTarget(link.target, line.cwd ?? root);
+  };
+  if (!links.length) return <>{line.text}</>;
+  const out: ReactNode[] = [];
+  let pos = 0;
+  for (const link of links) {
+    if (link.start > pos) out.push(line.text.slice(pos, link.start));
+    out.push(
+      <a
+        key={link.start}
+        href={link.kind === "url" ? link.url : undefined}
+        className={styles.link}
+        onClick={(e) => activate(e, link)}
+        role="link"
+        tabIndex={-1}
+      >
+        {line.text.slice(link.start, link.end)}
+      </a>,
+    );
+    pos = link.end;
+  }
+  out.push(line.text.slice(pos));
+  return <>{out}</>;
+}
+
 function BuildConsole() {
+  const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [widest] = useState(() => new WidestColumns());
+  const columns = useMemo(() => widest.measure(lines), [widest, lines]);
   const virtualizer = useVirtualizer({
     count: lines.length,
     getScrollElement: () => ref.current,
@@ -227,7 +271,10 @@ function BuildConsole() {
         stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < LINE_HEIGHT * 2;
       }}
     >
-      <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+      <div
+        className={styles.consoleInner}
+        style={{ height: virtualizer.getTotalSize(), minWidth: `calc(${columns}ch + 24px)` }}
+      >
         {virtualizer.getVirtualItems().map((v) => {
           const line = lines[v.index]!;
           return (
@@ -236,7 +283,7 @@ function BuildConsole() {
               className={clsx(styles.line, styles[line.kind])}
               style={{ transform: `translateY(${v.start}px)` }}
             >
-              {line.text || " "}
+              <ConsoleLineText line={line} root={root} />
             </div>
           );
         })}

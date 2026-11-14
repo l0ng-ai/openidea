@@ -1,7 +1,11 @@
 //! Repository version lookups for manifest inspections and completion.
 use crate::{Host, rpc::Dispatcher};
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
-use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo};
+use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go, maven, npm};
+use std::collections::BTreeMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 struct CratesIo;
 impl DependencyVersionSource for CratesIo {
@@ -21,6 +25,174 @@ impl DependencyVersionSource for CratesIo {
     }
 }
 
+/// A cache key for a `package` that is not a filesystem-safe name (a Maven
+/// coordinate with dots, a query): hashed under the source's id.
+pub(crate) fn hashed_key(id: &str, package: &str) -> String {
+    let mut hash = DefaultHasher::new();
+    package.hash(&mut hash);
+    format!("{id}-{:016x}", hash.finish())
+}
+
+/// Maven Central's group-id suggestions: the search endpoint's groups matching
+/// a typed prefix, most recently updated first.
+pub(crate) struct MavenCentralGroups;
+impl DependencyVersionSource for MavenCentralGroups {
+    fn id(&self) -> &'static str {
+        "maven-central-groups"
+    }
+
+    fn cache_key(&self, prefix: &str) -> Option<String> {
+        Some(hashed_key(self.id(), prefix))
+    }
+
+    fn fetch(&self, prefix: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let url = maven::groups_url(prefix).ok_or_else(|| IdeError::internal("invalid group prefix"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        let text =
+            ide_tools::Http::new(&search_path)?.https_only().get_text_limited(&url, Some(1024 * 1024), cancel)?;
+        maven::parse_search_groups(&text).ok_or_else(|| IdeError::internal("invalid search response"))
+    }
+}
+
+/// The artifacts of one group matching a typed prefix, from the same endpoint.
+pub(crate) struct MavenCentralArtifacts {
+    pub group: String,
+}
+impl DependencyVersionSource for MavenCentralArtifacts {
+    fn id(&self) -> &'static str {
+        "maven-central-artifacts"
+    }
+
+    fn cache_key(&self, prefix: &str) -> Option<String> {
+        Some(hashed_key(self.id(), &format!("{}\u{1}{prefix}", self.group)))
+    }
+
+    fn fetch(&self, prefix: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let url =
+            maven::artifacts_url(&self.group, prefix).ok_or_else(|| IdeError::internal("invalid artifact prefix"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        let text =
+            ide_tools::Http::new(&search_path)?.https_only().get_text_limited(&url, Some(1024 * 1024), cancel)?;
+        maven::parse_search_artifacts(&text).ok_or_else(|| IdeError::internal("invalid search response"))
+    }
+}
+
+/// Every version published of one `group:artifact` on Central, newest first.
+pub(crate) struct MavenCentralVersions;
+impl DependencyVersionSource for MavenCentralVersions {
+    fn id(&self) -> &'static str {
+        "maven-central-versions"
+    }
+
+    fn cache_key(&self, coordinates: &str) -> Option<String> {
+        Some(hashed_key(self.id(), coordinates))
+    }
+
+    fn fetch(&self, coordinates: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let (group, artifact) = coordinates.split_once(':').ok_or_else(|| IdeError::internal("invalid coordinates"))?;
+        let url = maven::metadata_url(group, artifact).ok_or_else(|| IdeError::internal("invalid coordinates"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        let text =
+            ide_tools::Http::new(&search_path)?.https_only().get_text_limited(&url, Some(2 * 1024 * 1024), cancel)?;
+        Ok(maven::parse_metadata_versions(&text))
+    }
+}
+
+struct NpmRegistry;
+impl DependencyVersionSource for NpmRegistry {
+    fn id(&self) -> &'static str {
+        "npm"
+    }
+
+    /// Scoped names (`@scope/name`) aren't file-name safe.
+    fn cache_key(&self, package: &str) -> Option<String> {
+        let mut hash = DefaultHasher::new();
+        package.hash(&mut hash);
+        Some(format!("{}-{:016x}", self.id(), hash.finish()))
+    }
+
+    fn fetch(&self, package: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let path = npm::registry_path(package).ok_or_else(|| IdeError::internal("invalid package name"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        // The abbreviated metadata: the full document of a large package runs to tens of megabytes.
+        let text = ide_tools::Http::new(&search_path)?
+            .https_only()
+            .accept("application/vnd.npm.install-v1+json")
+            .get_text_limited(&format!("https://registry.npmjs.org/{path}"), Some(32 * 1024 * 1024), cancel)?;
+        npm::registry_versions(&text).ok_or_else(|| IdeError::internal("invalid registry metadata"))
+    }
+}
+
+struct GoModules {
+    root: PathBuf,
+    env: BTreeMap<String, String>,
+}
+
+impl DependencyVersionSource for GoModules {
+    fn id(&self) -> &'static str {
+        "go-modules"
+    }
+
+    fn cache_key(&self, package: &str) -> Option<String> {
+        let mut hash = DefaultHasher::new();
+        (&self.root, &self.env, package).hash(&mut hash);
+        Some(format!("{}-{:016x}", self.id(), hash.finish()))
+    }
+
+    fn fetch(&self, package: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let search =
+            self.env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(ide_core::tool_path::search_path);
+        let go = ide_core::tool_path::find_command("go", &search, &self.root)
+            .ok_or_else(|| IdeError::unavailable("Go SDK is unavailable"))?;
+        // A partially edited go.mod is often invalid. Query outside it while
+        // keeping the SDK and proxy/private module configuration.
+        let dir = tempfile::tempdir()?;
+        let mut cmd = Command::new(go);
+        cmd.current_dir(dir.path())
+            .env("PATH", search)
+            .envs(&self.env)
+            .env("GO111MODULE", "on")
+            .env("GOFLAGS", "")
+            .env("GOWORK", "off")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["list", "-m", "-versions", "-f", "{{range .Versions}}{{println .}}{{end}}", "--", package]);
+        let query = cancel.child_token();
+        // Fetches run on Host::blocking's Tokio pool, which keeps a runtime current.
+        let deadline = tokio::spawn({
+            let query = query.clone();
+            async move {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                query.cancel();
+            }
+        });
+        let output = ide_tools::run_streamed(cmd, &query, &|_| {});
+        deadline.abort();
+        Ok(go::listed_versions(&output?))
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "dependencies/go_tests.rs"]
+mod go_tests;
+
+fn go_source(project: &crate::Project, config_dir: &Path, path: &Path) -> IdeResult<GoModules> {
+    let member = ide_workspace::workspace::Workspace::load(&project.root)?.and_then(|workspace| {
+        workspace
+            .projects
+            .into_iter()
+            .filter(|root| **root != project.root && path.starts_with(root))
+            .max_by_key(|root| root.components().count())
+    });
+    let settings = match &member {
+        Some(root) => ide_workspace::SettingsStore::load(config_dir, Some(root)).effective(),
+        None => project.settings.effective(),
+    };
+    let root = member.unwrap_or_else(|| project.root.clone());
+    let mut env = BTreeMap::new();
+    ide_sdk::go::configure_environment(&root, &settings, &mut env);
+    Ok(GoModules { root, env })
+}
+
 /// `offset` limits a completion request to its version string; inspections omit it.
 pub async fn dependency_versions(
     host: &Host,
@@ -31,11 +203,31 @@ pub async fn dependency_versions(
 ) -> IdeResult<Vec<DependencyVersions>> {
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
-    let cancel = host.begin_request(request);
+    let config_dir = host.config_dir.clone();
+    let cancel = host.begin_project_read_request(window, request);
     let result = host
         .blocking(move || {
             let snap = project.documents.snapshot(doc)?;
-            if snap.large || snap.read_only || snap.path.file_name().is_none_or(|n| n != "Cargo.toml") {
+            if snap.large || snap.read_only {
+                return Ok(Vec::new());
+            }
+            if snap.path.file_name().is_some_and(|name| name == "go.mod") {
+                let Some(dependency) = offset.and_then(|offset| go::dependency_at(&snap.text, offset)) else {
+                    return Ok(Vec::new());
+                };
+                project.require_trust()?;
+                let source = go_source(&project, &config_dir, snap.path.as_ref())?;
+                let versions = cache.versions(&source, &dependency.package, &cancel)?;
+                return Ok(vec![DependencyVersions { dependency, versions, update: None }]);
+            }
+            if snap.path.file_name().is_some_and(|name| name == "package.json") {
+                let Some(dependency) = offset.and_then(|offset| npm::dependency_at(&snap.text, offset)) else {
+                    return Ok(Vec::new());
+                };
+                let versions = cache.versions(&NpmRegistry, &dependency.package, &cancel)?;
+                return Ok(vec![DependencyVersions { dependency, versions, update: None }]);
+            }
+            if snap.path.file_name().is_none_or(|name| name != "Cargo.toml") {
                 return Ok(Vec::new());
             }
             let mut out = Vec::new();
@@ -119,6 +311,53 @@ mod tests {
         std::fs::write(&other, text).unwrap();
         let info = project.documents.open(&other).unwrap();
         assert!(dependency_versions(&host, "main", info.id, None, RequestId(414)).await.unwrap().is_empty());
+        host.close_project("main");
+    }
+
+    struct CachedNpm;
+    impl DependencyVersionSource for CachedNpm {
+        fn id(&self) -> &'static str {
+            "npm"
+        }
+        fn cache_key(&self, package: &str) -> Option<String> {
+            NpmRegistry.cache_key(package)
+        }
+        fn fetch(&self, _: &str, _: &CancellationToken) -> IdeResult<Vec<String>> {
+            Ok(vec!["20.11.0".into(), "18.19.3".into()])
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn package_json_completes_the_version_at_the_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let text = "{\n  \"devDependencies\": { \"@types/node\": \"^20\" }\n}\n";
+        let path = root.join("package.json");
+        std::fs::write(&path, text).unwrap();
+        let host = Host::new(HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: Arc::default(),
+            sink_for: Box::new(|_| Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        let project = host.open_project("main", &root).unwrap();
+        let info = project.documents.open(&path).unwrap();
+        host.dependency_versions.versions(&CachedNpm, "@types/node", &CancellationToken::new()).unwrap();
+        let offset = text.find("^20").unwrap() as u32 + 2;
+        let found = dependency_versions(&host, "main", info.id, Some(offset), RequestId(420)).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].dependency.package, "@types/node");
+        assert_eq!(found[0].versions, ["20.11.0", "18.19.3"]);
+        // Inspections (no offset) and positions outside a version ask nothing.
+        assert!(dependency_versions(&host, "main", info.id, None, RequestId(421)).await.unwrap().is_empty());
+        assert!(dependency_versions(&host, "main", info.id, Some(2), RequestId(422)).await.unwrap().is_empty());
         host.close_project("main");
     }
 }

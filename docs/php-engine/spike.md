@@ -7,7 +7,7 @@
 ```text
 scripts/php-corpus.sh
 cargo run --release -p ide-php --example parse_corpus            # all corpora under PHP_CORPUS_DIR
-cargo run --release -p ide-php --example parse_corpus -- fixtures/php-app
+cargo run --release -p ide-php --example parse_corpus -- fixtures/php-library
 ```
 
 The example reads every `.php` file into memory first, so the timings below leave out disk reads. A counting global allocator measures the heap. Truncation is deterministic: a fixed xorshift seed picks 200 error-free files that have at least one declaration, and cuts each at a random byte offset.

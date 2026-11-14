@@ -22,6 +22,9 @@ export interface LogOptions {
   showDate: boolean;
   showHash: boolean;
   showSignature: boolean;
+  showGitHubChecks: boolean;
+  /** The row naming the columns, where they are resized and reordered. */
+  showColumnHeaders: boolean;
   highlightMine: boolean;
   highlightMerges: boolean;
   highlightCurrentBranch: boolean;
@@ -31,6 +34,8 @@ export interface LogOptions {
   groupByDirectory: boolean;
   /** Selecting a changed file shows its diff in the editor's preview tab. */
   diffPreview: boolean;
+  /** Changed files show how many lines the commit added and deleted. */
+  showLineStats: boolean;
   showDetails: boolean;
   showRepository: boolean;
   showOnlyAffected: boolean;
@@ -56,12 +61,15 @@ export const DEFAULT_LOG_OPTIONS: LogOptions = {
   showDate: true,
   showHash: false,
   showSignature: false,
+  showGitHubChecks: false,
+  showColumnHeaders: false,
   highlightMine: true,
   highlightMerges: true,
   highlightCurrentBranch: true,
   showBranches: true,
   groupByDirectory: true,
   diffPreview: true,
+  showLineStats: false,
   showDetails: true,
   showRepository: true,
   showOnlyAffected: false,

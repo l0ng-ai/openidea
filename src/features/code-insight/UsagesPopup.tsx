@@ -11,15 +11,17 @@ import { Decoration, EditorView } from "@codemirror/view";
 import { codePreviewExtensions } from "@/editor/api";
 import { basename } from "@/platform/project";
 import { shortcutLabel } from "@/platform/keymap";
-import { Icon, IconButton, List, Popup, fileIconName, listNavigate } from "@/ui";
+import { Icon, IconButton, List, Popup, Select, Spinner, fileIconName, listNavigate } from "@/ui";
 import { openLocation, readFileLines } from "./ipc";
 import {
   dismissUsagesPopup,
+  setUsagesPopupScope,
   showUsageResults,
   usageCount,
   useUsagesPopup,
   type Usage,
   type UsageGroup,
+  type UsageScope,
 } from "./usages";
 import { UsagePreview } from "./UsagesView";
 import styles from "./UsagesPopup.module.css";
@@ -79,7 +81,7 @@ export function UsagesPopup() {
 const ROW = 24;
 
 function UsagesPopupInner() {
-  const { anchor, symbol, groups, note } = useUsagesPopup();
+  const { anchor, symbol, groups, note, loading, scope } = useUsagesPopup();
   const preview = useUsagesPopupPreview((s) => s.preview);
   const all = useMemo<Usage[]>(() => groups.flatMap((g) => g.usages), [groups]);
   const [filter, setFilter] = useState("");
@@ -144,7 +146,16 @@ function UsagesPopupInner() {
   const keys = shortcutLabel("find.usages");
   return (
     <Popup open anchor={anchor} onClose={close} aria-label="Usages" className={styles.popup}>
-      <div className={styles.focus} tabIndex={0} data-autofocus onKeyDown={onKeyDown}>
+      <div
+        className={styles.focus}
+        tabIndex={0}
+        data-autofocus
+        data-testid="usages-popup"
+        data-loading={loading}
+        data-total={total}
+        data-scope={scope ?? undefined}
+        onKeyDown={onKeyDown}
+      >
         <div className={styles.header}>
           <span className={styles.title}>
             {symbol ? tx`Usages of ${symbol}` : tx("Usages")}{" "}
@@ -152,13 +163,31 @@ function UsagesPopupInner() {
               {filter || items.length !== total ? tx`${items.length} of ${total} found` : tx`${total} found`}
             </span>
           </span>
+          {scope && (
+            <Select<UsageScope>
+              variant="ghost"
+              aria-label={tx("Scope")}
+              className={styles.scope}
+              value={scope}
+              options={[
+                { value: "project", label: tx("Project Files") },
+                { value: "libraries", label: tx("Project and Libraries") },
+              ]}
+              onChange={setUsagesPopupScope}
+            />
+          )}
+          {loading && (
+            <span className={styles.searching} role="status" aria-label={tx("Searching for more usages")}>
+              <Spinner size={16} variant="spokes" />
+            </span>
+          )}
           {filter && (
             <span className={clsx(styles.filter, !items.length && styles.noMatch)} role="status">
               {filter}
             </span>
           )}
           <IconButton
-            icon="list"
+            icon="preview-details"
             size="small"
             title="Show Preview"
             pressed={preview}
@@ -171,7 +200,11 @@ function UsagesPopupInner() {
           </button>
         </div>
         <UsageAccessFilter items={all} />
-        {note && <div className={styles.note}>{note}</div>}
+        {note && (
+          <div className={styles.note} data-testid="usages-note">
+            {note}
+          </div>
+        )}
         <div className={styles.body} style={{ height: Math.max(1, Math.min(14, items.length)) * ROW }}>
           <List
             items={items}
@@ -191,8 +224,8 @@ function UsagesPopupInner() {
               </div>
             }
             renderItem={(u) => (
-              <div className={styles.row}>
-                <Icon name={fileIconName(basename(u.path), u.path)} size={14} className={styles.icon} />
+              <div className={styles.row} data-testid="usage-row" data-path={u.path} data-line={u.line}>
+                <Icon name={fileIconName(basename(u.path), u.path)} size={16} className={styles.icon} />
                 <UsagePreview usage={u} />
                 <span className={styles.spacer} />
                 <span className={styles.where}>

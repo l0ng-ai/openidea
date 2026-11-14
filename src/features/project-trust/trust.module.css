@@ -52,6 +52,18 @@
   justify-content: space-between;
   gap: var(--space-3);
 }
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.sectionHead h3 {
+  margin: 0;
+}
+.hint {
+  color: var(--fg-secondary);
+}
 .path {
   overflow-wrap: anywhere;
 }

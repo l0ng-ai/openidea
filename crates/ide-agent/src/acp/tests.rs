@@ -16,6 +16,42 @@ const CANCEL: &str = include_str!("../../tests/fixtures/acp-v2/cancel.jsonl");
 const RESUME: &str = include_str!("../../tests/fixtures/acp-v2/resume.jsonl");
 const INITIALIZE_V1: &str = include_str!("../../tests/fixtures/acp-v2/initialize-v1.jsonl");
 
+#[test]
+fn auth_required_matches_authentication_words_and_sign_in_phrases() {
+    for (code, message, expected) in [
+        (AUTH_REQUIRED, "This account is not eligible.", true),
+        (codes::INTERNAL_ERROR, "Auth required", true),
+        (codes::INTERNAL_ERROR, "Authentication failed", true),
+        (codes::INTERNAL_ERROR, "Failed to authenticate. API Error: 401", true),
+        (codes::INTERNAL_ERROR, "Failed to authenticate. API Error: 403", true),
+        (codes::INTERNAL_ERROR, "Not authenticated", true),
+        (codes::INTERNAL_ERROR, "Authorization failed", true),
+        (codes::INTERNAL_ERROR, "Authorize your account", true),
+        (codes::INTERNAL_ERROR, "Unauthenticated", true),
+        (codes::INTERNAL_ERROR, "Unauthentication error", true),
+        (codes::INTERNAL_ERROR, "Unauthorized", true),
+        (codes::INTERNAL_ERROR, "Unauthorization error", true),
+        (codes::INTERNAL_ERROR, "OAuth token has expired", true),
+        (codes::INTERNAL_ERROR, "OAuth2 token has expired", true),
+        (codes::INTERNAL_ERROR, "You are not logged in", true),
+        (codes::INTERNAL_ERROR, "You are logged out", true),
+        (codes::INTERNAL_ERROR, "Please sign in", true),
+        (codes::INTERNAL_ERROR, "Please log in", true),
+        (codes::INTERNAL_ERROR, "Login required", true),
+        (codes::INTERNAL_ERROR, "author", false),
+        (codes::INTERNAL_ERROR, "authors", false),
+        (codes::INTERNAL_ERROR, "authority", false),
+        (codes::INTERNAL_ERROR, "authored", false),
+        (codes::INTERNAL_ERROR, "reauthenticate", false),
+        (codes::INTERNAL_ERROR, "preauthorized", false),
+        (codes::INTERNAL_ERROR, "signal input failed", false),
+        (codes::INTERNAL_ERROR, "catalog index failed", false),
+        (codes::INTERNAL_ERROR, "login succeeded", false),
+    ] {
+        assert_eq!(auth_required(code, message), expected, "code={code}, message={message:?}");
+    }
+}
+
 /// The messages of a fixture going `dir` (`in` or `out`).
 pub(crate) fn frames(fixture: &str, dir: &str) -> Vec<Value> {
     fixture
@@ -57,9 +93,82 @@ fn the_negotiating_request_carries_both_versions() {
     assert!(p["capabilities"].is_object());
     assert_eq!(p["clientCapabilities"]["subagents"], json!({}));
     assert_eq!(p["clientCapabilities"]["terminal"], false);
+    assert_eq!(
+        p["clientCapabilities"]["_meta"]["parameterizedModelPicker"], true,
+        "Cursor and similar agents need parameterized model options (e.g. fast on/off)"
+    );
     // What we sent in the capture is what claude-agent-acp negotiated v2 and v1 from.
-    let sent = &frames(TURN, "out")[0]["params"];
-    assert_eq!(sent["clientCapabilities"], p["clientCapabilities"]);
+    let sent = frames(TURN, "out")[0]["params"]["clientCapabilities"].clone();
+    let mut expected = sent;
+    expected["_meta"] = p["clientCapabilities"]["_meta"].clone();
+    assert_eq!(expected, p["clientCapabilities"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent() {
+    #[derive(Default)]
+    struct DiscoveryAgent {
+        peer: std::sync::OnceLock<Peer>,
+        calls: parking_lot::Mutex<Vec<(String, Value)>>,
+    }
+    impl Handler for DiscoveryAgent {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+            self.calls.lock().push((method.to_owned(), params));
+            match method {
+                "initialize" => Ok(json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": { "loadSession": true }
+                })),
+                "session/new" => Ok(json!({
+                    "sessionId": "discover",
+                    "configOptions": [
+                        {"id": "model", "category": "model", "type": "select", "currentValue": "m1",
+                         "options": [{"value": "m1", "name": "One"}, {"value": "m2", "name": "Two"}]},
+                        {"id": "effort", "type": "select", "currentValue": "medium",
+                         "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+                        {"id": "fast", "type": "select", "currentValue": "false",
+                         "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "On"}]}
+                    ]
+                })),
+                _ => Ok(json!({})),
+            }
+        }
+    }
+    let agent = Arc::new(DiscoveryAgent::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_for_connector = agent.clone();
+    let connector: crate::Connector = Arc::new(move |_, _, client, _| {
+        let (ca, cb) = tokio::io::duplex(1 << 20);
+        let (car, caw) = tokio::io::split(ca);
+        let (cbr, cbw) = tokio::io::split(cb);
+        let agent_peer = Peer::connect_framed(cbr, cbw, agent_for_connector.clone(), Framing::Lines);
+        let _ = agent_for_connector.peer.set(agent_peer);
+        Ok(Peer::connect_framed(car, caw, client, Framing::Lines))
+    });
+    let mgr = crate::AgentManager::with_connector(
+        crate::AgentPaths {
+            project_root: tmp.path().to_path_buf(),
+            store_dir: tmp.path().join("store"),
+            worktrees_dir: tmp.path().join("worktrees"),
+            models_file: tmp.path().join("models.json"),
+            custom_agents_dir: None,
+            home_dir: None,
+            env_secrets: None,
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+    mgr.commands("cursor", None).await.unwrap();
+    let calls = agent.calls.lock();
+    assert_eq!(calls.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["initialize", "session/new"]);
+    assert_eq!(calls[1].1["mcpServers"], json!([]));
+    let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
+    let fast = cursor.config.iter().find(|o| o.id == "fast").expect("fast option");
+    assert_eq!(fast.category.as_deref(), Some("model_config"));
+    assert_eq!(fast.current.as_deref(), Some("false"));
+    assert!(cursor.thought_levels.contains_key("m1") && cursor.thought_levels.contains_key("m2"));
+    assert!(cursor.thought_levels["m1"].iter().any(|o| o.category.as_deref() == Some("thought_level")));
 }
 
 #[test]
@@ -97,6 +206,36 @@ fn the_shape_decides_the_version_not_the_number() {
     // v2 without session capabilities: no resume.
     let n = Negotiated::from_initialize(&json!({ "protocolVersion": 2, "info": { "name": "x", "version": "1" } }));
     assert_eq!((n.generation, n.load_session(), n.session("fork")), (2, false, false));
+}
+
+#[test]
+fn picks_non_terminal_agent_auth_method() {
+    let v1 = Negotiated::from_initialize(&json!({
+        "protocolVersion": 1,
+        "authMethods": [
+            { "id": "cli_login", "_meta": { "terminal-auth": { "command": "copilot", "args": ["login"] } } },
+            { "id": "terminal_login", "type": "terminal", "args": ["login"] },
+            { "id": "api_key", "type": "env_var" },
+            { "id": "github_oauth", "name": "GitHub OAuth" }
+        ]
+    }));
+    assert_eq!(v1.agent_auth_method(), Some("github_oauth"));
+
+    let v2 = Negotiated::from_initialize(&json!({
+        "protocolVersion": 2,
+        "info": { "name": "x", "version": "1" },
+        "authMethods": [
+            { "type": "terminal", "methodId": "cli", "name": "CLI", "args": ["login"] },
+            { "type": "agent", "methodId": "oauth", "name": "OAuth" }
+        ]
+    }));
+    assert_eq!(v2.agent_auth_method(), Some("oauth"));
+
+    let terminal_only = Negotiated::from_initialize(&json!({
+        "protocolVersion": 1,
+        "authMethods": [{ "id": "cli", "type": "terminal", "args": ["login"] }]
+    }));
+    assert_eq!(terminal_only.agent_auth_method(), None);
 }
 
 #[test]
@@ -526,4 +665,14 @@ async fn v1_requests_are_sent_in_v2() {
         .map(|(_, p)| &p["sessionId"])
         .collect();
     assert_eq!(commands, [&json!("28846a4c-c3e8-4a45-a3d0-c19f10d19d1a"), &json!("s1")]);
+}
+
+#[test]
+fn stdio_mcp_is_v1_baseline_and_negotiated_in_v2() {
+    assert!(super::Negotiated::from_initialize(&json!({"protocolVersion":1,"agentCapabilities":{}})).mcp_stdio());
+    assert!(!super::Negotiated::from_initialize(&json!({"info":{},"capabilities":{"session":{}}})).mcp_stdio());
+    assert!(
+        super::Negotiated::from_initialize(&json!({"info":{},"capabilities":{"session":{"mcp":{"stdio":{}}}}}))
+            .mcp_stdio()
+    );
 }

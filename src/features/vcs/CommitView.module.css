@@ -62,22 +62,26 @@
 .icon {
   flex: none;
 }
+/* The name takes the whole row; when it doesn't fit, the grey detail after it gives way first. */
 .label {
-  flex: 0 0 auto;
-  max-width: 75%;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .groupLabel {
   color: var(--fg-strong);
-  font-weight: 600;
 }
 .detail {
+  flex: 0 10000 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
+}
+.detailIcon {
+  flex: none;
+  --icon-color: var(--fg-subtle);
 }
 .partial {
   flex: none;
@@ -160,6 +164,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* A narrow panel moves Commit and Push… to its own row rather than cutting its label. */
+  flex-wrap: wrap;
   padding: 8px 6px 10px 10px;
   white-space: nowrap;
 }
@@ -189,6 +195,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.stashRow > .detail {
+  flex-shrink: 1;
 }
 .stashMessage {
   flex: 1;

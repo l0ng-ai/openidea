@@ -1,11 +1,12 @@
 import { branchesByRepo } from "./multiRoot";
 /** Title bar branch widget (branch name + incoming / outgoing markers) + Branches popup. */
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import type { Branch, BranchInfo } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
 import { bindingsFor, normalizeBinding, registerKeyClaim, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { useEditorRegistry } from "@/editor/api";
 import {
@@ -23,6 +24,7 @@ import {
   type MenuItem,
   T,
 } from "@/ui";
+import type { PopupAnchor } from "@/ui/Popup";
 import { buildBranchRows, withExpanded, type BranchRow, type PopupAction } from "./branches";
 import { branchPresentation, extensionPopupActions, useBranchWidgetExtensions } from "./branchWidgetExtensions";
 import { branchMenu, commonBranchMenu, inRepo, tagMenu } from "./branchMenu";
@@ -37,6 +39,9 @@ import {
   type RepoRow,
 } from "./repoBranches";
 import { currentRepo, focusRepo, loadBranches, repoName, useVcs } from "./store";
+import { BranchSync } from "./BranchSync";
+import { showSyncCommits } from "./SyncCommitsPopup";
+import type { SyncDirection } from "./syncCommits";
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -67,7 +72,6 @@ export function BranchWidget() {
   const otherOp = useVcs((s) => (current ? (s.operations[current] ?? null) : null));
   const open = useBranchesPopup((s) => s.open);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
-  const ref = useRef<HTMLButtonElement>(null);
   if (!available || !selected) return null;
   // Another feature presents the current branch (the GitHub pull request on it).
   const presented = other ? null : branchPresentation(extensions);
@@ -94,10 +98,19 @@ export function BranchWidget() {
   ]
     .filter(Boolean)
     .join("\n");
+  // A marker lists its commits; the rest of the widget keeps opening the branches popup.
+  const openSync = (direction: SyncDirection) => {
+    useBranchesPopup.setState({ open: false });
+    showSyncCommits({
+      repo: current,
+      branch: { branch: branch.head, upstream: branch.upstream, ahead: branch.ahead, behind: branch.behind },
+      direction,
+    });
+  };
   return (
     <>
       <BarButton
-        ref={ref}
+        data-branches-widget
         variant="title"
         className={styles.widget}
         tooltip={tooltip}
@@ -116,23 +129,25 @@ export function BranchWidget() {
           <span className={styles.operation}>{branch.operation}</span>
         )}
         {/* Like IDEA's widget: icons only; counts are in the tooltip. */}
-        {branch.behind > 0 && (
-          <Icon name="vcs-incoming" size={12} className={clsx(styles.sync, styles.incoming)} label="Incoming commits" />
-        )}
-        {branch.ahead > 0 && (
-          <Icon name="vcs-outgoing" size={12} className={clsx(styles.sync, styles.outgoing)} label="Outgoing commits" />
-        )}
+        <BranchSync behind={branch.behind} ahead={branch.ahead} showCounts={false} onSelect={openSync} />
         <Icon name="chevron-down" size={14} className={styles.chevron} />
       </BarButton>
-      {open && <BranchesPopup anchor={ref} onClose={() => useBranchesPopup.setState({ open: false })} />}
     </>
   );
+}
+
+export function BranchesPopupHost() {
+  const open = useBranchesPopup((s) => s.open);
+  if (!open) return null;
+  const anchor = document.querySelector("[data-branches-widget]") ?? { x: window.innerWidth / 2 - 160, y: 60 };
+  return <BranchesPopup anchor={anchor} onClose={() => useBranchesPopup.setState({ open: false })} />;
 }
 
 const POPUP_ACTIONS: PopupAction[] = [
   { id: "vcs.update", label: "Update Project…", icon: "git-pull", group: "sync" },
   { id: "vcs.commit", label: "Commit…", icon: "commit", group: "sync" },
   { id: "vcs.push", label: "Push…", icon: "git-push", group: "sync" },
+  { id: "vcs.syncCommits", label: "Incoming and Outgoing Commits…", icon: "history", group: "sync" },
   { id: "vcs.newBranch", label: "New Branch…", icon: "plus", group: "branch" },
   { id: "vcs.checkoutRevision", label: "Checkout Tag or Revision…", icon: "branch", group: "branch" },
 ];
@@ -169,6 +184,27 @@ function loadOptions(): PopupOptions {
 /** The popup's gear options (Group by Prefix, Show Recent Branches, Show Tags), kept across sessions. */
 const usePopupOptions = create<PopupOptions>(loadOptions);
 
+/** The size the popup was last resized to, as IDEA keeps it across sessions. */
+const SIZE_KEY = "openidea.vcs.branchesPopup.size";
+
+function loadPopupSize(): { w: number; h: number } | null {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null");
+    const { w, h } = (v ?? {}) as Record<string, unknown>;
+    return typeof w === "number" && typeof h === "number" ? { w, h } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePopupSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Storage unavailable: the next popup opens at its default size.
+  }
+}
+
 function toggleOption(key: keyof PopupOptions) {
   usePopupOptions.setState((s) => ({ [key]: !s[key] }));
   try {
@@ -178,16 +214,53 @@ function toggleOption(key: keyof PopupOptions) {
   }
 }
 
-/** Groups and folders the user expanded or collapsed, remembered for the session (per popup kind). */
-const useExpansion = create<{ single: ReadonlyMap<string, boolean>; multi: ReadonlyMap<string, boolean> }>(() => ({
-  single: new Map(),
-  multi: new Map(),
-}));
+/**
+ * Groups and folders the user expanded or collapsed (per popup kind), kept per project across
+ * sessions as IDEA's GitBranchesPopupTreeState does.
+ */
+const useExpansion = create<{
+  root: string | null;
+  single: ReadonlyMap<string, boolean>;
+  multi: ReadonlyMap<string, boolean>;
+}>(() => ({ root: null, single: new Map(), multi: new Map() }));
+
+const EXPANSION_KEY = "openidea.vcs.branchesPopup.expanded:";
+
+/** Switches to the expansion stored for the project at `root`. */
+function loadExpansion(root: string | null) {
+  if (useExpansion.getState().root === root) return;
+  const next = { root, single: new Map<string, boolean>(), multi: new Map<string, boolean>() };
+  try {
+    const v: unknown = root ? JSON.parse(localStorage.getItem(EXPANSION_KEY + root) ?? "null") : null;
+    for (const kind of ["single", "multi"] as const) {
+      const entries = (v as Record<string, unknown> | null)?.[kind];
+      if (Array.isArray(entries))
+        for (const e of entries)
+          if (Array.isArray(e) && typeof e[0] === "string" && typeof e[1] === "boolean") next[kind].set(e[0], e[1]);
+    }
+  } catch {
+    // Storage unavailable: defaults.
+  }
+  useExpansion.setState(next);
+}
 
 function useExpanded(kind: "single" | "multi") {
   const expanded = useExpansion((s) => s[kind]);
-  const setOpen = (key: string, open: boolean) =>
-    useExpansion.setState((s) => (s[kind].get(key) === open ? s : { [kind]: withExpanded(s[kind], key, open) }));
+  const setOpen = (key: string, open: boolean) => {
+    const s = useExpansion.getState();
+    if (s[kind].get(key) === open) return;
+    const next = { ...s, [kind]: withExpanded(s[kind], key, open) };
+    useExpansion.setState(next);
+    if (!next.root) return;
+    try {
+      localStorage.setItem(
+        EXPANSION_KEY + next.root,
+        JSON.stringify({ single: [...next.single], multi: [...next.multi] }),
+      );
+    } catch {
+      // Kept for this session only.
+    }
+  };
   return [expanded, setOpen] as const;
 }
 
@@ -287,12 +360,15 @@ const caretAt = (e: KeyboardEvent, where: "start" | "end") => {
   return where === "end" ? input.selectionStart === input.value.length : input.selectionStart === 0;
 };
 
-function BranchesPopup({ anchor, onClose }: { anchor: RefObject<HTMLElement | null>; onClose: () => void }) {
+function BranchesPopup({ anchor, onClose }: { anchor: PopupAnchor; onClose: () => void }) {
   const multi = useVcs((s) => s.roots.length > 1);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
   const actions = useMemo(() => [...POPUP_ACTIONS, ...extensionPopupActions(extensions)], [extensions]);
   // ⌥⌘N is also Inline (enabled while a popup is open over an editor): the search field handles it here.
   useEffect(() => registerKeyClaim((_e, stroke) => isNewBranchStroke(stroke)), []);
+  const [initialSize] = useState(loadPopupSize);
+  const root = useProject((s) => s.project?.root ?? null);
+  useLayoutEffect(() => loadExpansion(root), [root]);
   return (
     <Popup
       open
@@ -301,6 +377,11 @@ function BranchesPopup({ anchor, onClose }: { anchor: RefObject<HTMLElement | nu
       placement="bottom-start"
       aria-label="Git Branches"
       className={clsx(styles.popup, multi && styles.wide)}
+      resizable="both"
+      minWidth={280}
+      minHeight={200}
+      initialSize={initialSize}
+      onResized={savePopupSize}
     >
       {multi ? (
         <MultiRepoPanel onClose={onClose} actions={actions} />
@@ -442,7 +523,7 @@ function BranchesPanel({ onClose, actions: baseActions, root, fallback, onBack }
     <>
       <div className={styles.search}>
         <SearchField
-          className={root ? styles.searchGrow : undefined}
+          className={styles.searchGrow}
           data-autofocus
           value={query}
           onChange={(v) => {
@@ -898,19 +979,7 @@ function BranchRowView({ row }: { row: BranchRow | Extract<RepoRow, { type: "act
           <T>current</T>
         </span>
       )}
-      {/* Like IDEA: incoming (↙) before outgoing (↗). */}
-      {b.behind > 0 && (
-        <span className={clsx(styles.syncSmall, styles.incoming)} title={tx`${b.behind} incoming commits`}>
-          <Icon name="vcs-incoming" size={12} />
-          {b.behind}
-        </span>
-      )}
-      {b.ahead > 0 && (
-        <span className={clsx(styles.syncSmall, styles.outgoing)} title={tx`${b.ahead} outgoing commits`}>
-          <Icon name="vcs-outgoing" size={12} />
-          {b.ahead}
-        </span>
-      )}
+      <BranchSync behind={b.behind} ahead={b.ahead} />
       {!b.remote && b.upstream && <span className={styles.upstream}>{b.upstream}</span>}
       <Icon name="chevron-right" size={10} className={styles.chevron} />
     </span>

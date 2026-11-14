@@ -60,12 +60,18 @@
 
   if (initialTheme) applyTheme(initialTheme);
 
+  const stepFrameFontZoom = (delta) => {
+    const cur = Math.round((parseFloat(root.style.zoom || "1") || 1) * 100);
+    const next = delta === 0 ? 100 : Math.max(60, Math.min(200, cur + delta * 8));
+    root.style.zoom = next === 100 ? "" : (next / 100).toFixed(2);
+  };
+
   // IDE shortcuts (Save, Close, Find Action…) pressed while the page has focus:
   // the ones the page left alone go to the workbench. Editing keys stay here.
   const EDITING_KEYS = new Set(["a", "c", "v", "x", "z", "y"]);
   window.addEventListener("keydown", (e) => {
     const fn = /^F\d{1,2}$/.test(e.key);
-    const mod = (e.metaKey || e.ctrlKey) && !EDITING_KEYS.has(e.key.toLowerCase());
+    const mod = (e.metaKey || e.ctrlKey || e.altKey) && !EDITING_KEYS.has(e.key.toLowerCase());
     if (e.isComposing || (!fn && !mod)) return;
     // After every handler of the page has seen it.
     setTimeout(() => {
@@ -78,6 +84,8 @@
     const m = e.data;
     if (e.source !== window.parent || !m || m.tag !== TAG) return;
     if (m.theme) applyTheme(m.theme);
+    else if (m.fontZoomDelta === -1 || m.fontZoomDelta === 0 || m.fontZoomDelta === 1)
+      stepFrameFontZoom(m.fontZoomDelta);
     else if (typeof m.reply === "number") {
       const p = pending.get(m.reply);
       pending.delete(m.reply);
@@ -92,6 +100,8 @@
   const documentApi = Object.freeze({
     /** `{ version, text, readOnly, name }` of the document a custom editor shows (`name`: the file's, no directory). */
     get: () => call("document.get"),
+    /** The bytes of the file the custom editor shows (read-only, so the disk is current). */
+    bytes: () => call("document.bytes"),
     /** Called with `{ version, text }` when the document changes other than through this frame. */
     onChange: (fn) => {
       if (typeof fn === "function") documentListeners.push(fn);

@@ -1,0 +1,119 @@
+name: Nightly
+
+# Twice a day, builds the newest main commit that passed CI as a prerelease tagged with its own
+# version, so remote development finds the server of that version. The `nightly` release holds
+# the manifest the nightly app updates from; its tag marks the commit last built, and a run with
+# nothing newer stops there. Only the latest builds are kept.
+on:
+  schedule:
+    - cron: "17 2,14 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Build even if nothing is newer than the last nightly"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  prepare:
+    permissions:
+      actions: read
+      contents: write
+    if: github.repository == 'l0ng-ai/openidea'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - id: commit
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          sha="$(gh run list --workflow ci.yml --branch main --event push --status success --limit 1 \
+            --json headSha --jq '.[0].headSha // ""')"
+          if [ -z "$sha" ]; then
+            echo "::notice::no main commit has passed CI"
+            exit 0
+          fi
+          # No `nightly` tag yet (the first run): compare fails and the build goes on.
+          status="$(gh api "repos/$GH_REPO/compare/nightly...$sha" --jq .status 2>/dev/null)" || status=ahead
+          if [ "$status" != ahead ] && [ "$FORCE" != true ]; then
+            echo "::notice::$sha is not newer than the last nightly"
+            exit 0
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v5
+        if: steps.commit.outputs.sha != ''
+        with: { ref: "${{ steps.commit.outputs.sha }}" }
+      - uses: actions/setup-node@v5
+        if: steps.commit.outputs.sha != ''
+        with: { node-version: 22 }
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.commit.outputs.sha != ''
+      - id: release
+        if: steps.commit.outputs.sha != ''
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          version="$(node scripts/nightly-prepare.ts "$(date -u +%Y%m%d%H%M)")"
+          tag="v$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: $tag"
+          git tag "$tag"
+          git push origin "$tag"
+          id="$(gh api -X POST "repos/$GH_REPO/releases" -f tag_name="$tag" -f name="OpenIDEA Nightly $version" \
+            -F draft=true -F prerelease=true -f body="Built from $SHA." --jq .id)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  binaries:
+    permissions:
+      contents: write
+    needs: prepare
+    if: needs.prepare.outputs.tag != ''
+    uses: ./.github/workflows/release-build.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+      release_id: ${{ needs.prepare.outputs.release_id }}
+    secrets: inherit
+
+  publish:
+    permissions:
+      contents: write
+    needs: [prepare, binaries]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SHA: ${{ needs.prepare.outputs.sha }}
+      KEEP: 14
+    steps:
+      - name: Publish the build
+        run: gh release edit "$TAG" --tag "$TAG" --draft=false
+      - name: Point the updater at it
+        run: |
+          gh release download "$TAG" -p latest.json -D "$RUNNER_TEMP"
+          gh release view nightly >/dev/null 2>&1 ||
+            gh release create nightly --prerelease --latest=false --target "$SHA" --title "OpenIDEA Nightly" \
+              --notes "The update manifest of the nightly builds, and the commit last built."
+          gh release upload nightly "$RUNNER_TEMP/latest.json" --clobber
+          gh api -X PATCH "repos/$GH_REPO/git/refs/tags/nightly" -f sha="$SHA" -F force=true --silent
+      # Failed builds' drafts go too, once they are this old.
+      - name: Delete old builds
+        run: |
+          gh release list --limit 200 --json tagName,createdAt --jq \
+            '[.[] | select(.tagName | contains("-nightly."))] | sort_by(.createdAt) | reverse | .[env.KEEP | tonumber:][].tagName' |
+            while read -r tag; do
+              gh release delete "$tag" --cleanup-tag --yes
+            done

@@ -35,9 +35,6 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.sync {
-  flex: none;
-}
 .popup {
   width: 380px;
   display: flex;
@@ -58,7 +55,9 @@
 .searchGrow {
   flex: 1;
 }
+/* Its height fits the rows; in a resized popup it takes the rest of the height. */
 .listWrap {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -111,24 +110,6 @@
   color: var(--accent);
   font-size: var(--fs-tiny);
   line-height: 15px;
-}
-.syncSmall {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  color: var(--fg-muted);
-  font-family: var(--font-mono);
-  font-size: var(--fs-tiny);
-}
-.syncSmall + .syncSmall {
-  margin-left: -4px;
-}
-.incoming {
-  color: var(--accent);
-}
-.outgoing {
-  color: var(--success);
 }
 .upstream {
   flex: 0 4 auto;

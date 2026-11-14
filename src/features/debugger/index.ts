@@ -3,13 +3,14 @@
  * backend), DAP sessions driven by `IdeEvent::Debug`, the Debug tool window,
  * execution point + inline values, Evaluate / View Breakpoints dialogs.
  */
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { selectionValueTooltip, valueTooltip } from "./editor/valueTooltip";
 import { quickEvaluateMouse } from "./editor/quickEvaluate";
 import { registerEditorContribution } from "@/editor/api";
 import {
+  registerEditorKind,
   registerMenuGroup,
   registerOverlay,
   registerRunConfigType,
@@ -19,12 +20,14 @@ import {
 import { registerDebugActions } from "./actions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
+import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
+import { watchNetworkSessions } from "./js/networkSessions";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
-import { onHotCodeReplace } from "./hotswap";
+import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
 import {
   activeSession,
   handleDebugEvent,
@@ -35,38 +38,68 @@ import {
   stopSession,
   useDebug,
 } from "./state";
-import { DebuggerOverlays } from "./ui/Overlays";
+import { useOverlays } from "./ui/popoverStore";
 import { REMOTE_TYPES } from "./remote";
+import { jsBrowserType } from "./browser";
+import { forgetInstances } from "./memory/instancesState";
+import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
+import { heapEditorKind } from "./heap/heapEditorKind";
+import { installHeapContext } from "./heap/heapDumpFiles";
+import { forgetMemory } from "./memory/memoryState";
+
+/** Whether a breakpoint popover, debugger dialog or chooser is open. */
+const useAnyOverlay = () =>
+  useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
+
+/** The Debug stripe button's badge, like Run's: how many debug sessions (child sessions aside) are live. */
+function useLiveSessionCount(): number | null {
+  return useDebug((s) => Object.values(s.sessions).filter((x) => x.parent === null && isLive(x)).length || null);
+}
 
 export function activate(): () => void {
   useDebugRunSessions.setState({
     Console: lazyComponent(() => import("./ui/DebugConsole").then((m) => m.DebugServiceConsole)),
   });
-  loadWatches();
+  loadWatches(useProject.getState().project?.root ?? null);
   publishContext();
   loadBreakpoints(useProject.getState().project?.root ?? null);
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
+  loadJsBreakpoints(useProject.getState().project?.root ?? null);
   const disposers = [
     () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
     registerDebugActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
+    registerRunConfigType(jsBrowserType),
     registerToolWindow({
       id: "debug",
       title: "Debug",
       icon: "toolwindow-debug",
       anchor: "bottom",
       stripe: "onUse",
+      sessionContent: true,
       order: 20,
       component: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugToolWindow)),
       headerContent: lazyComponent(() => import("./ui/DebugToolWindow").then((m) => m.DebugTabs)),
+      useBadge: useLiveSessionCount,
     }),
-    registerOverlay({ id: "debugger", component: DebuggerOverlays }),
+    registerEditorKind(heapEditorKind),
+    installHeapContext(),
+    forgetHeapOnProjectChange(),
+    registerOverlay({
+      id: "debugger",
+      component: lazyWhen(useAnyOverlay, () => import("./ui/Overlays").then((m) => m.DebuggerOverlays)),
+    }),
     registerMenuGroup({
       id: "debugger.evaluate",
       menus: ["editor"],
       items: () => (activeSession()?.status === "paused" ? [{ kind: "action", action: "debug.evaluate" }] : []),
+    }),
+    registerMenuGroup({
+      id: "debugger.hotswap",
+      menus: ["editor"],
+      items: (_menu, { paths }) => hotSwapMenuItems(paths),
     }),
     // Stop (⌘F2) offers the running debug sessions beside run processes.
     registerMenuGroup({
@@ -95,15 +128,28 @@ export function activate(): () => void {
       if (e.event.kind === "hotCodeReplace") onHotCodeReplace(e.session, e.event);
       else handleDebugEvent(e.session, e.event);
     }),
+    useDebug.subscribe((s, prev) => {
+      if (s.sessions === prev.sessions) return;
+      for (const id of Object.keys(prev.sessions)) {
+        if (id in s.sessions) continue;
+        forgetMemory(Number(id));
+        forgetInstances(Number(id));
+        forgetHeapCapture(Number(id));
+      }
+    }),
     useProject.subscribe((s, prev) => {
       const root = s.project?.root ?? null;
       if (root !== (prev.project?.root ?? null) || s.project?.trusted !== prev.project?.trusted) {
         resetSessions();
+        loadWatches(root);
         loadBreakpoints(root);
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);
+        loadJsBreakpoints(root);
       }
     }),
+    watchPageSessions(),
+    watchNetworkSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { highlightingFor, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import { openideaHighlightStyle } from "./highlight";
+import { openideaHighlightStyle, parameter } from "./highlight";
+import { findLanguageDescription, loadSupport } from "./languages";
 import { setSyntaxHighlights, syntaxHighlightField } from "./syntaxHighlight";
+
+const views: EditorView[] = [];
+afterEach(() => views.splice(0).forEach((view) => view.destroy()));
 
 function marks(state: EditorState) {
   const out: { text: string; cls: string }[] = [];
@@ -39,5 +44,27 @@ describe("syntaxHighlightField", () => {
 
     state = state.update({ changes: { from: 0, insert: "  " } }).state;
     expect(marks(state).map((m) => m.text)).toEqual(["def", "hi", ":ok"]);
+  });
+
+  it("lets Kotlin declaration roles override the stream lexer's generic definition style", async () => {
+    const support = await loadSupport(findLanguageDescription("Kotlin", "demo.kt")!);
+    const view = new EditorView({
+      parent: document.body,
+      doc: "fun greet(prefix: String) {}",
+      extensions: [support!, syntaxHighlightField, syntaxHighlighting(openideaHighlightStyle)],
+    });
+    views.push(view);
+    view.dispatch({
+      effects: setSyntaxHighlights.of({ kinds: ["function", "parameter"], data: [4, 9, 0, 10, 16, 1] }),
+    });
+    for (const [text, tag] of [
+      ["greet", t.function(t.definition(t.variableName))],
+      ["prefix", parameter],
+    ] as const) {
+      const cls = highlightingFor(view.state, [tag])!;
+      const span = view.contentDOM.querySelector(`.${cls}`)!;
+      expect(span.textContent).toBe(text);
+      expect(span.children.length).toBe(0);
+    }
   });
 });

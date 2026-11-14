@@ -217,8 +217,15 @@ export interface BuiltinInspection {
   description: string;
   /** Highlighting level when the profile sets none (else as reported). */
   defaultLevel?: InspectionLevel;
+  /** `false`: off until a profile turns it on. */
+  defaultEnabled?: boolean;
+  /** Each diagnostic code is an inspection of its own (`<id>:<code>`), as a language server's are. */
+  byCode?: boolean;
   options?: readonly InspectionOptionSpec[];
 }
+
+/** Turned on, the Java language server's compiler reports it (`ide-sdk` `SERIAL_VERSION_INSPECTION`). */
+export const JAVA_SERIAL_VERSION_INSPECTION = "java:missing-serial-version";
 
 /** Producer key of the Typo inspection's diagnostics. */
 export const SPELLING_PRODUCER = "spelling";
@@ -285,6 +292,26 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     description: "Compiler errors and warnings of the last Build Project, shown at their source positions.",
   },
   {
+    id: JAVA_SERIAL_VERSION_INSPECTION,
+    producer: "jdt-serial-version",
+    name: "Serializable class without 'serialVersionUID'",
+    group: "Java",
+    description:
+      "Reports classes that implement Serializable but declare no serialVersionUID field. Alt+Enter on the class name adds a default or a generated ID. The Java language server checks it, and restarts when this is changed.",
+    defaultLevel: "warning",
+    defaultEnabled: false,
+  },
+  {
+    id: "builtin:phpstan",
+    producer: "phpstan",
+    name: "PHPStan",
+    group: "PHP",
+    description:
+      "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root, or the configuration file chosen in Settings › Languages & Frameworks › PHP. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
+    defaultLevel: "warning",
+    byCode: true,
+  },
+  {
     id: "builtin:sql",
     producer: "sql-inspections",
     name: "Unresolved database references",
@@ -323,6 +350,11 @@ export function inspectionOptions(id: string): readonly InspectionOptionSpec[] |
   return BUILTIN_BY_ID.get(id)?.options ?? (phpInspection(id)?.strict ? [PHP_STRICT_OPTION_SPEC] : undefined);
 }
 
+/** Whether inspection `id` is on when a profile doesn't say. */
+export function enabledByDefault(id: string): boolean {
+  return BUILTIN_BY_ID.get(id)?.defaultEnabled ?? true;
+}
+
 /** Option `key` of inspection `id` under `profile` (its default when unset). */
 export function inspectionOption(profile: ProfileOverrides, id: string, key: string): boolean {
   const value = profile[id]?.options?.[key];
@@ -339,9 +371,10 @@ export interface InspectionRef {
 export function diagnosticInspection(producer: string, d: Pick<Diagnostic, "code">): InspectionRef | null {
   if (!producer) return null;
   const builtin = BUILTIN_BY_PRODUCER.get(producer);
-  if (builtin) return { id: builtin.id, name: builtin.name };
+  if (builtin && !(builtin.byCode && d.code)) return { id: builtin.id, name: builtin.name };
   const base = producerInspectionId(producer);
-  return d.code ? { id: codeInspectionId(base, d.code), name: `${producer} ${d.code}` } : { id: base, name: producer };
+  const name = builtin?.name ?? producer;
+  return d.code ? { id: codeInspectionId(base, d.code), name: `${name} ${d.code}` } : { id: base, name };
 }
 
 /** Inspection id of everything a producer reports. */
@@ -376,7 +409,7 @@ export function applyProfile<D extends Diagnostic>(
 ): readonly D[] {
   const base = producerInspectionId(producer);
   const own = profile[base];
-  if (own?.enabled === false) return [];
+  if (!(own?.enabled ?? enabledByDefault(base))) return [];
   const fallback = BUILTIN_BY_PRODUCER.get(producer)?.defaultLevel;
   let changed = false;
   const out: D[] = [];

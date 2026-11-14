@@ -1,0 +1,80 @@
+package openidea:plugin@1.7.0;
+
+/// Optional export (world `plugin-file-actions`): quick fixes and
+/// refactorings that create, rename or delete files, next to the text edits
+/// `providers.code-actions` offers. Declare the `code-actions` provider kind in
+/// `[[contributes.providers]]`; the host calls `code-actions` here with the same
+/// budget and lists the results with the others.
+interface file-actions {
+    use types.{error, range, text-edit};
+
+    /// The document the actions are for (the editor's text while it is open).
+    record document {
+        /// Absolute path.
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    /// Text edits to one file.
+    record file-edit {
+        path: string,
+        edits: list<text-edit>,
+    }
+
+    /// A file change, applied before the action's text edits.
+    variant file-operation {
+        /// Fails when the file exists, unless `overwrite`.
+        create(create-file),
+        rename(rename-file),
+        /// Deletes the file; undoing the action restores it.
+        delete(delete-file),
+    }
+
+    /// A new file with its text; missing parent directories are created.
+    record create-file {
+        path: string,
+        text: string,
+        overwrite: bool,
+    }
+
+    /// Moves `path` to `new-path`.
+    record rename-file {
+        path: string,
+        new-path: string,
+    }
+
+    /// The file to delete.
+    record delete-file {
+        path: string,
+    }
+
+    /// A code action that changes files. Paths are absolute or relative to the
+    /// project root, and stay inside it: a path outside disables the action.
+    record file-action {
+        title: string,
+        /// `quickfix`, `refactor`, …
+        kind: option<string>,
+        preferred: bool,
+        /// Applied first, in order, as one workspace edit with `edits`: if
+        /// any operation or edit fails, nothing is applied, and one undo
+        /// reverses all of it.
+        operations: list<file-operation>,
+        /// Applied after the operations; may target files they create.
+        edits: list<file-edit>,
+        /// Opened once the action is applied.
+        open: option<string>,
+        /// The plugin's own reference: with it and no `operations` or `edits`,
+        /// they are computed by `resolve` once the user picks the action.
+        data: option<string>,
+    }
+
+    /// Actions for `selection`, under the edit-path budget.
+    code-actions: func(doc: document, selection: range) -> list<file-action>;
+    /// The operations and edits of an action listed with `data` and nothing
+    /// to apply, once the user picks it (the command budget applies, not the
+    /// editor's 50 ms). The same four prompts as `providers.resolve-code-action`
+    /// work here, in the editor's window and excluding the wait from the budget.
+    resolve: func(doc: document, action: file-action) -> result<file-action, error>;
+}

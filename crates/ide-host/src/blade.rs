@@ -371,6 +371,7 @@ fn directive_item(name: &str, range: ide_core::Range, server: ide_core::ServerId
     CompletionItem {
         label: name.to_owned(),
         label_detail: None,
+        label_description: None,
         detail: Some("Blade directive".into()),
         kind: Some(CompletionKind::Keyword),
         documentation: None,

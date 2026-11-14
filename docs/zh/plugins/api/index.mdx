@@ -1,0 +1,85 @@
+---
+title: "API 参考"
+description: "openidea:plugin WIT 包中的每个 interface：一句话说明及源码链接。"
+---
+
+插件 API 是 [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中的 WIT 包 `openidea:plugin@1.7.0`。WIT 文件就是参考文档：每个 interface、类型和函数都在注释中有说明。1.7.0 是 `main` 上的版本；最新已发布版本是 1.6.0，其 WIT 保存在 [`sdk/rust/openidea-plugin/tests/api/released/`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/tests/api/released)。
+
+<Info>
+  自动生成的 API 参考正在计划中。在此之前，请参考下面的 WIT 文件、Rust SDK 的 `cargo
+  doc`（[`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)），以及
+  [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#the-api) 中把每个 SDK 函数对应到
+  WIT 函数和能力的表格。
+</Info>
+
+## World
+
+[`plugin.wit`](https://github.com/l0ng-ai/openidea/blob/main/wit/plugin.wit) 定义所有 world：基础 world `plugin`（全部导入，加上 `lifecycle`、`commands` 和 `event-handler` 三个导出），以及每个额外导出各自对应的可选 world（`plugin-providers`、`plugin-views`、`plugin-hover` 等）。见 [架构与沙箱](/zh/plugins/architecture)。
+
+## 宿主 interface（导入）
+
+由插件调用，大多受某个[能力](/zh/plugins/capabilities)约束。
+
+| Interface        | 文件                                                                                 | 说明                                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `types`          | [types.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/types.wit)             | 共享类型：位置（从 0 开始的行号、UTF-16 列）、范围、错误，以及承载后续新增内容的 `extension`                           |
+| `log`            | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | 写入 IDE 日志，标上插件 id                                                                                             |
+| `ui`             | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | 通知（API 1.5 起可只发给某个项目）、状态栏项、上下文键、选择器、输入框、确认框、文件夹选择、剪贴板、打开 URL、界面语言 |
+| `storage`        | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | 插件的持久键值存储（64 MiB）                                                                                           |
+| `command-runner` | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | 运行 IDE 操作和其他插件的命令（API 1.4，`ide.commands`）                                                               |
+| `output`         | [host.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/host.wit)               | 每个插件的具名只读 输出 标签页（API 1.4）                                                                              |
+| `workspace`      | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 打开的项目：读写、查找和搜索文件，符号，路径所属项目，打开项目                                                         |
+| `editor`         | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 文本编辑器：文档、选区、带版本号的编辑、滚动定位；已打开的编辑器和打开文件                                             |
+| `invocation`     | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 命令或事件的来源：所在项目、编辑器和选中的路径                                                                         |
+| `vcs`            | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 项目所在仓库的 Git：状态、远程、fetch、log、blame、diff                                                                |
+| `fs`             | [fs.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/fs.wit)                   | 打开的项目以外的文件（`fs.read:` / `fs.write:`），以及插件私有目录                                                     |
+| `decorations`    | [decorations.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/decorations.wit) | 编辑器标注和项目树徽标（API 1.4）                                                                                      |
+| `commit`         | [commit.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/commit.wit)           | 正在准备的提交及其提交信息                                                                                             |
+| `events`         | [events.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/events.wit)           | 订阅工作台事件，可按路径过滤                                                                                           |
+| `tasks`          | [events.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/events.wit)           | 带进度指示、时间预算更长的后台工作                                                                                     |
+| `diagnostics`    | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | 为文件发布问题，读取 问题 视图                                                                                         |
+| `net`            | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | HTTP(S) 请求（`net:` / `net.http:` / `net:ask`）                                                                       |
+| `secrets`        | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | 系统钥匙串中的密钥，只能通过请求中的 `{{secret:<name>}}` 使用                                                          |
+| `process`        | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | 运行已批准的程序：一次性运行、带环境变量运行，或通过句柄保持运行                                                       |
+| `ipc`            | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | 项目所在机器上的本地套接字和命名管道（API 1.4）                                                                        |
+| `auth`           | [io.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/io.wit)                   | 在桌面端接收 OAuth 回环重定向（API 1.4）                                                                               |
+| `views`          | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)             | 刷新和显示视图、向 Web 视图发消息、终端、内容标签页、打开位置                                                          |
+| `view-types`     | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)             | 声明式视图模型：树、列表、表单、表格、消息、`html` 内容、视图事件                                                      |
+| `settings`       | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)             | 插件自己的设置，项目优先于全局，或 schema 默认值                                                                       |
+| `run`            | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                 | 在 运行 工具窗口中启动插件的运行配置（API 1.4）                                                                        |
+| `run-targets`    | [run-targets.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run-targets.wit) | 插件拥有的、包装命令的项目运行目标（API 1.4）                                                                          |
+| `database`       | [database.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/database.wit)       | 插件自己的项目数据源及其凭据（API 1.4）                                                                                |
+| `mcp`            | [mcp.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/mcp.wit)                 | 内置 MCP 服务器 stdio 桥接的命令行，从不暴露其 URL 或 token（API 1.4）                                                 |
+| `detail-types`   | [details.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/details.wit)         | Services 树旁边的面板为插件节点显示的内容                                                                              |
+
+## 插件 interface（导出）
+
+由 IDE 调用。前三个是每个代码插件都有的；其余都是可选的，各自对应一个 world。
+
+| Interface                  | 文件                                                                                             | 说明                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `lifecycle`                | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | 实例的 `activate` 和 `deactivate`                                                 |
+| `commands`                 | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | 执行插件声明的某个命令                                                            |
+| `event-handler`            | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | 接收订阅事件的批次                                                                |
+| `syntax-provider`          | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | 为没有语法定义的插件语言提供高亮、大纲和折叠                                      |
+| `run-target-validation`    | [exports.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/exports.wit)                     | 通过插件的运行目标启动前进行检查（API 1.5）                                       |
+| `providers`                | [providers.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/providers.wit)                 | 为声明的语言提供补全、行内补全、代码操作、导航和行标记                            |
+| `language-features`        | [language-features.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/language-features.wit) | 格式化、签名帮助、高亮、链接、代码透镜、折叠、颜色、符号、装订区操作等（API 1.4） |
+| `injections`               | [injections.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/injections.wit)               | 文档中嵌入语言的范围（API 1.4）                                                   |
+| `hover-provider`           | [hover.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/hover.wit)                         | 向任意语言的悬停追加 Markdown                                                     |
+| `inlay-hints-provider`     | [inlay.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/inlay.wit)                         | 任意语言中的内嵌提示                                                              |
+| `semantic-tokens-provider` | [semantic.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/semantic.wit)                   | 任意语言中的语义着色                                                              |
+| `diagnostics-provider`     | [diagnostics.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/diagnostics.wit)             | 当前文档（可能未保存）中的问题                                                    |
+| `file-actions`             | [file-actions.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/file-actions.wit)           | 创建、重命名或删除文件的快速修复和重构                                            |
+| `document-indexer`         | [indexing.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/indexing.wit)                   | 在后台索引的跨文件定义、引用和装订区标记                                          |
+| `endpoints-provider`       | [endpoints.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/endpoints.wit)                 | 项目的 HTTP 端点，供 随处搜索 和 HTTP 客户端使用                                  |
+| `view-provider`            | [views.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/views.wit)                         | 声明的视图和自定义编辑器的内容与事件                                              |
+| `detail-provider`          | [details.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/details.wit)                     | Services 工具窗口中插件节点的详情面板                                             |
+| `commit-checker`           | [commit.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/commit.wit)                       | 提交前检查                                                                        |
+| `run-configurations`       | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | 项目的动态运行配置（API 1.4）                                                     |
+| `test-results`             | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | 解析测试输出、选择要重新运行的测试（API 1.4）                                     |
+| `mcp-provider`             | [mcp.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/mcp.wit)                             | 插件为内置 MCP 服务器提供的工具（API 1.4）                                        |
+
+## 其他语言
+
+SDK 在 [`sdk/rust/openidea-plugin/wit`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/wit) 中带有一份完全相同的 WIT 文件。用其他语言编写插件时，用该语言的组件模型工具为 `plugin` world（或某个可选 world）生成绑定，构建出组件，再用 `openidea-plugin check` 校验。

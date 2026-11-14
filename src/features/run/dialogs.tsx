@@ -52,24 +52,7 @@ export async function confirmRerun(name: string, instances = 1): Promise<boolean
   return answer !== null;
 }
 
-/** IDEA's question before closing a Run tab whose process still runs. Resolves true for Terminate. */
-export async function confirmTerminate(name: string): Promise<boolean> {
-  const answer = await confirmChecked({
-    title: tx`Process '${name}' Is Running`,
-    message: tx`Do you want to terminate the process '${name}'?`,
-    ok: "Terminate",
-    checkbox: "Do not ask again",
-  });
-  if (answer?.checked && isTauri()) {
-    try {
-      await call(commands.settingsSet("global", "run.confirmTerminate", "false"));
-      await loadSettings();
-    } catch {
-      /* keep asking */
-    }
-  }
-  return answer !== null;
-}
+export { confirmTerminate } from "@/workbench/confirmTerminate";
 
 /** Asks for the value of `$Prompt$`; null when cancelled. */
 export function promptValue(title: string): Promise<string | null> {

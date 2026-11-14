@@ -13,7 +13,7 @@ import { ipcPath } from "@/platform/paths";
 import { registerClientCommand } from "@/editor/lsp/clientCommands";
 import { copyText, showContextMenu, type MenuItem } from "@/ui";
 import { editorService, notifications, registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
-import { appendToGeneratedRequests } from "../spring/editor";
+import { appendGeneratedRequests } from "../generatedRequests";
 
 /** The command of the engine's route lenses and hints (`ide_php` `ROUTE_ACTIONS_COMMAND`). */
 export const ROUTE_ACTIONS_COMMAND = "laravel.routeActions";
@@ -57,7 +57,7 @@ const actions: RouteActions = {
     ),
   open: (r) => void openExternalUrl(r.url),
   createRequest: (r) =>
-    void appendToGeneratedRequests([r.request]).catch((err: unknown) =>
+    void appendGeneratedRequests([r.request]).catch((err: unknown) =>
       notifications().notify({
         level: "error",
         title: "Cannot create the HTTP request",

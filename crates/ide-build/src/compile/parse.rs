@@ -7,6 +7,7 @@
 //! [`super::resolve`] turns them into IDE coordinates.
 
 use ide_core::Severity;
+pub(crate) use ide_core::output_encoding::strip_ansi;
 use serde_json::Value;
 
 /// Output dialect of a build step.
@@ -98,32 +99,6 @@ pub(crate) struct OutputParser {
     pending: Option<Pending>,
 }
 
-/// Removes ANSI escape sequences (colour, cursor movement).
-pub(crate) fn strip_ansi(s: &str) -> String {
-    if !s.contains('\u{1b}') {
-        return s.to_owned();
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            out.push(c);
-            continue;
-        }
-        if chars.peek() == Some(&'[') {
-            chars.next();
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() || c == '~' {
-                    break;
-                }
-            }
-        } else {
-            chars.next();
-        }
-    }
-    out
-}
-
 fn num(s: &str) -> Option<u32> {
     s.trim().parse().ok().filter(|n| *n > 0)
 }
@@ -169,6 +144,13 @@ fn bracket_pos(s: &str) -> Option<(u32, Option<u32>, &str)> {
     Some((line, col, rest.trim_start()))
 }
 
+/// `/C:/p/A.java` → `C:/p/A.java`: Maven and file URIs put a `/` before the drive letter on Windows.
+/// Joined as is, it would become the drive-relative `C:p/A.java`.
+fn drive_path(p: &str) -> &str {
+    let b = p.as_bytes();
+    if b.len() > 2 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':' { &p[1..] } else { p }
+}
+
 /// `file:///p/A.kt` → `/p/A.kt` (percent-decoded).
 fn from_file_uri(s: &str) -> String {
     let Some(rest) = s.strip_prefix("file://") else { return s.to_owned() };
@@ -187,9 +169,7 @@ fn from_file_uri(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    let path = String::from_utf8_lossy(&out).into_owned();
-    // `file:///C:/x` on Windows.
-    if path.len() > 2 && path.as_bytes()[0] == b'/' && path.as_bytes()[2] == b':' { path[1..].to_owned() } else { path }
+    drive_path(&String::from_utf8_lossy(&out)).to_owned()
 }
 
 /// Kotlin: `file:///p/A.kt:12:5 msg` or `/p/A.kt: (12, 5): msg`, after the `e: ` / `w: ` prefix.
@@ -247,7 +227,7 @@ fn maven_line(line: &str) -> Option<RawMessage> {
         && looks_like_source_path(path)
         && let Some((ln, col, msg)) = bracket_pos(&format!("[{pos}"))
     {
-        return Some(RawMessage::new(severity, msg, ColUnit::Char).at(path, ln, col));
+        return Some(RawMessage::new(severity, msg, ColUnit::Char).at(drive_path(path), ln, col));
     }
     if let Some(m) = kotlin_line(rest) {
         return Some(m);
@@ -479,6 +459,20 @@ mod tests {
         assert_eq!(out[0].text, "cannot find symbol\nsymbol:   class Foo\nlocation: class a.A");
         assert_eq!(pos(&out[1]), (Severity::Warning, "/p/src/main/java/a/B.java", 3, Some(8)));
         assert_eq!(out[1].unit, ColUnit::Char);
+    }
+
+    #[test]
+    fn maven_windows_paths_drop_the_slash_before_the_drive() {
+        let out = parse(
+            Format::Maven,
+            "[ERROR] /C:/dev/p/src/main/java/a/A.java:[18,41] package a.b does not exist\n\
+             [ERROR] C:\\dev\\p\\B.java:[3,8] cannot find symbol\n\
+             [ERROR] file:///C:/dev/p/K.kt:4:9 Unresolved reference 'x'.\n",
+        );
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(pos(&out[0]), (Severity::Error, "C:/dev/p/src/main/java/a/A.java", 18, Some(41)));
+        assert_eq!(pos(&out[1]), (Severity::Error, "C:\\dev\\p\\B.java", 3, Some(8)));
+        assert_eq!(pos(&out[2]), (Severity::Error, "C:/dev/p/K.kt", 4, Some(9)));
     }
 
     #[test]

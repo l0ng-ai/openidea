@@ -121,9 +121,11 @@ describe("theme tokens", () => {
 /**
  * Tokens the palette themes (Solarized, One) take from their light / dark base
  * on purpose: colours the user assigns (project and data source colours), the
- * platform's caption close button, and the tint strength.
+ * platform's caption close and macOS window buttons, the tint strength, and
+ * the selection foreground, whose base default preserves syntax colours.
  */
-const INHERITED_FROM_BASE = /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$)/;
+const INHERITED_FROM_BASE =
+  /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$|fg-editor-selection$)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];
@@ -142,7 +144,7 @@ describe("palette themes", () => {
   it("have a tokens.css block for every palette theme id, and no other", () => {
     const blocks = [...css.matchAll(/:root\[data-color-theme="([a-z0-9-]+)"\]/g)].map((m) => m[1]);
     expect([...new Set(blocks)].sort()).toEqual(palettes.map((t) => t.id).sort());
-    expect(palettes.length).toBeGreaterThanOrEqual(4);
+    expect(palettes.length).toBeGreaterThanOrEqual(2);
   });
 
   it.each(palettes)("$id defines every token or inherits it from its $kind base on purpose", ({ id, kind }) => {

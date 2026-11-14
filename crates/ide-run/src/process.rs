@@ -51,12 +51,19 @@ struct Entry {
     config_id: String,
     name: String,
     pid: Mutex<Option<u32>>,
-    stdin: Mutex<Option<Box<dyn Write + Send>>>,
+    stdin: Mutex<Option<ide_core::input::InputWriter>>,
     /// The PTY master of a terminal-emulated run (resize; dropped on exit).
     pty: Option<Mutex<Option<Box<dyn MasterPty + Send>>>>,
+    /// The Windows job over the launch: everything it starts joins the job, so a Stop
+    /// reaches the tree even when the launcher exited first (and took the tracked pid's
+    /// meaning along). `None` when the assignment failed; the kill then falls back to
+    /// `taskkill /T /F` from the pid.
+    #[cfg(windows)]
+    job: Option<ide_core::process::Job>,
     stop: Option<StopCommand>,
     output: OutputFn,
     exited: AtomicBool,
+    code: Mutex<Option<i32>>,
     stopping: AtomicBool,
 }
 
@@ -80,6 +87,8 @@ pub struct StartOptions {
     pub encoding: Option<String>,
     /// Project content and source roots added to Python launch environments.
     pub python_paths: Vec<PathBuf>,
+    /// Where the Ruby test reporter is installed (see [`crate::ruby_reporter`]); Ruby test runs load it.
+    pub ruby_reporter: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -355,6 +364,10 @@ impl ProcessManager {
         if matches!(config.kind.as_str(), "python" | "pytest" | "django-test") {
             crate::python_path::extend(&mut env.vars, &options.python_paths, !env.clear)?;
         }
+        if let Some(dir) = options.ruby_reporter.as_deref().filter(|_| crate::ruby_reporter::applies(config)) {
+            crate::ruby_preload::add(&mut env.vars, dir, crate::ruby_reporter::FEATURE, !env.clear);
+            env.vars.insert("OPENIDEA_TEST_REPORT".into(), "1".into());
+        }
         let on_output: OutputFn = Arc::from(on_output);
         let on_output = match extras.output_file.as_deref() {
             Some(file) => tee_output(&resolve_cwd(root, Some(Path::new(file))), on_output)?,
@@ -413,12 +426,34 @@ impl ProcessManager {
             std::io::ErrorKind::NotFound => IdeError::unavailable(format!("command not found: {}", config.command)),
             _ => IdeError::from(e),
         })?;
+        // The job follows the launch's tree kernel-side; Stop reaches what the launcher
+        // started even after the launcher itself is gone.
+        #[cfg(windows)]
+        let job = ide_core::process::Job::for_child(&child);
 
         let id = RunId::next();
-        let stdin: Option<Box<dyn Write + Send>> = match child.stdin.take() {
-            Some(pipe) if !redirected => Some(Box::new(pipe)),
-            _ => None,
-        };
+        let stdin = (|| -> std::io::Result<_> {
+            Ok(match child.stdin.take() {
+                Some(pipe) if !redirected => {
+                    #[cfg(unix)]
+                    let wait_writable = {
+                        use std::os::fd::AsRawFd;
+                        ide_core::input::nonblocking(pipe.as_raw_fd())?
+                    };
+                    Some(input_writer(
+                        id,
+                        Box::new(pipe),
+                        #[cfg(unix)]
+                        wait_writable,
+                    )?)
+                }
+                _ => None,
+            })
+        })()
+        .inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        })?;
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
@@ -427,9 +462,12 @@ impl ProcessManager {
             pid: Mutex::new(Some(child.id())),
             stdin: Mutex::new(stdin),
             pty: None,
+            #[cfg(windows)]
+            job,
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
+            code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
@@ -441,12 +479,27 @@ impl ProcessManager {
         let stderr = child.stderr.take();
         let result = (|| -> std::io::Result<()> {
             if let Some(out) = stdout {
-                spawn_reader(id, Stream::Stdout, out, tx.clone())?;
+                spawn_reader(
+                    id,
+                    Stream::Stdout,
+                    out,
+                    tx.clone(),
+                    #[cfg(unix)]
+                    None,
+                )?;
             }
             if let Some(err) = stderr {
-                spawn_reader(id, Stream::Stderr, err, tx.clone())?;
+                spawn_reader(
+                    id,
+                    Stream::Stderr,
+                    err,
+                    tx.clone(),
+                    #[cfg(unix)]
+                    None,
+                )?;
             }
-            spawn_pump(rx, on_output.clone(), entry.clone(), sink, options.encoding.clone(), notice)?;
+            let decoder = || OutputDecoder::for_pipes(options.encoding.as_deref());
+            spawn_pump(rx, on_output.clone(), entry.clone(), sink, [decoder(), decoder()], notice)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -516,6 +569,14 @@ impl ProcessManager {
         for (k, v) in &env.vars {
             cmd.env(k, v);
         }
+        #[cfg(unix)]
+        let wait_writable = ide_core::input::nonblocking(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
+        #[cfg(unix)]
+        let wait_readable = ide_core::input::readable(
+            pair.master.as_raw_fd().ok_or_else(|| std::io::Error::other("PTY has no file descriptor"))?,
+        )?;
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
             let text = e.to_string();
             if text.contains("No such file") || text.contains("not found") {
@@ -530,6 +591,16 @@ impl ProcessManager {
         let writer = pair.master.take_writer().map_err(|e| IdeError::internal(format!("pty writer: {e}")))?;
 
         let id = RunId::next();
+        let writer = input_writer(
+            id,
+            writer,
+            #[cfg(unix)]
+            wait_writable,
+        )
+        .inspect_err(|_| {
+            let _ = child.kill();
+            let _ = child.wait();
+        })?;
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
@@ -538,17 +609,31 @@ impl ProcessManager {
             pid: Mutex::new(child.process_id()),
             stdin: Mutex::new(Some(writer)),
             pty: Some(Mutex::new(Some(pair.master))),
+            // By pid, not by handle: the PTY's child exposes its id only.
+            #[cfg(windows)]
+            job: child.process_id().and_then(ide_core::process::Job::for_pid),
             stop,
             output: on_output.clone(),
             exited: AtomicBool::new(false),
+            code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
         on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
         let (tx, rx) = mpsc::channel();
-        let result = spawn_reader(id, Stream::Stdout, reader, tx.clone())
-            .and_then(|_| spawn_pump(rx, on_output, entry.clone(), sink, options.encoding.clone(), None));
+        let result = spawn_reader(
+            id,
+            Stream::Stdout,
+            reader,
+            tx.clone(),
+            #[cfg(unix)]
+            Some(Box::new(wait_readable)),
+        )
+        .and_then(|_| {
+            let decoder = || OutputDecoder::for_label(options.encoding.as_deref());
+            spawn_pump(rx, on_output, entry.clone(), sink, [decoder(), decoder()], None)
+        });
         if let Err(e) = result {
             let _ = child.kill();
             let _ = child.wait();
@@ -600,16 +685,9 @@ impl ProcessManager {
         if entry.exited.load(Ordering::Acquire) {
             return Err(IdeError::invalid("process has exited"));
         }
-        let mut stdin = entry.stdin.lock();
-        let pipe = stdin.as_mut().ok_or_else(|| IdeError::invalid("stdin is closed"))?;
-        let res = pipe.write_all(data.as_bytes()).and_then(|_| pipe.flush());
-        if let Err(e) = res {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                *stdin = None;
-            }
-            return Err(e.into());
-        }
-        Ok(())
+        let stdin = entry.stdin.lock();
+        let pipe = stdin.as_ref().ok_or_else(|| IdeError::invalid("stdin is closed"))?;
+        pipe.write(data.as_bytes()).map_err(Into::into)
     }
 
     /// Closes the process's stdin (sends EOF; on a terminal, types ^D).
@@ -618,7 +696,9 @@ impl ProcessManager {
         if entry.pty.is_some() {
             return self.write_stdin(id, "\u{4}");
         }
-        entry.stdin.lock().take();
+        if let Some(stdin) = entry.stdin.lock().as_ref() {
+            stdin.finish();
+        }
         Ok(())
     }
 
@@ -627,27 +707,29 @@ impl ProcessManager {
         self.stop_with_grace(id, STOP_GRACE)
     }
 
-    /// [`Self::stop`] with an explicit grace period before the kill. A configuration's
-    /// stop command runs first; signals follow only if the process outlives it.
+    /// [`Self::stop`] with an explicit grace period for the configured stop command. The
+    /// first stop only asks the process tree to exit (stop command, then `SIGINT`) and waits;
+    /// a second stop kills it.
     pub fn stop_with_grace(&self, id: RunId, grace: Duration) -> IdeResult<()> {
         let entry = self.entry(id)?;
-        if entry.exited.load(Ordering::Acquire) {
-            return Ok(());
-        }
         let already_stopping = entry.stopping.swap(true, Ordering::AcqRel);
         let Some(pid) = *entry.pid.lock() else { return Ok(()) };
-        if already_stopping {
-            // Second stop request: don't wait out the grace period.
-            kill_tree(pid, true);
+        // A run that ended by itself can leave members of its group behind: a Stop must
+        // still be able to reach them.
+        if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
             return Ok(());
-        }
-        if entry.stop.is_none() {
-            kill_tree(pid, false);
         }
         let entry = entry.clone();
         std::thread::Builder::new()
             .name(format!("openidea-run-stop-{}", id.0))
             .spawn(move || {
+                if already_stopping {
+                    kill_tree(&entry, pid, true);
+                    return;
+                }
+                if entry.stop.is_none() {
+                    kill_tree(&entry, pid, false);
+                }
                 let exits_within = |limit: Duration| {
                     let deadline = Instant::now() + limit;
                     while Instant::now() < deadline {
@@ -663,15 +745,26 @@ impl ProcessManager {
                     if exits_within(grace) {
                         return;
                     }
-                    kill_tree(pid, false);
+                    kill_tree(&entry, pid, false);
                 }
-                if !exits_within(grace) {
-                    tracing::debug!(id = %entry.id, pid, "process ignored interrupt; killing");
-                    kill_tree(pid, true);
+                // A first Stop only asks the process tree to exit, as IDEA does: it waits for
+                // the shutdown to finish (a Spring Boot app can take seconds) and a second Stop
+                // is what kills. Killing on a timer here cut shutdown logs off with SIGKILL.
+                while group_alive(pid, &entry) {
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             })
             .map_err(|e| IdeError::internal(format!("failed to start stop thread: {e}")))?;
         Ok(())
+    }
+
+    /// Returns `None` while running, or the exit code once output has drained.
+    pub fn exit_code(&self, id: RunId) -> IdeResult<Option<Option<i32>>> {
+        let entry = self.entry(id)?;
+        if !entry.exited.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        Ok(Some(*entry.code.lock()))
     }
 
     pub fn list(&self) -> Vec<RunInfo> {
@@ -684,7 +777,7 @@ impl ProcessManager {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(pid, true);
+                kill_tree(entry, pid, true);
             }
         }
     }
@@ -695,7 +788,7 @@ impl ProcessManager {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(pid, true);
+                kill_tree(entry, pid, true);
             }
         }
     }
@@ -745,15 +838,56 @@ fn run_followup(
     }
     (entry.output)(OutputChunk::System { text: format!("{}\n", inv.display) });
     let mut child = cmd.spawn()?;
+    // The follow-up run continues the same launch: it joins the run's job, so a Stop
+    // reaches its tree too.
+    #[cfg(windows)]
+    if let Some(job) = entry.job.as_ref() {
+        job.assign_pid(child.id());
+    }
     *pid = Some(child.id());
-    *entry.stdin.lock() = child.stdin.take().map(|p| Box::new(p) as Box<dyn Write + Send>);
+    *entry.stdin.lock() = (|| -> std::io::Result<_> {
+        Ok(match child.stdin.take() {
+            Some(pipe) => {
+                #[cfg(unix)]
+                let wait_writable = {
+                    use std::os::fd::AsRawFd;
+                    ide_core::input::nonblocking(pipe.as_raw_fd())?
+                };
+                Some(input_writer(
+                    entry.id,
+                    Box::new(pipe),
+                    #[cfg(unix)]
+                    wait_writable,
+                )?)
+            }
+            None => None,
+        })
+    })()
+    .inspect_err(|_| {
+        let _ = child.kill();
+        let _ = child.wait();
+    })?;
     drop(pid);
     let readers = (|| {
         if let Some(out) = child.stdout.take() {
-            spawn_reader(entry.id, Stream::Stdout, out, tx.clone())?;
+            spawn_reader(
+                entry.id,
+                Stream::Stdout,
+                out,
+                tx.clone(),
+                #[cfg(unix)]
+                None,
+            )?;
         }
         if let Some(err) = child.stderr.take() {
-            spawn_reader(entry.id, Stream::Stderr, err, tx.clone())?;
+            spawn_reader(
+                entry.id,
+                Stream::Stderr,
+                err,
+                tx.clone(),
+                #[cfg(unix)]
+                None,
+            )?;
         }
         Ok::<_, std::io::Error>(())
     })();
@@ -877,13 +1011,24 @@ fn group_alive(pid: u32, _entry: &Entry) -> bool {
     unsafe { libc::kill(-(pid as libc::pid_t), 0) == 0 }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn group_alive(_pid: u32, entry: &Entry) -> bool {
+    // The job sees what an exited launcher left behind; without one (the assignment
+    // failed), a run is over when the launcher itself is.
+    match entry.job.as_ref() {
+        Some(job) => job.is_running(),
+        None => !entry.exited.load(Ordering::Acquire),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn group_alive(_pid: u32, entry: &Entry) -> bool {
     !entry.exited.load(Ordering::Acquire)
 }
 
 #[cfg(unix)]
-fn kill_tree(pid: u32, force: bool) {
+fn kill_tree(entry: &Entry, pid: u32, force: bool) {
+    let _ = entry;
     let sig = if force { libc::SIGKILL } else { libc::SIGINT };
     let pid = pid as libc::pid_t;
     if pid <= 0 {
@@ -911,9 +1056,15 @@ fn add_raw_args(cmd: &mut Command, args: &[String]) {
 }
 
 #[cfg(windows)]
-fn kill_tree(pid: u32, _force: bool) {
+fn kill_tree(entry: &Entry, pid: u32, _force: bool) {
     use std::os::windows::process::CommandExt;
-    // Console children have no reliable graceful signal from outside their console.
+    // The job ends the whole launch kernel-side, members included that the launcher
+    // started after any snapshot would have been taken.
+    if entry.job.as_ref().is_some_and(|job| job.terminate()) {
+        return;
+    }
+    // Console children have no reliable graceful signal from outside their console, and
+    // without a job the tree can only be found from the tracked root's pid.
     let _ = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .creation_flags(ide_core::process::CREATE_NO_WINDOW)
@@ -927,6 +1078,7 @@ fn spawn_reader(
     stream: Stream,
     mut pipe: impl Read + Send + 'static,
     tx: Sender<Msg>,
+    #[cfg(unix)] mut wait_readable: Option<Box<dyn FnMut() -> std::io::Result<()> + Send>>,
 ) -> std::io::Result<()> {
     let label = if stream == Stream::Stdout { "out" } else { "err" };
     std::thread::Builder::new().name(format!("openidea-run-{label}-{}", id.0)).spawn(move || {
@@ -940,7 +1092,25 @@ fn spawn_reader(
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(unix)]
+                    if let Some(wait) = &mut wait_readable {
+                        if let Err(e) = wait()
+                            && e.kind() != std::io::ErrorKind::Interrupted
+                        {
+                            tracing::warn!(%id, "run read: {e}");
+                            break;
+                        }
+                        continue;
+                    }
+                    std::thread::sleep(BATCH_INTERVAL);
+                }
+                #[cfg(unix)]
+                Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
+                Err(e) => {
+                    tracing::warn!(%id, "run read: {e}");
+                    break;
+                }
             }
         }
     })?;
@@ -954,18 +1124,35 @@ fn chunk(stream: Stream, text: String) -> OutputChunk {
     }
 }
 
+/// Appends what `decode` writes to `pending`, through the notice filter when there is one.
+fn emit(
+    decode: impl FnOnce(&mut String),
+    notice: &mut Option<ide_core::output_encoding::NoticeFilter>,
+    decoded: &mut String,
+    pending: &mut String,
+) {
+    match notice {
+        Some(filter) => {
+            decode(decoded);
+            filter.filter(decoded, pending);
+            decoded.clear();
+        }
+        None => decode(pending),
+    }
+}
+
 /// Merges both streams in arrival order, batching consecutive output of the same stream.
+/// `decoders` decode stdout and stderr.
 fn spawn_pump(
     rx: mpsc::Receiver<Msg>,
     on_output: OutputFn,
     entry: Arc<Entry>,
     sink: SharedSink,
-    encoding: Option<String>,
+    decoders: [OutputDecoder; 2],
     notice: Option<String>,
 ) -> std::io::Result<()> {
     std::thread::Builder::new().name(format!("openidea-run-pump-{}", entry.id.0)).spawn(move || {
-        let mut out_dec = OutputDecoder::for_label(encoding.as_deref());
-        let mut err_dec = OutputDecoder::for_label(encoding.as_deref());
+        let [mut out_dec, mut err_dec] = decoders;
         // "Picked up JAVA_TOOL_OPTIONS: …" from every JVM given the console encoding, on
         // either stream (`spring-boot:run` copies its fork's stderr to Maven's stdout).
         let filter = || notice.clone().map(ide_core::output_encoding::NoticeFilter::new);
@@ -974,6 +1161,8 @@ fn spawn_pump(
         let mut pending = String::new();
         let mut pending_stream = Stream::Stdout;
         let mut batch_started: Option<Instant> = None;
+        // Since when a decoder holds part of a line back to tell its encoding.
+        let mut held_since: Option<Instant> = None;
         let mut status: Option<Exit> = None;
         let mut drain_deadline: Option<Instant> = None;
 
@@ -988,6 +1177,7 @@ fn spawn_pump(
             let now = Instant::now();
             let wait = [
                 batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
+                held_since.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
                 drain_deadline.map(|t| t.saturating_duration_since(now)),
             ]
             .into_iter()
@@ -1004,14 +1194,8 @@ fn spawn_pump(
                         Stream::Stdout => (&mut out_dec, &mut out_notice),
                         Stream::Stderr => (&mut err_dec, &mut err_notice),
                     };
-                    match notice {
-                        Some(filter) => {
-                            dec.decode_into(&bytes, &mut decoded);
-                            filter.filter(&decoded, &mut pending);
-                            decoded.clear();
-                        }
-                        None => dec.decode_into(&bytes, &mut pending),
-                    }
+                    emit(|out| dec.decode_into(&bytes, out), notice, &mut decoded, &mut pending);
+                    held_since = if out_dec.holds() || err_dec.holds() { held_since.or(Some(now)) } else { None };
                     if !pending.is_empty() && batch_started.is_none() {
                         batch_started = Some(Instant::now());
                     }
@@ -1026,6 +1210,25 @@ fn spawn_pump(
                 Err(RecvTimeoutError::Timeout) => {
                     if drain_deadline.is_some_and(|d| Instant::now() >= d) {
                         break;
+                    }
+                    // Nothing more came: show a held prompt.
+                    if held_since.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                        held_since = None;
+                        for (stream, dec, notice) in [
+                            (Stream::Stdout, &mut out_dec, &mut out_notice),
+                            (Stream::Stderr, &mut err_dec, &mut err_notice),
+                        ] {
+                            if dec.holds() {
+                                if stream != pending_stream {
+                                    flush(&mut pending, pending_stream, &mut batch_started);
+                                    pending_stream = stream;
+                                }
+                                emit(|out| dec.release(out), notice, &mut decoded, &mut pending);
+                            }
+                        }
+                        if !pending.is_empty() && batch_started.is_none() {
+                            batch_started = Some(Instant::now());
+                        }
                     }
                     if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
                         flush(&mut pending, pending_stream, &mut batch_started);
@@ -1055,6 +1258,31 @@ fn spawn_pump(
         if let Some(pty) = &entry.pty {
             pty.lock().take();
         }
+        // A stopped run is over when the whole process group (Unix) or the whole job
+        // (Windows) is gone, not when the child we spawned exits: a shell or `mvn` can
+        // end while the application it started keeps its port, and reporting "finished"
+        // then would let Run start into an occupied port. A second Stop kills the group
+        // or the job, which ends this wait.
+        #[cfg(unix)]
+        {
+            let pid = *entry.pid.lock();
+            if entry.stopping.load(Ordering::Acquire)
+                && let Some(pid) = pid
+            {
+                while group_alive(pid, &entry) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        // Without a job the exited flag is the only probe, and it always reads "alive"
+        // here: this thread is the one that sets it.
+        #[cfg(windows)]
+        if entry.stopping.load(Ordering::Acquire) && entry.job.is_some() {
+            while group_alive(0, &entry) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        *entry.code.lock() = code;
         entry.exited.store(true, Ordering::Release);
         tracing::debug!(id = %entry.id, ?code, "run exited");
         sink.emit(IdeEvent::RunExited { run: entry.id, code });
@@ -1142,6 +1370,22 @@ fn signal_number(description: &str) -> Option<i32> {
 #[cfg(not(unix))]
 fn signal_number(_description: &str) -> Option<i32> {
     None
+}
+
+fn input_writer(
+    id: RunId,
+    writer: Box<dyn std::io::Write + Send>,
+    #[cfg(unix)] wait_writable: impl FnMut() -> std::io::Result<()> + Send + 'static,
+) -> std::io::Result<ide_core::input::InputWriter> {
+    ide_core::input::InputWriter::new(
+        format!("openidea-run-input-{}", id.0),
+        writer,
+        #[cfg(unix)]
+        wait_writable,
+        move |e| {
+            tracing::warn!(%id, "run input: {e}");
+        },
+    )
 }
 
 #[cfg(test)]

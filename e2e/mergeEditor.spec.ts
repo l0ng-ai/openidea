@@ -1,3 +1,4 @@
+import type { EditorView } from "@codemirror/view";
 import type { Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
@@ -121,6 +122,23 @@ test("Apply writes and stages unresolved text only after confirmation", async ({
   expect((await writes(page))[0]!.args[2]).toEqual({ changes: [{ from: 0, to: 13, insert: BASE }] });
 });
 
+test("footer buttons work when a click doesn't focus them, as in WebKit", async ({ page }) => {
+  await mountMerge(page);
+  await result(page).locator(".cm-content").click();
+  // WebKit focuses the clicked button's nearest focusable ancestor, not the button.
+  await page
+    .locator("#merge-host")
+    .getByRole("button", { name: "Apply", exact: true })
+    .evaluate((button) => {
+      let target = button.parentElement;
+      while (target && !target.hasAttribute("tabindex")) target = target.parentElement;
+      if (target) target.focus();
+      else (document.activeElement as HTMLElement | null)?.blur();
+      (button as HTMLButtonElement).click();
+    });
+  await expect(page.getByRole("dialog")).toContainText("Save and mark the file as resolved anyway?");
+});
+
 test("binary and unreadable versions show an error with no Apply controls", async ({ page }) => {
   await mountMerge(page, ["\0base", "\0ours", "\0theirs"]);
   await expect(page.locator("#merge-host")).toContainText("Binary files cannot be resolved in the merge editor.");
@@ -205,6 +223,7 @@ test("the toolbar applies the non-conflicting changes of one side", async ({ pag
   await expect(page.getByRole("button", { name: "Apply Non-Conflicting Changes from the Left Side" })).toBeDisabled();
   await page.getByRole("button", { name: "Apply Non-Conflicting Changes from the Right Side" }).click();
   await expect(status(page)).toHaveText("2 changes left, 2 conflicts");
+  await expect(result(page).locator(".cm-editor")).toHaveClass(/cm-focused/);
   expect(await text(result(page))).toContain("\nC\n");
   await expect(page.getByRole("button", { name: "Apply All Non-Conflicting Changes" })).toBeDisabled();
 });
@@ -342,4 +361,60 @@ test("merge actions follow the focused instance and survive a context menu", asy
   await page.getByRole("menuitem", { name: "Ignore", exact: true }).click();
   await expect(second.locator("[class*=status]").first()).toHaveText("2 changes left, 1 conflict");
   await expect(status(page)).toHaveText("1 change left, 1 conflict");
+});
+
+test("difference navigation focuses and centres the merge result caret with synchronized sides", async ({ page }) => {
+  const base = Array.from({ length: 800 }, (_, i) => `const value${i} = ${i};`);
+  const ours = [...base];
+  const theirs = [...base];
+  for (const i of [100, 400, 700]) {
+    ours[i] = `const ours${i} = ${i};`;
+    theirs[i] = `const theirs${i} = ${i};`;
+  }
+  await mountMerge(page, [base.join("\n"), ours.join("\n"), theirs.join("\n")]);
+  const pane = result(page);
+  const check = async (line: number) => {
+    await expect(pane.locator(".cm-editor")).toHaveClass(/cm-focused/);
+    await expect
+      .poll(() =>
+        pane.locator(".cm-content").evaluate((content) => {
+          const view = (content as HTMLElement & { cmTile: { view: EditorView } }).cmTile.view;
+          const head = view.state.selection.main.head;
+          const at = view.state.doc.lineAt(head);
+          const rect = view.scrollDOM.getBoundingClientRect();
+          const coords = view.coordsAtPos(head)!;
+          return {
+            line: at.number,
+            column: head - at.from,
+            centred: Math.abs((coords.top + coords.bottom) / 2 - rect.top - rect.height / 2) < 3,
+            cursor: getComputedStyle(view.dom.querySelector(".cm-cursor")!).display !== "none",
+            blinking: /cm-blink/.test(getComputedStyle(view.dom.querySelector(".cm-cursorLayer")!).animationName),
+          };
+        }),
+      )
+      .toEqual({ line, column: 0, centred: true, cursor: true, blinking: true });
+    await expect
+      .poll(async () => {
+        const tops = await page.locator("#merge-host .cm-content").evaluateAll(
+          (els, line) =>
+            els.map((content) => {
+              const view = (content as HTMLElement & { cmTile: { view: EditorView } }).cmTile.view;
+              return view.documentTop + view.lineBlockAt(view.state.doc.line(line).from).top;
+            }),
+          line,
+        );
+        return Math.max(...tops) - Math.min(...tops);
+      })
+      .toBeLessThan(2);
+  };
+  await page.getByRole("button", { name: "Next Change", exact: true }).click();
+  await check(101);
+  await page.keyboard.press("F7");
+  await check(401);
+  await page.keyboard.press("F7");
+  await check(701);
+  await page.getByRole("button", { name: "Previous Change", exact: true }).click();
+  await check(401);
+  await page.keyboard.press("Shift+F7");
+  await check(101);
 });

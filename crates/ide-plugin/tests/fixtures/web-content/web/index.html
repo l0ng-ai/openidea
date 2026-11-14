@@ -1,0 +1,49 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Content Probe</title>
+<style>
+body { background: var(--openidea-bg); color: var(--openidea-fg); font-family: var(--openidea-font-ui, sans-serif); padding: 12px; }
+button { font: inherit; padding: 6px; } pre { white-space: pre-wrap; }
+</style></head><body>
+<h2>Plugin content editor tab</h2>
+<button id="open">Open content tab</button>
+<pre id="status" aria-live="polite"></pre>
+<script>
+let stored = "name = \"demo\"\nreplicas = 2\n";
+const openTab = () => openidea.postMessage(JSON.stringify({
+  op: "open-content-tab",
+  key: "service-config",
+  title: "service.toml",
+  fileName: "service.toml",
+  language: "toml",
+  content: stored,
+  actions: [
+    { id: "reload", label: "Reload", icon: "rerun" },
+    { id: "diff", label: "Diff", icon: "diff" },
+    { id: "save", label: "Apply", icon: "green-checkmark", primary: true, save: true }
+  ]
+}));
+document.querySelector("#open").onclick = openTab;
+openidea.onMessage((text) => {
+  if (text === "open") { openTab(); return; }
+  let m; try { m = JSON.parse(text); } catch { return; }
+  if (m.op === "content-tab-error") {
+    document.querySelector("#status").textContent = m.error;
+  } else if (m.op === "content-tab-action") {
+    if (m.action === "reload") {
+      openidea.postMessage(JSON.stringify({
+        op: "content-tab-reply", requestId: m.requestId, content: stored, status: "Reloaded"
+      }));
+    } else if (m.action === "diff") {
+      openidea.postMessage(JSON.stringify({
+        op: "content-tab-reply", requestId: m.requestId,
+        diff: { left: stored, right: m.content, leftLabel: "Live", rightLabel: "Edited", title: "Diff: service.toml" }
+      }));
+    } else if (m.action === "save") {
+      stored = m.content;
+      openidea.postMessage(JSON.stringify({
+        op: "content-tab-reply", requestId: m.requestId, saved: true, status: "Applied"
+      }));
+    }
+  }
+});
+</script></body></html>

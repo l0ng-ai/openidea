@@ -1,7 +1,7 @@
 //! Project-incarnation notebook ownership and whole-batch execution admission.
 use crate::ops::Channel;
 use ide_core::error::ErrorKind;
-use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, SharedSink};
+use ide_core::{CancellationToken, IdeError, IdeEvent, IdeResult, IpcPath, SharedSink};
 use ide_notebook::kernel::{KernelManager, KernelOutput};
 use ide_notebook::{NotebookDocument, NotebookEdit, NotebookSnapshot};
 use parking_lot::Mutex;
@@ -17,7 +17,7 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 #[serde(rename_all = "camelCase")]
 pub struct NotebookOutputEvent {
     pub id: String,
-    pub path: String,
+    pub path: IpcPath,
     pub cell: String,
     pub msg_id: String,
     pub kind: String,
@@ -84,6 +84,14 @@ pub struct NotebookService {
     registry: Arc<Mutex<Registry>>,
     kernels: Arc<KernelManager>,
     sink: SharedSink,
+    observer: parking_lot::RwLock<Option<Arc<dyn NotebookObserver>>>,
+}
+
+/// Learns each open notebook's contents after every change of them, and when it closes (the
+/// language servers' copy of its code cells).
+pub trait NotebookObserver: Send + Sync {
+    fn changed(&self, path: &Path, snapshot: &NotebookSnapshot);
+    fn closed(&self, path: &Path);
 }
 
 impl NotebookService {
@@ -121,7 +129,23 @@ impl NotebookService {
                 }
             }),
         );
-        Arc::new(Self { registry, kernels: Arc::new(kernels), sink })
+        Arc::new(Self { registry, kernels: Arc::new(kernels), sink, observer: Default::default() })
+    }
+
+    pub fn set_observer(&self, observer: Arc<dyn NotebookObserver>) {
+        *self.observer.write() = Some(observer);
+    }
+
+    /// Called with the document's state locked, so observers see its changes in order.
+    fn changed(&self, path: &Path, snapshot: &NotebookSnapshot) {
+        if let Some(observer) = self.observer.read().clone() {
+            observer.changed(path, snapshot);
+        }
+    }
+
+    /// The file of an open notebook.
+    pub fn path_of(&self, id: &str) -> IdeResult<PathBuf> {
+        Ok(self.resolve(id)?.path.clone())
     }
 
     pub fn open(&self, path: &Path) -> IdeResult<NotebookSnapshot> {
@@ -136,6 +160,7 @@ impl NotebookService {
         }
         let document = NotebookDocument::load(&path)?;
         let initial = document.snapshot();
+        self.changed(&path, &initial);
         let id = initial.id.clone();
         registry.paths.insert(path.clone(), id.clone());
         registry.documents.insert(
@@ -173,7 +198,9 @@ impl NotebookService {
         let document = self.resolve(id)?;
         let mut state = document.state.lock();
         mutable(&state)?;
-        state.document.edit(version, edit)
+        let snapshot = state.document.edit(version, edit)?;
+        self.changed(&document.path, &snapshot);
+        Ok(snapshot)
     }
 
     pub fn save(&self, id: &str) -> IdeResult<NotebookSnapshot> {
@@ -190,7 +217,9 @@ impl NotebookService {
         if state.active.is_some() {
             return Err(IdeError::unavailable("stop notebook execution before undo or redo"));
         }
-        if redo { state.document.redo() } else { state.document.undo() }
+        let snapshot = if redo { state.document.redo() } else { state.document.undo() }?;
+        self.changed(&document.path, &snapshot);
+        Ok(snapshot)
     }
 
     pub async fn interrupt(&self, id: &str) -> IdeResult<()> {
@@ -238,7 +267,10 @@ impl NotebookService {
                 snapshot(&document)
             } else {
                 self.kernels.shutdown_kernel(&document.path).await?;
-                document.state.lock().document.reload()
+                let mut state = document.state.lock();
+                let snapshot = state.document.reload()?;
+                self.changed(&document.path, &snapshot);
+                Ok(snapshot)
             }
         }
         .await;
@@ -284,6 +316,10 @@ impl NotebookService {
         let mut registry = self.registry.lock();
         registry.documents.remove(id);
         registry.paths.remove(&document.path);
+        drop(registry);
+        if let Some(observer) = self.observer.read().clone() {
+            observer.closed(&document.path);
+        }
         Ok(())
     }
 
@@ -536,7 +572,7 @@ fn commit_output(
     };
     Ok(Some(NotebookOutputEvent {
         id: document.id.clone(),
-        path: document.path.to_string_lossy().into_owned(),
+        path: document.path.clone().into(),
         cell: cell.to_owned(),
         msg_id: output.msg_id,
         kind: output.kind,
@@ -573,6 +609,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_observer_follows_every_change_of_an_open_notebook_and_its_close() {
+        #[derive(Default)]
+        struct Seen(Mutex<Vec<String>>);
+        impl NotebookObserver for Seen {
+            fn changed(&self, path: &Path, snapshot: &NotebookSnapshot) {
+                let sources: Vec<&str> = snapshot.cells.iter().map(|c| c.source.as_str()).collect();
+                let name = path.file_name().unwrap().to_string_lossy();
+                self.0.lock().push(format!("{name}: {}", sources.join(" | ")));
+            }
+            fn closed(&self, path: &Path) {
+                self.0.lock().push(format!("closed {}", path.file_name().unwrap().to_string_lossy()));
+            }
+        }
+        let (dir, service, initial) = fixture();
+        let seen = Arc::new(Seen::default());
+        service.set_observer(seen.clone());
+        service.close(&initial.id).await.unwrap();
+        let opened = service.open(&dir.path().join("session.ipynb")).unwrap();
+        assert_eq!(
+            service.path_of(&opened.id).unwrap(),
+            dunce::canonicalize(dir.path().join("session.ipynb")).unwrap()
+        );
+        let edit = NotebookEdit::SetSource { cell: "second".into(), source: "print(x + 1)".into() };
+        let edited = service.edit(&opened.id, opened.version, edit).unwrap();
+        service.undo(&opened.id, false).unwrap();
+        // A second view of the open notebook changes nothing.
+        service.open(&dir.path().join("session.ipynb")).unwrap();
+        assert!(edited.version > opened.version);
+        service.close(&opened.id).await.unwrap();
+        assert_eq!(
+            *seen.0.lock(),
+            [
+                "closed session.ipynb",
+                "session.ipynb: x = 1 | print(x) | notes",
+                "session.ipynb: x = 1 | print(x + 1) | notes",
+                "session.ipynb: x = 1 | print(x) | notes",
+                "closed session.ipynb",
+            ]
+        );
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn canonical_split_opens_share_incarnation_but_reopen_and_projects_do_not() {
         let (dir, service, initial) = fixture();
         let alternate = dir.path().join(".").join("session.ipynb");
@@ -590,6 +669,16 @@ mod tests {
         assert_eq!(service.get(&reopened.id).unwrap().id, reopened.id);
         service.shutdown().await;
         other.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn the_notebook_path_reaches_the_ui_as_the_project_tree_names_it() {
+        let (dir, service, _) = fixture();
+        let ui_path =
+            format!("{}/session.ipynb", ide_core::ipc_path::to_ipc(&dunce::canonicalize(dir.path()).unwrap()));
+        let snapshot = service.open(Path::new(&ui_path)).unwrap();
+        assert_eq!(serde_json::to_value(&snapshot).unwrap()["path"], ui_path);
+        service.shutdown().await;
     }
 
     #[tokio::test(start_paused = true)]

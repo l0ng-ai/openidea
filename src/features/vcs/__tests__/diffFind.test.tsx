@@ -33,8 +33,10 @@ vi.mock("@/editor/api", async (importOriginal) => ({
     Promise.resolve({
       path,
       text: () => "foo\nqux\nfoo\n",
+      lineEnding: () => "lf",
       readOnly: false,
       extension: [],
+      context: () => ({ doc: 1, path, language: "plaintext", uiMode: null, readOnly: false }),
       save: () => Promise.resolve(),
       release: () => {},
     }),

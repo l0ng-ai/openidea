@@ -9,7 +9,9 @@ use std::sync::{Arc, OnceLock};
 
 /// Built-in definitions, embedded at compile time. Add new languages here.
 const BUILTIN: &[(&str, &str)] = &[
+    ("arduino", include_str!("../../../languages/arduino.toml")),
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
+    ("astro", include_str!("../../../languages/astro.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("blade", include_str!("../../../languages/blade.toml")),
     ("c", include_str!("../../../languages/c.toml")),
@@ -21,6 +23,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("d", include_str!("../../../languages/d.toml")),
     ("dart", include_str!("../../../languages/dart.toml")),
     ("diff", include_str!("../../../languages/diff.toml")),
+    ("django-html", include_str!("../../../languages/django-html.toml")),
     ("dockerfile", include_str!("../../../languages/dockerfile.toml")),
     ("dotenv", include_str!("../../../languages/dotenv.toml")),
     ("elixir", include_str!("../../../languages/elixir.toml")),
@@ -38,6 +41,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("groovy", include_str!("../../../languages/groovy.toml")),
     ("haskell", include_str!("../../../languages/haskell.toml")),
     ("hcl", include_str!("../../../languages/hcl.toml")),
+    ("helm-template", include_str!("../../../languages/helm-template.toml")),
     ("html", include_str!("../../../languages/html.toml")),
     ("http", include_str!("../../../languages/http.toml")),
     ("ignore", include_str!("../../../languages/ignore.toml")),
@@ -65,16 +69,19 @@ const BUILTIN: &[(&str, &str)] = &[
     ("php", include_str!("../../../languages/php.toml")),
     ("plaintext", include_str!("../../../languages/plaintext.toml")),
     ("powershell", include_str!("../../../languages/powershell.toml")),
+    ("prisma", include_str!("../../../languages/prisma.toml")),
     ("properties", include_str!("../../../languages/properties.toml")),
     ("proto", include_str!("../../../languages/proto.toml")),
     ("python", include_str!("../../../languages/python.toml")),
     ("r", include_str!("../../../languages/r.toml")),
+    ("restructuredtext", include_str!("../../../languages/restructuredtext.toml")),
     ("ruby", include_str!("../../../languages/ruby.toml")),
     ("rust", include_str!("../../../languages/rust.toml")),
     ("sass", include_str!("../../../languages/sass.toml")),
     ("scala", include_str!("../../../languages/scala.toml")),
     ("scss", include_str!("../../../languages/scss.toml")),
     ("shellscript", include_str!("../../../languages/shellscript.toml")),
+    ("slint", include_str!("../../../languages/slint.toml")),
     ("sql", include_str!("../../../languages/sql.toml")),
     ("svelte", include_str!("../../../languages/svelte.toml")),
     ("swift", include_str!("../../../languages/swift.toml")),
@@ -370,14 +377,13 @@ impl LanguageRegistry {
             .map(|f| f.ui_mode.clone())
     }
 
-    /// Creating or removing `path` can change a file's `framework_ui_mode`:
-    /// it is a framework's root marker.
+    /// Creating or removing `path` can change a file's `framework_ui_mode` or its
+    /// language (`framework-files`): it is a framework's root marker.
     pub fn is_framework_marker(&self, path: &Path) -> bool {
-        self.state()
-            .languages
-            .iter()
-            .flat_map(|l| &l.framework_ui_modes)
-            .any(|f| f.root_markers.iter().any(|m| crate::markers::is_marker_path(path, m)))
+        let state = self.state();
+        let modes = state.languages.iter().flat_map(|l| &l.framework_ui_modes).map(|f| &f.root_markers);
+        let files = state.languages.iter().flat_map(|l| &l.framework_files).map(|f| &f.root_markers);
+        modes.chain(files).flatten().any(|m| crate::markers::is_marker_path(path, m))
     }
 
     /// Detects by Override File Type, exact file name, then file-name pattern
@@ -399,6 +405,9 @@ impl LanguageRegistry {
         if let Some((_, i)) = t.name_globs.iter().find(|(p, _)| wildcard_match(p, file_name)) {
             return languages[*i].id.clone();
         }
+        if let Some(l) = languages.iter().find(|l| l.framework_files.iter().any(|f| is_framework_file(f, path))) {
+            return l.id.clone();
+        }
         let lower = file_name.to_ascii_lowercase();
         let mut rest = lower.as_str();
         while let Some(dot) = rest.find('.') {
@@ -417,6 +426,19 @@ impl LanguageRegistry {
         }
         LanguageId::plain_text()
     }
+}
+
+/// `path` is one of `files`: its extension is listed, and the nearest folder above it named
+/// `files.folder` has a root marker in a directory above that folder.
+fn is_framework_file(files: &crate::FrameworkFiles, path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return false };
+    if !files.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
+        return false;
+    }
+    path.ancestors()
+        .skip(1)
+        .find(|dir| dir.file_name().is_some_and(|name| name == files.folder.as_str()))
+        .is_some_and(|folder| crate::marked_root(None, folder, &files.root_markers).is_some())
 }
 
 /// `*` matches any (possibly empty) run of characters, `?` exactly one; everything else is literal.
@@ -496,6 +518,7 @@ mod tests {
         "Brainfuck",
         "Cobol",
         "C#",
+        "Django Template",
         "Clojure",
         "ClojureScript",
         "Closure Stylesheets (GSS)",
@@ -528,6 +551,7 @@ mod tests {
         "Groovy",
         "Haskell",
         "Haxe",
+        "Helm Template",
         "HXML",
         "HTTP",
         "IDL",
@@ -535,6 +559,7 @@ mod tests {
         "Julia",
         "Kotlin",
         "LiveScript",
+        "Log",
         "Lua",
         "mIRC",
         "Mathematica",
@@ -561,6 +586,7 @@ mod tests {
         "R",
         "RPM Changes",
         "RPM Spec",
+        "reStructuredText",
         "Ruby",
         "SAS",
         "Scala",
@@ -601,8 +627,11 @@ mod tests {
         "MsGenny",
         "Vue",
         "Angular Template",
+        "Angular TypeScript",
         "ERB",
         "JSP",
+        "Astro",
+        "GoMod",
         "Blade",
     ];
 
@@ -625,6 +654,12 @@ mod tests {
         let asciidoc = reg.get(&LanguageId::new("asciidoc")).unwrap();
         assert_eq!(asciidoc.ui_mode.as_deref(), Some("AsciiDoc"));
         assert_eq!(asciidoc.line_comment.as_deref(), Some("//"));
+        for path in ["guide.rst", "README.RST"] {
+            assert_eq!(detect(&reg, path), "restructuredtext");
+        }
+        let rst = reg.get(&LanguageId::new("restructuredtext")).unwrap();
+        assert_eq!(rst.ui_mode.as_deref(), Some("reStructuredText"));
+        assert_eq!(rst.line_comment.as_deref(), Some(".."));
         assert_eq!(reg.detect(Path::new("script"), Some("#!/usr/bin/env python3")).as_str(), "python");
         assert_eq!(detect(&reg, "README"), "plaintext");
         assert_eq!(detect(&reg, "unknown.zzz"), "plaintext");
@@ -639,6 +674,8 @@ mod tests {
         for (lang, servers) in [
             ("python", vec!["basedpyright", "pyright", "ty", "pyrefly"]),
             ("typescript", vec!["vtsls", "typescript-language-server"]),
+            ("java", vec!["jdtls", "kmp-lsp"]),
+            ("kotlin", vec!["kotlin-lsp", "kotlin-language-server", "kmp-lsp"]),
         ] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let got: Vec<(&str, bool)> = cfg
@@ -660,7 +697,10 @@ mod tests {
         };
         // After the TypeScript fallback (an available server before it would hide
         // it); before the HTML server (hover, rename and symbols take the first).
-        assert_eq!(names("typescript"), ["vtsls", "typescript-language-server", "angular-language-server", "oxlint"]);
+        assert_eq!(
+            names("typescript"),
+            ["vtsls", "typescript-language-server", "angular-language-server", "oxlint", "eslint"]
+        );
         assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
         for lang in ["typescript", "html"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
@@ -677,7 +717,7 @@ mod tests {
         let root = tmp.path();
         std::fs::create_dir_all(root.join("apps/web/src")).unwrap();
         std::fs::write(root.join("apps/web/.oxlintrc.json"), "{}").unwrap();
-        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte"] {
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let oxlint = cfg.language_servers.iter().find(|s| s.name == "oxlint").unwrap();
             assert_eq!((oxlint.command.as_str(), oxlint.args.as_slice()), ("oxlint", ["--lsp".to_string()].as_slice()));
@@ -686,6 +726,56 @@ mod tests {
             assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
             assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
+    }
+
+    #[test]
+    fn eslint_serves_js_files_only_below_its_config() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["apps/web/src", "apps/admin/src", "apps/api"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("apps/web/eslint.config.mjs"), "export default [];").unwrap();
+        std::fs::write(root.join("apps/admin/package.json"), r#"{"eslintConfig": {"root": true}}"#).unwrap();
+        std::fs::write(root.join("apps/api/package.json"), r#"{"name": "api"}"#).unwrap();
+        for lang in ["javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let eslint = cfg.language_servers.iter().find(|s| s.name == "eslint").unwrap();
+            assert_eq!(eslint.command, "vscode-eslint-language-server", "{lang}");
+            assert!(eslint.require_root_marker && !eslint.fallback, "{lang}");
+            let settings = eslint.settings.as_ref().unwrap();
+            assert_eq!(settings.get("validate"), Some(&"on".into()), "{lang}");
+            // The server reads `experimental.useFlatConfig` and fails every request without the object.
+            assert!(settings.get("experimental").is_some_and(serde_json::Value::is_object), "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &eslint.root_markers);
+            assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/admin/src/main.ts"), Some(root.join("apps/admin")), "{lang}");
+            assert_eq!(served("apps/api/main.ts"), None, "{lang}: package.json without eslintConfig");
+        }
+    }
+
+    #[test]
+    fn laravel_lsp_serves_php_files_only_below_artisan() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("php")).unwrap();
+        let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
+        // After the fallback: hover, rename and symbols stay with Intelephense.
+        assert_eq!(names, ["intelephense", "phpactor", "laravel-lsp"]);
+        let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
+        assert_eq!(lsp.command.as_str(), "laravel-lsp");
+        // Its `lsp` command takes no options and speaks over stdio; `--stdio` stops it at startup.
+        assert!(lsp.args.is_empty(), "{:?}", lsp.args);
+        assert!(lsp.require_root_marker && !lsp.fallback);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["shop", "lib"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("shop/artisan"), "").unwrap();
+        let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &lsp.root_markers);
+        assert_eq!(served("shop/app/Models/Order.php"), Some(root.join("shop")));
+        assert_eq!(served("lib/src/Parser.php"), None);
     }
 
     #[test]
@@ -715,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn html_of_angular_projects_is_an_angular_template() {
+    fn angular_projects_use_framework_modes() {
         let reg = reg();
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -726,9 +816,68 @@ mod tests {
         assert_eq!(mode("html", "apps/web/src/app/app.html").as_deref(), Some("Angular Template"));
         assert_eq!(mode("html", "apps/admin/src/index.html").as_deref(), Some("Angular Template"));
         assert_eq!(mode("html", "docs/index.html"), None);
-        assert_eq!(mode("typescript", "apps/web/src/app/app.ts"), None);
+        for file in ["apps/web/src/app/app.ts", "apps/admin/src/app.mts", "apps/admin/src/app.cts"] {
+            assert_eq!(mode("typescript", file).as_deref(), Some("Angular TypeScript"), "{file}");
+        }
+        assert_eq!(mode("typescript", "docs/example.ts"), None);
+        assert_eq!(mode("javascript", "apps/web/src/app/app.js"), None);
+        assert_eq!(mode("typescriptreact", "apps/web/src/app/app.tsx"), None);
         assert!(reg.is_framework_marker(&root.join("apps/admin/angular.json")));
         assert!(!reg.is_framework_marker(&root.join("apps/admin/package.json")));
+    }
+
+    #[test]
+    fn django_projects_make_html_in_templates_folders_templates() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let detect = |file: &str| reg.detect(&root.join(file), None).as_str().to_owned();
+        std::fs::create_dir_all(root.join("src/orders/templates/orders/email")).unwrap();
+        std::fs::create_dir_all(root.join("site/templates")).unwrap();
+        std::fs::write(root.join("src/manage.py"), "").unwrap();
+        assert_eq!(detect("src/orders/templates/orders/detail.html"), "django-html");
+        assert_eq!(detect("src/orders/templates/orders/email/body.TXT"), "django-html");
+        assert_eq!(detect("src/templates/base.html"), "django-html");
+        assert_eq!(detect("src/orders/templates/orders/data.json"), "json");
+        assert_eq!(detect("src/orders/static/orders/page.html"), "html");
+        // No `manage.py` above this `templates` folder.
+        assert_eq!(detect("site/templates/index.html"), "html");
+        assert_eq!(detect("page.djhtml"), "django-html");
+        assert!(reg.is_framework_marker(&root.join("src/manage.py")));
+    }
+
+    #[test]
+    fn helm_charts_make_yaml_and_notes_in_templates_folders_helm_templates() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let detect = |file: &str| reg.detect(&root.join(file), None).as_str().to_owned();
+        std::fs::create_dir_all(root.join("charts/podinfo/templates/tests")).unwrap();
+        std::fs::create_dir_all(root.join("k8s/templates")).unwrap();
+        std::fs::write(root.join("charts/podinfo/Chart.yaml"), "apiVersion: v2\nname: podinfo\n").unwrap();
+        assert_eq!(detect("charts/podinfo/Chart.yaml"), "yaml");
+        assert_eq!(detect("charts/podinfo/values.yaml"), "yaml");
+        assert_eq!(detect("charts/podinfo/templates/deployment.yaml"), "helm-template");
+        assert_eq!(detect("charts/podinfo/templates/tests/connection.yml"), "helm-template");
+        assert_eq!(detect("charts/podinfo/templates/_helpers.tpl"), "helm-template");
+        assert_eq!(detect("charts/podinfo/templates/NOTES.txt"), "helm-template");
+        // No `Chart.yaml` / `Chart.yml` above this `templates` folder.
+        assert_eq!(detect("k8s/templates/deployment.yaml"), "yaml");
+        assert_eq!(detect("common.gotmpl"), "helm-template");
+        // Outside a chart, `.tpl` belongs to other template engines (Smarty, Terraform).
+        assert_ne!(detect("site/index.tpl"), "helm-template");
+        assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yaml")));
+        assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yml")));
+    }
+
+    #[test]
+    fn the_django_fixture_has_templates_and_a_page() {
+        let reg = reg();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/django-app");
+        let detect = |file: &str| reg.detect(&fixture.join(file), None).as_str().to_owned();
+        assert_eq!(detect("shop/templates/shop/product_list.html"), "django-html");
+        assert_eq!(detect("shop/templates/shop/email/order.txt"), "django-html");
+        assert_eq!(detect("pages/promo.html"), "html");
     }
 
     #[test]
@@ -859,6 +1008,7 @@ mod tests {
             ("x.h", "c"),
             ("x.hpp", "cpp"),
             ("x.cc", "cpp"),
+            ("blink.ino", "arduino"),
             ("P.cs", "csharp"),
             ("V.swift", "swift"),
             ("AppDelegate.m", "objective-c"),
@@ -895,6 +1045,7 @@ mod tests {
             ("App.svelte", "svelte"),
             ("index.jsp", "jsp"),
             ("WEB-INF/tags/card.tag", "jsp"),
+            ("index.astro", "astro"),
             ("package.json", "json"),
             ("tsconfig.json", "jsonc"),
             ("tsconfig.app.json", "jsonc"),
@@ -910,6 +1061,7 @@ mod tests {
             ("CMakeLists.txt", "cmake"),
             ("api.proto", "proto"),
             ("schema.graphql", "graphql"),
+            ("schema.prisma", "prisma"),
             ("main.tf", "terraform"),
             ("prod.tfvars", "terraform-vars"),
             ("job.nomad", "hcl"),
@@ -928,6 +1080,7 @@ mod tests {
             ("icon.svg.import", "godot-resource"),
             ("export_presets.cfg", "godot-resource"),
             ("water.gdshader", "gdshader"),
+            ("app-window.slint", "slint"),
             ("notes.txt", "plaintext"),
         ];
         for (path, id) in cases {
@@ -954,6 +1107,28 @@ mod tests {
         assert!(dbg.args.iter().any(|a| a == "--dap-port"));
         let res = reg.get(&LanguageId::new("godot-resource")).unwrap();
         assert_eq!(res.line_comment.as_deref(), Some(";"));
+    }
+
+    #[test]
+    fn go_enables_semantic_tokens_when_the_server_initializes() {
+        let reg = reg();
+        let go = reg.get(&LanguageId::new("go")).unwrap();
+        assert_eq!(
+            go.language_servers[0]
+                .initialization_options
+                .as_ref()
+                .and_then(|options| options.get("semanticTokens"))
+                .and_then(toml::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn astro_server_leaves_typescript_sdk_resolution_to_the_launcher() {
+        let reg = reg();
+        let ls = &reg.get(&LanguageId::new("astro")).unwrap().language_servers[0];
+        let tsdk = ls.initialization_options.as_ref().and_then(|o| o.get("typescript")?.get("tsdk")?.as_str());
+        assert_eq!(tsdk, None);
     }
 
     #[test]

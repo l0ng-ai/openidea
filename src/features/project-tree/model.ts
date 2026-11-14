@@ -100,6 +100,10 @@ export function isVisible(entry: FileEntry, opts: TreeOptions): boolean {
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
+export function compareNames(a: string, b: string): number {
+  return collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
 /** Symlinks report the target's metadata; folders have size 0 (the entry has no target kind). */
 export const isDirEntry = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.size === 0);
 
@@ -125,7 +129,7 @@ export function sortEntries(
       const m = (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0);
       if (m) return m;
     }
-    return collator.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    return compareNames(a.name, b.name);
   });
 }
 
@@ -580,7 +584,12 @@ export interface RefreshPlan {
 }
 
 export function planRefresh(
-  event: { created: readonly string[]; modified: readonly string[]; removed: readonly string[] },
+  event: {
+    created: readonly string[];
+    modified: readonly string[];
+    removed: readonly string[];
+    ignoreRules?: readonly string[];
+  },
   loaded: ReadonlySet<string>,
 ): RefreshPlan {
   const reload = new Set<string>();
@@ -601,6 +610,7 @@ export function planRefresh(
       drop.delete(p);
     }
   }
+  for (const dir of loadedList) if (event.ignoreRules?.some((root) => isSameOrInside(dir, root))) reload.add(dir);
   for (const d of drop) reload.delete(d);
   // A reloaded parent may report the folder as present again; keep its descendants then.
   return { reload: [...reload], drop: [...drop] };

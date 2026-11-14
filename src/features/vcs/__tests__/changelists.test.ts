@@ -68,6 +68,15 @@ describe("change list model", () => {
     expect(next.files).toEqual({ "src/b.ts": feature, "new.ts": feature });
   });
 
+  it("keeps the lists of files whose changes a merge, rebase or update put aside", () => {
+    const { state, feature } = twoLists();
+    // The rebase stashed every change: nothing looks changed until they come back.
+    const aside = syncAssignments(state, [], true);
+    expect(aside?.files ?? state.files).toEqual(state.files);
+    const back = syncAssignments(aside ?? state, ["src/b.ts"]);
+    expect((back ?? aside ?? state).files).toEqual({ "src/b.ts": feature });
+  });
+
   it("files without an assignment belong to the active list", () => {
     const { state, feature } = twoLists();
     expect(listOf(state, "src/b.ts")).toBe(feature);

@@ -16,6 +16,7 @@ import {
   type ToolWindowService,
 } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
+import { BuildTitleItem } from "./BuildTitleItem";
 import { BuildView } from "./BuildView";
 import { activate } from "./index";
 import {
@@ -29,7 +30,16 @@ import {
   rootNode,
   MAX_CONSOLE_LINES,
 } from "./model";
-import { BUILD_TASK_ID, setBuildBackend, startBuild, stopBuild, useBuildRun, type BuildBackend } from "./store";
+import {
+  BUILD_TASK_ID,
+  rerunBuild,
+  setBuildBackend,
+  startBuild,
+  startCompileFile,
+  stopBuild,
+  useBuildRun,
+  type BuildBackend,
+} from "./store";
 
 const err = (path: string | null, line: number, text = "cannot find symbol"): BuildMessage => ({
   severity: "error",
@@ -86,13 +96,28 @@ describe("build model", () => {
 type Note = Parameters<NotificationService["notify"]>[0];
 
 class FakeBackend implements BuildBackend {
-  calls: Array<{ kind: string; file: string | null; clear: string[] }> = [];
+  calls: Array<{ kind: string; file: string | null; clear: string[]; cmake?: string }> = [];
   cancelled: number[] = [];
   private finish?: (r: BuildResult) => void;
   private fail?: (e: unknown) => void;
   emit?: (e: BuildEvent) => void;
-  run(kind: string, file: string | null, _request: number, clear: string[], onEvent: (e: BuildEvent) => void) {
-    this.calls.push({ kind, file, clear });
+  run(
+    kind: string,
+    file: string | null,
+    _request: number,
+    clear: string[],
+    onEvent: (e: BuildEvent) => void,
+    cmake: string | null,
+  ) {
+    this.calls.push({ kind, file, clear, ...(cmake ? { cmake } : {}) });
+    this.emit = onEvent;
+    return new Promise<BuildResult>((resolve, reject) => {
+      this.finish = resolve;
+      this.fail = reject;
+    });
+  }
+  compileFile(file: string, _request: number, clear: string[], onEvent: (e: BuildEvent) => void) {
+    this.calls.push({ kind: "compileFile", file, clear });
     this.emit = onEvent;
     return new Promise<BuildResult>((resolve, reject) => {
       this.finish = resolve;
@@ -150,6 +175,26 @@ describe("build feature", () => {
     setBuildBackend(null);
     useProject.setState({ project: null });
     setContext("projectOpen", false);
+    setContext("run.cmakeBuild", null);
+  });
+
+  it("shows the CMake hammer and builds the selected target through the shared action", async () => {
+    setContext("run.cmakeBuild", "cmake:release:hello:build");
+    render(<BuildTitleItem />);
+    expect(screen.getByRole("button", { name: "Build Project" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Build Project" }));
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:release:hello:build" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+    const explicit = executeAction("build.buildProject", { cmake: "cmake:debug:other:build", activate: false });
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:debug:other:build" });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await explicit;
+    });
   });
 
   it("registers the Build menu actions, shortcuts and an on-use bottom tool window", () => {
@@ -260,6 +305,66 @@ describe("build feature", () => {
     );
   });
 
+  it.each([
+    ["build.buildModule", { target: "/p/core", activate: false, wait: true }, "build", "/p/core"],
+    ["build.buildArtifacts", { activate: false, wait: true }, "artifacts", null],
+  ])("awaits %s only when requested and keeps its successful build hidden", async (id, arg, kind, file) => {
+    setContext("build.lastStatus", "success");
+    let finished = false;
+    const run = executeAction(id, arg).then(() => {
+      finished = true;
+    });
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ kind, file });
+    expect(finished).toBe(false);
+    expect(getContext()["build.lastStatus"]).toBeNull();
+    expect(show).not.toHaveBeenCalled();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(finished).toBe(true);
+    expect(getContext()["build.lastStatus"]).toBe("success");
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["build.buildModule", "/p/core"],
+    ["build.buildModule", undefined],
+    ["build.buildArtifacts", undefined],
+  ])("keeps ordinary %s calls nonblocking (%s)", async (id, arg) => {
+    await executeAction(id, arg);
+    expect(useBuildRun.getState().status).toBe("running");
+    expect(fake.calls.at(-1)?.file).toBe(arg ?? null);
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+  });
+
+  it("scopes Build Artifacts to the active file's module, or the whole project without one", async () => {
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => "/p/core/src/A.java",
+    } as unknown as EditorService);
+    await executeAction("build.buildArtifacts", { activate: false });
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "artifacts", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => null,
+    } as unknown as EditorService);
+    await executeAction("build.buildArtifacts", { activate: false });
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "artifacts", file: null });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+  });
+
   it("starts a build without a workbench", async () => {
     show.mockImplementation(() => {
       throw new Error("No workbench");
@@ -303,5 +408,39 @@ describe("build feature", () => {
     });
     expect(useBuildRun.getState().status).toBe("cancelled");
     expect(notes).toHaveLength(0);
+  });
+
+  it("compiles one file without its module and reruns it from the tool window", async () => {
+    const run = startCompileFile("/p/core/src/A.java");
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    expect(useBuildRun.getState().title).toBe("Compile File");
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+    expect(useBuildRun.getState().status).toBe("success");
+    // Rerun repeats the single-file compilation, not a module build.
+    const rerun = rerunBuild();
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await rerun;
+    });
+    expect(useBuildRun.getState().status).toBe("success");
+  });
+
+  it("runs Compile File for the active Java file", async () => {
+    provideEditorService({
+      openFile,
+      saveAll: () => Promise.resolve(),
+      activePath: () => "/p/core/src/A.java",
+    } as unknown as EditorService);
+    await executeAction("build.compileFile", { activate: false });
+    expect(fake.calls.at(-1)).toMatchObject({ kind: "compileFile", file: "/p/core/src/A.java" });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
   });
 });

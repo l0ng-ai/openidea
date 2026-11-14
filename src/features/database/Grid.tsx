@@ -1,25 +1,55 @@
 /**
  * Result / table data grid: virtualised rows, resizable columns, rectangular
- * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV, `<null>`
- * rendering, sortable headers and in-place editing (table editor).
+ * cell selection (click, ⇧-click, arrows, ⌘A), copy as TSV / CSV / One-Row,
+ * `<null>` rendering, sortable headers and type-aware in-place editing
+ * (booleans toggle, enums pick from their values, Set NULL / Set DEFAULT).
  */
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { writeClipboardText } from "@/platform/clipboard";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import clsx from "clsx";
-import { Dialog, Icon, showContextMenu, type MenuItem } from "@/ui";
-import { parseDelimited, toCsv, toTsv, type Cell } from "./model";
+import { Checkbox, Dialog, Icon, lockDragCursor, Popup, SelectListbox, showContextMenu, type MenuItem } from "@/ui";
+import { parseDelimited, toCsv, toOneRow, toTsv, type Cell } from "./model";
+import { initialJsonText, isJsonColumn, isJsonValue } from "./jsonValue";
+import { JsonValueWindow } from "./JsonValueEditor";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { CELL_PREVIEW_LIMIT, cellPreview, hasLineBreak } from "./cellPreview";
+import {
+  booleanLiterals,
+  defaultLiteralOf,
+  enumValuesOfType,
+  isBooleanType,
+  NULL_INPUT,
+  type BooleanLiterals,
+} from "./cellEditors";
+import { registerCellGrid, type CellActions } from "./cellActions";
+import type { DbDriver } from "@/platform/ipc";
 
 export interface GridColumn {
   name: string;
   type: string;
   primaryKey?: boolean;
   foreignKey?: boolean;
+  /** Whether the column accepts SQL NULL (`undefined`: unknown — the editor assumes it does). */
+  nullable?: boolean;
+  /** The column's introspected default expression (Set DEFAULT); `null` when it has none. */
+  default?: string | null;
+  /** The column's allowed values (a caller that knows them; else parsed from the type string). */
+  enumValues?: readonly string[];
 }
 
-const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$/i;
+const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$|^fixed\b/i;
 const NUMBER = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i;
 
 /** Numbers are right-aligned (IDEA): by type, else when every sampled value is one. */
@@ -29,15 +59,24 @@ export function isNumericColumn(type: string, sample: readonly Cell[]): boolean 
   return values.length > 0 && values.every((v) => NUMBER.test(v));
 }
 
+/** The grid's own copy formats (the extractor drop-down chooses one for plain ⌘C). */
+export type CopyFormat = "tsv" | "csv" | "onerow";
+
 export interface GridProps {
   columns: readonly GridColumn[];
   rowCount: number;
   /** Displayed value (pending edits applied). */
   value: (row: number, col: number) => Cell;
+  /** The format plain ⌘C copies in (the toolbar's extractor; TSV by default). */
+  copyFormat?: CopyFormat;
   rowState?: (row: number) => "deleted" | "inserted" | null;
   isModified?: (row: number, col: number) => boolean;
   editable?: boolean;
   onEdit?: (row: number, col: number, value: Cell) => void;
+  /** The data source's driver: which literals boolean editors write (`t`/`f`, `1`/`0`…). */
+  driver?: DbDriver;
+  /** Omit an inserted cell from the INSERT, so its database default applies. */
+  onResetCell?: (row: number, col: number) => void;
   sort?: ReadonlyArray<{ column: string; descending: boolean }>;
   onSort?: (column: string, add: boolean) => void;
   /** Extra context menu items for the selected rows. */
@@ -51,6 +90,14 @@ export interface GridProps {
   /** The header's filter button (IDEA's local filter); `filtered` marks the columns with one. */
   onFilter?: (col: number, anchor: HTMLElement) => void;
   filtered?: (col: number) => boolean;
+  /** Cells matching the search bar's query. */
+  isMatch?: (row: number, col: number) => boolean;
+  /** The search bar's current match: selected and scrolled into view when it changes. */
+  currentMatch?: { row: number; col: number } | null;
+  /** ⌘F / Ctrl+F in the grid (opens the search bar). */
+  onFind?: () => void;
+  /** Go to Column: a new object selects that column's cell in the current row, scrolls to it and focuses the grid. */
+  revealColumn?: { col: number } | null;
   "aria-label"?: string;
 }
 
@@ -109,7 +156,18 @@ function norm(s: Sel) {
 }
 
 export function Grid(props: GridProps) {
-  const { columns, rowCount, value, editable, onEdit, sort, onSort, rowMenu, firstRowNumber = 1 } = props;
+  const {
+    columns,
+    rowCount,
+    value,
+    editable,
+    onEdit,
+    sort,
+    onSort,
+    rowMenu,
+    firstRowNumber = 1,
+    copyFormat = "tsv",
+  } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<Sel | null>(null);
   const dragging = useRef(false);
@@ -120,15 +178,24 @@ export function Grid(props: GridProps) {
     window.addEventListener("mouseup", stop);
     return () => window.removeEventListener("mouseup", stop);
   }, []);
-  const [editing, setEditing] = useState<{ row: number; col: number; text: string; dialog: boolean } | null>(null);
-  /** The inline editor is being swapped for the multi-line one: its blur must not commit. */
-  const maximizing = useRef(false);
+  const [editing, setEditing] = useState<{
+    row: number;
+    col: number;
+    text: string;
+    json: boolean;
+    dialog: boolean;
+  } | null>(null);
+  /** The inline editor is being replaced or closed: its blur must not commit again. */
+  const skipBlurCommit = useRef(false);
   useEffect(() => {
-    if (!editing?.dialog) maximizing.current = false;
+    if (!editing?.dialog) skipBlurCommit.current = false;
   }, [editing?.dialog]);
   const columnKey = columns.map((c) => c.name).join("\u0000");
   const [widths, setWidths] = useState<number[]>([]);
   const [numeric, setNumeric] = useState<boolean[]>([]);
+  /** Boolean columns edit as a checkbox; enum columns offer their allowed values. */
+  const bools = columns.map((c) => isBooleanType(c.type, props.driver));
+  const enums = columns.map((c) => c.enumValues ?? enumValuesOfType(c.type));
   useEffect(() => {
     const sampleRows = Math.min(rowCount, 50);
     const samples = columns.map((_, ci) => Array.from({ length: sampleRows }, (_, r) => value(r, ci)));
@@ -154,6 +221,37 @@ export function Grid(props: GridProps) {
     estimateSize: () => ROW_H,
     overscan: 12,
   });
+  /** Scrolls sideways so column `c` is visible (the first one with the row numbers). */
+  const scrollColumnIntoView = (c: number) => {
+    const el = scrollRef.current;
+    if (!el || c < 0 || c >= widths.length) return;
+    const left = c ? NUM_W + widths.slice(0, c).reduce((a, b) => a + b, 0) : 0;
+    const right = NUM_W + widths.slice(0, c + 1).reduce((a, b) => a + b, 0);
+    if (left < el.scrollLeft) el.scrollLeft = left;
+    else if (right > el.scrollLeft + el.clientWidth) el.scrollLeft = Math.min(left, right - el.clientWidth);
+  };
+  const { currentMatch } = props;
+  useEffect(() => {
+    if (!currentMatch) return;
+    const { row, col } = currentMatch;
+    setSel({ r0: row, c0: col, r1: row, c1: col });
+    virtualizer.scrollToIndex(row, { align: "auto" });
+    scrollColumnIntoView(col);
+    // Follows the match only, not the virtualizer's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentMatch?.row, currentMatch?.col]);
+  const { revealColumn } = props;
+  useEffect(() => {
+    if (!revealColumn || !rowCount) return;
+    const { col } = revealColumn;
+    const row = sel ? Math.min(sel.r1, rowCount - 1) : 0;
+    setSel({ r0: row, c0: col, r1: row, c1: col });
+    virtualizer.scrollToIndex(row, { align: "auto" });
+    scrollColumnIntoView(col);
+    scrollRef.current?.focus({ preventScroll: true });
+    // Runs once per request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealColumn]);
   const totalWidth = useMemo(() => NUM_W + widths.reduce((a, b) => a + b, 0), [widths]);
   const template = `${NUM_W}px ${widths.map((w) => `${w}px`).join(" ")}`;
 
@@ -169,7 +267,7 @@ export function Grid(props: GridProps) {
     return Array.from({ length: n.bottom - n.top + 1 }, (_, i) => n.top + i);
   };
 
-  const copy = (format: "tsv" | "csv", header: boolean, wholeRows = false) => {
+  const copy = (format: CopyFormat, header: boolean, wholeRows = false) => {
     if (!sel) return;
     const n = norm(sel);
     const cols = wholeRows
@@ -177,12 +275,18 @@ export function Grid(props: GridProps) {
       : Array.from({ length: n.right - n.left + 1 }, (_, i) => n.left + i);
     const rows = selectedRows().map((r) => cols.map((c) => value(r, c)));
     const head = header ? cols.map((c) => columns[c]!.name) : null;
-    const text = format === "tsv" ? toTsv(head, rows) : toCsv(head, rows);
-    void navigator.clipboard?.writeText(text);
+    const text =
+      format === "onerow"
+        ? toOneRow(rows, (c) => !!numeric[cols[c]!])
+        : format === "tsv"
+          ? toTsv(head, rows)
+          : toCsv(head, rows);
+    void writeClipboardText(text);
   };
 
   const commit = () => {
     if (!editing) return;
+    skipBlurCommit.current = true;
     const prev = value(editing.row, editing.col);
     // A textarea turns CRLF into LF; a value that used CRLF throughout keeps it.
     const text =
@@ -196,19 +300,131 @@ export function Grid(props: GridProps) {
     scrollRef.current?.focus();
   };
 
+  /** The JSON value window's Apply / Set NULL: the same pending-edit pipeline as the inline editor. */
+  const commitJsonWindow = (text: string | null) => {
+    if (!editing) return;
+    if (text !== value(editing.row, editing.col)) onEdit?.(editing.row, editing.col, text);
+    setEditing(null);
+    scrollRef.current?.focus();
+  };
+
   /** `maximized` (⇧Enter): the multi-line editor, which multi-line and long values always use. */
   const startEdit = (row: number, col: number, maximized = false) => {
     if (!editable || props.rowState?.(row) === "deleted") return;
-    const text = value(row, col) ?? "";
-    setEditing({ row, col, text, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
+    const cell = value(row, col);
+    const text = cell ?? "";
+    // JSON cells (type or content) edit in the JSON value editor when the dialog opens (#2333).
+    const json = isJsonValue(columns[col]?.type ?? "", cell);
+    setEditing({ row, col, text, json, dialog: maximized || text.length > CELL_PREVIEW_LIMIT || hasLineBreak(text) });
   };
+
+  /** The select editor's pick: values are final, so it commits at once (Escape still cancels). */
+  const pickSelect = (v: string) => {
+    if (!editing) return;
+    onEdit?.(editing.row, editing.col, v === NULL_INPUT ? null : v);
+    setEditing(null);
+    scrollRef.current?.focus();
+  };
+
+  const toggleBoolean = (r: number, c: number, lit: BooleanLiterals) => {
+    if (!onEdit || props.rowState?.(r) === "deleted") return;
+    onEdit(r, c, value(r, c) === lit.t ? lit.f : lit.t);
+  };
+
+  /** Set NULL over a range, unless a column is known to reject it. */
+  const nullOk = (n: { left: number; right: number }) =>
+    Array.from({ length: n.right - n.left + 1 }, (_, i) => columns[n.left + i]!).every((c) => c.nullable !== false);
+
+  /** Set DEFAULT over a range: added rows drop the cell's value (the DB default applies); */
+  /** otherwise the column's default is used, when introspected as a plain literal. */
+  const defaultable = (n: { top: number; bottom: number; left: number; right: number }): boolean => {
+    let usable = false;
+    for (let r = n.top; r <= n.bottom; r++) {
+      if (props.rowState?.(r) === "deleted") continue;
+      usable = true;
+      if (props.rowState?.(r) === "inserted") {
+        if (!props.onResetCell) return false;
+        continue;
+      }
+      for (let c = n.left; c <= n.right; c++) {
+        const d = columns[c]!.default;
+        if (d == null || defaultLiteralOf(d) === null) return false;
+      }
+    }
+    return usable;
+  };
+  const setNulls = (n: { top: number; bottom: number; left: number; right: number }) => {
+    if (!onEdit || !nullOk(n)) return;
+    for (let r = n.top; r <= n.bottom; r++)
+      for (let c = n.left; c <= n.right; c++) if (props.rowState?.(r) !== "deleted") onEdit(r, c, null);
+  };
+  const setDefaults = (n: { top: number; bottom: number; left: number; right: number }) => {
+    if (!onEdit || !defaultable(n)) return;
+    for (let r = n.top; r <= n.bottom; r++) {
+      if (props.rowState?.(r) === "deleted") continue;
+      for (let c = n.left; c <= n.right; c++) {
+        if (props.rowState?.(r) === "inserted") {
+          // An added row's untouched cells are omitted from the INSERT: the DB default applies.
+          props.onResetCell?.(r, c);
+          continue;
+        }
+        const d = columns[c]!.default;
+        const literal = d != null ? defaultLiteralOf(d) : null;
+        if (literal !== null) {
+          const lit = booleanLiterals(props.driver);
+          const text =
+            bools[c] && /^(true|false|t|f|1|0)$/i.test(literal)
+              ? /^(true|t|1)$/i.test(literal)
+                ? lit.t
+                : lit.f
+              : literal;
+          onEdit(r, c, text);
+        }
+      }
+    }
+  };
+  const jsonWindowChanged = editing?.dialog && editing.json && editing.text !== (value(editing.row, editing.col) ?? "");
+
+  const cellActions = useRef<CellActions>(null!);
+  useLayoutEffect(() => {
+    const canEdit = () =>
+      !!editable && !!onEdit && !!sel && !editing && selectedRows().some((r) => props.rowState?.(r) !== "deleted");
+    const actions: CellActions = {
+      canToggle: () => canEdit() && !!bools[sel!.c1] && props.rowState?.(sel!.r1) !== "deleted",
+      canSetNull: () => canEdit() && nullOk(norm(sel!)),
+      canSetDefault: () => canEdit() && defaultable(norm(sel!)),
+      canFilter: () => !!props.onFilter && !!sel && !editing,
+      toggle: () => {
+        if (actions.canToggle()) toggleBoolean(sel!.r1, sel!.c1, booleanLiterals(props.driver));
+      },
+      setNull: () => {
+        if (actions.canSetNull()) setNulls(norm(sel!));
+      },
+      setDefault: () => {
+        if (actions.canSetDefault()) setDefaults(norm(sel!));
+      },
+      filter: () => {
+        if (!actions.canFilter()) return;
+        scrollColumnIntoView(sel!.c1);
+        const anchor = scrollRef.current?.querySelectorAll<HTMLElement>("[data-column-filter]")[sel!.c1];
+        if (anchor) props.onFilter!(sel!.c1, anchor);
+      },
+    };
+    Object.assign((cellActions.current ??= {} as CellActions), actions);
+  });
+  useEffect(() => registerCellGrid(scrollRef.current!, cellActions.current), []);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (editing) return;
     const mod = e.metaKey || e.ctrlKey;
     if (mod && e.key.toLowerCase() === "c") {
       e.preventDefault();
-      copy("tsv", false);
+      copy(copyFormat, false);
+      return;
+    }
+    if (mod && e.key.toLowerCase() === "f" && props.onFind) {
+      e.preventDefault();
+      props.onFind();
       return;
     }
     if (mod && e.key.toLowerCase() === "a") {
@@ -222,6 +438,14 @@ export function Grid(props: GridProps) {
       startEdit(sel.r1, sel.c1, e.key === "Enter" && e.shiftKey);
       return;
     }
+    if (e.key === "Tab") {
+      // IDEA's tables: Tab moves between cells, leaving the grid after the last one.
+      const next = mod || e.altKey ? null : nextCell(sel.r1, sel.c1, e.shiftKey ? -1 : 1);
+      if (!next) return;
+      e.preventDefault();
+      moveTo(next[0], next[1], false);
+      return;
+    }
     const moves: Record<string, [number, number]> = {
       ArrowUp: [-1, 0],
       ArrowDown: [1, 0],
@@ -231,10 +455,30 @@ export function Grid(props: GridProps) {
     const m = moves[e.key];
     if (!m) return;
     e.preventDefault();
-    const r = Math.max(0, Math.min(rowCount - 1, sel.r1 + m[0]));
-    const c = Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1]));
-    setSel(e.shiftKey ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
+    moveTo(
+      Math.max(0, Math.min(rowCount - 1, sel.r1 + m[0])),
+      Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1])),
+      e.shiftKey,
+    );
+  };
+
+  /** The cell Tab (`step` 1) or Shift+Tab (-1) goes to, row by row; null past either end. */
+  const nextCell = (r: number, c: number, step: 1 | -1): [number, number] | null => {
+    const i = Math.min(r, rowCount - 1) * columns.length + c + step;
+    return i < 0 || i >= rowCount * columns.length ? null : [Math.floor(i / columns.length), i % columns.length];
+  };
+
+  const moveTo = (r: number, c: number, extend: boolean) => {
+    setSel(extend && sel ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
     virtualizer.scrollToIndex(r, { align: "auto" });
+    scrollColumnIntoView(c);
+  };
+
+  /** Focus from a click lands on the clicked cell; from the keyboard, on the first cell. */
+  const pointerFocus = useRef(false);
+  const onFocus = (e: FocusEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || pointerFocus.current || sel || editing) return;
+    if (rowCount && columns.length) moveTo(0, 0, false);
   };
 
   const onCellMouseDown = (e: MouseEvent, r: number, c: number) => {
@@ -281,7 +525,15 @@ export function Grid(props: GridProps) {
     e.preventDefault();
     if (!sel) return;
     const items: MenuItem[] = [
-      { label: "Copy", shortcut: "⌘C", run: () => copy("tsv", false) },
+      { label: "Copy", shortcut: "⌘C", run: () => copy(copyFormat, false) },
+      {
+        label: "Copy as",
+        submenu: [
+          { label: "TSV", verbatim: true, run: () => copy("tsv", false) },
+          { label: "CSV", verbatim: true, run: () => copy("csv", false) },
+          { label: "One-Row", run: () => copy("onerow", false) },
+        ],
+      },
       { label: "Copy with Header", run: () => copy("tsv", true) },
       { label: "Copy Rows as TSV", run: () => copy("tsv", true, true) },
       { label: "Copy Rows as CSV", run: () => copy("csv", true, true) },
@@ -291,13 +543,12 @@ export function Grid(props: GridProps) {
       items.push(
         { kind: "separator" },
         { label: "Edit Cell", disabled: n.top !== n.bottom || n.left !== n.right, run: () => startEdit(n.top, n.left) },
-        {
-          label: "Set NULL",
-          run: () => {
-            for (let r = n.top; r <= n.bottom; r++) for (let c = n.left; c <= n.right; c++) onEdit(r, c, null);
-          },
-        },
+        { kind: "action", action: "db.setCellNull", arg: cellActions.current },
+        { kind: "action", action: "db.setCellDefault", arg: cellActions.current },
       );
+    }
+    if (props.onFilter) {
+      items.push({ kind: "separator" }, { kind: "action", action: "db.localFilter", arg: cellActions.current });
     }
     const extra = rowMenu?.(selectedRows()) ?? [];
     if (extra.length) items.push({ kind: "separator" }, ...extra);
@@ -307,6 +558,7 @@ export function Grid(props: GridProps) {
   const startResize = (e: MouseEvent, col: number) => {
     e.preventDefault();
     e.stopPropagation();
+    const releaseCursor = lockDragCursor("ew-resize");
     const startX = e.clientX;
     const start = widths[col] ?? 100;
     const move = (ev: globalThis.MouseEvent) => {
@@ -316,6 +568,7 @@ export function Grid(props: GridProps) {
     const up = () => {
       window.removeEventListener("mousemove", move);
       window.removeEventListener("mouseup", up);
+      releaseCursor();
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
@@ -327,13 +580,34 @@ export function Grid(props: GridProps) {
       className={styles.grid}
       tabIndex={0}
       role="grid"
+      data-db-cell-grid=""
       aria-label={props["aria-label"] ?? "Results"}
       aria-rowcount={rowCount}
       onKeyDown={onKeyDown}
+      onFocus={onFocus}
+      onMouseDownCapture={() => {
+        pointerFocus.current = true;
+        setTimeout(() => (pointerFocus.current = false));
+      }}
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
-      {editing?.dialog && (
+      {editing?.dialog && editing.json && (
+        <JsonValueWindow
+          title={tx`Edit ${columns[editing.col]!.name}`}
+          initial={jsonWindowChanged ? editing.text : initialJsonText(editing.text)}
+          baseline={jsonWindowChanged ? (value(editing.row, editing.col) ?? "") : undefined}
+          validate={isJsonColumn(columns[editing.col]!.type)}
+          emptyIsNull={value(editing.row, editing.col) === null}
+          onClose={() => {
+            setEditing(null);
+            scrollRef.current?.focus();
+          }}
+          onApply={(text) => commitJsonWindow(text)}
+          onSetNull={() => commitJsonWindow(null)}
+        />
+      )}
+      {editing?.dialog && !editing.json && (
         <Dialog
           open
           title={tx`Edit ${columns[editing.col]!.name}`}
@@ -384,6 +658,10 @@ export function Grid(props: GridProps) {
                 {props.onFilter && (
                   <button
                     type="button"
+                    data-column-filter=""
+                    // Not a Tab stop, like IDEA's table header: Tab past the last cell leaves the grid.
+                    // The keyboard opens it with the Local Filter action.
+                    tabIndex={-1}
                     className={clsx(styles.headerFilter, props.filtered?.(ci) && styles.headerFilterOn)}
                     aria-label={`Filter ${c.name}`}
                     title={tx("Local filter")}
@@ -429,28 +707,64 @@ export function Grid(props: GridProps) {
               </div>
               {columns.map((_, c) => {
                 if (editing && !editing.dialog && editing.row === r && editing.col === c) {
+                  const col = columns[c]!;
+                  const lit = bools[c] ? booleanLiterals(props.driver) : null;
+                  const values = enums[c];
+                  const cell = value(editing.row, editing.col);
+                  // A cell that is NULL in a NOT NULL column (a pending edit) is anomalous: plain editor.
+                  if ((lit || values) && !(cell === null && col.nullable === false)) {
+                    const options: Array<{ value: string; label: string }> = [];
+                    const known = (v: string) => options.some((o) => o.value === v);
+                    if (lit) options.push({ value: lit.t, label: tx("true") }, { value: lit.f, label: tx("false") });
+                    else for (const v of values!) if (!known(v)) options.push({ value: v, label: v });
+                    // A value the editor doesn't offer stays selectable instead of silently changing on commit.
+                    if (cell !== null && !known(cell)) options.unshift({ value: cell, label: cell });
+                    if (col.nullable !== false) options.push({ value: NULL_INPUT, label: "NULL" });
+                    return (
+                      <CellSelect
+                        key={c}
+                        label={tx`Edit ${col.name}`}
+                        value={cell === null ? NULL_INPUT : cell}
+                        options={options}
+                        onChoose={pickSelect}
+                        onClose={() => {
+                          setEditing(null);
+                          scrollRef.current?.focus();
+                        }}
+                      />
+                    );
+                  }
                   return (
                     <input
                       key={c}
                       className={styles.cellEditor}
+                      data-cell-editor=""
                       autoFocus
                       aria-label={`Edit ${columns[c]!.name}`}
                       value={editing.text}
                       onChange={(e) => setEditing({ ...editing, text: e.target.value })}
                       onBlur={() => {
-                        if (!maximizing.current) commit();
+                        if (!skipBlurCommit.current) commit();
                       }}
                       onKeyDown={(e) => {
                         e.stopPropagation();
                         if (e.key === "Enter" && e.shiftKey) {
                           // A line break can't be typed in a single-line field: continue in the multi-line editor.
                           e.preventDefault();
-                          maximizing.current = true;
+                          skipBlurCommit.current = true;
                           setEditing({ ...editing, dialog: true });
                           return;
                         }
                         if (e.key === "Enter") commit();
+                        if (e.key === "Tab") {
+                          // Like IDEA's table editor: Tab commits and selects the next cell.
+                          e.preventDefault();
+                          const next = nextCell(editing.row, editing.col, e.shiftKey ? -1 : 1);
+                          commit();
+                          if (next) moveTo(next[0], next[1], false);
+                        }
                         if (e.key === "Escape") {
+                          skipBlurCommit.current = true;
                           setEditing(null);
                           scrollRef.current?.focus();
                         }
@@ -459,13 +773,19 @@ export function Grid(props: GridProps) {
                   );
                 }
                 const val = value(r, c);
+                // Boolean cells show a checkbox while the grid is editable (DataGrip); Space toggles too.
+                const lit =
+                  editable && onEdit && bools[c] && state !== "deleted" ? booleanLiterals(props.driver) : null;
                 return (
                   <div
                     key={c}
                     role="gridcell"
+                    aria-selected={selected(r, c)}
                     className={clsx(
                       styles.cell,
                       numeric[c] && styles.cellNumber,
+                      props.isMatch?.(r, c) && styles.cellMatch,
+                      currentMatch?.row === r && currentMatch.col === c && styles.cellMatchCurrent,
                       selected(r, c) && styles.cellSelected,
                       props.isModified?.(r, c) && styles.cellModified,
                     )}
@@ -476,7 +796,34 @@ export function Grid(props: GridProps) {
                     onDoubleClick={() => startEdit(r, c)}
                     title={val != null && val.length > 40 ? val.slice(0, 2000) : undefined}
                   >
-                    {val === null ? (
+                    {lit ? (
+                      <>
+                        <span
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            setSel({ r0: r, c0: c, r1: r, c1: c });
+                          }}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                        >
+                          <Checkbox
+                            tabIndex={-1}
+                            className={styles.cellCheckbox}
+                            aria-label={tx`Toggle ${columns[c]!.name}`}
+                            checked={val === lit.t}
+                            indeterminate={val === null}
+                            onChange={() => {
+                              toggleBoolean(r, c, lit);
+                              scrollRef.current?.focus();
+                            }}
+                          />
+                        </span>
+                        {val === null ? (
+                          <span className={styles.null}>&lt;null&gt;</span>
+                        ) : (
+                          cellText(displayed(val, !!numeric[c]))
+                        )}
+                      </>
+                    ) : val === null ? (
                       <span className={styles.null}>&lt;null&gt;</span>
                     ) : (
                       cellText(displayed(val, !!numeric[c]))
@@ -488,6 +835,35 @@ export function Grid(props: GridProps) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function CellSelect({
+  label,
+  value,
+  options,
+  onChoose,
+  onClose,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChoose(value: string): void;
+  onClose(): void;
+}) {
+  const anchor = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={anchor} role="gridcell" className={styles.cellEditor}>
+      {options.find((o) => o.value === value)?.label}
+      <Popup open anchor={anchor} onClose={onClose} matchWidth role="presentation">
+        <SelectListbox
+          value={value}
+          options={options.map((o) => ({ ...o, verbatim: true }))}
+          onChoose={onChoose}
+          aria-label={label}
+        />
+      </Popup>
     </div>
   );
 }

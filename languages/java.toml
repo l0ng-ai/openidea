@@ -27,7 +27,7 @@ install-hint = "Install Microsoft java-debug (Settings › Languages & Framework
 name = "jdtls"
 command = "jdtls"
 root-markers = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.xml", ".project"]
-install-hint = "Install Eclipse JDT Language Server (brew install jdtls, or https://github.com/eclipse-jdtls/eclipse.jdt.ls); requires JDK 21+"
+install-hint = "Install Eclipse JDT Language Server (brew install jdtls, or https://github.com/eclipse-jdtls/eclipse.jdt.ls); runs on a JDK new enough for the installed release, chosen or downloaded automatically"
 
 [language-servers.initialization-options]
 bundles = []
@@ -43,7 +43,11 @@ contentProvider = { preferred = "fernflowerContentProvider" }
 maven = { downloadSources = true, updateSnapshots = false }
 eclipse = { downloadSources = true }
 references = { includeDecompiledSources = true }
+# The editor's usage lenses count usages; the server's own lenses would search every
+# declaration of the file again, all at once (on by default in JDT LS).
+referencesCodeLens = { enabled = false }
 signatureHelp = { enabled = true }
+symbols = { includeGeneratedCode = true }
 configuration = { updateBuildConfiguration = "automatic" }
 project = { referencedLibraries = ["lib/**/*.jar"] }
 # Generated code (implement methods, getters, toString…) indents like the editor (`indent` above).
@@ -58,3 +62,10 @@ generatesMetadataFilesAtProjectRoot = false
 exclusions = ["**/node_modules/**", "**/.metadata/**", "**/archetype-resources/**", "**/META-INF/maven/**"]
 maven = { enabled = true }
 gradle = { enabled = true, wrapper = { enabled = true } }
+
+[[language-servers]]
+name = "kmp-lsp"
+fallback = true
+command = "kmp-lsp"
+root-markers = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "build.xml", ".project"]
+install-hint = "Install kmp-lsp in Settings › Languages & Frameworks › Language Servers (https://github.com/Hessesian/kmp-lsp)"

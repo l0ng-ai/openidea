@@ -5,6 +5,7 @@
  */
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -21,9 +22,9 @@ import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { tooltipAttrs } from "./Tooltip";
 import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
-import { T } from "./T";
+import { Given } from "./T";
 import styles from "./Tabs.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, useGivenTx } from "@/platform/i18n";
 
 export interface TabItem {
   id: string;
@@ -32,6 +33,11 @@ export interface TabItem {
   text?: string;
   icon?: IconName | (string & {});
   closable?: boolean;
+  /**
+   * Pinned (IDEA's content tabs): with `onTogglePin`, an Unpin button takes the close
+   * button's place, and the strip's close gestures leave the tab alone.
+   */
+  pinned?: boolean;
   /** Unsaved changes marker. */
   modified?: boolean;
   /** CSS colour for the label (VCS status etc.), e.g. `var(--vcs-modified)`. */
@@ -39,6 +45,8 @@ export interface TabItem {
   /** CSS colour the tab background is tinted with (IDEA's data source / file colours). */
   tint?: string;
   italic?: boolean;
+  /** Greyed out, e.g. a run tab whose process has ended. */
+  dimmed?: boolean;
   tooltip?: string;
   /** Trailing content (counts, badges). */
   trailing?: ReactNode;
@@ -91,9 +99,10 @@ function previewOrder(ids: readonly string[], id: string, index: number): Map<st
   return new Map(order.map((it, i) => [it, i]));
 }
 
-/** A tab strip as seen from its container: close the selected tab if it can be closed. */
+/** A tab strip as seen from its container: close or pin the selected tab when it can be. */
 export interface TabStripHandle {
   closeSelected(): boolean;
+  togglePinSelected(): boolean;
 }
 
 /**
@@ -109,6 +118,8 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
+  /** Pin / Unpin Tab on the selected tab, from the container (a tool window's content tabs). */
+  onTogglePin?: (id: string) => void;
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
   closeOnShiftClick?: boolean;
   onDoubleClick?: (id: string) => void;
@@ -121,6 +132,11 @@ export interface TabsProps {
   "aria-label"?: string;
   /** Tabpanel id prefix for `aria-controls`. */
   panelIdPrefix?: string;
+  /**
+   * Tab from a tab moves focus into the selected tab's content (IDEA's table, list or tree)
+   * instead of the next control; returns false when there is nothing to focus.
+   */
+  focusContent?: () => boolean;
   /** Enables drag & drop reordering (and moving between strips of the same type). */
   dnd?: TabsDnd;
   /** Tabs that don't fit: `scroll` the strip (default), `squeeze` them, or `wrap` into rows. */
@@ -137,6 +153,7 @@ export function Tabs({
   onSelect,
   onClose,
   onCloseOthers,
+  onTogglePin,
   closeOnShiftClick,
   onDoubleClick,
   onContextMenu,
@@ -144,6 +161,7 @@ export function Tabs({
   trailing,
   className,
   panelIdPrefix,
+  focusContent,
   dnd,
   layout = "scroll",
   closePosition = "right",
@@ -151,6 +169,7 @@ export function Tabs({
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
+  const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
   const [overflow, setOverflow] = useState(false);
@@ -160,18 +179,24 @@ export function Tabs({
   const [dragging, setDragging] = useState<string | null>(null);
 
   const register = useContext(TabStripRegistry);
-  const latest = useRef({ items, activeId, onClose });
+  const latest = useRef({ items, activeId, onClose, onTogglePin });
   useLayoutEffect(() => {
-    latest.current = { items, activeId, onClose };
+    latest.current = { items, activeId, onClose, onTogglePin };
   });
   useEffect(
     () =>
       register?.({
         closeSelected: () => {
-          const { items, activeId, onClose } = latest.current;
+          const { items, activeId, onClose, onTogglePin } = latest.current;
           const item = items.find((it) => it.id === activeId);
-          if (!item || !onClose || item.closable === false) return false;
+          if (!item || !onClose || item.closable === false || (item.pinned && onTogglePin)) return false;
           onClose(item.id);
+          return true;
+        },
+        togglePinSelected: () => {
+          const { items, activeId, onTogglePin } = latest.current;
+          if (!onTogglePin || !items.some((it) => it.id === activeId)) return false;
+          onTogglePin(activeId!);
           return true;
         },
       }),
@@ -213,24 +238,64 @@ export function Tabs({
     });
   }, [dndType]);
 
+  // Tab slots wholly in view as last observed, which needs no layout read: switching to one of
+  // them doesn't measure the strip (a forced layout of the window, mid-switch).
+  const inView = useRef(new Set<Element>());
+  // Bring a tab's whole slot (label + close button) into view. Narrowing the strip clips
+  // the active tab's close button (#1740), and clicking the already-active tab doesn't
+  // change `activeId`, so the strip must also reveal on clicks and resizes.
+  const revealTab = useCallback(
+    (id: string | null, always = false) => {
+      const scroller = scrollRef.current;
+      const tab = id ? tabRefs.current.get(id)?.parentElement : null;
+      if (!scroller || !tab || (!always && inView.current.has(tab))) return;
+      (vertical ? revealVertically : revealHorizontally)(scroller, tab);
+    },
+    [vertical],
+  );
+
+  const tabIds = items.map((it) => it.id).join("\n");
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+    const seen = inView.current;
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.intersectionRatio >= 1) seen.add(e.target);
+          else seen.delete(e.target);
+        }
+      },
+      { root, threshold: 1 },
+    );
+    for (const tab of tabRefs.current.values()) if (tab.parentElement) io.observe(tab.parentElement);
+    return () => {
+      io.disconnect();
+      seen.clear();
+    };
+  }, [tabIds]);
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     // A vertical strip shows its scrollbar instead of the overflow dropdown.
-    const measure = () => setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+    const measure = () => {
+      setOverflow(!vertical && el.scrollWidth > el.clientWidth + 1);
+      // A resize (e.g. the editor area narrowing) must scroll the active tab back
+      // into view instead of leaving its close button clipped until a tab switch.
+      revealTab(latest.current.activeId, true);
+    };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [items.length, vertical]);
+  }, [items.length, revealTab, vertical]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.
-    const tab = activeId ? tabRefs.current.get(activeId)?.parentElement : null;
-    const scroller = scrollRef.current;
-    if (tab && scroller) (vertical ? revealVertically : revealHorizontally)(scroller, tab);
-  }, [activeId, vertical]);
+    revealTab(activeId);
+  }, [activeId, revealTab]);
 
   const focusTab = (index: number) => {
     const item = items[(index + items.length) % items.length];
@@ -256,8 +321,11 @@ export function Tabs({
         break;
       case "Delete":
       case "Backspace":
-        if (onClose && item.closable !== false) onClose(item.id);
+        if (onClose && item.closable !== false && !(item.pinned && onTogglePin)) onClose(item.id);
         else return;
+        break;
+      case "Tab":
+        if (e.shiftKey || !focusContent?.()) return;
         break;
       default:
         return;
@@ -267,7 +335,7 @@ export function Tabs({
 
   const menuItems: MenuItem[] = items.map((t) => ({
     id: t.id,
-    label: tx(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    label: given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
     icon: t.icon,
     checked: t.id === activeId ? true : undefined,
     run: () => onSelect(t.id),
@@ -300,7 +368,7 @@ export function Tabs({
       <div
         ref={scrollRef}
         role="tablist"
-        aria-label={tx(aria["aria-label"])}
+        aria-label={given(aria["aria-label"])}
         aria-orientation={vertical ? "vertical" : undefined}
         className={styles.scroller}
         onWheel={(e) => {
@@ -310,14 +378,15 @@ export function Tabs({
       >
         {items.map((item, index) => {
           const selected = item.id === activeId;
-          const closable = !!onClose && item.closable !== false;
+          const pinned = !!onTogglePin && !!item.pinned;
+          const closable = !!onClose && item.closable !== false && !pinned;
           return (
             <div
               key={item.id}
               className={clsx(
                 styles.tab,
                 selected && styles.selected,
-                closable && styles.closable,
+                (closable || pinned) && styles.closable,
                 dragging === item.id && styles.dragging,
                 marker === index && styles.dropBefore,
                 marker === items.length && index === items.length - 1 && styles.dropAfter,
@@ -379,7 +448,7 @@ export function Tabs({
                 aria-controls={panelIdPrefix ? `${panelIdPrefix}-panel-${item.id}` : undefined}
                 aria-selected={selected}
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
-                className={styles.tabButton}
+                className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
@@ -389,18 +458,37 @@ export function Tabs({
                     return;
                   }
                   onSelect(item.id);
+                  // Revealing on every click: re-selecting the active tab doesn't change
+                  // `activeId`, so the reveal effect wouldn't re-run (#1740).
+                  revealTab(item.id);
                 }}
                 onDoubleClick={onDoubleClick ? () => onDoubleClick(item.id) : undefined}
                 onKeyDown={(e) => onKeyDown(e, index, item)}
-                {...tooltipAttrs(item.tooltip)}
+                {...tooltipAttrs(given(item.tooltip), undefined, true)}
               >
                 {item.icon && <Icon name={item.icon} size={14} className={styles.tabIcon} />}
                 <span className={clsx(styles.tabLabel, item.italic && styles.italic)}>
-                  {typeof item.label === "string" ? <T>{item.label}</T> : item.label}
+                  {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
                 {item.modified && !closable && <span className={styles.modified} aria-label={tx("Modified")} />}
               </button>
+              {pinned && (
+                <span className={styles.closeSlot} data-tab-close>
+                  <IconButton
+                    icon="pin"
+                    title="Unpin Tab"
+                    size="small"
+                    iconSize={14}
+                    tabIndex={-1}
+                    className={styles.unpin}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin!(item.id);
+                    }}
+                  />
+                </span>
+              )}
               {closable && (
                 <span className={styles.closeSlot} data-tab-close>
                   {item.modified && <span className={styles.modified} aria-label={tx("Modified")} />}

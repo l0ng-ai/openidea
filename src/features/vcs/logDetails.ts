@@ -126,19 +126,28 @@ export function useCommitDetails(commit: Commit, enabled = true) {
   const version = useVcs((s) => s.version);
   const repo = commitRepo(commit) ?? currentRepo();
   const refs = refVersions((s) => s[repo ?? ""] ?? 0);
-  const key = `${repo}\0${commit.id}\0${version}\0${refs}`;
-  const [result, setResult] = useState<{ key: string; details: LogDetails | null; error: boolean } | null>(null);
+  const target = `${repo}\0${commit.id}`;
+  const key = `${target}\0${version}\0${refs}`;
+  const [result, setResult] = useState<{
+    target: string;
+    details: LogDetails | null;
+    error: boolean;
+  } | null>(null);
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
     void loadLogDetails(commit, controller.signal)
       .then((details) => {
-        if (!controller.signal.aborted) setResult({ key, details, error: false });
+        if (!controller.signal.aborted) setResult({ target, details, error: false });
       })
       .catch(() => {
-        if (!controller.signal.aborted) setResult({ key, details: null, error: true });
+        if (!controller.signal.aborted) setResult({ target, details: null, error: true });
       });
     return () => controller.abort();
-  }, [commit, key, enabled, version]);
-  return { details: result?.key === key ? result.details : null, error: result?.key === key && result.error };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, enabled]);
+  // A repository refresh reloads the same commit's details: keep showing the last ones until
+  // the new ones arrive, or the section blinks on every refresh.
+  const current = result?.target === target ? result : null;
+  return { details: current?.details ?? null, error: !!current?.error };
 }

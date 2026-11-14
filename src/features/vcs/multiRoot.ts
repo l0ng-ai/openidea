@@ -8,6 +8,7 @@ export type RepoCommit = Commit & {
   user?: string | null;
   userName?: string | null;
   remoteNames?: string[];
+  refBranches?: Branch[];
   readOnly?: boolean;
 };
 export const commitRepo = (c: Commit | undefined): string | null | undefined => (c as RepoCommit | undefined)?.repo;

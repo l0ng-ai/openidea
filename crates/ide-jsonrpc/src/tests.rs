@@ -70,6 +70,21 @@ mod framing_tests {
     }
 
     #[tokio::test]
+    async fn utf16_output_of_wsl_exe_before_a_message_does_not_swallow_it() {
+        // `wsl.exe` reports its own errors as UTF-16LE with a BOM; the real server only starts
+        // after it, so the first message must still be read whole.
+        let notice = "The Windows Subsystem for Linux instance has terminated.";
+        let mut input: Vec<u8> = [0xff, 0xfe].into();
+        input.extend(format!("{notice}\r\n").encode_utf16().flat_map(u16::to_le_bytes));
+        input.extend(b"Content-Length: 2\r\n\r\n{}");
+        let (msgs, noise) = read_with_noise(&input).await;
+        assert_eq!(msgs.unwrap(), vec![b"{}".to_vec()]);
+        // The text is kept for the error shown to the user, whatever the BOM decodes to.
+        let ascii: String = noise.concat().chars().filter(char::is_ascii).filter(|c| *c != '\0').collect();
+        assert_eq!(ascii.trim(), notice);
+    }
+
+    #[tokio::test]
     async fn unterminated_output_then_eof_is_reported() {
         // `pause` prints its prompt without a newline and the process is gone.
         let (msgs, noise) = read_with_noise(b"Press any key to continue . . . ").await;
@@ -525,4 +540,30 @@ async fn output_before_the_handshake_is_reported_not_dropped() {
     let lines = lines.lock().clone();
     assert!(lines.iter().any(|l| l == "python: not found"), "{lines:?}");
     assert!(lines.iter().any(|l| l.ends_with(". . .") && l.len() > 6), "{lines:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn incoming_messages_are_normalized_before_dispatch() {
+    struct Server;
+    impl Handler for Server {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, _: &str, params: Value) -> Result<Value, (i64, String)> {
+            Ok(params)
+        }
+    }
+    struct Client;
+    impl Handler for Client {
+        fn on_notification(&self, _: &str, _: Value) {}
+        fn on_request(&self, _: &str, _: Value) -> Result<Value, (i64, String)> {
+            Err((codes::METHOD_NOT_FOUND, "no".into()))
+        }
+        fn normalize_incoming(&self, message: &mut Value) {
+            if let Some(result) = message.get_mut("result") {
+                *result = json!("normalized");
+            }
+        }
+    }
+    let (client, _server) = pair(Arc::new(Client), Arc::new(Server));
+    let v: Value = client.request("echo", "raw", None).await.unwrap();
+    assert_eq!(v, json!("normalized"));
 }

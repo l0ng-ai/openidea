@@ -10,14 +10,18 @@
 mod acp;
 mod config;
 mod conversation;
+mod external;
+pub mod mcp;
 mod model;
 mod native;
 mod provider;
 pub mod registry;
+pub mod security;
 mod skills;
 mod timeline;
 mod worktree;
 
+pub use external::ExternalSession;
 pub use model::*;
 
 use conversation::{Conversation, SavedSubagent, Session};
@@ -35,6 +39,12 @@ use std::time::Duration;
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// Returns the active command execution security policy for the project.
+pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySettings + Send + Sync>;
+
+/// Returns the user's choice of the approvals new tasks start with.
+pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskApprovals + Send + Sync>;
 
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
@@ -54,6 +64,9 @@ const SESSION_STATE: [&str; 5] =
 pub(crate) const RETRY_UPDATE: &str = "openidea_retry";
 /// A native agent's own update: the usage limits of its account (see [`AgentLimit`]).
 pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
+/// A native agent's own update: the background tasks its session runs
+/// (see [`TaskState::background_tasks`]).
+pub(crate) const BACKGROUND_TASKS_UPDATE: &str = "openidea_background_tasks";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -79,6 +92,18 @@ pub struct AgentPaths {
     pub custom_agents_dir: Option<PathBuf>,
     /// The user's home: its `.claude` holds their own skills and commands.
     pub home_dir: Option<PathBuf>,
+    /// Where the values of the agent files' environment variables are kept; without it they stay in the files.
+    pub env_secrets: Option<Arc<dyn EnvSecrets>>,
+}
+
+/// Keeps the values of agent files' environment variables (`agent/<id>/env/<name>`) out of
+/// the files, which keep only the names; the app keeps them in the OS credential store.
+pub trait EnvSecrets: Send + Sync {
+    fn get(&self, key: &str) -> Option<String>;
+    fn set(&self, key: &str, value: &str) -> IdeResult<()>;
+    fn delete(&self, key: &str);
+    /// The keys that start with `prefix`.
+    fn keys(&self, prefix: &str) -> Vec<String>;
 }
 
 /// Starts the ACP server of a provider in a directory, speaking to `client`.
@@ -88,17 +113,25 @@ type Connector = Arc<
         + Sync,
 >;
 
+/// Returns the configured MCP servers (User and Workspace) for this project.
+pub type McpServersFn = dyn Fn() -> Vec<McpServer> + Send + Sync;
+
 struct Shared {
     paths: AgentPaths,
     runtime: tokio::runtime::Handle,
     connector: Connector,
     sink: RwLock<Option<AgentSink>>,
+    security: RwLock<Option<SecurityHook>>,
+    new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
     known: Mutex<HashMap<String, Known>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// One pre-session lookup of commands and settings per provider, including failed attempts.
+    command_fetches: Mutex<HashMap<String, tokio::sync::watch::Receiver<bool>>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
+    mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
 }
 
 /// What an agent offered in its last session, for the New Task page.
@@ -106,6 +139,9 @@ struct Shared {
 struct Known {
     #[serde(default)]
     config: Vec<AgentConfigOption>,
+    /// Thinking levels reported for each model value, including its last choice.
+    #[serde(default, rename = "thoughtLevels")]
+    thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
     /// By project root: skills and custom commands differ per project.
     #[serde(default, rename = "projectCommands")]
     commands: HashMap<String, Vec<AgentCommand>>,
@@ -116,6 +152,10 @@ impl Shared {
         self.providers.read().iter().find(|p| p.id == id).cloned()
     }
 
+    fn env_secrets(&self) -> Option<&dyn EnvSecrets> {
+        self.paths.env_secrets.as_deref()
+    }
+
     fn emit(&self, event: AgentEvent) {
         let sink = self.sink.read().clone();
         if let Some(sink) = sink {
@@ -123,9 +163,23 @@ impl Shared {
         }
     }
 
+    fn mcp_servers_for_session(&self, provider: &str, init: &acp::Negotiated) -> Vec<Value> {
+        let mut servers = mcp_servers_for(init.mcp_stdio(), &self.paths.project_root);
+        let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
+        servers.extend(mcp::acp_mcp_servers(&configured, provider, init));
+        servers
+    }
+
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
         let mut config = self.known.lock().get(provider).map(|k| k.config.clone()).unwrap_or_default();
+        // Model-specific options are offered separately, never as provider-wide defaults.
+        config.retain(|o| o.category.as_deref() != Some("thought_level"));
         config::add_client_options(provider, &mut config);
+        let hook = self.new_task_approvals.read().clone();
+        if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
+            config::ask_for_approvals(&mut config);
+            return config;
+        }
         if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
             && let Some(o) = config.iter_mut().find(|c| c.id == o)
         {
@@ -143,36 +197,164 @@ impl Shared {
         cache.get(provider).and_then(|k| k.commands.get(&self.root_key())).cloned().unwrap_or_default()
     }
 
+    async fn fetch_settings(self: &Arc<Self>, spec: provider::ProviderSpec) {
+        let mut ready = {
+            let mut fetches = self.command_fetches.lock();
+            fetches
+                .entry(spec.id.clone())
+                .or_insert_with(|| {
+                    let (done, ready) = tokio::sync::watch::channel(false);
+                    let shared = self.clone();
+                    // Keep the lookup alive if a composer unmounts while it is waiting.
+                    self.runtime.spawn(async move {
+                        tracing::info!("agent {}: settings discovery started", spec.id);
+                        let discovered = if spec.driver == provider::Driver::Acp {
+                            acp::discover::run(&shared, &spec).await.map(|_| None)
+                        } else if spec.driver == provider::Driver::Claude {
+                            native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await.map(Some)
+                        } else {
+                            return;
+                        };
+                        if let Ok(Some(found)) = discovered {
+                            let commands =
+                                config::commands_of(&json!({ "availableCommands": found.commands }), &spec.id);
+                            let options = config::options_of(&json!({ "configOptions": found.options }));
+                            let levels: Vec<_> = found
+                                .efforts
+                                .into_iter()
+                                .map(|(model, o)| {
+                                    let options = o.map(|o| config::options_of(&json!({ "configOptions": [o] })));
+                                    (model, options.unwrap_or_default())
+                                })
+                                .collect();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                // Notifies subscribers itself when the discovery
+                                // changed the cached config; unchanged results
+                                // stay silent.
+                                shared.remember_discovered(&spec.id, &options, &commands, &levels);
+                            })
+                            .await;
+                        } else if let Err(e) = discovered {
+                            tracing::info!("agent {}: settings discovery failed: {e}", spec.id);
+                        }
+                        let _ = done.send(true);
+                    });
+                    ready
+                })
+                .clone()
+        };
+        while !*ready.borrow_and_update() {
+            if ready.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+
+    fn has_config(&self, provider: &str) -> bool {
+        self.known.lock().get(provider).is_some_and(|k| !k.config.is_empty())
+    }
+
+    /// Whether the thinking levels of every model the agent offers are known (#1686).
+    fn knows_all_levels(&self, provider: &str) -> bool {
+        let cache = self.known.lock();
+        let Some(known) = cache.get(provider) else { return false };
+        let models: Vec<&str> = known
+            .config
+            .iter()
+            .filter(|o| o.category.as_deref() == Some("model"))
+            .flat_map(|o| o.values.iter().map(|v| v.value.as_str()))
+            .collect();
+        // No advertised models yet: nothing to attach effort levels to.
+        if models.is_empty() {
+            return false;
+        }
+        models.iter().all(|id| known.thought_levels.contains_key(*id))
+    }
+
     fn root_key(&self) -> String {
         self.paths.project_root.to_string_lossy().into_owned()
     }
 
-    fn remember(&self, provider: &str, config: Option<&[AgentConfigOption]>, commands: Option<&[AgentCommand]>) {
-        let snapshot = {
-            let mut cache = self.known.lock();
-            let known = cache.entry(provider.to_owned()).or_default();
-            let mut changed = false;
-            if let Some(c) = config.filter(|c| !c.is_empty() && known.config != *c) {
+    /// Cache levels only when `model` confirms which model the session reported them for.
+    fn remember(
+        &self,
+        provider: &str,
+        config: Option<&[AgentConfigOption]>,
+        commands: Option<&[AgentCommand]>,
+        model: Option<&str>,
+    ) {
+        self.remember_inner(provider, config, commands, model, &[], false);
+    }
+
+    /// `levels`: each model's thinking-level options, so a new task offers them for any model
+    /// it picks (#1686). A session's report for a model wins over these.
+    fn remember_discovered(
+        &self,
+        provider: &str,
+        config: &[AgentConfigOption],
+        commands: &[AgentCommand],
+        levels: &[(String, Vec<AgentConfigOption>)],
+    ) {
+        self.remember_inner(provider, Some(config), Some(commands), model_of(config).as_deref(), levels, true);
+    }
+
+    fn remember_inner(
+        &self,
+        provider: &str,
+        config: Option<&[AgentConfigOption]>,
+        commands: Option<&[AgentCommand]>,
+        model: Option<&str>,
+        discovered_levels: &[(String, Vec<AgentConfigOption>)],
+        discovered: bool,
+    ) {
+        // Keep the update and its disk write ordered; a session report wins over discovery.
+        let mut cache = self.known.lock();
+        let known = cache.entry(provider.to_owned()).or_default();
+        let mut changed = false;
+        for (model, levels) in discovered_levels {
+            if !known.thought_levels.contains_key(model) {
+                known.thought_levels.insert(model.clone(), levels.clone());
+                changed = true;
+            }
+        }
+        if let Some(c) = config.filter(|_| !discovered || known.config.is_empty()) {
+            if let Some(model) = model {
+                let levels: Vec<_> =
+                    c.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                if known.thought_levels.get(model) != Some(&levels) {
+                    known.thought_levels.insert(model.to_owned(), levels);
+                    changed = true;
+                }
+            }
+            if !c.is_empty() && known.config != c {
                 known.config = c.to_vec();
                 changed = true;
             }
-            let root = self.root_key();
-            if let Some(c) =
-                commands.filter(|c| !c.is_empty() && known.commands.get(&root).map(Vec::as_slice) != Some(c))
-            {
-                known.commands.insert(root, c.to_vec());
-                changed = true;
-            }
-            if !changed {
-                return;
-            }
-            serde_json::to_vec_pretty(&*cache)
-        };
-        if let Ok(bytes) = snapshot
+        }
+        let root = self.root_key();
+        if let Some(c) = commands.filter(|c| {
+            !c.is_empty()
+                && (!discovered || known.commands.get(&root).is_none_or(Vec::is_empty))
+                && known.commands.get(&root).map(Vec::as_slice) != Some(c)
+        }) {
+            known.commands.insert(root, c.to_vec());
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&*cache)
             && let Err(e) = write_file(&self.paths.models_file, &bytes)
         {
             tracing::warn!("saving agent settings: {e}");
         }
+        // The cached provider config actually changed (a session report, discovery,
+        // or a turn update): tell subscribers to re-list, so a changed model list
+        // reaches the composer without waiting for the next task (#1490). Unchanged
+        // reports stay silent, so routine session traffic emits nothing. The cache
+        // lock is released first; the sink never runs under it.
+        drop(cache);
+        self.emit(AgentEvent::Providers);
     }
 }
 
@@ -188,11 +370,17 @@ struct TaskFile {
     /// In the project's own checkout: files already changed when the task started.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     before: BTreeMap<String, worktree::Stamp>,
+    /// The folder (in the task store) with copies of the `before` files, for rolling back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    saved: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagents: Vec<SavedSubagent>,
     /// Turns to drop from the session once it is loaded (a fork of an earlier point).
     #[serde(default, skip_serializing_if = "is_zero")]
     pending_rollback: u32,
+    /// The user named the task: its agent's own title updates no longer replace it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    title_renamed: bool,
 }
 
 struct TaskState {
@@ -201,14 +389,22 @@ struct TaskState {
     conversation: Conversation,
     wanted: Vec<AgentConfigChoice>,
     before: Arc<BTreeMap<String, worktree::Stamp>>,
+    saved: Option<String>,
     pending_rollback: u32,
+    /// The user named the task; see `TaskFile::title_renamed`.
+    title_renamed: bool,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
+    /// Background tasks the agent reported as running (`run_in_background` commands and
+    /// the like), as it sent them: unlike a turn they outlive it, so an idle release
+    /// waits for the last one. A (re)started process runs nothing yet.
+    background_tasks: Vec<Value>,
 }
 
 /// A running agent and its session.
 #[derive(Clone)]
 struct Live {
+    sign_in_message: String,
     peer: acp::Conn,
     session: String,
     capabilities: AgentCapabilities,
@@ -216,6 +412,7 @@ struct Live {
     embedded: bool,
     /// `session/load`: the process can be stopped between turns and the session reloaded.
     resumable: bool,
+    init: acp::Negotiated,
 }
 
 struct Task {
@@ -239,9 +436,14 @@ struct Task {
     turn_started: AtomicBool,
     /// Turns sent so far: an idle release scheduled before the latest one is void.
     turns: AtomicU64,
+    /// Bumped when the agent's last background task finishes: an idle release scheduled
+    /// before that is void, the usual delay starts over from the report.
+    idle_epoch: AtomicU64,
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
+    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
+    streamed: Mutex<HashMap<Session, Sent>>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
     /// Set by `delete`; held while saving.
@@ -269,16 +471,20 @@ impl AgentManager {
     fn with_connector(paths: AgentPaths, runtime: tokio::runtime::Handle, connector: Connector) -> Self {
         let known =
             std::fs::read(&paths.models_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref()));
+        let providers = RwLock::new(provider::load(paths.custom_agents_dir.as_deref(), paths.env_secrets.as_deref()));
         let shared = Arc::new(Shared {
             paths,
             runtime,
             connector,
             sink: RwLock::new(None),
+            security: RwLock::new(None),
+            new_task_approvals: RwLock::new(None),
             known: Mutex::new(known),
             providers,
             probes: Mutex::new(HashMap::new()),
+            command_fetches: Mutex::new(HashMap::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
+            mcp_servers_hook: RwLock::new(None),
         });
         let mut tasks = HashMap::new();
         for file in std::fs::read_dir(&shared.paths.store_dir).into_iter().flatten().flatten() {
@@ -297,6 +503,7 @@ impl AgentManager {
                         f.task.status = AgentStatus::Ready;
                     }
                     f.task.retry = None;
+                    f.task.background.clear();
                     let task = Task::restore(f, shared.clone());
                     task.state.lock().conversation.settle(now_ms());
                     tasks.insert(task.id.clone(), task);
@@ -315,14 +522,29 @@ impl AgentManager {
         tasks
     }
 
+    /// Sets the callback used to read the active command execution security policy.
+    pub fn set_security_hook(&self, hook: SecurityHook) {
+        *self.shared.security.write() = Some(hook);
+    }
+
+    /// Sets the callback that reads which approvals new tasks start with.
+    pub fn set_new_task_approvals_hook(&self, hook: NewTaskApprovalsHook) {
+        *self.shared.new_task_approvals.write() = Some(hook);
+    }
+
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
-        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
+        let in_use: std::collections::HashSet<String> =
+            self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
         let list = specs
             .iter()
+            .filter(|p| !provider::is_unlisted(p) || in_use.contains(&p.id))
             .map(|p| {
                 let mut info = provider::describe(p);
                 info.config = self.shared.known_config(&p.id);
+                info.thought_levels =
+                    self.shared.known.lock().get(&p.id).map(|k| k.thought_levels.clone()).unwrap_or_default();
                 info.commands = self.shared.known_commands(&p.id);
                 info
             })
@@ -334,7 +556,9 @@ impl AgentManager {
             let new = specs.iter().find(|p| &p.id == id);
             matches!((old, new), (Some(a), Some(b)) if a.command == b.command && a.args == b.args && a.env == b.env)
         });
-        *prev = specs;
+        *prev = specs.clone();
+        drop(probes);
+        drop(prev);
         list
     }
 
@@ -344,7 +568,7 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_command(&dir, id, command.as_deref())
+        provider::set_builtin_command(&dir, self.shared.env_secrets(), id, command.as_deref())
     }
 
     /// Sets the environment variables built-in `id` starts with; empty clears them.
@@ -352,15 +576,44 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_env(&dir, id, env)
+        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)
+    }
+
+    /// Saves a new custom ACP agent through its agent file.
+    pub fn save_custom_agent(&self, input: CustomAgentInput) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::save_custom(&dir, self.shared.env_secrets(), &input)
+    }
+
+    /// Removes a custom agent's file (registry installs go through `registry_remove`).
+    pub fn remove_custom_agent(&self, id: &str) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::remove_custom(&dir, self.shared.env_secrets(), id)
+    }
+
+    /// Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents.
+    pub fn import_acp_agents(&self, text: &str) -> IdeResult<Vec<AcpImportOutcome>> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::import_acp(&dir, self.shared.env_secrets(), text)
     }
 
     /// Re-reads configured/installed agents, drops cached probes, and notifies subscribers.
     pub fn reload_providers(&self) {
-        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref());
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
         self.shared.emit(AgentEvent::Providers);
+    }
+
+    /// Provides the user and workspace MCP servers configured in settings.
+    pub fn set_mcp_servers_hook(&self, hook: Box<McpServersFn>) {
+        *self.shared.mcp_servers_hook.write() = Some(Arc::from(hook));
     }
 
     /// The slash commands to complete for `provider`, in `task`'s directory or (without one)
@@ -378,9 +631,27 @@ impl AgentManager {
         // Commands the agent implements itself and never lists (its CLI builtins):
         // merged without duplicating what `availableCommands` or the disk offer.
         let mut offered = offered;
+        if task.is_none()
+            && (offered.is_empty() || !self.shared.has_config(&provider) || !self.shared.knows_all_levels(&provider))
+            && let Some(spec) = self
+                .shared
+                .spec(&provider)
+                .filter(|s| matches!(s.driver, provider::Driver::Claude | provider::Driver::Acp))
+        {
+            let claude = spec.driver == provider::Driver::Claude;
+            self.shared.fetch_settings(spec).await;
+            if claude {
+                offered = self.shared.known_commands(&provider);
+            }
+        }
         for &(name, description) in builtin_commands(&provider) {
             if !offered.iter().any(|c| c.name == name) {
-                offered.push(AgentCommand { name: name.to_owned(), description: description.to_owned(), hint: None });
+                offered.push(AgentCommand {
+                    name: name.to_owned(),
+                    description: description.to_owned(),
+                    hint: None,
+                    source: AgentCommandSource::Command,
+                });
             }
         }
         if provider != "claude" && provider != "claude-acp" {
@@ -401,6 +672,93 @@ impl AgentManager {
         let s = task.state.lock();
         let timeline = s.conversation.timeline(&subagent).ok_or_else(|| IdeError::not_found("no such subagent"))?;
         Ok(timeline.entries.clone())
+    }
+
+    /// Session ids the tasks already hold (native drivers reuse the CLI's own id).
+    fn imported_session_ids(&self) -> HashSet<String> {
+        self.tasks.read().values().filter_map(|t| t.state.lock().session_id.clone()).collect()
+    }
+
+    /// Sessions of this project on this machine that no task holds yet, newest first. Reads
+    /// transcripts from disk: call it off the UI and command threads.
+    pub fn external_sessions(&self) -> Vec<ExternalSession> {
+        let mut out = Vec::new();
+        let root = self.shared.paths.project_root.clone();
+        if let Some(spec) = self.shared.spec("claude")
+            && let Some(dir) = native::claude::cli::config_dir(&spec.env)
+        {
+            out.extend(external::claude_sessions(&dir, &root));
+        }
+        let home = self.shared.paths.home_dir.clone().or_else(home_dir);
+        if let Some(home) = home {
+            out.extend(external::codex_sessions(&home.join(".codex"), &root));
+        }
+        let known = self.imported_session_ids();
+        out.retain(|s| !known.contains(&s.session_id));
+        out.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
+        out.truncate(50);
+        out
+    }
+
+    /// Imports an external session as a task: its first turn loads and replays it (#312).
+    pub fn import_session(&self, provider: &str, session_id: &str) -> IdeResult<AgentTask> {
+        if !matches!(provider, "claude" | "codex") {
+            return Err(IdeError::invalid(format!("cannot import {provider} sessions")));
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if self.imported_session_ids().contains(session_id) {
+            return Err(IdeError::invalid("that session is already a task"));
+        }
+        let found = self
+            .external_sessions()
+            .into_iter()
+            .find(|s| s.provider == provider && s.session_id == session_id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown {provider} session {session_id}")))?;
+        let root = self.shared.paths.project_root.clone();
+        let cwd = found.cwd.map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| root.clone());
+        let config = self.shared.known_config(&spec.id);
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let task = AgentTask {
+            project_root: Some(IpcPath(root)),
+            id,
+            title: found.title,
+            provider: spec.id.clone(),
+            model: model_of(&config),
+            status: AgentStatus::Ready,
+            isolation: Isolation::Local,
+            cwd: IpcPath(cwd),
+            branch: None,
+            base: None,
+            base_commit: None,
+            error: None,
+            created_ms: now,
+            updated_ms: now,
+            config,
+            commands: self.shared.known_commands(&spec.id),
+            usage: None,
+            queue: Vec::new(),
+            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            resets_ms: None,
+            retry: None,
+            background: Box::default(),
+        };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: Some(session_id.to_owned()),
+            entries: Vec::new(),
+            wanted: Vec::new(),
+            before: BTreeMap::new(),
+            saved: None,
+            subagents: Vec::new(),
+            pending_rollback: 0,
+            title_renamed: true,
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
+        handle.persist();
+        Ok(task)
     }
 
     /// Creates the task (and its worktree) and sends `req.prompt` as its first message.
@@ -442,10 +800,37 @@ impl AgentManager {
                 o.current = Some(choice.value.clone());
             }
         }
+        if let Some(model) = model_of(&config)
+            && let Some(levels) = self.shared.known.lock().get(&spec.id).and_then(|k| k.thought_levels.get(&model))
+        {
+            config.extend(levels.iter().cloned().map(|mut o| {
+                if let Some(choice) =
+                    req.config.iter().find(|c| c.id == o.id && o.values.iter().any(|v| v.value == c.value))
+                {
+                    o.current = Some(choice.value.clone());
+                }
+                o
+            }));
+        }
         let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        // Copies of the files the user had changed already, for rolling back the task's changes to them.
+        let saved = if before.is_empty() {
+            None
+        } else {
+            let name = format!("{id}.before");
+            let (dir, at, files) = (self.shared.paths.store_dir.join(&name), cwd.clone(), before.clone());
+            match blocking(move || worktree::save_before(&at, &files, &dir)).await {
+                Ok(saved) => saved.then_some(name),
+                Err(e) => {
+                    tracing::warn!("saving the changed files of agent task {id}: {e}");
+                    None
+                }
+            }
+        };
         let task = AgentTask {
             project_root,
-            id: uuid::Uuid::new_v4().simple().to_string(),
+            id,
             title,
             provider: spec.id.clone(),
             model: model_of(&config),
@@ -465,6 +850,7 @@ impl AgentManager {
             capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
             resets_ms: None,
             retry: None,
+            background: Box::default(),
         };
         let file = TaskFile {
             task: task.clone(),
@@ -472,8 +858,10 @@ impl AgentManager {
             entries: Vec::new(),
             wanted: req.config,
             before,
+            saved,
             subagents: Vec::new(),
             pending_rollback: 0,
+            title_renamed: false,
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = true;
@@ -587,28 +975,57 @@ impl AgentManager {
             }
             o.clone()
         };
+        let previous = target.current.clone();
+        // Cursor's `session/set_config_option` (Fast, effort) can take seconds. Show the
+        // choice first so the switch and slider move immediately.
+        apply_config_choice(&task, option, &value);
+        task.persist();
+        task.emit_task();
+
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
+        let mut model_options =
+            target.category.as_deref() != Some("model") || previous.as_deref() == Some(value.as_str());
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
-            let reply: Value =
-                live.peer.request(method, params, None).await.map_err(|e| IdeError::internal(task.describe(e)))?;
+            let reply: Value = match live.peer.request(method, params, None).await {
+                Ok(reply) => reply,
+                Err(e) => {
+                    {
+                        let mut s = task.state.lock();
+                        s.wanted.retain(|c| c.id != option);
+                        if let Some(prev) = previous.clone() {
+                            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: prev });
+                        }
+                        if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+                            o.current = previous.clone();
+                        }
+                        s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                    }
+                    task.persist();
+                    task.emit_task();
+                    return Err(IdeError::internal(task.describe(e)));
+                }
+            };
             if let Some(options) = reply.get("configOptions") {
                 config::merge_update(&mut task.state.lock().task.config, options);
+                model_options = true;
             }
         }
         {
             let mut s = task.state.lock();
-            s.wanted.retain(|c| c.id != option);
-            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
+            if !model_options {
+                s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
+            }
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
                 o.current = Some(value);
             }
             s.task.model = model_of(&s.task.config).or(s.task.model.take());
             let provider = s.task.provider.clone();
             let config = s.task.config.clone();
+            let model = s.task.model.clone().filter(|_| model_options);
             drop(s);
-            task.shared.remember(&provider, Some(&config), None);
+            task.shared.remember(&provider, Some(&config), None, model.as_deref());
         }
         task.approve_pending();
         task.persist();
@@ -631,10 +1048,16 @@ impl AgentManager {
             return Err(IdeError::invalid("this agent can't copy a conversation from there"));
         }
         let cwd = source.state.lock().task.cwd.0.clone();
+        let provider_id = source.state.lock().task.provider.clone();
+        let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init);
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
-            .request("session/fork", json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": [] }), None)
+            .request(
+                "session/fork",
+                json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers }),
+                None,
+            )
             .await
             .map_err(|e| IdeError::internal(source.describe(e)))?;
         let session = reply
@@ -659,6 +1082,7 @@ impl AgentManager {
                 queue: Vec::new(),
                 resets_ms: None,
                 retry: None,
+                background: Box::default(),
                 ..s.task.clone()
             };
             TaskFile {
@@ -667,10 +1091,14 @@ impl AgentManager {
                 entries,
                 wanted: s.wanted.clone(),
                 before: (*s.before).clone(),
+                saved: s.saved.clone(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
+                title_renamed: s.title_renamed,
             }
         };
+        // Copying may have started the source's agent: it stops again once idle.
+        source.release_when_idle();
         let task = Task::restore(file, self.shared.clone());
         self.tasks.write().insert(task.id.clone(), task.clone());
         task.persist();
@@ -687,12 +1115,39 @@ impl AgentManager {
         if task.state.lock().busy {
             return Err(IdeError::invalid("wait until the agent is done"));
         }
+        let starts = turn_starts(&task.state.lock().conversation.main.entries);
+        let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
+        // Dropping every turn starts the conversation over, which needs no agent-side
+        // rewind — and some agents cannot rewind past their first turn (a resumed
+        // Claude Code session). A fresh session avoids both.
+        if turns == 0 {
+            task.kill();
+            let first = {
+                let mut s = task.state.lock();
+                let first = match s.conversation.main.entries.get(cut) {
+                    Some(AgentEntry::User { text, .. }) => {
+                        Some(AgentPrompt { text: text.clone(), ..Default::default() })
+                    }
+                    _ => None,
+                };
+                s.session_id = None;
+                s.conversation = Conversation::default();
+                // The fresh session reports its own usage; nothing carries over.
+                s.task.usage = None;
+                s.pending_rollback = 0;
+                s.task.updated_ms = now_ms();
+                first
+            };
+            task.streamed.lock().clear();
+            task.persist();
+            self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
+            task.emit_task();
+            return Ok(first);
+        }
         let live = task.ensure_session().await.map_err(IdeError::internal)?;
         if !live.capabilities.rollback {
             return Err(IdeError::invalid("this agent can't undo turns"));
         }
-        let starts = turn_starts(&task.state.lock().conversation.main.entries);
-        let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
         let drop = (starts.len() - turns as usize) as u32;
         let _: Value = live
             .peer
@@ -709,9 +1164,12 @@ impl AgentManager {
             s.task.updated_ms = now_ms();
             first
         };
+        task.streamed.lock().clear();
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
+        // Undoing may have started the agent: it stops again once idle.
+        task.release_when_idle();
         Ok(first)
     }
 
@@ -797,6 +1255,21 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Stops background task `background` of task `id`.
+    pub async fn stop_background(&self, id: &str, background: &str) -> IdeResult<()> {
+        let task = self.task(id)?;
+        let live = task.live.lock().clone().ok_or_else(|| IdeError::invalid("the agent is not running"))?;
+        if !live.capabilities.background_tasks {
+            return Err(IdeError::invalid("this agent can't stop a background task"));
+        }
+        let _: Value = live
+            .peer
+            .request("_openidea/stop_task", json!({ "sessionId": live.session, "taskId": background }), None)
+            .await
+            .map_err(|error| IdeError::internal(task.describe(error)))?;
+        Ok(())
+    }
+
     /// Answers permission request `permission` with option `option` (`None` cancels it).
     pub fn respond(&self, id: &str, permission: u32, option: Option<String>) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -838,6 +1311,28 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Renames the task; the agent's own later title updates keep the user's choice.
+    pub fn rename(&self, id: &str, title: &str) -> IdeResult<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(IdeError::invalid("the title is empty"));
+        }
+        let title: String = title.chars().take(200).collect();
+        let task = self.task(id)?;
+        {
+            let mut s = task.state.lock();
+            if s.task.title == title && s.title_renamed {
+                return Ok(());
+            }
+            s.task.title = title;
+            s.title_renamed = true;
+            s.task.updated_ms = now_ms();
+        }
+        task.persist();
+        task.emit_task();
+        Ok(())
+    }
+
     /// Forgets the task; with `remove_worktree` also deletes its worktree (the branch stays).
     pub async fn delete(&self, id: &str, remove_worktree: bool) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -852,6 +1347,17 @@ impl AgentManager {
         };
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
+        self.tasks.write().remove(id);
+        *task.deleted.lock() = true;
+        let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
+        let saved = task.state.lock().saved.clone();
+        if let Some(saved) = saved
+            && !self.tasks.read().values().any(|t| t.state.lock().saved.as_ref() == Some(&saved))
+        {
+            let _ = std::fs::remove_dir_all(self.shared.paths.store_dir.join(saved));
+        }
+        // The list drops the task now; removing a large worktree's folder can take a while.
+        self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
         if remove_worktree && !shared && isolation == Isolation::Worktree && cwd.exists() {
             // On Windows the agent's processes lock the folder (their working directory,
             // open files) until they have exited.
@@ -861,25 +1367,120 @@ impl AgentManager {
             let worktrees = self.shared.paths.worktrees_dir.clone();
             blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
-        self.tasks.write().remove(id);
-        *task.deleted.lock() = true;
-        let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
-        self.shared.emit(AgentEvent::Removed { id: id.to_owned() });
         Ok(())
     }
 
     /// Files the task changed since it started.
     pub async fn changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let task = self.task(id)?;
-        let (cwd, base) = task.cwd_and_base();
+        let at = task.base();
         let before = task.state.lock().before.clone();
-        blocking(move || Ok(worktree::without_untouched(worktree::changes(&cwd, &base)?, &before))).await
+        blocking(move || at.changes(&before)).await
+    }
+
+    /// The task's uncommitted changes and, for a worktree task, the commits made since it
+    /// started (newest first). Both are read against the same `HEAD`.
+    pub async fn grouped_changes(&self, id: &str) -> IdeResult<AgentChanges> {
+        let task = self.task(id)?;
+        let at = task.base();
+        let before = task.state.lock().before.clone();
+        blocking(move || at.grouped_changes(&before)).await
     }
 
     /// Content of `path` (in the task's directory) when the task started.
     pub async fn base_text(&self, id: &str, path: PathBuf) -> IdeResult<Option<String>> {
-        let (cwd, base) = self.task(id)?.cwd_and_base();
-        blocking(move || worktree::file_at(&cwd, &path, &base)).await
+        let at = self.task(id)?.base();
+        blocking(move || match at.rev()? {
+            Some(rev) => worktree::file_at(at.cwd(), &path, &rev),
+            None => Ok(None),
+        })
+        .await
+    }
+
+    /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as
+    /// `view` compares them: as they were when it started, or as they are in `HEAD`.
+    pub async fn rollback_changes(
+        &self,
+        id: &str,
+        rel_paths: Option<Vec<String>>,
+        view: AgentChangesView,
+    ) -> IdeResult<()> {
+        let task = self.task(id)?;
+        if task.state.lock().busy {
+            return Err(IdeError::invalid("the agent is working: stop it before rolling back its changes"));
+        }
+        let at = task.base();
+        let (before, saved) = {
+            let s = task.state.lock();
+            (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
+        };
+        let restamped = blocking(move || {
+            let (changes, rev) = match view {
+                AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
+                AgentChangesView::SinceStart => (at.changes(&before)?, at.rev()?),
+            };
+            let sources = match rev.as_deref() {
+                Some(rev) => worktree::rename_sources(at.cwd(), rev)?,
+                None => Default::default(),
+            };
+            let mut restamped = Vec::new();
+            for change in changes.iter().filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path))) {
+                // A rename goes back to its old path too; the new one is taken away first, so a
+                // case-only rename on a case-insensitive disk ends as the old file.
+                for change in std::iter::once(change).chain(sources.get(&change.rel_path)) {
+                    worktree::restore(at.cwd(), rev.as_deref(), change, &before, saved.as_deref())?;
+                    // Back to the user's own edits: not a change of the task any more.
+                    if before.contains_key(&change.rel_path) {
+                        restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
+                    }
+                }
+            }
+            Ok(restamped)
+        })
+        .await?;
+        if !restamped.is_empty() {
+            let mut s = task.state.lock();
+            let mut before = (*s.before).clone();
+            before.extend(restamped);
+            s.before = Arc::new(before);
+        }
+        task.persist();
+        Ok(())
+    }
+
+    /// Accept: copies the task's changed files among `rel_paths` (all with `None`) from its
+    /// worktree into the local checkout, uncommitted, for the user to review and commit.
+    /// Files the checkout changed itself are left alone and reported. Only worktree tasks
+    /// have anything to accept.
+    pub async fn accept_changes(&self, id: &str, rel_paths: Option<Vec<String>>) -> IdeResult<AgentAcceptOutcome> {
+        let task = self.task(id)?;
+        if task.state.lock().busy {
+            return Err(IdeError::invalid("the agent is working: stop it before accepting its changes"));
+        }
+        let (isolation, cwd, base, root, before) = {
+            let s = task.state.lock();
+            (
+                s.task.isolation,
+                s.task.cwd.0.clone(),
+                s.task.base_commit.clone(),
+                s.task.project_root.clone().map(|p| p.0).unwrap_or_else(|| self.shared.paths.project_root.clone()),
+                (*s.before).clone(),
+            )
+        };
+        if isolation != Isolation::Worktree {
+            return Err(IdeError::invalid("the task works in the local checkout: there is nothing to accept"));
+        }
+        let Some(base) = base else {
+            return Err(IdeError::invalid("the task has no base revision to accept from"));
+        };
+        blocking(move || {
+            let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
+                .into_iter()
+                .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
+                .collect();
+            worktree::accept(&root, &cwd, &base, &wanted)
+        })
+        .await
     }
 
     /// Stops every agent (project closed).
@@ -907,8 +1508,11 @@ impl Task {
                 conversation,
                 wanted: file.wanted,
                 before: Arc::new(file.before),
+                saved: file.saved,
                 pending_rollback: file.pending_rollback,
+                title_renamed: file.title_renamed,
                 busy: false,
+                background_tasks: Vec::new(),
             }),
             live: Mutex::new(None),
             connecting: tokio::sync::Mutex::new(()),
@@ -919,23 +1523,25 @@ impl Task {
             cancel_pending: AtomicBool::new(false),
             turn_started: AtomicBool::new(false),
             turns: AtomicU64::new(0),
+            idle_epoch: AtomicU64::new(0),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
+            streamed: Mutex::new(HashMap::new()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
             deleted: Mutex::new(false),
         })
     }
 
-    fn cwd_and_base(&self) -> (PathBuf, String) {
+    fn base(&self) -> worktree::TaskBase {
         let s = self.state.lock();
-        // In the project's own checkout the user commits too: compare against the current HEAD,
-        // as the Commit tool window does, so commits made since the task started drop out.
-        let base = match s.task.isolation {
-            Isolation::Local => None,
-            Isolation::Worktree => s.task.base_commit.clone(),
-        };
-        (s.task.cwd.0.clone(), base.unwrap_or_else(|| "HEAD".into()))
+        let cwd = s.task.cwd.0.clone();
+        match s.task.isolation {
+            Isolation::Local => worktree::TaskBase::Local { cwd, start: s.task.base_commit.clone() },
+            Isolation::Worktree => {
+                worktree::TaskBase::Worktree { cwd, base: s.task.base_commit.clone().unwrap_or_else(|| "HEAD".into()) }
+            }
+        }
     }
 
     fn emit_task(&self) {
@@ -953,6 +1559,39 @@ impl Task {
             s.task.retry = retry;
         }
         self.emit_task();
+    }
+
+    /// Keeps the agent's background tasks that outlive its turn. Returns whether the last
+    /// one just finished, so the idle release starts over from this report.
+    fn set_background_tasks(&self, tasks: Vec<Value>) -> bool {
+        let (emptied, shown) = {
+            let mut state = self.state.lock();
+            if state.background_tasks == tasks {
+                return false;
+            }
+            let emptied = !state.background_tasks.is_empty() && tasks.is_empty();
+            let background = shown_background(&tasks, &state.task.background);
+            let shown = background != *state.task.background;
+            *state.task.background = background;
+            state.background_tasks = tasks;
+            if emptied {
+                // Void a release scheduled while the tasks still ran: it would stop the
+                // agent sooner than the usual delay after this one.
+                self.idle_epoch.fetch_add(1, Ordering::AcqRel);
+            }
+            (emptied, shown)
+        };
+        if shown {
+            self.emit_task();
+        }
+        emptied
+    }
+
+    fn clear_shown_background(&self) {
+        let cleared = !std::mem::take(&mut self.state.lock().task.background).is_empty();
+        if cleared {
+            self.emit_task();
+        }
     }
 
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
@@ -982,8 +1621,10 @@ impl Task {
                 entries: s.conversation.main.entries.clone(),
                 wanted: s.wanted.clone(),
                 before: (*s.before).clone(),
+                saved: s.saved.clone(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
+                title_renamed: s.title_renamed,
             })
         };
         let path = self.shared.paths.store_dir.join(format!("{}.json", self.id));
@@ -1008,11 +1649,12 @@ impl Task {
         let indices = std::mem::take(&mut *self.dirty.lock());
         let events: Vec<AgentEvent> = {
             let s = self.state.lock();
+            let mut streamed = self.streamed.lock();
             indices
                 .into_iter()
                 .filter_map(|(subagent, i)| {
-                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?.clone();
-                    Some(AgentEvent::Entry { task: self.id.clone(), subagent, index: i as u32, entry })
+                    let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
+                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
                 })
                 .collect()
         };
@@ -1073,17 +1715,30 @@ impl Task {
     /// Stops the agent's process once the task has stayed idle for [`IDLE_RELEASE`], so
     /// finished tasks don't keep an agent (and what it started) running. Only an agent that
     /// reloads its session: the next message starts it again with the conversation intact.
+    /// A turn's background tasks outlive it: the release waits for the last one, and the
+    /// delay runs again once the agent reports it done.
     fn release_when_idle(self: &Arc<Self>) {
         let turn = self.turns.load(Ordering::Acquire);
+        let epoch = self.idle_epoch.load(Ordering::Acquire);
         let delay = Duration::from_millis(self.shared.idle_release_ms.load(Ordering::Relaxed));
         let task = Arc::downgrade(self);
         self.shared.runtime.spawn(async move {
             tokio::time::sleep(delay).await;
             let Some(task) = task.upgrade() else { return };
             if task.turns.load(Ordering::Acquire) != turn
+                || task.idle_epoch.load(Ordering::Acquire) != epoch
                 || task.state.lock().busy
                 || !task.permissions.lock().is_empty()
             {
+                return;
+            }
+            // Stopping now would orphan what the agent still runs in the background: its
+            // result would never reach the conversation. Wait for the last task; when it
+            // is done, its report voids this schedule and starts the delay over.
+            let waiting = !task.state.lock().background_tasks.is_empty();
+            if waiting && task.live.lock().as_ref().is_some_and(|l| l.resumable && !l.peer.is_closed()) {
+                tracing::debug!("agent task {}: idle, waiting for its background tasks", task.id);
+                task.release_when_idle();
                 return;
             }
             let live = {
@@ -1093,6 +1748,7 @@ impl Task {
             if let Some(live) = live {
                 tracing::debug!("agent task {}: idle, stopping the agent until the next message", task.id);
                 live.peer.kill();
+                task.clear_shown_background();
             }
         });
     }
@@ -1111,6 +1767,7 @@ impl Task {
         if !gone && let Some(live) = self.live.lock().take() {
             live.peer.kill();
         }
+        self.clear_shown_background();
         match failure.limit {
             Some(resets) => {
                 self.state.lock().task.resets_ms = resets;
@@ -1215,17 +1872,46 @@ impl Task {
             };
             return Failure { message, limit: Some(resets) };
         }
-        match e {
-            // Signed out, or the account was refused (Claude Code: "API Error: 403").
-            RpcError::Server { message, .. } if message.to_lowercase().contains("auth") => {
-                let provider = self.state.lock().task.provider.clone();
-                Failure::from(match self.shared.spec(&provider) {
-                    Some(spec) => format!("{} needs you to sign in. {}", spec.name, spec.login_hint),
-                    None => message,
-                })
-            }
-            e => Failure::from(self.describe(e)),
+        let guidance = self.live.lock().as_ref().map(|live| live.sign_in_message.clone());
+        Failure::from(self.sign_in_error(&e, guidance.as_deref()).unwrap_or_else(|| self.describe(e)))
+    }
+
+    fn sign_in_error(&self, e: &RpcError, guidance: Option<&str>) -> Option<String> {
+        let RpcError::Server { code, message, .. } = e else { return None };
+        if !acp::auth_required(*code, message) {
+            return None;
         }
+        tracing::warn!(task = %self.id, code, %message, "agent sign-in failed");
+        let Some(guidance) = guidance else { return Some(message.clone()) };
+        Some(if message.trim().is_empty() || guidance.contains(message) {
+            guidance.to_owned()
+        } else {
+            format!("{guidance}\n\n{message}")
+        })
+    }
+
+    /// Runs `method` and, on an auth error, tries the agent's own ACP `authenticate` once before retrying.
+    async fn request_with_auth(
+        &self,
+        peer: &acp::Conn,
+        init: &acp::Negotiated,
+        tried_auth: &mut bool,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, RpcError> {
+        let first = peer.request(method, params.clone(), None).await;
+        if !*tried_auth
+            && let Err(RpcError::Server { code, ref message, .. }) = first
+            && acp::auth_required(code, message)
+            && let Some(method_id) = init.agent_auth_method()
+        {
+            *tried_auth = true;
+            match peer.request::<_, Value>("authenticate", json!({ "methodId": method_id }), None).await {
+                Ok(_) => return peer.request(method, params, None).await,
+                Err(e) => tracing::debug!(task = %self.id, method_id, error = %e, "agent authenticate failed"),
+            }
+        }
+        first
     }
 
     async fn ensure_session(self: &Arc<Self>) -> Result<Live, String> {
@@ -1240,6 +1926,10 @@ impl Task {
             (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone())
         };
         let spec = self.shared.spec(&provider_id).ok_or_else(|| format!("unknown agent {provider_id}"))?;
+        let launch_cwd = cwd.clone();
+        let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
+            .await
+            .map_err(|e| e.to_string())?;
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
@@ -1259,16 +1949,19 @@ impl Task {
             .map_err(|e| format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command))?;
 
         let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
+        let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
+        let mcp_servers = self.shared.mcp_servers_for_session(&provider_id, &init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
+        let mut tried_auth = false;
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let loaded: Result<Value, RpcError> =
-                peer.request("session/load", json!({ "sessionId": id, "cwd": cwd_s, "mcpServers": [] }), None).await;
+            let params = json!({ "sessionId": &id, "cwd": &cwd_s, "mcpServers": &mcp_servers });
+            let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
             match loaded {
@@ -1280,15 +1973,11 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let v: Value = peer
-                    .request("session/new", json!({ "cwd": cwd_s, "mcpServers": [] }), None)
+                let params = json!({ "cwd": &cwd_s, "mcpServers": &mcp_servers });
+                let v = self
+                    .request_with_auth(&peer, &init, &mut tried_auth, "session/new", params)
                     .await
-                    .map_err(|e| match e {
-                        RpcError::Server { ref message, .. } if message.to_lowercase().contains("auth") => {
-                            format!("{} needs you to sign in. {}", spec.name, spec.login_hint)
-                        }
-                        e => self.describe(e),
-                    })?;
+                    .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
                 let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
                 (id, v)
             }
@@ -1311,11 +2000,21 @@ impl Task {
         // A session that reports none keeps the last known ones, but what is set is unknown.
         let reported = config::options_of(&result);
         let known = !reported.is_empty();
-        let (mut options, wanted) = {
+        if known {
+            self.shared.remember(&provider_id, Some(&reported), None, model_of(&reported).as_deref());
+        }
+        let (mut options, mut wanted) = {
             let s = self.state.lock();
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
         config::add_client_options(&provider_id, &mut options);
+        // Changing model can replace the effort choices; validate those only afterwards.
+        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id).and_then(|o| o.category.as_deref()) {
+            Some("model") => 0,
+            Some("thought_level") => 2,
+            _ => 1,
+        });
+        let mut model_options = known;
         for choice in &wanted {
             // An option the session doesn't offer yet is set once it does (`apply_late_choices`).
             let Some(o) = options.iter().find(|o| o.id == choice.id).cloned() else { continue };
@@ -1323,6 +2022,9 @@ impl Task {
                 if o.values.iter().any(|v| v.value == choice.value) {
                     options.iter_mut().find(|o| o.id == choice.id).unwrap().current = Some(choice.value.clone());
                 }
+                continue;
+            }
+            if o.category.as_deref() == Some("thought_level") && !model_options {
                 continue;
             }
             let already = known && o.current.as_deref() == Some(choice.value.as_str());
@@ -1336,6 +2038,12 @@ impl Task {
                 Ok(reply) => {
                     if let Some(fresh) = reply.get("configOptions") {
                         config::merge_update(&mut options, fresh);
+                        model_options = true;
+                    } else if o.category.as_deref() == Some("model") {
+                        if o.current.as_deref() != Some(choice.value.as_str()) {
+                            options.retain(|o| o.category.as_deref() != Some("thought_level"));
+                        }
+                        model_options = false;
                     }
                     if let Some(o) = options.iter_mut().find(|o| o.id == choice.id) {
                         o.current = Some(choice.value.clone());
@@ -1344,17 +2052,22 @@ impl Task {
                 Err(e) => tracing::warn!("agent task {}: setting {} to {} failed: {e}", self.id, o.id, choice.value),
             }
         }
-        self.shared.remember(&provider_id, Some(&options), None);
+        let model = model_of(&options).filter(|_| model_options);
+        self.shared.remember(&provider_id, Some(&options), None, model.as_deref());
         {
             let mut s = self.state.lock();
             s.task.model = model_of(&options).or(s.task.model.take());
             s.task.config = options;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            // The (re)started process runs nothing yet: whatever it reports next is all of it.
+            s.background_tasks = Vec::new();
+            s.task.background.clear();
         }
         self.persist();
         self.emit_task();
-        let live = Live { peer, session: session_id, capabilities, embedded, resumable: can_load };
+        let live =
+            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, init };
         *self.live.lock() = Some(live.clone());
         Ok(live)
     }
@@ -1378,6 +2091,7 @@ impl Task {
                 .collect()
         };
         if due.is_empty() {
+            self.approve_pending();
             return;
         }
         let task = self.clone();
@@ -1390,15 +2104,24 @@ impl Task {
                         let mut s = task.state.lock();
                         if let Some(fresh) = reply.get("configOptions") {
                             config::merge_update(&mut s.task.config, fresh);
+                        } else if option.category.as_deref() == Some("model") {
+                            s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
                         }
                         if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option.id) {
                             o.current = Some(value);
                         }
                         s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                        let model = s.task.model.clone().filter(|_| {
+                            reply.get("configOptions").is_some() || option.category.as_deref() != Some("model")
+                        });
+                        let (provider, options) = (s.task.provider.clone(), s.task.config.clone());
+                        drop(s);
+                        task.shared.remember(&provider, Some(&options), None, model.as_deref());
                     }
                     Err(e) => tracing::warn!("agent task {}: setting {} to {value} failed: {e}", task.id, option.id),
                 }
             }
+            task.approve_pending();
             task.persist();
             task.emit_task();
         });
@@ -1415,7 +2138,7 @@ impl Task {
                     format!("The agent process exited:\n{}", tail.join("\n"))
                 }
             }
-            RpcError::Server { message, .. } => message,
+            RpcError::Server { message, data, .. } => with_details(message, data.as_ref()),
             e => e.to_string(),
         }
     }
@@ -1443,13 +2166,29 @@ impl Task {
             }
             return;
         }
+        if kind == BACKGROUND_TASKS_UPDATE {
+            if !self.replaying.load(Ordering::Acquire) {
+                let tasks = update.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+                // The last one finished while the agent is up: the usual delay starts over.
+                if self.set_background_tasks(tasks) {
+                    self.release_when_idle();
+                }
+            }
+            return;
+        }
         if kind == "session_info_update" {
-            // The agent's own title for the session replaces the first line of the prompt.
+            // The agent's own title for the session replaces the first line of the prompt,
+            // unless the user named the task.
             let title = update.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty());
             if let Some(title) = title {
-                self.state.lock().task.title = title.to_owned();
-                self.persist();
-                self.emit_task();
+                // Check and write under one lock: a rename landing between them would be lost.
+                let mut s = self.state.lock();
+                if !s.title_renamed && s.task.title != title {
+                    s.task.title = title.to_owned();
+                    drop(s);
+                    self.persist();
+                    self.emit_task();
+                }
             }
             return;
         }
@@ -1472,7 +2211,7 @@ impl Task {
                     true
                 }
                 "available_commands_update" => {
-                    s.task.commands = config::commands_of(update);
+                    s.task.commands = config::commands_of(update, &provider);
                     true
                 }
                 "usage_update" => {
@@ -1483,17 +2222,24 @@ impl Task {
             }
         };
         if task_changed {
-            let (config, commands) = {
+            let (config, commands, model) = {
                 let s = self.state.lock();
-                (s.task.config.clone(), s.task.commands.clone())
+                (
+                    s.task.config.clone(),
+                    s.task.commands.clone(),
+                    s.task.model.clone().filter(|_| kind == "config_option_update"),
+                )
             };
-            self.shared.remember(&provider, Some(&config), Some(&commands));
+            self.shared.remember(&provider, Some(&config), Some(&commands), model.as_deref());
             if kind != "usage_update" {
                 self.persist();
             }
             self.emit_task();
             if kind == "config_option_update" && !self.replaying.load(Ordering::Acquire) {
                 self.apply_late_choices();
+            }
+            if !self.replaying.load(Ordering::Acquire) && kind == "current_mode_update" {
+                self.approve_pending();
             }
             return;
         }
@@ -1524,12 +2270,12 @@ impl Task {
     /// Blocks the calling (blocking-pool) thread until the user answers.
     fn ask_permission(self: &Arc<Self>, params: &Value) -> Value {
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
-        let title = params
-            .pointer("/toolCall/title")
-            .and_then(Value::as_str)
-            .filter(|t| !t.is_empty())
-            .unwrap_or("The agent asks for permission")
-            .to_owned();
+        let (questions, by_index) = asked_questions(params);
+        let title = permission_title(params);
+        // An agent that answers by index titles its request "Ask user N question(s)"; its
+        // first question says what it wants, as the Claude Code adapter titles its own.
+        let title =
+            if by_index { questions.first().map(|question| question.question.clone()).unwrap_or(title) } else { title };
         // A subagent's request is answered in the task's conversation, named after the subagent.
         let session = params.get("sessionId").and_then(Value::as_str);
         let title = match session.and_then(|s| self.state.lock().conversation.label(s)) {
@@ -1551,17 +2297,86 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
+        let asked: Vec<String> = questions
+            .iter()
+            .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
+            .collect();
+        let command = security::extract_command(params);
+        // What the card names as the command: not for a request that grants more than running it.
+        let shown = command.as_deref().filter(|_| !security::widens_access(params)).map(shown_command);
+        if let Some(hook) = self.shared.security.read().clone()
+            && let Some(command) = command.as_deref()
+        {
+            match security::evaluate_command(command, &hook()) {
+                security::PolicyDecision::Blocked(pattern) => {
+                    let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
+                    let _ = self.push_entry(AgentEntry::Permission {
+                        id,
+                        title,
+                        command: shown.clone(),
+                        options,
+                        questions: Vec::new(),
+                        chosen: Some(format!("Blocked by policy ({pattern})")),
+                    });
+                    return match reject {
+                        Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option.id } }),
+                        None => json!({ "outcome": { "outcome": "cancelled" } }),
+                    };
+                }
+                security::PolicyDecision::Allowed if !security::widens_access(params) => {
+                    if let Some(allow) = options
+                        .iter()
+                        .find(|o| o.kind == "allow_once")
+                        .or_else(|| options.iter().find(|o| o.kind.starts_with("allow")))
+                        .cloned()
+                    {
+                        let _ = self.push_entry(AgentEntry::Permission {
+                            id,
+                            title,
+                            command: shown.clone(),
+                            options,
+                            questions: Vec::new(),
+                            chosen: Some(format!("{} (whitelisted)", allow.name)),
+                        });
+                        return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
+                    }
+                }
+                security::PolicyDecision::Allowed | security::PolicyDecision::AskUser => {}
+            }
+        }
         let (tx, rx) = std::sync::mpsc::channel();
-        let entry = self.push_entry(AgentEntry::Permission { id, title, options: options.clone(), chosen: None });
+        let entry = self.push_entry(AgentEntry::Permission {
+            id,
+            title,
+            command: shown,
+            options: options.clone(),
+            questions,
+            chosen: None,
+        });
         self.permissions.lock().insert(id, tx);
         self.set_status(AgentStatus::NeedsInput, None);
         self.approve_pending();
 
         let answer = rx.recv().ok().flatten();
-        let name = answer
-            .as_ref()
-            .and_then(|a| options.iter().find(|o| &o.id == a))
-            .map_or_else(|| "Cancelled".to_owned(), |o| o.name.clone());
+        let answers = answer
+            .as_deref()
+            .filter(|_| !asked.is_empty())
+            .and_then(|reply| serde_json::from_str::<serde_json::Map<String, Value>>(reply).ok());
+        let name = match &answers {
+            Some(answers) => asked
+                .iter()
+                .filter_map(|question| answers.get(question))
+                .map(|items| match items {
+                    Value::Array(items) => items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+                    item => item.as_str().unwrap_or_default().to_owned(),
+                })
+                .collect::<Vec<_>>()
+                .join("; "),
+            None => answer
+                .as_ref()
+                .and_then(|reply| options.iter().find(|option| &option.id == reply))
+                .map_or_else(|| "Cancelled".to_owned(), |option| option.name.clone()),
+        };
         {
             let mut s = self.state.lock();
             if let Some(AgentEntry::Permission { chosen, .. }) = s.conversation.main.entries.get_mut(entry) {
@@ -1573,6 +2388,31 @@ impl Task {
         if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
             self.set_status(AgentStatus::Running, None);
         }
+        // An agent that answers by index reads the answers beside the outcome, keyed by
+        // question index, with its Submit option chosen; anything less cancels the request.
+        if by_index {
+            let submit = options.iter().find(|option| option.kind == "allow_once").or_else(|| options.first());
+            return match (answers.as_ref(), submit) {
+                (Some(answers), Some(submit)) => {
+                    let picked: serde_json::Map<String, Value> = asked
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, question)| {
+                            let items = answers.get(question)?;
+                            let answer = match items {
+                                Value::Array(items) => {
+                                    items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+                                }
+                                item => item.as_str().unwrap_or_default().to_owned(),
+                            };
+                            Some((index.to_string(), json!(answer)))
+                        })
+                        .collect();
+                    json!({ "outcome": { "outcome": "selected", "optionId": submit.id }, "answers": picked })
+                }
+                _ => json!({ "outcome": { "outcome": "cancelled" } }),
+            };
+        }
         match answer {
             Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option } }),
             None => json!({ "outcome": { "outcome": "cancelled" } }),
@@ -1581,12 +2421,15 @@ impl Task {
 
     fn approve_pending(&self) {
         let s = self.state.lock();
-        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.provider, &s.task.config) {
+        if self.cancel_pending.load(Ordering::Acquire) || !config::bypass_approvals(&s.task.config) {
             return;
         }
         let mut pending = self.permissions.lock();
         for entry in s.conversation.main.entries.iter().rev() {
-            if let AgentEntry::Permission { id, options, chosen: None, .. } = entry
+            // A request with questions is never satisfied by a bypass: its Submit option
+            // would answer with no answers.
+            if let AgentEntry::Permission { id, options, questions, chosen: None, .. } = entry
+                && questions.is_empty()
                 && let Some(option) = options.iter().find(|o| o.kind == "allow_once")
                 && let Some(reply) = pending.remove(id)
             {
@@ -1617,6 +2460,7 @@ impl Task {
         self.cancel_permissions();
         let live = self.live.lock().take()?;
         live.peer.kill();
+        self.clear_shown_background();
         Some(live.peer)
     }
 }
@@ -1648,6 +2492,87 @@ impl Handler for Client {
 fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     prompt.text = prompt.text.trim().to_owned();
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
+}
+
+fn permission_title(params: &Value) -> String {
+    let call = &params["toolCall"];
+    let title = call.get("title").and_then(Value::as_str).filter(|t| !t.is_empty());
+    if call.get("kind").and_then(Value::as_str) == Some("execute") {
+        if let Some(command) = call.pointer("/rawInput/command").and_then(Value::as_str).filter(|c| !c.is_empty()) {
+            // Network approvals describe the host rather than approving command execution.
+            if !title.is_some_and(|t| t.starts_with("Allow network access to ")) {
+                return format!("Run {}", shell_script(command).unwrap_or_else(|| command.to_owned()));
+            }
+        }
+        if title.is_none()
+            && let Some(content) = call.get("content").and_then(Value::as_array)
+            && let Some(text) = content.iter().find_map(|c| c.pointer("/content/text").and_then(Value::as_str))
+        {
+            return format!("Run {text}");
+        }
+    }
+    title.unwrap_or("The agent asks for permission").to_owned()
+}
+
+/// A command as a permission card shows it: the script of a `<shell> -c <script>` line.
+fn shown_command(command: &str) -> String {
+    shell_script(command).unwrap_or_else(|| command.to_owned())
+}
+
+/// The script of a `<shell> -c <quoted script>` command line, when the whole line is exactly that.
+pub(crate) fn shell_script(command: &str) -> Option<String> {
+    let (shell, rest) = command.split_once(' ')?;
+    if !matches!(shell.rsplit('/').next(), Some("sh" | "bash" | "zsh")) {
+        return None;
+    }
+    let quoted = rest.strip_prefix("-lc ").or_else(|| rest.strip_prefix("-c "))?;
+    let mut out = String::new();
+    let mut chars = quoted.chars();
+    // Adjacent quoted words, e.g. 'a'\''b' or "a \"b\"".
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => loop {
+                match chars.next()? {
+                    '\'' => break,
+                    c => out.push(c),
+                }
+            },
+            '"' => loop {
+                match chars.next()? {
+                    '"' => break,
+                    '\\' => match chars.next()? {
+                        c @ ('"' | '\\' | '$' | '`') => out.push(c),
+                        '\n' => {}
+                        c => {
+                            out.push('\\');
+                            out.push(c);
+                        }
+                    },
+                    c => out.push(c),
+                }
+            },
+            '\\' => out.push(chars.next()?),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The questions a permission request asks, and whether they answer by question index.
+/// The Claude Code adapter carries them as `_meta.questions`, answered as the option id;
+/// Qwen Code (ACP) as `_meta.qwenQuestions`, answered with `answers` keyed by index beside
+/// the id of its Submit option.
+fn asked_questions(params: &Value) -> (Vec<AgentQuestion>, bool) {
+    for (pointer, by_index) in [("/toolCall/_meta/questions", false), ("/toolCall/_meta/qwenQuestions", true)] {
+        if let Some(questions) = params
+            .pointer(pointer)
+            .and_then(|questions| serde_json::from_value::<Vec<AgentQuestion>>(questions.clone()).ok())
+            .filter(|questions| !questions.is_empty())
+        {
+            return (questions, by_index);
+        }
+    }
+    (Vec::new(), false)
 }
 
 /// ACP content blocks: the text, each file (embedded when its text is in `contents`, else
@@ -1725,11 +2650,42 @@ fn usage_limit(e: &RpcError) -> Option<Option<f64>> {
         .then_some(None)
 }
 
-fn client_info() -> Value {
+/// An error's message with the detail ACP agents put in `data` (`{"details": …}` or a string):
+/// generic codes such as "Internal error" say nothing without it.
+fn with_details(message: String, data: Option<&Value>) -> String {
+    let details = match data {
+        Some(Value::String(text)) => text.as_str(),
+        Some(data) => data.get("details").and_then(Value::as_str).unwrap_or_default(),
+        None => "",
+    }
+    .trim();
+    if details.is_empty() || message.contains(details) {
+        message
+    } else if message.trim().is_empty() {
+        details.to_owned()
+    } else {
+        format!("{message}: {details}")
+    }
+}
+
+pub(crate) fn client_info() -> Value {
     json!({ "name": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") })
 }
 
 /// What the agent said it can do, and whether it takes embedded files.
+fn shown_background(tasks: &[Value], known: &[AgentBackgroundTask]) -> Vec<AgentBackgroundTask> {
+    let now = now_ms();
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let id = task.get("task_id")?.as_str()?.to_owned();
+            let started_ms = known.iter().find(|seen| seen.id == id).map_or(now, |seen| seen.started_ms);
+            let text = |key: &str| task.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
+            Some(AgentBackgroundTask { id, kind: text("task_type"), description: text("description"), started_ms })
+        })
+        .collect()
+}
+
 fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
     let meta = |p: &str| init.meta(p).and_then(Value::as_bool) == Some(true);
     let capabilities = AgentCapabilities {
@@ -1737,6 +2693,7 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         fork: init.session("fork"),
         rollback: meta("/openidea/rollback"),
         steer: meta("/openidea/steer"),
+        background_tasks: meta("/openidea/backgroundTasks"),
     };
     (capabilities, init.prompt("embeddedContext"))
 }
@@ -1749,6 +2706,10 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
         .filter(|(_, e)| matches!(e, AgentEntry::User { steered: false, .. }))
         .map(|(i, _)| i)
         .collect()
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1764,6 +2725,16 @@ fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
         retry_at_ms: now + n("retryDelayMs").unwrap_or(0) as f64,
         error: update.get("error").and_then(Value::as_str).filter(|e| !e.is_empty()).map(str::to_owned),
     })
+}
+
+fn apply_config_choice(task: &Task, option: &str, value: &str) {
+    let mut s = task.state.lock();
+    s.wanted.retain(|c| c.id != option);
+    s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.to_owned() });
+    if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
+        o.current = Some(value.to_owned());
+    }
+    s.task.model = model_of(&s.task.config).or(s.task.model.take());
 }
 
 fn model_of(config: &[AgentConfigOption]) -> Option<String> {
@@ -1814,6 +2785,11 @@ fn now_ms() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_millis() as f64)
 }
 
+/// The user's home, for tools that keep state there (Codex sessions).
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+}
+
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -1832,3 +2808,94 @@ mod replay;
 mod replay_tests;
 #[cfg(test)]
 mod tests;
+
+// The desktop advertises its relay only while the built-in server is listening.
+static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
+
+pub fn set_mcp_executable(executable: Option<std::path::PathBuf>) {
+    *MCP_EXECUTABLE.write() = executable;
+}
+
+fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
+    stdio_mcp_servers(MCP_EXECUTABLE.read().as_deref(), supported, root)
+}
+
+fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
+    let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
+    let command = ide_mcp::stdio_command(executable, root);
+    vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+}
+
+/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
+/// ended with `tail`. A message only grows while it streams, so its tail tells a message
+/// that went on from one that was replaced without comparing (or keeping) all of it.
+struct Sent {
+    index: usize,
+    bytes: usize,
+    utf16: usize,
+    tail: String,
+}
+
+const SENT_TAIL: usize = 64;
+
+impl Sent {
+    fn new(index: usize, text: &str) -> Self {
+        Self::after(index, text, 0, 0)
+    }
+
+    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
+    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
+        let mut start = text.len().saturating_sub(SENT_TAIL);
+        while !text.is_char_boundary(start) {
+            start -= 1;
+        }
+        let utf16 = utf16 + text[bytes..].encode_utf16().count();
+        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+    }
+
+    /// Whether `text` at `index` is this message, gone on.
+    fn extended_by(&self, index: usize, text: &str) -> bool {
+        self.index == index
+            && text.len() > self.bytes
+            && text.is_char_boundary(self.bytes)
+            && text[..self.bytes].ends_with(&self.tail)
+    }
+}
+
+/// The event that brings the UI's copy of entry `i` up to date: only the new text when
+/// it extends the message last sent for the session, else the whole entry.
+fn entry_event(
+    task: &str,
+    streamed: &mut HashMap<Session, Sent>,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> AgentEvent {
+    let text = match entry {
+        AgentEntry::Agent { text } | AgentEntry::Thought { text } => Some(text),
+        _ => None,
+    };
+    let Some(text) = text else {
+        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.remove(&subagent);
+        }
+        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+    };
+    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
+        Some(sent) => {
+            let (bytes, from) = (sent.bytes, sent.utf16);
+            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
+            AgentEvent::Append {
+                task: task.to_owned(),
+                subagent,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            }
+        }
+        None => {
+            streamed.insert(subagent.clone(), Sent::new(i, text));
+            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+        }
+    }
+}

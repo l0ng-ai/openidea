@@ -177,6 +177,8 @@ describe("format on save provider isolation", () => {
     expect(formatsOnSave(oxfmt, "typescript")).toBe(true);
     expect(formatsOnSave(oxfmt, "markdown")).toBe(false);
     expect(formatsOnSave(settings({ prettier: { runOnSave: true } }), "markdown")).toBe(true);
+    expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "python")).toBe(true);
+    expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "typescript")).toBe(false);
     expect(formatsOnSave(settings({}), "typescript")).toBe(false);
     expect(formatsOnSave(settings({}, true), "rust")).toBe(true);
     expect(formatsOnSave(null, "typescript")).toBe(false);

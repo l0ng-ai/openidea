@@ -26,6 +26,13 @@ const routes: EndpointEntry[] = [
 ];
 
 describe("endpoints in Search Everywhere", () => {
+  it("finds any-method plugin routes and displays an optional handler or framework", () => {
+    const entry = route({ method: "*", controller: "Rails", methodName: "", framework: "Rails", handler: undefined });
+    expect(matchRoutes([entry], "GET /deeplink/menu/search", 5).items[0]?.container).toBe("Rails");
+    expect(matchRoutes([{ ...entry, handler: "Menus#search" }], "Menus#search", 5).items[0]?.container).toBe(
+      "Menus#search",
+    );
+  });
   it("finds a controller method by the request path it answers", () => {
     for (const query of [
       "/deeplink/menu/search",

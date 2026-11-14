@@ -37,8 +37,27 @@ allprojects {
         task.addTestOutputListener(new TestOutputListener() {
             void onOutput(TestDescriptor test, TestOutputEvent output) {
                 if (test.className == null) return
-                println "##teamcity[testStdOut name='${tc(test.name)}' className='${tc(test.className)}' out='${tc(output.message)}']"
+                // A class's own output (`@BeforeAll`, `@AfterAll`) carries no test name.
+                def name = test.composite ? '' : " name='${tc(test.name)}'"
+                println "##teamcity[testStdOut${name} className='${tc(test.className)}' out='${tc(output.message)}']"
             }
         })
+    }
+}
+
+// Replace build-configured agents only for this debug launch, after project configuration.
+gradle.projectsEvaluated {
+    allprojects {
+        tasks.withType(Test).configureEach { Test task ->
+            if (System.getProperty('openidea.run.debug') == 'true') {
+                task.debugOptions.enabled = false
+                task.doFirst {
+                    task.setJvmArgs(task.jvmArgs.findAll {
+                        !it.startsWith('-agentlib:jdwp=') && !it.startsWith('-Xrunjdwp:')
+                    })
+                    task.jvmArgs('-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:0')
+                }
+            }
+        }
     }
 }

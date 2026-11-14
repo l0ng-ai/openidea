@@ -14,6 +14,7 @@
 //! - Agent → client ([`Dialect`]): `session/update`s are normalized ([`normalize`]) and
 //!   permission requests get the v1 `toolCall`.
 
+pub(crate) mod discover;
 mod normalize;
 
 use ide_jsonrpc::{Handler, Peer, RpcError, codes};
@@ -27,6 +28,29 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use tokio::sync::oneshot;
 
+/// ACP's error code for a request that needs the user to sign in.
+pub(crate) const AUTH_REQUIRED: i64 = -32000;
+
+// Covers signed-out users and refused accounts (Claude Code: "API Error: 403").
+pub(crate) fn auth_required(code: i64, message: &str) -> bool {
+    if code == AUTH_REQUIRED {
+        return true;
+    }
+    let lower = message.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    words.iter().any(|w| {
+        *w == "auth"
+            || w.starts_with("authenticat")
+            || w.starts_with("authoriz")
+            || w.starts_with("unauthenticat")
+            || w.starts_with("unauthoriz")
+            || w.starts_with("oauth")
+    }) || words.windows(3).any(|w| w == ["not", "logged", "in"])
+        || words
+            .windows(2)
+            .any(|w| w == ["logged", "out"] || w == ["sign", "in"] || w == ["log", "in"] || w == ["login", "required"])
+}
+
 /// The capabilities this client offers, in v1 form.
 fn client_capabilities() -> Value {
     json!({
@@ -34,6 +58,9 @@ fn client_capabilities() -> Value {
         "terminal": false,
         // Subagents as sessions of their own (ACP subagents RFD; v2 baseline).
         "subagents": {},
+        // Cursor exposes model parameters (e.g. Composer `fast`) as separate config options
+        // only when the client advertises this flag (undocumented Cursor ACP extension).
+        "_meta": { "parameterizedModelPicker": true },
     })
 }
 
@@ -69,6 +96,11 @@ pub(crate) struct Negotiated {
 }
 
 impl Negotiated {
+    pub fn mcp_stdio(&self) -> bool {
+        // Stdio is the ACP v1 baseline; v2 negotiates each transport explicitly.
+        self.capabilities.pointer("/mcpCapabilities/stdio").and_then(Value::as_bool).unwrap_or(self.generation == 1)
+    }
+
     /// Reads an `initialize` response. The shape decides, not `protocolVersion`: some v1
     /// agents report version 2 with v1 fields (`agentInfo`, `agentCapabilities`); only a
     /// v2 response has `info`.
@@ -97,7 +129,7 @@ impl Negotiated {
                 "audio": has(prompt, "audio"),
                 "embeddedContext": has(prompt, "embeddedContext"),
             },
-            "mcpCapabilities": { "http": has(mcp, "http"), "sse": false },
+            "mcpCapabilities": { "http": has(mcp, "http"), "sse": false, "stdio": has(mcp, "stdio") },
         });
         if session.is_some() {
             let mut sc = json!({ "list": {}, "resume": {}, "close": {} });
@@ -136,6 +168,11 @@ impl Negotiated {
         self.capabilities.pointer(&format!("/promptCapabilities/{name}")).and_then(Value::as_bool) == Some(true)
     }
 
+    /// `mcpCapabilities.<name>` (`http`, `sse`).
+    pub fn mcp(&self, name: &str) -> bool {
+        self.capabilities.pointer(&format!("/mcpCapabilities/{name}")).and_then(Value::as_bool) == Some(true)
+    }
+
     /// `sessionCapabilities.<name>` (`fork`, `resume`, `close`, `list`, `delete`).
     pub fn session(&self, name: &str) -> bool {
         self.capabilities.pointer(&format!("/sessionCapabilities/{name}")).is_some_and(|v| !v.is_null())
@@ -144,6 +181,17 @@ impl Negotiated {
     /// `agentCapabilities._meta` at `pointer` (e.g. `/openidea/rollback`).
     pub fn meta(&self, pointer: &str) -> Option<&Value> {
         self.capabilities.get("_meta")?.pointer(pointer)
+    }
+
+    /// First authentication method the agent can run over ACP (`type` absent or `"agent"`).
+    pub fn agent_auth_method(&self) -> Option<&str> {
+        self.auth_methods.iter().find_map(|m| {
+            let kind = m.get("type").and_then(Value::as_str).unwrap_or("agent");
+            (kind == "agent" && m.pointer("/_meta/terminal-auth").is_none())
+                .then(|| m.get("id").and_then(Value::as_str))
+                .flatten()
+                .filter(|id| !id.is_empty())
+        })
     }
 }
 

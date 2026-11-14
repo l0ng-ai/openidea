@@ -1,0 +1,16 @@
+{
+  "$comment": "Open-source projects the evals run on besides fixtures/: cloned at `commit` into target/eval/sources/, `remove`d paths dropped from the copy, `prepare` run once per checkout (dependencies downloaded before anything is timed; Maven needs to reach Central, a proxy goes in ~/.m2/settings.xml).",
+  "spring-petclinic": {
+    "repo": "https://github.com/spring-projects/spring-petclinic.git",
+    "commit": "500158f732419217507c7656904b8e6aa1bcc0d6",
+    "remove": ["build.gradle", "settings.gradle", "gradle", "gradlew", "gradlew.bat"],
+    "prepare": [
+      "mvn",
+      "-q",
+      "-B",
+      "dependency:go-offline",
+      "dependency:sources",
+      "-DfailOnMissingClassifierArtifact=false"
+    ]
+  }
+}

@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
+import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
+import { EmptyState, Icon, IconButton, Menu, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { ConsoleModel } from "./console";
@@ -11,6 +12,8 @@ import { runDirectory } from "./navigate";
 import { remoteLabel } from "./remote";
 import {
   acceptsInput,
+  baseConfigOf,
+  canRunSelectedTests,
   clearConsole,
   closeSessionTab,
   closeStdin,
@@ -27,14 +30,20 @@ import {
   useRun,
   writeTerminal,
   type RunSession,
+  isLive,
 } from "./store";
+import { rerunFailedConfigs } from "./testing/rerun";
+import { nodeOutput } from "./testing";
 import { TestTreeView, formatDuration } from "./TestTreeView";
 import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import { configIcon } from "./configs";
+import { agentName } from "./agentConfig";
+import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { toolWindowService } from "@/workbench/contributions";
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -46,7 +55,7 @@ function failed(s: RunSession): boolean {
  * configuration's own icon (Services keeps the same model, see services.tsx).
  */
 export function sessionIcon(s: RunSession): string {
-  if (s.status === "running" || s.status === "starting") return s.config.isTest ? "check" : "run";
+  if (isLive(s)) return s.config.isTest ? "check" : "run";
   if (failed(s)) return "error";
   // Ended (exit or stop): the configuration's own icon — the green arrow stays "still running".
   return configIcon(s.config);
@@ -54,15 +63,11 @@ export function sessionIcon(s: RunSession): string {
 
 export function SessionPanel({
   session,
-  onRerun,
-  onDebug,
-  onStop,
+  showLifecycle = true,
 }: {
   session: RunSession;
-  onRerun?: (() => void) | null;
-  /** Override the Debug button (Services: rerun the attached debugger's launch); null disables it. */
-  onDebug?: (() => void) | null;
-  onStop?: () => void;
+  /** False in the Services detail: the window's own toolbar already offers Run/Debug/Stop for the selection. */
+  showLifecycle?: boolean;
 }) {
   const updating = useApplicationUpdates((s) => s.ids.has(session.id));
   const version = useRun((s) => s.versions[session.id] ?? 0);
@@ -74,15 +79,41 @@ export function SessionPanel({
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
-  const running = session.status === "running" || session.status === "starting";
+  const running = isLive(session);
   const cwd = runDirectory(session.config.cwd);
+  const baseConfig = useRun(() => baseConfigOf(session));
+  // Test results mutate in place; their version refreshes the selection.
+  const failedSelection = useMemo(
+    () => (running ? [] : rerunFailedConfigs(baseConfig, failedTests(session.id))),
+    [running, baseConfig, session.id, version], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const [resolvedSelection, setResolvedSelection] = useState<{
+    request: Promise<RunConfig[]>;
+    supported: boolean;
+  } | null>(null);
+  useEffect(() => {
+    let current = true;
+    if (failedSelection instanceof Promise) {
+      void failedSelection.then((configs) => {
+        if (current) setResolvedSelection({ request: failedSelection, supported: configs.length > 0 });
+      });
+    }
+    return () => {
+      current = false;
+    };
+  }, [failedSelection]);
+  const canRerunFailed =
+    failedSelection instanceof Promise
+      ? resolvedSelection?.request === failedSelection && resolvedSelection.supported
+      : failedSelection.length > 0;
 
-  // Selecting a test with captured output shows just that output (like IDEA).
+  // Selecting a test or a group with captured output shows just that output (like IDEA).
   const testModel = useMemo(() => {
     const node = selectedTest ? rt?.tests?.get(selectedTest) : undefined;
-    if (!node || node.output.length === 0) return null;
+    const output = node ? nodeOutput(node) : [];
+    if (output.length === 0) return null;
     const m = new ConsoleModel();
-    m.append({ kind: "stdout", text: node.output.join("\n") + "\n" });
+    m.append({ kind: "stdout", text: output.join("\n") + "\n" });
     return m;
   }, [selectedTest, rt, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -139,77 +170,72 @@ export function SessionPanel({
   return (
     <div className={styles.session}>
       <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
-        <IconButton
-          icon="rerun"
-          iconSize={14}
-          title="Rerun"
-          shortcut={shortcutLabel("run.rerun")}
-          disabled={onRerun === null}
-          onClick={onRerun ?? (() => rerunSession(session.id))}
-        />
-        {/* Switch the launch mode: the same configuration started under the debugger. */}
-        <IconButton
-          icon="debug"
-          iconSize={14}
-          title="Debug"
-          shortcut={shortcutLabel("run.debug")}
-          disabled={onDebug === null}
-          onClick={onDebug ?? (() => void debugSession(session.id))}
-        />
-        {rt.tests && (
-          <IconButton
-            icon="rerun"
-            iconSize={14}
-            tone="danger"
-            title="Rerun Failed Tests"
-            shortcut={shortcutLabel("run.rerunFailed")}
-            disabled={running || failedTests(session.id).length === 0}
-            onClick={() => rerunFailed(session.id)}
-          />
+        {showLifecycle && (
+          <>
+            <IconButton
+              icon="rerun"
+              title="Rerun"
+              shortcut={shortcutLabel("run.rerun")}
+              onClick={() => rerunSession(session.id)}
+            />
+            {/* Switch the launch mode: the same configuration started under the debugger. */}
+            <IconButton
+              icon="debug"
+              title="Debug"
+              shortcut={shortcutLabel("run.debug")}
+              onClick={() => void debugSession(session.id)}
+            />
+            {rt.tests && (
+              <IconButton
+                icon="rerun"
+                tone="danger"
+                title="Rerun Failed Tests"
+                shortcut={shortcutLabel("run.rerunFailed")}
+                disabled={!canRerunFailed}
+                onClick={() => void rerunFailed(session.id)}
+              />
+            )}
+            <IconButton
+              icon="stop"
+              title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
+              tone={running ? "danger" : "default"}
+              disabled={!running}
+              onClick={() => void stopSession(session.id)}
+            />
+            {isUpdatable(session.config) && (
+              <IconButton
+                icon="refresh"
+                title="Update Application"
+                shortcut={shortcutLabel("run.updateApplication")}
+                disabled={session.status !== "running" || updating}
+                onClick={() => showApplicationUpdate(session.id)}
+              />
+            )}
+            <div className={styles.toolbarSep} />
+          </>
         )}
-        <IconButton
-          icon="stop"
-          iconSize={13}
-          title="Stop"
-          tone={running || onStop ? "danger" : "default"}
-          disabled={!running && !onStop}
-          onClick={onStop ?? (() => void stopSession(session.id))}
-        />
-        {isUpdatable(session.config) && (
-          <IconButton
-            icon="refresh"
-            title="Update Application"
-            shortcut={shortcutLabel("run.updateApplication")}
-            disabled={session.status !== "running" || updating}
-            onClick={() => showApplicationUpdate(session.id)}
-          />
-        )}
-        <div className={styles.toolbarSep} />
         {!rt.terminal && (
           <>
             <IconButton
               icon="search"
-              iconSize={14}
               title="Find…"
               shortcut={formatBinding(hostBinding("Meta+F"))}
               pressed={findOpen}
               onClick={() => setFindOpen((v) => !v)}
             />
             <IconButton
-              icon="arrow-down"
-              iconSize={14}
+              icon="scroll-to-end"
               title="Scroll to End"
               pressed={follow}
               onClick={() => setFollow((v) => !v)}
             />
-            <IconButton icon="soft-wrap" iconSize={14} title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
+            <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
           </>
         )}
-        <IconButton icon="trash" iconSize={14} title="Clear All" onClick={() => clearConsole(session.id)} />
+        <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
         <div className={styles.toolbarSep} />
         <IconButton
           icon="settings"
-          iconSize={14}
           title="Edit Configurations…"
           onClick={() => void executeAction("run.editConfigs", session.config.id)}
         />
@@ -225,6 +251,7 @@ export function SessionPanel({
                 running={running}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
+                canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
               />
             </SplitPanel>
@@ -248,6 +275,8 @@ function sessionItems(sessions: readonly RunSession[], targets: readonly RunTarg
     text: remoteLabel(s.config, targets),
     icon: sessionIcon(s),
     color: failed(s) ? "var(--danger)" : undefined,
+    // An agent's command that ended, however it ended.
+    dimmed: agentName(s.config) !== null && !isLive(s),
     closable: true,
     tooltip:
       s.status === "finished"
@@ -270,29 +299,84 @@ function currentTab(
   return traces.length ? { trace: traces[traces.length - 1]! } : null;
 }
 
+/** Closes a session or stack trace tab; as in IDEA, the tool window goes away with its last tab. */
+export async function closeRunTab(id: string, traces: readonly StackTraceTab[]) {
+  if (traces.some((t) => t.id === id)) closeStackTrace(id);
+  else if (!(await closeSessionTab(id))) return;
+  if (!useRun.getState().sessions.length && !useStackTraces.getState().tabs.length) toolWindowService().hide("run");
+}
+
 /** Session (and stack trace) tabs in the tool window header. */
 export function RunTabs() {
   const sessions = useRun((s) => s.sessions);
   const traces = useStackTraces((s) => s.tabs);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const active = useRun((s) => s.activeSession);
+  const { tabLimit } = useAgentRunSettings();
   const current = currentTab(sessions, traces, active);
   if (!current) return null;
+  const archived = archivedAgentSessions(sessions, tabLimit);
+  const shown = archived.length ? sessions.filter((s) => !archived.includes(s)) : sessions;
   const items: TabItem[] = [
-    ...sessionItems(sessions, runTargets),
+    ...sessionItems(shown, runTargets),
     ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true })),
   ];
+  const activeId = "session" in current ? current.session.id : current.trace.id;
   return (
     <Tabs
       variant="compact"
       className={styles.tabs}
       aria-label="Run sessions"
       items={items}
-      activeId={"session" in current ? current.session.id : current.trace.id}
+      activeId={activeId}
       onSelect={(id) => useRun.setState({ activeSession: id })}
-      onClose={(id) => (traces.some((t) => t.id === id) ? closeStackTrace(id) : void closeSessionTab(id))}
+      onClose={(id) => void closeRunTab(id, traces)}
       panelIdPrefix="openidea-run"
+      trailing={archived.length > 0 && <AgentArchive sessions={archived} activeId={activeId} />}
     />
+  );
+}
+
+/** The folder of archived agent tabs at the end of the strip, with their number. */
+function AgentArchive({ sessions, activeId }: { sessions: RunSession[]; activeId: string }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const holdsActive = sessions.some((s) => s.id === activeId);
+  const count = sessions.length;
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className={styles.agentArchive}
+        data-active={holdsActive || undefined}
+        aria-label={tx`Archived agent tabs: ${count}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="folder" size={14} />
+        <span className={styles.agentArchiveCount}>{tx`Archived (${count})`}</span>
+      </button>
+      <Menu
+        open={open}
+        anchor={anchor}
+        onClose={() => setOpen(false)}
+        aria-label="Archived agent tabs"
+        items={[
+          ...sessions.map((s) => ({
+            id: s.id,
+            label: s.config.name,
+            verbatim: true,
+            icon: sessionIcon(s),
+            checked: s.id === activeId,
+            run: () => useRun.setState({ activeSession: s.id }),
+          })),
+          { kind: "separator" as const },
+          { label: "Close All Archived Tabs", run: () => closeAgentArchive() },
+        ]}
+      />
+    </>
   );
 }
 

@@ -7,18 +7,27 @@
  */
 import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
+import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
 import { call, commands, isTauri, type GradleModel, type RunConfig } from "@/platform/ipc";
-import { findJavaModule, isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
+import { isJvmApplication, parseJavaArgs, prepareJavaModule } from "@/platform/javaLaunch";
 import { useProject } from "@/platform/project";
+import { maybeEditorService } from "@/workbench/contributions";
+import { applyBuildPolicyToCommand } from "./buildCommand";
 
 /** System property that marks a delegated run (read by `jdwpLaunch` to add the debug flag). */
 export const DELEGATED_MAIN = "-Dopenidea.run.main=";
 export const DELEGATED_DEBUG = "-Dopenidea.run.debug=true";
+/** Lets the init script start the debugged JVM's attach listener (the memory view needs it; not on Windows). */
+export const DELEGATED_ATTACH_LISTENER = "-Dopenidea.run.attachListener=true";
 const TASK = "openideaRun";
 
 const isAbsolute = (p: string) => p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
 const absolute = (root: string, p: string) => (isAbsolute(p) ? p : p ? `${root}/${p}` : root);
+
+export function gradleContainsModule(gradle: GradleModel, root: string, module: string): boolean {
+  return gradle.projects.some((p) => absolute(root, p.dir) === absolute(root, module));
+}
 
 export interface DelegationContext {
   /** Project root. */
@@ -73,7 +82,7 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
   // A Gradle run from here on: not an Application again (it would be delegated twice), and
   // without the Application's params (Gradle's own VM-options init script would repeat them).
   const { params: _params, ...rest } = config;
-  return {
+  return applyBuildPolicyToCommand({
     ...rest,
     kind: "gradle",
     command: ctx.gradle.command,
@@ -82,21 +91,18 @@ export function delegatedGradleConfig(config: RunConfig, module: string, ctx: De
     // The Gradle JVM's JAVA_HOME first; the configuration's own environment wins.
     env: { ...ctx.gradle.env, ...config.env },
     module: module,
-  };
+  });
 }
 
-/** Writes an init script where Gradle can read it; it never changes, so once per session. */
+/**
+ * Writes an init script where Gradle reads it: on the machine that runs the build (the
+ * remote host in remote development). It never changes, so once per session.
+ */
 const scriptPaths = new Map<string, Promise<string>>();
 function writeScript(name: string, text: string): Promise<string> {
   let written = scriptPaths.get(name);
   if (!written) {
-    written = (async () => {
-      const { tempDir, join } = await import("@tauri-apps/api/path");
-      const path = await join(await tempDir(), name);
-      await call(commands.fsDelete(path)).catch(() => {});
-      await call(commands.fsCreateFileBytes(path, Array.from(new TextEncoder().encode(text))));
-      return path;
-    })().catch((e) => {
+    written = call(commands.runGradleInitScript(name, text)).catch((e) => {
       scriptPaths.delete(name);
       throw e;
     });
@@ -121,9 +127,20 @@ export function withTestEvents<T extends Pick<RunConfig, "kind" | "command" | "a
 export async function gradleTestLaunch<T extends RunConfig>(config: T): Promise<T> {
   if (!isTauri() || !config.isTest || !isGradleCommand(config)) return config;
   try {
-    return withTestEvents(config, await writeScript("openidea-gradle-tests.gradle", TESTS_SCRIPT));
+    return withTestEvents(config, await writeScript("openidea-gradle-tests", TESTS_SCRIPT));
   } catch (e) {
     console.warn("Gradle test init script not written", e);
+    return config;
+  }
+}
+
+/** Gives a direct Gradle BootRun a dynamic JDWP port for the forked application JVM. */
+export async function gradleBootLaunch<T extends RunConfig>(config: T): Promise<T> {
+  if (!isTauri() || !isGradleCommand(config) || !config.args.some((a) => /(^|:)bootRun$/.test(a))) return config;
+  try {
+    return withTestEvents(config, await writeScript("openidea-gradle-boot", BOOT_SCRIPT));
+  } catch (e) {
+    console.warn("Gradle BootRun init script not written", e);
     return config;
   }
 }
@@ -138,19 +155,31 @@ export async function gradleDelegation(config: RunConfig): Promise<RunConfig | n
   const { project, settings } = useProject.getState();
   if (!project?.root || settings?.languages?.java?.gradle?.runUsing === "ide") return null;
   const { model, gradleOffline } = useBuildModel.getState();
-  if (!model?.gradle) return null;
-  const module = config.module ?? (await findJavaModule(config));
-  if (module === null) return null;
+  if (!model?.gradle?.length) return null;
+  const module = await prepareJavaModule(config, async () => {
+    await maybeEditorService()?.saveAll();
+  });
+  const dir = absolute(project.root, module);
+  // A composite can report a sibling's module; prefer a linked root that contains it.
+  const ownerDepth = (g: GradleModel) => {
+    const root = absolute(project.root, g.dir).replace(/\\/g, "/").replace(/\/+$/, "");
+    const path = dir.replace(/\\/g, "/").replace(/\/+$/, "");
+    return path === root || path.startsWith(`${root}/`) ? root.split("/").length : 0;
+  };
+  const gradle = model.gradle
+    .filter((g) => gradleContainsModule(g, project.root, module))
+    .sort((a, b) => ownerDepth(b) - ownerDepth(a))[0];
+  if (!gradle) return null;
   const ctx = {
     root: project.root,
-    gradle: model.gradle,
+    gradle,
     script: "",
     offline: gradleOffline,
     configurationCache: false,
   };
   if (!delegatedGradleConfig(config, module, ctx)) return null;
   const [script, configurationCache] = await Promise.all([
-    writeScript("openidea-gradle-run.gradle", RUN_SCRIPT),
+    writeScript("openidea-gradle-run", RUN_SCRIPT),
     supportsConfigurationCache(ctx),
   ]);
   return delegatedGradleConfig(config, module, { ...ctx, script, configurationCache });

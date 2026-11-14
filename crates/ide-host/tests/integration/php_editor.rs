@@ -196,7 +196,7 @@ fn has(items: &[String], label: &str) -> bool {
 /// old ones once the buffer is closed without saving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn navigation_follows_declarations_moved_by_a_body_edit() {
-    let s = Session::start("php-app", None).await;
+    let s = Session::start("php-library", None).await;
     let library = s.open("src/Library.php").await;
     let book = s.open("src/Model/Book.php").await;
     let call = s.pos(library, "$lent = $book->withAvailability(false);", "withAvailability").await;
@@ -228,7 +228,7 @@ async fn navigation_follows_declarations_moved_by_a_body_edit() {
 /// file's completion and hover, and closing the buffer without saving takes it back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn completion_and_hover_follow_another_files_unsaved_declarations() {
-    let s = Session::start("php-app", None).await;
+    let s = Session::start("php-library", None).await;
     let library = s.open("src/Library.php").await;
     let book = s.open("src/Model/Book.php").await;
     let lent = "$lent = $book->withAvailability(false);";
@@ -268,7 +268,7 @@ async fn completion_and_hover_follow_another_files_unsaved_declarations() {
 /// reported again when that buffer is closed unsaved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn diagnostics_follow_declarations_in_other_buffers() {
-    let s = Session::start("php-app", None).await;
+    let s = Session::start("php-library", None).await;
     let library = s.open("src/Library.php").await;
     let file = "src/Library.php";
     s.diagnostics_until(file, "the first inspection", |_| true).await;
@@ -288,7 +288,7 @@ async fn diagnostics_follow_declarations_in_other_buffers() {
 /// open files still see the edit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn diagnostics_follow_a_buffer_saved_and_closed_at_once() {
-    let s = Session::start("php-app", None).await;
+    let s = Session::start("php-library", None).await;
     let file = "src/Library.php";
     let library = s.open(file).await;
     s.type_after(library, "$lent = $book->withAvailability(false);", "        $lent->shelfMark();").await;
@@ -327,7 +327,7 @@ async fn diagnostics_follow_a_parent_class_edited_and_saved() {
 /// from it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn saving_keeps_the_answers_and_edits_go_on() {
-    let s = Session::start("php-app", None).await;
+    let s = Session::start("php-library", None).await;
     let library = s.open("src/Library.php").await;
     let book = s.open("src/Model/Book.php").await;
     s.type_after(book, "public const MAX_TITLE = 200;", "\n    public function shelfMark(): int { return 1; }").await;

@@ -4,6 +4,7 @@
  * by `crates/ide-lsp/tests`.
  */
 import type { Locator, Page } from "@playwright/test";
+import type { CompletionItem } from "../src/bindings";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 const ROOT = "/dev/acme-api";
@@ -33,7 +34,7 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await page.evaluate(() => {
     const item = (label: string, kind: string, detail: string, insertText: string) => ({
       label,
-      labelDetail: null,
+      labelDetail: kind === "property" ? ` ${detail}` : "()",
       detail,
       kind,
       documentation: null,
@@ -64,13 +65,84 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   const popup = page.locator(".cm-tooltip-autocomplete");
   await expect(popup.getByText("total", { exact: true })).toBeVisible();
   await expect(popup.getByText("toDto", { exact: true })).toBeVisible();
+  const field = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^total$/ }) });
+  await expect(field.locator(".cm-completionDetail")).toHaveCount(0);
+  await expect(field.locator(".cm-lsp-type")).toHaveText("BigDecimal");
+  const method = popup.locator("li").filter({ has: page.locator(".cm-completionLabel", { hasText: /^toDto$/ }) });
+  await expect(method.locator(".cm-completionDetail")).toHaveText("()");
+  await expect(method.locator(".cm-lsp-type")).toHaveText("OrderDto");
+  // CodeMirror anchors the popup at the completion's `from` (the word start), and the kind icon
+  // hangs left of the label. With no prefix typed yet `from` is the caret, so the label's x must
+  // match the caret column rather than the popup's left edge.
+  const wordStart = await editor.locator(".cm-content").evaluate(async (content) => {
+    const viewModule = "/node_modules/.vite/deps/@codemirror_view.js";
+    const { EditorView } = await import(/* @vite-ignore */ viewModule);
+    const view = EditorView.findFromDOM(content as HTMLElement)!;
+    return view.coordsAtPos(view.state.selection.main.head)!.left;
+  });
+  const label = await method.locator(".cm-completionLabel").boundingBox();
+  // Subpixel rounding differs per platform/font; a mis-set inset is a whole icon column off.
+  expect(Math.abs(label!.x - wordStart)).toBeLessThanOrEqual(2);
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
+  // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
+  const footerBelowList = await popup.evaluate((t) => {
+    const list = t.querySelector(":scope > ul")!;
+    const footer = t.querySelector(":scope > .cm-lsp-completion-footer")!;
+    return footer.getBoundingClientRect().top >= list.getBoundingClientRect().bottom - 1;
+  });
+  expect(footerBelowList).toBe(true);
   await page.keyboard.press("Enter");
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
 });
+
+for (const key of ["Enter", "Tab"]) {
+  for (const prefix of ["", "v"]) {
+    test(`${key} leaves the caret after a field snippet at root.${prefix}`, async ({ workbench: page }, info) => {
+      const editor = await openSample(page);
+      await page.evaluate(() => {
+        const item = (label: string): CompletionItem => ({
+          label,
+          labelDetail: null,
+          labelDescription: "int",
+          detail: "int",
+          kind: "field",
+          documentation: null,
+          sortText: null,
+          filterText: null,
+          preselect: label === "val",
+          deprecated: false,
+          insertText: label,
+          isSnippet: true,
+          replaceRange: null,
+          replaceRangeTab: null,
+          additionalEdits: [],
+          commitCharacters: [],
+          command: null,
+          data: null,
+          server: 1,
+        });
+        window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item("val"), item("value")] });
+      });
+      await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+      await page.keyboard.press("End");
+      await page.keyboard.press("Enter");
+      await page.keyboard.type(`int a = root.${prefix}`);
+      await page.keyboard.press("Control+Space");
+      const popup = page.locator(".cm-tooltip-autocomplete");
+      await expect(popup.getByText("val", { exact: true })).toBeVisible();
+      // CodeMirror ignores acceptance during its 75 ms lookup interaction delay.
+      await page.waitForTimeout(100);
+      await page.keyboard.press(key);
+      await expect(popup).toBeHidden();
+      await page.screenshot({ path: info.outputPath("accepted-completion.png"), animations: "disabled" });
+      await page.keyboard.type(";");
+      await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*int a = root\.val;$/);
+    });
+  }
+}
 
 test("⌘B goes to the declaration in another file", async ({ workbench: page }) => {
   const editor = await openSample(page);
@@ -155,6 +227,43 @@ test("⇧F6 renames in place and sends the server's edit to be applied", async (
   expect(JSON.stringify(apply)).toContain('"new_text":"placed"');
 });
 
+test("indexed single-file rename previews all anchors and applies only after confirmation", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  await page.evaluate(
+    ({ file, prepared, uses }) => {
+      window.__ipc.handlers.lsp_prepare_rename = () => prepared;
+      window.__ipc.handlers.lsp_rename = (args) => ({
+        preview: true,
+        edit: {
+          files: [{ kind: "edit", path: file, edits: uses.map((range) => ({ range, new_text: args.newName })) }],
+          preconditions: [{ path: file, hash: "indexed-snapshot" }],
+        },
+        incomplete: null,
+      });
+      window.__ipc.handlers.apply_workspace_edit = () => null;
+    },
+    { file: FILE, prepared: range(20, 12, 17), uses: [range(20, 12, 17), range(21, 15, 20)] },
+  );
+  for (const confirm of [false, true]) {
+    await caretAt(editor, page, "val order: Order", "order");
+    await page.keyboard.press("Shift+F6");
+    await expect(page.getByText(/Press ⇧F6 to show dialog/)).toBeVisible();
+    await page.keyboard.type("placed");
+    await page.keyboard.press("Enter");
+    const preview = page.getByRole("dialog", { name: "Rename 'order' to 'placed'" });
+    await expect(preview).toBeVisible();
+    await expect(preview.getByText("2 occurrences in 1 file")).toBeVisible();
+    expect(await ipcCalls(page, "apply_workspace_edit")).toHaveLength(0);
+    await preview.getByRole("button", { name: confirm ? "Do Refactor" : "Cancel", exact: true }).click();
+    await expect(preview).toBeHidden();
+  }
+  await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
+  const [apply] = await ipcCalls(page, "apply_workspace_edit");
+  expect(apply.edit).toMatchObject({ preconditions: [{ path: FILE, hash: "indexed-snapshot" }] });
+});
+
 test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(
@@ -216,4 +325,38 @@ test("diagnostics underline the range and ⌥⏎ applies the preferred quick fix
   await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
   const [applied] = await ipcCalls(page, "lsp_execute_code_action");
   expect(applied).toMatchObject({ action: { title: "Import 'com.acme.orders.model.Order'" } });
+});
+
+test("lazy plugin actions resolve only when invoked, never for their intention preview", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  await page.evaluate(() => {
+    const action = {
+      title: "Choose translation file",
+      kind: "quickfix",
+      isPreferred: true,
+      disabledReason: null,
+      edit: null,
+      command: null,
+      data: { plugin: "test.interactive-actions", data: "pick", file: false },
+      server: 0,
+    };
+    window.__ipc.handlers.lsp_code_actions = () => [action];
+    window.__ipc.handlers.lsp_resolve_code_action = () => ({ ...action, data: null, edit: { files: [] } });
+    window.__ipc.handlers.lsp_execute_code_action = () => [];
+  });
+  await editor.locator(".cm-line", { hasText: "val order: Order" }).click();
+  await page.keyboard.press("Alt+Enter");
+  const fix = page.getByRole("option", { name: "Choose translation file", exact: true });
+  await expect(fix).toBeVisible();
+  await fix.hover();
+  await expect(page.getByText("Preview isn't available for this action", { exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "lsp_resolve_code_action")).toHaveLength(0);
+  expect(await ipcCalls(page, "lsp_execute_code_action")).toHaveLength(0);
+  await fix.click();
+  await expect.poll(() => ipcCalls(page, "lsp_resolve_code_action")).toHaveLength(1);
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
+  const [applied] = await ipcCalls(page, "lsp_execute_code_action");
+  expect(applied).toMatchObject({ action: { title: "Choose translation file", edit: { files: [] } } });
 });

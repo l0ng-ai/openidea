@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  blockScopedNamespace,
   caretAfterReformat,
+  csprojFileScoped,
+  csprojRootNamespace,
+  inferCsharpNamespace,
   expandIncludes,
   fragmentResolver,
+  composerPsr4,
   inferGoPackage,
   inferJvmPackage,
+  inferPhpNamespace,
   planFile,
   reformatsOnCreate,
   renderFileTemplate,
@@ -89,6 +95,129 @@ describe("file naming", () => {
     for (const id of ["stylesheet", "dockerfile", "editorconfig", "json", "yaml", "toml", "shell", "gitignore"])
       expect(ids).toContain(id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("ships a Jupyter Notebook template that the notebook editor accepts", () => {
+    const jupyter = tpl("jupyter");
+    expect(jupyter).toMatchObject({ extension: "ipynb", icon: "file-jupyter", nameStyle: "asis" });
+    expect(jupyter.enabled).not.toBe(false);
+    for (const kind of jupyter.kinds) {
+      const { text } = renderFileTemplate(kind.body, { name: "analysis", fileName: "analysis.ipynb" });
+      const notebook = JSON.parse(text);
+      // The rules of the backend's validate_notebook.
+      expect(notebook.nbformat).toBe(4);
+      expect(Number.isInteger(notebook.nbformat_minor)).toBe(true);
+      expect(notebook.metadata).toEqual(expect.any(Object));
+      expect(Array.isArray(notebook.cells)).toBe(true);
+      for (const cell of notebook.cells as Array<Record<string, unknown>>) {
+        expect(typeof cell.cell_type).toBe("string");
+        expect(cell.metadata).toEqual(expect.any(Object));
+        expect(cell.source).toEqual(expect.any(Array));
+      }
+    }
+  });
+
+  it("names the titled notebook after the file", () => {
+    const titled = tpl("jupyter").kinds.find((k) => k.id === "titled")!;
+    const { text } = renderFileTemplate(titled.body, { name: "report", fileName: "report.ipynb" });
+    expect(JSON.parse(text).cells[0]).toMatchObject({
+      cell_type: "markdown",
+      source: ["# report"],
+    });
+  });
+
+  it("plans the notebook file name from the entered name", () => {
+    expect(planFile(tpl("jupyter"), "/p/notebooks", "analysis")?.path).toBe("/p/notebooks/analysis.ipynb");
+    expect(planFile(tpl("jupyter"), "/p", "analysis.ipynb")?.path).toBe("/p/analysis.ipynb");
+  });
+});
+
+describe("PHP namespaces", () => {
+  const psr4 = composerPsr4(
+    JSON.stringify({
+      autoload: { "psr-4": { "App\\": "src/", "Legacy\\": ["src/legacy/", "lib"] } },
+      "autoload-dev": { "psr-4": { "App\\Tests\\": "./tests" } },
+    }),
+  );
+
+  it("reads autoload and autoload-dev PSR-4 maps", () => {
+    expect(psr4).toEqual([
+      ["App\\", "src"],
+      ["Legacy\\", "src/legacy"],
+      ["Legacy\\", "lib"],
+      ["App\\Tests\\", "tests"],
+    ]);
+    expect(composerPsr4("{ not json")).toEqual([]);
+  });
+
+  it("uses the longest mapped folder and adds the folders below it", () => {
+    expect(inferPhpNamespace("/src/Http", psr4)).toBe("App\\Http");
+    expect(inferPhpNamespace("/src", psr4)).toBe("App");
+    expect(inferPhpNamespace("/src/legacy/Billing", psr4)).toBe("Legacy\\Billing");
+    expect(inferPhpNamespace("/tests/Service", psr4)).toBe("App\\Tests\\Service");
+    expect(inferPhpNamespace("/config", psr4)).toBe("");
+    expect(inferPhpNamespace("/src/my-dir", psr4)).toBe("");
+    expect(inferPhpNamespace("/x", [["", ""]])).toBe("x");
+  });
+
+  it("writes the namespace into PHP classes, and leaves it out without one", () => {
+    const kinds = tpl("php-class").kinds;
+    const cls = renderFileTemplate(kinds[0]!.body, {
+      name: "UserController",
+      fileName: "UserController.php",
+      packageName: "App\\Http",
+    });
+    expect(cls.text).toBe("<?php\n\nnamespace App\\Http;\n\nclass UserController\n{\n    \n}\n");
+    const bare = renderFileTemplate(kinds[0]!.body, { name: "Foo", fileName: "Foo.php" });
+    expect(bare.text).toBe("<?php\n\nclass Foo\n{\n    \n}\n");
+    const test = renderFileTemplate(kinds.find((k) => k.id === "test")!.body, {
+      name: "MailerTest",
+      fileName: "MailerTest.php",
+      packageName: "App\\Tests\\Service",
+    });
+    expect(test.text).toBe(
+      "<?php\n\nnamespace App\\Tests\\Service;\n\nuse PHPUnit\\Framework\\TestCase;\n\nfinal class MailerTest extends TestCase\n{\n    public function testSomething(): void\n    {\n        \n    }\n}\n",
+    );
+    expect(renderFileTemplate(tpl("php").kinds[0]!.body, { name: "bootstrap", fileName: "bootstrap.php" }).text).toBe(
+      "<?php\n\n\n",
+    );
+  });
+});
+
+describe("C# namespaces", () => {
+  it("come from the project's root namespace and the folders below the .csproj", () => {
+    expect(csprojRootNamespace('<Project Sdk="Microsoft.NET.Sdk"></Project>', "My.App.csproj")).toBe("My.App");
+    expect(csprojRootNamespace("<RootNamespace>Acme.Shop</RootNamespace>", "Web.csproj")).toBe("Acme.Shop");
+    expect(csprojRootNamespace("", "my-app.csproj")).toBe("my_app");
+    expect(inferCsharpNamespace("/Services/Billing", "Acme.Shop")).toBe("Acme.Shop.Services.Billing");
+    expect(inferCsharpNamespace("", "Acme.Shop")).toBe("Acme.Shop");
+    expect(inferCsharpNamespace("/2024-data", "App")).toBe("App._2024_data");
+  });
+
+  it("are file-scoped from C# 10 and blocks before it (.NET Framework and Unity projects)", () => {
+    const sdk = (tf: string) => `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>${tf}</PropertyGroup></Project>`;
+    expect(csprojFileScoped(sdk("<TargetFramework>net8.0</TargetFramework>"))).toBe(true);
+    expect(csprojFileScoped(sdk("<TargetFrameworks>net6.0;net8.0</TargetFrameworks>"))).toBe(true);
+    expect(csprojFileScoped(sdk("<TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>"))).toBe(false);
+    expect(csprojFileScoped(sdk("<TargetFramework>net48</TargetFramework>"))).toBe(false);
+    expect(csprojFileScoped(sdk("<TargetFramework>net5.0</TargetFramework>"))).toBe(false);
+    expect(
+      csprojFileScoped(sdk("<TargetFramework>netstandard2.1</TargetFramework><LangVersion>latest</LangVersion>")),
+    ).toBe(true);
+    expect(
+      csprojFileScoped("<TargetFrameworkVersion>v4.7.1</TargetFrameworkVersion><LangVersion>9.0</LangVersion>"),
+    ).toBe(false);
+  });
+
+  it("render C# classes with a file-scoped namespace, a block, or none", () => {
+    const cls = tpl("csharp").kinds[0]!.body;
+    const vars = { name: "OrderService", fileName: "OrderService.cs", packageName: "Acme.Shop" };
+    expect(renderFileTemplate(cls, vars).text).toBe("namespace Acme.Shop;\n\npublic class OrderService\n{\n    \n}\n");
+    expect(renderFileTemplate(blockScopedNamespace(cls), vars).text).toBe(
+      "namespace Acme.Shop\n{\n    public class OrderService\n    {\n        \n    }\n}\n",
+    );
+    expect(renderFileTemplate(cls, { name: "Foo", fileName: "Foo.cs" }).text).toBe("public class Foo\n{\n    \n}\n");
+    expect(tpl("csharp").kinds.map((k) => k.label)).toEqual(["Class", "Interface", "Struct", "Enum", "Record"]);
   });
 });
 
@@ -179,5 +308,38 @@ describe("reformat according to style", () => {
   it("stays at the start of the text and clamps past the end", () => {
     expect(caretAfterReformat("  a", 0, "a")).toBe(0);
     expect(caretAfterReformat("a b|".replace("|", ""), 3, "a")).toBe(1);
+  });
+});
+
+describe("plugin template names and values", () => {
+  it.each([".dockerignore", ".gitattributes", "Dockerfile", "Order.java"])("keeps exact filename %s", (fileName) => {
+    expect(planFile({ ...tpl("java"), fileName }, "/p", "ignored")?.path).toBe(`/p/${fileName}`);
+  });
+  it.each([
+    "",
+    ".",
+    "..",
+    "../escape",
+    "a/b",
+    "a\\b",
+    "/absolute",
+    "C:evil",
+    "a?",
+    " a",
+    "a.",
+    "NUL.txt",
+    "com1",
+    "a\n",
+  ])("rejects unsafe filename %j", (fileName) => {
+    expect(planFile({ ...tpl("file"), fileName }, "/p", "")).toBeNull();
+  });
+  it("inserts variables literally and preserves UTF-16 caret offsets", () => {
+    expect(
+      renderFileTemplate("$ENTITY$ ${ENTITY} $NAME$ $END$x", {
+        name: "Repo",
+        fileName: "Repo.java",
+        variables: { ENTITY: "😀$NAME$", NAME: "bad" },
+      }),
+    ).toEqual({ text: "😀$NAME$ 😀$NAME$ Repo x", caret: "😀$NAME$ 😀$NAME$ Repo ".length });
   });
 });

@@ -38,13 +38,29 @@ pub fn explain_statement(driver: DbDriver, statement: &str) -> String {
         DbDriver::Clickhouse => format!("EXPLAIN json = 1 {s}"),
         DbDriver::Mysql => format!("EXPLAIN {s}"),
         DbDriver::SqlServer => format!("SET SHOWPLAN_TEXT ON; {s}"),
+        DbDriver::Oracle => format!("EXPLAIN PLAN FOR {s}"),
+        DbDriver::Snowflake => format!("EXPLAIN USING TABULAR {s}"),
     }
+}
+
+/// Reads the plan `EXPLAIN PLAN SET STATEMENT_ID = '{plan_id}'` wrote (see [`parse`] with `DbDriver::Oracle`).
+pub fn oracle_plan_query(plan_id: &str) -> String {
+    format!(
+        "SELECT id, parent_id, operation, options, object_name, cost, cardinality, bytes \
+         FROM plan_table WHERE statement_id = '{plan_id}' ORDER BY id"
+    )
+}
+
+/// Removes a read plan (PLAN_TABLE keeps rows until the session ends).
+pub fn oracle_plan_cleanup(plan_id: &str) -> String {
+    format!("DELETE FROM plan_table WHERE statement_id = '{plan_id}'")
 }
 
 /// Reads the result of [`explain_statement`].
 pub fn parse(driver: DbDriver, result: &QueryResult) -> IdeResult<Vec<PlanNode>> {
     match driver {
         DbDriver::Sqlite => Ok(sqlite(&result.rows)),
+        DbDriver::Oracle => Ok(oracle(&result.rows)),
         DbDriver::Postgres | DbDriver::Clickhouse => {
             let text: String =
                 result.rows.iter().filter_map(|r| r.first().cloned().flatten()).collect::<Vec<_>>().join("\n");
@@ -62,6 +78,10 @@ pub fn parse(driver: DbDriver, result: &QueryResult) -> IdeResult<Vec<PlanNode>>
             Ok(mysql(&names, &result.rows))
         }
         DbDriver::SqlServer => Ok(Vec::new()),
+        DbDriver::Snowflake => {
+            let names: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+            Ok(snowflake(&names, &result.rows))
+        }
     }
 }
 
@@ -148,6 +168,76 @@ fn postgres(node: &Value, parent: Option<u32>, out: &mut Vec<PlanNode>) {
     }
 }
 
+/// Oracle PLAN_TABLE rows: `id, parent_id, operation, options, object_name, cost, cardinality, bytes`.
+fn oracle(rows: &[Vec<Option<String>>]) -> Vec<PlanNode> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for r in rows {
+        let cell = |i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let (id, parent, operation, options, object) = (cell(0), cell(1), cell(2), cell(3), cell(4));
+        let parent = ids.iter().position(|x| *x == parent).map(|i| i as u32);
+        let op = format!("{operation} {options}").trim().to_owned();
+        let (operation, params) = match (operation.as_str(), options.as_str()) {
+            ("TABLE ACCESS", "FULL") => ("Full Scan".into(), object),
+            ("TABLE ACCESS", "BY INDEX ROWID" | "BY ROWID RANGE" | "BY USER ROWID") => ("Table Access".into(), object),
+            ("INDEX", "RANGE SCAN" | "RANGE SCAN DESCENDING") => ("Index Range Scan".into(), object),
+            ("INDEX", "UNIQUE SCAN") => ("Index Lookup".into(), object),
+            ("INDEX", "FULL SCAN" | "FAST FULL SCAN" | "SKIP SCAN") => ("Full Index Scan".into(), object),
+            ("INDEX", "SAMPLE FAST FULL SCAN") => ("Full Index Scan".into(), object),
+            ("SORT", "ORDER BY") => ("Order By".into(), String::new()),
+            ("SORT", "GROUP BY") => ("Group By".into(), String::new()),
+            ("SORT", "UNIQUE") => ("Distinct".into(), String::new()),
+            ("HASH", "GROUP BY") => ("Group By".into(), String::new()),
+            _ => (op, object),
+        };
+        let mut properties = Vec::new();
+        for (name, value) in [("Cost", 5), ("Rows", 6), ("Bytes", 7)] {
+            if let Some(v) = r.get(value).cloned().flatten() {
+                properties.push(prop(name, v));
+            }
+        }
+        out.push(PlanNode { parent, operation, params, properties });
+        ids.push(id);
+    }
+    out
+}
+
+/// Snowflake's `EXPLAIN USING TABULAR`: one row per operation with its parents' ids; the
+/// first row totals the partitions and bytes the statement would scan.
+fn snowflake(names: &[&str], rows: &[Vec<Option<String>>]) -> Vec<PlanNode> {
+    let column = |name: &str| names.iter().position(|n| n.eq_ignore_ascii_case(name));
+    let cell = |r: &[Option<String>], name: &str| column(name).and_then(|i| r.get(i).cloned().flatten());
+    let mut ids: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for r in rows {
+        let operation = cell(r, "operation").unwrap_or_default();
+        let id = cell(r, "id").unwrap_or_default();
+        // `[0]`, `[1, 2]`: the first is the operation this one feeds.
+        let parent = cell(r, "parentOperators")
+            .and_then(|p| p.trim_matches(['[', ']']).split(',').next().map(|p| p.trim().to_owned()))
+            .and_then(|p| ids.iter().position(|x| *x == p))
+            .map(|i| i as u32);
+        let mut params = cell(r, "objects").unwrap_or_default();
+        if let Some(alias) = cell(r, "alias").filter(|a| !a.is_empty()) {
+            params = format!("{params} {alias}").trim().to_owned();
+        }
+        let mut properties = Vec::new();
+        for (label, name) in [
+            ("Expressions", "expressions"),
+            ("Partitions scanned", "partitionsAssigned"),
+            ("Partitions total", "partitionsTotal"),
+            ("Bytes scanned", "bytesAssigned"),
+        ] {
+            if let Some(value) = cell(r, name).filter(|v| !v.is_empty()) {
+                properties.push(prop(label, value));
+            }
+        }
+        out.push(PlanNode { parent, operation, params, properties });
+        ids.push(id);
+    }
+    out
+}
+
 /// MySQL's tabular `EXPLAIN`: one row per table access, flat.
 fn mysql(names: &[&str], rows: &[Vec<Option<String>>]) -> Vec<PlanNode> {
     let col = |r: &[Option<String>], n: &str| {
@@ -202,6 +292,49 @@ mod tests {
         assert_eq!(explain_statement(DbDriver::Mysql, "select 1"), "EXPLAIN select 1");
         assert_eq!(explain_statement(DbDriver::Clickhouse, " select 1;"), "EXPLAIN json = 1 select 1");
         assert_eq!(explain_statement(DbDriver::SqlServer, "select 1"), "SET SHOWPLAN_TEXT ON; select 1");
+        assert_eq!(explain_statement(DbDriver::Oracle, "select 1"), "EXPLAIN PLAN FOR select 1");
+        let q = oracle_plan_query("OI1");
+        assert!(q.contains("FROM plan_table WHERE statement_id = 'OI1' ORDER BY id"));
+        assert!(oracle_plan_cleanup("OI1").contains("DELETE FROM plan_table WHERE statement_id = 'OI1'"));
+    }
+
+    #[test]
+    fn reads_oracle_plan_table_rows() {
+        let r = result(
+            &["id", "parent_id", "operation", "options", "object_name", "cost", "cardinality", "bytes"],
+            vec![
+                vec![Some("1"), Some("0"), Some("SELECT STATEMENT"), None, None, Some("3"), Some("41"), Some("1230")],
+                vec![Some("2"), Some("1"), Some("HASH"), Some("GROUP BY"), None, Some("3"), Some("41"), Some("1230")],
+                vec![
+                    Some("4"),
+                    Some("2"),
+                    Some("TABLE ACCESS"),
+                    Some("FULL"),
+                    Some("orders"),
+                    Some("2"),
+                    Some("41"),
+                    Some("1230"),
+                ],
+                vec![
+                    Some("5"),
+                    Some("2"),
+                    Some("INDEX"),
+                    Some("UNIQUE SCAN"),
+                    Some("c_pk"),
+                    Some("0"),
+                    Some("1"),
+                    Some("6"),
+                ],
+            ],
+        );
+        let plan = parse(DbDriver::Oracle, &r).unwrap();
+        let ops: Vec<(&str, &str)> = plan.iter().map(|n| (n.operation.as_str(), n.params.as_str())).collect();
+        assert_eq!(
+            ops,
+            [("SELECT STATEMENT", ""), ("Group By", ""), ("Full Scan", "orders"), ("Index Lookup", "c_pk")]
+        );
+        assert_eq!((plan[2].parent, plan[3].parent), (Some(1), Some(1)));
+        assert!(plan[0].properties.iter().any(|p| p.name == "Cost" && p.value == "3"));
     }
 
     #[test]
@@ -284,5 +417,62 @@ mod tests {
         assert_eq!((plan[0].operation.as_str(), plan[0].params.as_str()), ("Full Scan", "table: o;"));
         assert_eq!((plan[1].operation.as_str(), plan[1].params.as_str()), ("Index Lookup", "table: c; key: PRIMARY;"));
         assert!(plan[0].properties.iter().any(|p| p.name == "rows" && p.value == "20"));
+    }
+
+    #[test]
+    fn reads_snowflake_tabular_plans() {
+        let names = [
+            "step",
+            "id",
+            "parentOperators",
+            "operation",
+            "objects",
+            "alias",
+            "expressions",
+            "partitionsTotal",
+            "partitionsAssigned",
+            "bytesAssigned",
+        ];
+        let row = |cells: [Option<&'static str>; 10]| cells.to_vec();
+        let r = result(
+            &names,
+            vec![
+                row([None, None, None, Some("GlobalStats"), None, None, None, Some("12"), Some("3"), Some("4096")]),
+                row([Some("1"), Some("0"), None, Some("Result"), None, None, Some("O.ID"), None, None, None]),
+                row([
+                    Some("1"),
+                    Some("1"),
+                    Some("[0]"),
+                    Some("Filter"),
+                    None,
+                    None,
+                    Some("O.ID > 3"),
+                    None,
+                    None,
+                    None,
+                ]),
+                row([
+                    Some("1"),
+                    Some("2"),
+                    Some("[1]"),
+                    Some("TableScan"),
+                    Some("DB.PUBLIC.ORDERS"),
+                    Some("O"),
+                    Some("ID"),
+                    Some("12"),
+                    Some("3"),
+                    Some("4096"),
+                ]),
+            ],
+        );
+        let plan = parse(DbDriver::Snowflake, &r).unwrap();
+        assert_eq!(
+            plan.iter().map(|n| n.operation.as_str()).collect::<Vec<_>>(),
+            ["GlobalStats", "Result", "Filter", "TableScan"]
+        );
+        assert_eq!(plan.iter().map(|n| n.parent).collect::<Vec<_>>(), [None, None, Some(1), Some(2)]);
+        assert_eq!(plan[3].params, "DB.PUBLIC.ORDERS O");
+        assert!(plan[3].properties.contains(&PlanProperty { name: "Partitions scanned".into(), value: "3".into() }));
+        assert!(plan[0].properties.contains(&PlanProperty { name: "Bytes scanned".into(), value: "4096".into() }));
     }
 }

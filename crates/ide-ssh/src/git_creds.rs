@@ -216,6 +216,7 @@ mod tests {
     use super::*;
 
     fn store() -> (tempfile::TempDir, GitCredentials) {
+        crate::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("git-credentials.json");
         (tmp, GitCredentials { saved: Arc::new(SecretFile::new(path)), sessions: Arc::default() })

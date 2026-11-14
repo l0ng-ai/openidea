@@ -67,7 +67,7 @@
   right: -3px;
   width: 6px;
   height: 100%;
-  cursor: col-resize;
+  cursor: ew-resize;
 }
 .rowNumber {
   display: flex;
@@ -121,12 +121,20 @@
   outline: none;
 }
 
+.cellCheckbox {
+  flex-shrink: 0;
+  margin: 0 6px 0 0;
+}
+
 /* ---- Tool windows ------------------------------------------------------------ */
 .view {
   height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+.resultTabs {
+  padding-inline: var(--space-2);
 }
 .toolbar {
   display: flex;
@@ -238,6 +246,12 @@
   margin: 0 4px;
   background: var(--border);
 }
+.treeFilter {
+  flex: 1;
+  min-width: 80px;
+  max-width: 280px;
+  margin-left: 4px;
+}
 .treeHost {
   flex: 1;
   min-height: 0;
@@ -254,12 +268,28 @@
   gap: 6px;
   min-width: 0;
 }
-.tinted {
-  flex: 1;
-  margin: 0 -4px;
-  padding: 0 4px;
-  border-radius: var(--radius-control, 4px);
+/* The whole tree row, indent included, so a coloured source and its children form one band. */
+.tintedRow:not([aria-selected="true"]):not(:hover) {
+  border-radius: 0;
   background: color-mix(in srgb, var(--db-tint) var(--tint-strength), transparent);
+}
+.tintRed {
+  --db-tint: var(--db-color-red);
+}
+.tintOrange {
+  --db-tint: var(--db-color-orange);
+}
+.tintYellow {
+  --db-tint: var(--db-color-yellow);
+}
+.tintGreen {
+  --db-tint: var(--db-color-green);
+}
+.tintBlue {
+  --db-tint: var(--db-color-blue);
+}
+.tintViolet {
+  --db-tint: var(--db-color-violet);
 }
 .nodeLabel {
   overflow: hidden;
@@ -344,11 +374,15 @@
 /* Dialogs. */
 .form {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: center;
   gap: 8px 12px;
-  min-width: 440px;
+  min-width: 0;
   padding: 14px;
+  overflow-wrap: anywhere;
+}
+.form > * {
+  min-width: 0;
 }
 .formLabel {
   color: var(--fg-secondary);
@@ -371,6 +405,10 @@
   display: flex;
   gap: 8px;
   align-items: center;
+}
+.formRow[hidden],
+.formLabel[hidden] {
+  display: none;
 }
 /* Data source dialog. */
 .formSection {
@@ -559,21 +597,6 @@
 }
 .gridHost {
   position: relative;
-}
-/* IDEA's floating row count at the bottom of a result. */
-.rowPill {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 3px 10px;
-  border: 1px solid var(--border-popup, var(--border));
-  border-radius: var(--radius-small);
-  background: var(--bg-popup, var(--bg-elev));
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-  box-shadow: var(--shadow-popup, none);
-  pointer-events: none;
 }
 .resultSource {
   color: var(--fg-muted);
@@ -838,6 +861,25 @@
   font: inherit;
   cursor: pointer;
 }
+/* Go to Column (ColumnsPopup.tsx). */
+.columnsPopup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  padding: 8px;
+}
+.columnsList {
+  height: min(320px, 50vh);
+}
+.columnsRow {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
 .filterPopup {
   display: flex;
   flex-direction: column;
@@ -936,6 +978,37 @@
 .recordText:focus {
   outline: none;
   border-color: var(--focus-ring);
+}
+/* The JSON value editor's host (#2333): the CodeMirror view fills it. */
+.valueEditor {
+  flex: 1;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-input);
+  color: var(--fg-strong);
+  overflow: hidden;
+}
+.valueEditor > :global(.cm-editor) {
+  height: 100%;
+  font-size: var(--fs-code);
+}
+.valueError {
+  color: var(--danger);
+  font-size: var(--fs-code);
+  overflow-wrap: anywhere;
+}
+.valueWindowBody {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+.valueWindowBody .valueEditor {
+  min-height: 160px;
 }
 .recordText {
   resize: vertical;
@@ -1227,6 +1300,12 @@
   color: transparent !important;
   caret-color: var(--fg-strong);
 }
+/* The input's own glyphs are transparent so the highlight layer below paints them; without
+   this the selection would be an empty highlight. */
+.sqlInputText::selection {
+  background: var(--bg-editor-selection);
+  color: var(--fg-strong);
+}
 .sqlHighlight {
   position: absolute;
   inset: 0;
@@ -1259,4 +1338,78 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   resize: vertical;
+}
+
+/* The grid beside the Record / Value / Aggregates panel, under its search bar. */
+.dataMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* IDEA's search bar above a result grid. */
+.gridSearch {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui);
+}
+.gridSearchField {
+  flex: 0 1 360px;
+  min-width: 160px;
+}
+.gridSearchCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 6px;
+  white-space: nowrap;
+  min-width: 56px;
+}
+.gridSearchNone {
+  color: var(--danger);
+}
+.cellMatch {
+  background: var(--bg-text-search-result);
+}
+.cellMatchCurrent {
+  background: var(--bg-text-search-result-current);
+}
+
+/* IDEA's floating pager at the bottom of a result: |< < 1-500 of 501+ > >| and the page size. */
+.resultPager {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border: 1px solid var(--border-popup, var(--border));
+  border-radius: var(--radius-small);
+  background: var(--bg-popup, var(--bg-elev));
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-popup, none);
+  white-space: nowrap;
+}
+.resultPagerRange {
+  padding: 0 6px;
+}
+.resultPagerCount {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  cursor: pointer;
+}
+.resultPagerCount:disabled {
+  color: inherit;
+  cursor: default;
 }

@@ -234,7 +234,7 @@ impl InspectionConfig {
 
     /// From the profile in effect in `settings`.
     pub fn from_settings(settings: &Settings) -> Self {
-        Self::from_profile(settings.inspections.active_overrides())
+        Self::from_profile(settings.inspections.active())
     }
 
     pub fn enabled(&self, id: &str) -> bool {

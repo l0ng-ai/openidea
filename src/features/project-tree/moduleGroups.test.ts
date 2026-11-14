@@ -123,3 +123,15 @@ describe("module group nodes in the tree", () => {
     expect(m.children.get(m.roots[0]!.key)!.map((n) => n.label)).toEqual(["billing", "core"]);
   });
 });
+
+it("namespaces module group identities by independently linked build", () => {
+  const projects = [
+    { path: ":", dir: "/w/first" },
+    { path: ":app", dir: "/w/shared" },
+  ];
+  const first = gradleModuleGroups(projects, "same", "/w/project", "first");
+  const second = gradleModuleGroups(projects, "same", "/w/project", "second");
+  expect(first.length).toBeGreaterThan(0);
+  expect(first[0]!.id).not.toBe(second[0]!.id);
+  expect(first.map(shape)).toEqual(second.map(shape));
+});

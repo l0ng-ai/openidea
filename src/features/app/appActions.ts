@@ -1,14 +1,17 @@
 import { redo, undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import type { Action } from "@/platform/actions";
+import { revealInFileManager } from "@/platform/fileManager";
 import { t } from "@/platform/i18n";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { selectReadingPane } from "@/ui";
 import { maybeEditorService, notifications, runUndoHandlers } from "@/workbench/contributions";
 import { showAbout } from "./AboutDialog";
 import { quitApp } from "./closeGuard";
 import { guessOs } from "./host";
 import { showKeymapReference } from "./KeymapReference";
 import { checkForUpdates } from "./updates";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 function errorText(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -18,8 +21,7 @@ export async function showLog(): Promise<void> {
   if (!isTauri()) return;
   try {
     const loc = await call(commands.appLogLocation());
-    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-    await revealItemInDir(loc.file ?? loc.dir);
+    await revealInFileManager(loc.file ?? loc.dir, null);
   } catch (e) {
     notifications().notify({ level: "error", title: t("app.log.failed"), body: errorText(e) });
   }
@@ -48,8 +50,9 @@ export function editCommand(command: "undo" | "redo" | "cut" | "copy" | "paste" 
       }
       if (focused instanceof Element && runUndoHandlers(command, focused)) return;
     }
-    if (command === "paste" && navigator.clipboard?.readText) {
-      void navigator.clipboard.readText().then((text) => document.execCommand("insertText", false, text));
+    if (command === "selectAll" && selectReadingPane(document.activeElement)) return;
+    if (command === "paste") {
+      void readClipboardPlainText().then((text) => document.execCommand("insertText", false, text));
       return;
     }
     document.execCommand(command);

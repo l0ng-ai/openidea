@@ -1,0 +1,148 @@
+---
+title: "Agents"
+description: "Run coding agents such as Claude Code, Codex and Gemini CLI inside the IDE, each task in its own Git worktree or in your checkout."
+---
+
+OpenIDEA runs command-line coding agents and gives them a chat interface in the IDE. Each conversation is a **task**. A task can work in a new Git worktree, away from your own changes, or directly in the project. You review what it changed as diffs, answer its permission requests, and keep several tasks running side by side.
+
+OpenIDEA does not include a model or an account of its own: it starts the agent you have installed and signed in to, and talks to it over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP).
+
+## Supported agents
+
+These agents are built in. Install the agent's own CLI and sign in once in a terminal; OpenIDEA finds it on `PATH`.
+
+| Agent          | Command OpenIDEA starts     | Sign in with          |
+| -------------- | --------------------------- | --------------------- |
+| Claude Code    | `claude`                    | `claude`              |
+| Codex          | `codex app-server`          | `codex login`         |
+| Gemini CLI     | `gemini --experimental-acp` | `gemini`              |
+| GitHub Copilot | `copilot --acp`             | `copilot`             |
+| Cursor         | `cursor-agent acp`          | `cursor-agent login`  |
+| OpenCode       | `opencode acp`              | `opencode auth login` |
+| Qwen Code      | `qwen --experimental-acp`   | `qwen`                |
+| Qoder          | `qodercli --acp`            | `qodercli login`      |
+| Qoder CN       | `qoderclicn --acp`          | `qoderclicn login`    |
+| Kimi CLI       | `kimi acp`                  | `kimi`                |
+| Goose          | `goose acp`                 | `goose configure`     |
+| Auggie         | `auggie --acp`              | `auggie login`        |
+| Kiro           | `kiro-cli acp`              | `kiro-cli login`      |
+| Mistral Vibe   | `vibe-acp`                  | `vibe`                |
+
+**Claude Code** and **Codex** are driven through their own protocols (Claude Code's stream-json mode and `codex app-server`). Their ACP adapters (`claude-acp`, `codex-acp`) are no longer listed; tasks that already use them keep working, and an [agent file](#add-a-custom-agent) for either id lists it again. If an agent needs you to sign in, the task tells you which command to run.
+
+Agents are unavailable in a project you have not marked as trusted.
+
+## Start a task
+
+| Action             | macOS | Windows / Linux    |
+| ------------------ | ----- | ------------------ |
+| **New Agent Task** | `⇧⌘I` | `Ctrl+Alt+Shift+I` |
+
+<Steps>
+  <Step title="Open the New Agent Task page">
+    Press the shortcut, or click **New Agent Task** in the **Agents** tool window (on the right).
+  </Step>
+  <Step title="Describe the task">
+    Type what the agent should do. Type `@` to reference a file, `/` for the agent's slash commands, and paste or attach images (**Attach Image…**) when the agent accepts them.
+  </Step>
+  <Step title="Choose where it works">
+    - **New worktree**: the agent works in a new Git worktree on a branch named `agent/<task>`, created from the base branch you pick. Your checkout is not touched. Worktrees are created next to the project, in a folder named `<project>.worktrees`.
+    - **Local checkout**: the agent edits your files directly.
+  </Step>
+  <Step title="Pick the agent and its settings">
+    Choose the agent, and its model, mode and other options when it offers them. Models and modes appear after the agent's first task.
+  </Step>
+  <Step title="Send">
+    The task opens as an editor tab and starts.
+  </Step>
+</Steps>
+
+## Work with a task
+
+The task tab shows the conversation: your messages, the agent's replies, its reasoning, plans, the tools it runs and the subagents it starts. While the agent works:
+
+- Messages you send are queued and delivered when the turn ends (**Queued messages**). **Send now** stops the current turn and sends that message next; queued messages can also be edited or removed.
+- **Stop** ends the current turn.
+- `⌘F` / `Ctrl+F` finds text in the conversation.
+
+On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
+
+### Permissions
+
+When an agent wants to run a command or call a tool that needs approval, the task shows the request and is listed as **Needs Input**. Choose one of the options the agent offers, such as **Allow Once**, **Allow for This Session**, **Always Allow**, **Decline**, **Always Decline** or **Decline and Stop**. Many agents also have a mode picker that approves edits or everything automatically; use it with care.
+
+Once an agent has run a task, new tasks start in its mode that approves everything (Claude Code's bypass permissions, Codex's Full Access), and command permissions don't apply there. To start them in a mode that asks, set **Settings › Agents › Chat › New tasks start** to **Asking for approval**. Only your own settings choose this, never a project's.
+
+### Review the changes
+
+Click **Show changes** in the task header to list the files the task changed. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
+
+### Context from the editor
+
+- **Send to Agent** in the editor and Project view context menus adds the selection or the selected files as `@` references to the message you typed last. It has no default shortcut; assign one in **Settings › Keymap**.
+- Referenced files up to 256 KB are embedded in the prompt when the agent accepts embedded files.
+- When the [built-in MCP server](/en/guide/mcp) is on, every task is given OpenIDEA's tools as an MCP server, so the agent can use the IDE's search, symbol lookup, problems, run configurations and more.
+
+## The Agents tool window
+
+The **Agents** tool window lists the project's tasks by what they need from you: **Needs Input**, **Failed**, usage limit reached, **Running**, **Ready to Review** and **Archived**. Its badge counts tasks that need input or have unread replies.
+
+Tasks open in editor tabs by default. **Chat in Tool Window** and **Chat in Editor** switch where conversations open; you can also drag a task into the editor area. A task's context menu has **Open**, **Rename…**, **Open in Terminal**, **Copy to a New Task**, **Pin** / **Unpin**, **Move to Group**, **Archive** / **Unarchive** and **Delete…**. Deleting a worktree task also removes its worktree.
+
+Pinned tasks sit above every group. **Move to Group** puts a task in a group of your own, and so does dropping it on a group header; **New Group…** in the tool window's options menu (⋯) creates an empty one, and a group's own menu renames or removes it. Groups and pins are kept per project.
+
+Tasks are saved per project and survive restarts. When the agent supports resuming sessions, the conversation continues where it left off on the next message; such an agent is also stopped after five idle minutes and started again when you send the next message.
+
+## Manage agents
+
+**Settings › Tools › Agents** (also **More Agents…** in the agent picker) has two tabs:
+
+- **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions.
+- **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
+
+**Settings › Tools › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
+
+## Add a custom agent
+
+Any agent that speaks ACP over stdio can be added with an agent file, `agents/<id>.toml` in OpenIDEA's configuration directory:
+
+| OS      | Agent files                                              |
+| ------- | -------------------------------------------------------- |
+| macOS   | `~/Library/Application Support/ai.l0ng.openidea/agents/` |
+| Windows | `%APPDATA%\ai.l0ng.openidea\agents\`                     |
+| Linux   | `~/.config/ai.l0ng.openidea/agents/`                     |
+
+```toml
+# agents/my-agent.toml
+name = "My Agent"
+command = "/usr/local/bin/my-agent"
+args = ["--acp"]
+
+[env]
+MY_AGENT_LOG = "info"
+```
+
+<ParamField path="name" type="string">
+  Name shown in the agent picker. Defaults to the file name.
+</ParamField>
+<ParamField path="command" type="string" required>
+  The executable to start, a path or a name on `PATH`.
+</ParamField>
+<ParamField path="args" type="string[]">
+  Arguments that start the agent in ACP mode.
+</ParamField>
+<ParamField path="env" type="table">
+  Extra environment variables for the agent process. OpenIDEA moves their values to the OS credential store the next
+  time it reads the file, and keeps only the names in it (with empty values). An agent installed from the ACP Registry
+  keeps the environment its registry entry sets in the file.
+</ParamField>
+<ParamField path="driver" type="string" default="acp">
+  `acp` for an ACP agent. `claude` and `codex` use the Claude Code and Codex protocols instead.
+</ParamField>
+
+The file name (without `.toml`) is the agent's id. A file named after a built-in agent (`gemini.toml`, `claude.toml`…) replaces that agent's command; this is what the **Built-in** tab writes when you set a custom executable or environment. Files that fail to parse are skipped and logged.
+
+## Limits
+
+- Agents run on your machine with your credentials and your subscriptions or API keys; OpenIDEA does not proxy or meter them.
+- A worktree task needs the project to be a Git repository with at least one commit.

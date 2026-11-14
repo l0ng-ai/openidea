@@ -47,7 +47,8 @@ export function toCmCompletion(item: CompletionItem): Completion {
     type: completionSymbolKind(item.kind),
   };
   if (filter) c.displayLabel = item.label;
-  if (item.labelDetail) c.detail = item.labelDetail;
+  const suffix = signatureSuffix(item);
+  if (suffix) c.detail = suffix;
   if (item.sortText) c.sortText = item.sortText;
   if (item.preselect) c.boost = 99;
   else if (item.deprecated) c.boost = -20;
@@ -78,6 +79,7 @@ export function withoutDuplicates(items: readonly CompletionItem[]): CompletionI
       it.server,
       it.label,
       it.labelDetail,
+      it.labelDescription,
       it.detail,
       it.kind,
       it.insertText,
@@ -111,9 +113,68 @@ export function importSource(item: Pick<CompletionItem, "additionalEdits">): str
   return null;
 }
 
-/** Text of the right-aligned type column: the detail, with the import source when it lacks one. */
-export function typeColumnText(item: Pick<CompletionItem, "detail" | "additionalEdits">): string | null {
-  const detail = item.detail?.replace(/\s+/g, " ") || null;
+type LabelPresentation = Partial<Pick<CompletionItem, "labelDetail" | "labelDescription" | "kind">>;
+
+/** End of a balanced parameter or type-parameter list, including nested parentheses and brackets. */
+function listEnd(text: string, start: number): number | null {
+  const close = ({ "(": ")", "[": "]", "<": ">" } as Record<string, string>)[text[start]!];
+  if (!close) return null;
+  let depth = 1;
+  let quote: string | null = null;
+  for (let i = start + 1; i < text.length; i++) {
+    if (quote) {
+      if (text[i] === "\\" && quote !== "`") i++;
+      else if (text[i] === quote) quote = null;
+      continue;
+    }
+    // A Rust lifetime is not a quoted literal.
+    if (text[i] === "'" && !/^'(?:\\.|[^'\\])*'(?![\p{L}\p{N}_])/u.test(text.slice(i))) continue;
+    if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+      quote = text[i]!;
+      continue;
+    }
+    if (text[i] === text[start]) depth++;
+    else if (text[i] === close && !(close === ">" && text[i - 1] === "=") && --depth === 0) return i + 1;
+  }
+  return null;
+}
+
+/** Only parameter suffixes belong beside the name; fields can have tuple or function types. */
+function signatureSuffix(item: LabelPresentation): string | null {
+  const suffix = item.labelDetail;
+  const callable = !item.kind || ["method", "function", "constructor"].includes(item.kind);
+  if (!callable || !suffix) return null;
+  let start = suffix.length - suffix.trimStart().length;
+  if (suffix[start] === "<" || suffix[start] === "[") {
+    const end = listEnd(suffix, start);
+    if (end === null) return null;
+    start = end;
+  }
+  if (suffix[start] !== "(") return null;
+  return suffix.slice(0, listEnd(suffix, start) ?? suffix.length);
+}
+
+/**
+ * Text of the right-aligned type column: the label description (`void`, `String`), else the
+ * non-signature label detail or detail, with the import source when it lacks one.
+ * A repeated `func` signature contributes only its result after the parameter suffix.
+ * JDT.LS sends the whole signature as `detail`
+ * (`PrintStream.print(Object obj) : void`), which would repeat the name and parameters already
+ * shown next to the label; the documentation panel still shows it.
+ */
+export function typeColumnText(
+  item: Pick<CompletionItem, "detail" | "additionalEdits"> & LabelPresentation,
+): string | null {
+  const suffix = signatureSuffix(item);
+  const labelType = suffix ? null : item.labelDetail?.trim();
+  const result = suffix && item.labelDetail?.slice(suffix.length).trim();
+  const repeated = item.detail
+    ?.match(/^func\s*(.*)$/s)?.[1]
+    ?.replace(/\s+/g, " ")
+    .trim();
+  const returnType = result && repeated === item.labelDetail?.replace(/\s+/g, " ").trim() ? result : null;
+  const detail =
+    (item.labelDescription?.trim() || labelType || returnType || item.detail)?.replace(/\s+/g, " ") || null;
   const source = importSource(item);
   if (!source || detail?.includes(source)) return detail;
   return !detail || /^auto[- ]?import$/i.test(detail) ? source : `${detail} (${source})`;

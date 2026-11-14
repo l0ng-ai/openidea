@@ -16,33 +16,61 @@
 //! projects) and folders linked with `openidea-plugin link` (`links.json`).
 
 mod api;
+mod auth;
+pub mod commands;
+pub mod commit;
+mod database;
+mod dependencies;
+pub(crate) mod diagnostics;
+pub mod endpoints;
+mod event_paths;
+mod execution;
+mod files_changed;
+mod hover;
 mod icon_extensions;
 mod icon_patterns;
 mod icon_settings;
 mod icons;
+pub mod index_ops;
+pub(crate) mod injections;
+mod inlay_hints;
 mod install;
 pub mod intellij;
+mod ipc;
+pub mod language_features;
 mod market;
+mod mcp;
+pub mod navigation;
+mod network_inbox;
 mod points;
 mod providers;
 pub mod remote;
 pub mod remote_host;
 mod run_detectors;
+pub mod run_targets;
+mod semantic_tokens;
+mod snippets;
 mod theme;
 mod types;
 pub mod ui_points;
 pub mod views;
 pub mod web;
+mod websocket;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
-pub use icons::{map_asset as icon_theme_map_asset, sanitize_svg, svg_prefix as icon_theme_svg_prefix};
+pub(crate) use hover::merge as merge_hover;
+pub use icons::{
+    MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
+};
+pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
-    read_url as read_market_url, resolve as resolve_market_href,
+    reachable_from as market_href_reachable_from, read_url as read_market_url, resolve as resolve_market_href,
 };
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
-pub(crate) use providers::editor_providers as editor_providers_for;
 pub use providers::{ProviderKind, set_editor_providers};
+pub(crate) use providers::{editor_plugin_host, editor_providers as editor_providers_for};
+pub(crate) use semantic_tokens::merge as merge_semantic_tokens;
 pub use theme::{ThemeDef, ThemeKind};
 pub use types::*;
 
@@ -55,7 +83,8 @@ use ide_extension::{
 use ide_language::plugin_point::PluginLanguages;
 use ide_language::{LanguageConfig, ProgramPin};
 use ide_plugin::{
-    Actor, ActorError, CANCELLED, CallError, HostApi, Invocation, Limits, PluginEngine, Runtime, RuntimeSetup,
+    Actor, ActorError, CANCELLED, CallError, HostApi, HostError, Invocation, Limits, PluginEngine, Runtime,
+    RuntimeSetup,
 };
 use parking_lot::{Condvar, Mutex, RwLock};
 use serde::{Deserialize, Serialize};
@@ -99,6 +128,7 @@ struct Links {
 }
 
 struct Meta {
+    uninstalling: bool,
     status: PluginStatus,
     error: Option<String>,
     warnings: Vec<String>,
@@ -117,6 +147,8 @@ struct Meta {
     retry_at: Option<Instant>,
     /// The component exports `syntax-provider` (known once activated).
     has_syntax: bool,
+    /// Known before activation can publish target registrations.
+    has_run_target_validation: bool,
     /// Next `on-schedule` activation.
     next_schedule: Option<Instant>,
     /// The trusted publisher of a signed installed package.
@@ -126,6 +158,7 @@ struct Meta {
 impl Meta {
     fn new() -> Self {
         Self {
+            uninstalling: false,
             status: PluginStatus::Disabled,
             error: None,
             warnings: Vec::new(),
@@ -137,6 +170,7 @@ impl Meta {
             failures: 0,
             retry_at: None,
             has_syntax: false,
+            has_run_target_validation: false,
             publisher: None,
             next_schedule: None,
         }
@@ -172,6 +206,7 @@ const LATENCY_WINDOW: usize = 128;
 struct EventQueue {
     since: Instant,
     events: Vec<WorkbenchEvent>,
+    files_source: Option<files_changed::Source>,
 }
 
 /// Most events queued per plugin and window; older ones are dropped.
@@ -182,6 +217,8 @@ const IDLE_BATCH: Duration = Duration::from_secs(2);
 
 struct LoadedPlugin {
     pkg: Package,
+    /// Read at load so disabled and failed plugins show it too.
+    icon: Option<ide_extension::package::PluginIcon>,
     /// The manifest failed to parse: `pkg` is a placeholder.
     invalid: bool,
     source: PluginSource,
@@ -200,6 +237,39 @@ struct Batches {
     pending: u32,
     /// Kinds of the batch being handled right now.
     running: Option<BTreeSet<EventKind>>,
+    files_pending: HashMap<FilesQueueKey, PendingFiles>,
+    running_token: Option<Arc<()>>,
+}
+
+type FilesQueueKey = (Option<String>, Option<PathBuf>);
+
+struct PendingFiles {
+    queue: EventQueue,
+    actor: std::sync::Weak<Actor>,
+    token: Arc<()>,
+}
+
+/// Dropping a posted job must release its mailbox even when the actor never runs it.
+struct BatchTicket {
+    batches: Arc<Mutex<Batches>>,
+    files_key: Option<FilesQueueKey>,
+    token: Arc<()>,
+}
+
+impl Drop for BatchTicket {
+    fn drop(&mut self) {
+        let mut batches = self.batches.lock();
+        if let Some(key) = &self.files_key
+            && batches.files_pending.get(key).is_some_and(|p| Arc::ptr_eq(&p.token, &self.token))
+        {
+            batches.files_pending.remove(key);
+        }
+        batches.pending = batches.pending.saturating_sub(1);
+        if batches.running_token.as_ref().is_some_and(|token| Arc::ptr_eq(token, &self.token)) {
+            batches.running = None;
+            batches.running_token = None;
+        }
+    }
 }
 
 impl LoadedPlugin {
@@ -303,14 +373,20 @@ pub struct PluginHost {
     sink: Arc<dyn PluginEventSink>,
     limits: Limits,
     registry: Arc<ExtensionRegistry>,
+    /// Extension points (declared by plugins) whose contributions changed, until their owners are told.
+    extension_changes: dependencies::PendingChanges,
     ui: Arc<UiStore>,
     languages: Arc<PluginLanguages>,
     run_detectors: Arc<run_detectors::RunDetectors>,
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
+    navigation: Mutex<navigation::NavigationIndex>,
+    endpoints: Mutex<endpoints::Endpoints>,
+    web_ptys: Mutex<BTreeMap<String, Vec<web::WebPtySession>>>,
+    diagnostic_projects: Mutex<Vec<diagnostics::ProjectState>>,
     /// Validated UI declarations of installed packages (start-up reuses them).
     index: Arc<ContributionIndex>,
-    ledger: Mutex<Ledger>,
+    ledger: Arc<Mutex<Ledger>>,
     plugins: RwLock<BTreeMap<String, Arc<LoadedPlugin>>>,
     state: Mutex<PersistedState>,
     /// What every plugin's [`api::PluginApi`] shares: sink, registry,
@@ -352,6 +428,11 @@ struct PendingUpdate {
 }
 
 impl PluginHost {
+    /// Current decoration snapshots for windows opening after a plugin published them.
+    pub fn decoration_sets(&self) -> std::collections::BTreeMap<String, Vec<DecorationSet>> {
+        self.shared.decoration_sets()
+    }
+
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
     pub fn new(plugins_dir: PathBuf, sink: Arc<dyn PluginEventSink>, limits: Limits) -> IdeResult<Self> {
         std::fs::create_dir_all(&plugins_dir)?;
@@ -361,10 +442,16 @@ impl PluginHost {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         let registry = Arc::new(ExtensionRegistry::new());
+        let extension_changes: dependencies::PendingChanges = Arc::default();
+        let changes = extension_changes.clone();
+        registry.set_change_listener(Arc::new(move |point, _owner| {
+            changes.lock().insert(point.to_owned());
+        }));
         let ui = UiStore::new();
         let index = Arc::new(ContributionIndex::new(
             plugins_dir.join(".cache").join("contributions"),
-            env!("CARGO_PKG_VERSION"),
+            // Revalidate SVGs accepted before URL-valued CSS functions were rejected.
+            concat!(env!("CARGO_PKG_VERSION"), ":svg-2"),
         ));
         ui.set_index(Some(index.clone()));
         let languages = PluginLanguages::new();
@@ -376,7 +463,15 @@ impl PluginHost {
         languages.set_process_policy(Arc::new(move |plugin, cap| {
             policy_pins.read().get(&(plugin.to_owned(), cap.to_string())).cloned()
         }));
-        let shared = api::Shared::new(sink.clone(), plugins_dir.join(".data"), pins.clone(), ui.clone());
+        let ledger = Arc::new(Mutex::new(Ledger::load(&plugins_dir)));
+        let shared = api::Shared::new(
+            sink.clone(),
+            plugins_dir.join(".data"),
+            pins.clone(),
+            ui.clone(),
+            ledger.clone(),
+            registry.clone(),
+        );
         let official_keys = market::built_in_official_keys();
         let market = RwLock::new(Self::load_market_index(&plugins_dir, &official_keys));
         let host = Self {
@@ -387,15 +482,20 @@ impl PluginHost {
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
-            ledger: Mutex::new(Ledger::load(&plugins_dir)),
+            ledger,
             plugins_dir,
             sink,
             limits,
             registry,
+            extension_changes,
             ui,
             languages,
             run_detectors,
             providers,
+            navigation: Mutex::default(),
+            endpoints: Mutex::default(),
+            web_ptys: Mutex::default(),
+            diagnostic_projects: Mutex::default(),
             index,
             plugins: RwLock::default(),
             state: Mutex::new(state),
@@ -431,17 +531,64 @@ impl PluginHost {
     /// Instantiates no Wasm: code runs on its activation events.
     pub fn load_all(&self) {
         let _guard = self.lifecycle.lock();
+        for pending in install::pending_uninstalls(&self.plugins_dir) {
+            if self.plugins.read().contains_key(&pending.id) {
+                continue;
+            }
+            let dir = pending.package_dir(&self.plugins_dir);
+            let mut manifest = placeholder_manifest(&dir);
+            manifest.id = pending.id.clone();
+            manifest.name = pending.name;
+            manifest.version = pending.version;
+            manifest.contributes.insert(
+                providers::SECRETS_POINT.into(),
+                toml::Value::Array(
+                    pending
+                        .secrets
+                        .into_iter()
+                        .map(|name| {
+                            toml::Value::Table(toml::Table::from_iter([("name".into(), toml::Value::String(name))]))
+                        })
+                        .collect(),
+                ),
+            );
+            let mut meta = Meta::new();
+            meta.status = PluginStatus::Failed;
+            meta.uninstalling = true;
+            meta.error = Some(
+                pending.error.unwrap_or_else(|| "Uninstall incomplete; retry Uninstall to finish cleanup.".into()),
+            );
+            self.plugins.write().insert(
+                pending.id,
+                Arc::new(LoadedPlugin {
+                    pkg: Package::new(manifest, dir),
+                    icon: None,
+                    invalid: false,
+                    source: PluginSource::Installed,
+                    dev_root: None,
+                    meta: Mutex::new(meta),
+                    batches: Arc::default(),
+                    runtime: Mutex::new(None),
+                }),
+            );
+        }
         let dirs = package_dirs(&self.plugins_dir);
         self.migrate_grants(&dirs);
+        // Every package is listed before any starts: a plugin's requirements are
+        // decided against all of them, and each starts after the plugins it needs.
+        let mut to_start = Vec::new();
         for dir in dirs {
             if !self.is_loaded_from(&dir) {
-                self.load_dir(&dir, PluginSource::Installed, None);
+                to_start.extend(self.register_dir(&dir, PluginSource::Installed, None).1);
             }
         }
         for dir in self.links().paths {
             if !self.is_loaded_from(&dir) && dir.join(MANIFEST_FILE).is_file() {
-                self.load_dir(&dir, PluginSource::Linked, None);
+                to_start.extend(self.register_dir(&dir, PluginSource::Linked, None).1);
             }
+        }
+        for plugin in self.in_start_order(to_start) {
+            self.start(&plugin);
         }
         let (done, cv) = &self.initial_load;
         *done.lock() = true;
@@ -549,6 +696,7 @@ impl PluginHost {
 
     /// Unloads the project plugins of `root` (the project became untrusted or closed).
     pub fn restrict_project(&self, root: &Path) {
+        self.shared.withdraw_run_targets(None, Some(root));
         let _guard = self.lifecycle.lock();
         let ids: Vec<_> = self
             .plugins
@@ -618,6 +766,7 @@ impl PluginHost {
             }
         }
         if changed {
+            self.reconcile();
             self.changed();
         }
     }
@@ -684,9 +833,24 @@ impl PluginHost {
         Ok(self.ui.assets_with_prefix(id, prefix).into_iter().map(|(k, v)| (k, v.to_string())).collect())
     }
 
+    /// Keeps hosts allowed through `net:ask` in memory for this host's lifetime.
+    pub fn set_net_hosts_session_only(&self) {
+        self.shared.net_hosts_session_only.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The UI language windows run in, as `locale()` reports it to plugin code.
+    pub fn set_ui_locale(&self, tag: &str) {
+        *self.shared.locale.write() = tag.to_owned();
+    }
+
+    pub fn ui_locale(&self) -> String {
+        self.shared.locale.read().clone()
+    }
+
     pub fn set_enabled(&self, id: &str, enabled: bool) -> IdeResult<()> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         {
             let mut state = self.state.lock();
             if enabled {
@@ -702,6 +866,11 @@ impl PluginHost {
         } else {
             plugin.meta.lock().status = PluginStatus::Disabled;
         }
+        // Plugins that need this one stop or start with it.
+        self.reconcile();
+        if enabled {
+            self.restart_optional_dependents(id);
+        }
         self.changed();
         Ok(())
     }
@@ -710,9 +879,11 @@ impl PluginHost {
     pub fn reload(&self, id: &str) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         let (dir, source, root) = (plugin.dir().to_path_buf(), plugin.source, plugin.dev_root.clone());
         self.unload(id);
         let new_id = self.load_dir(&dir, source, root);
+        self.settle_dependents(&new_id);
         self.changed();
         self.info_of(&new_id)
     }
@@ -771,6 +942,11 @@ impl PluginHost {
         let _guard = self.lifecycle.lock();
         let (pkg, set) = self.validate_package(src)?;
         let id = pkg.id().to_owned();
+        if let Some(plugin) = self.plugins.read().get(&id) {
+            self.check_not_uninstalling(plugin)?;
+        } else {
+            self.check_uninstall_pending(&id)?;
+        }
         if let Some(existing) = self.plugins.read().get(&id)
             && existing.source != PluginSource::Installed
         {
@@ -826,6 +1002,7 @@ impl PluginHost {
                 .map(|p| p.meta.lock().error.clone().unwrap_or_else(|| "it failed to load".into()));
             if let Some(reason) = failed {
                 self.roll_back(&id, &previous, &version, old_grant);
+                self.settle_dependents(&id);
                 self.changed();
                 return Err(IdeError::invalid(format!(
                     "{} {version} could not start ({reason}); version {previous} was restored",
@@ -838,6 +1015,7 @@ impl PluginHost {
             }
         }
         install::prune(&root);
+        self.settle_dependents(&id);
         self.changed();
         self.info_of(&id)
     }
@@ -845,6 +1023,13 @@ impl PluginHost {
     /// Makes `previous` the active version of `id` again and drops `failed`
     /// (its directory, its consent). Called with the plugin unloaded or not.
     fn roll_back(&self, id: &str, previous: &str, failed: &str, grant: Option<ledger::Grant>) {
+        let ready = match self.get(id) {
+            Ok(plugin) => self.check_not_uninstalling(&plugin),
+            Err(_) => self.check_uninstall_pending(id),
+        };
+        if ready.is_err() {
+            return;
+        }
         let root = self.plugins_dir.join(id);
         self.unload(id);
         if let Err(e) = install::activate_version(&root, previous) {
@@ -888,6 +1073,7 @@ impl PluginHost {
                 level: ide_plugin::NotificationLevel::Warning,
                 title: format!("{name} update rolled back"),
                 body: message.clone(),
+                actions: Vec::new(),
             },
         );
         self.changed();
@@ -898,6 +1084,7 @@ impl PluginHost {
     pub fn roll_back_update(&self, id: &str) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         if plugin.source != PluginSource::Installed {
             return Err(IdeError::invalid("only installed plugins have versions to roll back to"));
         }
@@ -916,6 +1103,7 @@ impl PluginHost {
     pub fn grant(&self, id: &str, consent: &Consent) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         if plugin.invalid {
             return Err(IdeError::invalid("the plugin's manifest is invalid"));
         }
@@ -927,29 +1115,56 @@ impl PluginHost {
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
         }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
         self.changed();
         self.info_of(id)
     }
 
-    /// Grants or revokes one capability (Settings › Plugins › Permissions).
+    /// Revokes one exact host remembered through `net:ask`.
+    pub fn revoke_net_host(&self, id: &str, host: &str) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        {
+            let mut ledger = self.ledger.lock();
+            if !ledger.forget_net_host(&plugin.subject(), host) {
+                return Err(IdeError::invalid("host is not remembered for this plugin"));
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
+        self.changed();
+        self.info_of(id)
+    }
+
+    /// Grants or revokes one declared capability (Settings › Plugins › Permissions).
     /// Revoking a required one stops the plugin until consent is given again.
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
         let cap: Capability = capability.parse().map_err(IdeError::invalid)?;
-        if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
-            return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
-        }
         {
             let mut ledger = self.ledger.lock();
             let subject = plugin.subject();
+            if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
+                return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
+            }
             if ledger.get(&subject).is_none() {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
             ledger.set(&subject, &cap, granted);
             if granted
                 && let Capability::Process(program) = &cap
-                && let Some(bin) = self.resolve_binary(program)
+                && let Some(bin) = ledger
+                    .program_choice(&subject, &cap)
+                    .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
             {
                 ledger.set_binary(&subject, &cap, bin);
             }
@@ -959,6 +1174,8 @@ impl PluginHost {
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
         }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
         self.changed();
         self.info_of(id)
     }
@@ -966,12 +1183,81 @@ impl PluginHost {
     /// The program a `process:` grant allows, checked against the file
     /// approved for it. Errors ask the user to confirm again.
     pub fn program_for(&self, id: &str, program: &str) -> IdeResult<PathBuf> {
+        self.program_for_project(id, program, None)
+    }
+
+    /// Resolves the approved executable for the invoking project, verifying its pinned content.
+    pub fn program_for_project(&self, id: &str, program: &str, root: Option<&Path>) -> IdeResult<PathBuf> {
         let plugin = self.get(id)?;
-        let cap = Capability::Process(program.to_owned());
         self.ledger
             .lock()
-            .check_binary(&plugin.subject(), &cap)
+            .check_binary_in_project(&plugin.subject(), &Capability::Process(program.into()), root)
             .map_err(|e| IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e))
+    }
+
+    /// Records a user-approved executable choice; removing it revalidates the fallback or revokes the grant.
+    pub fn choose_program(
+        &self,
+        id: &str,
+        capability: &str,
+        root: Option<&Path>,
+        path: Option<&Path>,
+    ) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        let cap: Capability = capability.parse().map_err(IdeError::invalid)?;
+        let Capability::Process(program) = &cap else {
+            return Err(IdeError::invalid("expected a process capability"));
+        };
+        if !plugin.manifest().declares(&cap) && !plugin.meta.lock().declared_extra.contains(&cap) {
+            return Err(IdeError::invalid("undeclared process capability"));
+        }
+        let binary = if let Some(path) = path {
+            Some(ledger::approve_program(path).map_err(IdeError::invalid)?)
+        } else if root.is_none() {
+            self.resolve_binary(program)
+        } else {
+            None
+        };
+        {
+            let mut ledger = self.ledger.lock();
+            let subject = plugin.subject();
+            if ledger.get(&subject).is_none() {
+                return Err(IdeError::invalid("confirm this plugin's permissions first"));
+            }
+            if let Some(root) = root {
+                ledger.set_project_binary(&subject, &cap, root, binary);
+                if path.is_some() {
+                    ledger.set(&subject, &cap, true);
+                } else if ledger.check_binary(&subject, &cap).is_err() {
+                    ledger.set(&subject, &cap, false);
+                }
+            } else if let Some(binary) = binary {
+                ledger.set_program_choice(&subject, &cap, path);
+                ledger.set(&subject, &cap, true);
+                ledger.set_binary(&subject, &cap, binary);
+            } else {
+                ledger.set_program_choice(&subject, &cap, None);
+                ledger.set(&subject, &cap, false);
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
+        self.changed();
+        self.info_of(id)
+    }
+
+    fn check_uninstall_pending(&self, id: &str) -> IdeResult<()> {
+        if install::uninstall_pending(&self.plugins_dir, id)? {
+            return Err(IdeError::unavailable(std::io::Error::from(std::io::ErrorKind::ResourceBusy).to_string()));
+        }
+        Ok(())
     }
 
     pub fn uninstall(&self, id: &str) -> IdeResult<()> {
@@ -992,21 +1278,66 @@ impl PluginHost {
             .flatten()
             .filter_map(|s| s.get("name")?.as_str().map(str::to_owned))
             .collect();
-        self.unload(id);
+        let mut pending = install::PendingUninstall {
+            id: id.to_owned(),
+            name: plugin.manifest().name.clone(),
+            version: plugin.manifest().version.clone(),
+            flat: plugin.dir() == self.plugins_dir.join(id),
+            secrets: secrets.clone(),
+            error: None,
+        };
+        // A broken manifest has no trusted identity to journal; keep its existing removal path.
+        if !plugin.invalid {
+            install::remember_uninstall(&self.plugins_dir, &pending, plugin.dir())?;
+        }
+        // Retain registration for retry, but prevent concurrent on-demand activation.
         {
+            let _runtime = plugin.runtime.lock();
+            let mut meta = plugin.meta.lock();
+            meta.uninstalling = true;
+            meta.status = PluginStatus::Disabled;
+        }
+        self.stop(&plugin);
+        let cleanup = || -> std::io::Result<()> {
+            self.remove_database_sources(id).map_err(|e| std::io::Error::other(e.message))?;
+            install::check_cleanup_parent(&self.plugins_dir, &self.shared.data_dir.join(id))?;
+            install::check_cleanup_parent(&self.plugins_dir, plugin.dir())?;
+            install::check_not_symlink(&self.shared.data_dir.join(id))?;
+            for file in ["secrets.json", "secrets.tmp"] {
+                install::check_not_symlink(&self.shared.data_dir.join(id).join(file))?;
+            }
             let store = self.shared.secrets.read().clone();
             for name in &secrets {
                 if let Err(e) = store.set(id, name, None) {
-                    tracing::warn!(plugin = %id, "cannot delete secret {name:?}: {e}");
+                    return Err(std::io::Error::other(format!("cannot delete secret {name:?}: {e}")));
                 }
             }
+            // Keep the installed package and registration available until cleanup succeeds.
+            let data = self.shared.data_dir.join(id);
+            match std::fs::remove_dir_all(&data) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !data.exists() => {}
+                Err(e) => return Err(e),
+            }
+            // Every version (`<id>/<version>`), or the flat directory of an older install.
+            let target = self.plugins_dir.join(id);
+            match std::fs::remove_dir_all(&target) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && !target.exists() => Ok(()),
+                result => result,
+            }
+        };
+        if let Err(e) = cleanup() {
+            pending.error = Some(e.to_string());
+            if !plugin.invalid
+                && let Err(record_error) = install::remember_uninstall(&self.plugins_dir, &pending, plugin.dir())
+            {
+                tracing::warn!(plugin = %id, "cannot save uninstall error: {record_error}");
+            }
+            self.set_failed(&plugin, e.to_string());
+            self.changed();
+            return Err(e.into());
         }
-        // Every version (`<id>/<version>`), or the flat directory of an older install.
-        let root = self.plugins_dir.join(id);
-        std::fs::remove_dir_all(if root.is_dir() { root } else { plugin.dir().to_path_buf() })?;
         self.updates.lock().remove(id);
-        // Its storage goes with it.
-        let _ = std::fs::remove_dir_all(self.shared.data_dir.join(id));
         {
             let mut ledger = self.ledger.lock();
             ledger.remove(&plugin.subject());
@@ -1020,6 +1351,13 @@ impl PluginHost {
             }
         }
         self.save_state();
+        if let Err(e) = install::forget_uninstall(&self.plugins_dir, id) {
+            self.set_failed(&plugin, e.to_string());
+            self.changed();
+            return Err(e.into());
+        }
+        self.unload(id);
+        self.reconcile();
         self.changed();
         Ok(())
     }
@@ -1033,8 +1371,33 @@ impl PluginHost {
         arg: Option<&str>,
         invocation: Invocation,
     ) -> IdeResult<Option<String>> {
+        self.run_command_with_cancel(id, command, arg, invocation, None)
+    }
+
+    /// Runs a command with request-scoped cancellation, without cancelling other queued calls.
+    pub fn run_command_with_cancel(
+        &self,
+        id: &str,
+        command: &str,
+        arg: Option<&str>,
+        invocation: Invocation,
+        cancel: Option<&ide_core::CancellationToken>,
+    ) -> IdeResult<Option<String>> {
+        // Queued behind a prompt open in another window, the command would sit there with no
+        // sign of life until that prompt is answered: point the user at it instead.
+        if let Some(client) = invocation.client.as_deref()
+            && let Some(waiting) = self.shared.waiting_elsewhere(id, client)
+        {
+            self.sink.emit(Some(&waiting), PluginEvent::PromptWaiting { plugin_id: id.to_owned() });
+            let name = self.get(id).map(|p| p.manifest().name.clone()).unwrap_or_else(|_| id.to_owned());
+            return Err(IdeError::invalid(format!(
+                "{name} is waiting for your answer in another window. Answer or close it there, then try again."
+            )));
+        }
         let (cmd, arg) = (command.to_owned(), arg.map(str::to_owned));
-        self.code_call(id, invocation, "running the command", move |rt, inv| rt.run_command(&cmd, arg.as_deref(), inv))
+        self.code_call_cancellable(id, invocation, "running the command", cancel, move |rt, inv| {
+            rt.run_command(&cmd, arg.as_deref(), inv)
+        })
     }
 
     /// Content of a declared view, or of a custom editor (`invocation.editor`
@@ -1066,11 +1429,83 @@ impl PluginHost {
         })
     }
 
+    /// The detail tabs of item `key` of a Services or `detail = true` view.
+    pub fn service_detail(
+        &self,
+        id: &str,
+        view: &str,
+        key: &str,
+        invocation: Invocation,
+    ) -> IdeResult<Vec<ide_plugin::ServiceTab>> {
+        self.detail_view(id, view)?;
+        let (view, key) = (view.to_owned(), key.to_owned());
+        self.code_call(id, invocation, "rendering the item's detail pane", move |rt, inv| {
+            rt.service_detail(&view, &key, inv)
+        })
+    }
+
+    /// Runs the program of the log tab `tab` of node `key`'s pane, with the
+    /// arguments of the toggles in `on`, streaming its output until it exits
+    /// or `cancel` fires; returns its exit code. The pane is asked of the
+    /// plugin again, so the UI never names what runs. Needs the plugin's
+    /// `process:<program>` grant.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stream_service_log(
+        &self,
+        id: &str,
+        view: &str,
+        key: &str,
+        tab: &str,
+        on: &[String],
+        invocation: Invocation,
+        cancel: &ide_core::CancellationToken,
+        on_line: &dyn Fn(PluginOutputLine),
+    ) -> IdeResult<Option<i32>> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let cwd = invocation.workspace_root.clone();
+        let tabs = self.service_detail(id, view, key, invocation)?;
+        let Some(ide_plugin::ServicePane::Log(log)) = tabs.into_iter().find(|t| t.id == tab).map(|t| t.body) else {
+            return Err(IdeError::not_found(format!("the pane of {key:?} has no log tab {tab:?}")));
+        };
+        let toggled = log.toggles.into_iter().filter(|t| on.contains(&t.id)).flat_map(|t| t.args);
+        let args: Vec<String> = log.args.into_iter().chain(toggled).collect();
+        let plugin =
+            self.plugins.read().get(id).cloned().ok_or_else(|| IdeError::not_found(format!("plugin {id:?}")))?;
+        let cap = Capability::Process(log.program.clone());
+        if !plugin.meta.lock().granted.iter().any(|g| g.covers(&cap)) {
+            let denied = HostError::Denied(cap.to_string()).to_string();
+            return Err(IdeError::new(ide_core::error::ErrorKind::PermissionDenied, denied));
+        }
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        api.stream_process(&log.program, args, cwd.as_deref(), cancel, on_line).map_err(|e| match e {
+            HostError::Cancelled => IdeError::cancelled(),
+            e @ HostError::Denied(_) => IdeError::new(ide_core::error::ErrorKind::PermissionDenied, e.to_string()),
+            HostError::NotFound(m) => IdeError::not_found(m),
+            HostError::Invalid(m) => IdeError::invalid(m),
+            e => IdeError::unavailable(e.to_string()),
+        })
+    }
+
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
         let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
             .iter()
             .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
+    }
+
+    fn detail_view(&self, id: &str, view: &str) -> IdeResult<()> {
+        let detail = self.ui.items(ui_points::VIEWS, Some(id)).iter().any(|i| {
+            i.key == view
+                && (i.decl["location"].as_str() == Some(ui_points::SERVICES_LOCATION)
+                    || i.decl["detail"].as_bool() == Some(true))
+        });
+        if detail {
+            Ok(())
+        } else {
+            Err(IdeError::not_found(format!("plugin {id:?} declares no detail view {view:?}")))
+        }
     }
 
     /// One call into a plugin's code for the UI: checks it may run (asking
@@ -1083,6 +1518,34 @@ impl PluginHost {
         what: &str,
         f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
+        self.code_call_cancellable(id, invocation, what, None, f)
+    }
+
+    fn code_call_cancellable<R: Send + 'static>(
+        &self,
+        id: &str,
+        invocation: Invocation,
+        what: &str,
+        cancel: Option<&ide_core::CancellationToken>,
+        f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> IdeResult<R> {
+        self.code_call_with_budget(id, invocation, what, cancel, None, f)
+    }
+
+    fn code_call_with_budget<R: Send + 'static>(
+        &self,
+        id: &str,
+        invocation: Invocation,
+        what: &str,
+        cancel: Option<&ide_core::CancellationToken>,
+        budget: Option<Duration>,
+        f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
+    ) -> IdeResult<R> {
+        if cancel.is_some_and(|token| token.is_cancelled()) {
+            return Err(IdeError::cancelled());
+        }
+        let deadline = budget.map(|budget| Instant::now() + budget);
+        let fallback = ide_core::CancellationToken::new();
         let plugin = self.get(id)?;
         let client = invocation.client.clone();
         {
@@ -1091,7 +1554,7 @@ impl PluginHost {
                 PluginStatus::Disabled => Some(format!("plugin {id:?} is disabled")),
                 PluginStatus::Static => Some(format!("plugin {id:?} has no code")),
                 PluginStatus::NeedsConsent => Some(format!("plugin {id:?} is waiting for your permission")),
-                PluginStatus::Failed => {
+                PluginStatus::Failed | PluginStatus::Blocked => {
                     Some(format!("plugin {id:?} is not running: {}", meta.error.as_deref().unwrap_or("failed")))
                 }
                 PluginStatus::Active | PluginStatus::Inactive => None,
@@ -1117,13 +1580,42 @@ impl PluginHost {
         }
         // Twice at most: the instance may be reclaimed between picking it and queueing the call.
         for attempt in 0..2 {
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                return Err(IdeError::cancelled());
+            }
             let (actor, activated) = self.ensure_active(&plugin, client.as_deref())?;
             if activated {
                 self.changed();
             }
             let started = Instant::now();
             let (call, inv) = (f.clone(), invocation.clone());
-            let result = actor.call(None, move |rt| call(rt, inv));
+            let result = match (deadline, cancel) {
+                (Some(deadline), cancel) => actor.call_bounded(
+                    cancel.unwrap_or(&fallback),
+                    Duration::from_millis(50),
+                    deadline.saturating_duration_since(Instant::now()),
+                    move |rt| call(rt, inv),
+                ),
+                (None, Some(cancel)) => {
+                    actor.call_cancellable(cancel, Duration::from_millis(50), move |rt| call(rt, inv))
+                }
+                (None, None) => actor.call(None, move |rt| call(rt, inv)),
+            };
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::cancelled());
+            }
+            if deadline.is_some() && matches!(result, Err(ActorError::SoftTimeout)) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::new(
+                    ide_core::error::ErrorKind::TimedOut,
+                    format!("plugin {id:?} timed out while {what}"),
+                ));
+            }
+            if matches!(result, Err(ActorError::Cancelled)) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::cancelled());
+            }
             if !matches!(result, Err(ActorError::Stopped | ActorError::SoftTimeout | ActorError::Cancelled)) {
                 let crashed = matches!(result, Err(ActorError::Call(CallError::Trap(_))));
                 // Cancelling or a missing grant is not the plugin failing.
@@ -1197,7 +1689,12 @@ impl PluginHost {
 
     /// Plugins' `runDetectors`, for [`ide_run::set_external_detection`].
     pub fn run_detection(&self) -> Arc<dyn ide_run::ExternalDetection> {
-        Arc::new(run_detectors::PluginRunDetection { store: self.run_detectors.clone(), pins: self.pins.clone() })
+        Arc::new(run_detectors::PluginRunDetection {
+            store: self.run_detectors.clone(),
+            dynamic: self.shared.run_configurations.clone(),
+            pins: self.pins.clone(),
+            project_pins: self.shared.project_pins.clone(),
+        })
     }
 
     /// The syntax of plugin languages, for [`ide_language::set_external_syntax`].
@@ -1252,9 +1749,102 @@ impl PluginHost {
         self.shared.status_items()
     }
 
+    /// Plugin context keys in effect for window `client`: global keys overlaid with its own.
+    pub fn status_snapshot(&self, client: &str) -> Vec<PluginStatusItem> {
+        self.shared.status_snapshot(client)
+    }
+
+    pub fn context_keys(&self, client: Option<&str>) -> Vec<PluginContextKey> {
+        self.shared.context_keys(client)
+    }
+
+    /// A window labelled `label` is about to exist again (labels are reused).
+    pub fn reopen_client(&self, label: &str) {
+        self.shared.reopen_client(label);
+    }
+
+    /// Window `label` closed: cancels its prompts, drops its context keys and queued
+    /// events, and ignores context writes of commands still running for it.
+    pub fn forget_client(&self, label: &str) {
+        self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
+        self.shared.forget_client(label);
+        self.forget_web_ptys(label);
+    }
+
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
     pub fn cancel_task(&self, task_id: &str) -> bool {
         task_id.parse().is_ok_and(|id| self.shared.cancel_task(id))
+    }
+
+    /// The user answered (`Some`) or dismissed (`None`) a prompt
+    /// (`PromptRequested`); false when it is no longer waiting.
+    pub fn answer_prompt(&self, prompt_id: &str, answer: Option<Vec<String>>) -> bool {
+        prompt_id.parse().is_ok_and(|id| self.shared.answer_prompt(id, answer))
+    }
+
+    /// A window answered a plugin's `CommitRequested`; false when the call no
+    /// longer waits.
+    pub fn answer_command(&self, client: &str, request: &str, answer: CommandAnswer) -> bool {
+        request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
+    }
+
+    pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_commit(id, answer))
+    }
+
+    /// Runs the plugins' before-commit checks `checks` (`(plugin, check)`) on
+    /// what `selection` commits. A check that fails or isn't available is
+    /// reported with `error`, so the commit still stops for it.
+    pub fn commit_checks(
+        &self,
+        invocation: Invocation,
+        selection: CommitSelection,
+        checks: Vec<PluginCommitCheckRef>,
+        cancel: &ide_core::CancellationToken,
+    ) -> IdeResult<Vec<PluginCommitCheckResult>> {
+        let declared = self.ui.items(ui_points::COMMIT_CHECKS, None);
+        let wanted: Vec<_> = checks
+            .into_iter()
+            .filter_map(|c| {
+                let item = declared.iter().find(|i| i.plugin_id == c.plugin_id && i.key == c.check)?;
+                Some((c, item.decl["title"].as_str().unwrap_or_default().to_owned()))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspace = self.shared.workspace().ok_or_else(|| IdeError::unavailable("no workspace"))?;
+        let draft = api::commit_draft(&*workspace, selection, cancel).map_err(|e| match e {
+            HostError::Cancelled => IdeError::cancelled(),
+            HostError::Invalid(m) => IdeError::invalid(m),
+            e => IdeError::unavailable(e.to_string()),
+        })?;
+        let mut out = Vec::new();
+        for (c, title) in wanted {
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let granted = self
+                .plugins
+                .read()
+                .get(&c.plugin_id)
+                .is_some_and(|p| p.meta.lock().granted.contains(&Capability::VcsRead));
+            let result = if granted {
+                let (check, draft) = (c.check.clone(), draft.clone());
+                self.code_call(&c.plugin_id, invocation.clone(), "checking the commit", move |rt, inv| {
+                    rt.commit_check(&check, draft.clone(), inv)
+                })
+                .map_err(|e| e.message)
+            } else {
+                Err(HostError::Denied(Capability::VcsRead.to_string()).to_string())
+            };
+            let (problems, error) = match result {
+                Ok(problems) => (problems, None),
+                Err(e) => (Vec::new(), Some(e)),
+            };
+            out.push(PluginCommitCheckResult { plugin_id: c.plugin_id, check: c.check, title, problems, error });
+        }
+        Ok(out)
     }
 
     /// Kinds of workbench events some running or activatable plugin wants;
@@ -1264,7 +1854,7 @@ impl PluginHost {
         let mut out = BTreeSet::new();
         for p in self.plugins.read().values() {
             for kind in EventKind::ALL {
-                if self.wants(p, kind, subs.get(p.id())) {
+                if Self::wants(p, kind, subs.kinds.get(p.id())) {
                     out.insert(kind);
                 }
             }
@@ -1274,7 +1864,7 @@ impl PluginHost {
 
     /// Whether `plugin` gets `kind` events: subscribed at run time or with
     /// `on-event:<kind>`, the capability granted, and able to run.
-    fn wants(&self, plugin: &LoadedPlugin, kind: EventKind, runtime: Option<&BTreeSet<EventKind>>) -> bool {
+    fn wants(plugin: &LoadedPlugin, kind: EventKind, runtime: Option<&BTreeSet<EventKind>>) -> bool {
         let declared =
             plugin.manifest().activation.iter().any(|a| matches!(a, ActivationEvent::Event(k) if k == kind.name()));
         if !declared && !runtime.is_some_and(|s| s.contains(&kind)) {
@@ -1287,7 +1877,40 @@ impl PluginHost {
 
     /// Queues workbench events from window `client` for the plugins that want
     /// them; [`flush_events`](Self::flush_events) delivers them in batches.
+    pub fn post_window_events(&self, client: &str, events: Vec<WorkbenchEvent>, editor: Option<PluginEditor>) {
+        let mut editors = self.shared.event_editors.write();
+        if let Some(editor) = editor {
+            editors.insert(client.into(), editor.context());
+        } else {
+            editors.remove(client);
+        }
+        drop(editors);
+        self.post_events(
+            Some(client),
+            events
+                .into_iter()
+                .filter(|e| {
+                    !matches!(
+                        e,
+                        WorkbenchEvent::RunExited(_)
+                            | WorkbenchEvent::TerminalExited(_)
+                            | WorkbenchEvent::ContentTabAction(_)
+                    )
+                })
+                .collect(),
+        );
+    }
+
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
+        self.post_events_from(client, events, None);
+    }
+
+    fn post_events_from(
+        &self,
+        client: Option<&str>,
+        events: Vec<WorkbenchEvent>,
+        source: Option<files_changed::Source>,
+    ) {
         if events.is_empty() {
             return;
         }
@@ -1295,31 +1918,84 @@ impl PluginHost {
         let plugins: Vec<_> = self.plugins.read().values().cloned().collect();
         let now = Instant::now();
         let mut queues = self.queues.lock();
+        let mut events = events;
+        files_changed::retain_live(&mut events, source.as_ref());
         for p in plugins {
-            let wanted: Vec<WorkbenchEvent> =
-                events.iter().filter(|e| self.wants(&p, e.kind(), subs.get(p.id()))).cloned().collect();
+            let wanted: Vec<WorkbenchEvent> = events
+                .iter()
+                .filter(|event| !matches!(event, WorkbenchEvent::WebsocketReady(ready) if ready.plugin_id != p.id()))
+                .filter(|e| Self::wants(&p, e.kind(), subs.kinds.get(p.id())))
+                .filter(|e| {
+                    !matches!(e, WorkbenchEvent::FilesChanged(_))
+                        || p.dev_root
+                            .as_ref()
+                            .is_none_or(|root| client.and_then(|c| self.shared.project_of(c)).as_ref() == Some(root))
+                })
+                .filter_map(|e| match e {
+                    WorkbenchEvent::SettingsChanged(_) => {
+                        let keys = self.shared.changed_settings(&p.pkg, client);
+                        (!keys.is_empty()).then_some(WorkbenchEvent::SettingsChanged(keys))
+                    }
+                    // Only the plugin that declares a point hears about its contributions.
+                    WorkbenchEvent::ExtensionsChanged(points) => {
+                        let own: Vec<String> = points
+                            .iter()
+                            .filter(|point| self.registry.point_owner(point).as_deref() == Some(p.id()))
+                            .cloned()
+                            .collect();
+                        (!own.is_empty()).then_some(WorkbenchEvent::ExtensionsChanged(own))
+                    }
+                    _ => Some(e.clone()),
+                })
+                .collect();
+            let wanted = Self::filter_path_events(&self.shared, &p, client, &wanted, &subs);
             if wanted.is_empty() {
                 continue;
             }
-            let queue = queues
-                .entry((p.id().to_owned(), client.map(str::to_owned)))
-                .or_insert_with(|| EventQueue { since: now, events: Vec::new() });
-            queue.events.extend(wanted);
+            let queue = queues.entry((p.id().to_owned(), client.map(str::to_owned))).or_insert_with(|| EventQueue {
+                since: now,
+                events: Vec::new(),
+                files_source: None,
+            });
+            if let Some(source) = &source {
+                if !queue.files_source.as_ref().is_some_and(|old| old.same(source)) {
+                    queue.events.retain(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
+                }
+                queue.files_source = Some(source.clone());
+            }
+            files_changed::append(&mut queue.events, wanted);
             let excess = queue.events.len().saturating_sub(MAX_QUEUED_EVENTS);
-            queue.events.drain(..excess);
+            let mut remaining = excess;
+            queue.events.retain(|event| {
+                if remaining > 0
+                    && !matches!(
+                        event,
+                        WorkbenchEvent::FilesChanged(_)
+                            | WorkbenchEvent::RunExited(_)
+                            | WorkbenchEvent::TerminalExited(_)
+                            | WorkbenchEvent::ContentTabAction(_)
+                    )
+                {
+                    remaining -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
         }
     }
 
     /// Delivers queued events: to running plugins right away, to idle ones
     /// (which must be activated) after [`IDLE_BATCH`], so frequent events
-    /// don't keep waking them. Call it a few times a second.
+    /// don't keep waking them. Filesystem events are already debounced by
+    /// the watcher and bypass that delay. Call it a few times a second.
     pub fn flush_events(&self) {
         self.flush_events_at(Instant::now());
     }
 
     #[doc(hidden)]
     pub fn flush_events_at(&self, now: Instant) {
-        let due: Vec<(QueueKey, Vec<WorkbenchEvent>)> = {
+        let due: Vec<(QueueKey, EventQueue)> = {
             let mut queues = self.queues.lock();
             let plugins = self.plugins.read();
             let keys: Vec<_> = queues
@@ -1330,15 +2006,17 @@ impl PluginHost {
                     running
                         || now.saturating_duration_since(q.since) >= IDLE_BATCH
                         || q.events.len() >= MAX_QUEUED_EVENTS / 2
-                        || q.events.contains(&WorkbenchEvent::Scheduled)
+                        || q.events
+                            .iter()
+                            .any(|e| matches!(e, WorkbenchEvent::FilesChanged(_) | WorkbenchEvent::Scheduled))
                 })
                 .map(|(k, _)| k.clone())
                 .collect();
-            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q.events))).collect()
+            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q))).collect()
         };
         let mut changed = false;
-        for ((id, client), events) in due {
-            changed |= self.deliver(&id, client, events);
+        for ((id, client), queue) in due {
+            changed |= self.deliver(&id, client, queue);
         }
         // Batches that crashed since.
         let plugins: Vec<_> = self.plugins.read().values().cloned().collect();
@@ -1371,12 +2049,52 @@ impl PluginHost {
         }
     }
 
+    fn filter_delivery_events(
+        shared: &api::Shared,
+        plugin: &LoadedPlugin,
+        client: Option<&str>,
+        events: &[WorkbenchEvent],
+        subs: &event_paths::Subscriptions,
+    ) -> Vec<WorkbenchEvent> {
+        Self::filter_path_events(shared, plugin, client, events, subs)
+            .into_iter()
+            .filter(|event| {
+                !matches!(
+                    event,
+                    WorkbenchEvent::FileOpened(_) | WorkbenchEvent::FileSaved(_) | WorkbenchEvent::FilesChanged(_)
+                ) || Self::wants(plugin, event.kind(), subs.kinds.get(plugin.id()))
+            })
+            .collect()
+    }
+
     /// Hands one batch to the plugin's `event-handler.handle` without waiting
     /// for it. A newer batch of the same kinds cooperatively cancels the one
     /// being handled (a save while the previous save is still being checked).
+    /// Filesystem deltas must all run: a newer delta cannot replace an older one.
     /// Returns whether the plugin was activated.
-    fn deliver(&self, id: &str, client: Option<String>, events: Vec<WorkbenchEvent>) -> bool {
+    fn deliver(&self, id: &str, client: Option<String>, mut queue: EventQueue) -> bool {
+        files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+        if queue.events.is_empty() {
+            return false;
+        }
+        if queue.events.iter().any(|e| matches!(e, WorkbenchEvent::FilesChanged(_)))
+            && queue.events.iter().any(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)))
+        {
+            let (files, other) = queue.events.into_iter().partition(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
+            let changed =
+                self.deliver(id, client.clone(), EventQueue { since: queue.since, events: other, files_source: None });
+            return self.deliver(
+                id,
+                client,
+                EventQueue { since: queue.since, events: files, files_source: queue.files_source },
+            ) | changed;
+        }
         let Ok(plugin) = self.get(id) else { return false };
+        let subs = self.shared.subscriptions.lock().clone();
+        let eligible = Self::filter_delivery_events(&self.shared, &plugin, client.as_deref(), &queue.events, &subs);
+        if eligible.is_empty() {
+            return false;
+        }
         if !plugin.meta.lock().pending.is_empty() {
             return false;
         }
@@ -1384,22 +2102,100 @@ impl PluginHost {
         let invocation = Invocation {
             workspace_root: client.as_deref().and_then(|c| self.shared.project_of(c)),
             client: client.clone(),
-            editor: None,
+            editor: client.as_deref().and_then(|c| self.shared.event_editors.read().get(c).cloned()),
+            selected_paths: Vec::new(),
+            global_settings: false,
+            command_chain: Vec::new(),
         };
-        let kinds: BTreeSet<EventKind> = events.iter().map(WorkbenchEvent::kind).collect();
+        let kinds: BTreeSet<EventKind> = queue.events.iter().map(WorkbenchEvent::kind).collect();
+        let filesystem = kinds.contains(&EventKind::FilesChanged);
+        let mailbox_key = (client.clone(), invocation.workspace_root.clone());
+        let mut ordinary = None;
+        let token = Arc::new(());
         {
             let mut batches = plugin.batches.lock();
-            if batches.running.as_ref() == Some(&kinds) && !kinds.contains(&EventKind::Scheduled) {
+            if batches.running.as_ref() == Some(&kinds)
+                && !kinds.contains(&EventKind::Scheduled)
+                && !kinds.contains(&EventKind::FilesChanged)
+                && !kinds.iter().any(|k| {
+                    matches!(k, EventKind::RunExited | EventKind::TerminalExited | EventKind::ContentTabAction)
+                })
+            {
                 actor.cancel_soft();
+            }
+            if filesystem {
+                files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+                if queue.events.is_empty() {
+                    return activated;
+                }
+                if let Some(pending) = batches.files_pending.get_mut(&mailbox_key)
+                    && pending.actor.upgrade().is_some_and(|owner| Arc::ptr_eq(&owner, &actor))
+                {
+                    let pending = &mut pending.queue;
+                    if queue
+                        .files_source
+                        .as_ref()
+                        .is_some_and(|source| !pending.files_source.as_ref().is_some_and(|old| old.same(source)))
+                    {
+                        pending.events.clear();
+                        pending.files_source = queue.files_source.clone();
+                    }
+                    files_changed::append(&mut pending.events, queue.events);
+                    return activated;
+                }
+                batches.files_pending.insert(
+                    mailbox_key.clone(),
+                    PendingFiles { queue, actor: Arc::downgrade(&actor), token: token.clone() },
+                );
+            } else {
+                ordinary = Some(queue);
             }
             batches.pending += 1;
         }
         let started = Instant::now();
-        let (start, finish) = (plugin.batches.clone(), plugin.batches.clone());
+        let start = plugin.batches.clone();
+        let ticket = BatchTicket {
+            batches: plugin.batches.clone(),
+            files_key: filesystem.then(|| mailbox_key.clone()),
+            token: token.clone(),
+        };
         let done_plugin = plugin.clone();
+        let delivery_plugin = plugin.clone();
+        let shared = self.shared.clone();
         actor.post(
             move |rt| {
-                start.lock().running = Some(kinds);
+                let _ticket = ticket;
+                let mut queue = {
+                    let mut batches = start.lock();
+                    let queue = if filesystem {
+                        if !batches.files_pending.get(&mailbox_key).is_some_and(|p| Arc::ptr_eq(&p.token, &token)) {
+                            return Ok(());
+                        }
+                        batches.files_pending.remove(&mailbox_key).expect("owned filesystem batch").queue
+                    } else {
+                        ordinary.expect("ordinary event batch")
+                    };
+                    batches.running = Some(kinds);
+                    batches.running_token = Some(token);
+                    queue
+                };
+                files_changed::retain_live(&mut queue.events, queue.files_source.as_ref());
+                if filesystem
+                    && invocation.workspace_root != invocation.client.as_deref().and_then(|c| shared.project_of(c))
+                {
+                    return Ok(());
+                }
+                let subs = shared.subscriptions.lock().clone();
+                let events = Self::filter_delivery_events(
+                    &shared,
+                    &delivery_plugin,
+                    invocation.client.as_deref(),
+                    &queue.events,
+                    &subs,
+                );
+                if events.is_empty() {
+                    return Ok(());
+                }
                 rt.handle_events(events, invocation)
             },
             move |result| {
@@ -1416,9 +2212,6 @@ impl PluginHost {
                     }
                     _ => {}
                 }
-                let mut batches = finish.lock();
-                batches.pending = batches.pending.saturating_sub(1);
-                batches.running = None;
             },
         );
         activated
@@ -1524,7 +2317,7 @@ impl PluginHost {
                 continue;
             }
             let pkg = Package::new(m.clone(), dir.clone());
-            let problem = match self.registry.prepare(&pkg) {
+            let problem = match self.prepare(&pkg) {
                 Err(e) => Some(e),
                 Ok(_) => m
                     .wasm
@@ -1547,6 +2340,7 @@ impl PluginHost {
                 authors: m.authors,
                 homepage: m.homepage,
                 change_notes: m.change_notes,
+                icon: plugin_icon(&pkg).ok().flatten(),
                 path: dir.into(),
                 problem,
             });
@@ -1558,12 +2352,17 @@ impl PluginHost {
     /// Deactivates every plugin (also done on drop).
     pub fn shutdown(&self) {
         let actors: Vec<_> = self.plugins.read().values().filter_map(|p| p.runtime.lock().take()).collect();
+        for id in self.plugins.read().keys() {
+            self.shared.block_prompts(id);
+            self.stop_web_ptys(id);
+        }
         for a in &actors {
             a.stop(false);
         }
         for a in actors {
             a.stop(true);
         }
+        self.shared.finish_process_shutdowns();
     }
 
     /// Periodic upkeep (every few seconds): reports crashes nobody waited
@@ -1610,7 +2409,7 @@ impl PluginHost {
                 self.queues
                     .lock()
                     .entry((p.id().to_owned(), None))
-                    .or_insert_with(|| EventQueue { since: now, events: Vec::new() })
+                    .or_insert_with(|| EventQueue { since: now, events: Vec::new(), files_source: None })
                     .events
                     .push(WorkbenchEvent::Scheduled);
             }
@@ -1641,11 +2440,24 @@ impl PluginHost {
         self.plugins.read().values().any(|p| p.dir() == dir)
     }
 
+    /// Validates the manifest's icon and every declaration of `pkg`; the
+    /// icon files join the package files the declarations reference.
+    fn prepare(&self, pkg: &Package) -> Result<ide_extension::PreparedSet, String> {
+        plugin_icon(pkg)?;
+        let mut set = self.registry.prepare(pkg)?;
+        for icon in [&pkg.manifest.icon, &pkg.manifest.icon_dark].into_iter().flatten() {
+            if !set.files.contains(icon) {
+                set.files.push(icon.clone());
+            }
+        }
+        Ok(set)
+    }
+
     /// Parses and validates a package directory; nothing takes effect.
     fn validate_package(&self, src: &Path) -> IdeResult<(Package, ide_extension::PreparedSet)> {
         let manifest = Manifest::load(src).map_err(IdeError::invalid)?;
         let pkg = Package::new(manifest, src.to_path_buf());
-        let set = self.registry.prepare(&pkg).map_err(IdeError::invalid)?;
+        let set = self.prepare(&pkg).map_err(IdeError::invalid)?;
         if let Some(wasm) = &pkg.manifest.wasm {
             if !src.join(wasm).is_file() {
                 return Err(IdeError::invalid(format!(
@@ -1663,9 +2475,34 @@ impl PluginHost {
 
     /// Loads one package and starts it unless disabled. Returns the plugin id.
     fn load_dir(&self, dir: &Path, source: PluginSource, dev_root: Option<PathBuf>) -> String {
+        let (id, to_start) = self.register_dir(dir, source, dev_root);
+        if let Some(plugin) = to_start {
+            self.start(&plugin);
+        }
+        id
+    }
+
+    /// Reads one package and lists it as a plugin. Returns its id and the plugin
+    /// when it is to be started (valid, enabled, not already loaded).
+    fn register_dir(
+        &self,
+        dir: &Path,
+        source: PluginSource,
+        dev_root: Option<PathBuf>,
+    ) -> (String, Option<Arc<LoadedPlugin>>) {
         let (manifest, error) = match Manifest::load(dir) {
             Ok(m) => (m, None),
-            Err(e) => (placeholder_manifest(dir), Some(e)),
+            Err(e) => {
+                let mut manifest = placeholder_manifest(dir);
+                // Installed directory names retain identity when discovery metadata is damaged.
+                if source == PluginSource::Installed
+                    && let Ok(relative) = dir.strip_prefix(&self.plugins_dir)
+                    && let Some(name) = relative.components().next().and_then(|p| p.as_os_str().to_str())
+                {
+                    manifest.id = name.to_owned();
+                }
+                (manifest, Some(e))
+            }
         };
         let invalid = error.is_some();
         let id = manifest.id.clone();
@@ -1678,6 +2515,7 @@ impl PluginHost {
             pkg = pkg.with_digest(digest.trim());
         }
         let plugin = Arc::new(LoadedPlugin {
+            icon: plugin_icon(&pkg).ok().flatten(),
             pkg,
             invalid,
             source,
@@ -1694,7 +2532,7 @@ impl PluginHost {
                     dir.display(),
                     existing.dir().display()
                 );
-                return id;
+                return (id, None);
             }
             plugins.insert(id.clone(), plugin.clone());
         }
@@ -1703,10 +2541,10 @@ impl PluginHost {
             let mut meta = plugin.meta.lock();
             meta.status = PluginStatus::Failed;
             meta.error = Some(e);
-        } else if !self.state.lock().disabled.contains(&id) {
-            self.start(&plugin);
+            return (id, None);
         }
-        id
+        let enabled = !self.state.lock().disabled.contains(&id);
+        (id, enabled.then_some(plugin))
     }
 
     fn unload(&self, id: &str) {
@@ -1714,10 +2552,30 @@ impl PluginHost {
         self.stop(&plugin);
     }
 
+    fn check_not_uninstalling(&self, plugin: &LoadedPlugin) -> IdeResult<()> {
+        if plugin.meta.lock().uninstalling {
+            return Err(IdeError::unavailable("Uninstall incomplete; retry Uninstall to finish cleanup."));
+        }
+        if plugin.source == PluginSource::Installed {
+            self.check_uninstall_pending(plugin.id())?;
+        }
+        Ok(())
+    }
+
     /// Validates, checks grants and commits the contributions; activates code
     /// whose activation event already fired.
     fn start(&self, plugin: &Arc<LoadedPlugin>) {
+        if let Err(e) = self.check_not_uninstalling(plugin) {
+            if !plugin.meta.lock().uninstalling {
+                self.set_failed(plugin, e.message);
+            }
+            return;
+        }
+        if let Some(reason) = self.blocked_reason(plugin) {
+            return self.set_blocked(plugin, &reason);
+        }
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         if plugin.source == PluginSource::Installed
             && let Some(reason) = self.revoked_reason(plugin.id(), &plugin.manifest().version, plugin.dir())
         {
@@ -1727,7 +2585,7 @@ impl PluginHost {
             let publisher = self.verified_publisher(plugin.dir());
             plugin.meta.lock().publisher = publisher;
         }
-        let set = match self.registry.prepare(&plugin.pkg) {
+        let set = match self.prepare(&plugin.pkg) {
             Ok(set) => set,
             Err(e) => return self.set_failed(plugin, e),
         };
@@ -1775,6 +2633,7 @@ impl PluginHost {
     /// first if needed. Returns whether it was activated now.
     fn ensure_active(&self, plugin: &Arc<LoadedPlugin>, client: Option<&str>) -> IdeResult<(Arc<Actor>, bool)> {
         let mut runtime = plugin.runtime.lock();
+        self.check_not_uninstalling(plugin)?;
         if let Some(actor) = runtime.as_ref() {
             if actor.is_alive() {
                 return Ok((actor.clone(), false));
@@ -1810,6 +2669,7 @@ impl PluginHost {
             plugin_id: plugin.id().to_owned(),
             version: plugin.manifest().version.clone(),
             granted,
+            subject: plugin.subject(),
             host: api,
             limits: self.limits,
         };
@@ -1828,6 +2688,7 @@ impl PluginHost {
                 return Err(IdeError::internal(format!("plugin {:?} {e}", plugin.id())));
             }
         };
+        plugin.meta.lock().has_run_target_validation = rt.has_run_target_validation();
         let crash = match rt.activate() {
             Ok(_) => None,
             Err(CallError::Trap(e)) => Some(format!("activation {e}")),
@@ -1857,6 +2718,7 @@ impl PluginHost {
             Err(e) => return Err(IdeError::internal(format!("plugin {:?}: {e}", plugin.id()))),
         };
         *runtime = Some(actor.clone());
+        self.shared.allow_prompts(plugin.id());
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Active;
         meta.has_syntax = has_syntax;
@@ -1881,6 +2743,8 @@ impl PluginHost {
             }
         }
         let Some(error) = actor.take_crash() else { return };
+        self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         if error.starts_with(CANCELLED) {
             // Cancelled on request: restart on next use, no backoff.
             let mut meta = plugin.meta.lock();
@@ -1897,6 +2761,7 @@ impl PluginHost {
     /// A trap dropped the plugin's instance: restart it on next use after a
     /// backoff, or stop it for the session after too many crashes in a row.
     fn crashed(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
+        self.clear_provider_diagnostics(plugin.id());
         let failures = {
             let mut meta = plugin.meta.lock();
             meta.failures += 1;
@@ -1926,6 +2791,7 @@ impl PluginHost {
                     level: NotificationLevel::Warning,
                     title: format!("Plugin \u{201c}{}\u{201d} crashed", plugin.manifest().name),
                     body: format!("{error}\nIt restarts the next time it is needed."),
+                    actions: Vec::new(),
                 },
             );
         }
@@ -1942,6 +2808,8 @@ impl PluginHost {
             *runtime = None;
         }
         actor.stop(false);
+        // Its handles go with its instance; an idle reclaim is one.
+        self.shared.kill_processes(plugin.id());
         let mut meta = plugin.meta.lock();
         if meta.status == PluginStatus::Active {
             meta.status = PluginStatus::Inactive;
@@ -1952,23 +2820,36 @@ impl PluginHost {
     }
 
     fn stop(&self, plugin: &LoadedPlugin) {
+        self.stop_web_ptys(plugin.id());
+        self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
+        // A call waiting on the user would keep the join below waiting.
+        self.shared.block_prompts(plugin.id());
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(true);
         }
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         self.shared.clear_plugin(plugin.id(), true);
         self.queues.lock().retain(|(id, _), _| id != plugin.id());
     }
 
     fn set_failed(&self, plugin: &LoadedPlugin, error: String) {
+        self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "{error}");
         self.registry.dispose_plugin(plugin.id());
+        self.clear_provider_diagnostics(plugin.id());
         let mut meta = plugin.meta.lock();
         meta.status = PluginStatus::Failed;
         meta.error = Some(error);
+        drop(meta);
+        self.stop_web_ptys(plugin.id());
     }
 
     fn fail(&self, plugin: &LoadedPlugin, error: &str, client: Option<&str>) {
+        self.clear_plugin_navigation(plugin.id());
+        self.clear_plugin_endpoints(plugin.id());
         tracing::warn!(plugin = %plugin.id(), "disabled after failure: {error}");
         if let Some(actor) = plugin.runtime.lock().take() {
             actor.stop(false);
@@ -1982,6 +2863,7 @@ impl PluginHost {
                 level: NotificationLevel::Error,
                 title: format!("Plugin \u{201c}{}\u{201d} was disabled", plugin.manifest().name),
                 body: error.to_owned(),
+                actions: Vec::new(),
             },
         );
         self.changed();
@@ -1994,6 +2876,7 @@ impl PluginHost {
             self.refresh_pins(&ledger);
         }
         self.emit(None, PluginEvent::CommandsChanged);
+        self.flush_extension_changes();
         let languages = self.languages.revision();
         if self.announced_languages.swap(languages, Ordering::AcqRel) != languages {
             self.emit(None, PluginEvent::LanguagesChanged);
@@ -2034,8 +2917,21 @@ impl PluginHost {
     /// pick up a change on their next lookup.
     fn refresh_pins(&self, ledger: &Ledger) {
         let mut pins = HashMap::new();
+        let mut project_pins = HashMap::new();
         for plugin in self.plugins.read().values() {
             let subject = plugin.subject();
+            if let Some(grant) = ledger.get(&subject) {
+                for (root, binaries) in &grant.project_binaries {
+                    for (cap, bin) in binaries {
+                        if grant.granted.contains(cap) {
+                            project_pins.insert(
+                                (plugin.id().to_owned(), cap.clone(), root.clone()),
+                                ProgramPin { path: bin.path.clone(), hash: bin.hash.clone() },
+                            );
+                        }
+                    }
+                }
+            }
             let declared =
                 plugin.manifest().capabilities.all().cloned().chain(plugin.meta.lock().declared_extra.clone());
             for cap in declared.filter(|c| matches!(c, Capability::Process(_))) {
@@ -2047,6 +2943,7 @@ impl PluginHost {
                 }
             }
         }
+        *self.shared.project_pins.write() = project_pins;
         let mut current = self.pins.write();
         if *current != pins {
             *current = pins;
@@ -2078,7 +2975,7 @@ impl PluginHost {
             return h.trim().to_owned();
         }
         // Installed before hashes were recorded: hash once and remember.
-        let files = self.registry.prepare(&plugin.pkg).map(|s| s.files).unwrap_or_default();
+        let files = self.prepare(&plugin.pkg).map(|s| s.files).unwrap_or_default();
         let files: Vec<PathBuf> = files.into_iter().chain(plugin.manifest().wasm.clone()).collect();
         let hash = ledger::package_hash(plugin.dir(), &files).unwrap_or_default();
         let _ = std::fs::write(&file, &hash);
@@ -2100,12 +2997,26 @@ impl PluginHost {
 
     fn record_consent(&self, request: &Request<'_>, consent: &Consent) {
         let accepted: Vec<Capability> = request.optional.iter().filter(|c| consent.accepts(c)).cloned().collect();
+        let choices: BTreeMap<_, _> = {
+            let ledger = self.ledger.lock();
+            request
+                .required
+                .iter()
+                .chain(&accepted)
+                .filter_map(|cap| {
+                    ledger.program_choice(&request.subject, cap).map(|p| (cap.to_string(), p.to_path_buf()))
+                })
+                .collect()
+        };
         let binaries: BTreeMap<String, BinaryGrant> = request
             .required
             .iter()
             .chain(&accepted)
             .filter_map(|c| match c {
-                Capability::Process(program) => self.resolve_binary(program).map(|b| (c.to_string(), b)),
+                Capability::Process(program) => choices
+                    .get(&c.to_string())
+                    .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
+                    .map(|b| (c.to_string(), b)),
                 _ => None,
             })
             .collect();
@@ -2124,6 +3035,8 @@ impl PluginHost {
     }
 
     fn info(&self, p: &LoadedPlugin) -> PluginInfo {
+        // Before `meta` below: this reads the other plugins' statuses.
+        let (depends, dependents, extension_points) = self.relations(p);
         let m = p.manifest();
         // The ledger before a plugin's `meta`, as everywhere (`refresh_pins` holds the
         // ledger and locks each plugin's): the other order deadlocks.
@@ -2137,6 +3050,13 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        // Hosts remembered through `net:ask` are grants of their own: listed
+        // separately so the user can revoke them one by one.
+        let net_hosts = grant
+            .as_ref()
+            .filter(|g| g.confirmed && g.has(&Capability::NetAsk) && m.declares(&Capability::NetAsk))
+            .map(|g| g.net_hosts.iter().cloned().collect())
+            .unwrap_or_default();
         PluginInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -2145,6 +3065,7 @@ impl PluginHost {
             authors: m.authors.clone(),
             homepage: m.homepage.clone(),
             change_notes: m.change_notes.clone(),
+            icon: p.icon.clone(),
             source: p.source,
             path: p.dir().to_path_buf().into(),
             enabled: !self.state.lock().disabled.contains(&m.id),
@@ -2152,6 +3073,7 @@ impl PluginHost {
             error: meta.error.clone(),
             has_code: m.wasm.is_some(),
             capabilities,
+            net_hosts,
             contributions: self.registry.contributions(&m.id),
             activation: m.activation.iter().map(ToString::to_string).collect(),
             warnings: meta.warnings.clone(),
@@ -2160,6 +3082,9 @@ impl PluginHost {
             previous_version: (p.source == PluginSource::Installed)
                 .then(|| install::previous_version(&self.plugins_dir.join(&m.id)))
                 .flatten(),
+            depends,
+            dependents,
+            extension_points,
         }
     }
 }
@@ -2254,11 +3179,15 @@ fn placeholder_manifest(dir: &Path) -> Manifest {
         license: None,
         change_notes: None,
         declared_categories: Vec::new(),
+        icon: None,
+        icon_dark: None,
         engine: ide_extension::ENGINE_VERSION.into(),
         legacy: false,
         wasm: None,
         activation: Vec::new(),
         capabilities: Default::default(),
+        depends: Vec::new(),
+        extension_points: Vec::new(),
         contributes: Default::default(),
     }
 }
@@ -2322,6 +3251,70 @@ impl ide_language::ExternalSyntax for PluginSyntax {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_panics_stop_actor_and_reply_on_every_call_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::new(tmp.path().join("plugins"), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/diagnostics");
+        host.install_from_dir(&fixture, &Consent::all()).unwrap();
+        let plugin = host.get("test.diagnostics").unwrap();
+        for mode in 0..5 {
+            let (actor, _) = host.ensure_active(&plugin, None).unwrap();
+            let cancel = ide_core::CancellationToken::new();
+            let next_actor = actor.clone();
+            let (queued_tx, queued_rx) = std::sync::mpsc::channel();
+            let panic = move |_: &mut Runtime| -> Result<(), CallError> {
+                let pending = next_actor.submit(None, |_| Ok("must not run")).unwrap();
+                queued_tx.send(pending).unwrap();
+                panic!("host call panic")
+            };
+            let result = match mode {
+                0 => actor.call(None, panic),
+                1 => actor.call_cancellable(&cancel, Duration::ZERO, panic),
+                2 => actor.call_edit_cancellable(&cancel, Duration::ZERO, Duration::from_secs(5), panic),
+                _ => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    if mode == 3 {
+                        actor.post(panic, move |result| {
+                            let _ = tx.send(result);
+                        });
+                    } else {
+                        actor.post(
+                            |_| Ok(()),
+                            move |result| {
+                                let _ = tx.send(result);
+                                panic!("completion callback panic");
+                            },
+                        );
+                    }
+                    rx.recv_timeout(Duration::from_secs(5)).expect("actor must reply")
+                }
+            };
+            if mode < 4 {
+                let queued = queued_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(matches!(queued.wait(), Err(ActorError::Stopped)), "poisoned runtime must not run queued work");
+            }
+            actor.stop(true);
+            if mode < 4 {
+                assert!(
+                    matches!(result, Err(ActorError::Call(CallError::Trap(ref message))) if message.contains("host call panic")),
+                    "{result:?}"
+                );
+            }
+            assert!(!actor.is_alive());
+            assert!(!actor.is_busy());
+            assert!(matches!(actor.call(None, |_| Ok(())), Err(ActorError::Stopped)));
+            let crash = actor.take_crash().expect("supervisor must see the panic");
+            assert!(crash.contains(if mode == 4 { "completion callback panic" } else { "host call panic" }));
+            assert!(actor.take_crash().is_none());
+            cancel.cancel();
+            // Re-enable to reset the supervisor before testing the next call path.
+            host.set_enabled("test.diagnostics", false).unwrap();
+            host.set_enabled("test.diagnostics", true).unwrap();
+        }
+    }
 
     #[test]
     fn globs() {

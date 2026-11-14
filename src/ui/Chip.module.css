@@ -1,0 +1,32 @@
+/* The chip surface: shared with the pickers that open (Select's chip variant) and the changes
+   button. Flat like the main toolbar's project and branch widgets: no frame at rest, a toolbar
+   button's hover on the ones that open. */
+.surface {
+  box-sizing: border-box;
+  height: 22px;
+  border-radius: var(--radius-toolbar-button);
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+}
+/* A read-only fact: same shape and height as the pickers it sits beside. */
+.chip {
+  composes: surface;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

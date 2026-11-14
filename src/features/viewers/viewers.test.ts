@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { binaryInput, formatSize, imageInput, isImagePath, isMarkdownPath, isSvgPath, wantsHexView } from "./fileKinds";
+import { registerTextEditorWrapper, resolveFileEditor } from "@/workbench/contributions";
+import { activate as activateViewers } from "./index";
+import {
+  associatedApplication,
+  binaryInput,
+  formatSize,
+  imageInput,
+  isImagePath,
+  isMarkdownPath,
+  isSvgPath,
+  wantsHexView,
+} from "./fileKinds";
 import {
   BYTES_PER_ROW,
   MAX_SCROLL_PX,
@@ -27,6 +38,17 @@ describe("file kinds", () => {
     expect(isMarkdownPath("/p/notes.txt")).toBe(false);
   });
 
+  it("matches files opened with an associated application", () => {
+    const office = ["*.xlsx", "*.pdf"];
+    expect(associatedApplication("/p/a.xlsx", office, "windows")).toBe(true);
+    expect(associatedApplication("/p/A.XLSX", office, "macos")).toBe(true);
+    expect(associatedApplication("/p/A.XLSX", office, "linux")).toBe(false);
+    expect(associatedApplication("/p/a.txt", office, "windows")).toBe(false);
+    expect(associatedApplication("/p/a.xlsx.bak", office, "windows")).toBe(false);
+    // Only the file name matches, not a directory that looks like a pattern.
+    expect(associatedApplication("/p/*.xlsx/report.txt", office, "windows")).toBe(false);
+  });
+
   it("builds viewer inputs keyed apart from text tabs", () => {
     expect(imageInput("/a/b.png")).toEqual({ kind: "image", key: "image:/a/b.png", path: "/a/b.png" });
     const input = binaryInput("/a/b.bin", { size: 10, binary: true, tooLarge: false });
@@ -44,6 +66,22 @@ describe("file kinds", () => {
     expect(formatSize(512)).toBe("512 B");
     expect(formatSize(1536)).toBe("1.5 KB");
     expect(formatSize(300 * 1024 * 1024)).toBe("300 MB");
+  });
+
+  it("lets a text editor wrapper take precedence over the image viewer", async () => {
+    const offViewers = activateViewers();
+    const offWrapper = registerTextEditorWrapper({
+      id: "plugin.acme.diagram.canvas",
+      matches: (p) => p.endsWith(".diagram.svg"),
+      component: () => null,
+    });
+    try {
+      expect((await resolveFileEditor("/p/icon.svg"))?.input.kind).toBe("image");
+      expect(await resolveFileEditor("/p/arch.diagram.svg")).toBeNull();
+    } finally {
+      offWrapper();
+      offViewers();
+    }
   });
 });
 

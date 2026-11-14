@@ -25,9 +25,10 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
+  configurationDirectory: string;
   languages: string[];
   prefer: boolean;
   runOnSave: boolean;
@@ -35,6 +36,7 @@ interface ExternalFormatterValid {
 
 const DEFAULT_FORMATTER: ExternalFormatterValid = {
   path: "",
+  configurationDirectory: "",
   languages: [
     "markdown",
     "yaml",
@@ -55,32 +57,130 @@ const DEFAULT_FORMATTER: ExternalFormatterValid = {
   runOnSave: false,
 };
 
-/** `languages.php.languageLevel` values; `""` = Auto (from `composer.json`). */
+const DEFAULT_RUFF_FORMATTER: ExternalFormatterValid = {
+  ...DEFAULT_FORMATTER,
+  languages: ["python"],
+};
+
+/** `languages.php.languageLevel` values, newest first; `""` = Auto (from `composer.json`). */
 export const PHP_LANGUAGE_LEVELS = [
   "",
-  "5.6",
-  "7.0",
-  "7.1",
-  "7.2",
-  "7.3",
-  "7.4",
-  "8.0",
-  "8.1",
-  "8.2",
-  "8.3",
-  "8.4",
   "8.5",
+  "8.4",
+  "8.3",
+  "8.2",
+  "8.1",
+  "8.0",
+  "7.4",
+  "7.3",
+  "7.2",
+  "7.1",
+  "7.0",
+  "5.6",
 ] as const;
 
+/** `languages.java.languageLevel` values; `""` = SDK default (Auto). Levels before 8 need a jdtls
+ *  that still compiles them (Settings › Languages & Frameworks › Language Servers). */
+export const JAVA_LANGUAGE_LEVELS = [
+  "",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "10",
+  "11",
+  "12",
+  "13",
+  "14",
+  "15",
+  "16",
+  "17",
+  "18",
+  "19",
+  "20",
+  "21",
+  "22",
+  "23",
+  "24",
+  "25",
+] as const;
+
+export type DependencyScopeValid = "compile" | "test" | "runtime" | "provided";
+
+export const DEPENDENCY_SCOPES = ["compile", "test", "runtime", "provided"] as const;
+
+export interface ProjectLibraryValid {
+  name: string;
+  classes: string[];
+  sources: string[];
+  javadocs: string[];
+  scope: DependencyScopeValid;
+}
+
+export interface ModuleDependencyValid {
+  kind: "library" | "module";
+  target: string;
+  scope: DependencyScopeValid;
+  exported: boolean;
+}
+
+export interface ModuleStructureValid {
+  jdk: string;
+  languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
+  compilerOutput: string;
+  testCompilerOutput: string;
+  dependencies: ModuleDependencyValid[];
+}
+
+export interface FacetConfigValid {
+  kind: "web" | "spring" | "jpa";
+  module: string;
+  descriptor: string;
+  webRoot: string;
+}
+
+export type ArtifactKindValid = "jar" | "war" | "warExploded";
+
+export const ARTIFACT_KINDS = ["jar", "war", "warExploded"] as const;
+
+export interface ArtifactConfigValid {
+  name: string;
+  kind: ArtifactKindValid;
+  module: string;
+  outputDirectory: string;
+  mainClass: string;
+  includeLibraries: string[];
+}
+
 export interface LanguagesValid {
-  python: { interpreter: string; activateVirtualenv: boolean };
+  pluginFormatters: Record<string, string>;
+  python: {
+    interpreter: string;
+    activateVirtualenv: boolean;
+    /** Interpreters added to the IDE-wide list (Settings › Python › All Interpreters). */
+    interpreters: string[];
+    /** Interpreters removed from that list: detection does not show them again. */
+    hiddenInterpreters: string[];
+    /** Hide interpreters that belong to another project. */
+    hideOtherProjectInterpreters: boolean;
+    /** Show each interpreter's path under its name on the interpreters page. */
+    showInterpreterPaths: boolean;
+  };
   ruby: { interpreter: string };
-  node: { interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  node: {
+    runTarget: string;
+    interpreter: string;
+    packageManager: "" | "npm" | "pnpm" | "yarn" | "bun";
+    runtime: "" | "node" | "bun" | "deno";
+  };
   php: {
+    runTarget: string;
     interpreter: string;
     languageLevel: (typeof PHP_LANGUAGE_LEVELS)[number];
     includePaths: string[];
     stubs: string[];
+    phpstanConfig: string;
   };
   rust: {
     toolchain: string;
@@ -98,11 +198,15 @@ export interface LanguagesValid {
   typescript: { version: string };
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
+  ruff: ExternalFormatterValid;
   java: {
     jdk: string;
+    languageLevel: (typeof JAVA_LANGUAGE_LEVELS)[number];
     jdtlsJdk: string;
     jdtlsVmArgs: string;
+    jdtlsShared: boolean;
     gradle: {
+      linkedProjects: string[] | null;
       jvm: string;
       distribution: "wrapper" | "local";
       home: string;
@@ -111,12 +215,21 @@ export interface LanguagesValid {
       runUsing: "gradle" | "ide";
     };
     maven: {
+      runnerJre: string;
       home: string;
       userSettings: string;
+      toolchains: string;
       localRepository: string;
       unlinkedProjects: string[];
+      linkedProjects: string[];
       daemon: boolean;
       mvndHome: string;
+      /** `-T`: a thread count (4) or a core multiplier (2C, 2.5C); empty = Maven's default. */
+      threads: string;
+      /** Comma-separated `-P` profiles; empty = POM/settings defaults. */
+      activeProfiles: string;
+      /** Delegate IDE build/run actions to Maven (`javac`) instead of jdtls (ECJ). */
+      delegateBuild: boolean;
     };
   };
   /** Preview font size in px; `null` follows the editor font size. */
@@ -133,8 +246,22 @@ export interface ProjectStructureValid {
   unmarked: string[];
   /** Content roots besides the project folder (absolute paths). */
   contentRoots: string[];
+  /** Other projects (absolute paths) this project depends on; indexed and navigable with it. */
+  dependencies: string[];
+  /** Per-workspace-member dependencies: member path → the roots it depends on. */
+  memberDependencies: Record<string, string[]>;
   /** "Exclude files": `;`-separated name patterns. */
   excludeFiles: string;
+  /** Project compiler output directory; empty = default. */
+  compilerOutput: string;
+  /** Per-module overrides keyed by module relative path (`"."` for root). */
+  modules: Record<string, ModuleStructureValid>;
+  /** Project-level libraries. */
+  libraries: ProjectLibraryValid[];
+  /** Module framework facets (`web`, `spring`, `jpa`). */
+  facets: FacetConfigValid[];
+  /** Packaging artifacts (`jar`, `war`, `warExploded`). */
+  artifacts: ArtifactConfigValid[];
 }
 
 /** The folder lists of `ProjectStructureValid` (marks). */
@@ -147,21 +274,45 @@ export type FolderListKey =
   | "unmarked";
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
-  python: { interpreter: "", activateVirtualenv: true },
+  pluginFormatters: {},
+  python: {
+    interpreter: "",
+    activateVirtualenv: true,
+    interpreters: [],
+    hiddenInterpreters: [],
+    hideOtherProjectInterpreters: false,
+    showInterpreterPaths: true,
+  },
   ruby: { interpreter: "" },
-  node: { interpreter: "", packageManager: "" },
-  php: { interpreter: "", languageLevel: "", includePaths: [], stubs: [] },
+  node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
+  php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
   typescript: { version: "bundled" },
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
+  ruff: DEFAULT_RUFF_FORMATTER,
   java: {
     jdk: "",
+    languageLevel: "",
     jdtlsJdk: "",
     jdtlsVmArgs: "",
-    gradle: { jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
-    maven: { home: "", userSettings: "", localRepository: "", unlinkedProjects: [], daemon: false, mvndHome: "" },
+    jdtlsShared: false,
+    gradle: { linkedProjects: null, jvm: "", distribution: "wrapper", home: "", userHome: "", runUsing: "gradle" },
+    maven: {
+      runnerJre: "",
+      home: "",
+      userSettings: "",
+      toolchains: "",
+      localRepository: "",
+      unlinkedProjects: [],
+      linkedProjects: [],
+      daemon: false,
+      mvndHome: "",
+      threads: "",
+      activeProfiles: "",
+      delegateBuild: false,
+    },
   },
   markdown: { previewFontSize: null },
 };
@@ -174,7 +325,14 @@ export const DEFAULT_PROJECT_STRUCTURE: ProjectStructureValid = {
   excluded: [],
   unmarked: [],
   contentRoots: [],
+  dependencies: [],
+  memberDependencies: {},
   excludeFiles: "",
+  compilerOutput: "",
+  modules: {},
+  libraries: [],
+  facets: [],
+  artifacts: [],
 };
 
 type Obj = Record<string, unknown>;
@@ -217,11 +375,11 @@ const folders = (v: unknown): string[] =>
 const folderKey = (stored: string) => (stored === "." ? "" : stored);
 const storedFolder = (rel: string) => normalizeFolder(rel) || ".";
 
-function validateFormatter(raw: unknown): ExternalFormatterValid {
-  const d = DEFAULT_FORMATTER;
+function validateFormatter(raw: unknown, d = DEFAULT_FORMATTER): ExternalFormatterValid {
   const f = obj(raw);
   return {
     path: text(f.path, d.path),
+    configurationDirectory: text(f.configurationDirectory, d.configurationDirectory),
     languages: Array.isArray(f.languages)
       ? [...new Set(f.languages.filter((v): v is string => typeof v === "string"))]
       : d.languages,
@@ -247,20 +405,33 @@ export function validateLanguages(raw: unknown): LanguagesValid {
   const gradle = obj(java.gradle);
   const markdown = obj(l.markdown);
   return {
+    pluginFormatters: Object.fromEntries(
+      Object.entries(obj(l.pluginFormatters)).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    ),
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),
+      interpreters: strings(py.interpreters),
+      hiddenInterpreters: strings(py.hiddenInterpreters),
+      hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
+      showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {
+      runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
+      runtime: oneOf(node.runtime, ["", "node", "bun", "deno"] as const, d.node.runtime),
     },
     php: {
+      runTarget: text(php.runTarget, ""),
       interpreter: text(php.interpreter, d.php.interpreter),
       languageLevel: oneOf(php.languageLevel, PHP_LANGUAGE_LEVELS, d.php.languageLevel),
       includePaths: strings(php.includePaths),
       stubs: strings(php.stubs),
+      phpstanConfig: text(php.phpstanConfig, d.php.phpstanConfig),
     },
     rust: {
       toolchain: text(rust.toolchain, d.rust.toolchain),
@@ -287,11 +458,17 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     typescript: { version: text(ts.version, d.typescript.version) || d.typescript.version },
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
+    ruff: validateFormatter(l.ruff, DEFAULT_RUFF_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
+      languageLevel: oneOf(java.languageLevel, JAVA_LANGUAGE_LEVELS, d.java.languageLevel),
       jdtlsJdk: text(java.jdtlsJdk, d.java.jdtlsJdk),
       jdtlsVmArgs: text(java.jdtlsVmArgs, d.java.jdtlsVmArgs),
+      jdtlsShared: bool(java.jdtlsShared, d.java.jdtlsShared),
       gradle: {
+        linkedProjects: Array.isArray(gradle.linkedProjects)
+          ? gradle.linkedProjects.filter((p): p is string => typeof p === "string")
+          : null,
         jvm: text(gradle.jvm, d.java.gradle.jvm),
         distribution: oneOf(gradle.distribution, ["wrapper", "local"] as const, d.java.gradle.distribution),
         home: text(gradle.home, d.java.gradle.home),
@@ -299,12 +476,18 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         runUsing: oneOf(gradle.runUsing, ["gradle", "ide"] as const, d.java.gradle.runUsing),
       },
       maven: {
+        runnerJre: text(maven.runnerJre, d.java.maven.runnerJre),
         home: text(maven.home, d.java.maven.home),
         userSettings: text(maven.userSettings, d.java.maven.userSettings),
+        toolchains: text(maven.toolchains, d.java.maven.toolchains),
         localRepository: text(maven.localRepository, d.java.maven.localRepository),
         unlinkedProjects: folders(maven.unlinkedProjects),
+        linkedProjects: folders(maven.linkedProjects),
         daemon: bool(maven.daemon, d.java.maven.daemon),
         mvndHome: text(maven.mvndHome, d.java.maven.mvndHome),
+        threads: text(maven.threads, d.java.maven.threads),
+        activeProfiles: text(maven.activeProfiles, d.java.maven.activeProfiles),
+        delegateBuild: bool(maven.delegateBuild, d.java.maven.delegateBuild),
       },
     },
     markdown: { previewFontSize: previewSize(markdown.previewFontSize) },
@@ -330,6 +513,97 @@ export function useMarkdownPreviewFontSize(): number {
   return useProject((s) => markdownPreviewFontSize(s.settings));
 }
 
+function validateModuleDependencies(raw: unknown): ModuleDependencyValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ModuleDependencyValid[] = [];
+  for (const item of raw) {
+    const m = obj(item);
+    const target = text(m.target, "");
+    if (!target) continue;
+    out.push({
+      kind: oneOf(m.kind, ["library", "module"] as const, "library"),
+      target,
+      scope: oneOf(m.scope, DEPENDENCY_SCOPES, "compile"),
+      exported: bool(m.exported, false),
+    });
+  }
+  return out;
+}
+
+function validateModulesMap(raw: unknown): Record<string, ModuleStructureValid> {
+  const m = obj(raw);
+  const out: Record<string, ModuleStructureValid> = {};
+  for (const [k, v] of Object.entries(m)) {
+    const key = normalizeFolder(k) || ".";
+    const mod = obj(v);
+    out[key] = {
+      jdk: text(mod.jdk, ""),
+      languageLevel: oneOf(mod.languageLevel, JAVA_LANGUAGE_LEVELS, ""),
+      compilerOutput: text(mod.compilerOutput, ""),
+      testCompilerOutput: text(mod.testCompilerOutput, ""),
+      dependencies: validateModuleDependencies(mod.dependencies),
+    };
+  }
+  return out;
+}
+
+function validateLibrariesList(raw: unknown): ProjectLibraryValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ProjectLibraryValid[] = [];
+  for (const item of raw) {
+    const l = obj(item);
+    const name = text(l.name, "");
+    const classes = strings(l.classes);
+    const sources = strings(l.sources);
+    const javadocs = strings(l.javadocs);
+    if (!name && classes.length === 0 && sources.length === 0) continue;
+    out.push({
+      name: name || (classes[0]?.split(/[\\/]/).pop() ?? "Library"),
+      classes,
+      sources,
+      javadocs,
+      scope: oneOf(l.scope, DEPENDENCY_SCOPES, "compile"),
+    });
+  }
+  return out;
+}
+
+function validateFacetsList(raw: unknown): FacetConfigValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: FacetConfigValid[] = [];
+  for (const item of raw) {
+    const f = obj(item);
+    const kind = oneOf(f.kind, ["web", "spring", "jpa"] as const, "web");
+    const module = normalizeFolder(text(f.module, ".")) || ".";
+    out.push({
+      kind,
+      module,
+      descriptor: text(f.descriptor, ""),
+      webRoot: text(f.webRoot, ""),
+    });
+  }
+  return out;
+}
+
+function validateArtifactsList(raw: unknown): ArtifactConfigValid[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ArtifactConfigValid[] = [];
+  for (const item of raw) {
+    const a = obj(item);
+    const name = text(a.name, "");
+    if (!name) continue;
+    out.push({
+      name,
+      kind: oneOf(a.kind, ARTIFACT_KINDS, "jar"),
+      module: normalizeFolder(text(a.module, ".")) || ".",
+      outputDirectory: text(a.outputDirectory, ""),
+      mainClass: text(a.mainClass, ""),
+      includeLibraries: strings(a.includeLibraries),
+    });
+  }
+  return out;
+}
+
 export function validateProjectStructure(raw: unknown): ProjectStructureValid {
   const p = obj(raw);
   return {
@@ -342,8 +616,29 @@ export function validateProjectStructure(raw: unknown): ProjectStructureValid {
     contentRoots: Array.isArray(p.contentRoots)
       ? [...new Set(p.contentRoots.filter((x): x is string => typeof x === "string" && !!x.trim()))]
       : [],
+    dependencies: Array.isArray(p.dependencies)
+      ? [...new Set(p.dependencies.filter((x): x is string => typeof x === "string" && !!x.trim()))]
+      : [],
+    memberDependencies: Object.fromEntries(
+      Object.entries(obj(p.memberDependencies))
+        .map(([member, deps]) => [
+          member,
+          Array.isArray(deps) ? [...new Set(deps.filter((x): x is string => typeof x === "string" && !!x.trim()))] : [],
+        ])
+        .filter(([member, deps]) => !!member && (deps as string[]).length > 0),
+    ),
     excludeFiles: typeof p.excludeFiles === "string" ? p.excludeFiles : "",
+    compilerOutput: text(p.compilerOutput, ""),
+    modules: validateModulesMap(p.modules),
+    libraries: validateLibrariesList(p.libraries),
+    facets: validateFacetsList(p.facets),
+    artifacts: validateArtifactsList(p.artifacts),
   };
+}
+
+/** Content roots plus dependency projects, deduplicated (what the Project view, index and run see). */
+export function effectiveContentRoots(ps: ProjectStructureValid): string[] {
+  return [...new Set([...ps.contentRoots, ...ps.dependencies])];
 }
 
 /** Root kinds, as in IDEA's Project Structure (`ide-workspace::roots::RootKind`). */

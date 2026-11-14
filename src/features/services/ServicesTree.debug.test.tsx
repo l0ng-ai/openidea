@@ -1,13 +1,20 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { registerActions } from "@/platform/actions";
 import { commands, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { validateSettings } from "@/features/settings/model/schema";
 import { adoptSession, appendConsole, useDebug } from "@/features/debugger/state";
 import { DebugServiceConsole } from "@/features/debugger/ui/DebugConsole";
-import { runServiceProvider } from "@/features/run/services";
+import { registerRunServiceActions, runServiceProvider } from "@/features/run/services";
 import { onRunExited, runtime, startRun, useRun } from "@/features/run/store";
-import { registerServiceProvider, useDebugRunSessions, type DebugServiceSession } from "@/workbench/contributions";
+import {
+  provideToolWindowService,
+  registerServiceProvider,
+  useDebugRunSessions,
+  type DebugServiceSession,
+  type ToolWindowService,
+} from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 
@@ -46,8 +53,11 @@ const summary = (id: number, extra: Partial<DebugServiceSession> = {}): DebugSer
   ...extra,
 });
 let dispose: () => void;
+let disposeActions: () => void;
 beforeEach(() => {
   localStorage.clear();
+  // The types are added by hand, as in the real window (nothing shows by default).
+  localStorage.setItem("openidea.services.runTypes:/services-debug", JSON.stringify(["spring-boot", "shell"]));
   useProject.setState({
     project: { root: "/services-debug", name: "app", isGit: false, settings: validateSettings({}) } as never,
   });
@@ -61,10 +71,12 @@ beforeEach(() => {
     expanded: new Set(["run:type:spring-boot"]),
   });
   dispose = registerServiceProvider(runServiceProvider);
+  disposeActions = registerRunServiceActions();
 });
 afterEach(() => {
   vi.restoreAllMocks();
   dispose();
+  disposeActions();
   useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null });
 });
 const select = () =>
@@ -101,6 +113,91 @@ it("shows debug output/state, pins actions, and does not rebuild the tree for st
   expect(d.stop).toHaveBeenCalledOnce();
 });
 
+it("shows the service port announced by a debug session's application", () => {
+  adoptSession(1, { runConfig: config });
+  appendConsole(1, "stdout", "Tomcat started on port 8080 (http) with context path '/'\n");
+  useDebugRunSessions.setState({ serviceSessions: [summary(1, { httpPort: 8080 })] });
+  render(<ServicesTreeView />);
+  expect(within(screen.getByRole("tree")).getByText(":8080")).toBeTruthy();
+});
+
+it("debugs a service in place without switching to the Debug tool window", async () => {
+  const start = vi.fn();
+  const disposeAction = registerActions([
+    { id: "run.debugConfig", title: "Debug Configuration", run: ({ arg }) => start(arg) },
+  ]);
+  try {
+    render(<ServicesTreeView />);
+    select();
+    fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config, show: false }));
+  } finally {
+    disposeAction();
+  }
+});
+
+it("reruns a debug service in place from the Services panel", () => {
+  const d = summary(1, { rerun: vi.fn(), rerunInPlace: vi.fn() });
+  useDebugRunSessions.setState({ serviceSessions: [d] });
+  render(<ServicesTreeView />);
+  select();
+  fireEvent.click(toolbar().getByRole("button", { name: "Rerun" }));
+  expect(d.rerunInPlace).toHaveBeenCalledOnce();
+  expect(d.rerun).not.toHaveBeenCalled();
+});
+
+it("starts a debug session in place from the Services toolbar", async () => {
+  const start = vi.fn();
+  const disposeAction = registerActions([
+    { id: "run.debugConfig", title: "Debug Configuration", run: ({ arg }) => start(arg) },
+  ]);
+  const c = { ...config, kind: "shell", command: "echo", debugAdapter: "java-debug" };
+  const s = await startRun(c);
+  expect(s).not.toBeNull();
+  useRun.setState({ configs: [c], sessions: [{ ...s!, config: c, status: "running" as const }] });
+  useServicesTree.setState({ expanded: new Set(["run:type:shell"]) });
+  try {
+    render(<ServicesTreeView />);
+    select();
+    fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
+    await vi.waitFor(() => expect(start).toHaveBeenCalledWith({ config: c, show: false }));
+  } finally {
+    disposeAction();
+  }
+});
+
+it("reruns a plain run service in place from the Services toolbar", async () => {
+  const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
+  const s = await startRun(c);
+  expect(s).not.toBeNull();
+  useRun.setState({ configs: [c] });
+  useServicesTree.setState({ expanded: new Set(["run:type:shell"]) });
+  const show = vi.fn();
+  provideToolWindowService({ show } as unknown as ToolWindowService);
+  const previousRuntime = runtime(s!.id);
+  render(<ServicesTreeView />);
+  select();
+  fireEvent.click(toolbar().getByRole("button", { name: /^(Run|Rerun)$/ }));
+  await vi.waitFor(() => expect(runtime(s!.id)).not.toBe(previousRuntime));
+  expect(show).not.toHaveBeenCalled();
+});
+
+it("reruns an attached debugger in place from the Services toolbar", async () => {
+  const c = { ...config, kind: "shell", command: "echo", debugAdapter: null };
+  const s = await startRun(c);
+  expect(s).not.toBeNull();
+  const active = { ...s!, config, status: "running" as const, runId: 7 };
+  runtime(s!.id)!.console.append({ kind: "stdout", text: "Maven application log\n" });
+  useRun.setState({ configs: [config], sessions: [active] });
+  const d = summary(1, { processId: 7, rerun: vi.fn(), rerunInPlace: vi.fn() });
+  useDebugRunSessions.setState({ serviceSessions: [d] });
+  render(<ServicesTreeView />);
+  select();
+  fireEvent.click(toolbar().getByRole("button", { name: "Debug" }));
+  expect(d.rerunInPlace).toHaveBeenCalledOnce();
+  expect(d.rerun).not.toHaveBeenCalled();
+});
+
 it("keeps the other parallel instance alive and then displays it", async () => {
   adoptSession(1);
   adoptSession(2);
@@ -119,7 +216,7 @@ it("keeps the other parallel instance alive and then displays it", async () => {
   expect(screen.getByRole("log")).toHaveTextContent("first instance");
 });
 
-it("shows the owning Run output for attached debugging and overrides both sets of controls", async () => {
+it("shows the owning Run output for attached debugging and routes the controls through the Services toolbar", async () => {
   const stopRun = vi.spyOn(commands, "runStop").mockImplementation(async (id) => {
     queueMicrotask(() => onRunExited(id, 130));
     return { status: "ok", data: null };
@@ -135,8 +232,14 @@ it("shows the owning Run output for attached debugging and overrides both sets o
   render(<ServicesTreeView />);
   select();
   expect(screen.getByRole("log")).toHaveTextContent("Maven application log");
-  const actions = within(screen.getByRole("toolbar", { name: "Run actions" }));
-  fireEvent.click(actions.getByRole("button", { name: "Rerun" }));
+  // The console strip keeps only console controls: the window toolbar owns Run / Debug / Stop.
+  const strip = within(screen.getByRole("toolbar", { name: "Run actions" }));
+  expect(strip.queryByRole("button", { name: "Rerun" })).toBeNull();
+  expect(strip.queryByRole("button", { name: "Debug" })).toBeNull();
+  expect(strip.queryByRole("button", { name: "Stop" })).toBeNull();
+  expect(strip.getByRole("button", { name: "Clear All" })).toBeTruthy();
+  const actions = toolbar();
+  fireEvent.click(actions.getByRole("button", { name: /^(Run|Rerun)$/ }));
   expect(d.rerun).toHaveBeenCalledOnce();
   await act(async () => fireEvent.click(actions.getByRole("button", { name: "Stop" })));
   expect(stopRun).toHaveBeenCalledExactlyOnceWith(7);
@@ -145,13 +248,13 @@ it("shows the owning Run output for attached debugging and overrides both sets o
   expect(actions.getByRole("button", { name: "Stop" })).toBeEnabled();
 });
 
-it("group Stop stops all roots but terminates a shared Maven process only once", async () => {
+it("group Stop All stops all roots but terminates a shared Maven process only once", async () => {
   const first = summary(1, { processId: 7 }),
     second = summary(2, { processId: 7 });
   useDebugRunSessions.setState({ serviceSessions: [first, second] });
   render(<ServicesTreeView />);
   fireEvent.mouseDown(within(screen.getByRole("tree")).getByText("Spring Boot").closest('[role="treeitem"]')!);
-  fireEvent.click(toolbar().getByRole("button", { name: "Stop" }));
+  fireEvent.click(toolbar().getByRole("button", { name: "Stop All" }));
   await vi.waitFor(() => expect(second.stop).toHaveBeenCalledOnce());
   expect(first.stop).toHaveBeenCalledExactlyOnceWith({ stopProcess: false });
   expect(second.stop).toHaveBeenCalledExactlyOnceWith();

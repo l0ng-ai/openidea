@@ -377,7 +377,8 @@ fn triggers_open_completion_only_where_they_start_a_context() {
 /// debug builds get more room).
 #[test]
 fn completion_on_the_fixture_is_fast() {
-    let root = dunce::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app")).unwrap();
+    let root =
+        dunce::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library")).unwrap();
     let cache = tempfile::tempdir().unwrap();
     let mut project = Project { _tmp: None, root: root.clone(), engine: open_engine(&root, cache.path()), next_doc: 1 };
     let library = std::fs::read_to_string(root.join("src/Library.php")).unwrap();

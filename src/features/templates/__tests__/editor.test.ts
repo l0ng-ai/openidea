@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { registerAction } from "@/platform/actions";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
-import { ensureSyntaxTree } from "@codemirror/language";
+import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
-import { CompletionContext, autocompletion, completionStatus, hasNextSnippetField } from "@codemirror/autocomplete";
+import {
+  CompletionContext,
+  autocompletion,
+  completionStatus,
+  hasNextSnippetField,
+  snippet,
+} from "@codemirror/autocomplete";
 import {
   EXCLUSIVE_COMPLETION_KEY,
   expandLiveTemplateAtCaret,
@@ -42,8 +49,7 @@ async function editor(language: string, doc: string, cursor = doc.length, extra:
       ...extra,
     ],
   });
-  ensureSyntaxTree(state, doc.length, 5000);
-  view = new EditorView({ state, parent: document.body });
+  view = new EditorView({ state: completedSyntaxState(state), parent: document.body });
   return view;
 }
 
@@ -92,6 +98,55 @@ describe("Tab expansion", () => {
     req.onPick(req.items[1]!, "");
     await tick();
     expect(v.state.doc.toString()).toBe("class A { void f() { boolean b = !(x > y)");
+  });
+});
+
+describe("Java .var", () => {
+  it("runs Introduce Variable on the expression, ended as a statement", async () => {
+    let seen: { doc: string; selected: string } | null = null;
+    const dispose = registerAction({
+      id: "refactor.extractVariable",
+      title: "Introduce Variable…",
+      run: () => {
+        const sel = view!.state.selection.main;
+        seen = { doc: view!.state.doc.toString(), selected: view!.state.sliceDoc(sel.from, sel.to) };
+      },
+    });
+    try {
+      const v = await editor(
+        "java",
+        "class A { void f() {\n  list.get(0).var\n} }",
+        "class A { void f() {\n  list.get(0).var".length,
+      );
+      expect(expandPostfixAtCaret(v)).toBe(true);
+      const req = useChooser.getState().request;
+      if (req)
+        req.onPick(
+          req.items.find((i) => i.label === "list.get(0)")!,
+          "",
+        );
+      await vi.waitFor(() => expect(seen).not.toBeNull());
+      expect(seen).toEqual({ doc: "class A { void f() {\n  list.get(0);\n} }", selected: "list.get(0)" });
+    } finally {
+      dispose();
+    }
+  });
+
+  it("falls back to the var template without Introduce Variable", async () => {
+    const v = await editor(
+      "java",
+      "class A { void f() {\n  name().var\n} }",
+      "class A { void f() {\n  name().var".length,
+    );
+    expect(expandPostfixAtCaret(v)).toBe(true);
+    const req = useChooser.getState().request;
+    if (req)
+      req.onPick(
+        req.items.find((i) => i.label === "name()")!,
+        "",
+      );
+    await vi.waitFor(() => expect(v.state.doc.toString()).toContain("var name = name();"));
+    expect(v.state.doc.toString()).toBe("class A { void f() {\n  var name = name();\n} }");
   });
 });
 
@@ -152,6 +207,17 @@ describe("template fields", () => {
     expect(press(v, "Enter")).toBe(true);
     expect(v.state.doc.toString()).toBe("for (let i = 0; i < .length; i++) {\n\t\n}".replace("\t", "  "));
     expect(v.state.selection.main.head).toBe("for (let i = 0; i < ".length);
+  });
+
+  it("leaves Enter to the editor in a completion's snippet", async () => {
+    const v = await editor("typescript", "<dep");
+    // An LSP tag completion: `<dependency>$1</dependency>$0`.
+    snippet("<dependency>${1}</dependency>${0}")(v, { label: "dependency" }, 0, 4);
+    expect(v.state.selection.main.head).toBe("<dependency>".length);
+    expect(hasNextSnippetField(v.state)).toBe(true);
+    expect(press(v, "Enter")).toBe(false);
+    expect(tab(v)).toBe(true);
+    expect(v.state.selection.main.head).toBe(v.state.doc.length);
   });
 
   it("Esc first drops the field's selection, then leaves the template", async () => {

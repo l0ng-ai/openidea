@@ -170,14 +170,14 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// Moving a class of `fixtures/php-app` to another PSR-4 folder changes its
+/// Moving a class of `fixtures/php-library` to another PSR-4 folder changes its
 /// namespace and every import of it, through the file-move refactoring.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_engine_updates_namespaces_and_imports_when_a_file_moves() {
     let tmp = tempfile::tempdir().unwrap();
     let base = dunce::canonicalize(tmp.path()).unwrap();
-    let root = base.join("php-app");
-    copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app"), &root);
+    let root = base.join("php-library");
+    copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library"), &root);
     let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
     let host = host(&base.join("app"), events.clone());
     let project = host.open_project("main", &root).unwrap();
@@ -671,7 +671,9 @@ async fn laravel_live_database_schema() {
     let run = |sql: &str| {
         let host = host.clone();
         let statement = SqlStatement { from: 0, to: sql.len() as u32, text: sql.to_owned() };
-        async move { ops::db::execute(&host, "main", ide_core::RequestId(90), "mem", vec![statement], 10).await.unwrap() }
+        async move {
+            ops::db::execute(&host, "main", ide_core::RequestId(90), "mem", vec![statement], 0, 10, None).await.unwrap()
+        }
     };
     let outcome = run("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT, rating REAL)").await;
     assert_eq!(outcome[0].error, None);

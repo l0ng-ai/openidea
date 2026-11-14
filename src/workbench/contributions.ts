@@ -17,7 +17,8 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { FileMatches, SearchQuery, RunConfig } from "@/bindings";
+import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
+import { notifyEach } from "@/platform/listeners";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -29,6 +30,8 @@ export type ToolWindowAnchor = "left" | "right" | "bottom";
 export interface ToolWindowContribution {
   id: string;
   title: string;
+  /** The title comes from outside the IDE (a plugin) and is shown as written. */
+  verbatim?: boolean;
   /** Icon name from `ui/icons`. */
   icon: string;
   anchor: ToolWindowAnchor;
@@ -56,6 +59,8 @@ export interface ToolWindowContribution {
    * present the header title also gets a "▾" opening just these items.
    */
   headerMenu?: MenuItem[] | ((id: string) => MenuItem[]);
+  /** `headerMenu` stays in "⋮" only: the title gets no "▾". */
+  plainTitle?: boolean;
   /**
    * The title as a view switcher (IDEA's "Project ▾" panes): a React hook
    * returning the current view's label and the items the title opens instead
@@ -71,6 +76,11 @@ export interface ToolWindowContribution {
    * or "onUse" — listed under the stripe's "…" until first opened (Find, Run…).
    */
   stripe?: "shown" | "onUse";
+  /**
+   * Its content lasts only while the project is open (run and debug sessions, search results),
+   * so it isn't reopened with the project.
+   */
+  sessionContent?: boolean;
 }
 
 export type StatusAlign = "left" | "right";
@@ -115,6 +125,8 @@ export interface EditorKindContribution {
   component: ComponentType<{ input: EditorInput }>;
   title: (input: EditorInput) => string;
   icon?: (input: EditorInput) => string;
+  /** Small marker rendered in the tab's trailing slot (a status dot for live state). */
+  trailing?: (input: EditorInput) => ReactNode;
   /**
    * Its tabs are saved with the editor session and reopened with the project (their
    * `data` must be plain JSON). The editor closes tabs whose target is gone itself.
@@ -122,8 +134,20 @@ export interface EditorKindContribution {
   restorable?: boolean;
   /** Can remain visible in a window without a project (for example, an external Git log). */
   standalone?: boolean;
+  /**
+   * Its recently used tabs stay mounted, hidden, while another tab is active: switching back
+   * shows them as they were instead of building them again (long agent conversations). A hidden
+   * tab keeps running; `useEditorShown` tells it whether it is the one shown.
+   */
+  keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /**
+   * Whether the tab is busy (a process is running, like a terminal session's):
+   * closing its last tab asks first, and tab-limit eviction skips it. May be
+   * async; both the close confirmation and the eviction await the answer.
+   */
+  isBusy?(input: EditorInput): boolean | Promise<boolean>;
   /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
@@ -158,6 +182,14 @@ export interface EditorDocumentLifecycle {
   /** Edit › Undo / Redo while the editor has focus. */
   undo?(input: EditorInput): Promise<void>;
   redo?(input: EditorInput): Promise<void>;
+}
+
+/** Bumped by `notifyTabTitlesChanged`; tab labels whose `title(input)` changed re-render. */
+export const useEditorTabTitles = create<{ revision: number }>(() => ({ revision: 0 }));
+
+/** An editor kind's tab title may have changed outside the tab state (e.g. a renamed agent task). */
+export function notifyTabTitlesChanged() {
+  useEditorTabTitles.setState((s) => ({ revision: s.revision + 1 }));
 }
 
 /** Bumped by `notifyEditorDocumentChanged`; selectors reading `isDirty` re-run on it. */
@@ -202,6 +234,8 @@ export interface ServiceTreeItem {
   dim?: boolean;
   /** Expanded the first time the node appears. */
   expanded?: boolean;
+  /** Shows an expander before its children are known (the provider's `expand` loads them). */
+  expandable?: boolean;
   /** Undefined for leaves. */
   children?: ServiceTreeItem[];
 }
@@ -233,6 +267,10 @@ export interface ServiceProviderContribution {
   menu?(item: ServiceTreeItem): MenuItem[];
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
+  /** A node of this provider became the lead selection. */
+  select?(item: ServiceTreeItem): void;
+  /** A node of this provider was expanded or collapsed. */
+  expand?(item: ServiceTreeItem, expanded: boolean): void;
   /** Right pane for a selected node. */
   detail?: ComponentType<{ item: ServiceTreeItem }>;
   /** Status line above the tree (a long operation in progress…); renders null when idle. */
@@ -318,6 +356,27 @@ export const registerWorkbenchBanner = (c: WorkbenchBannerContribution) => regis
 export const registerToolWindow = (c: ToolWindowContribution) => register("toolWindows", c.id, c);
 export const registerStatusItem = (c: StatusItemContribution) => register("statusItems", c.id, c);
 export const registerOverlay = (c: OverlayContribution) => register("overlays", c.id, c);
+
+type GitLogChecksCell = ComponentType<{ root: string; revision: string }>;
+export const useGitLogChecks = create<{ cell: GitLogChecksCell | null }>(() => ({ cell: null }));
+
+export function registerGitLogChecks(cell: GitLogChecksCell): () => void {
+  useGitLogChecks.setState({ cell });
+  return () => {
+    if (useGitLogChecks.getState().cell === cell) useGitLogChecks.setState({ cell: null });
+  };
+}
+
+const EditorShown = createContext(true);
+export const EditorShownProvider = EditorShown.Provider;
+/** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
+export const useEditorShown = () => useContext(EditorShown);
+
+const ToolWindowShown = createContext(true);
+export const ToolWindowShownProvider = ToolWindowShown.Provider;
+/** Whether this tool window is showing (one shown once stays mounted while hidden). */
+export const useToolWindowShown = () => useContext(ToolWindowShown);
+
 export const registerEditorKind = (c: EditorKindContribution) => register("editorKinds", c.kind, c);
 export const registerTitleItem = (c: TitleItemContribution) => register("titleItems", c.id, c);
 export const registerServiceView = (c: ServiceViewContribution) => register("serviceViews", c.id, c);
@@ -399,6 +458,30 @@ export function registerFileEditorProvider(p: FileEditorProvider): () => void {
   };
 }
 
+/**
+ * Opens locations under a URI scheme a feature owns (a notebook cell's
+ * `vscode-notebook-cell:` URI): the editor hands them over instead of opening
+ * them as a server-provided virtual document.
+ */
+export interface UriOpener {
+  scheme: string;
+  open(uri: string, options: OpenOptions): Promise<void>;
+}
+
+const uriOpeners = new Map<string, UriOpener>();
+
+export function registerUriOpener(o: UriOpener): () => void {
+  uriOpeners.set(o.scheme, o);
+  return () => {
+    if (uriOpeners.get(o.scheme) === o) uriOpeners.delete(o.scheme);
+  };
+}
+
+export function uriOpenerFor(uri: string): UriOpener | undefined {
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]+):/.exec(uri)?.[1];
+  return scheme ? uriOpeners.get(scheme.toLowerCase()) : undefined;
+}
+
 /** The non-text editor input for `path`, or null for the text editor. Provider failures fall through. */
 export async function resolveFileEditor(path: string): Promise<FileEditorResolution | null> {
   const providers = [...fileEditorProviders.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100));
@@ -435,6 +518,44 @@ export async function resolveFileEditor(path: string): Promise<FileEditorResolut
     await rollback();
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Files opened with another application (IDEA's "Files opened in associated
+// applications"): asked before the file editors above, so an explicit
+// association wins over the built-in viewers.
+
+/** Hands a file to another application instead of opening an editor tab. */
+export interface ExternalFileOpenHandler {
+  id: string;
+  /** Lower asks first. Default 100. */
+  order?: number;
+  /** Opens `path` outside the IDE; true when it was handed over. */
+  open(path: string): boolean | Promise<boolean>;
+}
+
+const externalFileOpenHandlers = new Map<string, ExternalFileOpenHandler>();
+
+export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler): () => void {
+  externalFileOpenHandlers.set(handler.id, handler);
+  return () => {
+    if (externalFileOpenHandlers.get(handler.id) === handler) externalFileOpenHandlers.delete(handler.id);
+  };
+}
+
+/** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
+export async function openFileExternally(path: string): Promise<boolean> {
+  const handlers = [...externalFileOpenHandlers.values()].sort(
+    (a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id),
+  );
+  for (const handler of handlers) {
+    try {
+      if (await handler.open(path)) return true;
+    } catch (e) {
+      console.warn(`external file opener ${handler.id} failed`, e);
+    }
+  }
+  return false;
 }
 
 /**
@@ -550,6 +671,10 @@ export interface EditorService {
   prepareClose?(): Promise<EditorCloseSession>;
   /** Backend project/window transition failed after authorization: resume its prepared documents. */
   cancelClose?(): void;
+  /** Drops this window's saved editor tabs so the next open does not restore them. */
+  forgetSavedTabs?(): void;
+  /** Writes them again when a close is cancelled after {@link forgetSavedTabs}. */
+  keepSavedTabs?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
 }
@@ -583,11 +708,20 @@ export interface NotificationService {
     sticky?: boolean;
     /** Replaces an earlier notification with the same key. */
     key?: string;
+    /** Title, body and action labels come from outside the IDE (a plugin) and are shown as written. */
+    verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
      * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
      */
     group?: string;
+    /**
+     * The notification answers a command the user just ran (Check for Updates
+     * and the install it offers). It pops up even when balloon notifications
+     * are turned off or its group's popup type is "No popup": those settings
+     * silence what the IDE reports on its own, not the answer to a request.
+     */
+    userInitiated?: boolean;
   }): void;
   /** Hides the balloon of the notification with `key` (it stays in the log), e.g. once its cause is gone. */
   expire?(key: string): void;
@@ -617,11 +751,25 @@ export type EmbeddedTerminalFactory = (
   options: EmbeddedTerminalOptions,
 ) => Promise<EmbeddedTerminal>;
 
+/**
+ * The output of Run sessions, by process: lets the Debug console of a debugger
+ * attached to a process the Run feature started (Maven, Gradle, Spring Boot…)
+ * show that process's output. Provided by the run feature.
+ */
+export interface RunOutputService {
+  /**
+   * Calls `listener` with the output so far, then with each new chunk, until the
+   * returned function is called. A process no Run session owns gets nothing.
+   */
+  subscribe(process: RunId, listener: (kind: "stdout" | "stderr" | "system", text: string) => void): () => void;
+}
+
 const services: {
   editor?: EditorService;
   toolWindows?: ToolWindowService;
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
+  runOutput?: RunOutputService;
 } = {};
 
 function need<T>(s: T | undefined, name: string): T {
@@ -633,6 +781,7 @@ export const provideEditorService = (s: EditorService) => void (services.editor 
 export const provideToolWindowService = (s: ToolWindowService) => void (services.toolWindows = s);
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
+export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
 
 export const editorService = (): EditorService => need(services.editor, "editor");
 export const toolWindowService = (): ToolWindowService => need(services.toolWindows, "toolWindows");
@@ -642,6 +791,84 @@ export const notifications = (): NotificationService =>
 export const maybeEditorService = (): EditorService | undefined => services.editor;
 /** Creates terminal widgets; provided by the terminal feature. */
 export const embeddedTerminal = (): EmbeddedTerminalFactory | undefined => services.embeddedTerminal;
+/** Run output by process; provided by the run feature. */
+export const runOutput = (): RunOutputService | undefined => services.runOutput;
+
+/**
+ * The commit being prepared (the Commit tool window or dialog), for plugins:
+ * provided by the vcs feature.
+ */
+export interface CommitService {
+  /**
+   * What Commit would commit now, per repository (unsaved editors saved first, as
+   * Commit does); `null` without a repository.
+   */
+  selection(): Promise<CommitSelection | null>;
+  /** Replaces the message if the draft is still at `revision`; false when it changed. */
+  setMessage(revision: number, message: string): boolean;
+}
+
+let commitServiceImpl: CommitService | undefined;
+export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
+export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/**
+ * Context a feature offers the agent composer's `@` menu (`@problems`, `@terminal`): what
+ * choosing it inserts, a ``` block (`info` names its kind: `problems`, `terminal <title>`)
+ * or references to files.
+ */
+export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
+
+export interface AgentContextSource {
+  /** Typed after `@`. */
+  id: string;
+  /** English: shown through the text catalog. */
+  title: string;
+  description: string;
+  icon: string;
+  /** What to insert now; null when there is nothing (no problems, no terminal). */
+  resolve(): Promise<AgentContext | null>;
+}
+
+const agentContextSources = new Map<string, AgentContextSource>();
+
+export function registerAgentContextSource(source: AgentContextSource): () => void {
+  agentContextSources.set(source.id, source);
+  return () => {
+    if (agentContextSources.get(source.id) === source) agentContextSources.delete(source.id);
+  };
+}
+
+export const getAgentContextSources = (): AgentContextSource[] => [...agentContextSources.values()];
+
+/** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
+export interface ContributedCommitCheck {
+  /** Stable key (`<plugin id>/<check id>`), stored when the check is turned off. */
+  key: string;
+  title: string;
+}
+
+/** A problem a contributed check reported (or why the check could not run). */
+export interface ContributedCommitProblem {
+  title: string;
+  message: string;
+  path?: string;
+  /** 0-based. */
+  line?: number;
+}
+
+export interface CommitCheckProvider {
+  checks(): ContributedCommitCheck[];
+  /** Runs the checks `keys` on what `selection` commits. */
+  run(selection: CommitSelection, keys: string[]): Promise<ContributedCommitProblem[]>;
+}
+
+export const useCommitCheckProviders = create<{ providers: CommitCheckProvider[] }>(() => ({ providers: [] }));
+
+export function registerCommitCheckProvider(p: CommitCheckProvider): () => void {
+  useCommitCheckProviders.setState((s) => ({ providers: [...s.providers, p] }));
+  return () => useCommitCheckProviders.setState((s) => ({ providers: s.providers.filter((x) => x !== p) }));
+}
 
 /**
  * Handles a pointer drag dropped on the editor content: features register handlers for
@@ -702,9 +929,24 @@ export function showFindResults(source: FindResultsSource) {
 // tree, editor tabs, Search Everywhere, etc. Providers (VCS status, problems)
 // push decorations into this store; consumers read with `useFileDecoration`.
 
+export interface DecorationSegment {
+  text: string;
+  icon?: string;
+  strike?: boolean;
+  label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
+  /** CSS values for the segment's font style / effect, e.g. scheme-driven bold or wavy underline. */
+  fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
+}
+
 export interface FileDecoration {
   /** CSS colour, normally a token like `var(--vcs-modified)`. */
   color?: string;
+  suffix?: readonly DecorationSegment[];
+  suffixColor?: string;
   /** CSS colour tinting the editor tab (a data source's colour on its console). */
   tint?: string;
   /** Short badge text, e.g. a problem count. */
@@ -813,11 +1055,15 @@ export interface SettingsPageContribution {
  * edits not applied yet. Edits are written on Apply / OK and dropped on Cancel.
  */
 export interface SettingsForm {
+  /** Applies pending edits; false prevents an action from running after a failed save. */
+  apply(): Promise<boolean>;
   scope: "global" | "project";
   /** Value of a dotted key (map entries too, e.g. `languageServers.ruff.args`). */
   useValue(key: string): unknown;
   /** Stages a value; `null` removes the key on Apply. */
   set(key: string, value: unknown): void;
+  /** Stages a literal map entry with independent page/Reset ownership. */
+  setMapEntry(key: string, path: string[], value: unknown): void;
   /** Values stored outside settings JSON; the writer runs on Apply / OK and returns the saved value. */
   useExternal<T>(
     key: string,
@@ -940,6 +1186,8 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "problems"
+  | "searchResults"
   | "editorGutter"
   | "openIn"
   | "stopProcess"
@@ -947,13 +1195,20 @@ export type ContextMenuId =
   | "new";
 
 /**
- * Entries of the native main menu's open slots (src-tauri/src/menu.rs
- * `Entry::Dynamic`), e.g. `pluginTools` at the end of Tools: each runs `action`.
+ * Entries of open menu slots: the native main menu's (src-tauri/src/menu.rs
+ * `Entry::Dynamic`, e.g. `pluginTools` at the end of Tools) and in-app toolbars
+ * (`commitMessage`, above the commit message). Each runs `action`.
  */
 export interface MenuSlotItem {
   action: string;
   arg?: string | null;
   label: string;
+  /** The label comes from outside the IDE (a plugin) and is shown as written. */
+  verbatim?: boolean;
+  /** Icon name, for toolbar slots. */
+  icon?: string;
+  /** Shown only while this `when` clause holds (toolbar slots). */
+  when?: string | null;
 }
 
 export const useMenuSlotItems = create<{ slots: Record<string, MenuSlotItem[]> }>(() => ({ slots: {} }));
@@ -975,6 +1230,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** Zero-based UTF-16 column for problem/search result commands. */
+  column?: number;
   /** The tab's input, when the menu is for an editor tab without a path. */
   input?: EditorInput;
 }
@@ -1034,6 +1291,30 @@ export function provideProjectViewSelection(get: () => string[]): () => void {
 /** Selected project view paths (absolute); empty without a project view. */
 export const projectViewSelection = (): string[] => projectSelection?.() ?? [];
 
+/** The project view node the user last selected; `dir` decides the icon and popup of the last crumb. */
+export interface ProjectViewLead {
+  path: string;
+  dir: boolean;
+}
+
+/**
+ * The project view's current node, for the navigation bar: IDEA's bar shows the
+ * tree while that is the user's context and returns to the editor's file once the
+ * editor takes over (focus, tab switch). `null` = the editor is the context.
+ */
+export const useProjectViewLead = create<{ lead: ProjectViewLead | null }>(() => ({ lead: null }));
+
+export function setProjectViewLead(lead: ProjectViewLead | null) {
+  const prev = useProjectViewLead.getState().lead;
+  if (prev?.path === lead?.path && prev?.dir === lead?.dir) return;
+  useProjectViewLead.setState({ lead });
+}
+
+/** Hands the context back to the editor. */
+export function clearProjectViewLead() {
+  if (useProjectViewLead.getState().lead) useProjectViewLead.setState({ lead: null });
+}
+
 /** Runs the groups' `prepare` hooks, giving up after `timeoutMs` so the menu never waits long. */
 export async function prepareMenuGroups(menu: ContextMenuId, ctx: MenuGroupContext, timeoutMs = 200): Promise<void> {
   const pending = groupsFor(menu)
@@ -1056,6 +1337,11 @@ export interface ExecutorLaunch {
   launch: RunConfig;
   /** The process exited (not called when it failed to start). */
   finished(result: { exitCode: number | null; stopped: boolean }): void;
+  /**
+   * The user stopped the run: called before the stop signal, which waits for it (at most
+   * `BEFORE_STOP_TIMEOUT_MS`). A second Stop does not wait.
+   */
+  beforeStop?(runId: RunId): Promise<void>;
 }
 
 export interface RunExecutorContribution {
@@ -1339,6 +1625,8 @@ export function localChangedPaths(
 // running a whole command line; anything else runs as a shell command.
 
 export interface RunAnythingItem {
+  /** Optional section within the provider; the shared `recent` id merges command histories. */
+  group?: { id: string; label: string };
   /** Stable within the provider. */
   key: string;
   label: string;
@@ -1383,6 +1671,9 @@ export function runAnythingProviderList(): RunAnythingProvider[] {
 export interface EndpointEntry {
   /** `GET`, `POST`, … (`PUT|PATCH` for a route answering several). */
   method: string;
+  framework?: string;
+  handler?: string;
+  pluginId?: string;
   /** Class-level and method-level mapping joined; `{var}` kept. */
   url: string;
   controller: string;
@@ -1403,17 +1694,33 @@ export interface EndpointProvider {
 }
 
 const endpointProviders = new Map<string, EndpointProvider>();
+const endpointListeners = new Set<() => void>();
+export function onEndpointsChanged(listener: () => void): () => void {
+  endpointListeners.add(listener);
+  return () => {
+    endpointListeners.delete(listener);
+  };
+}
+/** Endpoints a provider reports may have changed: `onEndpointsChanged` listeners ask again. */
+export function endpointsChanged() {
+  notifyEach(endpointListeners, (listener) => listener(), "endpoints changed");
+}
 
 export function registerEndpointProvider(p: EndpointProvider): () => void {
   endpointProviders.set(p.id, p);
+  endpointsChanged();
   return () => {
-    if (endpointProviders.get(p.id) === p) endpointProviders.delete(p.id);
+    if (endpointProviders.get(p.id) === p) {
+      endpointProviders.delete(p.id);
+      endpointsChanged();
+    }
   };
 }
 
 export async function searchEndpoints(root: string | null): Promise<EndpointEntry[]> {
   if (!root) return [];
-  return (await Promise.all([...endpointProviders.values()].map((p) => p.endpoints(root)))).flat();
+  const results = await Promise.allSettled([...endpointProviders.values()].map(async (p) => p.endpoints(root)));
+  return results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
 }
 
 // ---------------------------------------------------------------------------
@@ -1439,6 +1746,8 @@ export interface DebugRunSession {
   configId: string | null;
   name: string;
   startedAt: number;
+  /** Set while the session shuts down after Stop. */
+  status?: "starting" | "running" | "paused" | "stopping" | "terminated";
   paused: boolean;
   rerun: (() => void) | null;
   stop: () => void;
@@ -1450,9 +1759,13 @@ export interface DebugServiceSession {
   id: number;
   config: RunConfig;
   startedAt: number;
-  status: "starting" | "running" | "paused" | "terminated";
+  status: "starting" | "running" | "paused" | "stopping" | "terminated";
   processId: number | null;
+  /** The debuggee's HTTP port announced on its console (not the JDWP attach port), if known. */
+  httpPort?: number;
   rerun: (() => void) | null;
+  /** Rerun without opening the Debug tool window (the Services panel debugs in place). */
+  rerunInPlace?: (() => void) | null;
   stop: (options?: { stopProcess?: boolean }) => Promise<void>;
   show: () => void;
 }
@@ -1462,6 +1775,58 @@ export const useDebugRunSessions = create<{
   serviceSessions: DebugServiceSession[];
   Console: ComponentType<{ sessionId: number }> | null;
 }>(() => ({ sessions: [], serviceSessions: [], Console: null }));
+
+/**
+ * The Services tool window's badge: how many of its listed services are running.
+ * The run provider (another feature) keeps it current; `null` hides the badge.
+ */
+export const useServicesRunningCount = create<{ count: number | null }>(() => ({ count: null }));
+
+// ---------------------------------------------------------------------------
+// Processes a closing window or project would terminate. Features that own
+// child processes (Run/Debug sessions) publish them here, so the close guard can
+// ask first (IDEA's "Terminate processes?").
+
+export interface RunningProcess {
+  /** Configuration or session name shown in the prompt. */
+  name: string;
+}
+
+export interface RunningProcessesProvider {
+  id: string;
+  /** Processes this feature is running in the window right now. */
+  running(): RunningProcess[] | Promise<RunningProcess[]>;
+  /**
+   * Stops them before a close: graceful first (stop command / SIGINT, as IDEA does), the
+   * whole set again when `kill` asks for SIGKILL.
+   */
+  stop?(kill: boolean): Promise<void> | void;
+}
+
+const runningProcessesProviders = new Map<string, RunningProcessesProvider>();
+
+export function registerRunningProcessesProvider(p: RunningProcessesProvider): () => void {
+  runningProcessesProviders.set(p.id, p);
+  return () => {
+    if (runningProcessesProviders.get(p.id) === p) runningProcessesProviders.delete(p.id);
+  };
+}
+
+/** Asks every provider to stop its processes: graceful, or killed when `kill` is set. */
+export async function stopRunningProcesses(kill: boolean): Promise<void> {
+  await Promise.all([...runningProcessesProviders.values()].map((p) => p.stop?.(kill)));
+}
+
+/** Live processes of every provider, one entry per name. */
+export async function runningProcesses(): Promise<RunningProcess[]> {
+  const all = (await Promise.all([...runningProcessesProviders.values()].map((p) => p.running()))).flat();
+  const seen = new Set<string>();
+  return all.filter((p) => {
+    if (!p.name || seen.has(p.name)) return false;
+    seen.add(p.name);
+    return true;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // "Get from Version Control" sources besides a plain URL (IDEA: GitHub, GitLab…),
@@ -1504,4 +1869,99 @@ export function registerCloneSource(source: CloneSourceContribution): () => void
 /** Registered clone sources in order. */
 export function cloneSourceList(sources = useCloneSources.getState().sources): CloneSourceContribution[] {
   return [...sources.values()].sort((a, b) => (a.order ?? 100) - (b.order ?? 100) || a.id.localeCompare(b.id));
+}
+
+// File templates contributed by plugins, consumed by the templates feature.
+export const useContributedFileTemplates = create<{ templates: import("@/platform/fileTemplates").FileTemplate[] }>(
+  () => ({ templates: [] }),
+);
+
+export function addContributedFileTemplate(t: import("@/platform/fileTemplates").FileTemplate): () => void {
+  useContributedFileTemplates.setState((s) => ({ templates: [...s.templates.filter((x) => x.id !== t.id), t] }));
+  return () => useContributedFileTemplates.setState((s) => ({ templates: s.templates.filter((x) => x !== t) }));
+}
+
+/**
+ * Flush contributed document indexes before workspace usages or refactoring. A refactoring
+ * refuses (throws) while an index is incomplete; usages go ahead and resolve `false`, so the
+ * results can say they may be incomplete.
+ */
+export type DocumentIndexPurpose = "usages" | "refactor";
+type DocumentIndexSync = (path: string, purpose: DocumentIndexPurpose) => Promise<boolean | void>;
+const documentIndexSync = new Set<DocumentIndexSync>();
+export function registerDocumentIndexSync(sync: DocumentIndexSync): () => void {
+  documentIndexSync.add(sync);
+  return () => {
+    documentIndexSync.delete(sync);
+  };
+}
+export async function synchronizeDocumentIndexes(path: string, purpose: DocumentIndexPurpose): Promise<boolean> {
+  const complete = await Promise.all([...documentIndexSync].map((sync) => sync(path, purpose)));
+  return complete.every((c) => c !== false);
+}
+
+/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
+const fontZoomSurfaces = new Map<Element, (delta: number) => void>();
+
+export function registerFontZoomSurface(host: Element, step: (delta: number) => void): () => void {
+  fontZoomSurfaces.set(host, step);
+  return () => {
+    fontZoomSurfaces.delete(host);
+  };
+}
+
+export function stepFocusedSurfaceFontZoom(delta: number): boolean {
+  const focused = document.activeElement;
+  for (const [host, step] of fontZoomSurfaces) {
+    if (focused && host.contains(focused)) {
+      step(delta);
+      return true;
+    }
+  }
+  return false;
+}
+
+export function resetSurfaceFontZoom(): void {
+  for (const step of fontZoomSurfaces.values()) step(0);
+}
+
+/** Optional plugin test parser; the Run feature keeps the existing test tree. */
+type PluginTestParser = (config: string, chunk: string) => Promise<import("@/bindings").PluginTestEvent[] | null>;
+let pluginTestParser: PluginTestParser | null = null;
+export function providePluginTestParser(parser: PluginTestParser): () => void {
+  pluginTestParser = parser;
+  return () => {
+    if (pluginTestParser === parser) pluginTestParser = null;
+  };
+}
+export function parsePluginTests(config: string, chunk: string) {
+  return pluginTestParser?.(config, chunk) ?? Promise.resolve(null);
+}
+
+/** Optional selection support owned by the same host as the plugin test parser. */
+type PluginTestSelector = (config: string, tests: string[][]) => Promise<string[] | null>;
+let pluginTestSelector: PluginTestSelector | null = null;
+export function providePluginTestSelector(selector: PluginTestSelector): () => void {
+  pluginTestSelector = selector;
+  return () => {
+    if (pluginTestSelector === selector) pluginTestSelector = null;
+  };
+}
+export function selectPluginTests(config: string, tests: string[][]) {
+  return pluginTestSelector?.(config, tests) ?? Promise.resolve(null);
+}
+
+/** Read-only named snippets supplied by plugins. */
+export interface ContributedSnippet {
+  id: string;
+  pluginName: string;
+  language: string;
+  prefixes: string[];
+  body: string;
+  description: string;
+}
+export const useContributedSnippets = create<{ snippets: ContributedSnippet[] }>(() => ({ snippets: [] }));
+export function addContributedSnippets(snippets: ContributedSnippet[]): () => void {
+  useContributedSnippets.setState((s) => ({ snippets: [...s.snippets, ...snippets] }));
+  return () => useContributedSnippets.setState((s) => ({ snippets: s.snippets.filter((x) => !snippets.includes(x)) }));
 }

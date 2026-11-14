@@ -17,11 +17,13 @@ import {
 } from "@/ui";
 import { openLocation } from "./ipc";
 import {
+  closeHierarchy,
   ROOT_ID,
   directionLabel,
   hierarchyTitle,
   hierarchyTarget,
   loadChildren,
+  prefetchLevels,
   refreshHierarchy,
   noneFoundLabel,
   setDirection,
@@ -64,9 +66,10 @@ export function HierarchyTabs() {
       variant="compact"
       className={styles.tabs}
       aria-label="Hierarchies"
-      items={[{ id: "current", label }]}
+      items={[{ id: "current", label, closable: true }]}
       activeId="current"
       onSelect={() => undefined}
+      onClose={closeHierarchy}
     />
   );
 }
@@ -220,6 +223,10 @@ export function HierarchyView() {
           getChildren={getChildren}
           isExpandable={isExpandable}
           loadChildren={(n) => (n.kind === "item" ? loadChildren(n.node) : undefined)}
+          onExpandedChange={(_expanded, n, open) => {
+            const shown = open ? children.get(n.id) : undefined;
+            if (shown) prefetchLevels(shown);
+          }}
           defaultExpanded={[ROOT_ID]}
           handleRef={tree}
           isOccurrence={() => true}

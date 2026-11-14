@@ -311,6 +311,8 @@ struct Replay {
     sent: Arc<Mutex<Vec<Vec<Value>>>>,
     launched: Mutex<Vec<Vec<String>>>,
     errors: Arc<Mutex<Vec<String>>>,
+    /// Each process's kill token.
+    kills: Mutex<Vec<CancellationToken>>,
 }
 
 impl Cli for Replay {
@@ -331,6 +333,7 @@ impl Cli for Replay {
         let (shim_in, cli_in) = tokio::io::duplex(1 << 20);
         let (mut cli_out, shim_out) = tokio::io::duplex(1 << 20);
         let kill = CancellationToken::new();
+        self.kills.lock().push(kill.clone());
         let (sent, errors, token) = (self.sent.clone(), self.errors.clone(), kill.clone());
         sent.lock().push(Vec::new());
         tokio::spawn(async move {
@@ -421,14 +424,18 @@ impl Replayed {
     }
 }
 
-async fn replay(name: &str) -> Replayed {
-    let processes = load_fixture(name);
-    let cli = Arc::new(Replay {
+fn replay_cli(processes: Vec<Vec<Frame>>) -> Arc<Replay> {
+    Arc::new(Replay {
         processes: Mutex::new(processes.into()),
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
-    });
+        kills: Mutex::default(),
+    })
+}
+
+async fn replay(name: &str) -> Replayed {
+    let cli = replay_cli(load_fixture(name));
     let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
     let h =
@@ -459,6 +466,69 @@ async fn replay_simple() {
     assert!(args.contains(&"--permission-prompt-tool".to_owned()));
     let user = r.sent(0).into_iter().find(|m| m["type"] == "user").unwrap();
     assert_eq!(user["message"]["content"][0]["text"], "Reply with exactly: hello there");
+}
+
+/// The app closing the connection (an idle task released, archived or deleted) stops the
+/// CLI processes of its sessions, idle ones included.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_connection_stops_the_processes() {
+    let r = replay("simple").await;
+    assert!(r.cli.kills.lock().iter().all(|k| !k.is_cancelled()));
+    r.h.client.kill();
+    let kills = r.cli.kills.lock().clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for k in kills {
+            k.cancelled().await;
+        }
+    })
+    .await
+    .expect("every process was stopped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_without_a_title_get_one_generated() {
+    let mut processes = load_fixture("simple");
+    processes[0].extend([
+        Frame::Shim(json!({"type": "control_request", "request_id": "req_3",
+            "request": {"subtype": "generate_session_title"}})),
+        Frame::Cli(json!({"type": "control_response",
+            "response": {"subtype": "success", "request_id": "req_3", "response": {"title": "Say hello"}}})),
+    ]);
+    let cli = replay_cli(processes);
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h = Harness::connect(
+        cli.clone(),
+        config.path().into(),
+        config.path().join("pending"),
+        cwd_path.clone(),
+        Vec::new(),
+    )
+    .await;
+    let session = h.new_session().await;
+    // The transcript Claude Code writes, without the title it gives sessions in a terminal.
+    let dir = config.path().join("projects").join(history::escape(&cwd_path));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prompt = json!({"type": "user", "uuid": "u1", "parentUuid": null,
+        "message": {"role": "user", "content": "Reply with exactly: hello there"}});
+    std::fs::write(dir.join(format!("{session}.jsonl")), format!("{prompt}\n")).unwrap();
+
+    h.prompt(&session, "Reply with exactly: hello there").await.unwrap();
+    let mut titles = Vec::new();
+    for _ in 0..100 {
+        titles = h.updates(&session, "session_info_update");
+        if !titles.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    assert_eq!(titles.iter().map(|t| t["title"].clone()).collect::<Vec<_>>(), [json!("Say hello")]);
+    let sent = cli.sent.lock()[0].clone();
+    let request =
+        sent.iter().find(|m| m.pointer("/request/subtype") == Some(&json!("generate_session_title"))).unwrap();
+    assert_eq!(request["request"]["description"], "Reply with exactly: hello there");
+    assert_eq!(request["request"]["persist"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -727,6 +797,7 @@ async fn a_stop_ahead_of_its_prompt_cancels_it() {
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
@@ -770,6 +841,7 @@ async fn a_failed_turn_reports_its_failure() {
             sent: Arc::default(),
             launched: Mutex::default(),
             errors: Arc::default(),
+            kills: Mutex::default(),
         });
         let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let h =
@@ -977,6 +1049,19 @@ fn api_retries_are_announced() {
 }
 
 #[test]
+fn background_tasks_are_announced_wholesale() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let tasks = json!([{"task_id": "bsh1", "task_type": "local_bash", "description": "sleep 900"}]);
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": tasks}));
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].session, "s");
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": tasks}));
+    // The list is replaced with every report: an empty one says every task is done.
+    let out = t.on_message(&json!({"type": "system", "subtype": "background_tasks_changed", "tasks": []}));
+    assert_eq!(out[0].update, json!({"sessionUpdate": crate::BACKGROUND_TASKS_UPDATE, "tasks": []}));
+}
+
+#[test]
 fn streamed_text_is_not_sent_twice() {
     let mut t = Translator::new("s", PathBuf::from("/w"), true);
     let se = |event: Value| json!({"type": "stream_event", "parent_tool_use_id": null, "event": event});
@@ -1092,4 +1177,94 @@ fn tool_calls_plans_and_subagents() {
     assert_eq!(finished[0].update["state"], json!({"state": "idle", "stopReason": "end_turn"}));
     assert_eq!(finished[1].update["content"][0]["text"], "It is x");
     assert_eq!(finished[1].update["senderSessionId"], "ag");
+}
+
+#[tokio::test]
+async fn questions_go_out_as_one_request() {
+    let questions = json!([
+        {"header": "Files", "question": "Where should they live?", "multiSelect": false,
+         "options": [{"label": "Local", "description": "Kept out of git"}, {"label": "Committed", "description": "In the repo"}]},
+        {"header": "Checks", "question": "Which checks?", "multiSelect": true,
+         "options": [{"label": "Lint", "description": ""}, {"label": "Tests", "description": ""}]},
+    ]);
+    let input = json!({ "questions": questions });
+    let asked = std::sync::Mutex::new(Vec::new());
+    let reply = json!({"Where should they live?": ["Local"], "Which checks?": ["Lint", "Tests"]}).to_string();
+    let answers = json!({"Where should they live?": "Local", "Which checks?": "Lint, Tests"});
+    let result = ask_questions(&input, &json!({"toolCallId": "t"}), |call, options| {
+        asked.lock().unwrap().push((call, options));
+        let reply = reply.clone();
+        async move { Some(reply) }
+    })
+    .await;
+    assert_eq!(result, Some(answers));
+    let asked = asked.into_inner().unwrap();
+    assert_eq!(asked.len(), 1);
+    let (call, options) = &asked[0];
+    assert_eq!(call["title"], "Where should they live?");
+    assert_eq!(call["_meta"]["questions"], questions);
+    assert_eq!(options[0]["optionId"], "reject");
+}
+
+#[tokio::test]
+async fn answers_keep_claude_codes_format_with_other_text() {
+    let input = json!({"questions": [
+        {"question": "Which cache?", "multiSelect": false, "options": [{"label": "Redis"}, {"label": "None"}]},
+        {"question": "Which checks?", "multiSelect": true, "options": [{"label": "Lint"}, {"label": "Tests"}]},
+        {"question": "Which stores?", "multiSelect": true, "options": [{"label": "Disk"}, {"label": "S3"}]},
+    ]});
+    let reply = json!({
+        "Which cache?": ["Memcached, for now"],
+        "Which checks?": ["Lint", "Tests"],
+        "Which stores?": ["Disk", "Redis, not Memcached", "a \"cold\" tier"],
+    })
+    .to_string();
+    let result = ask_questions(&input, &json!({}), |_, _| {
+        let reply = reply.clone();
+        async move { Some(reply) }
+    })
+    .await;
+    assert_eq!(
+        result,
+        Some(json!({
+            "Which cache?": "Memcached, for now",
+            "Which checks?": "Lint, Tests",
+            "Which stores?": "Disk, \"Redis, not Memcached\", \"a \\\"cold\\\" tier\"",
+        }))
+    );
+}
+
+#[tokio::test]
+async fn skipped_questions_have_no_answers() {
+    let input = json!({"questions": [{"question": "Which?", "options": [{"label": "A"}]}]});
+    let skipped = ask_questions(&input, &json!({}), |_, _| async { Some("reject".to_owned()) }).await;
+    assert_eq!(skipped, None);
+    let cancelled = ask_questions(&input, &json!({}), |_, _| async { None }).await;
+    assert_eq!(cancelled, None);
+}
+
+#[test]
+fn mcp_servers_become_an_mcp_config() {
+    assert_eq!(mcp_config(&json!({ "mcpServers": [] })), None);
+    assert_eq!(mcp_config(&json!({})), None);
+    let config = mcp_config(&json!({ "mcpServers": [
+        { "type": "http", "name": "openidea", "url": "http://127.0.0.1:1/mcp",
+          "headers": [{ "name": "Authorization", "value": "Bearer t" }] },
+        { "name": "local", "command": "srv", "args": ["-x"], "env": [{ "name": "K", "value": "V" }] },
+    ] }))
+    .unwrap();
+    let v: Value = serde_json::from_str(&config).unwrap();
+    assert_eq!(
+        v["mcpServers"]["openidea"],
+        json!({ "type": "http", "url": "http://127.0.0.1:1/mcp", "headers": { "Authorization": "Bearer t" } })
+    );
+    assert_eq!(v["mcpServers"]["local"], json!({ "command": "srv", "args": ["-x"], "env": { "K": "V" } }));
+
+    let path = write_mcp_config(&config).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o077, 0);
+    let kept = path.to_path_buf();
+    drop(path);
+    assert!(!kept.exists());
 }

@@ -197,6 +197,8 @@ async fn code_actions_skip_a_command_no_server_provides_after_their_edit() {
     let info = ops::doc::open(&host, "main", file.clone()).await.unwrap();
     // Optimize Imports as vtsls offers it: the edit, then a command its client runs itself.
     let action = |edit: bool| CodeAction {
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         title: "Organize Imports".into(),
         kind: Some("source.organizeImports".into()),
         is_preferred: false,

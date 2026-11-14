@@ -1,8 +1,8 @@
 /** Debug tool window: toolbar, Threads & Variables (frames + variables), Console. */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { executeAction, getAction } from "@/platform/actions";
-import { evaluateWhen, useContextKeys } from "@/platform/context";
+import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
 import { call, commands, type Scope, type Variable } from "@/platform/ipc";
 import {
@@ -24,30 +24,34 @@ import {
 import { setMuted, useBreakpoints } from "../breakpoints/store";
 import { frameLabel, groupFrames } from "../frames";
 import { blurDebugView, focusDebugView } from "./focusedView";
+import { useActionEnabled } from "./useActionEnabled";
 import {
   addWatch,
+  closeSessionTab,
   evaluate,
   selectFrame,
   selectSession,
   selectThread,
   revealFrame,
+  rootOf,
   sessionSupports,
   useDebug,
   type DebugSession,
 } from "../state";
+import { remoteWaitingNote } from "../remote";
+import { sessionTabs } from "./sessionTabs";
+import { stopNote } from "../js/eventBreakpoints";
+import { NetworkView } from "../js/NetworkView";
+import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
+import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { useToolWindowShown } from "@/workbench/contributions";
 import styles from "./DebugToolWindow.module.css";
-import { tx } from "@/platform/i18n";
-
-function useActionEnabled(id: string): boolean {
-  const ctx = useContextKeys();
-  const a = getAction(id);
-  return !!a && evaluateWhen(a.when, ctx);
-}
+import { tx, useTx } from "@/platform/i18n";
 
 function ToolButton({ action, icon, tone }: { action: string; icon: string; tone?: "danger" }) {
   const enabled = useActionEnabled(action);
@@ -100,7 +104,10 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console";
+type Tab = "variables" | "console" | "memory" | "network";
+
+/** The view the user last picked; the tool window opens on it again (Console until one is picked). */
+let chosenTab: Tab = "console";
 
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
@@ -114,42 +121,59 @@ export function DebugTabs() {
   const active = useDebug((s) => s.active);
   const list = Object.values(sessions);
   if (!list.length) return null;
-  const items: TabItem[] = list.map((s) => ({
+  const tabs = sessionTabs(list);
+  const items: TabItem[] = tabs.map(({ session: s, child }) => ({
     id: String(s.id),
-    label: s.parent != null ? tx`${s.name} (child)` : s.name,
+    label: child ? tx`${s.name} (child)` : s.name,
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
+    closable: true,
     tooltip: statusText(s),
   }));
+  // A browser launch's own session has no tab: its page's tab stands for it.
+  const shown = tabs.find((t) => t.session.id === active) ?? tabs.find((t) => t.owner === active);
   return (
     <Tabs
       variant="compact"
       className={styles.sessionTabs}
       aria-label="Debug sessions"
       items={items}
-      activeId={active != null ? String(active) : null}
+      activeId={shown ? String(shown.session.id) : null}
       onSelect={(id) => selectSession(+id)}
+      onClose={(id) => void closeSessionTab(tabs.find((t) => t.session.id === +id)?.owner ?? +id)}
       panelIdPrefix="openidea-debug"
     />
   );
 }
 
 export function DebugToolWindow() {
+  const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
   const [view, setView] = useState<{
     session: number | undefined;
     status: DebugSession["status"] | undefined;
     tab: Tab;
-  }>({ session: undefined, status: undefined, tab: "variables" });
+  }>({ session: undefined, status: undefined, tab: chosenTab });
   if (active && (view.session !== active.startedAt || view.status !== active.status))
     setView({
       session: active.startedAt,
       status: active.status,
-      tab: active.status === "starting" ? "console" : active.status === "paused" ? "variables" : view.tab,
+      // A breakpoint or exception brings Threads & Variables to the front; finishing a step keeps
+      // the tab the user is on (e.g. Console, to watch the output while stepping), and so does Memory.
+      tab:
+        active.status === "starting"
+          ? "console"
+          : active.status === "paused" && view.tab !== "memory" && active.stopReason !== "step"
+            ? "variables"
+            : view.tab,
     });
-  const tab = view.tab;
+  const hasMemory = !!active && sessionSupports("jvmMemory", active);
+  const hasNetwork = !!active && sessionSupports("jsPage", active);
+  // The selected session may be one without the Memory or the Network tab.
+  const tab: Tab =
+    (view.tab === "memory" && !hasMemory) || (view.tab === "network" && !hasNetwork) ? "variables" : view.tab;
 
   if (!active) {
     return (
@@ -165,29 +189,7 @@ export function DebugToolWindow() {
   return (
     <div className={styles.root}>
       <div className={styles.toolbar} role="toolbar" aria-label={tx("Debugger actions")}>
-        <div role="tablist" aria-label={tx("Debug views")} className={styles.tabs}>
-          {(
-            [
-              ["variables", "Threads & Variables"],
-              ["console", "Console"],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              id={`debug-tab-${id}`}
-              aria-selected={tab === id}
-              aria-controls={`debug-panel-${id}`}
-              className={clsx(styles.tab, tab === id && styles.tabActive)}
-              onClick={() => setView({ session: active.startedAt, status: active.status, tab: id })}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {/* IDEA's XDebugger.ToolWindow.TopToolbar3 (+ its "More" group). */}
-        <span className={styles.sep} aria-hidden />
+        {/* IDEA's XDebugger.ToolWindow.TopToolbar3 (+ its "More" group), then the views. */}
         <ToolButton action="debug.rerun" icon="rerun" />
         <ToolButton action="debug.stop" icon="stop" tone="danger" />
         <span className={styles.sep} aria-hidden />
@@ -197,6 +199,13 @@ export function DebugToolWindow() {
         <ToolButton action="debug.stepInto" icon="step-into" />
         <ToolButton action="debug.stepOut" icon="step-out" />
         <span className={styles.sep} aria-hidden />
+        {rootOf(active).adapter === "dart" && (
+          <>
+            <ToolButton action="debug.hotReload" icon="hot-reload" />
+            <ToolButton action="debug.hotRestart" icon="refresh" />
+            <span className={styles.sep} aria-hidden />
+          </>
+        )}
         <IconButton
           icon="view-breakpoints"
           action="debug.viewBreakpoints"
@@ -214,10 +223,41 @@ export function DebugToolWindow() {
           onClick={() => setMuted(!muted)}
         />
         <MoreActions />
+        <span className={styles.sep} aria-hidden />
+        <div role="tablist" aria-label={tx("Debug views")} className={styles.tabs}>
+          {(
+            [
+              ["variables", "Threads & Variables"],
+              ["console", "Console"],
+              ...(hasMemory ? [["memory", "Memory"] as const] : []),
+              ...(hasNetwork ? [["network", "Network"] as const] : []),
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`debug-tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls={`debug-panel-${id}`}
+              className={clsx(styles.tab, tab === id && styles.tabActive)}
+              onClick={() => {
+                chosenTab = id;
+                setView({ session: active.startedAt, status: active.status, tab: id });
+              }}
+            >
+              {tx(label)}
+            </button>
+          ))}
+        </div>
       </div>
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
           <ThreadsAndVariables session={active} />
+        ) : tab === "memory" ? (
+          <MemoryView key={active.id} session={active} />
+        ) : tab === "network" ? (
+          <NetworkView key={active.id} session={active.id} />
         ) : (
           <DebugConsole key={active.id} session={active} />
         )}
@@ -230,7 +270,12 @@ export function DebugToolWindow() {
 
 function ThreadsAndVariables({ session }: { session: DebugSession }) {
   return (
-    <SplitGroup orientation="horizontal" id="debug-threads-variables" className={styles.split}>
+    <SplitGroup
+      orientation="horizontal"
+      id="debug-threads-variables"
+      storageKey="openidea.debug.threadsVariables"
+      className={styles.split}
+    >
       <SplitPanel id="frames" defaultSize="34%" minSize="160px">
         <FramesPane session={session} />
       </SplitPanel>
@@ -293,8 +338,13 @@ function FramesPane({ session }: { session: DebugSession }) {
         onBlur={() => blurDebugView("frames")}
       >
         {!paused && (
-          <div className={styles.note}>{session.status === "terminated" ? tx("Finished") : tx("Running…")}</div>
+          <div className={styles.note}>
+            {session.status === "terminated"
+              ? tx("Finished")
+              : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
+          </div>
         )}
+        {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}
         {items.map((item) =>
           item.kind === "hidden" ? (
             <button
@@ -342,7 +392,7 @@ function FramesPane({ session }: { session: DebugSession }) {
                     label: "Copy Stack",
                     icon: "copy",
                     run: () =>
-                      void navigator.clipboard?.writeText(
+                      void writeClipboardText(
                         session.frames
                           .map((f) => `${frameLabel(f)}${f.path ? `, ${basename(f.path)}` : ""}`)
                           .join("\n"),
@@ -378,6 +428,7 @@ interface EvalRow {
 function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
+  const variablesEpoch = useDebug((s) => s.variablesEpoch);
   const [expression, setExpression] = useState("");
   const evalField = useRef<HTMLInputElement>(null);
   const completion = useExpressionCompletion(evalField, expression, setExpression, session);
@@ -393,6 +444,9 @@ function VariablesPane({ session }: { session: DebugSession }) {
     rows: [],
   });
   const frame = session.status === "paused" ? session.selectedFrame : null;
+  const live = liveWatchesApply(session);
+  // A hidden tool window stays mounted: its watches must not go on running in the page.
+  const liveWatches = useLiveWatches(session, watches, useToolWindowShown());
   // Same thread and stack depth across stops: compare like with like.
   const changeScope = `${session.id}:${session.selectedThread}:${session.frames.findIndex((f) => f.id === frame)}`;
 
@@ -418,9 +472,10 @@ function VariablesPane({ session }: { session: DebugSession }) {
     return () => {
       cancelled = true;
     };
-  }, [session.id, frame, stopSeq]);
+  }, [session.id, frame, stopSeq, variablesEpoch]);
 
-  // Watches are re-evaluated on every stop / frame change.
+  // Watches are re-evaluated on every stop / frame change, and when the adapter has new values (kotlin-lsp first
+  // answers "Collecting data…").
   useEffect(() => {
     if (frame == null || !watches.length) return;
     let cancelled = false;
@@ -441,7 +496,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
     };
     // `session` identity changes on every patch; frame/stopSeq capture what matters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.id, frame, stopSeq, watches]);
+  }, [session.id, frame, stopSeq, variablesEpoch, watches]);
 
   const roots = useMemo<VarRoot[]>(() => {
     const out: VarRoot[] = [];
@@ -453,7 +508,8 @@ function VariablesPane({ session }: { session: DebugSession }) {
         variable: lastEval.result,
         error: lastEval.error,
       });
-    const watchRows = watchData.frame === frame ? watchData.rows : [];
+    // While the program runs, a debugger that evaluates without suspending gives the values.
+    const watchRows = frame == null ? liveWatches : watchData.frame === frame ? watchData.rows : [];
     for (const w of watches) {
       const r = watchRows.find((x) => x.expression === w);
       out.push({
@@ -461,7 +517,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         kind: "watch",
         name: w,
         variable: r?.result ?? null,
-        error: frame == null ? "Not suspended" : (r?.error ?? null),
+        error: frame == null && !live ? "Not suspended" : (r?.error ?? null),
       });
     }
     if (frame != null && scopeData.frame === frame) {
@@ -489,13 +545,17 @@ function VariablesPane({ session }: { session: DebugSession }) {
       }
     }
     return out;
-  }, [lastEval, watches, watchData, scopeData, frame]);
+  }, [lastEval, watches, watchData, scopeData, frame, live, liveWatches]);
 
   const run = async () => {
     const e = expression.trim();
     if (!e) return;
     try {
-      setLastEval({ expression: e, result: await evaluate(e, "repl", session), error: null });
+      setLastEval({
+        expression: e,
+        result: await evaluate(e, session.adapter === "gdb" ? "watch" : "repl", session),
+        error: null,
+      });
     } catch (err) {
       setLastEval({ expression: e, result: null, error: err instanceof Error ? err.message : String(err) });
     }
@@ -554,7 +614,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <VariablesView
           roots={roots}
           session={session.id}
-          generation={stopSeq * 100000 + (frame ?? 0)}
+          generation={(stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0)}
           changes={{ epoch: stopSeq, scope: changeScope }}
           aria-label="Variables"
         />

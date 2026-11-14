@@ -17,11 +17,21 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { EditorState, Facet, Prec, RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
+import {
+  Compartment,
+  EditorState,
+  Facet,
+  Prec,
+  RangeSet,
+  StateEffect,
+  StateField,
+  type Extension,
+} from "@codemirror/state";
 import {
   Decoration,
   EditorView,
   GutterMarker,
+  ViewPlugin,
   WidgetType,
   gutter,
   showPanel,
@@ -29,29 +39,43 @@ import {
   type Panel,
   type Tooltip,
 } from "@codemirror/view";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
 import { iconNode } from "@/editor/lsp/iconMarkup";
-import type { DbDriver, DbStatementOutcome } from "@/platform/ipc";
+import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Select } from "@/ui";
-import { sourceLabel, splitTarget, targetOf } from "./model";
+import { activeSchema, schemaSwitchable, sourceLabel, splitTarget, targetOf } from "./model";
+import { loadSavedCatalog, offerIntrospection } from "./introspection";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
-import { shouldAutoCompleteSql, sqlCandidates, type CandidateKind, type SqlCandidate } from "./sql/complete";
+import {
+  shouldAutoCompleteSql,
+  sqlCandidates,
+  type CandidateKind,
+  type SqlCandidate,
+  type SqlCatalog,
+} from "./sql/complete";
 import { sqlSupport } from "./sqlSupport";
+import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
   bindConsole,
   cancelConsole,
+  consoleSchema,
   consoleSource,
   executeConsole,
   explainConsole,
   finishTransaction,
   openHistory,
   loadCompletion,
+  runSql,
   listsDatabases,
   loadDatabases,
+  loadSchemas,
   loadSources,
+  loadTables,
+  tablesKey,
+  setConsoleSchema,
   setManualCommit,
   sourceById,
   targetLabel,
@@ -59,11 +83,13 @@ import {
 } from "./store";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
+import { databaseRequest, projectRequest } from "./requests";
 
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
-export const SQL_LANGUAGE = "sql";
+import { SQL_LANGUAGE } from "./sqlLanguage";
+export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
 
 /** Statement outcomes of the last run, kept on the text (IDEA's gutter check / error and timing). */
@@ -212,6 +238,12 @@ export async function executeInView(view: EditorView, path: string) {
   if (outcomes.length) markOutcomes(view, outcomes);
 }
 
+/** Runs every statement of `view`, in order (stops at the first that fails). */
+export async function executeScriptInView(view: EditorView, path: string) {
+  const outcomes = await executeConsole(path, view.state.doc.toString(), 0, view.state.doc.length);
+  if (outcomes.length) markOutcomes(view, outcomes);
+}
+
 /** Explain Plan of the statement at the caret (or the first selected one) of `view`. */
 export async function explainInView(view: EditorView, path: string) {
   const sel = view.state.selection.main;
@@ -231,10 +263,35 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const databases = useDatabase((s) => s.databases);
   const boundId = bound ? splitTarget(bound).id : null;
   const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
+  const sqlServer = sourceById(boundId)?.driver === "sqlServer";
+  const switchable = schemaSwitchable(sourceById(boundId)?.driver);
+  // The console's active schema: its pick, else the connection's default (`completion.defaultSchema`).
+  const pickedSchema = useDatabase((s) => s.consoleSchemas[path]);
+  const defaultSchema = useDatabase((s) => (bound ? s.completion[bound]?.defaultSchema : undefined));
+  const schemaList = useDatabase((s) => (bound ? s.schemas[bound] : undefined));
+  const schema = activeSchema(pickedSchema, defaultSchema);
   useEffect(() => {
-    if (boundId && listsDatabases(sourceById(boundId)) && !useDatabase.getState().databases[boundId])
+    if (boundId && (sqlServer || listsDatabases(sourceById(boundId))) && !useDatabase.getState().databases[boundId])
       void loadDatabases(boundId);
-  }, [boundId]);
+  }, [boundId, sqlServer]);
+  useEffect(() => {
+    if (bound && switchable && !sqlServer && !useDatabase.getState().schemas[bound]) void loadSchemas(bound);
+  }, [bound, switchable, sqlServer]);
+  const schemaOptions = useMemo(() => {
+    if (!switchable) return [];
+    const databaseList = boundId ? databases[boundId] : undefined;
+    const names = sqlServer
+      ? databaseList?.status === "ok"
+        ? databaseList.value.names
+        : []
+      : schemaList?.status === "ok"
+        ? schemaList.value
+        : [];
+    const out = names.map((n) => ({ value: n, label: n }));
+    // The connection's default is offered even before its schema list loads.
+    if (defaultSchema && !names.includes(defaultSchema)) out.unshift({ value: defaultSchema, label: defaultSchema });
+    return out;
+  }, [switchable, schemaList, defaultSchema, sqlServer, boundId, databases]);
   const targets = useMemo(() => {
     const out: Array<{ value: string; label: string; detail?: string; icon: string }> = [];
     for (const s of sources) {
@@ -270,6 +327,12 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         shortcut={shortcutLabel("db.execute")}
         disabled={!bound || running}
         onClick={() => void executeInView(view, path)}
+      />
+      <IconButton
+        icon="gutter-run-all"
+        title="Execute Script"
+        disabled={!bound || running}
+        onClick={() => void executeScriptInView(view, path)}
       />
       <IconButton
         icon="db-plan"
@@ -324,6 +387,18 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         </>
       )}
       <span className={styles.spacer} />
+      {bound && sourceById(boundId)?.driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
+      {switchable && (
+        <Select
+          aria-label={sqlServer ? "Database" : "Schema"}
+          value={schema || null}
+          placeholder="<schema>"
+          options={schemaOptions}
+          searchable={schemaOptions.length > 10}
+          onChange={(v) => setConsoleSchema(path, v)}
+          disabled={!bound}
+        />
+      )}
       <Select
         aria-label="Data source"
         value={bound ?? null}
@@ -333,6 +408,69 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         disabled={!sources.length}
       />
     </div>
+  );
+}
+
+const quoted = (name: string) => `"${name.replace(/"/g, '""')}"`;
+
+/**
+ * Warehouse and role of a Snowflake data source's session (its consoles share them). Read
+ * once connected and after each run, since `USE WAREHOUSE` / `USE ROLE` in a console moves them too.
+ */
+function SnowflakeSession({ target, idle }: { target: string; idle: boolean }) {
+  const connected = useDatabase((s) => s.connected.has(target));
+  const [state, setState] = useState<DbSessionContext>({
+    warehouse: "",
+    role: "",
+    warehouses: [],
+    roles: [],
+  });
+  useEffect(() => {
+    // Completion has the saved catalog before the first connect; a stale one is read again after it.
+    void loadSavedCatalog(target);
+    if (connected) void offerIntrospection(target);
+  }, [connected, target]);
+  useEffect(() => {
+    if (!connected || !idle) return;
+    let stale = false;
+    call(commands.dbSessionContext(target))
+      .then((context) => {
+        if (!stale) setState(context);
+      })
+      // Not connected any more, or no privilege: the pickers keep what they showed.
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [target, connected, idle]);
+  if (!connected) return null;
+  const use = async (what: "WAREHOUSE" | "ROLE", name: string) => {
+    if (await runSql(target, [`USE ${what} ${quoted(name)}`]))
+      setState((s) => (what === "WAREHOUSE" ? { ...s, warehouse: name } : { ...s, role: name }));
+  };
+  const options = (names: string[], current: string) =>
+    [...new Set(current ? [current, ...names] : names)].map((n) => ({ value: n, label: n }));
+  return (
+    <>
+      <Select
+        aria-label="Warehouse"
+        value={state.warehouse || null}
+        placeholder="<warehouse>"
+        options={options(state.warehouses, state.warehouse)}
+        searchable={state.warehouses.length > 10}
+        onChange={(v) => void use("WAREHOUSE", v)}
+        disabled={!idle}
+      />
+      <Select
+        aria-label="Role"
+        value={state.role || null}
+        placeholder="<role>"
+        options={options(state.roles, state.role)}
+        searchable={state.roles.length > 10}
+        onChange={(v) => void use("ROLE", v)}
+        disabled={!idle}
+      />
+    </>
   );
 }
 
@@ -418,13 +556,93 @@ function finishTemplateField(view: EditorView) {
  * Context-aware SQL completion against the bound data source's schema (see
  * `sql/analyze` and `sql/complete`); keywords and functions without one.
  */
+/**
+ * The databases of Snowflake data source `id` with their loaded schemas and tables, so
+ * completion can follow `database.schema.table` beyond the console's own database.
+ */
+function catalogOf(id: string): SqlCatalog | undefined {
+  const st = useDatabase.getState();
+  const { id: sourceId, database: bound } = splitTarget(id);
+  const listed = st.databases[sourceId];
+  const dbs = listed?.status === "ok" ? listed.value : null;
+  // What introspection read comes first (it is there before connecting); a database it has not
+  // reached falls back to what the tree loaded.
+  const read = st.catalogs[sourceId]?.databases ?? {};
+  if (!dbs && !Object.keys(read).length) return undefined;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const target = (database: string) => (dbs ? targetOf(sourceId, database, dbs.current) : null);
+  const schemas = (database: string) => {
+    if (read[database]) return read[database].map((s) => s.name);
+    const at = target(database);
+    const list = at ? st.schemas[at] : undefined;
+    return list?.status === "ok" ? list.value : null;
+  };
+  const current = bound ?? dbs?.current ?? "";
+  return {
+    databases: dbs?.names ?? Object.keys(read),
+    schemas,
+    tables: (database, schema) => {
+      const known = read[database]?.find((s) => same(s.name, schema));
+      if (known) return known.tables.map((t) => ({ name: t.name, view: t.kind !== "table" }));
+      const exact = schemas(database)?.find((s) => same(s, schema));
+      const at = target(database);
+      const list = exact && at ? st.tables[tablesKey(at, exact)] : undefined;
+      return list?.status === "ok" ? list.value.map((t) => ({ name: t.name, view: t.kind !== "table" })) : null;
+    },
+    search: (prefix, limit) => {
+      const wanted = prefix.toLowerCase();
+      const found: Array<{ database: string; schema: string; name: string; view: boolean }> = [];
+      for (const [database, list] of Object.entries(read)) {
+        // The console's own database is in the schema model already.
+        if (same(database, current)) continue;
+        for (const schema of list)
+          for (const t of schema.tables) {
+            if (!t.name.toLowerCase().startsWith(wanted)) continue;
+            found.push({ database, schema: schema.name, name: t.name, view: t.kind !== "table" });
+            if (found.length >= limit) return found;
+          }
+      }
+      return found;
+    },
+  };
+}
+
+/** Loads what `database.` / `database.schema.` at the caret needs before it is completed. */
+async function loadQualified(id: string, qualifier: readonly string[]): Promise<void> {
+  const current = databaseRequest(id);
+  const sourceId = splitTarget(id).id;
+  // Introspection has it: nothing to load (and no reason to connect for it).
+  const wanted = (qualifier[0] ?? "").toLowerCase();
+  const read = useDatabase.getState().catalogs[sourceId]?.databases ?? {};
+  if (Object.keys(read).some((d) => d.toLowerCase() === wanted)) return;
+  if (!useDatabase.getState().databases[sourceId]) await loadDatabases(sourceId);
+  if (!current()) return;
+  const dbs = useDatabase.getState().databases[sourceId];
+  if (dbs?.status !== "ok") return;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const database = dbs.value.names.find((d) => same(d, qualifier[0] ?? ""));
+  if (!database) return;
+  if (useDatabase.getState().catalogs[sourceId]?.databases[database]) return;
+  const target = targetOf(sourceId, database, dbs.value.current);
+  if (!useDatabase.getState().schemas[target]) await loadSchemas(target);
+  if (!current()) return;
+  if (qualifier.length < 2) return;
+  const list = useDatabase.getState().schemas[target];
+  const schema = list?.status === "ok" ? list.value.find((s) => same(s, qualifier[1]!)) : undefined;
+  if (schema && !useDatabase.getState().tables[tablesKey(target, schema)]) await loadTables(target, schema);
+}
+
 function completionSource(path: string): CompletionSource {
-  return (ctx: CompletionContext): CompletionResult | null => {
+  return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
     const id = consoleSource(path);
+    const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
     const driver: DbDriver = source?.driver ?? "sqlite";
     const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
     if (id && !model) void loadCompletion(id);
+    // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
+    const schema = consoleSchema(path);
+    const scoped = model && schema ? { ...model, defaultSchema: schema } : model;
     // A selected template placeholder (`alias`) is about to be replaced: analyze without it.
     const sel = ctx.state.selection.main;
     const placeholder = !sel.empty && (ctx.pos === sel.from || ctx.pos === sel.to);
@@ -433,7 +651,18 @@ function completionSource(path: string): CompletionSource {
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
     if (!ctx.explicit && !shouldAutoCompleteSql(analysis)) return null;
-    const candidates = sqlCandidates({ model, analysis, driver, sourceName: source?.name ?? undefined });
+    const cataloged = driver === "snowflake" && !!id;
+    if (cataloged && analysis.qualifier?.length) {
+      await loadQualified(id, analysis.qualifier).catch(() => {});
+      if (ctx.aborted || !current()) return null;
+    }
+    const candidates = sqlCandidates({
+      model: scoped,
+      analysis,
+      driver,
+      sourceName: source?.name ?? undefined,
+      catalog: cataloged ? catalogOf(id) : undefined,
+    });
     if (!candidates.length) return null;
     return {
       from: analysis.prefix.from,
@@ -456,6 +685,30 @@ const noKeywords: CompletionSource = (ctx) => ({ from: ctx.pos, options: [] });
 
 function driverOf(path: string): DbDriver {
   return sourceById(consoleSource(path))?.driver ?? "sqlite";
+}
+
+/**
+ * Syntax colours of the bound data source's dialect, over the editor's standard SQL mode.
+ * Follows the binding: a console moved to another data source is coloured for that one.
+ */
+function dialectColours(path: string): Extension {
+  const slot = new Compartment();
+  const colours = (driver: DbDriver): Extension =>
+    driver === "snowflake" ? Prec.high(snowflakeLanguage().extension) : [];
+  const initial = driverOf(path);
+  return [
+    slot.of(colours(initial)),
+    ViewPlugin.define((view) => {
+      let shown = initial;
+      const stop = useDatabase.subscribe(() => {
+        const driver = driverOf(path);
+        if (driver === shown) return;
+        shown = driver;
+        view.dispatch({ effects: slot.reconfigure(colours(driver)) });
+      });
+      return { destroy: stop };
+    }),
+  ];
 }
 
 /** Live template contexts at a position (`sql-statement` / `sql-query` / `sql-code`). */
@@ -533,6 +786,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     completeAfterTemplate,
     valuesInfo(ctx.path),
     sqlSupport(ctx.path),
+    dialectColours(ctx.path),
     // The grammar's keyword list would duplicate ours (it is the fallback without a language server).
     Prec.highest(EditorState.languageData.of(() => [{ autocomplete: noKeywords }])),
   ];

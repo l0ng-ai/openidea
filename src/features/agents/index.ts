@@ -3,37 +3,73 @@
  * Agents tool window lists tasks by what they need from the user, a task opens as an
  * editor tab (conversation + changed files), and New Task is an editor page.
  */
+import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
-import { lazyComponent } from "@/ui";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { call, commands } from "@/platform/ipc";
 import {
+  registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerOverlay,
   registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
   toolWindowService,
 } from "@/workbench/contributions";
 import { AgentsStatus } from "./AgentsStatus";
-import { HOME_KIND, REGISTRY_PAGE, SESSION_KIND, TASK_DRAG, TOOL_WINDOW } from "./model";
-import { sendPaths, sendSelection } from "./references";
+import {
+  AGENTS_GROUP,
+  HOME_KIND,
+  MCP_PAGE,
+  POLICY_PAGE,
+  REGISTRY_PAGE,
+  SESSION_KIND,
+  TASK_DRAG,
+  TOOL_WINDOW,
+  providerIcon,
+} from "./model";
+import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { connect, disconnect, openHome, useAgents } from "./store";
-import { taskActions } from "./taskActions";
+import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
+import { TaskStatusMark } from "./TaskStatusMark";
+import { taskActions, useAgentsHeaderMenu } from "./taskActions";
+import { replyActions } from "./replyActions";
 
-/** Settings › Tools › Agents (also used by the Settings window). */
+/** Settings › Agents › Coding Agents and Settings › Agents › External MCP Servers (also used by the Settings window). */
 export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: REGISTRY_PAGE,
-    title: "Agents",
-    group: "Tools",
-    order: 500,
-    keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
-    component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
-  });
+  const disposers = [
+    registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Coding Agents",
+      group: AGENTS_GROUP,
+      // First in Agents, which sits after Languages & Frameworks and before Tools.
+      order: 450,
+      keywords: ["agent", "acp", "registry", "install", "update", "coding agent"],
+      component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
+    }),
+    registerSettingsPage({
+      id: MCP_PAGE,
+      title: "External MCP Servers",
+      group: AGENTS_GROUP,
+      order: 475,
+      keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+      component: lazyComponent(() => import("./McpServersPage").then((m) => m.McpServersPage)),
+    }),
+    registerSettingsPage({
+      id: POLICY_PAGE,
+      title: "Command Permissions",
+      group: AGENTS_GROUP,
+      order: 490,
+      keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
+      component: lazyComponent(() => import("./AgentPolicyPage").then((m) => m.AgentPolicyPage)),
+    }),
+  ];
+  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {
@@ -44,8 +80,38 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    trackEditorCopies(),
+    registerAgentContextSource({
+      id: "changes",
+      title: "Changes",
+      description: "Files with uncommitted changes",
+      icon: "diff",
+      resolve: async () => {
+        const changed = await call(commands.vcsStatus());
+        return changed.length ? { kind: "files", paths: changed.map((f) => f.path) } : null;
+      },
+    }),
+    // The performance harness (`perf/`): long conversations to switch between and scroll.
+    import.meta.env.DEV || import.meta.env.MODE === "perf"
+      ? registerActions([
+          {
+            id: "agents.openSampleConversations",
+            title: "Open Sample Conversations",
+            category: "Agents",
+            hidden: true,
+            run: async ({ arg }) => {
+              const { tasks = 2, turns = 150 } = (arg ?? {}) as { tasks?: number; turns?: number };
+              const { openSampleConversations } = await import("./sampleConversation");
+              openSampleConversations(tasks, turns);
+            },
+          },
+        ])
+      : () => {},
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) sync(s.project?.root);
+      // What new tasks start with comes from the agents' list.
+      else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
+        void refreshProviders();
     }),
     registerToolWindow({
       id: TOOL_WINDOW,
@@ -54,7 +120,8 @@ export function activate(): () => void {
       anchor: "right",
       order: 0.5,
       component: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsView)),
-      headerContent: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsLocationActions)),
+      headerMenu: useAgentsHeaderMenu,
+      plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
         const n = useAgents(
@@ -63,6 +130,13 @@ export function activate(): () => void {
         return n || null;
       },
     }),
+    registerOverlay({
+      id: "agents.importSessions",
+      component: lazyWhen(
+        () => useAgents((s) => s.importOpen),
+        () => import("./ImportSessionsDialog").then((m) => m.ImportSessionsOverlay),
+      ),
+    }),
     registerEditorKind({
       kind: SESSION_KIND,
       component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
@@ -70,15 +144,25 @@ export function activate(): () => void {
         const data = input.data as { task: string; title?: string };
         return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
       },
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
+      // Busy / done marker in the tab's trailing slot (#2233).
+      trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      // Rebuilding a long conversation on every switch back is slow.
+      keepAlive: true,
     }),
     registerEditorKind({
       kind: HOME_KIND,
       component: lazyComponent(() => import("./HomeEditor").then((m) => m.HomeEditor)),
       title: () => "New Agent Task",
-      icon: () => "toolwindow-agents",
+      icon: (input) => {
+        const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
+        return task ? providerIcon(task.provider) : "toolwindow-agents";
+      },
       restorable: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.
@@ -98,6 +182,7 @@ export function activate(): () => void {
     }),
     registerActions([
       ...taskActions,
+      ...replyActions,
       {
         id: "agents.findInConversation",
         title: "Find in Conversation",
@@ -117,6 +202,26 @@ export function activate(): () => void {
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
       },
       {
+        id: "agents.closeTask",
+        title: "Close Agent Task",
+        description: "Closes the agent task tab in the editor; the task keeps running in the Agents tool window.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: async () => {
+          await closeActiveTask();
+        },
+      },
+      {
+        id: "agents.closeAndNewTask",
+        title: "Close and New Agent Task",
+        description: "Closes the agent task tab in the editor, then opens the New Task page.",
+        category: "Agents",
+        when: "projectOpen",
+        keywords: ["agent", "tab"],
+        run: () => closeAndNewTask(),
+      },
+      {
         id: "agents.addAgent",
         title: "More Agents…",
         description: "Opens Settings › Tools › Agents: installs, updates or removes agents from the ACP Registry.",
@@ -124,6 +229,16 @@ export function activate(): () => void {
         icon: "plugin",
         keywords: ["agent", "acp", "registry", "install", "update"],
         run: () => void executeAction("file.settings", REGISTRY_PAGE),
+      },
+      {
+        id: "agents.mcpServers",
+        title: "External MCP Servers…",
+        description:
+          "Opens Settings › Agents › External MCP Servers: configures the User and Workspace MCP servers coding agents use.",
+        category: "Agents",
+        icon: "settings",
+        keywords: ["mcp", "model context protocol", "servers", "tools", "agent"],
+        run: () => void executeAction("file.settings", MCP_PAGE),
       },
       {
         id: "agents.sendToAgent",

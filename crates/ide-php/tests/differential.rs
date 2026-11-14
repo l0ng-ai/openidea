@@ -975,9 +975,9 @@ fn print_summary(report: &Report, md: &Path) {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "needs Intelephense (npm i -g intelephense)"]
 async fn fixture() {
-    let root = dunce::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app")).unwrap();
+    let root = dunce::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library")).unwrap();
     let n = env_or("PHP_DIFF_SAMPLES", 200);
-    let report = run("php-app", &root, n, env_or("PHP_DIFF_SEED", DEFAULT_SEED), Duration::from_secs(120)).await;
+    let report = run("php-library", &root, n, env_or("PHP_DIFF_SEED", DEFAULT_SEED), Duration::from_secs(120)).await;
     let (json, md) = write_report(&report_dir(), &report);
     print_summary(&report, &md);
 

@@ -14,13 +14,13 @@ export const useBuildPresentation = create<BuildPresentation>(() => EMPTY);
 export function buildPresentation(model: BuildModel): BuildPresentation {
   const modules = new Map<string, "maven" | "gradle">();
   for (const p of model.maven?.projects ?? []) modules.set(p.dir, "maven");
-  for (const p of model.gradle?.projects ?? []) modules.set(p.dir, "gradle");
+  for (const p of (model.gradle ?? []).flatMap((g) => g.projects)) modules.set(p.dir, "gradle");
   const spring =
     (model.maven?.projects ?? []).some(
       (p) =>
         p.dependencies.some((d) => d.groupId.startsWith("org.springframework")) ||
         p.plugins.some((p) => p.groupId.startsWith("org.springframework")),
-    ) || (model.gradle?.projects ?? []).some((p) => p.tasks.some((t) => t.name === "bootRun"));
+    ) || (model.gradle ?? []).some((g) => g.projects.some((p) => p.tasks.some((t) => t.name === "bootRun")));
   return { modules, spring };
 }
 

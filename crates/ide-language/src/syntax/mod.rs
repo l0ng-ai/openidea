@@ -9,22 +9,27 @@ mod highlight;
 pub(crate) mod lines;
 mod literals;
 mod outline;
+mod rst;
 mod selection;
+mod sfc;
+mod vue;
 mod web;
 
-use crate::{FoldRange, LanguageConfig, LanguageRegistry, SymbolTag};
+use crate::{FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
 pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};
 use grammars::{SPECS, Spec};
 pub use highlight::{SyntaxHighlightKind, SyntaxHighlights};
 use ide_core::{LanguageId, OutlineItem, Pos, Range};
+pub use lines::{shift_pos, shift_range};
 pub use literals::{Literal, LiteralKind, SpellingKind, SpellingRegion};
 pub use outline::merge_visibility;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tree_sitter::{Language, Parser, Tree};
+pub use vue::{VueComponentImport, VueRefAccess, VueRefElement};
 pub use web::{CSS_CLASS, CSS_ID, CSS_VARIABLE, FileReference, WebReference, WebReferenceKind};
 
 /// Texts larger than this are not parsed (minified bundles, generated dumps).
@@ -127,29 +132,11 @@ impl Syntax {
         SPECS.iter().map(|s| s.name)
     }
 
-    /// Changes whenever extraction output may change (grammar set, queries,
-    /// crate version); persistent caches of [`Syntax::tags`] key on it.
+    /// Changes whenever extraction output may change (this crate's sources,
+    /// queries, language definitions, tree-sitter crate versions; see
+    /// `build.rs`); persistent caches of [`Syntax::tags`] key on it.
     pub fn fingerprint(&self) -> String {
-        static FP: OnceLock<String> = OnceLock::new();
-        FP.get_or_init(|| {
-            let mut h = blake3::Hasher::new();
-            h.update(env!("CARGO_PKG_VERSION").as_bytes());
-            // Bump when web definitions (`.class`, `#id`, `--var` tags) change.
-            h.update(b"web-definitions-1");
-            for s in SPECS {
-                h.update(s.name.as_bytes());
-                h.update(&Language::new(s.language).abi_version().to_le_bytes());
-                h.update(s.outline.as_bytes());
-                for list in [s.fold_nodes, s.fold_bodies, s.imports, s.constructors] {
-                    for k in list {
-                        h.update(k.as_bytes());
-                        h.update(b"\0");
-                    }
-                }
-            }
-            h.finalize().to_hex()[..16].to_owned()
-        })
-        .clone()
+        env!("SYNTAX_SOURCE_HASH").to_owned()
     }
 
     /// Whether a tree-sitter grammar is bundled for this language.
@@ -165,11 +152,37 @@ impl Syntax {
     }
 
     pub fn outline(&self, lang: &LanguageId, text: &str) -> Vec<OutlineItem> {
+        // HTML containers (Vue SFC / Svelte / JSP have no grammar of their own;
+        // HTML itself parses alike): HTML outline with each inline `<script>`'s
+        // TS/JS declarations nested under its entry, in document coordinates.
+        if let Some(items) = self.web_outline(lang, text) {
+            return items;
+        }
         self.analyze(lang, text, |g, tree, text| {
             let query = g.outline_query()?;
             Some(outline::outline(g, query, tree, text))
         })
+        .or_else(|| self.builtin_outline(lang, text))
         .unwrap_or_default()
+    }
+
+    /// Outline for languages without a grammar that have a built-in parser.
+    fn builtin_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        (lang.as_str() == "restructuredtext" && text.len() <= MAX_PARSE_BYTES).then(|| rst::outline(text))
+    }
+
+    /// Outline of an HTML container document (html, vue, svelte, jsp): `None`
+    /// for every other language, CSS containers included.
+    pub(crate) fn web_outline(&self, lang: &LanguageId, text: &str) -> Option<Vec<OutlineItem>> {
+        let g = self.web_grammar(lang)?;
+        if g.spec.name != "html" || text.len() > MAX_PARSE_BYTES {
+            return None;
+        }
+        let tree = parse(&g.language, text, None)?;
+        let query = g.outline_query()?;
+        Some(outline::outline_nested(g, query, &tree, text, &|region_lang, region_text| {
+            self.outline(region_lang, region_text)
+        }))
     }
 
     pub fn folding(&self, lang: &LanguageId, text: &str) -> Vec<FoldRange> {
@@ -248,6 +261,19 @@ impl Syntax {
         self.with_web_tree(lang, text, |_, _, tree| web::anchors(tree, text, name)).unwrap_or_default()
     }
 
+    /// Inline TS/JS `<script>` regions of a Vue SFC / HTML document, in
+    /// document order. Empty for other languages or non-JavaScript blocks.
+    pub fn script_regions(&self, lang: &LanguageId, text: &str) -> Vec<ScriptRegion> {
+        self.with_web_tree(lang, text, |_g, _css, tree| sfc::script_regions(tree, text)).unwrap_or_default()
+    }
+
+    /// [`Self::script_regions`] of an already parsed document (`ParsedTree`
+    /// lends the tree and text) — the cache-aware way for other crates, which
+    /// reuses a cached incremental HTML tree instead of parsing again.
+    pub fn script_regions_of(tree: &Tree, text: &str) -> Vec<ScriptRegion> {
+        sfc::script_regions(tree, text)
+    }
+
     /// Highlighting from the grammar's own query; `None` without one.
     pub fn highlights(&self, lang: &LanguageId, text: &str) -> Option<SyntaxHighlights> {
         self.analyze(lang, text, |g, tree, text| {
@@ -278,6 +304,13 @@ impl Syntax {
     /// Name of the bundled grammar used for `lang`, if any.
     pub fn grammar_name(&self, lang: &LanguageId) -> Option<&'static str> {
         self.grammar(lang).map(|g| g.spec.name)
+    }
+
+    /// Name of the grammar web features parse `lang` with (html for Vue SFC /
+    /// Svelte / JSP, css for SCSS / Less); `None` when `lang` has its own
+    /// grammar or no web features. Lets other crates recognize containers.
+    pub fn web_grammar_name(&self, lang: &LanguageId) -> Option<&'static str> {
+        self.web_grammar(lang).map(|g| g.spec.name)
     }
 
     /// Grammar name and tree-sitter language for `lang`, for engines that parse

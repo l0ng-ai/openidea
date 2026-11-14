@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ContextMenuHost } from "@/ui";
 import { TestResults } from "./testing";
 import { TestTreeView } from "./TestTreeView";
@@ -25,7 +25,10 @@ function results() {
   return r;
 }
 
-function Host(props: { onRunTests?: (ids: string[], debug: boolean) => void }) {
+function Host(props: {
+  onRunTests?: (ids: string[], debug: boolean) => void;
+  canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+}) {
   return (
     <>
       <TestTreeView
@@ -83,4 +86,29 @@ describe("TestTreeView", () => {
       expect.objectContaining({ left: { text: "1", label: "Expected" }, right: { text: "2", label: "Actual" } }),
     );
   });
+
+  it.each([true, false])(
+    "enables Run and Debug only when the async selector returns support (%s)",
+    async (supported) => {
+      let resolve!: (supported: boolean) => void;
+      const selection = new Promise<boolean>((done) => {
+        resolve = done;
+      });
+      const canRunTests = vi.fn(() => selection);
+      const onRunTests = vi.fn();
+      render(<Host onRunTests={onRunTests} canRunTests={canRunTests} />);
+      fireEvent.contextMenu(screen.getByText("subs()"));
+      expect(screen.getByRole("menuitem", { name: "Run 'subs()'" })).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByRole("menuitem", { name: "Debug 'subs()'" })).toHaveAttribute("aria-disabled", "true");
+      expect(canRunTests).toHaveBeenCalledWith(["MathTest\u0000subs()"]);
+      await act(async () => resolve(supported));
+      for (const label of ["Run 'subs()'", "Debug 'subs()'"]) {
+        expect(screen.getByRole("menuitem", { name: label }).hasAttribute("aria-disabled")).toBe(!supported);
+      }
+      if (supported) {
+        fireEvent.click(screen.getByText("Run 'subs()'"));
+        expect(onRunTests).toHaveBeenCalledWith(["MathTest\u0000subs()"], false);
+      }
+    },
+  );
 });

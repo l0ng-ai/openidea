@@ -14,15 +14,21 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { isPopupOpen, lazyComponent } from "@/ui";
+import { isPopupOpen, lazyComponent, lazyWhen } from "@/ui";
 import { loadSettings, useProject } from "@/platform/project";
 import { logError } from "@/platform/errorLog";
 import { restoreRemote } from "@/platform/remote";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
-import { LazySettingsDialog, loadBuiltinPages, unloadBuiltinPages } from "./dialog/LazySettingsDialog";
+import {
+  LazyProjectStructureDialog,
+  LazySettingsDialog,
+  loadBuiltinPages,
+  unloadBuiltinPages,
+} from "./dialog/LazySettingsDialog";
 import {
   closeSettings,
+  openProjectStructure,
   openSettings,
   rebaseSettings,
   selectPage,
@@ -31,13 +37,14 @@ import {
   settingsTitle,
   useSettingsDialog,
 } from "./model/staging";
-import { zoomActions } from "./appearanceRuntime";
+import { appearanceToggleActions, navigationBarActions, zoomActions } from "./appearanceRuntime";
 import { activateFileTypes } from "./fileTypesRuntime";
 import { trackRuntimeSettings } from "./runtime";
 import { installActionProxies, installSettingsHost } from "./window/bridge";
-import { AssignShortcutOverlay, showAssignShortcut } from "./keymap/AssignShortcut";
+import { showAssignShortcut, useAssignShortcut } from "./keymap/assignShortcutStore";
 import { settingsSearchEntries } from "./searchIndex";
 import { activatePythonStatus } from "./languages/PythonStatus";
+import { activatePhpStatus } from "./languages/PhpStatus";
 import { nativeToAsciiAction } from "./nativeToAscii";
 import { isImeKey } from "@/platform/ime";
 import { trackIconThemePages } from "./iconThemePages";
@@ -104,17 +111,38 @@ async function showSettings(page?: string, newProjects = false) {
   openSettings(page, { newProjects });
 }
 
+const useAssignShortcutOpen = () => useAssignShortcut((s) => s.actionId !== null);
+
 export function activate(): () => void {
   const disposers = [
     trackRuntimeSettings(),
     trackIconThemePages(),
     activatePythonStatus(),
+    activatePhpStatus(),
     unloadBuiltinPages,
     registerOverlay({ id: "settings.dialog", component: LazySettingsDialog }),
+    registerOverlay({ id: "settings.projectStructure", component: LazyProjectStructureDialog }),
     registerActions(zoomActions()),
+    registerActions(appearanceToggleActions()),
+    registerActions(navigationBarActions()),
     registerActions(settingsActions((page, newProjects) => void showSettings(page, newProjects))),
+    registerActions([
+      {
+        id: "file.projectStructure",
+        title: "Project Structure…",
+        category: "File",
+        icon: "folder",
+        keywords: ["project structure", "sdk", "jdk", "modules", "libraries", "facets", "artifacts", "sources"],
+        run: ({ arg }) => openProjectStructure(typeof arg === "string" ? arg : undefined),
+      },
+    ]),
     activateFileTypes(),
-    registerOverlay({ id: "settings.assignShortcut", component: AssignShortcutOverlay }),
+    registerOverlay({
+      id: "settings.assignShortcut",
+      component: lazyWhen(useAssignShortcutOpen, () =>
+        import("./keymap/AssignShortcut").then((m) => m.AssignShortcutOverlay),
+      ),
+    }),
     registerActions([
       {
         // Search Everywhere's ⌥↵ on an action (arg: the action id).

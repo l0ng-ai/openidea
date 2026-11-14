@@ -1,0 +1,43 @@
+{
+  "tools": {
+    "jdtls": "1.63.0-202610191322",
+    "java": "21.0.13.0.2 (Homebrew)"
+  },
+  "groups": {
+    "completions": [
+      "book.nnull",
+      "book.opt",
+      "book.syserr",
+      "book.sysouf",
+      "book.sysout",
+      "book.sysoutv",
+      "byCustomer",
+      "cast",
+      "else",
+      "equals",
+      "for",
+      "fori",
+      "getClass",
+      "hashCode",
+      "if",
+      "largest",
+      "nn",
+      "not",
+      "notify",
+      "notifyAll",
+      "null",
+      "par",
+      "place",
+      "return",
+      "revenueCents",
+      "size",
+      "sout",
+      "throw",
+      "toString",
+      "try",
+      "var",
+      "wait",
+      "while"
+    ]
+  }
+}

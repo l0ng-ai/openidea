@@ -11,14 +11,18 @@ import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { Button, Checkbox, Dialog, Icon, Input, Spinner, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { windowBackgroundHex } from "@/workbench/theme";
-import { diffInput, openDiff, type DiffData, type DiffSide } from "./diffInput";
+import { diffInput, openVcsDiff, vcsDiffInFront, type DiffData, type DiffSide } from "./diffInput";
 import { openDialog, promptText } from "./dialogs";
 import { KIND_COLOR, fileCount } from "./model";
 import { runGitOperation, runOp } from "./ops";
+import { loadLogDetails } from "./logDetails";
+import { isProtectedBranch } from "./remoteUi";
+import { showLocalChanges } from "./commitUi";
 import { reloadLog, useGitLog } from "./logStore";
 import { conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, repoOf, useVcs } from "./store";
 import styles from "./common.module.css";
 import { ComparisonTree } from "./ComparisonTree";
+import { showWorktreeComparison } from "./compareTool";
 import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
@@ -78,6 +82,38 @@ export function operationControls(op: InProgress): Array<"continue" | "skip" | "
 export function controlLabel(op: InProgress, control: "continue" | "skip" | "abort"): string {
   if (control === "skip") return "Skip Commit";
   return `${control === "continue" ? "Continue" : "Abort"} ${OP_NOUN[op]}`;
+}
+
+/** Why `git rebase --continue` refused (see the backend's UNSTAGED_CHANGES_PREVENT_REBASE). */
+const UNSTAGED_CHANGES_PREVENT_REBASE = "There are unstaged changes in tracked files preventing rebase from continuing";
+
+/**
+ * Links of the balloon of an operation that failed and is still stopped: Abort, and for
+ * a rebase held up by unstaged changes, Stage and Retry (stages the tracked files'
+ * changes and continues) and Show Files.
+ */
+export function stoppedActions(op: InProgress, message: string): Array<{ label: string; run: () => void }> {
+  if (!inProgress()) return [];
+  const abort = { label: "Abort", run: () => void controlOperation("abort", op) };
+  if (op !== "rebase" || !message.includes(UNSTAGED_CHANGES_PREVENT_REBASE)) return [abort];
+  return [
+    {
+      label: "Stage and Retry",
+      run: () =>
+        void runGitOperation(
+          { op: "stageAndContinue" },
+          {
+            progress: "Continuing rebase",
+            success: "Rebase continued",
+            failure: tx`${controlLabel(op, "continue")} failed`,
+            onError: conflictsInstead,
+            errorActions: (m) => stoppedActions(op, m),
+          },
+        ),
+    },
+    { label: "Show Files", run: () => showLocalChanges() },
+    abort,
+  ];
 }
 
 /** Opens the conflicts dialog instead of an error balloon when the operation stopped on conflicts. */
@@ -168,6 +204,7 @@ export async function controlOperation(control: "continue" | "skip" | "abort", e
       success,
       failure: tx`${controlLabel(op, control)} failed`,
       onError: control === "abort" ? undefined : conflictsInstead,
+      errorActions: control === "abort" ? undefined : (message) => stoppedActions(op, message),
     },
   );
   // A rebase that continued and stopped again (next conflict) is reported by the conflicts listener.
@@ -238,8 +275,20 @@ export async function cherryPick(commits: Commit[]) {
   const ordered = newestFirst(commits).reverse();
   const label =
     ordered.length === 1 ? `${short(ordered[0]!.id)} “${ordered[0]!.summary}”` : `${ordered.length} commits`;
+  // Commits already pushed to a protected branch get "(cherry picked from commit …)".
+  const remoteBranches = new Set(
+    useVcs
+      .getState()
+      .branches.filter((b) => b.remote)
+      .map((b) => b.name),
+  );
+  const fromProtected = async (c: Commit) =>
+    (await loadLogDetails(c).catch(() => null))?.containingBranches.some(
+      (b) => remoteBranches.has(b) && isProtectedBranch(b.slice(b.indexOf("/") + 1)),
+    ) ?? false;
+  const recordOrigin = (await Promise.all(ordered.map(fromProtected))).every(Boolean);
   await runGitOperation(
-    { op: "cherryPick", commits: ordered.map((c) => c.id) },
+    { op: "cherryPick", commits: ordered.map((c) => c.id), recordOrigin },
     {
       progress: "Cherry-picking",
       success: tx`Cherry-picked ${label}`,
@@ -459,9 +508,9 @@ export function showCompareWithLocal(commit: Commit) {
   showDiffWithWorkingTree(commit.id, short(commit.id));
 }
 
-/** Files that differ between `rev` (a commit or branch) and the working tree. */
+/** Files that differ between `rev` (a commit or branch) and the working tree, in the Compare tool window. */
 export function showDiffWithWorkingTree(rev: string, label = rev) {
-  showComparison({ rev, label }, null);
+  showWorktreeComparison(rev, label);
 }
 
 /** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
@@ -489,7 +538,7 @@ function showComparison(from: Revision, to: Revision | null, scope?: ScopedCompa
   );
 }
 
-interface Revision {
+export interface Revision {
   rev: string;
   label: string;
 }
@@ -499,11 +548,41 @@ interface ScopedComparison {
   repositories: string[] | null;
 }
 
-interface ComparisonFile extends ChangedFile {
+export interface ComparisonFile extends ChangedFile {
   root: string;
   revision: string;
   added?: number;
   removed?: number;
+}
+
+/**
+ * Diff content of one comparison file. `swapped` exchanges the two sides
+ * (the Compare tool window's Swap Sides), for worktree and revision diffs alike.
+ */
+export function comparisonDiffData(
+  file: ComparisonFile,
+  from: Revision,
+  to: Revision | null,
+  swapped: boolean,
+): DiffData {
+  const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
+  const path = repositoryPath(file.root, file.path);
+  const left: DiffSide =
+    file.kind === "added" || file.kind === "untracked"
+      ? missing("(does not exist)")
+      : {
+          type: "rev",
+          rev: file.revision,
+          label: from.label,
+          path: file.oldPath ? repositoryPath(file.root, file.oldPath) : undefined,
+        };
+  const right: DiffSide =
+    file.kind === "deleted"
+      ? missing("(deleted)")
+      : !to
+        ? { type: "worktree" }
+        : { type: "rev", rev: to.rev, label: to.label };
+  return swapped ? { path, left: right, right: left } : { path, left, right };
 }
 
 export function comparisonEmpty(revision: string, repositories: number): string {
@@ -521,6 +600,9 @@ export function ChangesBetweenDialog({
   native = false,
   onCaption,
   onShowDiff,
+  swapped = false,
+  onSelect,
+  listOnly = false,
 }: {
   from: Revision;
   to: Revision | null;
@@ -530,13 +612,23 @@ export function ChangesBetweenDialog({
   native?: boolean;
   onCaption?: (caption: string) => void;
   onShowDiff?: (data: DiffData) => void;
+  /** Exchange the two sides (the Compare tool window's Swap Sides). */
+  swapped?: boolean;
+  /** Reports the selected file (the Compare tool window's Jump to Source / Swap Sides). */
+  onSelect?: (file: ComparisonFile | null) => void;
+  /** Files only, each diff opening in the editor (the Compare tool window's narrow sidebar). */
+  listOnly?: boolean;
 }) {
   const [root] = useState(currentRepoRoot);
   const [repo] = useState(currentRepo);
   const [files, setFiles] = useState<ComparisonFile[] | null>(null);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [current, setCurrent] = useState<ComparisonFile | null>(null);
+  const [current, setCurrentState] = useState<ComparisonFile | null>(null);
+  const setCurrent = (file: ComparisonFile | null) => {
+    setCurrentState(file);
+    onSelect?.(file);
+  };
   const fromRev = from.rev;
   const toRev = to?.rev ?? null;
   useEffect(() => {
@@ -585,27 +677,7 @@ export function ChangesBetweenDialog({
       };
     });
   }, [files, result, scope]);
-  const diffFor = (f: ComparisonFile): DiffData => {
-    const missing = (label: string): DiffSide => ({ type: "text", text: "", label });
-    return {
-      path: repositoryPath(f.root, f.path),
-      left:
-        f.kind === "added" || f.kind === "untracked"
-          ? missing("(does not exist)")
-          : {
-              type: "rev",
-              rev: f.revision,
-              label: from.label,
-              path: f.oldPath ? repositoryPath(f.root, f.oldPath) : undefined,
-            },
-      right:
-        f.kind === "deleted"
-          ? missing("(deleted)")
-          : !to
-            ? { type: "worktree" }
-            : { type: "rev", rev: to.rev, label: to.label },
-    };
-  };
+  const diffFor = (f: ComparisonFile): DiffData => comparisonDiffData(f, from, to, swapped);
   const input = current ? diffInput(diffFor(current)) : null;
   const title = to
     ? tx`Changes between ${from.label} and ${to.label}`
@@ -624,8 +696,9 @@ export function ChangesBetweenDialog({
     if (!current) return;
     if (onShowDiff) onShowDiff(diffFor(current));
     else {
-      void openDiff(diffFor(current));
-      onClose();
+      void openVcsDiff(diffFor(current));
+      // A diff window opens on top of this list (#1863); an editor tab would sit behind it.
+      if (!vcsDiffInFront()) onClose();
     }
   };
   const contents = (
@@ -671,6 +744,8 @@ export function ChangesBetweenDialog({
           diffFor={diffFor}
           getColor={(f) => KIND_COLOR[f.kind === "untracked" ? "added" : f.kind]}
           ariaLabel="Changed files"
+          inlineDiff={!listOnly}
+          openOnActivate={listOnly}
           renderDetails={(n) =>
             n.file ? (
               <>

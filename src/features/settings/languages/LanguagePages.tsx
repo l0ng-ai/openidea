@@ -3,13 +3,17 @@
  * Build Tools › Maven: the toolchain each language's server and run configurations
  * use (applied by `ide-sdk` when language servers start and when run configurations load).
  */
-import { useId, useMemo } from "react";
-import { IconButton, Input, type SelectOption } from "@/ui";
-import { PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
+import { useProject } from "@/platform/project";
+import { useRunTargets } from "@/platform/pluginRunTargets";
+import { tx } from "@/platform/i18n";
+import { useEffect, useId, useMemo, useState } from "react";
+import { call, commands, type Sdk } from "@/platform/ipc";
+import { IconButton, Input, type SelectOption, T } from "@/ui";
+import { JAVA_LANGUAGE_LEVELS, PHP_LANGUAGE_LEVELS } from "@/platform/languageSettings";
 import { GlobListEditor, Row, Section, Select, Toggle } from "../components/Form";
 import { choosePath } from "./api";
-import { useSetting } from "../components/context";
-import { SdkField, tildify, useDetected } from "./components";
+import { usePageContext, useSetting } from "../components/context";
+import { SdkField, tildify, useDetected, useJdtlsJdk } from "./components";
 import styles from "./Sdk.module.css";
 
 function PathInput({
@@ -72,7 +76,32 @@ function SdkRow({
 // ---------------------------------------------------------------------------
 // Node.js
 
+function RunTargetRow({ language }: { language: "php" | "node" }) {
+  const [target, setTarget] = useSetting<string>(`languages.${language}.runTarget`);
+  const targets = useRunTargets();
+  const options = [
+    { value: "", label: "Default run target" },
+    { value: "local", label: "Local machine" },
+    ...targets.map((t) => ({ value: t.id, label: tx`Run in target ${t.name}` })),
+  ];
+  if (target && target !== "local" && !targets.some((t) => t.id === target))
+    options.push({ value: target, label: tx`Run in target ${target}` });
+  return (
+    <Row label="Run in target">
+      <Select value={target ?? ""} options={options} onChange={setTarget} aria-label="Run in target" />
+    </Row>
+  );
+}
+
+const RUNTIME_OPTIONS: SelectOption[] = [
+  { value: "", label: "Auto", detail: "deno.json → Deno, bun.lock → Bun, else Node.js" },
+  { value: "node", label: "Node.js" },
+  { value: "bun", label: "Bun" },
+  { value: "deno", label: "Deno" },
+];
+
 export function NodePage() {
+  const [runtime, setRuntime] = useSetting<string>("languages.node.runtime");
   const [pm, setPm] = useSetting<string>("languages.node.packageManager");
   const { list } = useDetected("packageManager");
   const pmOptions = useMemo<SelectOption[]>(
@@ -92,6 +121,17 @@ export function NodePage() {
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Preferred runtime"
+          hint="Runs JavaScript and TypeScript files from the gutter and the editor's Run action."
+        >
+          <Select value={runtime} options={RUNTIME_OPTIONS} onChange={setRuntime} aria-label="Preferred runtime" />
+        </Row>
+        <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
+          <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
+        </Row>
+      </Section>
+      <Section title="Node.js">
         <SdkRow
           k="languages.node.interpreter"
           label="Node interpreter"
@@ -102,9 +142,7 @@ export function NodePage() {
           aria-label="Node interpreter"
           hint="Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…)."
         />
-        <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
-          <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
-        </Row>
+        <RunTargetRow language="node" />
       </Section>
     </div>
   );
@@ -121,6 +159,40 @@ const PHP_ENGINE_OPTIONS: SelectOption[] = [
   { value: "native", label: "Built-in", detail: "default" },
   { value: "intelephense", label: "Intelephense", detail: "language server, fallback" },
 ];
+/** The `php` on `PATH` (what the Default interpreter runs), looked up while `enabled`. */
+function usePathPhp(enabled: boolean): string | null {
+  const [path, setPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let live = true;
+    call(commands.sdkLocateTools(["php"], null))
+      .then((r) => live && setPath(r.tools[0]?.path ?? null))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [enabled]);
+  return path;
+}
+
+/**
+ * The Xdebug version `php` loads, `null` for none; `undefined` while it is checked or when the check
+ * fails. Checked again when detection runs again (after installing Xdebug).
+ */
+function useXdebug(php: Sdk | undefined): string | null | undefined {
+  const [found, setFound] = useState<{ php: Sdk; xdebug: string | null } | null>(null);
+  useEffect(() => {
+    if (!php) return;
+    let live = true;
+    call(commands.sdkPhpXdebug(php.path, null))
+      .then((r) => live && setFound({ php, xdebug: r.xdebug }))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [php]);
+  return found && found.php === php ? found.xdebug : undefined;
+}
 
 export function PhpPage() {
   const [engine, setEngine] = useSetting<string>("languages.php.engine");
@@ -130,7 +202,10 @@ export function PhpPage() {
   const [stubs, setStubs] = useSetting<string[]>("languages.php.stubs");
   const [analyzersOnSave, setAnalyzersOnSave] = useSetting<boolean>("languages.php.analyzersOnSave");
   const { list } = useDetected("php");
-  const selected = list.find((s) => s.path === interpreter) ?? (interpreter ? undefined : list[0]);
+  const pathPhp = usePathPhp(!interpreter);
+  // Default runs the `php` on PATH: the list is newest first, so it isn't necessarily `list[0]`.
+  const selected = list.find((s) => s.path === (interpreter || pathPhp));
+  const xdebug = useXdebug(selected);
   return (
     <div className={styles.page}>
       <Section>
@@ -188,7 +263,18 @@ export function PhpPage() {
           hint="When vendor/bin/phpstan or vendor/bin/psalm (with a psalm.xml) is installed, runs it on each saved PHP file of a trusted project with the PHP interpreter below and shows its problems, without those the built-in engine already reports."
         />
       </Section>
+      <Section title="PHPStan">
+        <PathInput
+          k="languages.php.phpstanConfig"
+          label="Configuration file"
+          placeholder="phpstan.neon, phpstan.neon.dist or phpstan.dist.neon"
+          hint="The configuration vendor/bin/phpstan checks saved files with. Empty uses phpstan.neon, phpstan.neon.dist or phpstan.dist.neon in the project root. Absolute, or relative to the project."
+          title="Select PHPStan Configuration File"
+          file
+        />
+      </Section>
       <Section title="CLI Interpreter">
+        <RunTargetRow language="php" />
         <SdkRow
           k="languages.php.interpreter"
           label="PHP interpreter"
@@ -200,6 +286,7 @@ export function PhpPage() {
           hint="Runs PHP scripts, PHPUnit, Composer and artisan. Its folder is put first on PATH, so vendor/bin/phpunit and other #!/usr/bin/env php scripts use it too."
         />
         {selected?.version && <Row label="Version">{selected.version}</Row>}
+        {xdebug !== undefined && <Row label="Xdebug">{xdebug ?? <T>Not installed</T>}</Row>}
       </Section>
     </div>
   );
@@ -334,8 +421,22 @@ export function GoPage() {
 // ---------------------------------------------------------------------------
 // Java
 
+export const JAVA_LEVEL_OPTIONS: SelectOption[] = JAVA_LANGUAGE_LEVELS.map((level) =>
+  level ? { value: level, label: level } : { value: "", label: "SDK default", detail: "from build / JDK" },
+);
+
 export function JavaPage() {
+  const [shared, setShared] = useSetting<boolean>("languages.java.jdtlsShared");
+  const { scope } = usePageContext();
+  const workspace = useProject((s) => !!s.project?.workspace);
+  const sharedDisabled = scope === "project" && workspace;
   const [vmArgs, setVmArgs] = useSetting<string>("languages.java.jdtlsVmArgs");
+  const [languageLevel, setLanguageLevel] = useSetting<string>("languages.java.languageLevel");
+  const [jdtlsJdk] = useSetting<string>("languages.java.jdtlsJdk");
+  const jdtls = useJdtlsJdk(
+    "Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers.",
+    jdtlsJdk ?? "",
+  );
   const id = useId();
   return (
     <div className={styles.page}>
@@ -349,10 +450,32 @@ export function JavaPage() {
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Project JDK"
-          hint="Compiles and runs the project: the default jdtls runtime, Run/Debug, and JAVA_HOME for Maven and Gradle."
+          hint="Compiles and runs the project: Run/Debug and JAVA_HOME for Maven and Gradle; it also runs jdtls when new enough for it."
         />
+        <Row
+          label="Language level"
+          hint="Java source and bytecode compliance level when no build descriptor overrides it."
+        >
+          <Select
+            value={languageLevel}
+            options={JAVA_LEVEL_OPTIONS}
+            onChange={setLanguageLevel}
+            aria-label="Java language level"
+          />
+        </Row>
       </Section>
       <Section title="Language Server">
+        <Toggle
+          label="Share JDT LS across builds"
+          checked={shared}
+          onChange={setShared}
+          disabled={sharedDisabled}
+          hint={
+            sharedDisabled
+              ? "Shared JDT LS is available only in local ordinary project windows. Open a workspace member as a project to change this setting for it."
+              : "Uses one JDT LS process for linked builds in each local ordinary project window. Other project windows use separate processes."
+          }
+        />
         <SdkRow
           k="languages.java.jdtlsJdk"
           label="JDK"
@@ -362,7 +485,8 @@ export function JavaPage() {
           directory
           browseTitle="Select JDK Home Directory"
           aria-label="Language server JDK"
-          hint="Runs jdtls only; the project keeps its Project JDK. When empty, a suitable installed JDK is used first, otherwise Eclipse Temurin is downloaded automatically into a separate language-server folder. The jdtls executable itself is set in Language Servers."
+          hint={jdtls.hint}
+          minJava={jdtls.minJava}
         />
         <Row
           label="JVM options"
@@ -452,10 +576,30 @@ export function GradlePage() {
 }
 
 export function MavenPage() {
+  const [delegateBuild, setDelegateBuild] = useSetting<boolean>("languages.java.maven.delegateBuild");
   const [daemon, setDaemon] = useSetting<boolean>("languages.java.maven.daemon");
+  const [threads, setThreads] = useSetting<string>("languages.java.maven.threads");
+  const [activeProfiles, setActiveProfiles] = useSetting<string>("languages.java.maven.activeProfiles");
+  const id = useId();
   return (
     <div className={styles.page}>
       <Section>
+        <Toggle
+          label="Delegate IDE build/run actions to Maven"
+          checked={delegateBuild}
+          onChange={setDelegateBuild}
+          hint="Run and Debug build Maven modules with Maven (the project's javac) instead of the Java language server. Editor problems still come from the language server."
+        />
+        <SdkRow
+          k="languages.java.maven.runnerJre"
+          label="JRE"
+          kind="jdk"
+          emptyLabel="Use Project JDK"
+          directory
+          browseTitle="Select JDK Home Directory"
+          aria-label="JRE"
+          hint="JDK used for Maven sync, builds, goals and tests. An explicit JAVA_HOME in a run configuration takes precedence."
+        />
         <SdkRow
           k="languages.java.maven.home"
           label="Maven home path"
@@ -476,12 +620,52 @@ export function MavenPage() {
           hint="Passed as -s (mirrors, servers, proxies)."
         />
         <PathInput
+          k="languages.java.maven.toolchains"
+          label="Toolchains file"
+          placeholder="~/.m2/toolchains.xml"
+          title="Select Maven toolchains.xml"
+          file
+          hint="Passed as -t; selects the JDKs Maven compiles with."
+        />
+        <PathInput
           k="languages.java.maven.localRepository"
           label="Local repository"
           placeholder="From settings.xml, else ~/.m2/repository"
           title="Select Local Repository"
           hint="Passed as -Dmaven.repo.local."
         />
+        <Row
+          label="Active profiles"
+          htmlFor={`${id}-profiles`}
+          hint="Comma-separated profiles (-P), combined with Maven tool window choices; !id excludes a profile. A run configuration’s own -P replaces these profiles."
+        >
+          <Input
+            id={`${id}-profiles`}
+            mono
+            className={styles.pathInput}
+            value={activeProfiles}
+            placeholder="dev,integration"
+            onChange={(e) => setActiveProfiles(e.target.value)}
+            aria-label="Active profiles"
+          />
+        </Row>
+        <Row
+          label="Thread count"
+          htmlFor={id}
+          hint="Passed as -T to Maven builds and run configurations: a thread count (4) or a core multiplier (2C, 2.5C) for parallel builds of multi-module projects. Empty runs Maven serially."
+        >
+          <span className={styles.pathRow}>
+            <Input
+              id={id}
+              mono
+              className={styles.pathInput}
+              value={threads}
+              placeholder="4, 2C"
+              onChange={(e) => setThreads(e.target.value.trim())}
+              aria-label="Thread count"
+            />
+          </span>
+        </Row>
         <Toggle
           label="Use Maven Daemon (mvnd)"
           checked={daemon}
@@ -505,6 +689,7 @@ export function MavenPage() {
 
 export function TypeScriptPage() {
   const [version, setVersion] = useSetting<string>("languages.typescript.version");
+  const [memory, setMemory] = useSetting<number>("languages.typescript.tsserverMaxMemory");
   const { list } = useDetected("typeScript");
   const workspace = list.find((s) => s.source === "workspace");
   const options = useMemo<SelectOption[]>(() => {
@@ -520,6 +705,17 @@ export function TypeScriptPage() {
       out.push({ value: version, label: tildify(version), detail: "custom" });
     return out;
   }, [workspace, version]);
+  const memoryOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "0", label: "Auto", detail: "8192 MB in Vue hybrid mode, else the server default" },
+      { value: "4096", label: "4096 MB" },
+      { value: "6144", label: "6144 MB" },
+      { value: "8192", label: "8192 MB" },
+      { value: "12288", label: "12288 MB" },
+      { value: "16384", label: "16384 MB" },
+    ],
+    [],
+  );
   return (
     <div className={styles.page}>
       <Section>
@@ -539,6 +735,17 @@ export function TypeScriptPage() {
               }}
             />
           </span>
+        </Row>
+        <Row
+          label="tsserver memory limit"
+          hint="Heap limit of the TypeScript server (typescript.tsserver.maxTsServerMemory, in MB). Auto raises it for Vue projects, whose single program holds every .vue file's virtual TypeScript."
+        >
+          <Select
+            value={String(memory ?? 0)}
+            options={memoryOptions}
+            onChange={(v) => setMemory(Number(v))}
+            aria-label="tsserver memory limit"
+          />
         </Row>
       </Section>
     </div>

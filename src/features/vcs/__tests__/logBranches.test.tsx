@@ -23,6 +23,7 @@ vi.mock("@/platform/actions", async (importOriginal) => ({
 
 import { ContextMenuHost } from "@/ui";
 import { BranchesPanel } from "../GitLog";
+import syncStyles from "../BranchSync.module.css";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
@@ -86,6 +87,22 @@ describe("Git Log branches pane", () => {
     fireEvent.mouseDown(screen.getByText("feature"));
     expect(useGitLog.getState().filters.branches).toEqual([]);
     expect(screen.getByText("feature").closest("[data-row]")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it.each([
+    [2, 0],
+    [0, 3],
+    [2, 3],
+    [0, 0],
+  ])("renders shared branch markers for ahead %i / behind %i", (ahead, behind) => {
+    useVcs.setState({ branches: [b("main", { current: true, ahead, behind })] });
+    render(<BranchesPanel />);
+    const incoming = screen.queryByLabelText("3 incoming commits");
+    const outgoing = screen.queryByLabelText("2 outgoing commits");
+    if (behind) expect(incoming).toHaveClass(syncStyles.incoming!);
+    else expect(incoming).toBeNull();
+    if (ahead) expect(outgoing).toHaveClass(syncStyles.outgoing!);
+    else expect(outgoing).toBeNull();
   });
 
   it("double click switches the log to that branch", () => {

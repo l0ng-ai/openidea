@@ -150,6 +150,7 @@ impl ClickhousePool {
         self.0.client.read().clone().ok_or_else(|| IdeError::new(ErrorKind::Io, "ClickHouse connection is closed"))
     }
 
+    /// `max_rows`: the rows the server may send (the skipped ones included).
     fn request(&self, client: &Client, query_id: &str, max_rows: usize, initialized: bool) -> RequestBuilder {
         let mut request = client
             .post(self.0.endpoint.clone())
@@ -177,6 +178,17 @@ impl ClickhousePool {
     }
 
     pub async fn execute(&self, sql: &str, max_rows: usize, cancel: &CancellationToken) -> IdeResult<QueryResult> {
+        self.execute_from(sql, 0, max_rows, cancel).await
+    }
+
+    /// [`execute`](Self::execute), reading past the first `skip` rows without parsing or keeping them.
+    pub async fn execute_from(
+        &self,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
         if transaction_statement(sql) {
             return Err(transaction_error());
         }
@@ -188,7 +200,7 @@ impl ClickhousePool {
         };
         let client = self.client()?;
         let query_id = uuid::Uuid::new_v4().to_string();
-        let request = self.request(&client, &query_id, max_rows, *session).body(sql.to_owned());
+        let request = self.request(&client, &query_id, skip.saturating_add(max_rows), *session).body(sql.to_owned());
         let started = Instant::now();
         let fetch = async {
             let mut response = request.send().await.map_err(http_error)?;
@@ -216,7 +228,7 @@ impl ClickhousePool {
                 }
                 (Vec::new(), Vec::new(), false)
             } else {
-                let mut reader = RowReader::new(max_rows);
+                let mut reader = RowReader::new(skip, max_rows);
                 while let Some(chunk) = response.chunk().await.map_err(http_error)? {
                     reader.push(&chunk)?;
                 }
@@ -309,11 +321,13 @@ impl ClickhousePool {
 
 type DecodedResult = (Vec<ResultColumn>, Vec<Vec<Option<String>>>, bool);
 
-/// Decodes a streamed [`FORMAT`] body. Keeps the first `max_rows` rows; later rows only set
-/// `has_more` and are read past unparsed, so a grid limit bounds memory however large the
-/// block `result_overflow_mode=break` lets the server send. A line that is not a JSON array
+/// Decodes a streamed [`FORMAT`] body. Reads past the first `skip` rows unparsed (a later
+/// page), then keeps `max_rows` rows; later rows only set `has_more` and are read past
+/// unparsed, so a grid limit bounds memory however large the block
+/// `result_overflow_mode=break` lets the server send. A line that is not a JSON array
 /// starts the exception ClickHouse writes when a query fails mid-stream.
 struct RowReader {
+    skip: usize,
     max_rows: usize,
     pending: Vec<u8>,
     names: Option<Vec<String>>,
@@ -324,8 +338,17 @@ struct RowReader {
 }
 
 impl RowReader {
-    fn new(max_rows: usize) -> Self {
-        Self { max_rows, pending: Vec::new(), names: None, types: None, rows: Vec::new(), more: false, exception: None }
+    fn new(skip: usize, max_rows: usize) -> Self {
+        Self {
+            skip,
+            max_rows,
+            pending: Vec::new(),
+            names: None,
+            types: None,
+            rows: Vec::new(),
+            more: false,
+            exception: None,
+        }
     }
 
     fn push(&mut self, chunk: &[u8]) -> IdeResult<()> {
@@ -356,9 +379,15 @@ impl RowReader {
             self.exception = Some(format!("{}\n", String::from_utf8_lossy(line)));
             return Ok(());
         }
-        if self.names.is_some() && self.types.is_some() && self.rows.len() >= self.max_rows {
-            self.more = true;
-            return Ok(());
+        if self.names.is_some() && self.types.is_some() {
+            if self.skip > 0 {
+                self.skip -= 1;
+                return Ok(());
+            }
+            if self.rows.len() >= self.max_rows {
+                self.more = true;
+                return Ok(());
+            }
         }
         let Ok(values) = serde_json::from_slice::<Vec<Box<serde_json::value::RawValue>>>(text) else {
             self.exception = Some(format!("{}\n", String::from_utf8_lossy(line)));
@@ -547,7 +576,11 @@ mod tests {
     }
 
     fn decode(body: &[u8], max_rows: usize, chunk: usize) -> IdeResult<DecodedResult> {
-        let mut reader = RowReader::new(max_rows);
+        decode_from(body, 0, max_rows, chunk)
+    }
+
+    fn decode_from(body: &[u8], skip: usize, max_rows: usize, chunk: usize) -> IdeResult<DecodedResult> {
+        let mut reader = RowReader::new(skip, max_rows);
         for part in body.chunks(chunk) {
             reader.push(part)?;
         }
@@ -584,6 +617,18 @@ mod tests {
         assert!(rows.is_empty() && !more);
         assert_eq!(decode(b"", 5, 64).unwrap().0.len(), 0);
         assert!(decode(b"[\"x\"]\n[\"UInt8\"]\n[1, 2]\n", 1, 64).is_err());
+    }
+
+    #[test]
+    fn a_later_page_skips_rows_without_keeping_them() {
+        let body = b"[\"n\"]\n[\"UInt8\"]\n[1]\n[2]\n[3]\n[4]\n[5]\n";
+        let page = |skip, max| {
+            let (_, rows, more) = decode_from(body, skip, max, 3).unwrap();
+            (rows.into_iter().map(|r| r[0].clone().unwrap()).collect::<Vec<_>>(), more)
+        };
+        assert_eq!(page(2, 2), (vec!["3".to_owned(), "4".to_owned()], true));
+        assert_eq!(page(4, 2), (vec!["5".to_owned()], false));
+        assert_eq!(page(9, 2), (Vec::<String>::new(), false));
     }
 
     #[test]

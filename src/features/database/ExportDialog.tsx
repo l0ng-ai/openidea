@@ -2,6 +2,7 @@
  * IDEA's Export Data dialog: extractor (format) and its options on the left,
  * a live preview on the right; copies to the clipboard or writes a file.
  */
+import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useMemo, useState } from "react";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, IconButton, Input, Select, T } from "@/ui";
@@ -76,7 +77,7 @@ export function ExportDialog({
 
   const browse = async () => {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { save } = await import("@/platform/dialog");
       const f = EXPORT_FORMATS.find((x) => x.id === format)!;
       const path = await save({ defaultPath: file, filters: [{ name: f.label, extensions: [f.extension] }] });
       if (path) setFile(path);
@@ -118,7 +119,7 @@ export function ExportDialog({
         {
           label: "Copy to Clipboard",
           onClick: () => {
-            void navigator.clipboard?.writeText(text());
+            void writeClipboardText(text());
             closeDialog();
           },
         },

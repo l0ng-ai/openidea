@@ -1,33 +1,57 @@
 /**
- * Build, Execution, Deployment › Deployment: SFTP servers (connection, path
+ * Build, Execution, Deployment › Deployment: SFTP, FTP and local servers (connection, path
  * mappings, excluded remote paths) and the transfer options. Consumed by the
  * deployment feature and `ide-remote` (automatic upload, remote delete).
  */
 import { useEffect, useId, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import { call, commands, IpcError, type FsConnection, type RemoteEntry } from "@/platform/ipc";
+import { call, commands, IpcError, isTauri, type FsConnection, type RemoteEntry } from "@/platform/ipc";
 import { useTx, tx, txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { deploymentConnection, type DeploymentServerValid } from "@/platform/remoteSettings";
-import { Badge, Button, Checkbox, Dialog, Icon, IconButton, Input, Select, Spinner, T, Tabs } from "@/ui";
+import {
+  connectionSecretKey,
+  deploymentConnectable,
+  deploymentConnection,
+  deploymentSecretKey,
+  type DeploymentGroupValid,
+  type DeploymentServerValid,
+  type FtpConnectionValid,
+} from "@/platform/remoteSettings";
+import {
+  Badge,
+  Button,
+  Checkbox,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  showContextMenu,
+  Spinner,
+  T,
+  Tabs,
+} from "@/ui";
 import { GlobListEditor, Row } from "../components/Form";
 import { SshConfigSelect, useSshConfigs } from "../components/SshConfigSelect";
-import { useSetting } from "../components/context";
+import { usePageContext, useSetting, useSettingsFormFor } from "../components/context";
 import {
   addMapping,
   fixDefaultServer,
   folderWithin,
   formatExcludes,
+  newGroup,
   newServer,
   parseExcludes,
+  pruneGroups,
   remoteParent,
   removeMapping,
+  toggleGroupServer,
   updateMapping,
 } from "./deploymentModel";
 import { choosePath } from "../languages/api";
 import { BUILD_GROUP } from "./execution";
 import type { PageSpec } from "./spec";
-import { sshTestRemedy } from "./sshConnection";
+import { parseSshPort, sshTestRemedy } from "./sshConnection";
 import { PageLink } from "./workflowControls";
 import workflow from "./Workflow.module.css";
 import styles from "./Deployment.module.css";
@@ -197,7 +221,7 @@ function RemoteFolderDialog({
           <IconButton icon="refresh" size="small" title="Refresh" onClick={reload} />
         </form>
         {error ? (
-          <ConnectionProblem ssh={connection.kind === "sftp" ? connection.ssh : ""} error={error} onRetry={reload} />
+          <ConnectionProblem ssh={connectionSecretKey(connection)} error={error} onRetry={reload} />
         ) : (
           <ul
             className={styles.folderList}
@@ -267,6 +291,117 @@ function TextField({
   );
 }
 
+interface FtpPassword {
+  password: string;
+  save: boolean;
+}
+
+/** The FTP password, staged like a setting and written to the saved passwords on Apply. */
+function useFtpPassword(secretKey: string, ftp: boolean) {
+  const page = usePageContext();
+  const form = useSettingsFormFor(page.pageId, page.scope);
+  const [known, setKnown] = useState<{ key: string; saved: boolean } | null>(null);
+  const saved = known?.key === secretKey && known.saved;
+  useEffect(() => {
+    let live = true;
+    if (ftp && isTauri())
+      void commands.sshPasswordSaved(secretKey).then(
+        (stored) => live && setKnown({ key: secretKey, saved: stored }),
+        () => {},
+      );
+    return () => {
+      live = false;
+    };
+  }, [secretKey, ftp]);
+  const base: FtpPassword = { password: "", save: saved };
+  const value = form.useExternal<FtpPassword>(`ftpPassword.${secretKey}`, base, async ({ password, save }) => {
+    if (password) await commands.sshSetSecret(secretKey, password, save);
+    else if (!save) await commands.sshSetSecret(secretKey, null, false);
+    const stored = password ? save : save && saved;
+    setKnown({ key: secretKey, saved: stored });
+    return { password: "", save: stored };
+  });
+  return { ...value, saved };
+}
+
+function FtpRows({
+  ftp,
+  secret,
+  update,
+}: {
+  ftp: FtpConnectionValid;
+  secret: ReturnType<typeof useFtpPassword>;
+  update: (patch: Partial<FtpConnectionValid>) => void;
+}) {
+  const hostId = useId();
+  const portId = useId();
+  const userId = useId();
+  const passwordId = useId();
+  const tx = useTx();
+  // What is typed (e.g. an invalid port); the editor is keyed by server.
+  const [portText, setPortText] = useState(ftp.port?.toString() ?? "");
+  return (
+    <>
+      <Row label="Host" htmlFor={hostId}>
+        <span className={styles.field}>
+          <Input
+            id={hostId}
+            className={styles.wide}
+            value={ftp.host}
+            placeholder="example.com"
+            onChange={(e) => update({ host: e.target.value })}
+          />
+          <label htmlFor={portId}>
+            <T>Port:</T>
+          </label>
+          <Input
+            id={portId}
+            className={styles.port}
+            inputMode="numeric"
+            value={portText}
+            placeholder="21"
+            invalid={!!portText.trim() && parseSshPort(portText) === null}
+            onChange={(e) => {
+              setPortText(e.target.value);
+              update({ port: parseSshPort(e.target.value) });
+            }}
+          />
+        </span>
+      </Row>
+      <Row label="User name" htmlFor={userId}>
+        <Input
+          id={userId}
+          className={styles.wide}
+          value={ftp.user}
+          placeholder={tx("Anonymous")}
+          onChange={(e) => update({ user: e.target.value })}
+        />
+      </Row>
+      <Row label="Password" htmlFor={passwordId}>
+        <Input
+          id={passwordId}
+          type="password"
+          autoComplete="off"
+          className={styles.wide}
+          value={secret.value.password}
+          placeholder={secret.saved && !secret.value.password ? tx("Password already stored") : undefined}
+          onChange={(e) => secret.set({ ...secret.value, password: e.target.value })}
+        />
+      </Row>
+      <div className={styles.option}>
+        <Checkbox
+          checked={secret.value.save}
+          onChange={(save) => secret.set({ ...secret.value, save })}
+          label="Save password"
+        />
+      </div>
+      <div className={styles.option}>
+        <Checkbox checked={ftp.passive} onChange={(passive) => update({ passive })} label="Passive mode" />
+      </div>
+    </>
+  );
+}
+
 type TestState =
   | { ssh: string; kind: "busy" }
   | { ssh: string; kind: "ok"; count: number }
@@ -282,7 +417,11 @@ function ConnectionTab({
   const [browsing, setBrowsing] = useState(false);
   const [result, setTest] = useState<TestState | null>(null);
   const connection = deploymentConnection(server);
-  const testKey = `${server.kind}:${server.sshConfig}:${server.rootPath}`;
+  const ftp = server.kind === "ftp" || server.kind === "ftps";
+  const secret = useFtpPassword(deploymentSecretKey(server), ftp);
+  // A password typed but not applied yet is what Test Connection logs in with.
+  const typedPassword = (ftp && secret.value.password) || null;
+  const testKey = JSON.stringify([server.kind, server.sshConfig, server.ftp, server.rootPath, typedPassword]);
   const test = result?.ssh === testKey ? result : null;
   const rootId = useId();
 
@@ -290,7 +429,7 @@ function ConnectionTab({
     const ssh = testKey;
     setTest({ ssh, kind: "busy" });
     try {
-      await call(commands.deployTestConnection(connection, server.rootPath.trim() || "~"));
+      await call(commands.deployTestConnection(connection, server.rootPath.trim() || "~", typedPassword));
       setTest({ ssh, kind: "ok", count: 0 });
     } catch (e) {
       setTest({ ssh, kind: "error", error: e });
@@ -306,6 +445,8 @@ function ConnectionTab({
           value={server.kind}
           options={[
             { value: "sftp", label: "SFTP" },
+            { value: "ftp", label: "FTP" },
+            { value: "ftps", label: "FTPS" },
             { value: "local", label: "Local or mounted folder" },
           ]}
           onChange={(kind) => update({ kind })}
@@ -319,6 +460,9 @@ function ConnectionTab({
           </PageLink>
         </Row>
       )}
+      {ftp && (
+        <FtpRows ftp={server.ftp} secret={secret} update={(patch) => update({ ftp: { ...server.ftp, ...patch } })} />
+      )}
       <Row label="Root path" htmlFor={rootId} hint="Mappings' deployment paths are relative to this folder.">
         <span className={styles.field}>
           <Input
@@ -329,7 +473,7 @@ function ConnectionTab({
             placeholder={server.kind === "local" ? tx("Folder path") : tx("Login folder")}
             onChange={(e) => update({ rootPath: e.target.value })}
           />
-          <Button size="small" disabled={server.kind === "sftp" && !server.sshConfig} onClick={() => setBrowsing(true)}>
+          <Button size="small" disabled={!deploymentConnectable(server)} onClick={() => setBrowsing(true)}>
             <T>Browse…</T>
           </Button>
         </span>
@@ -343,7 +487,10 @@ function ConnectionTab({
       <div className={styles.testRow}>
         <Button
           size="small"
-          disabled={(server.kind === "sftp" ? !server.sshConfig : !server.rootPath.trim()) || test?.kind === "busy"}
+          disabled={
+            (server.kind === "local" ? !server.rootPath.trim() : !deploymentConnectable(server)) ||
+            test?.kind === "busy"
+          }
           onClick={() => void runTest()}
         >
           <T>Test Connection</T>
@@ -356,8 +503,8 @@ function ConnectionTab({
         )}
       </div>
       {test?.kind === "error" &&
-        (server.kind === "sftp" ? (
-          <ConnectionProblem ssh={server.sshConfig} error={test.error} onRetry={() => void runTest()} />
+        (server.kind !== "local" ? (
+          <ConnectionProblem ssh={deploymentSecretKey(server)} error={test.error} onRetry={() => void runTest()} />
         ) : (
           <span className={styles.error}>{errorText(test.error)}</span>
         ))}
@@ -398,7 +545,7 @@ function MappingsTab({
   const mappings = server.mappings;
   const remoteRoot = server.rootPath.trim().replace(/\/+$/, "");
   // Deployment paths are relative to the root path, so the remote chooser needs an absolute one.
-  const canBrowseRemote = isAbsolute(remoteRoot) && (server.kind !== "sftp" || !!server.sshConfig);
+  const canBrowseRemote = isAbsolute(remoteRoot) && deploymentConnectable(server);
   const set = (i: number, patch: Partial<(typeof mappings)[number]>) =>
     update({ mappings: updateMapping(mappings, i, patch) });
   const chooseLocal = async (i: number) => {
@@ -545,44 +692,118 @@ function ExcludedPathsTab({
 
 type ServerTab = "connection" | "mappings" | "excluded";
 
+function GroupPanel({
+  group,
+  servers,
+  update,
+}: {
+  group: DeploymentGroupValid;
+  servers: readonly DeploymentServerValid[];
+  update: (patch: Partial<DeploymentGroupValid>) => void;
+}) {
+  const tx = useTx();
+  return (
+    <div className={styles.panel}>
+      <TextField label="Name" value={group.name} onChange={(name) => update({ name })} />
+      <div className={styles.groupMembers} role="group" aria-label={tx("Servers in group")}>
+        <div className={styles.groupTitle}>
+          <T>Servers in group</T>
+        </div>
+        {servers.length === 0 && (
+          <div className={styles.note}>
+            <T>No servers. Click + to add one.</T>
+          </div>
+        )}
+        {servers.map((s) => (
+          <Checkbox
+            key={s.id}
+            checked={group.servers.includes(s.id)}
+            onChange={() => update(toggleGroupServer(group, s.id, servers))}
+            label={<span>{s.name || s.id}</span>}
+          />
+        ))}
+      </div>
+      <div className={styles.note}>
+        <T>Upload to… on this group uploads the files to each of its servers in turn.</T>
+      </div>
+    </div>
+  );
+}
+
+type Selection = { kind: "server" | "group"; id: string } | null;
+
 function DeploymentServersEditor() {
   const tx = useTx();
   const [servers, setServers] = useSetting<DeploymentServerValid[]>("deployment.servers");
+  const [groups, setGroups] = useSetting<DeploymentGroupValid[]>("deployment.groups");
   const [defaultServer, setDefaultServer] = useSetting<string>("deployment.defaultServer");
   const list = servers ?? [];
-  const [selected, setSelected] = useState<string | null>(list[0]?.id ?? null);
+  const groupList = groups ?? [];
+  const [selected, setSelected] = useState<Selection>(list[0] ? { kind: "server", id: list[0].id } : null);
   const [tab, setTab] = useState<ServerTab>("connection");
-  const current = list.find((s) => s.id === selected) ?? null;
+  const current = selected?.kind === "server" ? (list.find((s) => s.id === selected.id) ?? null) : null;
+  const currentGroup = selected?.kind === "group" ? (groupList.find((g) => g.id === selected.id) ?? null) : null;
   const effectiveDefault = fixDefaultServer(list, defaultServer ?? "");
 
   const commit = (next: DeploymentServerValid[]) => {
     setServers(next);
     const d = fixDefaultServer(next, defaultServer ?? "");
     if (d !== (defaultServer ?? "")) setDefaultServer(d);
+    const pruned = pruneGroups(groupList, next);
+    if (pruned.some((g, i) => g !== groupList[i])) setGroups(pruned);
   };
   const update = (patch: Partial<DeploymentServerValid>) => {
     if (current) commit(list.map((s) => (s.id === current.id ? { ...s, ...patch } : s)));
   };
+  const updateGroup = (patch: Partial<DeploymentGroupValid>) => {
+    if (currentGroup) setGroups(groupList.map((g) => (g.id === currentGroup.id ? { ...g, ...patch } : g)));
+  };
   const add = (base?: DeploymentServerValid) => {
     const server = newServer(list, base);
     commit([...list, server]);
-    setSelected(server.id);
+    setSelected({ kind: "server", id: server.id });
     setTab("connection");
   };
+  const addGroup = () => {
+    const group = newGroup(groupList);
+    setGroups([...groupList, group]);
+    setSelected({ kind: "group", id: group.id });
+  };
   const remove = () => {
+    if (currentGroup) {
+      const index = groupList.indexOf(currentGroup);
+      const rest = groupList.filter((g) => g.id !== currentGroup.id);
+      setGroups(rest);
+      const next = rest[Math.min(index, rest.length - 1)] ?? null;
+      setSelected(next ? { kind: "group", id: next.id } : list[0] ? { kind: "server", id: list[0].id } : null);
+      return;
+    }
     if (!current) return;
     const index = list.indexOf(current);
     const rest = list.filter((s) => s.id !== current.id);
     commit(rest);
-    setSelected(rest[Math.min(index, rest.length - 1)]?.id ?? null);
+    const next = rest[Math.min(index, rest.length - 1)] ?? null;
+    setSelected(next ? { kind: "server", id: next.id } : null);
   };
+  const isSelected = (kind: "server" | "group", id: string) => selected?.kind === kind && selected.id === id;
 
   return (
     <div className={styles.layout}>
       <div className={workflow.tableBox}>
         <div className={workflow.toolbar} role="toolbar" aria-label={tx("Deployment servers actions")}>
-          <IconButton icon="plus" title="Add" size="small" onClick={() => add()} />
-          <IconButton icon="minus" title="Remove" size="small" disabled={!current} onClick={remove} />
+          <IconButton
+            icon="plus"
+            title="Add"
+            size="small"
+            onClick={(e) => {
+              const r = e.currentTarget.getBoundingClientRect();
+              showContextMenu({ x: r.left, y: r.bottom }, [
+                { label: "Server", icon: "web", run: () => add() },
+                { label: "Server Group", icon: "folder", run: addGroup },
+              ]);
+            }}
+          />
+          <IconButton icon="minus" title="Remove" size="small" disabled={!current && !currentGroup} onClick={remove} />
           <IconButton
             icon="copy"
             title="Copy"
@@ -599,18 +820,31 @@ function DeploymentServersEditor() {
           />
         </div>
         <div className={styles.serverList} role="listbox" aria-label={tx("Deployment servers")}>
-          {list.length === 0 && (
+          {list.length === 0 && groupList.length === 0 && (
             <div className={styles.empty}>
               <T>No servers. Click + to add one.</T>
             </div>
           )}
+          {groupList.map((g) => (
+            <div
+              key={g.id}
+              role="option"
+              aria-selected={isSelected("group", g.id)}
+              className={clsx(styles.serverRow, isSelected("group", g.id) && styles.serverSelected)}
+              onMouseDown={() => setSelected({ kind: "group", id: g.id })}
+            >
+              <Icon name="folder" />
+              <span className={styles.serverName}>{g.name || g.id}</span>
+              <Badge>{g.servers.length}</Badge>
+            </div>
+          ))}
           {list.map((s) => (
             <div
               key={s.id}
               role="option"
-              aria-selected={s.id === selected}
-              className={clsx(styles.serverRow, s.id === selected && styles.serverSelected)}
-              onMouseDown={() => setSelected(s.id)}
+              aria-selected={isSelected("server", s.id)}
+              className={clsx(styles.serverRow, isSelected("server", s.id) && styles.serverSelected)}
+              onMouseDown={() => setSelected({ kind: "server", id: s.id })}
             >
               <Icon name="web" />
               <span className={clsx(styles.serverName, s.id === effectiveDefault && styles.default)}>
@@ -621,7 +855,11 @@ function DeploymentServersEditor() {
           ))}
         </div>
       </div>
-      {current ? (
+      {currentGroup ? (
+        <div className={styles.detail}>
+          <GroupPanel key={currentGroup.id} group={currentGroup} servers={list} update={updateGroup} />
+        </div>
+      ) : current ? (
         <div className={styles.detail}>
           <Tabs
             variant="compact"
@@ -687,6 +925,8 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
       "local",
       "mounted",
       "sftp",
+      "ftp",
+      "ftps",
       "ssh",
       "server",
       "upload",
@@ -708,8 +948,13 @@ export const DEPLOYMENT_PAGES: PageSpec[] = [
               "Root path",
               "Web server URL",
               "SSH configuration",
+              "FTP",
+              "Passive mode",
+              "Password",
+              "Save password",
               "Test Connection",
               "Use as Default",
+              "Server Group",
               "Local path",
               "Deployment path",
               "Web path",

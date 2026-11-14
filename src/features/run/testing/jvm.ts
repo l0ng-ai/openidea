@@ -21,7 +21,7 @@ const SUREFIRE_CLASS_RE =
 const SUREFIRE_TOTAL_RE = /^(?:\[\w+\]\s+)?Tests run: (\d+), Failures: (\d+), Errors: (\d+), Skipped: (\d+)\s*$/;
 // `at org.junit…`, also behind a class loader or module (`at app//org.junit…`, `at java.base@21/java.lang…`).
 const LIBRARY_FRAME_RE =
-  /^\s*at\s+(?:\S*\/)?(?:org\.junit|junit\.|org\.opentest4j|kotlin\.|jdk\.internal|java\.|javax\.|sun\.|org\.gradle)/;
+  /^\s*at\s+(?:\S*\/)?(?:org\.junit|junit\.|org\.opentest4j|org\.testng|kotlin\.|jdk\.internal|java\.|javax\.|sun\.|org\.gradle)/;
 
 /** The source position of a stack frame in the project's code, null for library frames. */
 function frameLocation(line: string): TestLocation | null {
@@ -35,7 +35,13 @@ function frameLocation(line: string): TestLocation | null {
  * (`add(int, int)[1]` → `add`); `outcomes` keeps each test's failure or skip until it finishes.
  */
 function initScriptEvents({ kind, attrs }: ServiceMessage, outcomes: Map<string, "failed" | "skipped">): TestEvent[] {
-  if (!attrs.className || !attrs.name) return [];
+  if (!attrs.className) return [];
+  const printed = (path: string[]): TestEvent[] => {
+    const text = (attrs.out ?? "").replace(/\r?\n$/, "");
+    return text ? text.split(/\r?\n/).map((line) => ({ type: "output", path, line })) : [];
+  };
+  // A class's own output (`@BeforeAll`, `@AfterAll`) belongs to the class.
+  if (!attrs.name) return kind === "testStdOut" || kind === "testStdErr" ? printed([attrs.className]) : [];
   const path = [attrs.className, attrs.name.split("(")[0]!.trim() || attrs.name];
   const key = path.join("\0");
   // A parameterized method's invocations share its node: one failure fails the method.
@@ -45,10 +51,8 @@ function initScriptEvents({ kind, attrs }: ServiceMessage, outcomes: Map<string,
       if (!failed) outcomes.delete(key);
       return [{ type: "start", path }];
     case "testStdOut":
-    case "testStdErr": {
-      const text = (attrs.out ?? "").replace(/\r?\n$/, "");
-      return text ? text.split(/\r?\n/).map((line) => ({ type: "output", path, line })) : [];
-    }
+    case "testStdErr":
+      return printed(path);
     case "testFailed": {
       outcomes.set(key, "failed");
       const lines = (attrs.details || attrs.message || "").split("\n");

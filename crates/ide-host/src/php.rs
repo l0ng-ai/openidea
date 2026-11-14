@@ -553,6 +553,7 @@ impl crate::language_service::LanguageService for PhpService {
         let engine = self.0.engine()?;
         let outcome = engine.rename_with_possible_usages(doc, pos, new_name, cancel)?;
         Some(outcome.map(|outcome| Renamed {
+            preview: false,
             edit: outcome.edit,
             incomplete: None,
             possible_usages:
@@ -601,6 +602,8 @@ impl crate::language_service::LanguageService for PhpService {
                 kind: Some(CHANGE_SIGNATURE.to_owned()),
                 is_preferred: false,
                 disabled_reason: None,
+                diagnostics: Vec::new(),
+                original_diagnostics: None,
                 edit: None,
                 command: None,
                 data: Some(serde_json::Value::String(data)),
@@ -625,6 +628,8 @@ impl crate::language_service::LanguageService for PhpService {
                 kind: Some(EXTRACT_METHOD_DIALOG.to_owned()),
                 is_preferred: false,
                 disabled_reason: None,
+                diagnostics: Vec::new(),
+                original_diagnostics: None,
                 edit: None,
                 command: None,
                 data: Some(serde_json::Value::String(data)),
@@ -819,6 +824,8 @@ pub(crate) fn translation_action(
         kind: Some(REWRITE.to_owned()),
         is_preferred: false,
         disabled_reason: None,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         edit: None,
         command: Some(Command {
             title,
@@ -860,6 +867,8 @@ fn member_choosers(
             kind: Some(GENERATE_CHOOSER.to_owned()),
             is_preferred: false,
             disabled_reason: None,
+            diagnostics: Vec::new(),
+            original_diagnostics: None,
             edit: None,
             command: None,
             data: Some(serde_json::Value::String(data)),
@@ -875,6 +884,8 @@ pub(crate) fn code_action(action: ide_php::imports::ImportAction, server: ide_co
         kind: Some(action.kind.to_owned()),
         is_preferred: action.preferred,
         disabled_reason: None,
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
         edit: Some(action.edit),
         command: None,
         data: None,
@@ -931,6 +942,7 @@ pub(crate) fn completion_item(item: Completion, server: ide_core::ServerId) -> C
     CompletionItem {
         label: item.label,
         label_detail: item.label_detail,
+        label_description: None,
         detail: item.detail,
         kind: Some(kind),
         documentation: None,

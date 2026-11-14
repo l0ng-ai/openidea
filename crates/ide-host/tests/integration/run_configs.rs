@@ -141,3 +141,38 @@ async fn workspace_cmake_before_launch_tasks_resolve_in_the_member() {
         assert!(configs.iter().any(|c| c.id == task.target && c.cwd == build.cwd));
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gradle_init_scripts_are_written_by_the_host_that_runs_the_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(tmp.path());
+    let text = "allprojects { }\n".to_string();
+    let path =
+        ops::run::run_gradle_init_script(&host, "main", "openidea-gradle-tests".into(), text.clone()).await.unwrap();
+    assert!(path.contains("openidea-gradle-tests-"), "{path}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    let again = ops::run::run_gradle_init_script(&host, "main", "openidea-gradle-tests".into(), text).await.unwrap();
+    assert_eq!(again, path);
+    // A name is not a path.
+    let escaped = ops::run::run_gradle_init_script(&host, "main", "../escape".into(), String::new()).await;
+    assert!(escaped.is_err(), "{escaped:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn debug_env_files_load_in_order_like_a_run() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = host(tmp.path());
+    let first = tmp.path().join("first.env");
+    let second = tmp.path().join("second.env");
+    std::fs::write(&first, "SHARED=one\nONLY_FIRST=1\nREF=${SHARED}-suffix\n").unwrap();
+    std::fs::write(&second, "SHARED=two\nONLY_SECOND=2\n").unwrap();
+    let vars = ops::run::run_env_files(&host, "main", vec![first, second]).unwrap();
+    // Later files win; references resolve against earlier files, then the system environment.
+    assert_eq!(vars.get("SHARED").map(String::as_str), Some("two"));
+    assert_eq!(vars.get("ONLY_FIRST").map(String::as_str), Some("1"));
+    assert_eq!(vars.get("ONLY_SECOND").map(String::as_str), Some("2"));
+    assert_eq!(vars.get("REF").map(String::as_str), Some("one-suffix"));
+    // An unreadable file is an error, like a run that names a missing `.env`.
+    let missing = ops::run::run_env_files(&host, "main", vec![tmp.path().join("nope.env")]);
+    assert!(missing.is_err(), "{missing:?}");
+}

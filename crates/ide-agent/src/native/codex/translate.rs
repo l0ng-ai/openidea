@@ -256,6 +256,31 @@ fn effort_name(effort: &str) -> String {
     }
 }
 
+/// The enabled skills from `skills/list`, named as Codex ACP advertises them.
+pub(super) fn skill_commands(result: &Value) -> Option<Value> {
+    let entries = result.get("data")?.as_array()?;
+    let mut seen = std::collections::HashSet::new();
+    let commands: Vec<Value> = entries
+        .iter()
+        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
+        .flatten()
+        .filter_map(|skill| {
+            let name = skill.get("name")?.as_str()?.trim();
+            if name.is_empty() || skill.get("enabled") == Some(&Value::Bool(false)) || !seen.insert(name) {
+                return None;
+            }
+            let description = skill
+                .pointer("/interface/shortDescription")
+                .and_then(Value::as_str)
+                .or_else(|| skill.get("shortDescription").and_then(Value::as_str))
+                .or_else(|| skill.get("description").and_then(Value::as_str))
+                .unwrap_or(name);
+            Some(json!({ "name": format!("${name}"), "description": description, "source": "skill", "input": null }))
+        })
+        .collect();
+    Some(json!({ "sessionUpdate": "available_commands_update", "availableCommands": commands }))
+}
+
 /// ACP prompt content blocks as codex `UserInput`s. Embedded files become text.
 pub(super) fn user_input(prompt: &Value) -> Vec<Value> {
     let blocks = prompt.as_array().map(Vec::as_slice).unwrap_or_default();
@@ -587,6 +612,16 @@ pub(super) fn usage(params: &Value) -> Option<Value> {
     Some(json!({ "sessionUpdate": "usage_update", "used": used, "size": size }))
 }
 
+/// A thread name from the model's reply to the naming prompt: its first line, without
+/// quotes or a closing period. `None` when nothing is left.
+pub(super) fn thread_name(reply: &str) -> Option<String> {
+    const MAX_NAME: usize = 80;
+    let line = reply.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '“' | '”' | '「' | '」' | '*'));
+    let line = line.trim_end_matches(['.', '。']).trim();
+    (!line.is_empty()).then(|| line.chars().take(MAX_NAME).collect())
+}
+
 /// How a failed turn is reported.
 #[derive(Debug, PartialEq)]
 pub(super) enum Failure {
@@ -732,19 +767,24 @@ pub(super) fn answer_of(choices: &[Choice], outcome: &Value, decline: Value) -> 
     choices.iter().find(|c| selected && c.option["optionId"].as_str() == chosen).map_or(decline, |c| c.answer.clone())
 }
 
+/// The command a command approval is about: the request's own, else its item's.
+pub(super) fn approval_command<'a>(params: &'a Value, item: Option<&'a Value>) -> Option<&'a str> {
+    // Approval payloads can describe a different command from the item's earlier summary.
+    let item = item.filter(|i| i.get("id") == params.get("itemId"));
+    params
+        .get("command")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+        .or_else(|| item.and_then(|i| i.get("command")).and_then(Value::as_str).filter(|c| !c.is_empty()))
+}
+
 /// The ACP title of a command approval.
-pub(super) fn command_approval_title(params: &Value, item: Option<&Value>, cwd: Option<&str>) -> String {
+pub(super) fn command_approval_title(params: &Value, item: Option<&Value>) -> String {
     if let Some(host) = params.pointer("/networkApprovalContext/host").and_then(Value::as_str) {
         return format!("Allow network access to {host}");
     }
-    let from_item = item.and_then(|i| tool_call(i, false, cwd, None)).and_then(|c| str_of(&c, "title"));
-    let title = from_item.or_else(|| {
-        let synthetic = json!({ "id": "", "type": "commandExecution", "command": params.get("command"),
-            "commandActions": params.get("commandActions").cloned().unwrap_or(json!([])) });
-        tool_call(&synthetic, false, cwd, None).and_then(|c| str_of(&c, "title"))
-    });
-    match title.filter(|t| !t.is_empty()) {
-        Some(t) => format!("Run {t}"),
+    match approval_command(params, item) {
+        Some(command) => format!("Run {}", crate::shell_script(command).unwrap_or_else(|| command.to_owned())),
         None => "Run a command".to_owned(),
     }
 }
@@ -834,4 +874,32 @@ pub(super) fn tail(text: &str) -> String {
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+/// Session-scoped MCP configuration, carried in thread/start, resume and fork.
+pub(super) fn mcp_config(params: &Value) -> Option<Value> {
+    let mut servers = serde_json::Map::new();
+    for server in params.get("mcpServers")?.as_array()? {
+        if server.get("type").and_then(Value::as_str).is_some_and(|t| t != "stdio") {
+            continue;
+        }
+        let (Some(name), Some(command)) =
+            (server.get("name").and_then(Value::as_str), server.get("command").and_then(Value::as_str))
+        else {
+            continue;
+        };
+        let env: serde_json::Map<String, Value> = server
+            .get("env")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| Some((v.get("name")?.as_str()?.to_owned(), v.get("value")?.clone())))
+            .collect();
+        servers.insert(
+            name.into(),
+            json!({"command":command,
+            "args":server.get("args").cloned().unwrap_or_else(||json!([])),"env":env}),
+        );
+    }
+    (!servers.is_empty()).then(|| json!({"mcp_servers":servers}))
 }

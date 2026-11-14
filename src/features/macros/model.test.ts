@@ -57,7 +57,7 @@ describe("macros", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-        last: [{ kind: "text", text: "a" }, { kind: "action" }, { kind: "action", id: "x", arg: {} }],
+        last: [{ kind: "text", text: "a" }, { kind: "action" }, { kind: "action", id: "x", arg: { a: { b: 1 } } }],
         saved: [{ name: "" }],
       }),
     );
@@ -96,12 +96,34 @@ describe("macros", () => {
     expect(storableArg("x")).toBe("x");
     expect(storableArg(2)).toBe(2);
     expect(storableArg(undefined)).toBeUndefined();
-    expect(storableArg({ path: "/a" })).toBeNull();
     expect(storableArg(Number.NaN)).toBeNull();
     const title = (id: string) => (id === "a" ? "Action A" : id);
     expect(describeStep({ kind: "action", id: "a", arg: "x" }, title)).toBe("Action A (x)");
     expect(describeStep({ kind: "text", text: "a\nb" }, title)).toBe('Type "a↵b"');
     expect(describeStep({ kind: "key", key: "Enter" }, title)).toBe("Press Enter");
+  });
+
+  it("stores a selection payload and rejects anything that is not plain data", () => {
+    const selection = { path: "/a", paths: ["/a", "/b"] };
+    expect(storableArg(selection)).toEqual(selection);
+    expect(storableArg(["/a"])).toEqual(["/a"]);
+    expect(storableArg(true)).toBe(true);
+    expect(storableArg({ a: { b: 1 } })).toBeNull();
+    expect(storableArg([1])).toBeNull();
+    expect(storableArg(new Date())).toBeNull();
+    expect(storableArg(() => 1)).toBeNull();
+    expect(storableArg({ n: Number.NaN })).toBeNull();
+    expect(storableArg(Object.create(null))).toEqual({});
+  });
+
+  it("round-trips an object argument through storage and describes it", () => {
+    const arg = { path: "/a", paths: ["/a", "/b"] };
+    saveMacro("Sel", [{ kind: "action", id: "p.run", arg }]);
+    _reloadMacros();
+    expect(useMacros.getState().saved[0]?.steps).toEqual([{ kind: "action", id: "p.run", arg }]);
+    expect(describeStep({ kind: "action", id: "p.run", arg }, (id) => id)).toBe("p.run (/a)");
+    expect(describeStep({ kind: "action", id: "p.run", arg: ["/a", "/b"] }, (id) => id)).toBe("p.run (/a, /b)");
+    expect(describeStep({ kind: "action", id: "p.run", arg: { n: 1 } }, (id) => id)).toBe('p.run ({"n":1})');
   });
 
   it("names the editor keys a macro records", () => {

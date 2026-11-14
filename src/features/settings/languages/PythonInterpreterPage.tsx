@@ -1,5 +1,5 @@
 /**
- * Settings › Python › Interpreter (PyCharm's "Python Interpreter" page): the
+ * Settings › Python › Dependencies (PyCharm's "Python Interpreter" page): the
  * project interpreter and its packages (pip / uv pip). The interpreter feeds
  * run configurations, basedpyright / pyright (`python.pythonPath`) and the
  * terminal's virtualenv activation.
@@ -10,10 +10,11 @@ import clsx from "clsx";
 import { Button, IconButton, Input, Spinner, showContextMenu, T } from "@/ui";
 import { useProject } from "@/platform/project";
 import { Section, Toggle } from "../components/Form";
-import { effectivePython, listPackages, pip, useSdks, type PythonPackage } from "./api";
+import { effectivePython, listPackages, pip, type PythonPackage } from "./api";
 import { AddInterpreterDialog } from "./AddInterpreterDialog";
 import { useSetting } from "../components/context";
 import { SdkField, tildify } from "./components";
+import { interpreterIcon, sameInterpreterPath, usePythonInterpreters } from "./interpreters";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -67,7 +68,22 @@ export function PythonInterpreterPage() {
   const [activate, setActivate] = useSetting<boolean>("languages.python.activateVirtualenv");
   const root = useProject((s) => s.project?.root ?? null);
   const [auto, setAuto] = useState<string | null>(null);
-  const detected = useSdks((s) => s.byKind.python);
+  // Bumped when an environment is created: it may reuse the configured path, whose state changed.
+  const [created, setCreated] = useState(0);
+  // Detected interpreters plus the ones added to (or hidden from) the IDE-wide list.
+  const { detected, rows, hidden } = usePythonInterpreters({ withProjects: false });
+  const extras = useMemo(
+    () =>
+      rows
+        .filter((row) => !row.invalid && !detected.some((sdk) => sameInterpreterPath(sdk.path, row.path, null)))
+        .map((row) => ({
+          value: row.path,
+          label: row.name,
+          detail: tildify(row.path),
+          icon: interpreterIcon(row.source),
+        })),
+    [rows, detected],
+  );
 
   useEffect(() => {
     let live = true;
@@ -77,7 +93,23 @@ export function PythonInterpreterPage() {
     return () => {
       live = false;
     };
-  }, [root]);
+  }, [root, created]);
+
+  // The interpreter runs resolve to: the configured one while it exists, else the fallback.
+  const [resolved, setResolved] = useState<{ interpreter: string; path: string | null } | null>(null);
+  useEffect(() => {
+    if (!interpreter) return;
+    let live = true;
+    effectivePython()
+      .then((path) => live && setResolved({ interpreter, path }))
+      .catch(() => live && setResolved(null));
+    return () => {
+      live = false;
+    };
+  }, [root, interpreter, created]);
+  // A configured interpreter whose executable is gone (PyCharm's "Invalid"): runs fall back.
+  const invalid =
+    !!interpreter && resolved?.interpreter === interpreter && !sameInterpreter(resolved.path, interpreter, root);
 
   // Without a configured interpreter the project's virtualenv is used (like run configurations).
   const python = interpreter || auto;
@@ -150,6 +182,10 @@ export function PythonInterpreterPage() {
           emptyDetail={autoDetail}
           browseTitle="Select Python Interpreter"
           aria-label="Python interpreter"
+          invalid={invalid}
+          extra={extras}
+          exclude={hidden}
+          optionIcon={(sdk) => interpreterIcon(sdk.source)}
         />
         <Button
           size="small"
@@ -162,8 +198,13 @@ export function PythonInterpreterPage() {
       </div>
       {python && (
         <div className={styles.path} title={python}>
-          {current ? `${current.name} — ` : ""}
+          {current && !invalid ? `${current.name} — ` : ""}
           {tildify(python)}
+        </div>
+      )}
+      {invalid && (
+        <div className={clsx(styles.empty, styles.error)} role="alert">
+          <T>The configured Python interpreter no longer exists. Choose another interpreter or add a new one.</T>
         </div>
       )}
 
@@ -269,7 +310,7 @@ export function PythonInterpreterPage() {
               <T>No interpreter selected. Choose one above or add a new one.</T>
             </div>
           )}
-          {python && error && (
+          {python && error && !invalid && (
             <div className={clsx(styles.empty, styles.error)} role="alert">
               {error}
             </div>
@@ -323,10 +364,19 @@ export function PythonInterpreterPage() {
           onClose={() => setAdding(false)}
           onAdded={(path) => {
             setInterpreter(path);
+            setCreated((n) => n + 1);
+            reload();
             setAdding(false);
           }}
         />
       )}
     </div>
   );
+}
+
+/** Whether `resolved` (an absolute path from the backend) is the configured `interpreter` setting. */
+function sameInterpreter(resolved: string | null, interpreter: string, root: string | null): boolean {
+  if (!resolved) return false;
+  if (tildify(resolved) === tildify(interpreter)) return true;
+  return !!root && resolved === `${root.replace(/[\\/]+$/, "")}/${interpreter}`;
 }

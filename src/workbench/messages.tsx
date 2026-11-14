@@ -10,7 +10,7 @@
  */
 import { useState, type ReactNode } from "react";
 import { create } from "zustand";
-import { t } from "@/platform/i18n";
+import { t, VerbatimTextContext } from "@/platform/i18n";
 import { Checkbox, Dialog, type DialogButton, type MessageIconKind } from "@/ui";
 
 export interface MessageButton {
@@ -36,6 +36,8 @@ export interface MessageRequest {
   /** Defaults to `question`. */
   icon?: MessageIconKind;
   width?: number;
+  /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
+  verbatim?: boolean;
 }
 
 export interface MessageResult {
@@ -81,6 +83,10 @@ export interface ConfirmOptions {
   checkbox?: string;
   /** Initial state of `checkbox`. */
   checked?: boolean;
+  /** Closes the dialog as cancelled when aborted. */
+  signal?: AbortSignal;
+  /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
+  verbatim?: boolean;
 }
 
 /** OK / Cancel question; resolves `null` when cancelled, else the checkbox state. */
@@ -92,6 +98,8 @@ export async function confirmChecked(opts: ConfirmOptions): Promise<{ checked: b
     checkbox: opts.checkbox,
     checked: opts.checked,
     buttons: [{ id: "ok", label: opts.ok, primary: true }],
+    signal: opts.signal,
+    verbatim: opts.verbatim,
   });
   return r.button === "ok" ? { checked: r.checked } : null;
 }
@@ -134,16 +142,19 @@ function MessageDialog({ message }: { message: Pending }) {
   }));
   const withCancel = message.cancel !== false && !message.buttons.some((b) => b.id === "cancel");
   return (
-    <Dialog
-      open
-      onClose={() => done("cancel")}
-      title={message.title}
-      icon={message.icon ?? "question"}
-      width={message.width ?? 460}
-      footerStart={message.checkbox && <Checkbox checked={checked} onChange={setChecked} label={message.checkbox} />}
-      buttons={withCancel ? [...declared, { label: t("common.cancel"), role: "cancel" }] : declared}
-    >
-      {message.body}
-    </Dialog>
+    <VerbatimTextContext.Provider value={!!message.verbatim}>
+      <Dialog
+        open
+        blockWorkbenchShortcuts
+        onClose={() => done("cancel")}
+        title={message.title}
+        icon={message.icon ?? "question"}
+        width={message.width ?? 460}
+        footerStart={message.checkbox && <Checkbox checked={checked} onChange={setChecked} label={message.checkbox} />}
+        buttons={withCancel ? [...declared, { label: t("common.cancel"), role: "cancel" }] : declared}
+      >
+        {message.body}
+      </Dialog>
+    </VerbatimTextContext.Provider>
   );
 }

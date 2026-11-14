@@ -19,6 +19,7 @@ export interface IssueLinkValid {
 
 export interface GitSettingsValid {
   inlineBlame: boolean;
+  showBranchInProjectView: boolean;
   executable: string;
   updateMethod: UpdateMethod;
   autoUpdateOnPushRejected: boolean;
@@ -50,6 +51,10 @@ export interface CommitSettingsValid {
   bodyLimit: number;
   showRightMargin: boolean;
   wrapAtMargin: boolean;
+  /** Plugin before-commit checks turned off (`<plugin id>/<check id>`). */
+  disabledPluginChecks: string[];
+  /** Double-click opens the diff (`true`), the source file (`false`), or follows the interface (`null`). */
+  doubleClickOpensDiff: boolean | null;
 }
 
 export interface VcsSettingsValid {
@@ -69,12 +74,23 @@ export interface VcsSettingsValid {
   issueNavigation: IssueLinkValid[];
 }
 
+/** Mirrors `ide-core::workflow_settings::LogLevelColors` defaults. */
+export interface LogLevelColorsValid {
+  enabled: boolean;
+  error: string;
+  warn: string;
+  info: string;
+  debug: string;
+  trace: string;
+}
+
 export interface ConsoleSettingsValid {
   softWrap: boolean;
   overrideBuffer: boolean;
   bufferKb: number;
   encoding: string;
   foldPatterns: string[];
+  logColors: LogLevelColorsValid;
 }
 
 export interface DebuggerSettingsValid {
@@ -85,14 +101,17 @@ export interface DebuggerSettingsValid {
   runToCursorInlay: boolean;
   inlineValues: boolean;
   sortValues: boolean;
+  liveWatches: boolean;
   valueTooltip: boolean;
   valueTooltipOnSelection: boolean;
   valueTooltipDelay: number;
   skipLibraryCode: boolean;
+  debugServerPage: boolean;
   python: { attachSubprocess: boolean; gevent: boolean };
 }
 
 export interface RunSettingsValid {
+  defaultTarget: string;
   confirmRerun: boolean;
   confirmTerminate: boolean;
   showOnStart: boolean;
@@ -112,6 +131,7 @@ export interface TerminalSettingsValid {
   overrideIdeShortcuts: boolean;
   shellIntegration: boolean;
   highlightHyperlinks: boolean;
+  highlightSelection: boolean;
   optionAsMeta: boolean;
   escapeToEditor: boolean;
   cursorShape: CursorShape;
@@ -142,6 +162,19 @@ export interface ExternalToolValid {
   openConsole: boolean;
 }
 
+export interface AgentSecurityValid {
+  allowedCommands: string[];
+  blockedCommands: string[];
+}
+
+/** Agents › IDE MCP Server: the Run tool window's agent tabs (`run_command`). */
+export interface AgentRunSettingsValid {
+  /** Finished agent tabs shown; older ones go to the archive. */
+  tabLimit: number;
+  /** Archived agent tabs kept; older ones are closed. */
+  archiveLimit: number;
+}
+
 export interface WorkflowSettings extends RemoteSettings {
   vcs: VcsSettingsValid;
   console: ConsoleSettingsValid;
@@ -150,6 +183,7 @@ export interface WorkflowSettings extends RemoteSettings {
   terminal: TerminalSettingsValid;
   actionsOnSave: ActionsOnSaveValid;
   externalTools: ExternalToolValid[];
+  agentSecurity: AgentSecurityValid;
 }
 
 export const WORKFLOW_LIMITS = {
@@ -159,6 +193,8 @@ export const WORKFLOW_LIMITS = {
   bufferKb: { min: 16, max: 1_048_576 },
   tooltipDelay: { min: 0, max: 10_000 },
   terminationTimeoutMs: { min: 0, max: 600_000 },
+  agentTabLimit: { min: 0, max: 1000 },
+  agentArchiveLimit: { min: 0, max: 100_000 },
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
@@ -185,6 +221,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     historyLimit: 1000,
     git: {
       inlineBlame: false,
+      showBranchInProjectView: false,
       executable: "",
       updateMethod: "merge",
       autoUpdateOnPushRejected: false,
@@ -215,6 +252,8 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       bodyLimit: 72,
       showRightMargin: true,
       wrapAtMargin: false,
+      disabledPluginChecks: [],
+      doubleClickOpensDiff: null,
     },
     confirmation: {
       onCreate: "ask",
@@ -238,6 +277,14 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       "at node:internal/",
       "<frozen importlib._bootstrap",
     ],
+    logColors: {
+      enabled: false,
+      error: "var(--ansi-red)",
+      warn: "var(--ansi-yellow)",
+      info: "var(--ansi-green)",
+      debug: "var(--ansi-cyan)",
+      trace: "var(--ansi-magenta)",
+    },
   },
   debugger: {
     showOnBreakpoint: true,
@@ -247,13 +294,15 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     runToCursorInlay: true,
     inlineValues: true,
     sortValues: false,
+    liveWatches: false,
     valueTooltip: true,
     valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
     skipLibraryCode: true,
+    debugServerPage: false,
     python: { attachSubprocess: true, gevent: false },
   },
-  run: { confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
+  run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
   terminal: {
     startDirectory: "",
     env: {},
@@ -267,6 +316,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     overrideIdeShortcuts: true,
     shellIntegration: true,
     highlightHyperlinks: true,
+    highlightSelection: true,
     optionAsMeta: false,
     escapeToEditor: false,
     cursorShape: "block",
@@ -280,12 +330,18 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   },
   actionsOnSave: { optimizeImports: false, cleanup: false },
   externalTools: [],
+  agentSecurity: {
+    allowedCommands: [],
+    blockedCommands: ["rm -rf *", "rm -rf /", "mkfs*", "dd *", ":(){ :|:& };:", "shutdown*", "reboot*"],
+  },
   ...DEFAULT_REMOTE,
 };
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+/** A boolean the user may leave unset. */
+const tri = (v: unknown): boolean | null => (typeof v === "boolean" ? v : null);
 const text = (v: unknown, d: string) => (typeof v === "string" ? v : d);
 const nonEmpty = (v: unknown, d: string) => (typeof v === "string" && v.trim() ? v : d);
 const oneOf = <T extends string>(v: unknown, allowed: readonly T[], d: T): T =>
@@ -312,6 +368,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
     historyLimit: num(v.historyLimit, d.historyLimit, L.historyLimit, true),
     git: {
       inlineBlame: bool(g.inlineBlame, d.git.inlineBlame),
+      showBranchInProjectView: bool(g.showBranchInProjectView, d.git.showBranchInProjectView),
       executable: text(g.executable, d.git.executable).trim(),
       updateMethod: oneOf(g.updateMethod, ["merge", "rebase"] as const, d.git.updateMethod),
       autoUpdateOnPushRejected: bool(g.autoUpdateOnPushRejected, d.git.autoUpdateOnPushRejected),
@@ -342,6 +399,8 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       bodyLimit: num(c.bodyLimit, d.commit.bodyLimit, L.messageLimit, true),
       showRightMargin: bool(c.showRightMargin, d.commit.showRightMargin),
       wrapAtMargin: bool(c.wrapAtMargin, d.commit.wrapAtMargin),
+      disabledPluginChecks: strings(c.disabledPluginChecks, d.commit.disabledPluginChecks),
+      doubleClickOpensDiff: tri(c.doubleClickOpensDiff),
     },
     confirmation: {
       onCreate: oneOf(conf.onCreate, confirm, d.confirmation.onCreate),
@@ -363,12 +422,22 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
 export function validateConsole(raw: unknown): ConsoleSettingsValid {
   const d = DEFAULT_WORKFLOW.console;
   const v = obj(raw);
+  const lc = obj(v.logColors);
+  const dl = d.logColors;
   return {
     softWrap: bool(v.softWrap, d.softWrap),
     overrideBuffer: bool(v.overrideBuffer, d.overrideBuffer),
     bufferKb: num(v.bufferKb, d.bufferKb, WORKFLOW_LIMITS.bufferKb, true),
     encoding: nonEmpty(v.encoding, d.encoding),
     foldPatterns: strings(v.foldPatterns, d.foldPatterns),
+    logColors: {
+      enabled: bool(lc.enabled, dl.enabled),
+      error: nonEmpty(lc.error, dl.error),
+      warn: nonEmpty(lc.warn, dl.warn),
+      info: nonEmpty(lc.info, dl.info),
+      debug: nonEmpty(lc.debug, dl.debug),
+      trace: nonEmpty(lc.trace, dl.trace),
+    },
   };
 }
 
@@ -384,10 +453,12 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     runToCursorInlay: bool(v.runToCursorInlay, d.runToCursorInlay),
     inlineValues: bool(v.inlineValues, d.inlineValues),
     sortValues: bool(v.sortValues, d.sortValues),
+    liveWatches: bool(v.liveWatches, d.liveWatches),
     valueTooltip: bool(v.valueTooltip, d.valueTooltip),
     valueTooltipOnSelection: bool(v.valueTooltipOnSelection, d.valueTooltipOnSelection),
     valueTooltipDelay: num(v.valueTooltipDelay, d.valueTooltipDelay, WORKFLOW_LIMITS.tooltipDelay, true),
     skipLibraryCode: bool(v.skipLibraryCode, d.skipLibraryCode),
+    debugServerPage: bool(v.debugServerPage, d.debugServerPage),
     python: {
       attachSubprocess: bool(py.attachSubprocess, d.python.attachSubprocess),
       gevent: bool(py.gevent, d.python.gevent),
@@ -399,6 +470,7 @@ export function validateRun(raw: unknown): RunSettingsValid {
   const d = DEFAULT_WORKFLOW.run;
   const v = obj(raw);
   return {
+    defaultTarget: text(v.defaultTarget, ""),
     confirmRerun: bool(v.confirmRerun, d.confirmRerun),
     confirmTerminate: bool(v.confirmTerminate, d.confirmTerminate),
     showOnStart: bool(v.showOnStart, d.showOnStart),
@@ -429,6 +501,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     overrideIdeShortcuts: bool(v.overrideIdeShortcuts, d.overrideIdeShortcuts),
     shellIntegration: bool(v.shellIntegration, d.shellIntegration),
     highlightHyperlinks: bool(v.highlightHyperlinks, d.highlightHyperlinks),
+    highlightSelection: bool(v.highlightSelection, d.highlightSelection),
     optionAsMeta: bool(v.optionAsMeta, d.optionAsMeta),
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
@@ -476,6 +549,27 @@ export function validateExternalTools(raw: unknown): ExternalToolValid[] {
   return out;
 }
 
+export function validateAgentSecurity(raw: unknown): AgentSecurityValid {
+  const v = obj(raw);
+  const d = DEFAULT_WORKFLOW.agentSecurity;
+  return {
+    allowedCommands: strings(v.allowedCommands, d.allowedCommands),
+    blockedCommands: strings(v.blockedCommands, d.blockedCommands),
+  };
+}
+
+export const DEFAULT_AGENT_RUNS: AgentRunSettingsValid = { tabLimit: 1, archiveLimit: 999 };
+
+/** From `mcpServer` (Agents › IDE MCP Server). */
+export function validateAgentRuns(raw: unknown): AgentRunSettingsValid {
+  const v = obj(raw);
+  const d = DEFAULT_AGENT_RUNS;
+  return {
+    tabLimit: num(v.agentTabLimit, d.tabLimit, WORKFLOW_LIMITS.agentTabLimit, true),
+    archiveLimit: num(v.agentArchiveLimit, d.archiveLimit, WORKFLOW_LIMITS.agentArchiveLimit, true),
+  };
+}
+
 export function validateWorkflow(raw: unknown): WorkflowSettings {
   const root = obj(raw);
   return {
@@ -486,6 +580,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
     terminal: validateTerminal(root.terminal),
     actionsOnSave: validateActionsOnSave(root.actionsOnSave),
     externalTools: validateExternalTools(root.externalTools),
+    agentSecurity: validateAgentSecurity(root.agentSecurity),
     ...validateRemote(root),
   };
 }
@@ -552,3 +647,14 @@ export const EXTERNAL_TOOL_MACROS: ReadonlyArray<{ name: string; description: st
   { name: "$SelectedText$", description: "Text selected in the editor" },
   { name: "$Prompt$", description: "Asks for a value when the tool runs" },
 ];
+
+/** Agents › IDE MCP Server limits on the Run tool window's agent tabs. */
+export function agentRunSettings(): AgentRunSettingsValid {
+  return validateAgentRuns(obj(useProject.getState().settings).mcpServer);
+}
+
+/** React hook over {@link agentRunSettings}. */
+export function useAgentRunSettings(): AgentRunSettingsValid {
+  const raw = useProject((p) => obj(p.settings).mcpServer);
+  return validateAgentRuns(raw);
+}

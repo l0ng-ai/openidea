@@ -1,16 +1,18 @@
 /**
- * Gutter icons from plugins' `line-markers` providers (MyBatis' arrows
- * between a mapper interface and its XML). Asked once per document version
+ * Gutter icons from plugins' `line-markers` providers. Asked once per document version
  * (debounced); markers follow their lines in between; a click opens the
  * marker's target. The gutter column exists only while there are markers,
  * so editors without plugin providers keep their usual width.
  */
 import { Compartment, RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import type { EditorDocContext } from "@/editor/api";
-import { navigateTo } from "@/editor/lsp/navigation";
+import { shownAgain, type EditorDocContext } from "@/editor/api";
+import { navigationButton } from "./navigationButton";
+import { tx } from "@/platform/i18n";
+import { pluginsBackend } from "./backend";
 import { commands, type LineMarkerInfo } from "@/platform/ipc";
-import { gutterIconMarkup } from "@/ui";
+import { gutterIconMarkup, isIconName } from "@/ui/icons";
+import { onMarkerIconsChanged, resolveMarkerIcon } from "./markerIcons";
 import styles from "@/editor/navigation/LineMarkers.module.css";
 
 const DEBOUNCE_MS = 400;
@@ -21,17 +23,38 @@ const ICONS: Record<string, string> = {
   overridden: "gutter-overridden",
   overriding: "gutter-overriding",
   run: "gutter-run",
-  navigate: "gutter-implementing",
+  navigate: "gutter-navigate",
 };
 
-/** Icon name for a plugin marker (`navigate` when unknown). */
+/** Legacy aliases and ordinary registered icon names; navigate when unknown. */
 export function markerIcon(icon: string | null): string {
-  return ICONS[icon ?? "navigate"] ?? ICONS.navigate!;
+  const name = icon ?? "navigate";
+  return Object.hasOwn(ICONS, name) ? ICONS[name]! : isIconName(name) ? name : ICONS.navigate!;
 }
 
 interface Placed {
-  marker: LineMarkerInfo;
+  markers: LineMarkerInfo[];
+  icon: string;
   pos: number;
+}
+
+function targetKey(marker: LineMarkerInfo): string {
+  const target = marker.target;
+  return target
+    ? JSON.stringify([
+        target.path,
+        target.range.start.line,
+        target.range.start.col,
+        target.range.end.line,
+        target.range.end.col,
+      ])
+    : JSON.stringify([marker.pluginId, marker.tooltip]);
+}
+
+function markerTooltip(markers: readonly LineMarkerInfo[]): string {
+  const descriptions = [...new Set(markers.map((marker) => marker.tooltip).filter(Boolean))];
+  if (markers.length === 1) return descriptions[0] ?? "";
+  return [`${tx("Related targets")} (${markers.length})`, ...descriptions.slice(0, 5)].join("\n");
 }
 
 const setMarkers = StateEffect.define<Placed[]>();
@@ -45,29 +68,50 @@ const markersField = StateField.define<Placed[]>({
   },
 });
 
-/** Markers on existing lines, at their line starts. */
+/** One marker per line and resolved icon, retaining all distinct destinations. */
 export function placeMarkers(doc: Text, markers: readonly LineMarkerInfo[]): Placed[] {
-  return markers.filter((m) => m.line < doc.lines).map((marker) => ({ marker, pos: doc.line(marker.line + 1).from }));
+  const groups = new Map<string, { placed: Placed; seen: Set<string> }>();
+  for (const marker of markers) {
+    if (!Number.isInteger(marker.line) || marker.line < 0 || marker.line >= doc.lines) continue;
+    const icon = markerIcon(marker.icon);
+    const key = `${marker.line}:${icon}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { placed: { markers: [], icon, pos: doc.line(marker.line + 1).from }, seen: new Set() };
+      groups.set(key, group);
+    }
+    const target = targetKey(marker);
+    if (!group.seen.has(target)) {
+      group.seen.add(target);
+      group.placed.markers.push(marker);
+    }
+  }
+  return [...groups.values()].map(({ placed }) => placed);
 }
 
 class PluginMarker extends GutterMarker {
-  constructor(readonly marker: LineMarkerInfo) {
+  constructor(readonly placed: Placed) {
     super();
   }
   override eq(other: GutterMarker): boolean {
     return (
       other instanceof PluginMarker &&
-      other.marker.tooltip === this.marker.tooltip &&
-      other.marker.icon === this.marker.icon
+      other.placed.icon === this.placed.icon &&
+      other.placed.markers.length === this.placed.markers.length &&
+      other.placed.markers.every((marker, index) => {
+        const current = this.placed.markers[index]!;
+        return marker.tooltip === current.tooltip && targetKey(marker) === targetKey(current);
+      })
     );
   }
   override toDOM(): Node {
-    const el = document.createElement("div");
-    el.className = styles.marker!;
-    el.title = this.marker.tooltip;
-    el.setAttribute("role", "button");
-    el.setAttribute("aria-label", this.marker.tooltip);
-    el.innerHTML = gutterIconMarkup(markerIcon(this.marker.icon)) ?? "";
+    const targets = this.placed.markers.flatMap((marker) => (marker.target ? [marker.target] : []));
+    const tooltip = markerTooltip(this.placed.markers);
+    const el = targets.length ? navigationButton(targets, this.placed.icon, tooltip) : document.createElement("span");
+    el.className = `${styles.marker} cm-plugin-mapping-button`;
+    el.title = tooltip;
+    el.setAttribute("aria-label", tooltip);
+    el.innerHTML = gutterIconMarkup(this.placed.icon) ?? "";
     return el;
   }
 }
@@ -75,18 +119,35 @@ class PluginMarker extends GutterMarker {
 class MarkersPlugin {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private generation = 0;
+  private skipped = false;
   private shown = false;
+  private off: () => void;
 
   constructor(
     private view: EditorView,
     private doc: number,
     private column: Compartment,
   ) {
+    const offBackend = pluginsBackend().onEvent((event) => {
+      if (event.type !== "documentIndexesChanged") return;
+      this.generation++;
+      this.shown = false;
+      this.view.dispatch({ effects: [setMarkers.of([]), this.column.reconfigure([])] });
+      this.schedule();
+    });
+    const offIcons = onMarkerIconsChanged(() => {
+      this.generation++;
+      this.schedule();
+    });
+    this.off = () => {
+      offBackend();
+      offIcons();
+    };
     this.schedule();
   }
 
   update(u: ViewUpdate) {
-    if (u.docChanged) this.schedule();
+    if (u.docChanged || (this.skipped && shownAgain(u))) this.schedule();
   }
 
   private schedule() {
@@ -102,7 +163,16 @@ class MarkersPlugin {
       const markers = await commands.pluginLineMarkers(this.doc);
       if (gen !== this.generation || this.view.state.doc !== text || !this.view.dom.isConnected) return;
       if (markers.status !== "ok") return;
-      const placed = placeMarkers(text, markers.data);
+      const resolved = await Promise.all(
+        markers.data.map(async (marker) => ({
+          ...marker,
+          icon: await resolveMarkerIcon(marker.pluginId, marker.icon),
+        })),
+      );
+      if (gen !== this.generation || this.view.state.doc !== text) return;
+      this.skipped = !this.view.dom.isConnected;
+      if (this.skipped) return;
+      const placed = placeMarkers(text, resolved);
       if (!placed.length && !this.view.state.field(markersField).length) return;
       const effects: StateEffect<unknown>[] = [setMarkers.of(placed)];
       if (placed.length > 0 !== this.shown) {
@@ -116,6 +186,7 @@ class MarkersPlugin {
   }
 
   destroy() {
+    this.off();
     if (this.timer) clearTimeout(this.timer);
     this.generation++;
   }
@@ -125,20 +196,9 @@ const markerColumn: Extension = gutter({
   class: `${styles.gutter} cm-openidea-gutter-pluginMarkers`,
   markers: (view) =>
     RangeSet.of(
-      view.state.field(markersField).map((m) => new PluginMarker(m.marker).range(m.pos)),
+      view.state.field(markersField).map((m) => new PluginMarker(m).range(m.pos)),
       true,
     ),
-  domEventHandlers: {
-    mousedown: (view, block, event) => {
-      const e = event as MouseEvent;
-      if (e.button !== 0) return false;
-      const target = view.state.field(markersField).find((m) => m.pos === block.from && m.marker.target)?.marker.target;
-      if (!target) return false;
-      e.preventDefault();
-      void navigateTo(target);
-      return true;
-    },
-  },
 });
 
 export function pluginLineMarkerGutter(ctx: EditorDocContext): Extension {

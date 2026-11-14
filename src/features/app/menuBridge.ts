@@ -4,17 +4,26 @@
  * The backend emits `openidea://menu` `{ action, arg }` to the focused window when
  * an IDE menu item is clicked; we run `executeAction(action, arg)`. In the
  * other direction we push localised labels (`menu.*` catalog keys) and the
- * shortcut text of every keymap binding, so the menu shows the JS keymap's
- * shortcuts without registering native accelerators (see src-tauri/src/menu.rs).
+ * native accelerator of every keymap binding, which the macOS menu shows as a key
+ * equivalent while the JS keymap stays the only dispatcher (see src-tauri/src/menu.rs).
  */
 import { executeActionFrom, getAction, isActionEnabled, useActions } from "@/platform/actions";
 import { useContextKeys } from "@/platform/context";
 import { keysWithPrefix, t, tx, useI18n } from "@/platform/i18n";
 import { commands, isTauri, type DynamicItem, type MenuConfig, type MenuNode } from "@/platform/ipc";
-import { effectiveBindings, formatBinding, primaryKeyBinding, useKeymap } from "@/platform/keymap";
+import {
+  effectiveBindings,
+  isMouseBinding,
+  normalizeBinding,
+  parseDoubleModifier,
+  primaryKeyBinding,
+  useKeymap,
+} from "@/platform/keymap";
 import { useProject } from "@/platform/project";
-import { useContributions, useMenuSlotItems } from "@/workbench/contributions";
+import { useContributions, useMenuSlotItems, useStandaloneEditor } from "@/workbench/contributions";
 import { isDistractionFree, useDistractionFree } from "@/workbench/distractionFree";
+import { orderStatusItems } from "@/workbench/StatusBar";
+import { statusWidgetRows } from "@/workbench/statusBarWidgets";
 import { useToolWindowLayouts } from "@/workbench/toolwindows/layouts";
 import { hostOs, type HostOs } from "./host";
 
@@ -38,9 +47,22 @@ export function routeMenuEvent(
   return run(payload.action, payload.arg ?? undefined);
 }
 
-/** Shortcut text for menus: macOS symbols, `Ctrl+Shift+O` style elsewhere. */
-export function menuShortcut(binding: string, os: HostOs): string {
-  return formatBinding(binding, os === "macos");
+/**
+ * Keymap key names a macOS key equivalent can show. Mirrors the names muda's accelerator
+ * parser accepts: Tauri drops an accelerator it cannot parse, and the item shows no shortcut.
+ */
+const NATIVE_KEY =
+  /^([A-Z0-9]|F([1-9]|1[0-9]|2[0-4])|[[\]`\\,./;'=-]|Space|Enter|Escape|Tab|Backspace|Delete|Up|Down|Left|Right|Home|End|PageUp|PageDown|Numpad(Add|Subtract|Multiply|Divide))$/;
+
+/**
+ * The binding as a native menu accelerator (`Shift+Meta+O`), or undefined when a menu
+ * cannot show it: chords, double modifiers, mouse buttons and gestures, as in IDEA.
+ */
+export function menuAccelerator(binding: string): string | undefined {
+  if (isMouseBinding(binding) || parseDoubleModifier(binding)) return undefined;
+  const stroke = normalizeBinding(binding);
+  if (stroke.includes(" ")) return undefined;
+  return NATIVE_KEY.test(stroke.split("+").pop()!) ? stroke : undefined;
 }
 
 export function buildMenuConfig(os: HostOs): MenuConfig {
@@ -48,19 +70,52 @@ export function buildMenuConfig(os: HostOs): MenuConfig {
   // Per-window state some labels follow (View › Appearance › Enter / Exit Distraction Free Mode).
   const params = { os, distractionFree: isDistractionFree() ? "on" : "off" };
   for (const key of keysWithPrefix("menu.")) labels[key] = t(key, params);
-  const shortcuts: Record<string, string> = {};
+  const accelerators: Record<string, string> = {};
+  const seen = new Set<string>();
   for (const [, id] of effectiveBindings()) {
-    if (id in shortcuts) continue;
+    if (seen.has(id)) continue;
+    seen.add(id);
     const first = primaryKeyBinding(id);
-    if (first) shortcuts[id] = menuShortcut(first, os);
+    const accelerator = first && menuAccelerator(first);
+    if (accelerator) accelerators[id] = accelerator;
   }
-  return { locale: useI18n.getState().locale, labels, shortcuts, dynamic: dynamicMenuItems() };
+  return {
+    locale: useI18n.getState().locale,
+    labels,
+    accelerators,
+    dynamic: dynamicMenuItems(),
+    checked: toggledActions(),
+  };
 }
 
-/** View › Tool Windows (every registered window, by title) and Window › Tool Window Layouts. */
+/** Toggle actions that are on: their menu items show a check mark (View › Appearance). */
+function toggledActions(): string[] {
+  return [...useActions.getState().actions.values()]
+    .filter((a) => a.toggled?.())
+    .map((a) => a.id)
+    .sort();
+}
+
+/** View › Appearance › Status Bar Widgets: the status bar's context menu, in bar order. */
+function statusBarWidgetItems(): DynamicItem[] {
+  const { project, lightEdit, settings } = useProject.getState();
+  // A LightEdit window's status bar has only the items that apply there (Workbench.tsx).
+  const lightEditFrame = !project && (lightEdit || useStandaloneEditor.getState().title !== null);
+  const items = [...useContributions.getState().statusItems.values()].filter((i) => !lightEditFrame || i.lightEdit);
+  const { left, right } = orderStatusItems(items);
+  const overrides = settings?.appearance?.statusBarWidgets;
+  return statusWidgetRows([...left, ...right], overrides).map((row) => ({
+    action: "view.toggleStatusBarWidget",
+    arg: row.id,
+    label: row.verbatim ? row.title : tx(row.title),
+    checked: row.visible,
+  }));
+}
+
+/** View › Tool Windows (every registered window, by title), View › Appearance › Status Bar Widgets and Window › Tool Window Layouts. */
 export function dynamicMenuItems(): Record<string, DynamicItem[]> {
   const toolWindows = [...useContributions.getState().toolWindows.values()]
-    .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tx(tw.title) ?? tw.title }))
+    .map((tw) => ({ action: `toolwindow.${tw.id}`, arg: null, label: tw.verbatim ? tw.title : tx(tw.title) }))
     .sort((a, b) => a.label.localeCompare(b.label));
   const layouts = useToolWindowLayouts
     .getState()
@@ -69,11 +124,11 @@ export function dynamicMenuItems(): Record<string, DynamicItem[]> {
     Object.entries(useMenuSlotItems.getState().slots).map(([slot, items]) => [
       slot,
       [...items]
-        .map((i) => ({ action: i.action, arg: i.arg ?? null, label: tx(i.label) ?? i.label }))
+        .map((i) => ({ action: i.action, arg: i.arg ?? null, label: i.verbatim ? i.label : tx(i.label) }))
         .sort((a, b) => a.label.localeCompare(b.label)),
     ]),
   );
-  return { ...slots, toolWindows, toolWindowLayouts: layouts };
+  return { ...slots, toolWindows, toolWindowLayouts: layouts, statusBarWidgets: statusBarWidgetItems() };
 }
 
 /** Action ids of every IDE item in a menu model. */
@@ -121,15 +176,18 @@ export function installMenuBridge(): () => void {
   // what cannot run). Recomputed shortly after context changes, sent only when it changed.
   let ids: Set<string> | null = null;
   let lastDisabled = "";
+  let forceEnablement = false;
   let enableTimer: ReturnType<typeof setTimeout> | undefined;
   const pushEnablement = (force = false) => {
+    forceEnablement ||= force;
     clearTimeout(enableTimer);
     enableTimer = setTimeout(() => {
       if (!ids || disposed || !document.hasFocus()) return;
       const dynamic = Object.values(dynamicMenuItems()).flatMap((items) => items.map((d) => d.action));
       const disabled = disabledMenuActions(new Set([...ids, ...dynamic]));
       const key = disabled.join(",");
-      if (!force && key === lastDisabled) return;
+      if (!forceEnablement && key === lastDisabled) return;
+      forceEnablement = false;
       lastDisabled = key;
       void commands.menuSetDisabled(disabled);
     }, 120);
@@ -147,7 +205,9 @@ export function installMenuBridge(): () => void {
     push();
     pushEnablement(true);
   };
-  // The native menu bar is shared: a focused window re-pushes its own window-scoped labels.
+  // The menu bar is shared. A focused window re-pushes labels that can differ per window.
+  // The backend edits only submenus whose visible items changed, so switching project
+  // tabs does not redraw the macOS menu bar.
   window.addEventListener("focus", onFocus);
   const unsubs = [
     useI18n.subscribe((s, prev) => {
@@ -158,15 +218,18 @@ export function installMenuBridge(): () => void {
       if (s.active !== prev.active) push();
     }),
     useContributions.subscribe((s, prev) => {
-      if (s.toolWindows !== prev.toolWindows) push();
+      if (s.toolWindows !== prev.toolWindows || s.statusItems !== prev.statusItems) push();
     }),
     useToolWindowLayouts.subscribe(push),
     useMenuSlotItems.subscribe(push),
     useContextKeys.subscribe(() => pushEnablement()),
     useActions.subscribe(() => pushEnablement()),
-    // Opening / closing a project changes the Open Recent list.
+    // Project membership and names also change the Open Recent list.
     useProject.subscribe((s, prev) => {
-      if (s.project?.root !== prev.project?.root) void commands.menuRefresh();
+      if (s.project !== prev.project) void commands.menuRefresh();
+      if (s.lightEdit !== prev.lightEdit) push();
+      // View › Appearance check marks and Status Bar Widgets.
+      if (s.settings?.appearance !== prev.settings?.appearance) push();
     }),
   ];
   return () => {

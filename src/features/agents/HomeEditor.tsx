@@ -6,7 +6,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Icon, Select, T, type SelectOption } from "@/ui";
+import { Chip, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
@@ -15,7 +15,18 @@ import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
-import { HOME, NO_COMMANDS, refreshProviders, startTask, updateDraft, useAgentCommands, useAgents } from "./store";
+import {
+  HOME,
+  NO_COMMANDS,
+  draftConfig,
+  refreshProviders,
+  setDraftOption,
+  startTask,
+  updateDraft,
+  useAgentCommands,
+  useAgents,
+} from "./store";
+import { useAgentSettings } from "./agentSettings";
 import styles from "./Home.module.css";
 
 export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
@@ -31,6 +42,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   );
   const members = project?.workspace?.projects ?? [];
   const root = members.includes(selected ?? "") ? selected! : (members[0] ?? project?.root ?? "");
+  // A window without a project yet has no fact to show: the where row stays empty until it does.
+  const projectLabel = members.length ? basename(root) : project?.name;
   const [repoState, setRepoState] = useState<{
     root: string;
     branches: Branch[];
@@ -85,7 +98,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const setOption = (id: string, value: string) => updateDraft({ config: { ...draft.config, [id]: value } });
+  const defaults = useAgentSettings().defaults;
+  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
 
   return (
     <div className={clsx(styles.home, docked && styles.docked)}>
@@ -95,66 +109,33 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             <T>What should the agent do?</T>
           </h1>
         )}
-        <Composer
-          id={HOME}
-          autoFocus
-          placeholder={
-            docked
-              ? "Describe a task…"
-              : "Describe a task for the agent. @ references a file or folder, / runs a command"
-          }
-          root={root}
-          projectRoot={root}
-          commands={agentCommands}
-          history={history}
-          config={provider?.config ?? []}
-          onConfig={setOption}
-          onSubmit={start}
-          disabled={!canStart}
-          toolbar={
-            <>
-              <Select
-                variant="ghost"
-                aria-label="Agent"
-                value={provider?.id ?? null}
-                options={providerOptions}
-                onChange={(id) =>
-                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
-                }
-              />
-              <ConfigPickers config={provider?.config ?? []} values={draft.config} onChange={setOption} />
-            </>
-          }
-          actions={
-            <SubmitButton
-              label={starting ? "Starting…" : "Start"}
-              pending={starting}
-              disabled={!canStart}
-              onClick={start}
-            />
-          }
-        />
+        {/* Above the box, like the running session's state line. */}
         <div className={styles.where}>
           {members.length > 1 ? (
             <Select
-              variant="ghost"
+              variant="chip"
               aria-label={tx("Project")}
               className={styles.projectPicker}
               value={root}
-              options={members.map((path) => ({ value: path, label: basename(path), detail: path }))}
+              options={members.map((path) => ({
+                value: path,
+                label: basename(path),
+                detail: path,
+                icon: "folder",
+              }))}
               onChange={(path) => {
                 setSelected(path);
                 updateDraft({ base: null });
               }}
             />
-          ) : (
-            <span className={styles.project} title={root}>
-              {members.length ? basename(root) : project?.name}
-            </span>
-          )}
+          ) : projectLabel ? (
+            <Chip icon="folder" title={root} className={styles.projectChip}>
+              {projectLabel}
+            </Chip>
+          ) : null}
           {isGit && (
             <Select
-              variant="ghost"
+              variant="chip"
               aria-label="Isolation"
               className={styles.isolation}
               value={isolation}
@@ -178,10 +159,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   <T>on</T>
                 </span>
               )}
-              <span className={styles.branch} title={current}>
-                <Icon name="branch" size={14} />
-                <span className={styles.branchName}>{current}</span>
-              </span>
+              <Chip icon="branch" title={current} className={styles.branch}>
+                {current}
+              </Chip>
             </>
           )}
           {isolation === "worktree" && branches.length > 0 && (
@@ -192,16 +172,55 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                 </span>
               )}
               <Select
-                variant="ghost"
+                variant="chip"
                 aria-label="Base branch"
                 className={styles.basePicker}
                 value={base}
-                options={branches.map((b) => ({ value: b.name, label: b.name }))}
+                options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
                 onChange={(b) => updateDraft({ base: b === current ? null : b })}
               />
             </>
           )}
         </div>
+        <Composer
+          id={HOME}
+          autoFocus
+          placeholder={
+            docked
+              ? "Describe a task…"
+              : "Describe a task for the agent. @ references a file or folder, / runs a command"
+          }
+          root={root}
+          projectRoot={root}
+          commands={agentCommands}
+          history={history}
+          config={config}
+          onConfig={setDraftOption}
+          onSubmit={start}
+          disabled={!canStart}
+          toolbar={
+            <>
+              <Select
+                variant="ghost"
+                aria-label="Agent"
+                value={provider?.id ?? null}
+                options={providerOptions}
+                onChange={(id) =>
+                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
+                }
+              />
+              <ConfigPickers config={config} onChange={setDraftOption} />
+            </>
+          }
+          actions={
+            <SubmitButton
+              label={starting ? "Starting…" : "Start"}
+              pending={starting}
+              disabled={!canStart}
+              onClick={start}
+            />
+          }
+        />
         {probe && (!docked || probe.error) && (
           <p className={probe.error ? styles.warning : styles.note}>
             {probe.error

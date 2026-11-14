@@ -1,6 +1,6 @@
 # Native engine vs Intelephense: differential report
 
-Phase 6.2 ran `crates/ide-php/tests/differential.rs` on the three corpora and on `fixtures/php-app`. This is the summary; the full per-sample reports are written to `target/php-differential/<name>.{md,json}` by each run.
+Phase 6.2 ran `crates/ide-php/tests/differential.rs` on the three corpora and on `fixtures/php-library`. This is the summary; the full per-sample reports are written to `target/php-differential/<name>.{md,json}` by each run.
 
 ```text
 cargo test -p ide-php --test differential -- --ignored --exact fixture
@@ -31,8 +31,8 @@ Raw agreement is what the harness computes. "Matches or beats" adds the differen
 
 | Project           | Query          | Agree | Differ | Only Intelephense | Only engine | Raw agreement |                                                                 Matches or beats |
 | ----------------- | -------------- | ----: | -----: | ----------------: | ----------: | ------------: | -------------------------------------------------------------------------------: |
-| php-app           | definition     |   157 |      0 |                 0 |           1 |         99.4% |                                                                   158/158 = 100% |
-| php-app           | hover          |   156 |      1 |                 0 |           1 |         98.7% |                                                                  157/158 = 99.4% |
+| php-library       | definition     |   157 |      0 |                 0 |           1 |         99.4% |                                                                   158/158 = 100% |
+| php-library       | hover          |   156 |      1 |                 0 |           1 |         98.7% |                                                                  157/158 = 99.4% |
 | laravel-framework | definition     |   160 |      0 |                 0 |           6 |         96.4% |                                                                   166/166 = 100% |
 | laravel-framework | hover          |   158 |      2 |                 1 |           6 |         94.6% |                                                                   167/167 = 100% |
 | symfony           | definition     |   164 |      2 |                 0 |           3 |         97.0% |                                                                  168/169 = 99.4% |
@@ -42,7 +42,7 @@ Raw agreement is what the harness computes. "Matches or beats" adds the differen
 | **corpora**       | **definition** |   516 |      6 |                 0 |           9 |         97.2% |                                                              526/531 = **99.1%** |
 | **corpora**       | **hover**      |   513 |      9 |                 1 |           9 |         96.4% |                                                              530/532 = **99.6%** |
 
-The corpora rows are phase 9.2.b's rerun (2026-11-10, same seed, corpus tags and Intelephense version); the php-app rows are phase 6.2.b's. Both stay above the bars the roadmap sets (definition 98.5%, hover 98.1%). The sampled positions are not all phase 6.2.b's, because a corpus's candidate positions depend on the harness and engine of the day. Some gaps listed there were not sampled this time (Symfony's `FileValidator` `$maxSize`, SimplePie's `$scheme`, Laravel's `AuthGuardTest` destructuring and `EloquentCursorPaginateTest` closure parameter); caret fixtures cover them instead. Raw agreement is lower on Laravel because the engine now answers more positions Intelephense leaves empty (cast attributes, forwarded builder calls); each is checked by hand below.
+The corpora rows are phase 9.2.b's rerun (2026-11-10, same seed, corpus tags and Intelephense version); the php-library rows are phase 6.2.b's. Both stay above the bars the roadmap sets (definition 98.5%, hover 98.1%). The sampled positions are not all phase 6.2.b's, because a corpus's candidate positions depend on the harness and engine of the day. Some gaps listed there were not sampled this time (Symfony's `FileValidator` `$maxSize`, SimplePie's `$scheme`, Laravel's `AuthGuardTest` destructuring and `EloquentCursorPaginateTest` closure parameter); caret fixtures cover them instead. Raw agreement is lower on Laravel because the engine now answers more positions Intelephense leaves empty (cast attributes, forwarded builder calls); each is checked by hand below.
 
 Phase 9.3 (type operators, conditional return types, object shapes, type aliases, `@mixin Foo<T>` arguments) reran the three corpora on 2026-11-10 with the same seed, tags and Intelephense version. Every count in the table is unchanged: none of the 600 sampled positions has a type that goes through one of these forms. The forms do appear in the corpora's PHPDoc (`grep` over `*.php`). Before 9.3 they all widened; now they are evaluated wherever their arguments are known:
 
@@ -132,7 +132,7 @@ Legend: **E** means the engine's answer is right and Intelephense's is missing o
 | `wp-login.php:595:10`                                      | definition | this assignment     | the first assignment | D                                                                  |
 | `wp-login.php:595:10`                                      | hover      | `?string`           | `string`             | E: `admin_url()` is documented `@return string`                    |
 
-### php-app
+### php-library
 
 | Position                               | Query | Intelephense           | Engine                                             | Verdict |
 | -------------------------------------- | ----- | ---------------------- | -------------------------------------------------- | ------- |

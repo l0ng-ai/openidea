@@ -24,7 +24,7 @@
  *   - `{n, number}`.
  *   Branches nest. Unknown parameters are left as written.
  */
-import { useCallback, useMemo } from "react";
+import { createContext, useCallback, useContext, useMemo } from "react";
 import { create } from "zustand";
 import en from "./locales/en.json";
 
@@ -45,6 +45,7 @@ export const LOCALES = {
   fr: { name: "Français (French)", tag: "fr" },
   pl: { name: "Polski (Polish)", tag: "pl" },
   pt: { name: "Português (Portuguese)", tag: "pt-BR" },
+  es: { name: "Español (Spanish)", tag: "es-MX" },
 } as const;
 export type Locale = keyof typeof LOCALES;
 export const SUPPORTED_LOCALES = Object.keys(LOCALES) as Locale[];
@@ -193,6 +194,28 @@ export function useTx(): typeof tx {
     }
     return bound;
   }, [texts]);
+}
+
+/**
+ * True below UI that shows text from outside the IDE as written: a plugin's
+ * titles, labels and messages. Its own translations come from its package; the
+ * IDE's catalog would turn a plugin's "Pick" or "Log" into the IDE's meaning.
+ */
+export const VerbatimTextContext = createContext(false);
+
+const asWritten = ((text: string | TemplateStringsArray | undefined, ...values: unknown[]) =>
+  text === undefined || typeof text === "string"
+    ? text
+    : text.reduce((out, s, i) => out + String(values[i - 1]) + s)) as typeof tx;
+
+/**
+ * `useTx` for text a component was given (labels, titles, options): as written
+ * below a {@link VerbatimTextContext}, translated elsewhere. A component's own
+ * words keep `tx`.
+ */
+export function useGivenTx(): typeof tx {
+  const bound = useTx();
+  return useContext(VerbatimTextContext) ? asWritten : bound;
 }
 
 function translateSource(texts: Catalog, text: string | TemplateStringsArray | undefined, values: unknown[]) {

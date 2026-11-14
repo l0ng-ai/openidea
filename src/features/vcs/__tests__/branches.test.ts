@@ -138,6 +138,16 @@ describe("buildBranchRows", () => {
     expect(summary(buildBranchRows(branches, [], "push", actions))).toEqual(["> Push…"]);
   });
 
+  it("matches a query as a substring or at word starts, not as letters scattered through the name", () => {
+    const list = ["sprint-1.1-device-reset", "feature/test-paging", "fix/TestRunner", "bugfix/totals-reset"].map((n) =>
+      b(n),
+    );
+    const search = (q: string) => summary(buildBranchRows(list, [], q, [], null, [], { groupByPrefix: false }));
+    expect(search("test")).toEqual(["v Local", "  local:feature/test-paging", "  local:fix/TestRunner"]);
+    // Word starts still work: `ftp` finds feature/test-paging.
+    expect(search("ftp")).toEqual(["v Local", "  local:feature/test-paging"]);
+  });
+
   it("omits empty groups", () => {
     expect(summary(buildBranchRows([b("main", { current: true })], [], "", []))).toEqual(["v Local", "  local:main ★"]);
   });

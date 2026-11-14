@@ -55,12 +55,300 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
         indent: None,
         ui_mode: None,
         framework_ui_modes: Vec::new(),
+        framework_files: Vec::new(),
         formatter: None,
         scratch_template: None,
         tree_sitter: None,
         language_servers: vec![server],
         debugger: None,
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires OPENIDEA_TEST_JDTLS and OPENIDEA_TEST_GRADLE_HOME, with JDK 21+"]
+async fn shared_jdtls_imports_independent_gradle_builds_and_external_root() {
+    use serde_json::json;
+
+    let jdtls = std::env::var("OPENIDEA_TEST_JDTLS").expect("set OPENIDEA_TEST_JDTLS");
+    let gradle_home = std::env::var("OPENIDEA_TEST_GRADLE_HOME").expect("set OPENIDEA_TEST_GRADLE_HOME");
+    let dir = tempfile::tempdir().unwrap();
+    let temp_root = dunce::canonicalize(dir.path()).unwrap();
+    let root = temp_root.join("workspace");
+    std::fs::create_dir(&root).unwrap();
+    let root = dunce::canonicalize(root).unwrap();
+    let external = temp_root.join("external");
+    let mut files = Vec::new();
+    for (name, build) in [("alpha", root.join("alpha")), ("beta", root.join("beta")), ("external", external.clone())] {
+        let source_dir = build.join("app/src/main/java/demo");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(build.join("settings.gradle"), format!("rootProject.name = '{name}'\ninclude 'app'\n")).unwrap();
+        std::fs::write(build.join("build.gradle"), "").unwrap();
+        std::fs::write(build.join("app/build.gradle"), "plugins { id 'java' }\n").unwrap();
+        let source = format!(
+            "package demo; public class Main {{ public static void main(String[] args) {{ {name}Marker(); }} static void {name}Marker() {{}} }}\n"
+        );
+        let path = source_dir.join("Main.java");
+        std::fs::write(&path, &source).unwrap();
+        files.push((name, path, source));
+    }
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    server.command = jdtls;
+    server.env.insert("GRADLE_USER_HOME".into(), dir.path().join("gradle-user-home").to_string_lossy().into_owned());
+    server.args.extend(["-data".into(), dir.path().join("jdtls-data").to_string_lossy().into_owned()]);
+    let options = server.initialization_options.as_mut().unwrap().as_table_mut().unwrap();
+    let settings = options.get_mut("settings").unwrap().as_table_mut().unwrap();
+    let java_settings = settings.get_mut("java").unwrap().as_table_mut().unwrap();
+    let imports = java_settings.get_mut("import").unwrap().as_table_mut().unwrap();
+    let gradle = imports.get_mut("gradle").unwrap().as_table_mut().unwrap();
+    gradle.insert("home".into(), toml::Value::String(gradle_home));
+    gradle.insert("wrapper".into(), toml::Value::try_from(json!({"enabled": false})).unwrap());
+    if let Ok(home) = std::env::var("OPENIDEA_TEST_GRADLE_JAVA_HOME") {
+        gradle.insert("java".into(), toml::Value::try_from(json!({"home": home})).unwrap());
+    }
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    mgr.set_jdtls_shared_hook(Box::new(|| true));
+    mgr.set_content_roots(vec![external]);
+    for (_, path, source) in &files {
+        mgr.did_open(DocId::next(), path, &LanguageId::new("java"), 1, source);
+    }
+    retry("shared jdtls ready", Duration::from_secs(60), || {
+        let status = last_status(&events, "jdtls");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, message)) = &status {
+            panic!("shared jdtls failed: {message:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    for (name, path, _) in &files {
+        let cp = retry(&format!("{name} Gradle classpath"), Duration::from_secs(180), || async {
+            let cp =
+                tokio::time::timeout(Duration::from_secs(10), mgr.java_classpath(path, false, &Default::default()))
+                    .await
+                    .ok()?
+                    .ok()?;
+            cp.class_paths.iter().any(|p| p.contains(&format!("/{name}/app/"))).then_some(cp)
+        })
+        .await;
+        assert!(
+            cp.class_paths
+                .iter()
+                .all(|p| !files.iter().any(|(other, _, _)| other != name && p.contains(&format!("/{other}/app/")))),
+            "classpath leaked between builds: {cp:?}"
+        );
+        let launch = tokio::time::timeout(
+            Duration::from_secs(30),
+            mgr.java_launch(path, false, false, false, false, &Default::default()),
+        )
+        .await
+        .expect("launch resolution timed out")
+        .expect("launch resolution failed");
+        assert_eq!(launch.class_paths, cp.class_paths, "launch resolved a different build for {name}");
+    }
+    let servers = mgr.servers().into_iter().filter(|s| s.name == "jdtls").collect::<Vec<_>>();
+    assert_eq!(servers.len(), 1, "expected one JDT LS: {servers:?}");
+    assert!(servers[0].pid.is_some(), "JDT LS process is not running");
+    for (_, path, _) in [&files[0], &files[2]] {
+        let bad = path.parent().unwrap().join("Broken.java");
+        let bad_source = "package demo; class Broken { MissingType x; }";
+        std::fs::write(&bad, bad_source).unwrap();
+        mgr.did_open(DocId::next(), &bad, &LanguageId::new("java"), 1, bad_source);
+        retry("diagnostics from shared JDT LS", Duration::from_secs(120), || {
+            let found = events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { path, items, .. } if path.0 == bad && items.iter().any(|d| d.message.contains("MissingType"))));
+            async move { found.then_some(()) }
+        }).await;
+    }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires kmp-lsp on PATH (or OPENIDEA_TEST_KMP_LSP)"]
+async fn kmp_lsp_java_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let path = root.join("Sample.java");
+    let source = "class Sample {\n    static String greet() { return \"Hello\"; }\n    void run() { greet(); }\n}\n";
+    std::fs::write(&path, source).unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "kmp-lsp");
+    assert_eq!(java.language_servers.len(), 1);
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_KMP_LSP") {
+        java.language_servers[0].command = bin;
+    }
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    retry("kmp-lsp ready", Duration::from_secs(30), || {
+        let status = last_status(&events, "kmp-lsp");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("kmp-lsp failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    let hover = retry("Java hover", Duration::from_secs(30), || async {
+        mgr.hover(doc, Pos::new(2, 18), Default::default()).await.ok().flatten()
+    })
+    .await;
+    assert!(hover.contents.value.contains("greet"), "{}", hover.contents.value);
+    let defs = retry("Java definition", Duration::from_secs(30), || async {
+        mgr.goto(doc, Pos::new(2, 18), GotoKind::Definition).await.ok().filter(|d| !d.is_empty())
+    })
+    .await;
+    assert_eq!(defs[0].path, path);
+    assert_eq!(defs[0].range.start.line, 1);
+    retry("Java completion", Duration::from_secs(30), || async {
+        let list = mgr.completion(doc, Pos::new(2, 20), None, Default::default()).await.ok()?;
+        list.items.iter().any(|i| i.label.starts_with("greet")).then_some(())
+    })
+    .await;
+    let tokens = mgr.semantic_tokens(doc).await.unwrap().unwrap();
+    assert!(!tokens.data.is_empty() && tokens.data.len() % 5 == 0);
+    let error = mgr.java_debug_server(&path).await.unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(error.message.contains("jdtls"));
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH and a compatible JDK"]
+async fn java_searches_skip_indexed_sources_but_keep_exclusions_outside_scope() {
+    use ide_lsp::types::HierarchyDirection;
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    let root = dunce::canonicalize(root).unwrap();
+    std::fs::create_dir_all(root.join("src/demo/excluded")).unwrap();
+    std::fs::write(root.join(".project"), "<projectDescription><name>search-scope</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>").unwrap();
+    std::fs::write(root.join(".classpath"), "<classpath><classpathentry kind=\"src\" path=\"src\" excluding=\"demo/excluded/**\"/><classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/><classpathentry kind=\"output\" path=\"bin\"/></classpath>").unwrap();
+    let source = "package demo; public class Target { public static void target() {} }";
+    let path = root.join("src/demo/Target.java");
+    let caller = root.join("src/demo/Caller.java");
+    let decoy = root.join("src/demo/Decoy.java");
+    let excluded = root.join("src/demo/excluded/Excluded.java");
+    let outside = root.join("Outside.java");
+    std::fs::write(&path, source).unwrap();
+    std::fs::write(&caller, "package demo; class Caller { void call() { Target.target(); } }").unwrap();
+    // A source file mentioning the name without a usage, too large for transient opening.
+    std::fs::write(&decoy, format!("package demo; class Decoy {{ void target() {{}} }}\n/*{}*/", " ".repeat(1 << 20)))
+        .unwrap();
+    std::fs::write(&excluded, "package demo.excluded; class Excluded {}").unwrap();
+    std::fs::write(&outside, "class Outside {}").unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend(["-data".into(), dir.path().join("metadata").to_string_lossy().into_owned()]);
+    let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../java/java-usages/openidea-java-usages.jar");
+    server
+        .initialization_options
+        .as_mut()
+        .unwrap()
+        .as_table_mut()
+        .unwrap()
+        .insert("bundles".into(), toml::Value::Array(vec![toml::Value::String(bundle.to_string_lossy().into_owned())]));
+    let (mgr, _) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    mgr.java_build(&path, false, &Default::default()).await.unwrap();
+    let uri = ide_lsp::path_to_uri_string;
+    let covered = retry("imported source scope", Duration::from_secs(120), || async {
+        mgr.jdtls_command(
+            &path,
+            "openidea.workspace.coveredFiles",
+            vec![json!([uri(&caller), uri(&decoy), uri(&excluded), uri(&outside),])],
+        )
+        .await
+        .ok()
+        .filter(|v| v.as_array().is_some_and(|a| !a.is_empty()))
+    })
+    .await;
+    assert_eq!(covered, json!([uri(&caller), uri(&decoy)]));
+    mgr.set_candidates_hook(Box::new(move |_, _| ide_lsp::CandidateFiles {
+        files: vec![caller.clone(), decoy.clone()],
+        limit_hit: false,
+    }));
+    let at = Pos::new(0, source.find("target()").unwrap() as u32);
+    let refs = mgr.references_streaming(doc, at, false, true, false, Default::default(), None).await.unwrap();
+    assert_eq!(refs.locations.len(), 1);
+    assert!(refs.locations[0].path.ends_with("Caller.java"));
+    assert_eq!(refs.incomplete, None, "the indexed decoy must not be transiently opened");
+    let calls = mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    assert_eq!(calls.items.len(), 1);
+    assert!(calls.items[0].path.ends_with("Caller.java"));
+    assert_eq!(calls.incomplete, None);
+    mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH and a compatible JDK"]
+async fn lombok_generated_members_appear_in_document_symbols() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let source = include_str!("fixtures/LombokSymbols.java");
+    let path = root.join("src/demo/LombokSymbols.java");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, source).unwrap();
+    let agent = dunce::canonicalize(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../java/lombok/lombok-1.18.48-openidea.3.jar"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".project"),
+        "<projectDescription><name>lombok-symbols</name><buildSpec><buildCommand>\
+         <name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures>\
+         <nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>",
+    )
+    .unwrap();
+    let library = agent.to_string_lossy().replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
+    std::fs::write(
+        root.join(".classpath"),
+        format!(
+            "<classpath><classpathentry kind=\"src\" path=\"src\"/>\
+             <classpathentry kind=\"con\" path=\"org.eclipse.jdt.launching.JRE_CONTAINER\"/>\
+             <classpathentry kind=\"lib\" path=\"{library}\"/>\
+             <classpathentry kind=\"output\" path=\"bin\"/></classpath>"
+        ),
+    )
+    .unwrap();
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend([
+        "-data".into(),
+        root.join("workspace").to_string_lossy().into_owned(),
+        format!("--jvm-arg=-javaagent:{}", agent.display()),
+    ]);
+    let (mgr, _) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("java"), 1, source);
+    let expected: &[(&str, &[&str])] = &[
+        ("User", &["getName()", "setName(String)", "getAge()", "setAge(int)", "User(String, int)", "builder()"]),
+        ("UserBuilder", &["name(String)", "age(int)", "build()"]),
+        ("Profile", &["Profile(String)", "getId()", "getName()", "setName(String)"]),
+        ("Logged", &["log", "write()"]),
+        ("PlainUser", &["PlainUser(String)", "getName()", "setName(String)"]),
+    ];
+    fn has_members(items: &[ide_core::OutlineItem], owner: &str, names: &[&str]) -> bool {
+        items.iter().any(|item| {
+            (item.name == owner && names.iter().all(|n| item.children.iter().any(|c| c.name == *n)))
+                || has_members(&item.children, owner, names)
+        })
+    }
+    retry("Lombok document symbols", Duration::from_secs(120), || async {
+        let items = mgr.document_symbols(doc).await.ok().flatten()?;
+        expected.iter().all(|(owner, names)| has_members(&items, owner, names)).then_some(())
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -123,6 +411,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         command: "openidea-definitely-not-installed-ls".into(),
         args: vec![],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec![],
         require_root_marker: false,
         initialization_options: None,
@@ -135,6 +424,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     };
@@ -393,6 +683,7 @@ async fn typescript_language_server_end_to_end() {
         command: "typescript-language-server".into(),
         args: vec!["--stdio".into()],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec!["tsconfig.json".into()],
         require_root_marker: false,
         initialization_options: None,
@@ -405,6 +696,7 @@ async fn typescript_language_server_end_to_end() {
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     };
@@ -443,6 +735,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         command: tools.join("node_modules/.bin").join(bin).to_string_lossy().into_owned(),
         args: vec!["--stdio".into()],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec!["package.json".into()],
         require_root_marker: false,
         initialization_options: init.map(|v| toml::Value::try_from(v).unwrap()),
@@ -455,6 +748,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         max_java: None,
         launch_error: None,
         tsserver_project: false,
+        tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
         pinned: None,
     }
@@ -624,5 +918,101 @@ async fn angular_language_server_end_to_end() {
             refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
         assert_eq!(found, [(app_html.clone(), 0)]);
     }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// A notebook's code cells on basedpyright and Ruff (LSP 3.17 notebook sync): names flow from
+/// earlier cells, IPython magics parse, and locations and diagnostics name the cells.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires ruff and basedpyright on PATH"]
+async fn basedpyright_and_ruff_serve_notebook_cells() {
+    use ide_lsp::{NotebookCell, cell_uri};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let root = dunce::simplified(&root).to_path_buf();
+    std::fs::write(root.join("pyproject.toml"), "[tool.ruff.lint]\nselect = [\"F\"]\n").unwrap();
+    let path = root.join("analysis.ipynb");
+    std::fs::write(&path, "{}").unwrap();
+    let mut python = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("python")).unwrap();
+    python.language_servers.retain(|server| matches!(server.name.as_str(), "basedpyright" | "ruff"));
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![python]));
+    let cell = |id: &str, source: &str| NotebookCell { id: id.into(), source: source.into() };
+    let first = "import os\nimport sys\n\ndef area(r: float) -> float:\n    return 3.14 * r * r\n";
+    let second = "%matplotlib inline\nsize: int = area(2)\nos.pa";
+    mgr.sync_notebook(&path, &LanguageId::new("python"), &[cell("first", first), cell("second", second)]);
+    for name in ["basedpyright", "ruff"] {
+        retry(name, Duration::from_secs(60), || {
+            let status = last_status(&events, name);
+            if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+                panic!("{name} failed: {msg:?}");
+            }
+            async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+        })
+        .await;
+    }
+    let docs = mgr.notebook_cells(&path);
+    let b = docs[1].doc;
+    let (a_uri, b_uri) = (cell_uri(&path, "first"), cell_uri(&path, "second"));
+    assert_eq!((docs[0].uri.as_str(), docs[1].uri.as_str()), (a_uri.as_str(), b_uri.as_str()));
+
+    // `os`, imported in the first cell, completes in the second.
+    let labels = retry("completion in a cell", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move {
+            let list = mgr.completion(b, Pos::new(2, 5), Some(".".into()), Default::default()).await.ok()?;
+            let labels: Vec<String> = list.items.into_iter().map(|i| i.label).collect();
+            labels.iter().any(|l| l == "path").then_some(labels)
+        }
+    })
+    .await;
+    assert!(labels.iter().any(|l| l == "path"), "{labels:?}");
+
+    let hover = mgr.hover(b, Pos::new(1, 13), Default::default()).await.unwrap().expect("hover on `area`");
+    assert!(
+        hover.contents.value.contains("area") && hover.contents.value.contains("float"),
+        "{}",
+        hover.contents.value
+    );
+
+    let defs = mgr.goto(b, Pos::new(1, 13), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs.len(), 1, "{defs:?}");
+    assert_eq!((defs[0].path.to_path_buf(), defs[0].range.start.line), (std::path::PathBuf::from(&a_uri), 3));
+
+    let diagnostics = |source: &'static str, uri: String| {
+        let events = events.clone();
+        move || {
+            let items = events.lock().iter().rev().find_map(|e| match e {
+                IdeEvent::Diagnostics { path, source: s, items } if s == source && path.0 == Path::new(&uri) => {
+                    Some(items.clone())
+                }
+                _ => None,
+            });
+            async move { items.filter(|items| !items.is_empty()) }
+        }
+    };
+    // `float` is not assignable to `int`; the magic on line 0 is no error.
+    let typed =
+        retry("basedpyright cell diagnostics", Duration::from_secs(30), diagnostics("basedpyright", b_uri)).await;
+    assert!(typed.iter().any(|d| d.range.start.line == 1), "{typed:?}");
+    assert!(typed.iter().all(|d| d.range.start.line != 0), "{typed:?}");
+    // F401: `sys` is unused.
+    let linted = retry("ruff cell diagnostics", Duration::from_secs(30), diagnostics("ruff", a_uri)).await;
+    assert!(linted.iter().any(|d| d.code.as_deref() == Some("F401") && d.range.start.line == 1), "{linted:?}");
+
+    // An edit reaches both servers: the error is fixed.
+    let fixed = "%matplotlib inline\nsize: float = area(2)\nos.path";
+    mgr.sync_notebook(&path, &LanguageId::new("python"), &[cell("first", first), cell("second", fixed)]);
+    retry("diagnostics after the fix", Duration::from_secs(30), || {
+        let uri = cell_uri(&path, "second");
+        let clear = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, source, items } if source == "basedpyright" && path.0 == Path::new(&uri) => {
+                Some(items.is_empty())
+            }
+            _ => None,
+        });
+        async move { (clear == Some(true)).then_some(()) }
+    })
+    .await;
+    mgr.close_notebook(&path);
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }

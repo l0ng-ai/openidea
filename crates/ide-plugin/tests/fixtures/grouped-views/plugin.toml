@@ -1,0 +1,37 @@
+id = "grouped-views"
+name = "Grouped Views"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*", "on-view:*"]
+
+[[contributes.commands]]
+id = "show"
+title = "Grouped Views: Show"
+
+[[contributes.commands]]
+id = "hide"
+title = "Grouped Views: Hide"
+
+[[contributes.commands]]
+id = "reveal"
+title = "Grouped Views: Reveal"
+
+[[contributes.views]]
+id = "overview"
+title = "Grouped Views"
+location = "right"
+group = "demo"
+when = "plugin.grouped-views.ready"
+
+[[contributes.views]]
+id = "files"
+title = "Project Files"
+location = "right"
+group = "demo"
+when = "workspaceContains:grouped-views.txt"
+
+[[contributes.views]]
+id = "legacy"
+title = "Ungrouped View"
+location = "left"

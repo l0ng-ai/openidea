@@ -1,0 +1,12 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 360px;
+  padding: 2px 16px 12px;
+}
+
+.text {
+  color: var(--fg-secondary);
+  font-size: 13px;
+}

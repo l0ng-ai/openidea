@@ -1,0 +1,34 @@
+id = "test.path-events"
+name = "Path event fixture"
+version = "0.1.0"
+engines.openidea = "^1.3"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["storage"]
+optional = ["events", "project.read"]
+
+[[contributes.providers]]
+kinds = ["hover"]
+languages = ["text", "plaintext"]
+
+[[contributes.commands]]
+id = "project"
+title = "project"
+
+[[contributes.commands]]
+id = "filter"
+title = "filter"
+
+[[contributes.commands]]
+id = "all"
+title = "all"
+
+[[contributes.commands]]
+id = "off"
+title = "off"
+
+[[contributes.commands]]
+id = "count"
+title = "count"

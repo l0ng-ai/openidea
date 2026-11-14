@@ -263,7 +263,7 @@ function ConfigChooser() {
           items={rows}
           getKey={(r) => r.key}
           isSection={isSection}
-          renderSection={(r) => (r.type === "section" ? r.label : null)}
+          renderSection={(r) => (r.type === "section" ? <T>{r.label}</T> : null)}
           activeIndex={clamped}
           onActiveChange={setActive}
           focusable={false}

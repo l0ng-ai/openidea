@@ -5,6 +5,7 @@ import type { SyncEntry } from "@/platform/ipc";
 const mocks = vi.hoisted(() => ({
   actions: [] as { id: string; run: (context: { arg: string[] }) => unknown }[],
   servers: [] as DeploymentServerValid[],
+  groups: [] as { id: string; name: string; servers: string[] }[],
   coverage: [] as { server: string; paths: string[]; skipped: { path: string; message: string }[] }[],
   choose: vi.fn(),
   notify: vi.fn(),
@@ -37,7 +38,7 @@ vi.mock("@/platform/project", () => ({
   useProject: { getState: () => ({ project: { root: "/project" } }) },
 }));
 vi.mock("@/platform/workflowSettings", () => ({
-  workflowSettings: () => ({ deployment: { servers: mocks.servers, defaultServer: "one" } }),
+  workflowSettings: () => ({ deployment: { servers: mocks.servers, groups: mocks.groups, defaultServer: "one" } }),
 }));
 vi.mock("@/workbench/contributions", () => ({
   notifications: () => ({ notify: mocks.notify }),
@@ -72,6 +73,7 @@ async function run(id: string, paths = ["/project/a", "/project/b"]) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.servers = ["one", "two"].map((id) => ({ id, name: id, kind: "local" }) as DeploymentServerValid);
+  mocks.groups = [];
   mocks.coverage = [
     {
       server: "one",
@@ -91,6 +93,34 @@ beforeEach(() => {
   useDeployment.setState({ sync: null });
   registerDeploymentActions();
 });
+describe("server groups", () => {
+  it("offers a group with a covering server and uploads to each of its servers, past a failure", async () => {
+    mocks.groups = [
+      { id: "g", name: "Production", servers: ["one", "two"] },
+      { id: "none", name: "Elsewhere", servers: ["two"] },
+    ];
+    mocks.coverage[1]!.paths = [];
+    mocks.choose.mockResolvedValue("Production (group)");
+    mocks.upload.mockRejectedValueOnce(new Error("connection refused"));
+    await run("deployment.uploadTo");
+    expect(mocks.choose).toHaveBeenCalledWith({ title: "Upload to", items: ["one", "Production (group)"] });
+    await vi.waitFor(() =>
+      expect(mocks.notify).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "No selected paths can be deployed to two" }),
+      ),
+    );
+    expect(mocks.upload).toHaveBeenCalledTimes(1);
+    expect(mocks.notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Cannot upload to one" }));
+  });
+  it("uploads to every covered server of the group in order", async () => {
+    mocks.groups = [{ id: "g", name: "Production", servers: ["two", "one"] }];
+    mocks.coverage[1]!.paths = ["/project/b"];
+    mocks.choose.mockResolvedValue("Production (group)");
+    await run("deployment.uploadTo");
+    await vi.waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+    expect(mocks.upload.mock.calls.map((c) => c[1])).toEqual(["two", "one"]);
+  });
+});
 describe("deployment eligibility", () => {
   it("keeps upstream's server-specific explanation when only one server is configured", async () => {
     mocks.servers = [mocks.servers[0]!];
@@ -109,6 +139,32 @@ describe("deployment eligibility", () => {
     expect(useDeployment.getState().sync).toBeNull();
     expect(mocks.compare).not.toHaveBeenCalled();
   });
+  it("opens default-server synchronization in a native window on desktop too", async () => {
+    mocks.desktop = true;
+    // The default server needs no choice, and on desktop nothing opens in the page.
+    mocks.actions
+      .find((action) => action.id === "deployment.syncWithDefault")!
+      .run({ arg: ["/project/a", "/project/b"] });
+    await vi.waitFor(() => expect(mocks.openWindow).toHaveBeenCalledWith("one", ["/project/a", "/project/b"]));
+    expect(mocks.choose).not.toHaveBeenCalled();
+    expect(useDeployment.getState().sync).toBeNull();
+    expect(mocks.compare).not.toHaveBeenCalled();
+  });
+  it.each(["deployment.syncWith", "deployment.syncWithDefault"])(
+    "reports a comparison window that cannot open (%s)",
+    async (action) => {
+      mocks.desktop = true;
+      mocks.choose.mockResolvedValue("one");
+      mocks.openWindow.mockRejectedValueOnce(new Error("window failed"));
+      await run(action);
+      await vi.waitFor(() =>
+        expect(mocks.notify).toHaveBeenCalledWith(
+          expect.objectContaining({ title: expect.stringContaining("Cannot open comparison") }),
+        ),
+      );
+      expect(useDeployment.getState().sync).toBeNull();
+    },
+  );
   it("saves edits made in the local diff before synchronization and stops if saving fails", async () => {
     await run("deployment.syncWith");
     mocks.choose.mockResolvedValue("one");

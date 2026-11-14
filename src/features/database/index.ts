@@ -4,9 +4,12 @@
  * results grids, and a table data editor. Connections, introspection and
  * statements run in Rust (`ide-db`).
  */
-import { lazyComponent } from "@/ui";
-import { activeEditor, registerEditorContribution } from "@/editor/api";
+import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
+import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
+import { tx } from "@/platform/i18n";
+import { onIdeEvent } from "@/platform/ipc";
 import { registerActions } from "@/platform/actions";
+import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
 import {
   registerEditorKind,
@@ -16,10 +19,13 @@ import {
   setFileDecorations,
   toolWindowService,
 } from "@/workbench/contributions";
-import { SQL_LANGUAGE, consoleExtension, executeInView, explainInView } from "./console";
-import { DatabaseDialogs } from "./Dialogs";
+import { installCellActions } from "./cellActions";
+import { installValueEditorActions } from "./valueEditorActions";
+import { registerResultTabActions } from "./resultTabActions";
+import { SQL_LANGUAGE } from "./sqlLanguage";
 import { phpSqlExtension } from "./phpSql";
 import { TABLE_KIND, tableTitle } from "./tableInput";
+import { databaseRequest, projectRequest } from "./requests";
 import { nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
 import {
@@ -28,6 +34,11 @@ import {
   consoleSource,
   consoleTints,
   loadSources,
+  connect,
+  loadSchemas,
+  loadDatabases,
+  listsDatabases,
+  sourceById,
   openConsole,
   openHistory,
   openSourceDialog,
@@ -35,8 +46,18 @@ import {
   watchIdleConnections,
 } from "./store";
 
+function useDatabaseHeaderMenu(): MenuItem[] {
+  const separate = useDatabase((s) => s.separateProceduresAndFunctions);
+  return [{ kind: "action", action: "db.separateProceduresAndFunctions", checked: separate }];
+}
+
+const useDialogOpen = () => useDatabase((s) => !!s.dialog);
+
 export function activate(): () => void {
   const disposers = [
+    onIdeEvent("dbSourcesChanged", () => {
+      void loadSources();
+    }),
     registerToolWindow({
       id: DB_TOOL_WINDOW,
       title: "Database",
@@ -44,6 +65,7 @@ export function activate(): () => void {
       anchor: "right",
       order: 20,
       component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
+      headerMenu: useDatabaseHeaderMenu,
       headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
     }),
     registerServiceView({
@@ -60,8 +82,18 @@ export function activate(): () => void {
       title: tableTitle,
       icon: () => "database",
     }),
-    registerOverlay({ id: "database.dialogs", component: DatabaseDialogs }),
-    registerEditorContribution({ id: "database.console", order: 57, extensions: consoleExtension }),
+    registerOverlay({
+      id: "database.dialogs",
+      component: lazyWhen(useDialogOpen, () => import("./Dialogs").then((m) => m.DatabaseDialogs)),
+    }),
+    registerEditorContribution({
+      id: "database.console",
+      order: 57,
+      extensions: lazyEditorExtension(
+        (ctx) => ctx.language === SQL_LANGUAGE && !ctx.virtual && !ctx.readOnly,
+        () => import("./console").then((m) => m.consoleExtension),
+      ),
+    }),
     registerEditorContribution({ id: "database.php-sql", order: 57, extensions: phpSqlExtension }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
@@ -71,6 +103,7 @@ export function activate(): () => void {
         loaded: false,
         connected: new Set(),
         databases: {},
+        catalogs: {},
         schemas: {},
         tables: {},
         details: {},
@@ -96,8 +129,34 @@ export function activate(): () => void {
     }),
     () => setFileDecorations("database", new Map()),
     watchIdleConnections(),
+    installTableEditorFocus(),
+    installValueEditorActions(),
+    installCellActions(),
+    registerResultTabActions(),
     registerDatabaseTreeActions(),
     registerActions([
+      {
+        id: "db.pluginConnect",
+        title: "Connect Plugin Data Source",
+        category: "Tools",
+        when: "projectOpen",
+        run: async (e) => {
+          if (!useProject.getState().project?.trusted)
+            throw new Error(tx("Trust this project to connect plugin data sources"));
+          const id = e.arg;
+          if (typeof id !== "string") throw new Error(tx("Invalid data source id"));
+          const project = projectRequest();
+          await loadSources();
+          if (!project()) return;
+          const current = databaseRequest(id);
+          toolWindowService().show(DB_TOOL_WINDOW, true);
+          const connected = await connect(id);
+          if (!current()) return;
+          if (!connected) throw new Error(tx("Database connection failed"));
+          if (listsDatabases(sourceById(id))) await loadDatabases(id);
+          else await loadSchemas(id);
+        },
+      },
       {
         id: "db.showToolWindow",
         title: "Database",
@@ -115,7 +174,9 @@ export function activate(): () => void {
         keywords: ["database", "connection", "postgres", "mysql", "sqlite"],
         when: "projectOpen",
         run: async () => {
+          const current = projectRequest();
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           openSourceDialog(null);
         },
       },
@@ -127,8 +188,10 @@ export function activate(): () => void {
         keywords: ["database", "sql console"],
         when: "projectOpen",
         run: async ({ arg }) => {
+          const current = projectRequest();
           const s = useDatabase.getState();
           if (!s.loaded) await loadSources();
+          if (!current()) return;
           const { sources, selectedSource } = useDatabase.getState();
           // A tree node (New ▸ Query Console) opens its data source's console.
           const node = arg && typeof arg === "object" && "kind" in arg ? nodeTarget(arg as DbNode) : null;
@@ -144,15 +207,61 @@ export function activate(): () => void {
         icon: "run",
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
         run: async () => {
+          const current = projectRequest();
           const e = activeEditor();
           if (!e || e.ctx.language !== SQL_LANGUAGE) return;
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           if (!consoleSource(e.ctx.path) && !useDatabase.getState().sources.length) {
             openSourceDialog(null);
             return;
           }
-          await executeInView(e.view, e.ctx.path);
+          await (await import("./console")).executeInView(e.view, e.ctx.path);
         },
+      },
+      {
+        id: "db.executeScript",
+        title: "Execute SQL Script",
+        category: "Tools",
+        icon: "gutter-run-all",
+        keywords: ["run all", "whole file", "statements"],
+        when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
+        run: async () => {
+          const current = projectRequest();
+          const e = activeEditor();
+          if (!e || e.ctx.language !== SQL_LANGUAGE) return;
+          if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
+          if (!consoleSource(e.ctx.path) && !useDatabase.getState().sources.length) {
+            openSourceDialog(null);
+            return;
+          }
+          await (await import("./console")).executeScriptInView(e.view, e.ctx.path);
+        },
+      },
+      {
+        id: "db.goToColumn",
+        title: "Go to Column",
+        category: "Tools",
+        keywords: ["table editor", "file structure", "columns"],
+        when: "dbTableEditorFocus",
+        run: () => activeTableEditor()?.showColumns(),
+      },
+      {
+        id: "db.submitChanges",
+        title: "Submit",
+        category: "Tools",
+        keywords: ["table editor", "apply changes", "commit"],
+        when: "dbTableEditorFocus && dbTableEditorChanges",
+        run: () => activeTableEditor()?.submit(),
+      },
+      {
+        id: "db.revertChanges",
+        title: "Revert",
+        category: "Tools",
+        keywords: ["table editor", "discard changes", "undo"],
+        when: "dbTableEditorFocus && dbTableEditorChanges",
+        run: () => activeTableEditor()?.revert(),
       },
       {
         id: "db.explainPlan",
@@ -162,10 +271,12 @@ export function activate(): () => void {
         keywords: ["query plan", "explain", "sql"],
         when: `editorTextFocus && editorLangId == ${SQL_LANGUAGE}`,
         run: async () => {
+          const current = projectRequest();
           const e = activeEditor();
           if (!e || e.ctx.language !== SQL_LANGUAGE) return;
           if (!useDatabase.getState().loaded) await loadSources();
-          await explainInView(e.view, e.ctx.path);
+          if (!current()) return;
+          await (await import("./console")).explainInView(e.view, e.ctx.path);
         },
       },
       {
@@ -176,7 +287,9 @@ export function activate(): () => void {
         keywords: ["database", "sql", "history"],
         when: "projectOpen",
         run: async () => {
+          const current = projectRequest();
           if (!useDatabase.getState().loaded) await loadSources();
+          if (!current()) return;
           const e = activeEditor();
           const path = e?.ctx.language === SQL_LANGUAGE ? e.ctx.path : null;
           const s = useDatabase.getState();

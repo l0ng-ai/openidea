@@ -20,6 +20,13 @@ export const FRAME_CSP =
 export const FRAME_TAG = "openidea-view";
 
 /**
+ * The page of the `openidea-plugin` scheme that a rendered document is written into
+ * (src-tauri/src/plugin_web.rs). A `srcdoc` frame would inherit the workbench's CSP,
+ * which blocks inline scripts; this page has only {@link FRAME_CSP}.
+ */
+export const FRAME_HOST_PATH = ".frame";
+
+/**
  * The theme variables a frame gets: public name → IDE token. Part of the
  * plugin API: names are only ever added, so the IDE's own tokens can change.
  */
@@ -75,6 +82,9 @@ export function frameTheme(root: HTMLElement = document.documentElement): FrameT
   }
   return { dark: root.dataset.theme !== "light", vars };
 }
+
+/** Top-right space reserved for `ToolWindowCornerActions` when a web view uses `header = "none"`. */
+export const HEADERLESS_CORNER_INSET = { width: 64, height: 34 } as const;
 
 /** The message that updates a loaded frame's theme. */
 export const frameThemeMessage = (theme: FrameTheme) => ({ tag: FRAME_TAG, theme });

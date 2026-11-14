@@ -9,6 +9,16 @@ describe("validateWorkflow", () => {
     expect(validateWorkflow({ vcs: { git: { inlineBlame: "true" } } }).vcs.git.inlineBlame).toBe(false);
   });
 
+  it("keeps the double-click choice unset until it is made", () => {
+    expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
+    expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();
+    const commit = (doubleClickOpensDiff: unknown) =>
+      validateWorkflow({ vcs: { commit: { doubleClickOpensDiff } } }).vcs.commit.doubleClickOpensDiff;
+    expect(commit(true)).toBe(true);
+    expect(commit(false)).toBe(false);
+    expect(commit("yes")).toBeNull();
+  });
+
   it("falls back to defaults for missing or malformed values", () => {
     expect(validateWorkflow(undefined)).toEqual(DEFAULT_WORKFLOW);
     const v = validateWorkflow({
@@ -18,7 +28,11 @@ describe("validateWorkflow", () => {
         confirmation: { onPatchCreated: "always" },
         issueNavigation: [{ pattern: "" }, { pattern: "#(\\d+)", link: "x/$1" }],
       },
-      console: { bufferKb: 1e12, foldPatterns: ["a", 3, ""] },
+      console: {
+        bufferKb: 1e12,
+        foldPatterns: ["a", 3, ""],
+        logColors: { enabled: false, error: "#ff0000", warn: 123 },
+      },
       terminal: { cursorShape: "bar", env: { A: "1", B: 2 }, tabName: "  " },
       externalTools: [{ name: "Lint", id: "x" }, { name: "" }, { name: "Again", id: "x" }],
     });
@@ -32,6 +46,14 @@ describe("validateWorkflow", () => {
     expect(v.vcs.shelf.removeApplied).toBe(false);
     expect(v.console.bufferKb).toBe(1_048_576);
     expect(v.console.foldPatterns).toEqual(["a"]);
+    expect(v.console.logColors).toEqual({
+      enabled: false,
+      error: "#ff0000",
+      warn: "var(--ansi-yellow)",
+      info: "var(--ansi-green)",
+      debug: "var(--ansi-cyan)",
+      trace: "var(--ansi-magenta)",
+    });
     expect(v.terminal).toMatchObject({ cursorShape: "bar", env: { A: "1" }, tabName: "Local" });
     expect(v.externalTools.map((t) => [t.id, t.name])).toEqual([
       ["x", "Lint"],

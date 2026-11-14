@@ -72,6 +72,75 @@ pub fn kill_tree_of(pid: u32) {
     let _ = pid;
 }
 
+/// Whether a process with this id exists. PID reuse makes this conservative: a reused id keeps
+/// whatever was tied to the old process alive, a live process is never reported dead.
+pub fn process_alive(pid: u32) -> bool {
+    // `kill(0, 0)` would signal the caller's own process group.
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        // Above `i32::MAX` the id would wrap to a negative value, which `kill` reads as a group.
+        let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+        // SAFETY: signal 0 delivers nothing; it only checks that the process exists and is reachable.
+        unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, GetLastError, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: plain call; a non-null result is a process handle owned by this function.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            // A process we may not open still exists.
+            // SAFETY: reads the thread's last error, set by the call above.
+            return unsafe { GetLastError() } == ERROR_ACCESS_DENIED;
+        }
+        // SAFETY: `handle` is valid and nobody else owns it.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let mut code = 0u32;
+        // SAFETY: a live process handle opened with query access; one out-parameter.
+        let ok = unsafe { GetExitCodeProcess(handle.as_raw_handle(), &mut code) };
+        // A handle that cannot be queried is not evidence that the process is gone.
+        ok == 0 || code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        true
+    }
+}
+
+/// The program and everything it started: an adapter may report the launcher shell, whose
+/// child is the debugged program, so stopping only the reported pid leaves the program alive.
+#[cfg(unix)]
+pub fn process_tree(pid: i32) -> Vec<i32> {
+    use std::collections::HashMap;
+    let Ok(out) = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid="]).output() else {
+        return vec![pid];
+    };
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut it = line.split_whitespace();
+        let (Some(p), Some(parent)) = (it.next(), it.next()) else { continue };
+        let (Ok(p), Ok(parent)) = (p.parse::<i32>(), parent.parse::<i32>()) else { continue };
+        children.entry(parent).or_default().push(p);
+    }
+    let mut tree = vec![pid];
+    let mut at = 0;
+    while at < tree.len() {
+        if let Some(kids) = children.get(&tree[at]) {
+            tree.extend(kids.iter().copied());
+        }
+        at += 1;
+    }
+    tree
+}
+
 /// [`kill_tree`] that first asks the group to exit: `SIGTERM`, then `grace`, then `SIGKILL`.
 /// Git removes its `index.lock` on `SIGTERM`, where `SIGKILL` leaves it behind and the next
 /// git command fails. Windows has no such signal to send from outside the child's console,
@@ -104,12 +173,23 @@ fn signal_group(child: &Child, signal: libc::c_int) {
 #[cfg(windows)]
 const TREE_EXIT_WAIT: Duration = Duration::from_secs(5);
 
+#[cfg(windows)]
+pub use windows_job::Job;
+#[cfg(windows)]
+pub use windows_tree::ProcessTree;
+
 /// `taskkill /T /F` from `pid`, then waits (up to [`TREE_EXIT_WAIT`]) until what the child
 /// started is gone: termination is asynchronous, and until a process is gone the files it
 /// holds open can't be opened or deleted. The child itself is left to its owner to reap.
 #[cfg(windows)]
 fn taskkill_tree_of(pid: u32) {
     let started = windows_tree::descendants(pid);
+    // When the child started nothing, killing it alone is the whole job:
+    // `taskkill` would be a process spawn (measured at ~0.7 s here) for the
+    // same outcome, and the callers kill the child themselves.
+    if started.is_empty() {
+        return;
+    }
     let mut taskkill = Command::new("taskkill");
     prepare(&mut taskkill)
         .args(["/T", "/F", "/PID", &pid.to_string()])
@@ -130,13 +210,48 @@ mod windows_tree {
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+        TerminateProcess, WaitForSingleObject,
     };
+
+    /// Owned handles to a program and its current descendants, retained even if its launcher exits.
+    pub struct ProcessTree {
+        processes: Vec<OwnedHandle>,
+    }
+
+    impl ProcessTree {
+        pub fn capture(pid: u32) -> Self {
+            let Some(root) = open_with(pid, PROCESS_TERMINATE) else { return Self { processes: Vec::new() } };
+            let children = descendants_with(pid, PROCESS_TERMINATE);
+            Self { processes: std::iter::once(root).chain(children).collect() }
+        }
+
+        pub fn is_running(&self) -> bool {
+            self.processes.iter().any(|process| {
+                // SAFETY: an owned process handle opened with SYNCHRONIZE access.
+                unsafe {
+                    WaitForSingleObject(process.as_raw_handle(), 0) == windows_sys::Win32::Foundation::WAIT_TIMEOUT
+                }
+            })
+        }
+
+        /// Requests termination children first; poll `is_running` until termination completes.
+        pub fn terminate(&self) {
+            for process in self.processes.iter().rev() {
+                // SAFETY: an owned process handle opened with TERMINATE access, never a reused pid.
+                unsafe { TerminateProcess(process.as_raw_handle(), 1) };
+            }
+        }
+    }
 
     /// Every process `root` started, directly or not, opened so it can be waited for. A
     /// parent's id is reused once it is gone, so a process counts only if it started after
     /// its parent.
     pub(super) fn descendants(root: u32) -> Vec<OwnedHandle> {
+        descendants_with(root, 0)
+    }
+
+    fn descendants_with(root: u32, access: u32) -> Vec<OwnedHandle> {
         let Some(root_started) = open(root).as_ref().and_then(started) else { return Vec::new() };
         let processes = processes();
         let mut seen = HashSet::from([root]);
@@ -147,7 +262,7 @@ mod windows_tree {
                 if ppid != parent || !seen.insert(pid) {
                     continue;
                 }
-                let Some(handle) = open(pid) else { continue };
+                let Some(handle) = open_with(pid, access) else { continue };
                 if let Some(at) = started(&handle).filter(|&at| at >= parent_started) {
                     parents.push((pid, at));
                     found.push(handle);
@@ -187,8 +302,12 @@ mod windows_tree {
     }
 
     fn open(pid: u32) -> Option<OwnedHandle> {
+        open_with(pid, 0)
+    }
+
+    fn open_with(pid: u32, access: u32) -> Option<OwnedHandle> {
         // SAFETY: plain call; a non-null result is a process handle owned by the caller.
-        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | access, 0, pid) };
         // SAFETY: as above.
         (!handle.is_null()).then(|| unsafe { OwnedHandle::from_raw_handle(handle) })
     }
@@ -200,6 +319,167 @@ mod windows_tree {
         // SAFETY: a live process handle opened with query access; four out-parameters.
         let ok = unsafe { GetProcessTimes(process.as_raw_handle(), &mut created, &mut exited, &mut kernel, &mut user) };
         (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
+
+/// A kernel job object over one launched process tree. Everything a launch starts joins
+/// the job by inheritance, so [`Job::terminate`] ends the whole tree — also processes
+/// started after the launch's snapshot was taken, orphans of a launcher that already
+/// exited (where a `taskkill /T /F` from the tracked pid no longer finds them), and
+/// processes born in the window a process-enumeration kill would miss. Spawns assign
+/// their root right after it starts; when the assignment fails (an enclosing job that
+/// disallows nesting, an already-exited pid), callers fall back to `taskkill /T /F`.
+#[cfg(windows)]
+mod windows_job {
+    use std::mem::size_of;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_BASIC_LIMIT_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
+        SetInformationJobObject, TerminateJobObject,
+    };
+    use windows_sys::Win32::System::Threading::{IO_COUNTERS, OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    /// A job object holding one launch's processes. The handle is kept open for the
+    /// launch's lifetime: `KILL_ON_JOB_CLOSE` ends anything still in the job when the
+    /// launch record (a run entry, a debug session) is finally dropped.
+    pub struct Job(OwnedHandle);
+
+    impl Job {
+        /// Takes the just-started `child` into a new job, so everything it starts is in
+        /// there too. `None` when the job could not be made or the process rejected the
+        /// assignment (callers fall back to `taskkill /T /F` from the child's pid).
+        pub fn for_child(child: &std::process::Child) -> Option<Job> {
+            // SAFETY: the child's own handle is a live process handle.
+            Self::from_handle(child.as_raw_handle())
+        }
+
+        /// [`Job::for_child`] for a process known by its id (a PTY child, a follow-up run,
+        /// a `tokio` child). `None` when the id no longer names an openable process — a
+        /// caller that holds the child cannot have had it reaped, so this is a dead or
+        /// already-gone launch.
+        pub fn for_pid(pid: u32) -> Option<Job> {
+            // SAFETY: plain call; a non-null result is a process handle owned by the caller.
+            // Assignment needs `SET_QUOTA | TERMINATE` on the process.
+            let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if handle.is_null() {
+                return None;
+            }
+            // SAFETY: the handle was just opened and is owned here.
+            let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+            Self::from_handle(handle.as_raw_handle())
+        }
+
+        fn from_handle(handle: RawHandle) -> Option<Job> {
+            // SAFETY: plain calls; a non-null result is a job handle owned by the caller.
+            let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if job.is_null() || job == INVALID_HANDLE_VALUE {
+                return None;
+            }
+            // SAFETY: the job handle is owned here and `limits` is sized as the API requires.
+            let job = unsafe { OwnedHandle::from_raw_handle(job) };
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
+                    PerProcessUserTimeLimit: 0,
+                    PerJobUserTimeLimit: 0,
+                    LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    MinimumWorkingSetSize: 0,
+                    MaximumWorkingSetSize: 0,
+                    ActiveProcessLimit: 0,
+                    Affinity: 0,
+                    PriorityClass: 0,
+                    SchedulingClass: 0,
+                },
+                IoInfo: IO_COUNTERS {
+                    ReadOperationCount: 0,
+                    WriteOperationCount: 0,
+                    OtherOperationCount: 0,
+                    ReadTransferCount: 0,
+                    WriteTransferCount: 0,
+                    OtherTransferCount: 0,
+                },
+                ProcessMemoryLimit: 0,
+                JobMemoryLimit: 0,
+                PeakProcessMemoryUsed: 0,
+                PeakJobMemoryUsed: 0,
+            };
+            // SAFETY: the job handle is owned here and `limits` is sized as the API requires.
+            let ok = unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectExtendedLimitInformation,
+                    &mut limits as *mut _ as *const _,
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            };
+            if ok == 0 {
+                return None;
+            }
+            // SAFETY: the process handle belongs to the just-spawned child and outlives
+            // this call; the job handle is owned here.
+            let ok = unsafe { AssignProcessToJobObject(job.as_raw_handle(), handle) };
+            if ok == 0 {
+                return None;
+            }
+            Some(Job(job))
+        }
+
+        /// Adds another just-started root of the same launch to the job (a Go build's
+        /// follow-up run, a JVM a debug session starts itself). `false` when it did not
+        /// take; the process then relies on its own kill.
+        pub fn assign_pid(&self, pid: u32) -> bool {
+            // SAFETY: plain call; the handle is opened only to assign it, and the job
+            // handle is owned and valid.
+            let handle = unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid) };
+            if handle.is_null() {
+                return false;
+            }
+            // SAFETY: both handles are valid for the duration of the call.
+            let ok = unsafe { AssignProcessToJobObject(self.0.as_raw_handle(), handle) };
+            // SAFETY: the process handle was opened above and is owned here.
+            unsafe { drop(OwnedHandle::from_raw_handle(handle)) };
+            ok != 0
+        }
+
+        /// Terminates every process in the job. `false` when the call failed (the job
+        /// handle is invalid): callers then fall back to `taskkill /T /F`. Termination is
+        /// asynchronous; poll [`Job::is_running`] (bounded by [`TREE_EXIT_WAIT`]) until
+        /// the tree is gone.
+        pub fn terminate(&self) -> bool {
+            // SAFETY: a job handle owned here.
+            unsafe { TerminateJobObject(self.0.as_raw_handle(), 1) != 0 }
+        }
+
+        /// Whether any process of the launch is still in the job. When the job's state
+        /// cannot be read, reports gone: waits on this must not wedge, and a kill via
+        /// [`Job::terminate`] does not depend on the answer.
+        pub fn is_running(&self) -> bool {
+            // A list of one is the common case; `ERROR_MORE_DATA` says the real list is
+            // longer, which means there are processes.
+            let mut list = JOBOBJECT_BASIC_PROCESS_ID_LIST {
+                NumberOfAssignedProcesses: 0,
+                NumberOfProcessIdsInList: 0,
+                ProcessIdList: [0],
+            };
+            let mut returned = 0u32;
+            // SAFETY: the job handle is owned here and `list` is sized as the API requires.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.0.as_raw_handle(),
+                    JobObjectBasicProcessIdList,
+                    &mut list as *mut _ as *mut _,
+                    size_of::<JOBOBJECT_BASIC_PROCESS_ID_LIST>() as u32,
+                    &mut returned,
+                )
+            };
+            if ok != 0 {
+                list.NumberOfProcessIdsInList > 0
+            } else {
+                std::io::Error::last_os_error().raw_os_error() == Some(ERROR_MORE_DATA as i32)
+            }
+        }
     }
 }
 
@@ -299,9 +579,11 @@ fn appimage_fixes() -> Vec<(OsString, Option<OsString>)> {
 const APPIMAGE_LAUNCH_VARS: [&str; 4] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
 
 /// What to change in `vars` (an environment) so a child sees the host's environment rather
-/// than the AppImage's: every `:`-separated entry inside `$APPDIR` is dropped (a saved
-/// `<NAME>_ORIG` wins when present), variables left empty are removed, and so are the
-/// runtime's own launch variables. Nothing changes when `APPDIR` is not set.
+/// than the AppImage's: every `:`-separated entry inside `$APPDIR` — or inside *any*
+/// AppImage mount, since an in-app update restart inherits the previous mount's entries
+/// alongside the new one — is dropped (a saved `<NAME>_ORIG` wins when present),
+/// variables left empty are removed, and so are the runtime's own launch variables.
+/// Nothing changes when `APPDIR` is not set.
 fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<OsString>)> {
     let get = |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v);
     let Some(appdir) =
@@ -309,7 +591,12 @@ fn appimage_env_fixes(vars: &[(OsString, OsString)]) -> Vec<(OsString, Option<Os
     else {
         return Vec::new();
     };
-    let inside = |entry: &str| entry.strip_prefix(appdir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    let inside = |entry: &str| {
+        let own = entry.strip_prefix(appdir).is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+        // AppImages extract to `/tmp/.mount_<name>`; an entry under another mount is
+        // another image's (e.g. the pre-update one a restart inherited), never the host's.
+        own || entry.starts_with("/tmp/.mount_")
+    };
     let mut fixes = Vec::new();
     for (key, value) in vars {
         let (Some(name), Some(value)) = (key.to_str(), value.to_str()) else { continue };
@@ -511,6 +798,30 @@ fn append_path_entries(path: &OsStr, extra: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_alive_tells_live_from_dead_pids() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(0));
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "exit 0"]);
+            cmd
+        } else {
+            Command::new("true")
+        };
+        let mut child = cmd.spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        drop(child);
+        assert!(!process_alive(pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_alive_rejects_ids_that_are_not_a_single_process() {
+        assert!(!process_alive(u32::MAX));
+    }
 
     #[cfg(unix)]
     #[test]
@@ -715,7 +1026,7 @@ mod tests {
             ("PATH", "/tmp/.mount_OpenIDabc/usr/bin/:/tmp/.mount_OpenIDabc/usr/sbin/:/usr/local/bin:/usr/bin"),
             ("XDG_DATA_DIRS", "/tmp/.mount_OpenIDabc/usr/share:/usr/share:/usr/local/share:/usr/share"),
             ("HOME", "/home/me"),
-            ("JAVA_HOME", "/tmp/.mount_OpenIDabcdef/jdk"),
+            ("JAVA_HOME", "/opt/jdk"),
         ]);
         assert_eq!(
             got,
@@ -724,6 +1035,27 @@ mod tests {
                 fix("LD_LIBRARY_PATH", Some("/opt/cuda/lib64:/usr/local/lib")),
                 fix("PATH", Some("/usr/local/bin:/usr/bin")),
                 fix("XDG_DATA_DIRS", Some("/usr/share:/usr/local/share:/usr/share")),
+            ]
+        );
+    }
+
+    #[test]
+    fn entries_of_a_previous_updates_mount_are_dropped() {
+        // An in-app update restart inherits the old mount's entries: a child's curl
+        // must not load the old image's libraries (they can still be mounted).
+        let got = fixes(&[
+            ("APPDIR", "/tmp/.mount_OpenIDjIlFFA"),
+            ("LD_LIBRARY_PATH", "/tmp/.mount_OpenIDjIlFFA/usr/lib/:/tmp/.mount_OpenIDdaNGfM/usr/lib/:/usr/local/lib"),
+            ("PATH", "/tmp/.mount_OpenIDjIlFFA/usr/bin/:/tmp/.mount_OpenIDdaNGfM/usr/bin/:/usr/bin"),
+            ("GIO_MODULE_DIR", "/tmp/.mount_OpenIDdaNGfM/usr/lib/gio/modules"),
+        ]);
+        assert_eq!(
+            got,
+            [
+                fix("APPDIR", None),
+                fix("LD_LIBRARY_PATH", Some("/usr/local/lib")),
+                fix("PATH", Some("/usr/bin")),
+                fix("GIO_MODULE_DIR", None),
             ]
         );
     }
@@ -811,6 +1143,25 @@ mod tests {
         }
         assert_eq!(find_executable("nope", &search), None);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_tree_lists_the_child_of_a_shell() {
+        let mut cmd = Command::new("sh");
+        own_group(&mut cmd).args(["-c", "sleep 5 & wait"]);
+        let mut child = cmd.spawn().unwrap();
+        let sh_pid = child.id() as i32;
+        // The shell forks `sleep` after it starts, so the tree grows a moment later.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut tree = process_tree(sh_pid);
+        while tree.len() < 2 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            tree = process_tree(sh_pid);
+        }
+        kill_tree(&mut child);
+        assert_eq!(tree[0], sh_pid, "the pid itself comes first");
+        assert!(tree.len() >= 2 && tree[1..].iter().all(|p| *p != sh_pid), "the shell's child follows: {tree:?}");
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -878,5 +1229,68 @@ mod kill_tests {
         terminate_tree(&mut child, Duration::from_millis(50));
         assert!(child.try_wait().unwrap().is_some(), "the child is reaped");
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod job_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+    use std::time::Instant;
+
+    /// `cmd` that keeps a `ping` grandchild for a minute, like a launcher that started an
+    /// application: the job must reach both.
+    fn launch_tree() -> (std::process::Child, Job, ProcessTree) {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/D", "/S", "/C", "ping -n 60 127.0.0.1 >NUL"]).stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW);
+        let child = cmd.spawn().unwrap();
+        let job = Job::for_child(&child).expect("the job takes the launch");
+        let tree = ProcessTree::capture(child.id());
+        assert!(tree.is_running(), "cmd started a grandchild the job inherits");
+        (child, job, tree)
+    }
+
+    /// Termination is asynchronous: the job reports its processes gone while their
+    /// handles still wait, so wait on the handles (the reused-pid-proof oracle).
+    fn assert_gone(tree: &ProcessTree) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while tree.is_running() {
+            assert!(Instant::now() < until, "the tree survived the job");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn job_terminates_the_tree_the_root_started() {
+        let (mut child, job, tree) = launch_tree();
+        assert!(job.is_running());
+        assert!(job.terminate(), "TerminateJobObject succeeds");
+        // The captured tree's handles survive the root's death, so the wait below is the
+        // grandchild's, not a reused pid's.
+        assert_gone(&tree);
+        assert!(!job.is_running());
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn a_later_spawned_root_joins_the_job() {
+        let (mut first, job, _) = launch_tree();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/D", "/S", "/C", "ping -n 60 127.0.0.1 >NUL"]).stdin(Stdio::null()).creation_flags(CREATE_NO_WINDOW);
+        let mut second = cmd.spawn().unwrap();
+        let second_tree = ProcessTree::capture(second.id());
+        assert!(job.assign_pid(second.id()), "the follow-up run joins the job");
+        assert!(job.terminate());
+        assert_gone(&second_tree);
+        let _ = first.wait();
+        let _ = second.wait();
+    }
+
+    #[test]
+    fn a_dead_pid_makes_no_job() {
+        // An id of a process this test cannot open (or that does not exist) gives no job,
+        // which is the callers' cue for the `taskkill /T /F` fallback.
+        assert!(Job::for_pid(u32::MAX).is_none());
     }
 }

@@ -5,6 +5,7 @@
  * and indentation fall back to the backend definition when the mode lacks them.
  */
 import { EditorState, Prec, type Extension } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   LRLanguage,
   LanguageDescription,
@@ -18,6 +19,8 @@ import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
 import { _languageMode } from "@/editor/api";
+import { JS_TAGS } from "./jsTags";
+import { docCommentTags } from "./docCommentTags";
 
 let infos: Map<string, LanguageInfo> | null = null;
 let infosPromise: Promise<Map<string, LanguageInfo>> | null = null;
@@ -85,6 +88,16 @@ const OWN_MODES = [
     load: () => import("./asciidoc").then((m) => new LanguageSupport(m.asciidocLanguage)),
   }),
   LanguageDescription.of({
+    name: "reStructuredText",
+    extensions: ["rst"],
+    load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
+  }),
+  LanguageDescription.of({
+    name: "Log",
+    extensions: ["log"],
+    load: () => import("./log").then((m) => new LanguageSupport(m.logLanguage)),
+  }),
+  LanguageDescription.of({
     name: "Shell",
     load: async () => {
       const { shell } = await import("@codemirror/legacy-modes/mode/shell");
@@ -106,6 +119,10 @@ const OWN_MODES = [
       },
     }),
   ),
+  LanguageDescription.of({
+    name: "Angular TypeScript",
+    load: () => import("./angular/inline").then((m) => m.angularTypescript()),
+  }),
   LanguageDescription.of({ name: "Angular Template", load: () => import("./angular").then((m) => m.angular()) }),
   LanguageDescription.of({
     name: "ERB",
@@ -134,6 +151,51 @@ const OWN_MODES = [
     alias: ["blade"],
     extensions: ["blade.php"],
     load: () => import("./blade").then((m) => m.blade()),
+  }),
+  LanguageDescription.of({
+    name: "Django Template",
+    alias: ["django-html", "djhtml"],
+    extensions: ["djhtml"],
+    load: () => import("./django").then((m) => m.django()),
+  }),
+  LanguageDescription.of({
+    name: "Helm Template",
+    alias: ["helm-template", "gotmpl"],
+    extensions: ["gotmpl"],
+    load: () => import("./helm").then((m) => m.helmTemplate()),
+  }),
+  LanguageDescription.of({
+    name: "Astro",
+    extensions: ["astro"],
+    load: () => import("./astro").then((m) => m.astro()),
+  }),
+  // Overrides the language-data Vue mode so `<style lang="scss">` highlights.
+  LanguageDescription.of({
+    name: "Vue",
+    extensions: ["vue"],
+    load: () => import("./vue").then((m) => m.vueLanguage()),
+  }),
+  LanguageDescription.of({
+    name: "YAML",
+    alias: ["yml"],
+    extensions: ["yaml", "yml"],
+    load: async () => {
+      const support = await languageData.find((l) => l.name === "YAML")!.load();
+      // @lezer/yaml can give a mapping that follows comment lines an inverted range when it
+      // lands on a tree buffer boundary (1024 entries by default); highlighting then skips
+      // the whole mapping. Larger buffers keep ordinary YAML files in one.
+      return new LanguageSupport(
+        (support.language as LRLanguage).configure({ bufferLength: 1 << 16 }),
+        support.support,
+      );
+    },
+  }),
+  LanguageDescription.of({
+    name: "GoMod",
+    alias: ["gomod", "gowork"],
+    extensions: ["mod", "work"],
+    filename: /^(?:go\.mod|go\.work)$/,
+    load: async () => new LanguageSupport((await import("./gomod")).goModLanguage),
   }),
 ];
 
@@ -218,9 +280,9 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
     const loose = LanguageDescription.matchLanguageName(BUILTIN_MODES, uiMode, false);
     if (loose) return OWN_MODES.find((l) => l.name === loose.name) ?? loose;
   }
-  if (uiMode === null && infos) return null;
   const own = LanguageDescription.matchFilename(OWN_MODES, path.slice(path.lastIndexOf("/") + 1));
   if (own) return own;
+  if (uiMode === null && infos) return null;
   const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
 }
@@ -252,9 +314,6 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/javascript styles `.` as a deref operator, but not `?.`.
-const JS_TAGS: Parameters<typeof styleTags>[0] = { "?.": t.derefOperator };
-
 // @lezer/java tags annotations as plain identifiers.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
@@ -264,9 +323,16 @@ export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
 const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JavaScript: JS_TAGS,
   TypeScript: JS_TAGS,
+  "Angular TypeScript": JS_TAGS,
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
+  PHP: {
+    "; ,": t.separator,
+    "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,
+    "MethodDeclaration/Name FunctionDefinition/Name": t.function(t.definition(t.variableName)),
+    "PropertyDeclaration/VariableDeclarator/VariableName": t.definition(t.propertyName),
+  },
   CSS: CSS_TAGS,
   SCSS: CSS_TAGS,
   Sass: CSS_TAGS,
@@ -276,8 +342,15 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
 
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
-  if (!extra || !(support.language instanceof LRLanguage)) return support;
-  const patched = new LanguageSupport(support.language.configure({ props: [styleTags(extra)] }), support.support);
+  const language =
+    extra && support.language instanceof LRLanguage
+      ? support.language.configure({ props: [styleTags(extra)] })
+      : support.language;
+  const patched = new LanguageSupport(language, [
+    support.support,
+    docCommentTags(desc.name),
+    EditorView.editorAttributes.of({ "data-language": desc.name }),
+  ]);
   // `loadedSupport` reads `desc.support` synchronously; keep it on the patched instance.
   (desc as { support: LanguageSupport | undefined }).support = patched;
   return patched;
@@ -293,7 +366,16 @@ const DEDENT_STATEMENT = /^\s*(?:pass|break|continue|return)\b/;
 const KEYWORD_OPEN_LANGS = new Set(["elixir", "ruby", "lua"]);
 const KEYWORD_OPEN =
   /\b(?:do(?:\s*\|[^|]*\|)?|then|->)$|^\s*(?:def|defp|defmodule|class|module|function|local\s+function|if|unless|elsif|elseif|else|while|until|for|case|begin|cond|with|receive|try)\b/;
-const NO_INDENT_LANGS = new Set(["plaintext", "markdown", "asciidoc", "log", "diff", "ignore", "gitattributes"]);
+const NO_INDENT_LANGS = new Set([
+  "plaintext",
+  "markdown",
+  "asciidoc",
+  "restructuredtext",
+  "log",
+  "diff",
+  "ignore",
+  "gitattributes",
+]);
 
 function opensBlock(code: string, language: string | undefined): boolean {
   if (!code) return false;

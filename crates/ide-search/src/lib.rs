@@ -185,6 +185,24 @@ pub struct SearchSummary {
 /// Text of unsaved open documents takes precedence over disk content.
 pub type Overlay<'a> = &'a (dyn Fn(&Path) -> Option<String> + Sync);
 
+/// Text of a file whose bytes are not UTF-8 (GBK, UTF-16 …); `None` for binary content.
+pub type Decode<'a> = &'a (dyn Fn(&Path, &[u8]) -> Option<String> + Sync);
+
+/// Where a search reads file text from: the open document when `overlay` has
+/// it, else the file on disk, decoded by `decode` when it is not UTF-8.
+#[derive(Clone, Copy)]
+pub struct TextSource<'a> {
+    pub overlay: Overlay<'a>,
+    pub decode: Decode<'a>,
+}
+
+impl<'a> TextSource<'a> {
+    /// Non-UTF-8 files decode as detected, without a configured fallback encoding.
+    pub fn detected(overlay: Overlay<'a>) -> Self {
+        Self { overlay, decode: &|_, bytes| ide_vfs::decode_text(bytes, None) }
+    }
+}
+
 /// Searches `root` in parallel, calling `on_file` for each file with matches.
 ///
 /// `on_file` is called from worker threads as files complete. Cancellation
@@ -208,7 +226,7 @@ pub fn search_filtered(
     cancel: &CancellationToken,
     on_file: &(dyn Fn(FileMatches) + Sync),
 ) -> IdeResult<SearchSummary> {
-    search_in_context(root, query, filter, None, overlay, cancel, on_file)
+    search_in_context(root, query, filter, None, TextSource::detected(overlay), cancel, on_file)
 }
 
 /// [`search_filtered`] honouring [`SearchQuery::context`] with the comments and
@@ -218,7 +236,7 @@ pub fn search_in_context(
     query: &SearchQuery,
     filter: Option<PathFilter<'_>>,
     literals: Option<Literals<'_>>,
-    overlay: Overlay<'_>,
+    text: TextSource<'_>,
     cancel: &CancellationToken,
     on_file: &(dyn Fn(FileMatches) + Sync),
 ) -> IdeResult<SearchSummary> {
@@ -236,7 +254,7 @@ pub fn search_in_context(
         context: query.context,
         literals,
         max_matches: query.max_matches,
-        overlay,
+        text,
         cancel,
         on_file,
     })
@@ -251,6 +269,18 @@ pub fn validate_query(query: &SearchQuery) -> IdeResult<()> {
         query::compile(query)?;
     }
     Ok(())
+}
+
+/// Byte ranges of the matches of `query` in `text`, matched as [`search`] does.
+/// Unlike [`LineMatch`]es, a match spanning lines comes back whole.
+pub fn match_ranges(text: &str, query: &SearchQuery) -> IdeResult<Vec<(usize, usize)>> {
+    if query.pattern.is_empty() {
+        return Ok(Vec::new());
+    }
+    let compiled = query::compile(query)?;
+    let mut out = Vec::new();
+    iter::for_each_match(&compiled.matcher, text.as_bytes(), 0, |m| out.push((m.start(), m.end())));
+    Ok(out)
 }
 
 /// Computes the replacement text for every match of `query` in `text`

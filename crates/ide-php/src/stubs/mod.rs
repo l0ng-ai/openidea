@@ -123,7 +123,7 @@ impl StubFilter {
     /// its `composer.json`.
     pub fn from_settings(root: &Path, settings: &Settings) -> Self {
         let version = ide_sdk::php::language_level(root, settings)
-            .and_then(|level| PhpVersion::parse(&level))
+            .and_then(|level| PhpVersion::parse(&level.version))
             .unwrap_or(PhpVersion::LATEST);
         Self::new(version, ide_sdk::php::stub_sets(root, settings))
     }

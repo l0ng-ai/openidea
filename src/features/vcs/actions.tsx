@@ -27,19 +27,29 @@ import {
 import { setAmend, useCommit } from "./commitStore";
 import { gotoConflict, resolveAtCaret, showConflictsDialog } from "./conflictsUi";
 import { focusedDiffNavigator } from "./diffNavigator";
-import { openDiff, withChain, workingDiffData } from "./diffInput";
-import { buildChangeTree, changeGroupPaths } from "./changes";
+import { showDiffWindow } from "./DiffWindow";
+import {
+  changeNodeDiff,
+  changeNodeDiffData,
+  openDiff,
+  openVcsDiff,
+  withChain,
+  workingDiffData,
+  type DiffData,
+} from "./diffInput";
+import { buildChangeTree, changeFileNodes, changeGroupPaths, type ChangeNode } from "./changes";
 import { useChangelists } from "./changelists";
 import { openDialog } from "./dialogs";
 import { gotoChange, rollbackSelectedLines } from "./gutter";
 import { openLocalHistory } from "./localHistoryKind";
 import { showSelectionHistory } from "./selectionHistoryKind";
 import { openLogTab, revealCommit, selectGitTab, useGitLog } from "./logStore";
-import { isModalCommit, openCommit, pushAfterCommit } from "./commitUi";
+import { commitFromContext, isModalCommit, pushAfterCommit } from "./commitUi";
 import { allRepos, runRemote } from "./ops";
-import { showPushDialog, showUpdateDialog, type PushTarget } from "./remoteUi";
+import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } from "./remoteUi";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
+import { createRepository } from "./createRepository";
 import {
   showManageRemotes,
   showMergeDialog,
@@ -48,10 +58,13 @@ import {
   showRebaseDialog,
   showWorktrees,
 } from "./gitMenuDialogs";
-import { refreshNow, repoName, useVcs } from "./store";
+import { currentRepo, refreshNow, repoName, repoOf, useVcs } from "./store";
+import { showSyncCommitsForCurrent } from "./SyncCommitsPopup";
 import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
+import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
+import { compareWithFileRevision } from "./FileRevisionChooser";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -75,14 +88,60 @@ export const commitWindowFocused = () => {
   return active === "commit" || (active === "git" && useGitLog.getState().tab === "changes");
 };
 
-/** Files the current context refers to: argument, commit view selection, or the active file. */
-function contextPaths(arg: unknown): string[] {
+/** A changed file's working diff, with the other files of its group (in tree order) as the F7 chain. */
+function groupDiffData(tree: readonly ChangeNode[], path: string): DiffData {
+  const siblings = changeGroupPaths(tree, path);
+  return withChain(
+    siblings.map((p) => workingDiffData(p)),
+    Math.max(0, siblings.indexOf(path)),
+  );
+}
+
+/**
+ * Show Diff's files as tree nodes where the side of the index is known: the changes
+ * tree's selected file nodes, else the nodes of `paths` the tree lists once. A
+ * partially staged file listed under both staging groups stays a path: its whole
+ * working diff.
+ */
+function showDiffTargets(tree: readonly ChangeNode[], paths: readonly string[], fromTree: boolean) {
+  const files = changeFileNodes(tree);
+  if (fromTree) {
+    const keys = new Set(useCommit.getState().selectionKeys);
+    const selected = files.filter((n) => keys.has(n.key));
+    if (selected.length && selected.length === keys.size) return selected;
+  }
+  return paths.map((path): ChangeNode | string => {
+    const nodes = files.filter((n) => n.path === path);
+    return nodes.length === 1 ? nodes[0]! : path;
+  });
+}
+
+/** The action's own paths, or the changes tree's selection while the tree has focus. */
+function changedPaths(arg: unknown): string[] {
   const explicit = argPaths(arg);
   if (explicit?.length) return explicit;
   const sel = useCommit.getState().selection;
-  if (commitWindowFocused() && sel.length) return sel;
+  return commitWindowFocused() ? sel : [];
+}
+
+/** Files the current context refers to: argument, commit view selection, or the active file. */
+function contextPaths(arg: unknown): string[] {
+  const changed = changedPaths(arg);
+  if (changed.length) return changed;
   const active = maybeEditorService()?.activePath();
   return active ? [active] : [];
+}
+
+/**
+ * Paths a selection-based action targets: the argument, else the changes tree's selection,
+ * else the Project view's — it keeps its selection while another view has focus — else the
+ * active file.
+ */
+function selectedPaths(arg: unknown): string[] {
+  const changed = changedPaths(arg);
+  if (changed.length) return changed;
+  const project = projectViewSelection();
+  return project.length ? project : contextPaths(arg);
 }
 
 function showGitWindow() {
@@ -155,7 +214,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "commit",
       when: VCS,
-      run: openCommit,
+      run: commitFromContext,
     },
     {
       id: "vcs.commitAndPush",
@@ -166,7 +225,7 @@ export function registerVcsActions(): () => void {
       run: async () => {
         const { message, amend } = useCommit.getState();
         // Nothing to commit with yet (or the modal interface): IDEA shows where the message is typed.
-        if (isModalCommit() || (!message.trim() && !amend)) return openCommit();
+        if (isModalCommit() || (!message.trim() && !amend)) return commitFromContext();
         const id = await commitChanges();
         if (id !== undefined) await pushAfterCommit();
       },
@@ -188,6 +247,15 @@ export function registerVcsActions(): () => void {
       when: VCS,
       keyWhen: IN_COMMIT_WINDOW,
       run: () => useCommit.setState((s) => ({ historyTick: s.historyTick + 1 })),
+    },
+    {
+      id: "vcs.createRepository",
+      title: "Create Git Repository…",
+      category: "Git",
+      icon: "branch",
+      when: "projectOpen && projectLocal",
+      keywords: ["init", "git", "enable version control"],
+      run: () => createRepository(),
     },
     {
       id: "vcs.clone",
@@ -212,7 +280,7 @@ export function registerVcsActions(): () => void {
       icon: "git-pull",
       when: VCS,
       keywords: ["pull"],
-      run: showUpdateDialog,
+      run: ({ arg }) => showUpdateDialog(arg && typeof arg === "object" ? (arg as UpdateTarget) : {}),
     },
     {
       id: "vcs.pull",
@@ -316,13 +384,13 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
-      keyWhen: "!editorTextFocus",
+      // In the Git Log's changed files it shows the commit's diff instead.
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
-        const selection = arg === undefined ? projectViewSelection() : [];
-        const paths = selection.length ? selection : contextPaths(arg);
+        const paths = selectedPaths(arg);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
@@ -337,14 +405,44 @@ export function registerVcsActions(): () => void {
           state.roots,
           useCommit.getState().groupByStaging,
         );
-        for (const path of paths.slice(0, 5)) {
-          const siblings = changeGroupPaths(tree, path);
-          const items = siblings.map((path) => workingDiffData(path));
-          await openDiff(
-            { ...withChain(items, Math.max(0, siblings.indexOf(path))), line },
-            { preview: paths.length === 1 },
-          );
+        // The modal interface has one front diff window (#1863): a file with its group
+        // as the F7 chain, or several selected files as the chain.
+        if (isModalCommit()) {
+          const targets = showDiffTargets(tree, paths, !argPaths(arg)?.length && commitWindowFocused());
+          const [first] = targets;
+          const data =
+            targets.length > 1
+              ? withChain(
+                  targets.map((t) => (typeof t === "string" ? workingDiffData(t) : changeNodeDiff(t))),
+                  0,
+                )
+              : typeof first === "string"
+                ? groupDiffData(tree, first)
+                : changeNodeDiffData(tree, first!);
+          await openVcsDiff({ ...data, line });
+          return;
         }
+        for (const path of paths.slice(0, 5)) {
+          await openDiff({ ...groupDiffData(tree, path), line }, { preview: paths.length === 1 });
+        }
+      },
+    },
+    {
+      id: "vcs.showDiffInNewWindow",
+      title: "Show Diff in New Window",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      keyWhen: "!editorTextFocus",
+      run: ({ arg }) => {
+        const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
+        const path = selectedPaths(arg)[0];
+        const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
+        if (!data) {
+          notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
+          return;
+        }
+        showDiffWindow(data, () => void openDiff(data, { preview: true }));
       },
     },
     {
@@ -354,14 +452,22 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       run: async ({ arg }) => {
-        const selection = arg === undefined ? projectViewSelection() : [];
-        const paths = selection.length ? selection : contextPaths(arg);
+        const paths = selectedPaths(arg);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Open or select a file or folder to compare" });
           return;
         }
         await comparePathsWithRevision(paths);
       },
+    },
+    {
+      id: "vcs.compareWithRevision",
+      title: "Compare with Revision…",
+      category: "Git",
+      icon: "diff",
+      when: VCS,
+      enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => compareWithFileRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
     },
     {
       id: "vcs.nextChange",
@@ -474,6 +580,15 @@ export function registerVcsActions(): () => void {
       },
     },
     {
+      id: "vcs.showCurrentRevision",
+      title: "Show Current Revision",
+      category: "Git",
+      icon: "commit",
+      when: VCS,
+      enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => showCurrentRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+    },
+    {
       id: "vcs.showHistoryForSelection",
       title: "Show History for Selection",
       category: "Git",
@@ -492,9 +607,20 @@ export function registerVcsActions(): () => void {
         const commit = arg && typeof arg === "object" && "id" in arg ? (arg as import("@/bindings").Commit) : null;
         const id = typeof arg === "string" ? arg : commit?.id;
         if (!id) return;
+        const active = maybeEditorService()?.activePath();
+        const repo = commit ? commitRepo(commit) : ((active ? repoOf(active) : null) ?? currentRepo());
         showGitWindow();
-        void revealCommit(id, commit ? commitRepo(commit) : undefined);
+        void revealCommit(id, repo);
       },
+    },
+    {
+      id: "vcs.syncCommits",
+      title: "Show Incoming and Outgoing Commits",
+      category: "Git",
+      icon: "history",
+      when: VCS,
+      keywords: ["incoming", "outgoing", "ahead", "behind", "unpushed", "unpulled"],
+      run: ({ arg }) => showSyncCommitsForCurrent(arg === "incoming" || arg === "outgoing" ? arg : undefined),
     },
     ...(["gitignore", "localExclude"] as const).map((destination): Action => ({
       id: destination === "gitignore" ? "vcs.ignoreShared" : "vcs.ignoreLocal",
@@ -522,6 +648,25 @@ export function registerVcsActions(): () => void {
       icon: "stash",
       when: VCS,
       run: () => void stashChanges(),
+    },
+    {
+      id: "vcs.stashSelected",
+      title: "Stash Selected Files…",
+      category: "Git",
+      icon: "stash",
+      when: VCS,
+      run: ({ arg }) => {
+        const paths = changedPaths(arg);
+        if (!paths.length) {
+          notifications().notify({
+            group: "vcs",
+            level: "info",
+            title: tx("Select the files to stash in the Commit view first"),
+          });
+          return;
+        }
+        void stashChanges(paths);
+      },
     },
     {
       id: "vcs.unstash",
@@ -574,5 +719,10 @@ export function registerVcsActions(): () => void {
       run: () => void gotoConflict(-1),
     },
   ];
-  return registerActions(actions);
+  const stopTracking = trackFileHistory();
+  const unregister = registerActions(actions);
+  return () => {
+    unregister();
+    stopTracking();
+  };
 }

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ChangeSet, Text } from "@codemirror/state";
 import type { TextChange } from "@/platform/ipc";
 import { DocSync, toTextChanges } from "./DocSync";
-import { minimalChange } from "./diff";
+import { minimalChanges } from "./diff";
 
 function apply(text: string, changes: TextChange[]) {
   let out = "";
@@ -12,6 +12,10 @@ function apply(text: string, changes: TextChange[]) {
     pos = c.to;
   }
   return out + text.slice(pos);
+}
+
+function numberedLines(count: number) {
+  return Array.from({ length: count }, (_, i) => `line ${i}\n`).join("");
 }
 
 class OutOfSync extends Error {
@@ -24,6 +28,8 @@ class FakeServer {
   edits: Array<{ base: number; changes: TextChange[] }> = [];
   private queue: Array<() => void> = [];
   snapshots = 0;
+  /** Snapshots still to reject (a transient IPC or remote-host failure). */
+  failSnapshots = 0;
   failNext: unknown = null;
   constructor(public text: string) {}
 
@@ -48,6 +54,10 @@ class FakeServer {
       }),
     snapshot: async () => {
       this.snapshots++;
+      if (this.failSnapshots > 0) {
+        this.failSnapshots--;
+        throw { kind: "unavailable", message: "snapshot failed" };
+      }
       return { text: this.text, version: this.version };
     },
   };
@@ -214,6 +224,76 @@ describe("DocSync", () => {
     }
   });
 
+  it("keeps syncing when the snapshot of a rebase fails once", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, view, sync, type, frame, host } = setup("one\ntwo\n");
+      type(8, 8, "three\n");
+      frame();
+      server.patch([{ from: 0, to: 3, insert: "ONE" }]); // event lost
+      server.failSnapshots = 1;
+      let idle = false;
+      void sync.whenIdle().then(() => (idle = true));
+      for (let i = 0; i < 4; i++) {
+        await server.processAll();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(server.snapshots).toBe(2);
+      expect(host.onError).toHaveBeenCalledWith(expect.objectContaining({ kind: "unavailable" }));
+      expect(server.text).toBe("ONE\ntwo\nthree\n");
+      expect(view.text.toString()).toBe(server.text);
+      expect(sync.idle).toBe(true);
+      expect(idle).toBe(true);
+      expect(host.onDiscarded).not.toHaveBeenCalled();
+
+      // Later typing still reaches the backend.
+      type(0, 0, "#");
+      frame();
+      await server.processAll();
+      expect(server.text).toBe("#ONE\ntwo\nthree\n");
+      expect(sync.idle).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops retrying when every snapshot fails, and keeps the local text to send later", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, view, sync, type, frame, host } = setup("one\ntwo\n");
+      type(8, 8, "three\n");
+      frame();
+      server.patch([{ from: 0, to: 3, insert: "ONE" }]); // event lost
+      server.failSnapshots = Infinity;
+      let idle = false;
+      void sync.whenIdle().then(() => (idle = true));
+      for (let i = 0; i < 20 && !idle; i++) {
+        await server.processAll();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      // A save waiting on the document is released instead of hanging, and nothing is in flight.
+      expect(idle).toBe(true);
+      expect(sync.inflight).toBeNull();
+      expect(server.pending()).toBe(0);
+      expect(host.onError).toHaveBeenCalled();
+      expect(view.text.toString()).toBe("one\ntwo\nthree\n");
+
+      // Once the backend answers again, the local text and new typing land where they belong.
+      server.failSnapshots = 0;
+      type(0, 0, "#");
+      frame();
+      for (let i = 0; i < 4; i++) {
+        await server.processAll();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(server.text).toBe("#ONE\ntwo\nthree\n");
+      expect(view.text.toString()).toBe(server.text);
+      expect(sync.idle).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hard-resyncs on unexpected errors and reports discarded changes", async () => {
     const { server, view, sync, type, frame, host } = setup("abc");
     server.failNext = { kind: "permissionDenied", message: "read-only" };
@@ -222,8 +302,49 @@ describe("DocSync", () => {
     await server.processAll();
     await flushMicrotasks();
     expect(view.text.toString()).toBe("abc");
-    expect(host.onDiscarded).toHaveBeenCalled();
+    // The rejection reaches the host, which writes it to the log file.
+    expect(host.onDiscarded).toHaveBeenCalledWith(expect.objectContaining({ kind: "permissionDenied" }));
     expect(sync.idle).toBe(true);
+  });
+
+  it("a hard resync touches only the regions that differ", async () => {
+    const initial = numberedLines(40);
+    const { server, view, type, frame, host } = setup(initial);
+    server.failNext = { kind: "permissionDenied", message: "read-only" };
+    type(initial.indexOf("line 2\n"), initial.indexOf("line 2\n"), "#");
+    type(view.text.toString().indexOf("line 37\n"), view.text.toString().indexOf("line 37\n"), "#");
+    frame();
+    await server.processAll();
+    await flushMicrotasks();
+    expect(view.text.toString()).toBe(initial);
+    const touched: number[] = [];
+    host.applyRemote.mock.calls[0]![0].iterChanges((fromA) => touched.push(fromA));
+    expect(touched).toHaveLength(2);
+  });
+
+  it("a snapshot resync patches each region a lost event changed", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = numberedLines(40);
+      const { server, view, type, frame, host } = setup(initial);
+      type(initial.length, initial.length, "tail\n");
+      frame();
+      const lost = [
+        { from: initial.indexOf("line 2\n"), to: initial.indexOf("line 2\n"), insert: "#" },
+        { from: initial.indexOf("line 37\n"), to: initial.indexOf("line 37\n"), insert: "#" },
+      ];
+      server.patch(lost);
+      await server.processAll();
+      await vi.advanceTimersByTimeAsync(100);
+      await server.processAll();
+      await flushMicrotasks();
+      expect(view.text.toString()).toBe(server.text);
+      const touched: number[] = [];
+      host.applyRemote.mock.calls[0]![0].iterChanges((fromA) => touched.push(fromA));
+      expect(touched).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("whenIdle resolves after everything is acked", async () => {
@@ -279,10 +400,22 @@ describe("DocSync", () => {
   });
 });
 
-describe("minimalChange", () => {
+describe("minimalChanges", () => {
   it("trims common prefix and suffix", () => {
-    expect(minimalChange("hello world", "hello brave world")).toEqual({ from: 6, to: 6, insert: "brave " });
-    expect(minimalChange("abc", "abc")).toBeNull();
-    expect(minimalChange("aaa", "a")).toEqual({ from: 1, to: 3, insert: "" });
+    expect(minimalChanges("hello world", "hello brave world")).toEqual([{ from: 6, to: 6, insert: "brave " }]);
+    expect(minimalChanges("abc", "abc")).toEqual([]);
+    expect(apply("aaa", minimalChanges("aaa", "a"))).toBe("a");
+  });
+
+  it("keeps distant edits apart", () => {
+    const before = numberedLines(40);
+    const after = before.replace("line 2\n", "line two\n").replace("line 37\n", "line thirty-seven\n");
+    const changes = minimalChanges(before, after);
+    expect(changes).toHaveLength(2);
+    expect(apply(before, changes)).toBe(after);
+  });
+
+  it("rebuilds text across astral characters", () => {
+    expect(apply("a😀b\n😁c", minimalChanges("a😀b\n😁c", "a😁b\n😀c"))).toBe("a😁b\n😀c");
   });
 });

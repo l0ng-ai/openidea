@@ -1,5 +1,64 @@
 import { expect, ipcCalls, stubDesktop, test, visibleToolWindows } from "./fixtures";
 
+for (const anchor of ["left", "right", "bottom"] as const) {
+  test(`maximized ${anchor} Terminal fills the workbench and restores the layout`, async ({ workbench: page }) => {
+    await page.getByRole("treeitem", { name: "README.md", exact: true }).dblclick();
+    await expect(page.locator("[data-editor-area] .cm-content")).toBeFocused();
+    await page.evaluate(async (anchor) => {
+      const path = "/src/workbench/toolwindows/store.ts";
+      const layout = await import(path);
+      layout.moveToolWindow("terminal", anchor);
+      layout.setToolWindowSize(anchor, 650);
+      layout.showToolWindow("terminal", true);
+    }, anchor);
+    const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+    const editor = page.locator("[data-editor-area]");
+    const input = terminal.getByRole("textbox", { name: "Terminal input" });
+    await expect(input).toBeFocused();
+    const before = (await terminal.boundingBox())!;
+    const editorBefore = (await editor.boundingBox())!;
+    await page.keyboard.press("Meta+Shift+'");
+    await expect(editor).toBeHidden();
+    await expect(input).toBeFocused();
+    const fillsGrid = async () =>
+      terminal.evaluate((el) => {
+        const panel = el.getBoundingClientRect();
+        const grid = el.closest("[data-maximized]")!.getBoundingClientRect();
+        return Math.abs(panel.width - grid.width) + Math.abs(panel.height - grid.height);
+      });
+    await expect.poll(fillsGrid).toBeLessThan(2);
+    await page.setViewportSize({ width: 1100, height: 750 });
+    await expect.poll(fillsGrid).toBeLessThan(2);
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await terminal.getByRole("button", { name: "Options", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Restore Size", exact: true }).click();
+    await expect(editor).toBeVisible();
+    await expect.poll(async () => Math.abs((await terminal.boundingBox())!.width - before.width)).toBeLessThan(2);
+    await expect.poll(async () => Math.abs((await terminal.boundingBox())!.height - before.height)).toBeLessThan(2);
+    await expect.poll(async () => Math.abs((await editor.boundingBox())!.width - editorBefore.width)).toBeLessThan(2);
+    await terminal.getByRole("button", { name: "Options", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Maximize", exact: true }).click();
+    await expect(editor).toBeHidden();
+    const title = terminal.locator("header").first().getByText("Terminal", { exact: true });
+    await title.dblclick();
+    await expect(editor).toBeVisible();
+    await title.dblclick();
+    await expect(editor).toBeHidden();
+    await page.evaluate(async () => {
+      const path = "/src/workbench/contributions.ts";
+      await (await import(path)).editorService().openFile("/dev/acme-api/README.md");
+    });
+    await expect(editor).toBeVisible();
+    await expect(editor.locator(".cm-content")).toBeFocused();
+    await input.focus();
+    await page.keyboard.press("Meta+Shift+'");
+    await expect(editor).toBeHidden();
+    await terminal.getByRole("button", { name: "Hide", exact: true }).click();
+    await expect(editor).toBeVisible();
+    await expect(editor.locator(".cm-content")).toBeFocused();
+  });
+}
+
 test("⌘1 focuses, hides and re-shows the Project tool window", async ({ workbench: page }) => {
   const project = page.getByRole("region", { name: "Project" });
   await page.keyboard.press("Meta+1");
@@ -107,6 +166,24 @@ test("⌘⇧F12 hides all tool windows and restores them", async ({ workbench: p
   await page.keyboard.press("Meta+Shift+F12");
   await expect(page.getByRole("region", { name: "Project" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Problems" })).toBeVisible();
+});
+
+test("a tool window resize keeps its cursor over other controls until release", async ({ workbench: page }) => {
+  const gap = page.locator('[data-gap="left"]');
+  const box = (await gap.boundingBox())!;
+  const hide = page.getByRole("region", { name: "Project" }).getByRole("button", { name: "Hide", exact: true });
+  const cursor = () => hide.evaluate((el) => getComputedStyle(el).cursor);
+
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 4 });
+  // The pointer is over the Project tree now; the button's own arrow cursor must not win.
+  await expect.poll(cursor).toBe("ew-resize");
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(true);
+
+  await page.mouse.up();
+  await expect.poll(cursor).toBe("default");
+  expect(await page.evaluate(() => document.documentElement.hasAttribute("data-drag-cursor"))).toBe(false);
 });
 
 test("the Terminal sends typed commands to the shell and shows its output", async ({ workbench: page }) => {

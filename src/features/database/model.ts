@@ -2,15 +2,17 @@
 import type {
   DbCellValue,
   DbColor,
+  DbDriver,
   DbProperty,
   DbRowEdit,
+  DbSnowflakeAuth,
   DbSortKey,
   DbSsh,
   DbSslMode,
   DataSource,
 } from "@/platform/ipc";
 import type { SshConfigValid } from "@/platform/remoteSettings";
-import { vendorOf, vendorOfScheme } from "./vendors";
+import { blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
 
@@ -20,6 +22,17 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
   const lines = rows.map((r) => r.map(clean).join("\t"));
   if (header) lines.unshift(header.map(clean).join("\t"));
   return lines.join("\n");
+}
+
+/**
+ * Every value on a single `, `-separated line (IDEA's One-Row extractor, for
+ * `IN (…)` lists): NULL for nulls, numbers unquoted, everything else
+ * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
+ */
+export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
+  const literal = (v: Cell, c: number) =>
+    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
+  return rows.flatMap((r) => r.map(literal)).join(", ");
 }
 
 /** RFC 4180 CSV; NULL is an empty field. */
@@ -193,6 +206,34 @@ export function passesObjectFilter(name: string, filter: string | null | undefin
 }
 
 /**
+ * The tree's quick filter (the toolbar's field): `name` contains it,
+ * case-insensitively (`*` / `?` still work through `matchesPattern` callers).
+ */
+export function passesTreeFilter(name: string, filter: string | null | undefined): boolean {
+  const q = (filter ?? "").trim().toLowerCase();
+  return !q || name.toLowerCase().includes(q);
+}
+
+/**
+ * Whether a console of `driver` gets the active-schema dropdown (a server with
+ * several schemas / databases to switch between; SQLite has one database only).
+ */
+export function schemaSwitchable(driver: DbDriver | null | undefined): boolean {
+  return (
+    driver === "postgres" ||
+    driver === "mysql" ||
+    driver === "sqlServer" ||
+    driver === "oracle" ||
+    driver === "snowflake"
+  );
+}
+
+/** The schema a console's statements run in: its pick, else the connection's default. */
+export function activeSchema(picked: string | null | undefined, defaultSchema: string | null | undefined): string {
+  return picked || defaultSchema || "";
+}
+
+/**
  * The databases / schemas the tree shows (Schemas tab): all of them, or the
  * ones matching a chosen name or pattern; `keep` (the connected database) always stays.
  */
@@ -319,6 +360,44 @@ const SSL_MODES: Record<string, DbSslMode> = {
   "verify-identity": "verifyFull",
 };
 
+const SNOWFLAKE_AUTHENTICATORS: Record<string, DbSnowflakeAuth> = {
+  snowflake_jwt: "keyPair",
+  snowflake: "password",
+  programmatic_access_token: "token",
+  oauth: "oAuth",
+  externalbrowser: "browser",
+};
+
+/** Applies a parameter of a Snowflake JDBC URL that names a connection setting. */
+function snowflakeParameter(source: Partial<DataSource>, name: string, value: string): boolean {
+  const settings = (source.snowflake ??= blankSnowflake());
+  switch (name.toLowerCase()) {
+    case "db":
+    case "database":
+      source.database = value;
+      return true;
+    case "schema":
+      source.options = { ...source.options, defaultSchema: value } as DataSource["options"];
+      return true;
+    case "warehouse":
+      settings.warehouse = value;
+      return true;
+    case "role":
+      settings.role = value;
+      return true;
+    case "private_key_file":
+      settings.privateKeyFile = value;
+      return true;
+    case "authenticator": {
+      const auth = SNOWFLAKE_AUTHENTICATORS[value.toLowerCase()];
+      if (auth) settings.auth = auth;
+      return !!auth;
+    }
+    default:
+      return false;
+  }
+}
+
 /**
  * Data Source from URL (and the General tab's URL field): `postgres://user:pass@host:5432/db`,
  * `mysql://…`, `mariadb://…`, wire-compatible products (`redshift://`, `tidb://`…), the
@@ -332,9 +411,11 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
     const file = sqlite[1]!.replace(/^\/([A-Za-z]:)/, "$1");
     return { source: { driver: "sqlite", file, name: fileSourceName(file) }, password: null };
   }
+  // JDBC thin URLs: `jdbc:oracle:thin:@//host:port/service`.
+  const thin = /^(?:oracle|oracledb):thin:@(.+)$/i.exec(url);
   const m =
     /^([a-z][a-z0-9]*):\/\/(?:([^:@/]*)(?::([^@/]*))?@)?([^:/?,]+|\[[^\]]+\])(?::(\d+))?(?:,[^/?]*)?(?:\/([^?]*))?(?:\?(.*))?$/i.exec(
-      url,
+      thin ? `oracle://${thin[1]!.replace(/^\/+/, "")}` : url,
     );
   const vendor = m ? vendorOfScheme(m[1]!) : undefined;
   if (!m || !vendor || vendor.driver === "sqlite") return null;
@@ -386,6 +467,7 @@ export function parseSourceUrl(raw: string): { source: Partial<DataSource>; pass
         source.sslKeyFile = v;
         break;
       default:
+        if (vendor.driver === "snowflake" && snowflakeParameter(source, k, v)) break;
         properties.push({ name: k, value: v });
     }
   }

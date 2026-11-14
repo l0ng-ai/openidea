@@ -1,16 +1,25 @@
 /**
- * PyCharm's "Add Python Interpreter" (local): generate a new virtualenv from a
- * base interpreter (`python -m venv`) or select an existing interpreter.
+ * PyCharm's "Add Python Interpreter" (local): generate a new environment with a
+ * tool (virtualenv / uv / Poetry) or select an existing interpreter.
  */
 import { isCancelled } from "@/platform/ipc";
 import { useId, useMemo, useState } from "react";
 import { Dialog, IconButton, Input, Select, Spinner, type SelectOption, T } from "@/ui";
-import { choosePath, createVenv, rememberSdk } from "./api";
+import { Icon, type IconName } from "@/ui/icons";
+import { choosePath, createVenv, pythonInterpreter, rememberSdk, type Sdk, type VenvTool } from "./api";
 import { tildify, useDetected } from "./components";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 
 type Mode = "new" | "existing";
+
+/** Environment types of the left column, in PyCharm's order. */
+const KINDS: { tool: VenvTool; label: string; missing: string; icon: IconName }[] = [
+  { tool: "venv", label: "Virtualenv Environment", missing: "", icon: "python-venv" },
+  { tool: "conda", label: "Conda Environment", missing: "conda is not installed", icon: "python-conda" },
+  { tool: "uv", label: "uv Environment", missing: "uv is not installed", icon: "python-uv" },
+  { tool: "poetry", label: "Poetry Environment", missing: "Poetry is not installed", icon: "python-poetry" },
+];
 
 export function AddInterpreterDialog({
   root,
@@ -22,39 +31,80 @@ export function AddInterpreterDialog({
   onAdded: (python: string) => void;
 }) {
   const { list, loading } = useDetected("python");
+  const [kind, setKind] = useState<VenvTool>("venv");
   const [mode, setMode] = useState<Mode>("new");
   const bases = useMemo(() => list.filter((s) => s.source !== "venv"), [list]);
   const [base, setBase] = useState<string | null>(null);
   const [location, setLocation] = useState(`${root}/.venv`);
   const [existing, setExisting] = useState<string | null>(null);
+  const [browsed, setBrowsed] = useState<Sdk[]>([]);
   const [busy, setBusy] = useState<{ cancel: () => void } | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const ids = { base: useId(), location: useId(), existing: useId() };
 
-  const baseValue = base ?? bases[0]?.path ?? null;
   const toOption = (s: { path: string; name: string }): SelectOption => ({
     value: s.path,
     label: s.name,
     detail: tildify(s.path),
   });
-  const baseOptions = bases.map(toOption);
-  const existingOptions = useMemo(() => {
-    const opts = list.map(toOption);
-    if (existing && !opts.some((o) => o.value === existing))
-      opts.push({ value: existing, label: tildify(existing), detail: "custom" });
-    return opts;
-  }, [list, existing]);
+  // conda installs a fresh Python of the base's version: offer versions, not environments to copy.
+  const versionOptions = (() => {
+    const seen = new Map<string, SelectOption>();
+    for (const s of bases) {
+      const short = s.version?.split(".").slice(0, 2).join(".");
+      if (short && !seen.has(short)) seen.set(short, { value: s.path, label: tx`Python ${short}` });
+    }
+    return [...seen.values()].sort((a, b) => b.label.localeCompare(a.label, undefined, { numeric: true }));
+  })();
+  const baseOptions = kind === "conda" ? versionOptions : bases.map(toOption);
+  const baseValue =
+    base ?? (kind === "conda" ? (versionOptions[0]?.value as string | undefined) : bases[0]?.path) ?? null;
+  const existingOptions = [...browsed, ...list.filter((s) => !browsed.some((b) => b.path === s.path))].map((s) => ({
+    value: s.path,
+    label: `${s.name} — ${tildify(s.path)}`,
+  }));
+
+  const checkExisting = (path: string, onResolved: (sdk: Sdk) => void) => {
+    setError(null);
+    let cancelled = false;
+    setBusy({
+      cancel: () => {
+        cancelled = true;
+        setBusy(null);
+      },
+    });
+    void pythonInterpreter(path)
+      .then((sdk) => {
+        if (cancelled) return;
+        if (!sdk) {
+          setError(tx("Cannot run this Python interpreter. Select a working Python executable or virtualenv folder."));
+          return;
+        }
+        onResolved(sdk);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(String((e as Error)?.message ?? e));
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(null);
+      });
+  };
 
   const ok = () => {
+    if (busy) return;
     setError(null);
     if (mode === "existing") {
-      if (existing) onAdded(existing);
+      if (existing)
+        checkExisting(existing, (sdk) => {
+          rememberSdk("python", sdk);
+          onAdded(sdk.path);
+        });
       return;
     }
     if (!baseValue || !location.trim()) return;
     setLog([]);
-    const job = createVenv(baseValue, location.trim(), (line) => setLog((l) => [...l.slice(-200), line]));
+    const job = createVenv(kind, baseValue, location.trim(), (line) => setLog((l) => [...l.slice(-200), line]));
     setBusy({ cancel: job.cancel });
     job.promise
       .then((sdk) => {
@@ -65,7 +115,17 @@ export function AddInterpreterDialog({
       .finally(() => setBusy(null));
   };
 
-  const canOk = mode === "new" ? !!baseValue && !!location.trim() && !busy : !!existing;
+  const canOk = !busy && (mode === "new" ? !!baseValue && !!location.trim() : !!existing?.trim());
+  const note = {
+    venv: tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter."),
+    conda: tx(
+      "Runs “conda create -p <location> python=<version>”: a new environment with only Python in it; the new interpreter becomes the project interpreter.",
+    ),
+    uv: tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
+    poetry: tx(
+      "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.",
+    ),
+  }[kind];
 
   return (
     <Dialog
@@ -74,7 +134,11 @@ export function AddInterpreterDialog({
       title="Add Python Interpreter"
       width={680}
       aria-label="Add Python Interpreter"
-      footerStart={busy && <Spinner size={14} label="Creating virtual environment" />}
+      footerStart={
+        busy && (
+          <Spinner size={14} label={mode === "existing" ? tx("Checking interpreter") : tx("Creating environment")} />
+        )
+      }
       buttons={[
         { label: "OK", role: "default", disabled: !canOk, onClick: ok },
         { label: "Cancel", role: "cancel" },
@@ -82,20 +146,45 @@ export function AddInterpreterDialog({
     >
       <div className={styles.dialogBody}>
         <ul className={styles.kinds} aria-label={tx("Interpreter type")}>
-          <li>
-            <button type="button" className={`${styles.kind} ${styles.kindOn}`} aria-current="true">
-              <T>Virtualenv Environment</T>
-            </button>
-          </li>
+          {KINDS.map((k) => (
+            <li key={k.tool}>
+              <button
+                type="button"
+                disabled={!!busy}
+                className={`${styles.kind} ${kind === k.tool ? styles.kindOn : ""}`}
+                aria-current={kind === k.tool || undefined}
+                onClick={() => {
+                  setKind(k.tool);
+                  setBase(null);
+                  setError(null);
+                }}
+              >
+                <Icon name={k.icon} size={16} />
+                {k.label}
+              </button>
+            </li>
+          ))}
         </ul>
         <div className={styles.form}>
           <div className={styles.radios} role="radiogroup" aria-label={tx("Environment")}>
             <label className={styles.radio}>
-              <input type="radio" name="env" checked={mode === "new"} onChange={() => setMode("new")} />{" "}
+              <input
+                type="radio"
+                name="env"
+                disabled={!!busy}
+                checked={mode === "new"}
+                onChange={() => setMode("new")}
+              />{" "}
               <T>New environment</T>
             </label>
             <label className={styles.radio}>
-              <input type="radio" name="env" checked={mode === "existing"} onChange={() => setMode("existing")} />{" "}
+              <input
+                type="radio"
+                name="env"
+                disabled={!!busy}
+                checked={mode === "existing"}
+                onChange={() => setMode("existing")}
+              />{" "}
               <T>Existing environment</T>
             </label>
           </div>
@@ -110,20 +199,20 @@ export function AddInterpreterDialog({
                   className={styles.pathInput}
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
+                  disabled={kind === "poetry"}
                 />
                 <IconButton
                   icon="folder-open"
                   size="small"
                   title="Browse…"
+                  disabled={kind === "poetry"}
                   onClick={async () => {
                     const p = await choosePath({ directory: true, title: "Virtualenv Location", defaultPath: root });
                     if (p) setLocation(p);
                   }}
                 />
               </div>
-              <label htmlFor={ids.base}>
-                <T>Base interpreter:</T>
-              </label>
+              <label htmlFor={ids.base}>{kind === "conda" ? <T>Python version:</T> : <T>Base interpreter:</T>}</label>
               <div className={styles.pathRow}>
                 <Select
                   className={styles.pathInput}
@@ -131,21 +220,21 @@ export function AddInterpreterDialog({
                   options={baseOptions}
                   onChange={setBase}
                   placeholder={loading ? "Detecting…" : "No Python found"}
-                  aria-label="Base interpreter"
+                  aria-label={kind === "conda" ? "Python version" : "Base interpreter"}
                 />
-                <IconButton
-                  icon="folder-open"
-                  size="small"
-                  title="Browse…"
-                  onClick={async () => {
-                    const p = await choosePath({ directory: false, title: "Select Base Interpreter" });
-                    if (p) setBase(p);
-                  }}
-                />
+                {kind !== "conda" && (
+                  <IconButton
+                    icon="folder-open"
+                    size="small"
+                    title="Browse…"
+                    onClick={async () => {
+                      const p = await choosePath({ directory: false, title: "Select Base Interpreter" });
+                      if (p) setBase(p);
+                    }}
+                  />
+                )}
               </div>
-              <div className={styles.note}>
-                {tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter.")}
-              </div>
+              <div className={styles.note}>{note}</div>
             </>
           ) : (
             <>
@@ -154,8 +243,10 @@ export function AddInterpreterDialog({
               </label>
               <div className={styles.pathRow}>
                 <Select
+                  id={ids.existing}
                   className={styles.pathInput}
                   value={existing}
+                  disabled={!!busy}
                   options={existingOptions}
                   onChange={setExisting}
                   placeholder={loading ? "Detecting…" : "Select an interpreter"}
@@ -165,9 +256,18 @@ export function AddInterpreterDialog({
                   icon="folder-open"
                   size="small"
                   title="Browse…"
+                  disabled={!!busy}
                   onClick={async () => {
-                    const p = await choosePath({ directory: false, title: "Select Python Interpreter" });
-                    if (p) setExisting(p);
+                    const p = await choosePath({
+                      directory: true,
+                      title: "Select Python Environment Folder",
+                      defaultPath: root,
+                    });
+                    if (p)
+                      checkExisting(p, (sdk) => {
+                        setBrowsed((current) => [sdk, ...current.filter((s) => s.path !== sdk.path)]);
+                        setExisting(sdk.path);
+                      });
                   }}
                 />
               </div>

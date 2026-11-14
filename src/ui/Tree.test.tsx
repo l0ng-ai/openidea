@@ -3,6 +3,8 @@ import { createRef } from "react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { Tree, type TreeHandle } from "./Tree";
 import { getContext } from "@/platform/context";
+import { registerAction } from "@/platform/actions";
+import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 
 interface N {
   id: string;
@@ -181,6 +183,17 @@ describe("Tree keyboard navigation", () => {
     expect(onActivate).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
   });
 
+  it("F4 and ⌘↓ go to onJumpToSource instead of activating when the tree has one", () => {
+    const onJumpToSource = vi.fn();
+    const { key, onActivate } = setup({ onJumpToSource });
+    key("End");
+    key("F4");
+    key("ArrowDown", { metaKey: true });
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(onJumpToSource).toHaveBeenCalledTimes(2);
+    expect(onJumpToSource).toHaveBeenLastCalledWith(expect.objectContaining({ id: "README.md" }), expect.any(Set));
+  });
+
   it("extends the selection with Shift+Arrow", () => {
     const onSelectionChange = vi.fn();
     const { key } = setup({ defaultExpanded: ["src"], onSelectionChange });
@@ -238,6 +251,30 @@ describe("Tree speed search", () => {
     expect(screen.queryByRole("status")).toBeNull();
     expect(lead()).toBe("main");
     expect(labels(tree)).toContain("App.tsx");
+  });
+
+  it("⌘⌫ erases the query and ⌥⌫ its last word instead of running the view's ⌘⌫ action", () => {
+    const drop = vi.fn();
+    useKeymap.setState({ preset: "intellij-macos", overrides: { "test.drop": ["Meta+Backspace", "Alt+Backspace"] } });
+    const dispose = [registerAction({ id: "test.drop", title: "Drop", run: drop }), installKeyboardDispatcher()];
+    try {
+      const { tree, lead, key } = setup({ defaultExpanded: ["src", "main"] });
+      key("ArrowDown");
+      for (const c of "index.t") key(c);
+      expect(lead()).toBe("index.ts");
+      key("Backspace", { altKey: true });
+      expect(screen.getByRole("status")).toHaveTextContent(/^index\.$/);
+      key("Backspace", { metaKey: true });
+      expect(screen.queryByRole("status")).toBeNull();
+      expect(drop).not.toHaveBeenCalled();
+      // Without a query the shortcut reaches the view again.
+      key("Backspace", { metaKey: true });
+      expect(drop).toHaveBeenCalledOnce();
+      expect(tree).toHaveFocus();
+    } finally {
+      dispose.forEach((d) => d());
+      useKeymap.setState({ overrides: {} });
+    }
   });
 
   it("filter mode hides non-matching rows but keeps ancestors", () => {
@@ -309,26 +346,47 @@ describe("siblingPositions", () => {
 
 describe("Tree horizontal scrolling", () => {
   const spacer = (tree: HTMLElement) => tree.querySelector<HTMLElement>("[data-content-width]");
+  // Widths are measured on the next animation frame.
+  const frame = () => act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
 
   it("is off unless asked for", () => {
     const { tree } = setup();
     expect(spacer(tree)).toBeNull();
   });
 
-  it("remeasures mounted rows with the same key, including narrower content", () => {
+  it("remeasures mounted rows with the same key, including narrower content", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(640);
     try {
       const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      await frame();
       expect(spacer(tree)?.style.width).toBe("640px");
       width.mockReturnValue(100);
       key("ArrowDown");
+      await frame();
       expect(spacer(tree)?.style.width).toBe("100px");
     } finally {
       width.mockRestore();
     }
   });
 
-  it("removes widths belonging to collapsed descendants", () => {
+  it("measures once per frame however many times it renders", async () => {
+    const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(640);
+    try {
+      const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      await frame();
+      width.mockClear();
+      key("ArrowDown");
+      key("ArrowDown");
+      key("ArrowDown");
+      expect(width).not.toHaveBeenCalled();
+      await frame();
+      expect(width).toHaveBeenCalledTimes(tree.querySelectorAll("[data-row]").length);
+    } finally {
+      width.mockRestore();
+    }
+  });
+
+  it("removes widths belonging to collapsed descendants", async () => {
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
       this: HTMLElement,
     ) {
@@ -336,16 +394,18 @@ describe("Tree horizontal scrolling", () => {
     });
     try {
       const { tree, key } = setup({ horizontalScroll: true, defaultExpanded: ["src"] });
+      await frame();
       expect(spacer(tree)?.style.width).toBe("640px");
       key("Home");
       key("ArrowLeft");
+      await frame();
       expect(spacer(tree)?.style.width).toBe("100px");
     } finally {
       width.mockRestore();
     }
   });
 
-  it("measures without the viewport minimum and restores it before returning", () => {
+  it("measures without the viewport minimum and restores it before returning", async () => {
     const minimums: string[] = [];
     const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
       this: HTMLElement,
@@ -355,6 +415,7 @@ describe("Tree horizontal scrolling", () => {
     });
     try {
       const { tree } = setup({ horizontalScroll: true });
+      await frame();
       expect(spacer(tree)?.style.width).toBe("100px");
       expect(minimums.length).toBeGreaterThan(0);
       expect(minimums.every((value) => parseFloat(value) === 0)).toBe(true);
@@ -464,5 +525,69 @@ describe("Tree scroll following", () => {
     key("u");
     expect(lead()).toBe("util.ts");
     expect(scrollTo).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Tree indents", () => {
+  // Settings › Appearance › "Use smaller indents in trees" sets `--tree-indent`
+  // on the root; the row padding reads it so the setting reaches every tree at
+  // once, without a restart, and chevrons keep aligning with it.
+  const pads = (root: HTMLElement) =>
+    within(root)
+      .queryAllByRole("treeitem")
+      .map((el) => el.style.paddingLeft);
+
+  it("pads each level through --tree-indent, falling back to the indent prop", () => {
+    const { tree } = setup({ defaultExpanded: ["src"] });
+    expect(pads(tree)).toEqual([
+      "calc(4px + 0 * var(--tree-indent, 20px))", // src
+      "calc(4px + 1 * var(--tree-indent, 20px))", // main
+      "calc(4px + 1 * var(--tree-indent, 20px))", // util.ts
+      "calc(4px + 0 * var(--tree-indent, 20px))", // README.md
+    ]);
+  });
+
+  it("honours a custom indent prop as the fallback value", () => {
+    const { tree } = setup({ defaultExpanded: ["src"], indent: 16 });
+    expect(pads(tree)[1]).toBe("calc(4px + 1 * var(--tree-indent, 16px))");
+  });
+
+  it("indents lazy-loading placeholder rows past their parent level", () => {
+    const { tree, key } = setup({ getChildren: () => undefined, loadChildren: () => undefined });
+    key("ArrowDown");
+    key("ArrowRight");
+    // Loading placeholders are `role="presentation"`, not tree items.
+    const placeholder = tree.querySelector<HTMLElement>('[role="presentation"]');
+    expect(placeholder?.style.paddingLeft).toBe("calc(24px + 1 * var(--tree-indent, 20px))");
+  });
+});
+
+describe("Tree double-click", () => {
+  it("selects on the first press without cancelling its default", () => {
+    const { tree } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "README.md" });
+    expect(fireEvent.mouseDown(row, { button: 0, detail: 1 })).toBe(true);
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("cancels the second press so double-clicking cannot select label text, and still activates", () => {
+    const { tree, onActivate } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "README.md" });
+    fireEvent.mouseDown(row, { button: 0, detail: 1 });
+    // The browser starts its word selection on this press; cancelling it keeps
+    // the labels unselected (jsdom reports cancellation through dispatchEvent).
+    expect(fireEvent.mouseDown(row, { button: 0, detail: 2 })).toBe(false);
+    fireEvent.doubleClick(row);
+    expect(onActivate).toHaveBeenCalledWith(expect.objectContaining({ id: "README.md" }), expect.anything());
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("still expands a folder on double-click", () => {
+    const { tree } = setup();
+    const row = within(tree).getByRole("treeitem", { name: "src" });
+    fireEvent.mouseDown(row, { button: 0, detail: 1 });
+    fireEvent.mouseDown(row, { button: 0, detail: 2 });
+    fireEvent.doubleClick(row);
+    expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
   });
 });

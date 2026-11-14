@@ -49,6 +49,10 @@ pub mod framing {
                 }
                 return Ok(None);
             }
+            // A UTF-16LE line break is `\n\0`: the cut after `\n` leaves a NUL at the start of the
+            // next line, which would turn the `Content-Length` after it into noise.
+            let nuls = line.iter().take_while(|&&b| b == 0).count();
+            line.drain(..nuls);
             if line.last() != Some(&b'\n') {
                 if n as u64 >= MAX_HEADER_LINE {
                     return Err(Error::new(ErrorKind::InvalidData, "header line too long"));
@@ -219,6 +223,10 @@ pub trait Handler: Send + Sync + 'static {
 
     /// Called once the response to a `method` request is queued: what it sends follows the response.
     fn after_response(&self, _method: &str) {}
+
+    /// Adjusts every message from the peer (responses included) before it is dispatched, e.g.
+    /// to repair values the peer spells more loosely than the types that read them accept.
+    fn normalize_incoming(&self, _message: &mut Value) {}
 }
 
 /// A [`Handler`] that ignores notifications and rejects requests.
@@ -342,7 +350,7 @@ impl Drop for KillOnDrop {
 /// child's `PATH` (a caller's `env` PATH, else the login shell's, else ours), so
 /// that on Windows `PATHEXT` names (`codex` → `codex.cmd`) start; anything else
 /// is kept as given.
-fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
+pub fn resolve_spawn_program(command: &str, env: &[(String, String)]) -> std::path::PathBuf {
     let path = std::path::Path::new(command);
     if path.components().count() > 1 || path.is_absolute() {
         return path.to_path_buf();
@@ -581,9 +589,10 @@ impl Peer {
                 .expect("spawn jsonrpc notification thread");
         }
 
-        // Reader: parses and dispatches; never runs handler code itself.
+        // Reader: parses and dispatches; runs no handler code beyond `normalize_incoming`.
         {
             let inner = inner.clone();
+            let handler = handler.clone();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(reader);
                 let seen_message = AtomicBool::new(false);
@@ -606,7 +615,7 @@ impl Peer {
                     match msg {
                         Ok(Some(body)) => {
                             seen_message.store(true, Ordering::Relaxed);
-                            dispatch(&inner, &notif_tx, &body);
+                            dispatch(&inner, &*handler, &notif_tx, &body);
                         }
                         Ok(None) => break,
                         Err(e) => {
@@ -779,15 +788,16 @@ async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value,
     }
 }
 
-fn dispatch(inner: &Arc<Inner>, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {
+fn dispatch(inner: &Arc<Inner>, handler: &dyn Handler, notif_tx: &std::sync::mpsc::Sender<Incoming>, body: &[u8]) {
     tracing::trace!(target: "ide_jsonrpc::wire", "<-- {}", String::from_utf8_lossy(body));
-    let msg: Value = match serde_json::from_slice(body) {
+    let mut msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("jsonrpc: unparsable message: {e}");
             return;
         }
     };
+    handler.normalize_incoming(&mut msg);
     let Value::Object(mut obj) = msg else {
         tracing::warn!("jsonrpc: ignoring non-object message");
         return;

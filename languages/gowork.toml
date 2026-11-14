@@ -3,9 +3,11 @@ name = "Go Workspace"
 filenames = ["go.work"]
 line-comment = "//"
 indent = { tab-size = 4, insert-spaces = false }
+ui-mode = "GoMod"
 
 [[language-servers]]
 name = "gopls"
 command = "gopls"
+initialization-options = { semanticTokens = true, vulncheck = "Imports" }
 root-markers = ["go.work"]
 install-hint = "go install golang.org/x/tools/gopls@latest"

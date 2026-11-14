@@ -8,6 +8,9 @@ import type { Mermaid } from "mermaid";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { themeKey } from "@/platform/themeWatch";
 import { attachPanZoom } from "../panZoom";
+import { attachDiagramTools, TOOLS_ATTR } from "./mermaidTools";
+import { localSvg } from "./localSvg";
+import { reid } from "./svgIds";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
 const OUTPUT_CLASS = "mermaid-output";
@@ -21,6 +24,8 @@ let seq = 0;
 /** Results by theme + source, so edits elsewhere in the file don't re-render diagrams. */
 const cache = new Map<string, Result>();
 const CACHE_LIMIT = 64;
+/** What each placeholder shows (theme + source): a later pass leaves those it already drew alone. */
+const drawn = new WeakMap<HTMLElement, string>();
 /** mermaid's render isn't re-entrant across configuration changes: one at a time. */
 let queue: Promise<unknown> = Promise.resolve();
 
@@ -33,6 +38,12 @@ function loadMermaid(): Promise<Mermaid> {
 /**
  * Diagram colours from the IDE tokens. Mermaid parses only hex and `rgb()`, so
  * tokens a theme writes as `hsl()`, `color-mix()` or `var()` are resolved to RGB.
+ *
+ * Shape fills cannot be the editor surface: on a dark theme that is nearly the
+ * preview background, so nodes, actors and slices paint as black. Class-diagram
+ * text is `nodeBorder`, so that has to be the foreground, not a chrome border.
+ * `darkMode` then darkens every `cScale*` by 75%; series colours are passed
+ * explicitly because a later override restores them.
  */
 function themeVariables(): Record<string, string | boolean> {
   const root = document.documentElement;
@@ -46,21 +57,119 @@ function themeVariables(): Record<string, string | boolean> {
     }
     return undefined;
   };
+  const dark = root.dataset.theme !== "light";
+  const canvas = token("--bg-editor", "--bg-app");
+  const surface = dark ? token("--bg-floating-toolbar", "--bg-popup", "--bg-elev") : token("--bg-elev", "--bg-popup");
+  const cluster = dark
+    ? token("--bg-selected", "--bg-floating-toolbar", "--bg-elev")
+    : token("--bg-hover", "--bg-elev");
+  const ink = token("--fg-strong", "--fg");
+  const line = token("--fg-secondary", "--fg");
+  const text = token("--fg");
+  const series = [
+    "--accent",
+    "--chart-series",
+    "--success",
+    "--warning",
+    "--info",
+    "--danger",
+    "--link",
+    "--vcs-modified",
+  ]
+    .map((name) => token(name))
+    .filter((color): color is string => Boolean(color));
   const vars: Record<string, string | undefined> = {
-    background: token("--bg-editor", "--bg-app"),
-    mainBkg: token("--bg-elev"),
-    primaryColor: token("--bg-elev"),
-    primaryBorderColor: token("--border-strong"),
-    primaryTextColor: token("--fg-strong", "--fg"),
-    secondaryColor: token("--bg-popup"),
-    tertiaryColor: token("--bg-hover"),
-    lineColor: token("--fg-secondary"),
-    textColor: token("--fg"),
-    edgeLabelBackground: token("--bg-editor", "--bg-app"),
-    errorBkgColor: token("--bg-elev"),
+    background: canvas,
+    mainBkg: surface,
+    secondBkg: surface,
+    primaryColor: series[0] ?? surface,
+    secondaryColor: series[1] ?? surface,
+    tertiaryColor: series[2] ?? surface,
+    primaryBorderColor: ink,
+    secondaryBorderColor: line,
+    tertiaryBorderColor: line,
+    nodeBorder: ink,
+    primaryTextColor: ink,
+    secondaryTextColor: ink,
+    tertiaryTextColor: ink,
+    nodeTextColor: ink,
+    textColor: text,
+    titleColor: ink,
+    classText: ink,
+    lineColor: line,
+    defaultLinkColor: line,
+    edgeLabelBackground: canvas,
+    clusterBkg: cluster,
+    clusterBorder: line,
+    actorBkg: surface,
+    actorBorder: line,
+    actorTextColor: ink,
+    actorLineColor: line,
+    signalColor: text,
+    signalTextColor: text,
+    labelBoxBkgColor: surface,
+    labelBoxBorderColor: line,
+    labelTextColor: ink,
+    loopTextColor: ink,
+    activationBkgColor: cluster,
+    activationBorderColor: line,
+    sequenceNumberColor: ink,
+    sectionBkgColor: cluster,
+    sectionBkgColor2: surface,
+    altSectionBkgColor: canvas,
+    excludeBkgColor: surface,
+    taskBkgColor: surface,
+    taskBorderColor: ink,
+    activeTaskBkgColor: cluster,
+    activeTaskBorderColor: token("--accent"),
+    doneTaskBkgColor: surface,
+    doneTaskBorderColor: line,
+    critBkgColor: surface,
+    critBorderColor: token("--danger"),
+    taskTextColor: ink,
+    taskTextDarkColor: ink,
+    taskTextOutsideColor: text,
+    taskTextClickableColor: token("--link", "--accent"),
+    gridColor: line,
+    todayLineColor: token("--danger"),
+    vertLineColor: token("--accent"),
+    labelBackgroundColor: surface,
+    compositeBackground: canvas,
+    compositeTitleBackground: surface,
+    compositeBorder: line,
+    innerEndBackground: canvas,
+    altBackground: cluster,
+    pieStrokeColor: line,
+    pieOuterStrokeColor: line,
+    pieTitleTextColor: ink,
+    pieSectionTextColor: text,
+    pieLegendTextColor: ink,
+    branchLabelColor: ink,
+    tagLabelColor: ink,
+    tagLabelBackground: surface,
+    commitLabelColor: ink,
+    commitLabelBackground: surface,
+    archEdgeColor: line,
+    archEdgeArrowColor: line,
+    archGroupBorderColor: line,
+    errorBkgColor: surface,
     errorTextColor: token("--danger"),
+    attributeBackgroundColorOdd: surface,
+    attributeBackgroundColorEven: cluster,
   };
-  const out: Record<string, string | boolean> = { darkMode: document.documentElement.dataset.theme !== "light" };
+  for (let i = 0; i < 12 && series.length; i++) {
+    const color = series[i % series.length]!;
+    vars[`cScale${i}`] = color;
+    vars[`cScaleInv${i}`] = ink;
+    vars[`cScaleLabel${i}`] = ink;
+    vars[`pie${i + 1}`] = color;
+    if (i < 8) {
+      vars[`git${i}`] = color;
+      vars[`gitBranchLabel${i}`] = ink;
+    }
+  }
+  // `none` drops the built-in light-grey halo, which reads as a grey smudge on dark surfaces.
+  const out: Record<string, string | boolean> = { darkMode: dark, useGradient: false, dropShadow: "none" };
   for (const [k, v] of Object.entries(vars)) if (v) out[k] = v;
   const font = css.getPropertyValue("--font-ui").trim();
   if (font) out.fontFamily = font;
@@ -72,8 +181,13 @@ function configure(mermaid: Mermaid, key: string) {
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: "strict",
+    // These go into the diagram's stylesheet as written: a diagram setting them could fetch from any host.
+    secure: ["themeCSS", "fontFamily", "altFontFamily"],
     suppressErrorRendering: true,
     theme: "base",
+    // Each diagram type defaults to "neo": the start state is hard-coded
+    // black, and strokes become a gradient of the border colour.
+    look: "classic",
     themeVariables: themeVariables(),
   });
   configured = key;
@@ -114,10 +228,11 @@ function remember(k: string, r: Result) {
 
 function show(block: HTMLElement, result: Result | null, stale?: Node) {
   block.querySelector(`:scope > .${OUTPUT_CLASS}`)?.remove();
+  block.querySelector(`:scope > [${TOOLS_ATTR}]`)?.remove();
   const out = document.createElement("div");
   out.className = OUTPUT_CLASS;
   if (result && "svg" in result) {
-    out.innerHTML = result.svg;
+    out.append(localSvg(reid(result.svg)));
     block.setAttribute(RENDERED_ATTR, "ok");
   } else if (result) {
     out.setAttribute("role", "alert");
@@ -132,7 +247,11 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
     return;
   }
   block.append(out);
-  if (block.getAttribute(RENDERED_ATTR) === "ok") attachPanZoom(out);
+  if (block.getAttribute(RENDERED_ATTR) === "ok") {
+    attachPanZoom(out);
+    const svg = out.querySelector("svg");
+    if (svg) attachDiagramTools(block, svg);
+  }
 }
 
 export const hasMermaid = (root: ParentNode) => root.querySelector(MERMAID_SELECTOR) !== null;
@@ -159,17 +278,23 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
   blocks.forEach((block, i) => {
     const source = (block.querySelector("code")?.textContent ?? "").replace(/\n+$/, "");
     const k = `${key}\n${source}`;
-    const cached = cache.get(k);
     const keep = () => {
       const out = block.querySelector(`:scope > .${OUTPUT_CLASS}`);
       if (out && block.getAttribute(RENDERED_ATTR) === "ok")
         previous[i] = out.querySelector("svg") ?? out.firstChild ?? out;
     };
-    if (cached) {
-      show(block, cached);
+    if (drawn.get(block) === k && block.querySelector(`:scope > .${OUTPUT_CLASS}`)) {
       keep();
       return;
     }
+    const cached = cache.get(k);
+    if (cached) {
+      show(block, cached);
+      drawn.set(block, k);
+      keep();
+      return;
+    }
+    drawn.delete(block);
     show(block, null, previous[i]);
     pending.push(
       enqueue(source, key, () => live).then((r) => {
@@ -177,6 +302,7 @@ export function renderMermaidIn(root: HTMLElement, previous: Node[] = []): Merma
         remember(k, r);
         if (!live) return;
         show(block, r);
+        drawn.set(block, k);
         keep();
       }),
     );

@@ -1,14 +1,18 @@
 .session {
+  --session-content-width: var(--agent-conversation-width);
+  --session-card-width: 80%;
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  background: var(--bg-editor);
+  background: var(--bg-app);
   color: var(--fg);
+  font-size: var(--fs-ui);
 }
 
 .conversation {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -30,109 +34,131 @@
   width: auto;
 }
 
-/* The conversation hugs its content; spare space stays below the composer
-   instead of inside the chat. */
-.streamArea,
-.stream {
-  flex: 0 1 auto;
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 6px 0 12px;
-  border-bottom: 1px solid var(--border);
-  flex: none;
-  min-width: 0;
-}
-.title {
-  flex: 0 1 auto;
-  min-width: 0;
-  font-weight: 600;
-  color: var(--fg-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.headerDetail {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--fg-subtle);
-}
-.headerText {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .providerIcon {
   color: var(--fg-muted);
+}
+
+/* The task's state and its terminal and changes, just above the composer. */
+.statusBar {
+  display: flex;
+  /* The changes chip sits above the line; the facts stay on that line's baseline. */
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 2px;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+/* The facts on the bar's line are as tall as its chips, so their text shares one centre line. */
+.agent {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  min-width: 0;
+  color: var(--fg-secondary);
+}
+.agentName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Where the task works, as the new-task composer shows it. */
+.where {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  /* The chips' own padding spaces them. */
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+.note {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 22px;
+  white-space: nowrap;
+}
+/* The changes sit above the meter, time and terminal; those keep their one row at the right. */
+.statusEnd {
+  display: inline-flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  margin-left: auto;
+}
+/* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
+.statusMeters {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  height: 22px;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.statusActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+/* What changed (files, commits) above the meters; both open the Changes pane. */
+.statusChips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+}
+.statusChip {
+  composes: surface from "../../ui/Chip.module.css";
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  border: none;
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.statusChip:hover,
+.statusChip[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+/* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */
+.statusChipLabel {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .muted {
   color: var(--fg-subtle);
 }
 
-/* Pending permission: an editor notification banner. A long question (AskUserQuestion) wraps,
-   scrolling past a third of the height; the answers follow it, wrapping too. */
-.banner {
-  flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 4px 8px;
-  min-height: 36px;
-  padding: 9px 12px;
-  background: var(--bg-feedback-warning);
-  border-bottom: 1px solid var(--border-feedback-warning);
-  color: var(--fg-strong);
-}
-.banner > svg {
-  flex: none;
-  margin-top: 1px;
-}
-.bannerText {
-  flex: 1 1 240px;
-  min-width: 0;
-  max-height: 33vh;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.bannerSpacer {
-  flex: 1;
-}
-.bannerActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin-left: auto;
-}
-.bannerLink {
-  flex: none;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.bannerLink:hover:not(:disabled) {
-  color: var(--link-hover);
-  text-decoration: underline;
-}
-.bannerLink:disabled {
-  color: var(--fg-subtle);
-  cursor: default;
-}
-
 /* The conversation with its find bar. */
 .streamArea {
+  min-width: 0;
   position: relative;
   flex: 1;
   min-height: 0;
@@ -143,45 +169,222 @@
 .stream {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 14px 16px 8px;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-anchor: none;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+}
+/* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
+.stream > * {
+  flex: none;
+  min-width: 0;
+  width: min(100%, var(--session-content-width));
+  max-width: 100%;
+  margin-inline: auto;
+  box-sizing: border-box;
+}
+.conversationRow {
+  min-width: 0;
+  contain-intrinsic-size: auto 120px;
+}
+/* Laid out once, an off-screen row skips rendering at its remembered size (`useOffscreenRows`). */
+.conversationRow[data-measured] {
+  content-visibility: auto;
+}
+/* Keep turns distinct and the work within a turn close to its author. */
+.stream > * + * {
+  margin-top: var(--space-4);
+}
+.stream > [data-process] + [data-process] {
+  margin-top: var(--space-2);
 }
 .stream:focus {
   outline: none;
 }
-/* Skip off-screen output layout; editable messages must repaint immediately when focus/content changes. */
-.stream > :not(.message):not(details) {
-  content-visibility: auto;
-  contain-intrinsic-block-size: auto 80px;
+/* Scrolled up: one click back to the latest message, centred over the stream's end like the conversation. */
+.jumpToLatest {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: var(--space-2);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-toolbar-button);
+  background: var(--bg-app);
+  color: var(--fg-muted);
+  cursor: pointer;
 }
-
+.jumpToLatest:hover {
+  background: var(--bg-hover);
+}
 /* Your message with its actions, shown on hover. */
 .message {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
 }
-.messageMeta {
+/* Keep the author attached to the message. */
+.messageHead {
   display: flex;
   align-items: center;
-  min-height: 20px;
-  padding-left: 12px;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  min-height: var(--h-control-small);
+  margin-bottom: calc(var(--space-2) / 2);
+}
+.messageTime {
+  -webkit-user-select: none;
+  user-select: none;
+  color: var(--fg-subtle);
   font-size: var(--fs-small);
+  white-space: nowrap;
+}
+.messageHead > .role {
+  margin-bottom: 0;
+}
+/* User cards and their footers share a right edge. */
+.userMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.userMessage > .user {
+  width: fit-content;
+  max-width: min(var(--session-card-width), 720px);
+}
+.userMessage > .messageHead {
+  justify-content: flex-end;
+}
+/* The actions and time below a message, in flow so they never cover the next entry. */
+.messageFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--h-control-small);
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+/* Who wrote the message. */
+.role {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.agentMessage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.agentAuthor {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-control-small);
+}
+.agentAuthor > .role {
+  margin-bottom: 0;
+}
+.agentAuthor + * {
+  margin-top: calc(var(--space-2) / 2);
+}
+.conversationRow > .process,
+.conversationRow > .permissionLine {
+  max-width: 100%;
+}
+/* Replies read as plain text on the panel, like other tool-window content. */
+.agentCard {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+@container (max-width: 640px) {
+  .stream {
+    --session-card-width: 96%;
+  }
+}
+/* A narrow docked session: rather than cut every fact to a letter or two, the bar keeps the
+   agent's icon and its state; where it works is in the task's tooltip and Changes. */
+@container (max-width: 420px) {
+  .where,
+  .agentName {
+    display: none;
+  }
 }
 .messageActions {
   display: inline-flex;
-  gap: 2px;
-  margin-left: 6px;
+  gap: 4px;
+  max-width: 100%;
+  flex-wrap: wrap;
   opacity: 0;
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
 }
+.messageFooter > .messageTime,
+.messageHead > .messageTime {
+  opacity: 0;
+}
+/* A turn's final reply keeps its time and actions in view; your messages show theirs on hover. */
+.conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageTime,
+.conversationRow:nth-last-child(1 of [data-message]) .agentMessage .messageActions,
+.conversationRow:nth-last-child(1 of [data-message]) .reply .messageActions,
+.message:hover .messageTime,
+.agentMessage:hover .messageFooter > .messageTime,
+.message:focus-within .messageTime,
+.agentMessage:focus-within .messageFooter > .messageTime,
 .message:hover .messageActions,
+.reply:hover .messageActions,
+.agentMessage:hover .messageActions,
+.agentMessage:focus-within .messageActions,
+.message:focus-within .messageActions,
+.reply:focus-within .messageActions,
+.messageActions[data-copied],
 .messageActions:focus-within {
   opacity: 1;
   pointer-events: auto;
+}
+
+.reply {
+  position: relative;
+}
+.replyFooter {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  box-sizing: border-box;
+  display: flex;
+  min-height: 24px;
+  padding-top: 2px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (hover: none) {
+  .messageActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .replyFooter {
+    position: static;
+    margin-top: 4px;
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .findBar {
@@ -210,9 +413,13 @@
 }
 
 .user {
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--accent);
-  color: var(--fg-strong);
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: var(--radius-tab);
+  background: var(--bg-hover);
+  color: var(--fg);
+  line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -245,7 +452,7 @@
 }
 
 .markdown {
-  line-height: 1.55;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .markdown :global(p) {
@@ -254,26 +461,36 @@
 .markdown :global(p:last-child) {
   margin-bottom: 0;
 }
+.markdown {
+  /* A tint of the text colour: reads as code on any background, and a selection over
+     it doesn't leave light boxes the way an opaque near-white fill does. */
+  --md-code-bg: color-mix(in srgb, var(--fg) 7%, transparent);
+}
 .markdown :global(code) {
   font-family: var(--font-mono);
   font-size: var(--fs-small);
-  padding: 0 4px;
+  padding: 0 2px;
   border-radius: 3px;
-  background: var(--bg-elev);
+  background: var(--md-code-bg);
 }
 .markdown :global(pre) {
   margin: 0 0 8px;
   padding: 8px 10px;
   border-radius: var(--radius-small);
-  background: var(--bg-elev);
+  background: var(--md-code-bg);
   overflow: auto;
 }
 .markdown :global(pre code) {
+  display: block;
   padding: 0;
   background: none;
 }
-.markdown :global(pre) {
+.codeBlock {
   position: relative;
+  margin: 0 0 8px;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
 }
 .codeCopy {
   position: absolute;
@@ -291,13 +508,52 @@
   color: var(--fg-secondary);
   cursor: pointer;
   opacity: 0;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.markdown :global(pre:hover) .codeCopy,
+.codeBlock:hover > .codeCopy,
+.markdown :global([data-mermaid]:hover) .codeCopy,
 .codeCopy:focus-visible {
   opacity: 1;
 }
+/* A drawn diagram carries its own tools at the top-right; Copy moves aside. */
+.markdown :global([data-mermaid][data-mermaid-state="ok"]) .codeCopy {
+  right: 56px;
+}
 .codeCopy:hover {
   background: var(--bg-hover);
+}
+/* Mermaid diagrams: the source stays until the diagram is drawn (and next to an
+   error), and the Copy button lives on the block — the drawn diagram hides the
+   code block that would otherwise carry it. */
+.markdown :global([data-mermaid]) {
+  position: relative;
+  margin: 0 0 8px;
+}
+.markdown :global([data-mermaid] > pre) {
+  margin: 0;
+}
+.markdown :global([data-mermaid-state="ok"] > pre) {
+  display: none;
+}
+.markdown :global(.mermaid-output) {
+  overflow: hidden;
+  text-align: center;
+  /* Node labels are drawing, not text: selecting across a reply skips them. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global([data-mermaid-state="error"] > .mermaid-output) {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  text-align: left;
+  white-space: pre-wrap;
 }
 .fileLink {
   color: var(--link);
@@ -311,6 +567,31 @@
 .markdown :global(ol) {
   margin: 0 0 8px;
   padding-left: 20px;
+  list-style: none;
+}
+/* Markers are drawn as pseudo-elements: WebKit paints a selection box around a native marker,
+   leaving a broken stripe down the gutter when a list is selected. */
+.markdown :global(li) {
+  position: relative;
+}
+.markdown :global(li)::before {
+  position: absolute;
+  right: calc(100% + 6px);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.markdown :global(ul > li)::before {
+  content: "•";
+}
+.markdown :global(ul ul > li)::before {
+  content: "◦";
+}
+.markdown :global(ul ul ul > li)::before {
+  content: "▪";
+}
+.markdown :global(ol > li)::before {
+  content: counter(list-item) ".";
+  font-variant-numeric: tabular-nums;
 }
 .markdown :global(a) {
   color: var(--link);
@@ -359,9 +640,23 @@
 .markdown :global(img) {
   max-width: 100%;
 }
+.loadImage {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.loadImage:hover {
+  background: var(--bg-hover);
+}
 .markdown :global(li:has(> input[type="checkbox"])) {
   margin-left: -20px;
-  list-style: none;
+}
+.markdown :global(li:has(> input[type="checkbox"]))::before {
+  content: none;
 }
 .markdown > :global(:first-child) {
   margin-top: 0;
@@ -380,8 +675,34 @@
   display: none;
 }
 .thought summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--h-row);
   color: var(--fg-muted);
   font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.thought summary:hover {
+  color: var(--fg);
+}
+.thoughtChevron {
+  flex: none;
+}
+.thoughtPreview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thought[open] .thoughtChevron {
+  transform: rotate(90deg);
+}
+.thoughtBody {
+  margin-top: var(--space-2);
+  color: var(--fg-secondary);
 }
 .thoughtText {
   margin-top: 4px;
@@ -396,23 +717,33 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 2px 8px;
-  margin-left: -8px;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
   border-radius: var(--radius-row);
   color: var(--fg-secondary);
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
 }
 .toolDetails > summary.tool:hover {
   background: var(--bg-hover);
   color: var(--fg);
 }
+.tool > svg {
+  flex: none;
+}
 .toolTitle {
-  font-family: var(--font-mono);
+  min-width: 0;
   font-size: var(--fs-small);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.toolChevron {
+  flex: none;
+}
+.toolDetails[open] > summary .toolChevron {
+  transform: rotate(90deg);
 }
 .toolDiff {
   font: inherit;
@@ -427,6 +758,73 @@
 .toolDiff:hover {
   background: var(--bg-hover);
 }
+
+/* Reasoning and tool calls between messages, folded as one block per turn. */
+.processRun > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.processRun > summary::-webkit-details-marker {
+  display: none;
+}
+.processSummary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
+  border-radius: var(--radius-row);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.processSummary:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.processChevron {
+  flex: none;
+  transition: transform 120ms ease;
+}
+.processRun[open] .processChevron {
+  transform: rotate(90deg);
+}
+.processRun:not([open]) > .processBody {
+  min-width: 0;
+  display: none;
+}
+/* The counts keep their line; what runs now gives way and ellipsizes. */
+.processParts {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* What the run is doing now, after its counts. */
+.processCurrent {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* An open run stays bounded and scrolls on its own, so a long one doesn't push the reply away. */
+.processBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: calc(var(--h-row) * 16);
+  overflow-y: auto;
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
 .output {
   margin: 4px 0 0;
   max-height: 240px;
@@ -438,6 +836,7 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   color: var(--fg-secondary);
 }
 
@@ -460,33 +859,102 @@
 }
 
 .permissionLine {
+  box-sizing: border-box;
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--border-feedback-warning);
+  border-radius: var(--radius-small);
+  background: var(--bg-feedback-warning);
   color: var(--fg-secondary);
 }
-/* Up to three lines; the full text is its tooltip. */
-.permissionTitle {
-  display: -webkit-box;
+.permissionLine > svg {
+  flex: none;
+  margin-top: calc(var(--space-2) / 4);
+}
+.permissionAsking > svg {
+  color: var(--warning);
+}
+.permissionBody {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.permissionTitle {
+  color: var(--fg-strong);
+  font-weight: 400;
+}
+.permissionCommand {
+  min-width: 0;
+  max-width: 100%;
+  max-height: calc(var(--lh-code) * 6);
+  box-sizing: border-box;
+  margin: 0;
+  padding: var(--space-2);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+.permissionCommand:focus-visible,
+.permissionDone:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.permissionDetail {
+  max-height: 33vh;
+  overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.permissionLine > svg,
-.permissionLine > .muted {
-  flex: none;
-}
 .permissionAnswers {
-  flex: 1 1 160px;
   min-width: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 12px;
-  margin-left: 6px;
+  gap: var(--space-2);
+}
+.permissionOption {
+  min-width: 0;
+  max-width: 100%;
+  padding-inline: var(--space-3);
+}
+.permissionOptionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.permissionPrefix {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+}
+.permissionDone {
+  padding: calc(var(--space-2) / 2) 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.permissionRecord {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .error {
@@ -514,7 +982,36 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 12px 12px;
+  align-self: center;
+  width: 100%;
+  max-width: calc(var(--session-content-width) + var(--space-3) * 2);
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3) var(--space-4);
+}
+
+.background {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backgroundTask {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--radius-row);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.backgroundText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .queue {
@@ -526,7 +1023,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
+  min-height: 28px;
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
@@ -539,11 +1036,17 @@
   white-space: nowrap;
 }
 
+/* Meters that don't fit wrap onto a hidden second row instead of being cut in half. */
 .meters {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 22px;
+  overflow: hidden;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  align-content: flex-start;
+  gap: 0 10px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -551,8 +1054,12 @@
 }
 .meter {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
+  min-width: 0;
+  height: 22px;
   gap: 5px;
+  overflow: hidden;
 }
 .usageBar {
   width: 36px;
@@ -610,9 +1117,8 @@
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: 4px 6px;
   margin-top: 4px;
-  color: var(--fg-muted);
   font-size: var(--fs-small);
 }
 .attachment {
@@ -697,6 +1203,47 @@
   font-size: var(--fs-small);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* Group and commit rows of the grouped Changes pane. */
+.changeGroup {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeGroupName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.changeCommit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeCommitHash {
+  flex: none;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+}
+.changeCommitSummary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changeCommitTime {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 
 .added {
@@ -888,29 +1435,316 @@
   text-overflow: ellipsis;
 }
 
-.changesToggle {
-  display: inline-flex;
+/* An open AskUserQuestion: every question with its options, answered at once above the composer. */
+.questionCard {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+  /* The composer's width, so the card sits exactly over the box it belongs to. */
+  width: 100%;
+  max-width: var(--session-content-width);
+  margin: 0 auto 8px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  container: question-card / inline-size;
+}
+.questionTabCheck {
+  flex: none;
+  color: var(--accent);
+}
+/* All questions share one grid cell: the card keeps the tallest question's height. */
+.questionPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.questionPanelsPaged {
+  min-height: 0;
+  overflow-y: auto;
+}
+.questionPanel {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.questionPanelHidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+/* The shown preview re-enables visibility, which would escape the hidden panel. */
+.questionPanelHidden .questionPreviewActive {
+  visibility: hidden;
+}
+.question {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.questionText {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.questionTag {
+  margin: 0 8px 0 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.questionLabel .questionTag {
+  margin: 0 0 0 8px;
+}
+.question .questionOption {
+  display: flex;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-row);
+}
+/* Each option is a card of its own: separate targets, not one list with hairlines. */
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.question .questionChoices > * {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+}
+.question .questionChoices > *:hover {
+  border-color: var(--border-strong);
+}
+.question .questionChoices > *:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+.question .questionOption:hover {
+  background: var(--bg-hover);
+}
+.questionOption > :first-child {
+  margin-top: 1px;
+}
+.questionOption > :last-child {
+  flex: 1;
+  min-width: 0;
+}
+.questionChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.questionOptionText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.questionLabel {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--fg);
+}
+.questionDescription {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.questionKey {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.questionOther {
+  margin: 2px 0 0 30px;
+}
+.questionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.questionChoices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+@container question-card (min-width: 640px) {
+  .questionBodyWithPreview {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .questionBodyWithPreview .questionPreview {
+    margin: 0;
+  }
+}
+.questionPreview {
+  display: grid;
+  min-width: 0;
+  margin: 0 0 0 30px;
+}
+.questionPreviewItem {
+  display: flex;
+  flex-direction: column;
+  grid-area: 1 / 1;
+  gap: 4px;
+  min-width: 0;
+  visibility: hidden;
+}
+.questionPreviewActive {
+  visibility: visible;
+}
+.questionPreviewCaption {
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.questionPreviewBody {
+  margin: 0;
+  padding: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-editor);
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+}
+.questionPreviewEmpty {
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.questionActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.questionPager {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.questionPage {
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Reasoning while it streams (auto): bounded, its tail in view. */
+.thoughtLive .thoughtBody {
+  max-height: calc(var(--h-row) * 4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  mask-image: linear-gradient(to bottom, transparent, black 40%);
+}
+
+/* A finished turn's work, folded under its message. */
+.turnFold > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.turnFold > summary::-webkit-details-marker {
+  display: none;
+}
+.turnFold[open] .processChevron {
+  transform: rotate(90deg);
+}
+.turnBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: 2px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+/* Above the composer: what waits for the user, the plan and changes, what runs now. */
+.tray {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tray:empty {
+  display: none;
+}
+.trayAsk {
+  min-width: 0;
+}
+.trayStrip {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  height: 22px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--fg-subtle);
+}
+.trayChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-row);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-row);
+  background: none;
+  color: var(--fg-secondary);
   font: inherit;
   font-size: var(--fs-small);
   cursor: pointer;
 }
-.changesToggle:hover:not(:disabled) {
+.trayChip:hover,
+.trayChip[aria-expanded="true"] {
   background: var(--bg-hover);
-  color: var(--fg-strong);
+  color: var(--fg);
 }
-.changesToggle[aria-pressed="true"] {
-  background: var(--bg-selected);
-  color: var(--fg-strong);
+.trayPlan {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px var(--space-2) 4px calc(var(--space-2) * 2);
+  font-size: var(--fs-small);
 }
-.changesToggle:disabled {
-  opacity: 0.4;
-  cursor: default;
+.planCurrent {
+  color: var(--fg);
+}
+
+/* Work in progress: a light sweeps across its label. The conversation's one spinner is the
+   working row at its end. */
+.shimmer {
+  background: linear-gradient(90deg, var(--fg-muted) 40%, var(--fg) 50%, var(--fg-muted) 60%) 0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer {
+    animation: none;
+    background: none;
+    color: var(--fg-muted);
+  }
 }

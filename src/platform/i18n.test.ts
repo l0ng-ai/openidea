@@ -89,6 +89,8 @@ describe("t / locales", () => {
     expect(resolveLocale("fr-CA")).toBe("fr");
     expect(resolveLocale("pl_PL")).toBe("pl");
     expect(resolveLocale("pl-PL")).toBe("pl");
+    expect(resolveLocale("es-MX")).toBe("es");
+    expect(resolveLocale("es_MX")).toBe("es");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
@@ -160,6 +162,16 @@ describe("t / locales", () => {
     expect(txTemplate("Retry failed")).toBe(`${tx("Retry")}失败`);
     expect(txTemplate("Sync with OS")).toBe("与操作系统同步");
     expect(txTemplate("Something else entirely")).toBe("Something else entirely");
+    expect(
+      txTemplate(
+        "The PHP language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed",
+      ),
+    ).toBe("语言服务器无法重命名此符号（PHP）；仅重命名插件索引的名称会导致重命名不完整");
+    expect(
+      txTemplate(
+        "The Ruby language server can't rename this symbol; renaming only the plugin's indexed names would leave it half renamed",
+      ),
+    ).toBe("语言服务器无法重命名此符号（Ruby 语言）；仅重命名插件索引的名称会导致重命名不完整");
   });
 
   it("translates text built by the tx tag, again after the locale changes", async () => {
@@ -208,6 +220,14 @@ describe("t / locales", () => {
     expect(t("app.keymap.count", { count: 5 })).toBe("5 skrótów");
   });
 
+  it("loads the Spanish catalogs", async () => {
+    await setLocale("es-MX");
+    expect(useI18n.getState().locale).toBe("es");
+    expect(t("common.cancel")).toBe("Cancelar");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 atajo");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 atajos");
+  });
+
   it("lists keys by prefix", () => {
     const keys = keysWithPrefix("menu.");
     expect(keys).toContain("menu.file.save");
@@ -233,12 +253,66 @@ describe("catalogs", () => {
   const COMPLETE = ["zh"];
   /** Written in another script, so a text equal to its English source was not translated. */
   const OWN_SCRIPT = new Set(["zh", "ko"]);
+  /** Product names intentionally kept as written in every locale. */
+  const SAME_AS_ENGLISH = new Set([
+    "Docker",
+    "JUnit",
+    "⌘Enter",
+    "Fork",
+    "Shell",
+    "ID",
+    "my-agent",
+    "Java",
+    "Python",
+    "Python {short}",
+    "C/C++",
+    "C#",
+    "Go",
+    "Rust",
+    "Kotlin",
+    "PHP",
+    "SQL",
+    "JavaScript",
+    "TypeScript",
+    "HTML",
+    "CSS",
+    "JSON",
+    "YAML",
+    "XML",
+    "Maven",
+    "Gradle",
+    "npm",
+    "pnpm",
+    "Yarn",
+    "Cargo",
+    "CMake",
+    "f-string",
+    "Tailwind CSS",
+    "Bun",
+    "Deno",
+    "Node.js",
+    "bun-dap (Bun)",
+  ]);
   const translated = SUPPORTED_LOCALES.filter((locale) => locale !== "en").sort();
 
   it("exist for exactly the supported locales", () => {
     expect(translated.length).toBeGreaterThan(0);
     expect(Object.keys(translations).sort()).toEqual(translated);
-    expect(Object.keys(texts).sort()).toEqual(translated);
+    expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
+  });
+
+  it("list every key once", () => {
+    // JSON.parse keeps the last of two equal keys, so a merge that adds a key twice goes unnoticed.
+    for (const dir of [LOCALES_DIR, join(LOCALES_DIR, "text")]) {
+      for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+        const keys = [...readFileSync(join(dir, file), "utf8").matchAll(/^ {2}("(?:[^"\\]|\\.)*"):/gm)].map(
+          (m) => JSON.parse(m[1]!) as string,
+        );
+        const seen = new Set<string>();
+        const repeated = keys.filter((key) => seen.has(key) || !seen.add(key));
+        expect(repeated, `${file} in ${dir}`).toEqual([]);
+      }
+    }
   });
 
   it("translate source text into non-empty text", () => {
@@ -249,7 +323,8 @@ describe("catalogs", () => {
   it("translate source text into text different from English, in locales with another script", () => {
     for (const [locale, catalog] of Object.entries(texts))
       if (OWN_SCRIPT.has(locale))
-        for (const [source, text] of Object.entries(catalog)) expect(text, `${locale}:${source}`).not.toBe(source);
+        for (const [source, text] of Object.entries(catalog))
+          if (!SAME_AS_ENGLISH.has(source)) expect(text, `${locale}:${source}`).not.toBe(source);
   });
 
   it("keep the placeholders of source-text templates", () => {

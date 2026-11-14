@@ -1,13 +1,14 @@
 /**
- * Markdown → sanitized HTML for the preview. Every top-level block is wrapped
- * in an element carrying its 0-based source line (`data-line`) for scroll
- * sync; images keep their source in `data-src` and are loaded by the preview
+ * Markdown → sanitized HTML for the preview. Every top-level block (or run of
+ * blocks inside one HTML container) is wrapped in an element carrying its
+ * 0-based source line (`data-line`) for scroll sync; images keep their source in `data-src` and are loaded by the preview
  * (local files through the backend, as the CSP blocks file URLs). Mermaid
  * blocks become `[data-mermaid]` placeholders, drawn by `./mermaid`. YAML front matter is shown
  * as a table of its top-level fields.
  */
 import { Marked, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
+import { opensOtherShare } from "@/platform/paths";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -26,9 +27,21 @@ const marked = new Marked({
 // Own instance: hooks must not leak into the hover / documentation renderer.
 let purifier: ReturnType<typeof DOMPurify> | null = null;
 
+/** Whether the webview would read `value` as an address on another host: it drops blanks and takes `\` for `/`. */
+const namesHost = (value: string) =>
+  /^(https?:|[\\/]{2})/i.test([...value].filter((c) => c.charCodeAt(0) > 32).join(""));
+
 function purify(): ReturnType<typeof DOMPurify> {
   if (purifier) return purifier;
   const p = DOMPurify(window);
+  // The preview loads nothing from other hosts. Only a link, opened on a click, names one;
+  // an image keeps its source for the preview to refuse.
+  p.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName === "alt" || data.attrName === "title") return;
+    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "src" && node.tagName === "IMG") return;
+    if (namesHost(data.attrValue)) data.keepAttr = false;
+  });
   p.addHook("afterSanitizeAttributes", (node) => {
     if (node.tagName === "IMG") {
       const src = node.getAttribute("src");
@@ -99,6 +112,37 @@ function frontMatterTable(fields: readonly [string, string][]): string {
   return `<table data-front-matter=""><tbody>${rows.join("")}</tbody></table>`;
 }
 
+// Containers whose open and close tags may sit in separate HTML blocks with Markdown between them.
+const CONTAINER_TAGS = new Set([
+  "article",
+  "aside",
+  "blockquote",
+  "center",
+  "details",
+  "div",
+  "dl",
+  "figure",
+  "footer",
+  "header",
+  "main",
+  "nav",
+  "ol",
+  "section",
+  "table",
+  "ul",
+]);
+const TAG = /<(\/?)([a-zA-Z][\w-]*)(?:"[^"]*"|'[^']*'|[^'">])*?(\/?)>/g;
+
+/** Applies the container tags an HTML block opens and closes to `open`, the stack of unclosed ones. */
+function trackContainers(raw: string, open: string[]) {
+  for (const [, closing, name, selfClosing] of raw.replace(/<!--[\s\S]*?(?:-->|$)/g, "").matchAll(TAG)) {
+    const tag = name!.toLowerCase();
+    if (!CONTAINER_TAGS.has(tag) || selfClosing) continue;
+    if (!closing) open.push(tag);
+    else if (open.includes(tag)) open.length = open.lastIndexOf(tag);
+  }
+}
+
 export function renderMarkdown(text: string): string {
   const front = frontMatter(text);
   const body = front ? text.split("\n").slice(front.lines).join("\n") : text;
@@ -106,6 +150,10 @@ export function renderMarkdown(text: string): string {
   const slugs = new Map<string, number>();
   let line = front?.lines ?? 0;
   let html = front ? `<div data-line="0">${frontMatterTable(front.fields)}</div>` : "";
+  // Blocks inside an HTML container left open (`<details>`, `<div>`…) share its wrapper up to
+  // the close: a wrapper per block would end the container early and spill its content out.
+  const open: string[] = [];
+  let group: { line: number; html: string } | null = null;
   for (const token of tokens) {
     const start = line;
     line += countLines(token.raw);
@@ -118,14 +166,21 @@ export function renderMarkdown(text: string): string {
       slugs.set(base, n + 1);
       body = body.replace(/^<h(\d)>/, `<h$1 id="${ANCHOR_PREFIX}${n ? `${base}-${n}` : base}">`);
     }
-    html += `<div data-line="${start}">${body}</div>`;
+    group ??= { line: start, html: "" };
+    group.html += body;
+    if (token.type === "html") trackContainers(token.raw, open);
+    if (open.length) continue;
+    html += `<div data-line="${group.line}">${group.html}</div>`;
+    group = null;
   }
+  if (group) html += `<div data-line="${group.line}">${group.html}</div>`;
   // The preview shares the IDE's document: a `<style>` in a file would restyle the whole IDE.
   return purify().sanitize(html, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ["data-src", "data-line", "data-front-matter"],
-    FORBID_TAGS: ["style", "form"],
-    FORBID_ATTR: ["style"],
+    // `srcset` and `<source>` would pick an image past the one the preview loads.
+    FORBID_TAGS: ["style", "form", "source"],
+    FORBID_ATTR: ["style", "srcset"],
   });
 }
 
@@ -162,6 +217,7 @@ export function resolveLink(file: string, href: string): LinkTarget | null {
   const fragment = hash >= 0 ? decodeURIComponent(rest.slice(hash + 1)) : undefined;
   const pathPart = decodeURIComponent((hash >= 0 ? rest.slice(0, hash) : rest).replace(/\?.*$/, ""));
   const path = pathPart ? joinPath(dirOf(file), pathPart) : file;
+  if (pathPart && opensOtherShare(path, pathPart, file)) return null;
   const lineMatch = fragment ? /^L(\d+)/.exec(fragment) : null;
   if (lineMatch) return { kind: "file", path, line: Math.max(0, Number(lineMatch[1]) - 1) };
   return { kind: "file", path, ...(fragment ? { anchor: fragment } : {}) };

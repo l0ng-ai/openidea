@@ -34,7 +34,7 @@ export function applicationConfig(
     kind: target.spring ? "spring-boot" : "application",
     command: "java",
     args: ["-cp", isTestSource(relPath) ? TEST_CLASSPATH : CLASSPATH, target.className],
-    cwd: module || null,
+    cwd: null,
     module,
     env: {},
     detected: true,

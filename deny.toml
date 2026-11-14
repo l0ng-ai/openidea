@@ -11,7 +11,7 @@ ignore = [
 [licenses]
 allow = [
     "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
-    "BSD-3-Clause", "ISC", "Zlib", "0BSD", "CC0-1.0", "Unlicense",
+    "BSD-3-Clause", "ISC", "Zlib", "0BSD", "CC0-1.0", "Unlicense", "MIT-0",
     # File-level copyleft, used unmodified as dependencies.
     "MPL-2.0",
     "Unicode-3.0", "Unicode-DFS-2016", "CDLA-Permissive-2.0", "OpenSSL",
@@ -24,3 +24,7 @@ multiple-versions = "warn"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# SQLx at a pinned rev: upstream's unreleased SQLite dependency ceiling fix plus the MySQL
+# `deprecate_eof` option (transact-rs/sqlx#4507), until a release carries both.
+allow-git = ["https://github.com/l0ng-ai/sqlx"]
+required-git-spec = "rev"

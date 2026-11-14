@@ -8,6 +8,7 @@ mod translate;
 mod tests;
 
 use super::Shim;
+use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
@@ -27,8 +28,9 @@ const OUTPUT_EVERY: Duration = Duration::from_millis(200);
 const EARLY_CANCEL: Duration = Duration::from_secs(1);
 /// How long the client's connection outlives codex.
 const EXIT_GRACE: Duration = Duration::from_millis(100);
-/// ACP's error code for a request that needs the user to sign in.
-const AUTH_REQUIRED: i64 = -32000;
+/// What a thread's name is asked for with, after its first turn.
+const NAME_PROMPT: &str = "Name this conversation for a list of tasks: a short title of at most six words, in the \
+    language the user writes in. Reply with the title only, without quotes or a closing period.";
 
 pub(crate) fn connect(
     spec: &ProviderSpec,
@@ -54,6 +56,7 @@ fn attach(
         client: OnceLock::new(),
         state: Mutex::new(State::default()),
         models: tokio::sync::Mutex::new(None),
+        skills: tokio::sync::Mutex::new(()),
     });
     let codex = connect_codex(Arc::new(CodexEvents(Arc::downgrade(&shim))))?;
     let _ = shim.codex.set(codex.clone());
@@ -83,6 +86,8 @@ struct CodexShim {
     state: Mutex<State>,
     /// `model/list`, fetched once.
     models: tokio::sync::Mutex<Option<Arc<Vec<ModelInfo>>>>,
+    /// Keep skill snapshots in request order, including invalidations during session setup.
+    skills: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -124,6 +129,10 @@ struct Thread {
     early_cancel: Option<Instant>,
     /// The latest agent message (a subagent's answer).
     answer: String,
+    /// The thread has a name.
+    named: bool,
+    /// A name is being asked for.
+    naming: bool,
 }
 
 struct PendingPrompt {
@@ -204,7 +213,7 @@ fn from_codex(e: RpcError) -> ResponseError {
                 code,
                 codes::PARSE_ERROR | codes::INVALID_REQUEST | codes::METHOD_NOT_FOUND | codes::INVALID_PARAMS
             );
-            let code = if !protocol && message.to_lowercase().contains("auth") { AUTH_REQUIRED } else { code };
+            let code = if !protocol && crate::acp::auth_required(code, &message) { AUTH_REQUIRED } else { code };
             ResponseError { code, message, data }
         }
         RpcError::Closed => error(codes::INTERNAL_ERROR, "Codex exited"),
@@ -264,7 +273,7 @@ impl CodexShim {
             "agentCapabilities": {
                 "loadSession": true,
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
-                "mcpCapabilities": { "http": false, "sse": false },
+                "mcpCapabilities": { "http": false, "sse": false, "stdio": true },
                 "sessionCapabilities": { "fork": {}, "close": {} },
                 "_meta": { "openidea": { "rollback": true, "steer": true } },
             },
@@ -301,6 +310,20 @@ impl CodexShim {
         models
     }
 
+    async fn publish_skills(&self, session: &str) {
+        let _listing = self.skills.lock().await;
+        let cwd = self.state.lock().threads.get(session).and_then(|t| t.cwd.clone());
+        let Some(cwd) = cwd else { return };
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), self.call("skills/list", json!({ "cwds": [cwd] }))).await;
+        if let Ok(Ok(result)) = result
+            && let Some(update) = translate::skill_commands(&result)
+            && self.state.lock().threads.contains_key(session)
+        {
+            self.emit(session, update);
+        }
+    }
+
     /// Registers a thread codex opened for a session of its own; returns its `configOptions`.
     fn open_thread(&self, result: &Value, models: &[ModelInfo], settings: Option<Settings>) -> (String, Value) {
         let thread = result.get("thread").unwrap_or(&Value::Null);
@@ -313,16 +336,22 @@ impl CodexShim {
         t.parent = None;
         t.settings = Some(settings);
         t.cwd = cwd;
+        t.named = thread.get("name").and_then(Value::as_str).is_some_and(|n| !n.trim().is_empty());
         (id, options)
     }
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await;
-        let result = self.call("thread/start", json!({ "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/start", request).await?;
         let (id, options) = self.open_thread(&result, &models, None);
         if id.is_empty() {
             return Err(error(codes::INTERNAL_ERROR, "codex started no thread"));
         }
+        self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
 
@@ -330,13 +359,18 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await;
-        let result = self.call("thread/resume", json!({ "threadId": id, "cwd": params.get("cwd") })).await?;
+        let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
+        let result = self.call("thread/resume", request).await?;
         let (_, options) = self.open_thread(&result, &models, None);
         let cwd = self.state.lock().threads.get(id).and_then(|t| t.cwd.clone());
         let thread = result.get("thread").unwrap_or(&Value::Null);
         for update in translate::history(thread, cwd.as_deref()) {
             self.emit(id, update);
         }
+        self.publish_skills(id).await;
         Ok(json!({ "configOptions": options }))
     }
 
@@ -345,6 +379,9 @@ impl CodexShim {
         let models = self.models().await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
+        if let Some(config) = translate::mcp_config(params) {
+            request["config"] = config;
+        }
         if let Some(s) = &settings {
             request["model"] = json!(s.model_slug(&models));
             request["approvalPolicy"] = json!(s.mode.approval_policy());
@@ -352,6 +389,7 @@ impl CodexShim {
         }
         let result = self.call("thread/fork", request).await?;
         let (id, options) = self.open_thread(&result, &models, settings);
+        self.publish_skills(&id).await;
         Ok(json!({ "sessionId": id, "configOptions": options }))
     }
 
@@ -541,9 +579,25 @@ impl CodexShim {
         }
     }
 
-    fn on_codex_notification(&self, method: &str, params: &Value) {
+    fn on_codex_notification(self: &Arc<Self>, method: &str, params: &Value) {
         let thread = params.get("threadId").and_then(Value::as_str).unwrap_or_default();
         match method {
+            "skills/changed" => {
+                let shim = self.clone();
+                let sessions: Vec<String> = self
+                    .state
+                    .lock()
+                    .threads
+                    .iter()
+                    .filter(|(_, t)| t.settings.is_some() && t.parent.is_none())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                self.runtime.spawn(async move {
+                    for session in sessions {
+                        shim.publish_skills(&session).await;
+                    }
+                });
+            }
             "turn/started" => {
                 if let Some(turn) = params.pointer("/turn/id").and_then(Value::as_str) {
                     self.turn_known(thread, turn, true);
@@ -579,8 +633,9 @@ impl CodexShim {
                 Some(translate::plan(params))
             }),
             "thread/tokenUsage/updated" => self.with_thread(thread, |_, _| translate::usage(params)),
-            "thread/name/updated" => self.with_thread(thread, |_, _| {
+            "thread/name/updated" => self.with_thread(thread, |t, _| {
                 let title = params.get("threadName").and_then(Value::as_str)?;
+                t.named = true;
                 Some(json!({ "sessionUpdate": "session_info_update", "title": title }))
             }),
             "thread/started" => self.thread_started(params.get("thread").unwrap_or(&Value::Null)),
@@ -766,9 +821,10 @@ impl CodexShim {
         }
     }
 
-    fn turn_completed(&self, thread: &str, turn: &Value) {
+    fn turn_completed(self: &Arc<Self>, thread: &str, turn: &Value) {
         let id = turn.get("id").and_then(Value::as_str).unwrap_or_default();
-        let (parent, answer) = {
+        let completed = turn.get("status").and_then(Value::as_str) == Some("completed");
+        let (parent, answer, name) = {
             let mut state = self.state.lock();
             let Some(t) = state.threads.get_mut(thread) else { return };
             if t.turn.as_deref().is_none_or(|r| r == id) {
@@ -784,8 +840,15 @@ impl CodexShim {
                 let _ = p.done.send((turn.clone(), error.clone()));
             }
             let answer = std::mem::take(&mut t.answer);
-            (t.parent.clone(), (answer, error))
+            let name =
+                completed && !id.is_empty() && t.parent.is_none() && t.settings.is_some() && !t.named && !t.naming;
+            t.naming |= name;
+            (t.parent.clone(), (answer, error), name)
         };
+        if name {
+            let (shim, thread, turn) = (self.clone(), thread.to_owned(), id.to_owned());
+            self.runtime.spawn(async move { shim.name_thread(&thread, &turn).await });
+        }
         let Some(parent) = parent else { return };
         let (answer, error) = answer;
         let mut state_of = match turn.get("status").and_then(Value::as_str) {
@@ -807,6 +870,28 @@ impl CodexShim {
         }
     }
 
+    /// Names a thread from what it holds after `turn`, as codex leaves naming to its
+    /// clients; `thread/name/updated` brings the name back. Unnamed, the next turn tries again.
+    async fn name_thread(&self, thread: &str, turn: &str) {
+        let sample = json!({ "threadId": thread, "expectedTurnId": turn, "prompt": NAME_PROMPT, "effort": "low" });
+        let named = match self.call("thread/sample", sample).await {
+            Ok(r) => match r.get("text").and_then(Value::as_str).and_then(translate::thread_name) {
+                Some(name) => {
+                    self.call("thread/name/set", json!({ "threadId": thread, "name": name })).await.map(|_| ())
+                }
+                None => Err(error(codes::INTERNAL_ERROR, "codex gave no name")),
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = &named {
+            tracing::debug!("naming codex thread {thread}: {}", e.message);
+        }
+        if let Some(t) = self.state.lock().threads.get_mut(thread) {
+            t.naming = false;
+            t.named |= named.is_ok();
+        }
+    }
+
     /// Requests from codex: approvals and questions, asked as ACP permission requests.
     fn on_codex_request(&self, method: &str, params: &Value) -> Result<Value, (i64, String)> {
         let thread = params.get("threadId").and_then(Value::as_str).unwrap_or_default().to_owned();
@@ -822,14 +907,15 @@ impl CodexShim {
         match method {
             "item/commandExecution/requestApproval" => {
                 let choices = translate::decisions(params, true);
-                let title = translate::command_approval_title(params, item.as_ref(), cwd);
-                let call = tool_call_of(
-                    &item_id,
-                    &title,
-                    "execute",
-                    reason,
-                    Some(json!({ "command": params.get("command"), "cwd": params.get("cwd") })),
-                );
+                let title = translate::command_approval_title(params, item.as_ref());
+                let mut input = json!({
+                    "command": translate::approval_command(params, item.as_ref()),
+                    "cwd": params.get("cwd"),
+                });
+                if let Some(network) = params.get("networkApprovalContext").filter(|c| !c.is_null()) {
+                    input["networkApprovalContext"] = network.clone();
+                }
+                let call = tool_call_of(&item_id, &title, "execute", reason, Some(input));
                 Ok(self.ask(&thread, call, &choices, decline))
             }
             "item/fileChange/requestApproval" => {
@@ -871,31 +957,55 @@ impl CodexShim {
                 Ok(self.ask(&thread, call, &choices, json!({ "permissions": {}, "scope": "turn" })))
             }
             "item/tool/requestUserInput" => {
-                let mut answers = serde_json::Map::new();
-                for q in params.get("questions").and_then(Value::as_array).into_iter().flatten() {
-                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
-                    let choices: Vec<Choice> = q
-                        .get("options")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .enumerate()
-                        .filter_map(|(i, o)| {
-                            let label = o.get("label")?.as_str()?;
-                            Some(Choice {
-                                option: json!({ "optionId": i.to_string(), "name": label, "kind": "allow_once" }),
-                                answer: json!({ "answers": [label] }),
+                let questions = params.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
+                // One permission request carrying all the questions, so the client shows
+                // them as a card (as it does for Claude's `AskUserQuestion`).
+                let asked: Vec<Value> = questions
+                    .iter()
+                    .filter_map(|q| {
+                        let id = q.get("id").and_then(Value::as_str)?;
+                        let question = q.get("question").and_then(Value::as_str)?;
+                        let options: Vec<Value> = q
+                            .get("options")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|o| {
+                                let label = o.get("label").and_then(Value::as_str)?;
+                                Some(json!({
+                                    "label": label,
+                                    "description": o.get("description").and_then(Value::as_str).unwrap_or_default(),
+                                }))
                             })
-                        })
-                        .collect();
-                    if choices.is_empty() {
-                        continue;
-                    }
-                    let title = q.get("question").and_then(Value::as_str).unwrap_or("Codex has a question");
-                    let call = tool_call_of(&item_id, title, "other", None, None);
-                    let answer = self.ask(&thread, call, &choices, Value::Null);
-                    if !answer.is_null() {
-                        answers.insert(qid.to_owned(), answer);
+                            .collect();
+                        Some(json!({
+                            "answerKey": id,
+                            "header": q.get("header").and_then(Value::as_str).unwrap_or_default(),
+                            "question": question,
+                            "multiSelect": q.get("multiSelect").and_then(Value::as_bool).unwrap_or(false),
+                            "options": options,
+                        }))
+                    })
+                    .collect();
+                if asked.is_empty() {
+                    return Ok(json!({ "answers": {} }));
+                }
+                let title = asked[0].get("question").and_then(Value::as_str).unwrap_or("Codex has a question");
+                let mut call = tool_call_of(&item_id, title, "other", None, None);
+                call["_meta"] = json!({ "questions": asked });
+                let options = [json!({ "optionId": "submit", "name": "Submit", "kind": "allow_once" })];
+                let picked: serde_json::Map<String, Value> = self
+                    .ask_option(&thread, call, &options)
+                    .and_then(|reply| serde_json::from_str(&reply).ok())
+                    .unwrap_or_default();
+                let mut answers = serde_json::Map::new();
+                for q in &questions {
+                    let Some(qid) = q.get("id").and_then(Value::as_str) else { continue };
+                    if let Some(labels) = picked
+                        .get(qid)
+                        .filter(|labels| labels.as_array().is_some_and(|labels| labels.iter().all(Value::is_string)))
+                    {
+                        answers.insert(qid.to_owned(), json!({ "answers": labels }));
                     }
                 }
                 Ok(json!({ "answers": answers }))
@@ -925,6 +1035,25 @@ impl CodexShim {
                 Ok(self.ask(&thread, call, &choices, json!({ "action": "decline" })))
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported request {method}"))),
+        }
+    }
+
+    /// Asks the client; returns the selected option id (`None` when cancelled).
+    fn ask_option(&self, session: &str, tool_call: Value, options: &[Value]) -> Option<String> {
+        let client = self.client.get().cloned()?;
+        let params = json!({ "sessionId": session, "toolCall": tool_call, "options": options });
+        let outcome: Result<Value, RpcError> =
+            self.runtime.block_on(client.request("session/request_permission", params, None));
+        match outcome {
+            Ok(outcome) => outcome
+                .pointer("/outcome/outcome")
+                .and_then(Value::as_str)
+                .filter(|outcome| *outcome == "selected")
+                .and_then(|_| outcome.pointer("/outcome/optionId").and_then(Value::as_str).map(str::to_owned)),
+            Err(e) => {
+                tracing::debug!("codex: question request failed: {e}");
+                None
+            }
         }
     }
 

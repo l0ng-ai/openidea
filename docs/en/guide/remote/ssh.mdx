@@ -1,0 +1,142 @@
+---
+title: "SSH"
+description: "Open a project that lives on an SSH host or in a WSL distribution, with the IDE backend running next to the code."
+---
+
+Remote development opens a project folder on another machine in a normal OpenIDEA window. The UI stays on your
+desktop; the IDE backend, [`openidea-server`](/en/guide/remote/server), runs on the remote host. Indexing, language
+servers, terminals, run configurations, debuggers, build tools and Git all run there, next to the code.
+
+OpenIDEA connects over SSH, or on Windows directly into a WSL distribution. For dev containers, see
+[Containers](/en/guide/remote/containers).
+
+## Requirements
+
+- An SSH host running Linux (x86_64 or aarch64) or macOS (Apple silicon or Intel). Windows hosts are not supported.
+- A POSIX shell with `uname`, `gzip`, `mkdir`, `chmod`, `mv` and `find` on the host, and the SFTP subsystem enabled
+  (used to install the server and by **Browse** in the connect dialog).
+- The first connection downloads the matching `openidea-server` release build to your desktop and uploads it to the
+  host. Without internet access on the desktop, see [Offline installation](/en/guide/remote/server#offline-installation).
+
+## Add an SSH configuration
+
+Remote development, run targets, data source tunnels, deployment servers and **Start SSH Session…** all connect
+through the app-wide SSH configurations.
+
+<Steps>
+  <Step title="Open the SSH settings">
+    Choose **Tools › SSH Configurations…**, or open **Settings › Tools › SSH Configurations**.
+  </Step>
+  <Step title="Add a configuration">
+    Click **+** (Add) and fill in **Name**, **Host**, **Port:** and **User name**.
+  </Step>
+  <Step title="Pick the authentication type">Choose one of the options under **Authentication type** (see below).</Step>
+  <Step title="Test the connection">
+    Click **Test Connection**. If the host key is not in `~/.ssh/known_hosts` yet, OpenIDEA shows the key and offers
+    **Trust Host and Retry**, which adds it there.
+  </Step>
+</Steps>
+
+| Authentication type                         | What it uses                                                                                                                                                         |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Password**                                | A password. Tick **Save password** to keep it in the OS credential store.                                                                                            |
+| **Key pair (OpenSSH or PuTTY)**             | A **Private key file** (for example `~/.ssh/id_ed25519`) and its **Passphrase**, which **Save passphrase** keeps in the credential store.                            |
+| **OpenSSH config and authentication agent** | `HostName`, `User`, `Port`, `IdentityFile` and `ProxyJump` from `~/.ssh/config`, and the keys of the SSH agent. **Host** can be a `Host` alias from `~/.ssh/config`. |
+
+Saved passwords and passphrases go to the macOS Keychain, Windows Credential Manager or the Secret Service on Linux,
+never to a settings file. The **+**, **−** and copy buttons above the list add, remove and duplicate configurations.
+
+### `~/.ssh/config` support
+
+OpenIDEA has its own SSH client and reads `~/.ssh/config` itself. It understands `Host`, `Match`, `Include`,
+`HostName`, `User`, `Port`, `IdentityFile`, `ProxyJump`, `ProxyCommand`, `StrictHostKeyChecking` and
+`UserKnownHostsFile`. Jump hosts authenticate with the agent and identity files; the password or passphrase of the
+configuration is only used for the target host.
+
+Host keys are checked against `known_hosts`. An unknown key has to be trusted once; a changed key is refused unless
+host key checking is turned off for that host.
+
+## Open a remote project
+
+<Steps>
+  <Step title="Open the connect dialog">
+    Choose **File › Remote Development…**, or click **Remote Development** on the Welcome screen.
+  </Step>
+  <Step title="Choose the host">
+    Pick an entry under **SSH configuration:**. **Configure…** opens the SSH settings if you need to add one.
+  </Step>
+  <Step title="Choose the folder">
+    Type a path under **Project directory:** (`~` and `~/…` are relative to the remote home), or click **Browse** to
+    walk the remote folders.
+  </Step>
+  <Step title="Open">Click **Open**. If a project is already open, choose **This Window** or **New Window**.</Step>
+</Steps>
+
+While connecting, the dialog shows each stage: connecting to the host, checking the IDE backend on the host,
+downloading or installing it when needed, starting it, and opening the project. The first connection to a host takes
+longer because of the upload; later ones reuse the installed server.
+
+After the project opens you are asked whether to trust it, as for a local folder.
+
+<Tip>
+  Run **Test Connection** in the SSH settings before the first connection. That is where you trust a new host key and
+  enter the password or passphrase.
+</Tip>
+
+## Working in a remote window
+
+- The window title ends with the host, and the status bar shows **SSH: `<host>`**. Clicking it opens the
+  **Remote Development** dialog.
+- Remote projects appear in the recent projects list on the Welcome screen, so you can reopen them from there.
+- Language servers, debuggers and other tools that OpenIDEA installs go to the remote host, under
+  `~/.openidea/data`.
+- Your keymap, appearance, editor font and colour scheme stay on the desktop. Project and tool settings live on the
+  host.
+- Your code plugins are synced to the server and run next to the project.
+- **File › Disconnect from Remote Host** closes the project and ends the connection.
+
+### Forward ports
+
+A remote window has a **Ports** tool window. Enter a port under **Remote port, e.g. 3000** and click
+**Forward Port**. `localhost:<port>` on the remote host is then reachable on your machine, on the same port when it is
+free or on another free one. Each row can be opened in the browser, copied, or stopped.
+
+Forwarded ports are remembered per host and folder, and forwarded again the next time you connect.
+
+### Reload the environment
+
+The server takes its environment from your login shell on the host when it starts. After changing a shell profile,
+choose **File › Reload Environment** so new terminals, runs and tools get the new values. Processes that are already
+running keep the old environment. When variables changed, the notification offers **Restart Language Servers**.
+
+If the remote project has a `.devcontainer/devcontainer.json` or `.devcontainer.json`, its `remoteEnv` is applied too,
+and its `postStartCommand` runs once each time the server starts.
+
+## Start an SSH terminal
+
+**Tools › Start SSH Session…** (or **SSH Session…** in the Terminal tool window's new-tab menu) picks an SSH
+configuration and opens a shell on that host in a terminal tab. The IDE's built-in SSH client connects with the
+configuration's saved password, key or agent, and asks for a password or passphrase that isn't saved, or to trust an
+unknown host key. No OpenSSH client is needed. It does not open a remote project.
+
+## Connect to WSL (Windows)
+
+On Windows, when at least one WSL distribution is installed, the connect dialog shows **Connect through:** with
+**SSH** and **WSL**. Choose **WSL**, pick the **WSL distribution:** and enter the **Project directory:** inside the
+distribution. OpenIDEA installs and starts `openidea-server` inside the distribution with `wsl.exe`; no SSH server is
+needed. The status bar then shows **WSL: `<distribution>`**.
+
+Opening a folder under `\\wsl.localhost\<distribution>\` also opens it through the distribution.
+**Browse** is not available for WSL.
+
+## Other uses of SSH configurations
+
+- **Run targets** (**Settings › Build, Execution, Deployment › Run Targets**) run a configuration on an SSH host. See
+  [Run configurations](/en/guide/run).
+- **Data sources** can connect through an SSH tunnel. See [Database](/en/guide/database).
+- **Tools › Deployment** uploads, downloads and syncs project files with a server over SFTP, FTP or FTPS.
+
+## Limits
+
+- One project per remote window: a remote project can't be attached to another window's projects.
+- The SSH host must run Linux or macOS on x86_64 or aarch64.

@@ -1,4 +1,4 @@
-//! `fixtures/php-app` keeps the shape the PHP engine phases and the language smoke test rely
+//! `fixtures/php-library` keeps the shape the PHP engine phases and the language smoke test rely
 //! on: PSR-4 paths that match namespaces, one of each declaration kind, generics, PHPStorm
 //! metadata, PHPUnit tests and one deliberate error. No PHP is needed to run this.
 
@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library")
 }
 
 fn read(rel: &str) -> String {

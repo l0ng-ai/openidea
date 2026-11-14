@@ -10,6 +10,19 @@ const tooltipSurface = {
   color: "var(--fg)",
 };
 
+/**
+ * Row metrics that put a label one icon column right of the popup's left edge. They live on the
+ * popup as custom properties so every rule consuming them — including the popup's negative
+ * offset below — changes together. The remaining 1px is tooltipSurface's border, shared with
+ * the hover and signature tooltips.
+ */
+const completionRowMetrics = {
+  "--cm-completion-edge": "4px",
+  "--cm-completion-inset": "6px",
+  "--cm-completion-icon": "16px",
+  "--cm-completion-gap": "6px",
+};
+
 const markdown = {
   ".cm-lsp-markdown": {
     fontFamily: "var(--font-ui)",
@@ -69,13 +82,33 @@ const markdown = {
   ".tok-invalid": { color: "var(--syn-invalid)" },
 };
 
+function semanticStyle(token: string, fallback: string) {
+  return {
+    color: `var(--syn-${token}, var(--syn-${fallback}))`,
+    fontWeight: `var(--syn-${token}-bold, inherit)`,
+    fontStyle: `var(--syn-${token}-italic, inherit)`,
+    backgroundColor: `var(--syn-${token}-bg, transparent)`,
+    textDecoration: `var(--syn-${token}-effect, none)`,
+    WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
+  };
+}
+
 export const lspTheme = EditorView.theme({
   // --- completion (IDEA lookup: icon column, bold blue match, grey tail/type, advertiser) ---
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion": {
     ...tooltipSurface,
+    ...completionRowMetrics,
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
     fontSize: "var(--fs-code)",
+    // CodeMirror anchors the popup at the completed word's start. Pull it left by one row's
+    // leading inset so the labels, not the icon column, sit on the text. CodeMirror's horizontal
+    // clamp measures the border box (margins excluded), so this offset sits outside its math:
+    // near the right edge it leaves that much extra space, and a word starting within one inset
+    // of the viewport's left edge would let the popup clip there. The normal editor layout
+    // (gutter + project sidebar) keeps the word well clear of that edge.
+    marginLeft:
+      "calc(-1 * (1px + var(--cm-completion-edge) + var(--cm-completion-inset) + var(--cm-completion-icon) + var(--cm-completion-gap)))",
     overflow: "hidden",
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul": {
@@ -89,11 +122,11 @@ export const lspTheme = EditorView.theme({
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li": {
     display: "flex",
     alignItems: "center",
-    gap: "6px",
+    gap: "var(--cm-completion-gap)",
     height: "var(--h-list-row)",
     lineHeight: "var(--h-list-row)",
-    margin: "0 4px",
-    padding: "0 8px 0 6px",
+    margin: "0 var(--cm-completion-edge)",
+    padding: "0 8px 0 var(--cm-completion-inset)",
     borderRadius: "var(--radius-small)",
     color: "var(--fg-editor, var(--fg-strong))",
     whiteSpace: "nowrap",
@@ -111,8 +144,8 @@ export const lspTheme = EditorView.theme({
   },
   ".cm-lsp-completion .cm-lsp-kind": {
     flex: "none",
-    width: "16px",
-    height: "16px",
+    width: "var(--cm-completion-icon)",
+    height: "var(--cm-completion-icon)",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -132,7 +165,9 @@ export const lspTheme = EditorView.theme({
     color: "var(--fg-completion-match, var(--link))",
   },
   // A server's label detail (`(a: string)`) hugs the name; template descriptions keep the gap.
-  ".cm-lsp-completion .cm-lsp-option .cm-completionDetail": { marginLeft: "-6px" },
+  ".cm-lsp-completion .cm-lsp-option .cm-completionDetail": {
+    marginLeft: "calc(-1 * var(--cm-completion-gap))",
+  },
   ".cm-lsp-completion .cm-lsp-type": {
     flex: "1 0 auto",
     maxWidth: "60%",
@@ -181,7 +216,10 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-doc-signature": { marginTop: "0", color: "var(--fg-emphasis)" },
 
   // --- hover / quick documentation / signature / hints ---------------------
-  ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface },
+  // Near the window edge CodeMirror caps the tooltip's height to the space left: its sections then
+  // shrink and scroll inside the popup instead of running past its border.
+  ".cm-tooltip.cm-tooltip-hover": { ...tooltipSurface, display: "flex", flexDirection: "column" },
+  ".cm-tooltip-hover > .cm-tooltip-section": { minHeight: 0, flexShrink: 1 },
   ".cm-lsp-hover": { maxWidth: "580px", maxHeight: "380px", overflow: "auto", padding: "10px 14px" },
   ".cm-lsp-hover-diagnostics + .cm-lsp-markdown": {
     borderTop: "1px solid var(--border-popup)",
@@ -274,11 +312,18 @@ export const lspTheme = EditorView.theme({
     textUnderlineOffset: "2px",
     cursor: "pointer",
   },
-  ".cm-lsp-occurrence": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+  ".cm-lsp-occurrence, .cm-lsp-occurrence-tail": {
+    "--lsp-occurrence-bg": "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
   },
-  ".cm-lsp-occurrence-write": {
-    backgroundColor: "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
+  ".cm-lsp-occurrence-write, .cm-lsp-occurrence-tail-write": {
+    "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
+  },
+  ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  // First line of a highlight over several lines: from its start column to the right edge,
+  // over the line's own background (the caret row's).
+  ".cm-lsp-occurrence-tail": {
+    backgroundImage:
+      "linear-gradient(to right, transparent var(--lsp-occurrence-from), var(--lsp-occurrence-bg) var(--lsp-occurrence-from))",
   },
   ".cm-lsp-nav-info": { padding: "4px 8px" },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
@@ -351,28 +396,77 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-inlay-pl": { marginLeft: "4px" },
   ".cm-lsp-inlay-pr": { marginRight: "4px" },
 
+  ".cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  ".cm-sem-python-annotation": semanticStyle("python-annotation", "type"),
+  ".cm-sem-python-parentheses": semanticStyle("python-parentheses", "punct"),
+  ".cm-sem-python-brackets": semanticStyle("python-brackets", "punct"),
+  ".cm-sem-python-braces": semanticStyle("python-braces", "punct"),
+  ".cm-sem-python-definition": semanticStyle("function", "function"),
+  ".cm-sem-python-nested": semanticStyle("python-nested-function", "function"),
+  ".cm-sem-python-predefined-definition": semanticStyle("python-predefined-definition", "predefined"),
+  ".cm-sem-python-predefined-usage": semanticStyle("python-predefined-usage", "predefined"),
+  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticStyle("docstring", "string"),
+  // After the docstring wildcard above so the tag's own colour wins inside it.
+  ".cm-sem-python-docstring-tag": {
+    ...semanticStyle("python-docstring-tag", "doc-comment-tag"),
+    textDecoration: "var(--syn-python-docstring-tag-effect, var(--syn-doc-comment-tag-effect, none))",
+    WebkitTextDecoration: "var(--syn-python-docstring-tag-effect, var(--syn-doc-comment-tag-effect, none))",
+  },
+  ".cm-sem-python-docstring-keyword": semanticStyle("python-docstring-keyword", "doc-comment-tag-value"),
+  ".cm-sem-python-bytes": semanticStyle("python-bytes", "string"),
+  ".cm-sem-python-fstring, .cm-sem-python-fstring .tok-string, .cm-sem-python-fstring .tok-string2": semanticStyle(
+    "python-fstring",
+    "string",
+  ),
+  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-format": semanticStyle("python-format", "escape"),
+  ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
-  ".cm-sem-type, .cm-sem-typeParameter": { color: "var(--syn-type)" },
+  ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
-  ".cm-sem-function": { color: "var(--syn-function-call, var(--syn-function))" },
-  ".cm-sem-function.cm-sem-declaration": { color: "var(--syn-function)" },
-  ".cm-sem-function.cm-sem-builtin": { color: "var(--syn-builtin, var(--syn-function))" },
-  ".cm-sem-macro": { color: "var(--syn-annotation)" },
-  ".cm-sem-annotation": { color: "var(--syn-decorator, var(--syn-annotation))" },
-  ".cm-sem-constant": { color: "var(--syn-constant)" },
-  ".cm-sem-property": { color: "var(--syn-property)" },
-  ".cm-sem-parameter": { color: "var(--syn-param, var(--syn-variable))" },
-  ".cm-sem-self": { color: "var(--syn-self, var(--syn-keyword))" },
-  ".cm-sem-keyword": { color: "var(--syn-keyword)", fontWeight: "var(--syn-keyword-bold, inherit)" },
-  ".cm-sem-builtin:not(.cm-sem-function)": { color: "var(--syn-builtin, inherit)" },
+  ".cm-sem-function": semanticStyle("function-call", "function"),
+  // Keep role selectors at one class so static/deprecated modifiers can override their styles.
+  ".cm-sem-function:where(.cm-sem-declaration)": semanticStyle("function", "function"),
+  ".cm-sem-function:where(.cm-sem-builtin)": semanticStyle("builtin", "function"),
+  ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
+  ".cm-sem-macro": semanticStyle("annotation", "annotation"),
+  ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
+  ".cm-sem-namespace": semanticStyle("namespace", "type"),
+  ".cm-sem-constant": { ...semanticStyle("constant", "constant"), fontStyle: "var(--syn-constant-italic, italic)" },
+  ".cm-sem-variable": semanticStyle("variable", "variable"),
+  ".cm-sem-property": semanticStyle("property", "property"),
+  ".cm-sem-parameter": semanticStyle("param", "variable"),
+  ".cm-sem-parameter.cm-sem-unused": { color: "var(--fg-unused, var(--fg-faint))" },
+  ".cm-sem-self": semanticStyle("self", "keyword"),
+  ".cm-sem-keyword": semanticStyle("keyword", "keyword"),
+  // Before the builtin rule: library globals (`print`, `string`) keep the predefined colour.
+  ".cm-sem-global:where(:not(.cm-sem-function))": semanticStyle("global", "variable"),
+  ".cm-sem-builtin:where(:not(.cm-sem-function))": semanticStyle("builtin", "variable"),
+  ".cm-sem-builtin.cm-sem-python-builtin": semanticStyle("python-builtin", "builtin"),
   ".cm-sem-static": { fontStyle: "var(--syn-static-italic, italic)" },
+  ".cm-sem-property.cm-sem-static, .cm-sem-property.cm-sem-static *": {
+    color: "var(--syn-static-property, var(--syn-property))",
+    fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
+    fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
+    backgroundColor: "var(--syn-static-property-bg, transparent)",
+    textDecoration: "var(--syn-static-property-effect, none)",
+    WebkitTextDecoration: "var(--syn-static-property-effect, none)",
+  },
   ".cm-sem-python-static": { fontStyle: "var(--syn-python-static-italic, normal)" },
   ".cm-sem-mutable": {
     textDecoration: "underline",
     textDecorationColor: "var(--fg-faint)",
     textUnderlineOffset: "3px",
   },
-  ".cm-sem-deprecated": { textDecoration: "line-through" },
+  ".cm-sem-python-local-variable": semanticStyle("python-local-variable", "variable"),
+  ".cm-sem-global.cm-sem-python-global-variable": semanticStyle("python-global-variable", "global"),
+  ".cm-sem-python-instance-attribute": semanticStyle("python-instance-attribute", "property"),
+  ".cm-sem-python-class-attribute": semanticStyle("python-class-attribute", "property"),
+  ".cm-sem-python-constant": semanticStyle("python-constant", "constant"),
+  ".cm-sem-python-property": semanticStyle("python-property", "property"),
+  ".cm-sem-python-type-parameter": semanticStyle("python-type-parameter", "type"),
+  // Deprecation wins over role effects, including static fields.
+  ".cm-content .cm-sem-deprecated, .cm-content .cm-sem-deprecated *": { textDecoration: "line-through" },
   // Semantic highlighting: after the base classes so a parameter's colour gives way, and over the
   // syntax highlighter's span inside.
   ...Object.fromEntries(

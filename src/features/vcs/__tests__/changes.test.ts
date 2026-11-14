@@ -3,12 +3,15 @@ import type { FileStatus } from "@/bindings";
 import {
   aggregateCheck,
   buildChangeTree,
+  checkOf,
   commitRepos,
+  changeFileNodes,
   ignoreTargets,
   initialCheck,
   hunkIncluded,
   groupFileNodes,
   planCommit,
+  remainingOverrides,
   stagingSide,
   toggledHunk,
   type CheckState,
@@ -148,6 +151,75 @@ describe("several repositories", () => {
     expect(commitRepos([], repos, "/r/libs/core")).toEqual(["/r/libs/core"]);
   });
 
+  it("shows each repository's branch, or its HEAD commit when detached, beside its name", () => {
+    const repoDetails = (tree: ChangeNode[]) =>
+      tree.map((g) => [g.label, ...(g.children ?? []).map((n) => `${n.label} ${n.detail ?? "-"}`)]);
+    const heads = {
+      "/r": { head: "feature/ABC-123", headCommit: "0123456789abcdef0123456789abcdef01234567" },
+      "/r/libs/core": { head: null, headCommit: "89abcdef0123456789abcdef0123456789abcdef" },
+    };
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos, false, heads))).toEqual([
+      ["Merge Conflicts", "r feature/ABC-123"],
+      ["Changes", "r feature/ABC-123", "libs/core 89abcdef"],
+      ["Unversioned Files", "r feature/ABC-123", "libs/core 89abcdef"],
+    ]);
+    const staging = buildChangeTree(nested, "/r", false, undefined, repos, true, heads);
+    expect(repoDetails(staging)[2]).toEqual(["Unstaged Changes", "r feature/ABC-123", "libs/core 89abcdef"]);
+    const lists = { lists: [{ id: "d", name: "Changes", comment: "" }], active: "d", files: {} } as never;
+    expect(repoDetails(buildChangeTree(nested, "/r", false, lists, repos, false, heads))[1]).toEqual([
+      "Changes",
+      "r feature/ABC-123",
+      "libs/core 89abcdef",
+    ]);
+    // Not loaded yet, or HEAD unreadable: no hint.
+    const partial = { "/r/libs/core": { head: null, headCommit: null } };
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos, false, partial))[1]).toEqual([
+      "Changes",
+      "r -",
+      "libs/core -",
+    ]);
+    // A repository without commits is on its unborn branch.
+    const unborn = { "/r/libs/core": { head: "main", headCommit: null } };
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos, false, unborn))[1]).toEqual([
+      "Changes",
+      "r -",
+      "libs/core main",
+    ]);
+    expect(repoDetails(buildChangeTree(nested, "/r", false, undefined, repos))[1]).toEqual([
+      "Changes",
+      "r -",
+      "libs/core -",
+    ]);
+    // One repository: no repository level, files keep their own details.
+    const single = buildChangeTree(status, "/r", false, undefined, ["/r"], false, { "/r": heads["/r"] });
+    expect(single).toEqual(buildChangeTree(status, "/r", false));
+  });
+
+  it("marks the hint with a branch icon, or a commit icon when detached, on repository nodes only", () => {
+    const heads = {
+      "/r": { head: "main", headCommit: "0123456789" },
+      "/r/libs/core": { head: null, headCommit: "89abcdef01" },
+    };
+    const icons = (nodes: ChangeNode[]): string[] =>
+      nodes.flatMap((n) => [`${n.label}:${n.detailIcon ?? "-"}`, ...icons(n.children ?? [])]);
+    const changes = buildChangeTree(nested, "/r", true, undefined, repos, false, heads)[1]!;
+    expect(icons([changes])).toEqual([
+      "Changes:-",
+      "r:branch",
+      "src:-",
+      "main/kotlin:-",
+      "App.kt:-",
+      "Partial.kt:-",
+      "test:-",
+      "AppTest.kt:-",
+      "README.md:-",
+      "libs/core:commit",
+      "Lib.kt:-",
+    ]);
+    const unloaded = buildChangeTree(nested, "/r", true, undefined, repos)[1]!;
+    expect(unloaded.children!.map((n) => n.detailIcon)).toEqual([undefined, undefined]);
+  });
+
   it("routes a nested repository's own entry (submodule) to the enclosing repository", () => {
     expect(rootOf("/r/libs/core/Lib.kt", repos)).toBe("/r/libs/core");
     expect(rootOf("/r/libs/core", repos)).toBe("/r");
@@ -195,14 +267,14 @@ describe("commit inclusion", () => {
     expect(initialCheck(status[5]!)).toBe("none");
   });
 
-  it("plans staging so the index holds exactly the checked changes", () => {
+  it("plans which changes the commit takes and which staged ones it leaves out", () => {
     const checks = new Map<string, CheckState>([
       ["/r/README.md", "none"],
       ["/r/notes.txt", "all"],
     ]);
     const plan = planCommit(status, checks);
     expect(plan.stage.sort()).toEqual(["/r/notes.txt", "/r/src/main/kotlin/App.kt"]);
-    expect(plan.unstage).toEqual(["/r/README.md"]);
+    expect(plan.exclude).toEqual(["/r/README.md"]);
     expect(plan.included.map((f) => f.relPath).sort()).toEqual([
       "notes.txt",
       "src/main/kotlin/App.kt",
@@ -211,11 +283,46 @@ describe("commit inclusion", () => {
     ]);
   });
 
+  it("leaves out a file added to the index and then deleted, which no group lists", () => {
+    const files = [fs("src/A.java", null, "modified"), fs("src/Gone.java", "added", "deleted")];
+    expect(
+      buildChangeTree(files, "/r", false)
+        .flatMap((g) => g.children ?? [])
+        .map((n) => n.label),
+    ).toEqual(["A.java"]);
+    const plan = planCommit(files, new Map());
+    expect(plan.stage).toEqual(["/r/src/A.java"]);
+    expect(plan.exclude).toEqual(["/r/src/Gone.java"]);
+    expect(plan.included.map((f) => f.relPath)).toEqual(["src/A.java"]);
+  });
+
   it("aggregates checkbox state for groups", () => {
     const checks = new Map<string, CheckState>();
     expect(aggregateCheck([status[0]!, status[3]!], checks)).toMatchObject({ checked: true, indeterminate: false });
     expect(aggregateCheck([status[0]!, status[4]!], checks)).toMatchObject({ checked: false, indeterminate: true });
     expect(aggregateCheck([status[1]!], checks)).toMatchObject({ checked: false, indeterminate: true });
+  });
+
+  it("keeps the changes left out of a commit excluded after it", () => {
+    const files = Array.from({ length: 20 }, (_, i) => fs(`src/f${i}.kt`, null, "modified"));
+    const leftOut = files.slice(5);
+    const checks = new Map<string, CheckState>(leftOut.map((f) => [f.path, "none"]));
+    const plan = planCommit(files, checks);
+    expect(plan.included).toHaveLength(5);
+
+    // The commit takes its 5 files out of the tree; the 15 left out keep their override.
+    const kept = remainingOverrides(checks, plan.included);
+    expect(kept.has(files[0]!.path)).toBe(false);
+    expect(leftOut.every((f) => checkOf(f, kept) === "none")).toBe(true);
+    expect(aggregateCheck(leftOut, kept)).toMatchObject({ checked: false, indeterminate: false });
+  });
+
+  it("drops only the committed paths from the per-file overrides", () => {
+    const overrides = new Map([
+      ["/r/a.ts", new Set(["h1"])],
+      ["/r/b.ts/", new Set(["h2"])],
+    ]);
+    expect([...remainingOverrides(overrides, [fs("a.ts", null, "modified")])]).toEqual([["/r/b.ts/", new Set(["h2"])]]);
   });
 
   it("commits a file with excluded blocks partially, without staging it", () => {
@@ -240,5 +347,35 @@ describe("commit inclusion", () => {
     expect(toggledHunk("hunks", new Set(["a", "b"]), all, "c").check).toBe("none");
     // Keys of blocks that no longer exist are dropped.
     expect(toggledHunk("hunks", new Set(["gone", "a"]), all, "b").excluded).toEqual(new Set(["a", "b"]));
+  });
+});
+
+describe("changeFileNodes", () => {
+  const file: ChangeNode = {
+    key: "/p/src/a.ts",
+    type: "file",
+    label: "a.ts",
+    group: "changes",
+    path: "/p/src/a.ts",
+    files: [],
+  };
+  const tree: ChangeNode[] = [
+    { key: "group:changes", type: "group", label: "Changes", group: "changes", children: [file], files: [] },
+  ];
+
+  it("lists the file nodes through nested groups, in tree order", () => {
+    expect(changeFileNodes(tree)).toEqual([file]);
+  });
+
+  it("lists a partially staged file under both staging groups", () => {
+    const fs = {
+      path: "/p/a.ts",
+      relPath: "a.ts",
+      staged: "modified",
+      unstaged: "modified",
+      renamedFrom: null,
+    } as const;
+    const nodes = changeFileNodes(buildChangeTree([fs], "/p", false, undefined, ["/p"], true));
+    expect(nodes.map((n) => n.group)).toEqual(["staged", "unstaged"]);
   });
 });

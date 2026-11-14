@@ -141,7 +141,7 @@ describe("PHP engine inspections", () => {
       ],
     );
     const php = tree.find((g) => g.name === "PHP")!;
-    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "lsp:php"]);
+    expect(php.children.map((n) => n.id)).toEqual(["lsp:intelephense", "lsp:php", "builtin:phpstan"]);
     const engine = php.children[1]!;
     expect(engine.name).toBe("Built-in engine");
     // The checks of Blade templates are reported by `blade`, not the engine's PHP producer.

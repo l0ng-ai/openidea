@@ -2,9 +2,16 @@
 @import "@fontsource-variable/jetbrains-mono";
 @import "./tokens.css";
 
-/* Monochrome icons default to the theme icon grey; callers override for selected / disabled. */
+/* Monochrome icons default to the theme icon grey; callers override for selected / disabled.
+   Programming ligatures follow `editor.ligatures` (`data-ligatures`), inherited by every mono
+   preview (Find results, Usages, …). */
 :root {
   --icon-color: var(--fg-icon);
+  font-variant-ligatures: none;
+}
+
+:root[data-ligatures] {
+  font-variant-ligatures: normal;
 }
 
 *,
@@ -20,6 +27,11 @@ body,
   margin: 0;
 }
 
+/* The page never scrolls: `clip` on the body leaves the viewport nothing to scroll into view. */
+html {
+  overflow: hidden;
+}
+
 body {
   background: var(--bg-frame);
   color: var(--fg);
@@ -27,15 +39,29 @@ body {
   font-size: var(--fs-ui);
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
+  overflow: clip;
   -webkit-user-select: none;
   user-select: none;
   cursor: default;
 }
 
+/* A resize drag owns the cursor until release, even over the editor or a button. */
+html[data-drag-cursor],
+html[data-drag-cursor] *,
+html[data-drag-cursor] *::before,
+html[data-drag-cursor] *::after {
+  cursor: var(--drag-cursor) !important;
+}
+
 html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *) {
   -webkit-user-select: none !important;
   user-select: none !important;
+}
+/* WebKit keeps editable text selectable whatever its user-select, so a drag passing over a
+   text field would extend into it; take fields outside the scope out of hit testing instead. */
+html[data-selection-lock]
+  :is(input, textarea, [contenteditable]):not([data-selection-scope], [data-selection-scope] *) {
+  pointer-events: none !important;
 }
 
 input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"]),
@@ -236,6 +262,10 @@ a:hover {
 ::-webkit-scrollbar-track,
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+/* An outer scroller whose scrollbar the editor's overview lane draws (cm/lanes.ts `overviewLaneIn`). */
+.cm-openidea-overviewScroller::-webkit-scrollbar:vertical {
+  width: 0;
 }
 
 /* Settings › Appearance › Antialiasing (IDE / Editor). */

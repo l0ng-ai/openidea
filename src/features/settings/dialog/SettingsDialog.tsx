@@ -18,6 +18,9 @@ import {
   IconButton,
   SearchField,
   Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
   Tree,
   type DialogButton,
   type TreeHandle,
@@ -65,6 +68,8 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   Editor: "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.",
   "Build, Execution, Deployment": "Configure build tools, run configurations, debugger and deployment.",
   "Languages & Frameworks": "Configure language servers, interpreters, SDKs and framework support.",
+  Python: "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.",
+  Agents: "Install coding agents and configure how they launch, chat and connect to the IDE.",
   Tools: "Configure external tools, terminal, database and other integrations.",
   "Version Control": "Configure the settings related to version control used in your project",
 };
@@ -277,8 +282,8 @@ export function SettingsLayout() {
   }
 
   return (
-    <div className={styles.layout}>
-      <div className={styles.sidebar}>
+    <SplitGroup id="settings" orientation="horizontal" storageKey="openidea.settings.layout" className={styles.layout}>
+      <SplitPanel id="navigation" defaultSize="240px" minSize="160px" maxSize="40%" className={styles.sidebar}>
         <SearchField
           data-autofocus
           className={styles.search}
@@ -332,8 +337,9 @@ export function SettingsLayout() {
             )}
           />
         </div>
-      </div>
-      <div className={styles.main}>
+      </SplitPanel>
+      <SplitHandle aria-label={tx("Settings pages")} />
+      <SplitPanel id="content" minSize="60%" className={styles.main}>
         <PageHost
           node={current}
           page={current?.page}
@@ -343,8 +349,8 @@ export function SettingsLayout() {
           history={history}
           key={current?.key ?? groupKey("")}
         />
-      </div>
-    </div>
+      </SplitPanel>
+    </SplitGroup>
   );
 }
 

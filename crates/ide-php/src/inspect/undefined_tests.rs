@@ -199,7 +199,8 @@ fn quiet_until_the_index_is_ready() {
 /// The fixture's code is clean; its tests only miss PHPUnit (no `vendor/`).
 #[test]
 fn quiet_on_the_fixture() {
-    let root = dunce::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app")).unwrap();
+    let root =
+        dunce::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library")).unwrap();
     let cache = tempfile::tempdir().unwrap();
     let config = EngineConfig {
         cache_dir: cache.path().join(CACHE_SUBDIR),

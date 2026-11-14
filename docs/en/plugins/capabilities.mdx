@@ -1,0 +1,96 @@
+---
+title: "Permissions and capabilities"
+description: "The capability model: what a plugin declares, what the user approves, and what each capability unlocks."
+---
+
+Plugin code can only do what its **capabilities** allow. A plugin declares them in `plugin.toml`; the user approves them when installing, and again when a new version asks for more. Calling a gated function without its capability returns `Error::Denied("<capability>")`. The plugin keeps running and can degrade (Git Toolbox still shows the branch without `vcs.write`).
+
+```toml
+[capabilities]
+required = ["project.read", "editor.write"]
+optional = ["net:api.example.com", "secrets"]
+```
+
+Logging, notifications, status bar items, tasks and runtime contributions need no capability.
+
+## The permission dialog
+
+Installing a package, or allowing a linked or project plugin to run, opens a dialog (_Install Word Tools 1.2.0?_ or _Allow Word Tools to run?_) that lists every requested capability with:
+
+- its id (`net:api.example.com`) and a description of what it allows;
+- a risk badge: **Low**, **Medium** or **High**;
+- a checkbox for **optional** capabilities (low-risk ones are pre-checked) or a bullet for **required** ones, which you accept by installing.
+
+When any granted capability is high-risk, the dialog warns that _High-risk permissions are equivalent to running arbitrary code on this machine._ It also warns when the package is not signed, or is signed with a different key than the installed version (see [Policy and security](/en/plugins/publishing/policy)).
+
+Later:
+
+- An update that asks for nothing new installs with the grants the installed version has. One that asks for more shows **Needs permission** in **Settings › Plugins** and stays off until you click **Review Permissions…** and allow it.
+- You can revoke optional capabilities in the plugin's details in **Settings › Plugins**.
+- Linked plugins (`openidea-plugin link`) are granted per folder; project plugins (`.openidea/plugins`) run only in trusted projects and only after you allow them.
+
+## Capability reference
+
+| Capability          | Risk   | Unlocks                                                                                                                                                           | API                           |
+| ------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `project.read`      | Low    | `Project::root`, `read_file`, `find_files`, `symbols`, `search_text`, `host::projects`, publishing diagnostics, `problems`, opening editors, decorations          | 1.0                           |
+| `project.write`     | High   | `Project::write_file`: creates and replaces text files inside the open projects, never git's own files (`.git`)                                                   | 1.3                           |
+| `editor.read`       | Low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                        | 1.0                           |
+| `editor.write`      | Medium | `TextEditor::apply_edits`                                                                                                                                         | 1.0                           |
+| `vcs.read`          | Low    | `vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff`, the pending commit, before-commit checks                                                         | 1.0                           |
+| `vcs.write`         | Medium | `vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                   | 1.0                           |
+| `storage`           | Low    | `host::storage`, 64 MiB per plugin                                                                                                                                | 1.0                           |
+| `events`            | Low    | File opened, closed and saved, files changed, editor focused, repository changed, settings changed                                                                | 1.0                           |
+| `events.input`      | Medium | `action-performed` and `input-mode-changed` events (keystrokes and editor input)                                                                                  | 1.0                           |
+| `clipboard`         | Medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                         | 1.0                           |
+| `secrets`           | Medium | `{{secret:<name>}}` in request headers, `secret_is_set`, `secret_set`, `secret_delete`                                                                            | 1.0                           |
+| `net:<host>`        | Medium | `host::fetch` over HTTPS (and loopback HTTP) to that host; `*.example.com` matches subdomains                                                                     | 1.0                           |
+| `net:ask`           | Medium | Ask the user at the first request to an HTTPS host that isn't declared                                                                                            | 1.5                           |
+| `net.http:<host>`   | Medium | Unencrypted HTTP to that host                                                                                                                                     | 1.4                           |
+| `database.sources`  | Medium | Manage only the plugin's own project database sources and write their credentials; trusted projects only                                                          | 1.4                           |
+| `fs.read:<path>`    | High   | `host::fs` reads outside the projects, under that path                                                                                                            | 1.0 (the `fs` interface: 1.3) |
+| `fs.write:<path>`   | High   | `host::fs` writes outside the projects, under that path; does not imply reading                                                                                   | 1.3                           |
+| `process:<program>` | High   | Run that program: `run_process`, `run_command`, `start`, terminals, language servers, debug adapters, runs                                                        | 1.0                           |
+| `ipc:<path>`        | High   | Local Unix sockets or Windows named pipes on the project machine                                                                                                  | 1.4                           |
+| `ide.commands`      | High   | Run any IDE action or another plugin's command as if the user chose it, including running programs, committing and pushing. The plugin's own commands are exempt. | 1.4                           |
+
+The **API** column is the oldest plugin API the manifest may admit when it declares the capability. For example, a manifest with `net.http:` must require `engines.openidea = "^1.4"` or later; installing and `openidea-plugin check` refuse it otherwise.
+
+## Processes
+
+`process:<program>` is the most powerful capability: it is equivalent to running arbitrary code on the machine.
+
+- Declare a program name (`process:checkstyle`). On grant, the IDE resolves it to an absolute path on the `PATH` of the machine where the project is, and records the file's content hash. It checks both again right before every start; a replaced file is refused until the user approves it again.
+- In **Settings › Plugins** the user can choose a different executable for a `process:` grant, globally or for the current project. The new choice is approved and pinned the same way. The plugin keeps calling its declared program name.
+- `process:` grants are also derived from what a contribution starts: a language's `language-servers` and `debugger`, and a run detector's `command`. These are optional: refusing one keeps the rest of the plugin working.
+- Processes run in the project root of a trusted project. Plugins can only add environment variables, never replace or remove them.
+
+## Files outside the project
+
+- `fs.read:<path>` grants reading a directory (at any depth) or one file outside the open projects. The path is resolved to its real location before it is compared, so a symlink out of the granted directory is refused, and `/opt/see` does not cover `/opt/seeyon`. Granting a whole file system (`/`, `C:\`) is refused. `~/` stands for the home directory.
+- `fs.write:<path>` grants creating and replacing files under that path. Writes are atomic, keep the file's encoding and BOM, are capped at 16 MiB, and are refused while an editor holds unsaved changes for the same file.
+- `host::fs::plugin_dir()` returns a private directory that belongs only to this plugin. Reading and writing inside it needs no capability. It survives reloads, updates and restarts, and is removed on uninstall.
+
+## Network
+
+- `net:<host>` allows HTTPS (and HTTP to loopback) to that host on any port. `*.example.com` matches any subdomain, not the apex.
+- `net.http:<host>` allows unencrypted HTTP; it does not imply HTTPS. An HTTPS → HTTP redirect also needs `net.http:`.
+- Each redirect is checked before connecting. Responses are limited to 16 MiB. Requests run on the machine where the project is.
+- `net:ask` (API 1.5) lets a plugin reach HTTPS hosts it didn't list. The first request to a new host asks the user, naming the plugin and the host, with **Allow once**, **Always allow** and **Deny** (remote sessions offer **Allow for this session** and **Deny**). "Always" is remembered per exact host and listed in the plugin's permissions, where it can be removed. Calls without a window (scheduled work, event handlers, providers) never ask and get `denied`. Plain HTTP never goes through this flow.
+
+## Secrets
+
+Secrets are declared in the manifest and entered by the user in **Settings › Plugins**; they are kept in the system keychain.
+
+```toml
+[[contributes.secrets]]
+name = "api-key"
+label = "API key"
+description = "Used only with the OpenAI backend."
+```
+
+The plugin never reads a secret. It writes `{{secret:api-key}}` in a request header and the host fills it in on the way out. `host::secret_is_set` says whether the user entered one. API 1.4 adds `secret_set` and `secret_delete` (for example to store an OAuth token), which still never return the value. In remote projects secrets stay in the desktop's keychain.
+
+## Trusted projects
+
+Some functions only work in trusted projects, whatever the plugin was granted: running processes, `vcs_fetch` and the newer Git reads, database sources, run targets and project plugins. In a project opened in Restricted Mode, the marketplace can be browsed but plugin code that runs cannot be changed.

@@ -17,8 +17,21 @@ const PYTHON_FILES: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "Pipf
 const SKIP_DIRS: &[&str] =
     &["node_modules", "target", "build", "dist", "out", "venv", "__pycache__", "vendor", "bower_components"];
 
+/// A Python virtual environment (`python -m venv`, virtualenv, uv) or conda environment,
+/// whatever it is named: its packages are dependencies, not modules of the project.
+/// Returns the file that marks it.
+pub(crate) fn virtual_env_marker(dir: &Path) -> Option<&'static str> {
+    if dir.join("pyvenv.cfg").is_file() {
+        Some("pyvenv.cfg")
+    } else if dir.join("conda-meta").is_dir() {
+        Some("conda-meta")
+    } else {
+        None
+    }
+}
+
 /// Build files whose changes can change the detected roots.
-const BUILD_FILES: &[&str] = &[
+pub(crate) const BUILD_FILES: &[&str] = &[
     "pom.xml",
     "build.gradle",
     "build.gradle.kts",
@@ -32,6 +45,7 @@ const BUILD_FILES: &[&str] = &[
     "Pipfile",
     "requirements.txt",
     "package.json",
+    "composer.json",
 ];
 
 /// Folder names that are (or contain) conventional roots.
@@ -64,7 +78,10 @@ pub fn affects_roots(rel: &Path) -> bool {
     let Some(name) = names.next() else { return false };
     BUILD_FILES.contains(&name)
         || ROOT_NAMES.contains(&name)
-        || matches!(name, "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt")
+        || matches!(
+            name,
+            "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt" | "pyvenv.cfg" | "conda-meta"
+        )
         || names.next() == Some("src")
 }
 
@@ -128,6 +145,13 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
             let child = join(&rel, &name);
             // Roots are not searched for nested modules (`src/main/java` can be huge).
             if found.iter().any(|f| *f == child || f.is_empty() && name == "src") {
+                continue;
+            }
+            if let Some(marker) = virtual_env_marker(&root.join(&child)) {
+                if !out.iter().any(|r| r.path == child) {
+                    let from = join(&child, marker);
+                    out.push(SourceFolder { path: child, kind: RootKind::Excluded, detected_from: Some(from) });
+                }
                 continue;
             }
             queue.push_back((child, depth + 1));
@@ -214,6 +238,15 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
         }
     }
 
+    // Before `package.json`: a Laravel app's `tests/` is the PHP test root.
+    if has("composer.json")
+        && let Ok(text) = std::fs::read_to_string(dir.join("composer.json"))
+    {
+        for (sub, kind) in composer_roots(&text) {
+            add(&sub, kind, "composer.json");
+        }
+    }
+
     if has("package.json") {
         // A JVM build's `src` holds source sets, not JavaScript.
         if !has("pom.xml") && !GRADLE_FILES.iter().any(|f| has(f)) {
@@ -228,6 +261,37 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
             add(ex, RootKind::Excluded, "package.json");
         }
     }
+}
+
+/// `autoload.psr-4` folders as Source roots and `autoload-dev.psr-4` ones as Test roots, relative to
+/// the `composer.json` folder; paths that leave it or point into `vendor/` are left out.
+fn composer_roots(text: &str) -> Vec<(String, RootKind)> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (section, kind) in [("autoload", RootKind::Source), ("autoload-dev", RootKind::Test)] {
+        let Some(map) = json.get(section).and_then(|a| a.get("psr-4")).and_then(|m| m.as_object()) else { continue };
+        for value in map.values() {
+            let paths: Vec<&str> = match value {
+                serde_json::Value::String(p) => vec![p.as_str()],
+                serde_json::Value::Array(a) => a.iter().filter_map(|p| p.as_str()).collect(),
+                _ => Vec::new(),
+            };
+            for path in paths {
+                let parts: Vec<&str> = path.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
+                if path.starts_with(['/', '\\'])
+                    || parts.iter().any(|c| *c == ".." || c.contains(':'))
+                    || parts.first() == Some(&"vendor")
+                {
+                    continue;
+                }
+                let sub = parts.join("/");
+                if !out.iter().any(|(p, _)| *p == sub) {
+                    out.push((sub, kind));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Gradle's conventional `src/<set>/<lang>` folders that exist: `(set, lang)`.
@@ -305,6 +369,47 @@ mod tests {
         assert!(roots.excluded_globs().contains(&"/game/Library".to_owned()));
         assert!(!roots.excluded_globs().contains(&"/Library".to_owned()));
         assert!(roots.roots.iter().any(|r| r.path == "server/src" && r.kind == RootKind::Source));
+    }
+
+    #[test]
+    fn composer_psr4_folders_are_source_and_test_roots() {
+        let dir = tree(&[
+            "app/",
+            "database/factories/",
+            "database/seeders/",
+            "lib/",
+            "tests/",
+            "vendor/acme/src/",
+            "package.json",
+        ]);
+        fs::write(
+            dir.path().join("composer.json"),
+            r#"{
+                "autoload": { "psr-4": {
+                    "App\\": "app/",
+                    "Database\\Factories\\": "database/factories/",
+                    "Database\\Seeders\\": ["database/seeders/", "lib", "missing/"],
+                    "Vendored\\": "vendor/acme/src/",
+                    "Outside\\": "../elsewhere/"
+                } },
+                "autoload-dev": { "psr-4": { "Tests\\": "tests/" } }
+            }"#,
+        )
+        .unwrap();
+        let mut roots = summary(&detect(dir.path()));
+        roots.sort();
+        assert_eq!(
+            roots,
+            [
+                "app=Source@composer.json",
+                "database/factories=Source@composer.json",
+                "database/seeders=Source@composer.json",
+                "lib=Source@composer.json",
+                "tests=Test@composer.json",
+            ]
+        );
+        assert!(affects_roots(Path::new("composer.json")));
+        assert!(composer_roots("not json").is_empty());
     }
 
     #[test]
@@ -421,6 +526,35 @@ mod tests {
                 "web/src=Source@web/package.json",
             ]
         );
+    }
+
+    #[test]
+    fn virtual_environments_are_excluded_whatever_their_name() {
+        // A package in the environment's site-packages has build files of its own; as a
+        // source root it would be put on PYTHONPATH and shadow the standard library.
+        let dir = tree(&[
+            "requirements.txt",
+            "app.py",
+            "code10/pyvenv.cfg",
+            "code10/Lib/site-packages/pkg/pyproject.toml",
+            "code10/Lib/site-packages/pkg/io/__init__.py",
+            "envs/conda/conda-meta/",
+            "envs/conda/lib/pkg/setup.py",
+            "svc/pyproject.toml",
+            "svc/env/pyvenv.cfg",
+            "svc/env/lib/python3.12/site-packages/dep/setup.py",
+        ]);
+        assert_eq!(
+            summary(&detect(dir.path())),
+            vec![
+                "=Source@requirements.txt",
+                "code10=Excluded@code10/pyvenv.cfg",
+                "envs/conda=Excluded@envs/conda/conda-meta",
+                "svc=Source@svc/pyproject.toml",
+                "svc/env=Excluded@svc/env/pyvenv.cfg",
+            ]
+        );
+        assert!(affects_roots(Path::new("code10/pyvenv.cfg")));
     }
 
     #[test]

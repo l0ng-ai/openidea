@@ -53,8 +53,12 @@ pub struct Outcome {
     pub success: bool,
 }
 
-/// Inspect sources, excluding generated/build/VCS trees and never following symlinks.
-pub fn has_kotlin(root: &Path) -> bool {
+/// Only linked Maven modules contribute sources to the bridge.
+pub fn has_kotlin(root: &Path, model: &BuildModel) -> bool {
+    model.maven.iter().flat_map(|m| &m.projects).any(|p| has_kotlin_sources(&root.join(&p.dir)))
+}
+
+fn has_kotlin_sources(root: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(root) else { return false };
     entries.flatten().any(|entry| {
         let Ok(kind) = entry.file_type() else { return false };
@@ -66,8 +70,22 @@ pub fn has_kotlin(root: &Path) -> bool {
                     entry.file_name().to_str(),
                     Some("target" | "build" | "out" | "bin" | "node_modules" | ".git" | ".openidea")
                 )
-                && has_kotlin(&entry.path())
+                && !["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
+                    .iter()
+                    .any(|marker| entry.path().join(marker).is_file())
+                && has_kotlin_sources(&entry.path())
         }
+    })
+}
+
+fn plan(root: &Path, model: &BuildModel) -> IdeResult<compile::BuildPlan> {
+    if model.maven.as_ref().is_none_or(|m| m.projects.is_empty()) {
+        return Err(IdeError::invalid("Kotlin bridge requires a Maven build root"));
+    }
+    Ok(compile::BuildPlan {
+        system: compile::BuildSystem::Maven,
+        title: root.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        steps: compile::maven_steps(root, model, BuildKind::Build, None)?,
     })
 }
 
@@ -81,10 +99,7 @@ pub fn build(
     cancel: &CancellationToken,
 ) -> IdeResult<Outcome> {
     std::fs::create_dir_all(generation)?;
-    let mut plan = compile::plan(root, model, BuildKind::Build, None, None)?;
-    if plan.system != compile::BuildSystem::Maven {
-        return Err(IdeError::invalid("Kotlin bridge requires a Maven build root"));
-    }
+    let mut plan = plan(root, model)?;
     let mut manifests = Vec::new();
     for (index, step) in plan.steps.iter_mut().enumerate() {
         step.args.push("--fail-at-end".into());
@@ -448,13 +463,116 @@ mod tests {
     }
 
     #[test]
+    fn kotlin_sources_belong_to_linked_maven_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for file in [
+            "java/pom.xml",
+            "gradle/build.gradle.kts",
+            "gradle/src/main/kotlin/App.kt",
+            "java/unlinked/pom.xml",
+            "java/unlinked/src/main/kotlin/App.kt",
+            "java/gradle/settings.gradle.kts",
+            "java/gradle/src/main/kotlin/App.kt",
+            "java/target/generated/Old.kt",
+            "java/node_modules/dependency/App.kt",
+            "java/linked/pom.xml",
+            "java/linked/src/test/kotlin/Test.kt",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        let mut model = BuildModel {
+            maven: Some(crate::MavenModel {
+                projects: vec![crate::MavenProject { dir: "java".into(), ..Default::default() }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(!has_kotlin(root, &model));
+        model.maven.as_mut().unwrap().projects.push(crate::MavenProject {
+            dir: "java/linked".into(),
+            aggregated: true,
+            ..Default::default()
+        });
+        assert!(has_kotlin(root, &model));
+        model.maven.as_mut().unwrap().projects.clear();
+        assert!(!has_kotlin(root, &model));
+        assert!(!has_kotlin(root, &BuildModel::default()));
+    }
+
+    #[test]
+    fn maven_bridge_ignores_the_workspace_build_system() {
+        for marker in ["Cargo.toml", "package.json", "build.gradle.kts", "go.mod", "CMakeLists.txt"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::write(root.join(marker), "").unwrap();
+            let mut model = BuildModel { maven: Some(crate::MavenModel::default()), ..Default::default() };
+            for name in ["java", "kotlin"] {
+                let module = root.join(name);
+                std::fs::create_dir_all(&module).unwrap();
+                model.maven.as_mut().unwrap().projects.push(crate::MavenProject {
+                    dir: name.into(),
+                    command: format!("{name}-mvnw"),
+                    options: vec!["-o".into(), "-Peditor".into()],
+                    env: BTreeMap::from([("JAVA_HOME".into(), "/jdk".into())]),
+                    ..Default::default()
+                });
+            }
+            std::fs::write(root.join("kotlin/App.kt"), "class App").unwrap();
+            assert!(has_kotlin(root, &model), "{marker}");
+            let plan = plan(root, &model).unwrap();
+            assert_eq!(plan.system, compile::BuildSystem::Maven);
+            assert_eq!(plan.steps.len(), 2);
+            for (step, name) in plan.steps.iter().zip(["java", "kotlin"]) {
+                assert_eq!(step.cwd, root.join(name));
+                assert_eq!(step.program, format!("{name}-mvnw"));
+                assert_eq!(
+                    step.args,
+                    [
+                        "-B",
+                        "-Dstyle.color=never",
+                        crate::maven::LOCAL_REPO_TRACKING_ARG,
+                        "-o",
+                        "-Peditor",
+                        "-Djacoco.skip=true",
+                        "test-compile"
+                    ]
+                );
+                assert_eq!(step.env.get("JAVA_HOME").map(String::as_str), Some("/jdk"));
+            }
+        }
+    }
+
+    #[test]
+    fn external_linked_maven_sources_are_included() {
+        let workspace = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        std::fs::write(external.path().join("App.kt"), "class App").unwrap();
+        let model = BuildModel {
+            maven: Some(crate::MavenModel {
+                projects: vec![crate::MavenProject {
+                    dir: external.path().to_string_lossy().into_owned(),
+                    command: "mvn".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(has_kotlin(workspace.path(), &model));
+        assert_eq!(plan(workspace.path(), &model).unwrap().steps[0].cwd, external.path());
+    }
+
+    #[test]
     fn does_not_find_deleted_sources_in_build_outputs() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("target/generated")).unwrap();
         std::fs::write(dir.path().join("target/generated/Old.kt"), "").unwrap();
-        assert!(!has_kotlin(dir.path()));
+        assert!(!has_kotlin_sources(dir.path()));
         std::fs::write(dir.path().join("New.kt"), "").unwrap();
-        assert!(has_kotlin(dir.path()));
+        assert!(has_kotlin_sources(dir.path()));
     }
 
     #[test]

@@ -1,0 +1,16 @@
+package openidea:plugin@1.7.0;
+
+/// Embedded languages. The host routes plugin providers and configured language
+/// servers inside these ranges, preserving host-document UTF-16 coordinates.
+/// Each LSP range gets its own masked, in-memory sibling document (at most 32
+/// per host document, documents over 2 MiB excluded). No file is written.
+/// Formatting and rename continue to use the host language's server.
+interface injections {
+    /// A versioned document snapshot. Coordinates are zero-based UTF-16.
+    record document { path: string, language: string, version: u64, text: string }
+    /// A host-document range containing the named language.
+    record injection { range: range, language: string }
+    use types.{range};
+    /// Embedded ranges, refreshed after edits under the editor-provider budget.
+    injections: func(doc: document) -> list<injection>;
+}

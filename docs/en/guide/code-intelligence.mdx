@@ -1,0 +1,129 @@
+---
+title: "Code intelligence"
+description: "Completion, navigation, find usages, documentation, hierarchies and structure, and where the answers come from."
+---
+
+## Where the answers come from
+
+Code intelligence has two sources:
+
+- **Language servers.** Each language is configured in `languages/<id>.toml` with one or more [LSP](https://microsoft.github.io/language-server-protocol/) servers (for example basedpyright and Ruff for Python, rust-analyzer for Rust, JDT LS for Java). A server starts when you open a file of its language and answers completion, navigation, usages, documentation, diagnostics, formatting and refactorings. Several servers can serve one language; their results are merged.
+- **The IDE's own index and syntax trees.** OpenIDEA parses files with bundled tree-sitter grammars and indexes the project's files and symbols in the background. This powers Go to File / Class / Symbol, the Structure view, folding, Extend Selection and syntax highlighting, and it is the fallback when no server is running: navigation, Find Usages, Rename of local variables and Introduce Variable then work from the syntax tree for what is certain, and Find Usages reports name matches as text occurrences.
+
+When a language server is missing, a notification offers to install it. Installed servers, their versions and settings are in **Settings › Languages & Frameworks › Language Servers**. The **Language Services** widget in the status bar shows which servers run for the project and lets you restart one. See [Languages](/en/languages/index) for what each language uses.
+
+Plugins can add completion items, quick fixes and other providers on top of these; see the Plugins tab.
+
+## Completion
+
+| Action                             | macOS    | Windows / Linux |
+| ---------------------------------- | -------- | --------------- |
+| **Code › Code Completion › Basic** | `⌃Space` | `Ctrl+Space`    |
+| **Cyclic Expand Word**             | `⌥/`     | `Alt+/`         |
+| **Cyclic Expand Word (Backward)**  | `⌥⇧/`    | `Alt+Shift+/`   |
+| **Parameter Info**                 | `⌘P`     | `Ctrl+P`        |
+
+Suggestions also appear as you type. `↵` / `Enter` inserts the selected one; `⇥` / `Tab` replaces the rest of the identifier. Documentation for the selected item opens beside the list. Live and postfix templates appear in the list too (see [Live templates](/en/guide/templates)).
+
+Parameter info opens automatically after `(` and `,`; `⇥` / `⇧⇥` move between arguments.
+
+**Cyclic Expand Word** completes the word at the caret from other words in the file and in open editors, without a language server. Press it again to cycle.
+
+Completion behaviour (case matching, auto-insert of a single suggestion, sorting, parentheses, when documentation shows) is in **Settings › Editor › General › Code Completion**. **Settings › Editor › General › Auto Import** controls imports on paste and adding unambiguous imports on the fly.
+
+### Inline completion
+
+Language servers that support LSP inline completion show a grey suggestion at the caret as you type. Turn it off, delay it until typing pauses, or limit it to some languages in **Settings › Editor › General › Inline Completion**.
+
+| Action                                       | macOS       | Windows / Linux   |
+| -------------------------------------------- | ----------- | ----------------- |
+| **Call Inline Completion**                   | `⌥\`        | `Alt+\`           |
+| **Insert Inline Proposal**                   | `⇥`         | `Tab`             |
+| **Insert Inline Proposal: Next Word**        | `⌘→`        | `Ctrl+Right`      |
+| **Show Next Inline Proposal** / **Previous** | `⌥]` / `⌥[` | `Alt+]` / `Alt+[` |
+| **Hide Inline Proposal**                     | `Esc`       | `Esc`             |
+
+## Navigation
+
+| Action                                | macOS               | Windows / Linux                    |
+| ------------------------------------- | ------------------- | ---------------------------------- |
+| **Go to Declaration or Usages**       | `⌘B` or `⌘`-click   | `Ctrl+B` or `Ctrl`-click           |
+| **Go to Implementation(s)**           | `⌥⌘B` or `⌥⌘`-click | `Ctrl+Alt+B` or `Ctrl+Alt`-click   |
+| **Go to Type Declaration**            | `⇧⌘B`               | `Ctrl+Shift+B`                     |
+| **Super Method**                      | `⌘U`                | `Ctrl+U`                           |
+| **Navigate › Test**                   | `⇧⌘T`               | `Ctrl+Shift+T`                     |
+| **Back** / **Forward**                | `⌘[` / `⌘]`         | `Ctrl+Alt+Left` / `Ctrl+Alt+Right` |
+| **Next Method** / **Previous Method** | `⌃⇧↓` / `⌃⇧↑`       | `Alt+Down` / `Alt+Up`              |
+
+- **Go to Declaration or Usages** on a declaration shows its usages instead.
+- Hold `⌘` / `Ctrl` and hover over a name to see it underlined as a link, with brief information about it.
+- Gutter icons mark types and methods that are implemented or overridden (↓) and methods that implement or override another (↑). Click one to go there.
+- **Navigate › Test** jumps between a class and its tests by naming convention and offers **Create New Test…** when there is none.
+
+Going to files, classes and symbols by name is covered in [Search and navigation](/en/guide/search).
+
+## Find usages
+
+| Action                                    | macOS         | Windows / Linux                 |
+| ----------------------------------------- | ------------- | ------------------------------- |
+| **Find Usages**                           | `⌥F7`         | `Alt+F7`                        |
+| **Show Usages**                           | `⌥⌘F7`        | `Ctrl+Alt+F7`                   |
+| **Highlight Usages in File**              | `⇧⌘F7`        | `Ctrl+Shift+F7`                 |
+| **Next Highlighted Usage** / **Previous** | `⌃⌥↓` / `⌃⌥↑` | `Ctrl+Alt+Down` / `Ctrl+Alt+Up` |
+
+**Find Usages** lists the results in the **Find Usages** tool window, grouped by file, with a preview. **Show Usages** shows them in a popup at the caret. The occurrences of the symbol under the caret are highlighted in the editor as you move.
+
+Above declarations, a **N usages** hint and the last author of the code (from Git blame) are shown, with the date of that last change. Turn them off under **Code Vision** in **Settings › Editor › Inlay Hints**.
+
+## Documentation and information
+
+| Action                   | macOS    | Windows / Linux |
+| ------------------------ | -------- | --------------- |
+| **Quick Documentation**  | `F1`     | `Ctrl+Q`        |
+| **Quick Definition**     | `⌥Space` | `Ctrl+Shift+I`  |
+| **Expression Type Info** | `⌃⇧P`    | `Ctrl+Shift+P`  |
+| **Error Description**    | `⌘F1`    | `Ctrl+F1`       |
+| **Context Info**         | `⌃⇧Q`    | `Alt+Q`         |
+
+Hovering over code shows the documentation and any problem under the pointer after a short delay. In the **Quick Documentation** popup, links open other symbols' documentation in place, `←` / `→` walk back and forward, and `F4` jumps to the source. Pressing `F1` again while the popup has focus moves it into the **Documentation** tool window; while that window is open, `F1` shows documentation there instead of in a popup.
+
+**Quick Definition** shows the source of the definition in a popup without leaving the file. **Context Info** shows the declaration lines around the caret (class, method and block headers), which helps when they have scrolled out of view.
+
+## Inlay hints
+
+Inline hints for parameter names, inferred types and other details (such as chained call types) come from the language server. Turn them on or off per kind and per language in **Settings › Editor › Inlay Hints**, or right-click a hint to disable that kind. `⌘`-click / `Ctrl`-click a hint part that names a declaration to go there.
+
+## Structure and hierarchies
+
+| Action                    | macOS  | Windows / Linux |
+| ------------------------- | ------ | --------------- |
+| **File Structure**        | `⌘F12` | `Ctrl+F12`      |
+| **Structure** tool window | `⌘7`   | `Alt+7`         |
+| **Call Hierarchy**        | `⌃⌥H`  | `Ctrl+Alt+H`    |
+| **Type Hierarchy**        | `⌃H`   | `Ctrl+H`        |
+
+**File Structure** opens a popup of the file's declarations; type to filter and press `↵` / `Enter` to jump. The **Structure** tool window shows the same outline; its toolbar can make it follow the caret. Breadcrumbs at the top or bottom of the editor show where the caret is; set their position and languages in **Settings › Editor › General › Breadcrumbs**.
+
+**Call Hierarchy** and **Type Hierarchy** open in the **Hierarchy** tool window. Levels load as you expand them. They need a language server that supports the LSP call and type hierarchy requests.
+
+## Generating code
+
+| Action                 | macOS | Windows / Linux |
+| ---------------------- | ----- | --------------- |
+| **Generate…**          | `⌘N`  | `Alt+Insert`    |
+| **Implement Methods…** | `⌃I`  | `Ctrl+I`        |
+| **Override Methods…**  | `⌃O`  | `Ctrl+O`        |
+
+These list what the language server can generate at the caret (constructors, getters and setters, missing members and so on), so the choices depend on the language. Quick fixes and intentions are covered in [Inspections](/en/guide/inspections), refactorings in [Refactoring](/en/guide/refactoring).
+
+## Semantic highlighting
+
+Besides syntax highlighting, colours from the language server's semantic tokens are applied. **Semantic Highlighting** (each local variable and parameter name gets its own colour throughout the file) and **Rainbow Brackets** are toggle actions you can run from Find Action; both are also in **Settings › Editor › Color Scheme**.
+
+## When something doesn't work
+
+- Check the **Language Services** status bar widget: the server may still be starting, may have failed, or may not be installed.
+- A file outside the source folders of its module (for example a Java file outside the module's source roots) gets only syntax checks from some servers. A banner at the top of the editor says so.
+- **File › Power Save Mode** turns off automatic completion and parameter info popups, documentation on hover, usage highlighting, usage hints and inline completion.
+- Indexing runs in the background after a project opens. Searches answer from what is already indexed and complete when indexing finishes.
+- [Troubleshooting](/en/reference/troubleshooting) lists more checks and where logs are kept.

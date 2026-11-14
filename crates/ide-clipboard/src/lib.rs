@@ -1,8 +1,8 @@
 //! The file list on the OS clipboard: what Explorer copies when the user
 //! copies files, so the project view can paste them, and what the project view
 //! writes so Explorer can paste the files it copied (IDEA does both). The
-//! written list comes with the paths as text, so a paste into an editor
-//! inserts them instead of doing nothing.
+//! written list comes with the file names as text, so a paste into an editor
+//! inserts them instead of doing nothing (#1878).
 //!
 //! Windows keeps it as `CF_HDROP`: a `DROPFILES` header and a double-NUL
 //! terminated list of absolute paths, wide when `fWide` is set. The data is set
@@ -20,6 +20,19 @@
 //! empty and [`set_files`] fails there.
 
 use std::path::PathBuf;
+
+/// Replaces every clipboard flavor with plain text. `owner` is the calling window
+/// handle on Windows, ignored elsewhere. Call on the main thread on macOS and Linux.
+pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
+    imp::set_text(text, owner)
+}
+
+/// The clipboard's plain text, None when it holds none. macOS only (main thread);
+/// Linux reads it asynchronously through GTK in the app, Windows through the WebView.
+#[cfg(target_os = "macos")]
+pub fn text() -> Option<String> {
+    imp::text()
+}
 
 /// Size of `DROPFILES`: `pFiles`, `pt` (two `LONG`s), `fNC`, `fWide`.
 const HEADER: usize = 20;
@@ -42,6 +55,21 @@ pub fn set_files(paths: &[PathBuf]) -> bool {
         return false;
     }
     imp::set_files(paths)
+}
+
+/// The text flavor written beside the file list: the files' names, one per
+/// line. An editor paste inserts names, not the absolute paths the file list
+/// keeps for Explorer (#1878; IDEA's text flavor is names too). A path with no
+/// file name (a root like `C:\`) keeps its whole path.
+#[cfg(any(windows, target_os = "macos", test))]
+fn names_text(paths: &[PathBuf], separator: &str) -> String {
+    paths
+        .iter()
+        .map(|p| {
+            p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string_lossy().into_owned())
+        })
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 /// `DROPFILES` for `paths`, in the wide form so names outside the ANSI code
@@ -108,7 +136,7 @@ pub fn decode(bytes: &[u8]) -> Vec<PathBuf> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{HEADER, decode, encode};
+    use super::{HEADER, decode, encode, names_text};
     use std::ffi::c_void;
     use std::path::PathBuf;
     use std::ptr;
@@ -150,8 +178,12 @@ mod imp {
     /// Opens the clipboard as its owner: the list is written in full, so no
     /// owning window is needed.
     fn open() -> bool {
+        open_for(ptr::null_mut())
+    }
+
+    fn open_for(owner: Handle) -> bool {
         for _ in 0..OPEN_ATTEMPTS {
-            if unsafe { OpenClipboard(ptr::null_mut()) } != 0 {
+            if unsafe { OpenClipboard(owner) } != 0 {
                 return true;
             }
             std::thread::sleep(OPEN_RETRY);
@@ -215,14 +247,37 @@ mod imp {
         }
     }
 
+    pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
+        let (memory, _) = global_text(text);
+        if memory.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: ownership transfers only on success; otherwise we free the allocation.
+        unsafe {
+            if !open_for(owner as Handle) {
+                GlobalFree(memory);
+                return Err(std::io::Error::last_os_error());
+            }
+            let taken = EmptyClipboard() != 0 && !SetClipboardData(CF_UNICODETEXT, memory).is_null();
+            let error = std::io::Error::last_os_error();
+            CloseClipboard();
+            if taken {
+                Ok(())
+            } else {
+                GlobalFree(memory);
+                Err(error)
+            }
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
             return false;
         }
-        // The paths as text, newline-separated, so pasting into an editor
-        // inserts them (IDEA writes the list and the text together).
-        let text = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\r\n");
+        // The file names as text: the file list keeps the absolute paths for
+        // Explorer, while an editor paste inserts the names (#1878).
+        let text = names_text(paths, "\r\n");
         // SAFETY: the blocks are allocated, filled, handed to the clipboard and
         // freed only on the paths where the clipboard did not take ownership.
         unsafe {
@@ -242,7 +297,7 @@ mod imp {
                 return false;
             }
             // Replacing the list also drops the text the user copied before;
-            // the paths' own text is set back with it.
+            // the file names are set back with it.
             if EmptyClipboard() == 0 {
                 CloseClipboard();
                 GlobalFree(memory);
@@ -277,6 +332,8 @@ mod imp {
     };
     use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
+
+    use super::names_text;
 
     /// `NSURL` as the one class to read, limited to file URLs: a web link the
     /// user copied is not a file to paste.
@@ -323,6 +380,27 @@ mod imp {
         })
     }
 
+    pub fn text() -> Option<String> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
+        })
+    }
+
+    pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            if board.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString }) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("Cannot write clipboard text"))
+            }
+        })
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
@@ -338,13 +416,11 @@ mod imp {
                 urls.iter().map(|url| ProtocolObject::from_ref(&**url)).collect();
             let board = NSPasteboard::generalPasteboard();
             // Replacing the list also drops the text the user copied before;
-            // the paths' own text is set back with it, so an editor paste
-            // inserts them (IDEA writes the list and the text together).
+            // the file names are set back as text, so an editor paste inserts
+            // names, not paths (#1878).
             board.clearContents();
             let written = board.writeObjects(&NSArray::from_slice(&writers));
-            let text = NSString::from_str(
-                &paths.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"),
-            );
+            let text = NSString::from_str(&names_text(paths, "\n"));
             board.setString_forType(&text, unsafe { NSPasteboardTypeString });
             written
         })
@@ -354,6 +430,19 @@ mod imp {
 #[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use std::path::PathBuf;
+
+    pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(text);
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = text;
+            Err(std::io::Error::other("Clipboard text is unavailable on this platform"))
+        }
+    }
 
     pub fn has_files() -> bool {
         false
@@ -413,6 +502,15 @@ mod tests {
         let mut far = encode(&paths(&["C:/a"]));
         far[0] = 0xff; // pFiles past the end
         assert_eq!(decode(&far), Vec::<PathBuf>::new());
+    }
+
+    #[test]
+    fn the_text_flavor_is_the_file_names() {
+        assert_eq!(names_text(&paths(&["C:/work/project/a.txt", "C:/work/project/sub"]), "\r\n"), "a.txt\r\nsub");
+        // A path with no file name (the filesystem root) keeps its whole path.
+        let root = PathBuf::from("/");
+        assert!(root.file_name().is_none());
+        assert_eq!(names_text(std::slice::from_ref(&root), "\n"), root.to_string_lossy());
     }
 
     #[test]

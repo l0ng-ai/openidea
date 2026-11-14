@@ -7,17 +7,22 @@
 import { registerActions, type Action } from "@/platform/actions";
 import { call, commands, type FileProbe } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
-import { basename } from "@/platform/project";
+import { openWithSystemApp } from "@/platform/fileManager";
+import { basename, useProject } from "@/platform/project";
 import { fileIconName, lazyComponent } from "@/ui";
 import {
   registerEditorKind,
+  registerExternalFileOpenHandler,
   registerFileEditorProvider,
   registerTextEditorWrapper,
+  textEditorWrapperFor,
+  useTextEditorWrappers,
   type EditorInput,
 } from "@/workbench/contributions";
 import {
   BINARY_KIND,
   IMAGE_KIND,
+  associatedApplication,
   binaryInput,
   imageInput,
   isImagePath,
@@ -80,12 +85,25 @@ function markdownActions(): Action[] {
 export function activate(): () => void {
   const probes = new Map<string, Promise<FileProbe>>();
   const disposers = [
+    // Files associated with another application (Settings › Editor › File Types)
+    // win over the viewers below; a failed launch falls through to them.
+    registerExternalFileOpenHandler({
+      id: "viewers.associatedApps",
+      order: 1,
+      open: (path) => {
+        const patterns = useProject.getState().settings?.files?.associatedApplications ?? [];
+        return associatedApplication(path, patterns) ? openWithSystemApp(path) : false;
+      },
+    }),
     registerEditorKind({ kind: IMAGE_KIND, component: ImageViewer, title: titleOf, icon: iconOf }),
     registerEditorKind({ kind: BINARY_KIND, component: HexViewer, title: titleOf, icon: iconOf }),
     registerFileEditorProvider({
       id: "viewers.image",
       order: 10,
-      resolve: (path) => (isImagePath(path) ? imageInput(path) : null),
+      resolve: (path) =>
+        isImagePath(path) && !textEditorWrapperFor(useTextEditorWrappers.getState().wrappers, path)
+          ? imageInput(path)
+          : null,
     }),
     registerFileEditorProvider({
       id: "viewers.hex",

@@ -1,0 +1,74 @@
+---
+title: "Go"
+description: "基于 gopls 的 Go 代码智能、GOROOT 与构建标签设置、go run 和 go test 运行配置，以及基于 Delve 的调试。"
+---
+
+OpenIDEA 用 gopls 提供 Go 代码智能，用 `go` 命令运行和测试模块，用 Delve 调试。`go.mod` 和 `go.work` 文件同样有高亮，并由 gopls 提供服务。其他语言的情况见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+gopls 负责 `.go`、`go.mod` 和 `go.work` 文件。工作区从最近的 `go.work` 开始，没有则从最近的 `go.mod` 开始。gopls 的语义高亮默认开启。
+
+缺少 gopls 时，OpenIDEA 会弹出 **gopls 未安装** 通知，点 **安装** 即可。也可以在 **设置 › 语言和框架 › 语言服务器** 中安装，或在那里指定你自己的 `gopls`。IDE 通过 `go install golang.org/x/tools/gopls@latest` 把它装进自己的工具文件夹，因此 `PATH` 上需要有 Go。`PATH` 上已有的 `gopls` 会直接使用。
+
+## 环境配置
+
+### Go SDK
+
+**设置 › 语言和框架 › Go** 有两项设置：
+
+- **GOROOT**：gopls 以及 go run / test 运行配置使用的 Go SDK。选 **默认** 时使用 `PATH` 上的 `go`；如果项目通过 mise 或 asdf 固定了 Go 版本，则改用那个安装。
+- **项目 GOPATH**：留空时使用 `go env GOPATH`。
+
+GOROOT 列表会显示 IDE 找到的 SDK：`PATH` 上的 `go`、`/usr/local/go`、Homebrew 和 `/usr/lib/go` 的安装、`~/sdk` 下的 SDK（通过 `golang.org/dl` 安装）、Go 自己下载的工具链（`~/go/pkg/mod/golang.org/toolchain@…`），以及 mise 和 asdf 的安装。
+
+### 构建标签
+
+**设置 › 语言和框架 › 构建标签** 用来设置项目的构建约束：**操作系统**、**架构**、**Go 版本**、**编译器**（`gc` 或 `gccgo`）、**CGO**、**自定义标签** 和 **实验功能**。这些设置会传给 gopls（作为构建参数和环境变量），同时作用于 go run / test 运行配置和调试。Go 运行配置可以勾选 **使用所有自定义构建标签**。
+
+### Go 模块
+
+**设置 › 语言和框架 › Go 模块** 提供 **自动启用 vendor 支持**，以及 `GOPROXY`、`GOPRIVATE`、`GOFLAGS`、`GONOPROXY`、`GONOSUMDB`、`GOSUMDB`、`GOMODCACHE`、`GOTOOLCHAIN`、`GOWORK` 等字段。留空的字段继承环境变量。这些值会传给 gopls 和 `go` 命令。
+
+在项目视图、编辑器标签页或编辑器中右键 `go.mod`，可以执行 **整理 Go 模块依赖** 和 **下载 Go 模块**；右键 `go.work` 可以执行 **同步 Go 工作区** 和 **添加目录到 Go 工作区…**。右键 `.go` 文件可以执行 **为文件运行 Go Generate** 和 **为包运行 Go Generate**。
+
+GOROOT 和模块缓存会出现在项目视图的 **外部库** 下。
+
+## 运行与测试
+
+OpenIDEA 会为每个模块（项目中的每个 `go.mod`，或 `go.work` 中列出的模块）识别运行配置：
+
+| 配置                  | 条件                      |
+| --------------------- | ------------------------- |
+| `go run .`            | 模块根目录是 `main` 包    |
+| `go run ./cmd/<name>` | `cmd/<name>` 是 `main` 包 |
+| `go test ./...`       | 总是生成                  |
+
+编辑器左侧栏的图标可以运行或调试 `main` 包中的 `func main`、`Test…`、`Benchmark…`、`Example…` 和 `Fuzz…` 函数，以及用 `t.Run` 或 `b.Run` 声明的子测试。`//go:generate` 行也有单独的图标。测试输出（普通模式和 `-v`）按包显示在测试树中，**重新运行失败的测试** 只重跑失败的用例。
+
+在 **运行 › 编辑配置…** 中，**Go 构建** 和 **Go 测试** 配置类型可以设置 **运行类型**（目录、文件或软件包）、目标、测试 **模式**、**Go 工具参数**、**程序实参**，构建配置还可以设置 **输出目录** 和 **构建后运行**。详见[运行配置](/zh/guide/run)和[测试](/zh/guide/testing)。
+
+| 操作           | macOS | Windows / Linux  |
+| -------------- | ----- | ---------------- |
+| 运行上下文配置 | `⌃⇧R` | `Ctrl+Shift+F10` |
+| 调试上下文配置 | `⌃⇧D` | 无               |
+| 构建项目       | `⌘F9` | `Ctrl+F9`        |
+
+**构建项目** 会在每个模块（`go.work` 中的每个模块）里执行 `go build ./...`，**重新构建项目** 会加上 `-a`。编译错误显示在构建工具窗口和编辑器中。对 `go test` 使用 **使用覆盖率运行** 时，采用 Go 自带的 `-coverprofile`，见[覆盖率](/zh/guide/coverage)。
+
+## 调试
+
+Go 调试使用 Delve（`dlv dap`）。开始调试时如果缺少 Delve，OpenIDEA 会提示通过 `go install github.com/go-delve/delve/cmd/dlv@latest` 把它装进工具文件夹。自动识别的 `go run`、`go test` 配置和左侧栏图标都可以直接调试。
+
+- **附加到进程…**（`⌥⇧F5` / `Ctrl+Alt+F5`）会在 **Go (Delve)** 分组下列出本机的 Go 进程。
+- **Go 远程** 配置可以附加到本机或其他机器上的 Delve 服务器（`dlv --headless`，Delve 1.7.3 及以上），并支持本地与远程根目录映射。表单中会给出启动远程端的命令。
+
+<Tip>在 macOS 上，Delve 可能需要先开启开发者模式才能调试：执行一次 `sudo DevToolsSecurity -enable`。</Tip>
+
+断点和单步的用法见[调试](/zh/guide/debugging)。
+
+## 限制
+
+- gopls 和 Delve 通过 `go install` 安装，需要 `PATH` 上有 Go。没有 Go 时，请自行安装它们，并在 **设置 › 语言和框架 › 语言服务器** 中指定路径。
+- 性能分析器不支持 Go 程序。
+- 左侧栏图标来自对文件的轻量扫描，而不是 gopls；写法特殊的测试可能没有图标，但仍可以用 `go test` 运行。

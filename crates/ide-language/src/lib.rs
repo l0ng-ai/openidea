@@ -10,18 +10,23 @@ use specta::Type;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Pinned Compose Specification JSON Schema URL associated with `yaml-language-server`.
+pub const COMPOSE_SCHEMA_URL: &str =
+    "https://raw.githubusercontent.com/compose-spec/compose-go/v2.16.2/schema/compose-spec.json";
+
 mod markers;
 pub mod plugin_point;
 mod registry;
 mod syntax;
-pub use markers::marked_root;
+pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
     CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken,
     FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion,
-    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference,
-    WebReferenceKind, merge_visibility, set_external_syntax,
+    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, VueComponentImport,
+    VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility, set_external_syntax, shift_pos,
+    shift_range,
 };
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
@@ -51,6 +56,10 @@ pub struct LanguageConfig {
     /// the first one whose root marker is found applies.
     #[serde(default)]
     pub framework_ui_modes: Vec<FrameworkUiMode>,
+    /// Files of this language in a framework's projects that their extension alone would
+    /// give to another language (Django templates are `.html` files in `templates`).
+    #[serde(default)]
+    pub framework_files: Vec<FrameworkFiles>,
     #[serde(default)]
     pub tree_sitter: Option<String>,
     #[serde(default)]
@@ -86,11 +95,33 @@ pub struct FrameworkUiMode {
     pub root_markers: Vec<String>,
 }
 
+/// Files in a framework's folder: a file with one of `extensions` below a folder named
+/// `folder`, which has a root marker in a directory above it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct FrameworkFiles {
+    pub folder: String,
+    /// Without the dot, compared ignoring case.
+    pub extensions: Vec<String>,
+    /// Matched like language servers' `root-markers`, e.g. `manage.py`.
+    pub root_markers: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all(serialize = "camelCase", deserialize = "kebab-case"))]
 pub struct IndentConfig {
     pub tab_size: u32,
     pub insert_spaces: bool,
+}
+
+/// Additions to the tsserver project of a tree without `tsconfig.json` / `jsconfig.json`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TsserverProjectExtras {
+    /// File extensions a tsserver plugin handles, registered with the sources (`vue`).
+    pub extensions: Vec<String>,
+    /// `compilerOptions.paths` with absolute targets: the bundler's module aliases
+    /// (`@/*` → `<root>/src/*` in a Vue CLI project).
+    pub paths: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -103,6 +134,10 @@ pub struct LanguageServerConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Environment variables the server can't start without (PowerShell Editor
+    /// Services' `PSES_BUNDLE_PATH`): while one is unset it counts as missing.
+    #[serde(default)]
+    pub requires_env: Vec<String>,
     /// Files whose presence marks a workspace root, e.g. `Cargo.toml`;
     /// `file#table` requires the TOML file to contain that dotted table, e.g.
     /// `pyproject.toml#tool.ruff`.
@@ -155,6 +190,9 @@ pub struct LanguageServerConfig {
     /// Register source files with tsserver when no project configuration exists.
     #[serde(default)]
     pub tsserver_project: bool,
+    /// Set by the settings hook: what that registered project adds to its defaults.
+    #[serde(skip)]
+    pub tsserver_project_extras: TsserverProjectExtras,
     /// Re-sends the open documents (unchanged) once `workspace/configuration` is answered:
     /// the server (Intelephense) applies some settings, such as the PHP version, only when
     /// it parses a document.
@@ -299,4 +337,16 @@ pub struct SymbolTag {
     /// Enclosing symbol, e.g. class name for a method.
     pub container: Option<String>,
     pub range: Range,
+}
+
+/// One inline TS/JS `<script>` block of a Vue SFC / HTML document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRegion {
+    /// Document-absolute UTF-8 byte offset of `text`, for tree-sitter parsing.
+    /// Convert to UTF-16 positions before exposing ranges through IPC.
+    pub base: usize,
+    /// The language the block's `lang` attribute picks.
+    pub language: LanguageId,
+    /// The script text.
+    pub text: String,
 }

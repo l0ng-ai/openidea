@@ -5,7 +5,7 @@ import { ensureSyntaxTree, indentUnit } from "@codemirror/language";
 import { insertNewlineAndIndent } from "@codemirror/commands";
 import { findLanguageDescription, loadSupport } from "./languages";
 import { trailingBracketIndent } from "./smartKeys";
-import { enterInBlockComment } from "./comments";
+import { enterInBlockComment, enterInDocComment } from "./docComment";
 
 const php = (await loadSupport(findLanguageDescription("PHP", "index.php")!))!;
 
@@ -27,7 +27,8 @@ function enter(body: string, extensions = [Prec.high(trailingBracketIndent)]): s
   });
   views.push(view);
   ensureSyntaxTree(view.state, doc.length, 5000);
-  if (!enterInBlockComment(view)) insertNewlineAndIndent(view);
+  // The editor's order (`prefs.ts`): the doc stub, the block comment, then the plain Enter.
+  if (!enterInDocComment("php")(view) && !enterInBlockComment(view)) insertNewlineAndIndent(view);
   const out = view.state.doc.toString();
   const caret = view.state.selection.main.head;
   const shown = out.slice(0, caret) + "|" + out.slice(caret);

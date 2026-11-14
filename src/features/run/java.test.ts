@@ -1,18 +1,23 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { JavaLaunchInfo, RunConfig } from "@/platform/ipc";
+import type { JavaLaunchInfo, RunConfig, TestCaseReport } from "@/platform/ipc";
 import {
   formatCompileErrors,
   joinJavaArgs,
+  JDWP_AGENT,
   jdwpListeningPort,
+  optsOutOfAttach,
   parseJavaArgs,
   resolveJavaCommand,
 } from "@/platform/javaLaunch";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
 import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
-import { jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
-import { adoptTemporary, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
+import { DELEGATED_DEBUG } from "./gradleRun";
+import { firstTopLevelType, jvmMainCandidates, scanJvmTargets } from "./jvmTargets";
+import { adoptTemporary, applyTestReports, MAX_TEMPORARY, saveTemporary, testReportEvents, useRun } from "./store";
+import { TestResults } from "./testing";
 import { detectRunTargets, targetConfig } from "./targets";
 
 const cfg = (over: Partial<RunConfig> & { id: string; kind: string }): RunConfig => ({
@@ -93,6 +98,47 @@ describe("scanJvmTargets (Java)", () => {
       [15, "suite", "a.b.OrderTest$Fixture", null, false],
       [16, "test", "a.b.OrderTest$Fixture", "inner", false],
     ]);
+  });
+
+  it("treats the public void methods of a TestNG class-level @Test as tests", () => {
+    const src = [
+      "package a.b;", // 0
+      "import org.testng.annotations.*;",
+      '@Test(groups = "unit")',
+      "public class PriceTest {", // 3
+      "  @BeforeMethod public void setUp() {}",
+      "  public void rounds() {}", // 5
+      '  @Test(dataProvider = "rows")',
+      "  public void parses(String row) {}", // 7
+      "  @DataProvider public Object[][] rows() { return null; }",
+      '  @DataProvider(name = "more") public void notATest() {}',
+      "  void packagePrivate() {}",
+      "  private void util() {}",
+      "  public static void shared() {}",
+      "  public int value() { return 1; }",
+      "}",
+    ].join("\n");
+    expect(pick(src, "src/test/java/a/b/PriceTest.java")).toEqual([
+      [3, "suite", "a.b.PriceTest", null, false],
+      [5, "test", "a.b.PriceTest", "rounds", false],
+      [7, "test", "a.b.PriceTest", "parses", false],
+    ]);
+  });
+});
+
+describe("firstTopLevelType", () => {
+  it("is the first top-level class, interface, enum, record or annotation, with the package", () => {
+    const src = [
+      "package demo;",
+      "import java.util.List; // class Commented {}",
+      '/* enum Old {} */ @Tag(type = List.class, name = "class Str")',
+      "interface Shape { class Nested {} }",
+      "public class Test { public static void main(String[] args) {} }",
+    ].join("\n");
+    expect(firstTopLevelType(src)).toBe("demo.Shape");
+    expect(firstTopLevelType("record Point(int x) {}\nclass Test {}")).toBe("Point");
+    expect(firstTopLevelType("@interface Marker {}\nclass Test {}")).toBe("Marker");
+    expect(firstTopLevelType("void main() {\n  IO.println(1);\n}\n")).toBeNull();
   });
 });
 
@@ -183,7 +229,8 @@ describe("application configurations", () => {
     });
     expect(applicationConfig({ className: "a.Tool" }, "m/src/test/java/a/Tool.java")).toMatchObject({
       kind: "application",
-      cwd: "m",
+      module: "m",
+      cwd: null,
       args: ["-cp", "${testClasspath}", "a.Tool"],
     });
   });
@@ -282,6 +329,8 @@ describe("java command lines", () => {
     expect(joinJavaArgs(["a", "b c", 'q"'])).toBe('a "b c" "q\\""');
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 50123")).toBe(50123);
     expect(jdwpListeningPort("Listening for transport dt_socket at address: 127.0.0.1:5005")).toBe(5005);
+    expect(jdwpListeningPort("[Test worker] Listening for transport dt_socket at address: 50124")).toBe(50124);
+    expect(jdwpListeningPort("    Listening for transport dt_socket at address: 50125\r")).toBe(50125);
     expect(jdwpListeningPort("[INFO] Listening")).toBeNull();
   });
 });
@@ -290,15 +339,33 @@ describe("debugging build tool configurations", () => {
   it("adds a waiting JDWP agent to spring-boot:run, Surefire and Gradle", () => {
     const boot = jdwpLaunch(cfg({ id: "b", kind: "maven", args: ["spring-boot:run"] }))!;
     expect(boot.args[1]).toMatch(
-      /^-Dspring-boot\.run\.jvmArguments=-agentlib:jdwp=.*suspend=y.*address=127\.0\.0\.1:0$/,
+      /^-Dspring-boot\.run\.jvmArguments=-XX:\+StartAttachListener -agentlib:jdwp=.*suspend=y.*address=127\.0\.0\.1:0$/,
     );
     const merged = jdwpLaunch(
       cfg({ id: "b", kind: "maven", args: ["spring-boot:run", "-Dspring-boot.run.jvmArguments=-Xmx1g"] }),
     )!;
-    expect(merged.args[1]).toMatch(/^-Dspring-boot\.run\.jvmArguments=-Xmx1g -agentlib:jdwp=/);
+    expect(merged.args[1]).toMatch(
+      /^-Dspring-boot\.run\.jvmArguments=-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/,
+    );
     const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", "-Dtest=A#b"], isTest: true }))!;
-    expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-agentlib:jdwp="))).toBe(true);
-    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toEqual(["bootRun", "--debug-jvm"]);
+    expect(test.args.some((a) => a.startsWith("-Dmaven.surefire.debug=-XX:+StartAttachListener -agentlib:jdwp="))).toBe(
+      true,
+    );
+    const failsafe = jdwpLaunch(cfg({ id: "v", kind: "maven", args: ["verify"] }))!;
+    for (const key of ["maven.surefire.debug", "maven.failsafe.debug"])
+      expect(failsafe.args.some((a) => a.startsWith(`-D${key}=-XX:+StartAttachListener -agentlib:jdwp=`))).toBe(true);
+    // A fork's "Listening for transport" line stays buffered until tests run — which suspend=y
+    // prevents — so a Maven test's port is pinned and attached without the line.
+    const pinned = jdwpLaunch(cfg({ id: "t2", kind: "maven", args: ["test"], isTest: true }), 50123)!;
+    expect(pinned.args.some((a) => a.includes("address=127.0.0.1:50123"))).toBe(true);
+    const pinnedFailsafe = jdwpLaunch(cfg({ id: "t3", kind: "maven", args: ["verify"], isTest: true }), 50124)!;
+    expect(
+      pinnedFailsafe.args.some((a) => a.startsWith("-Dmaven.failsafe.debug=") && a.includes("address=127.0.0.1:50124")),
+    ).toBe(true);
+    expect(jdwpLaunch(cfg({ id: "g", kind: "gradle", args: ["bootRun"] }))!.args).toContain(DELEGATED_DEBUG);
+    const gradleTest = jdwpLaunch(cfg({ id: "gt", kind: "gradle", args: ["test"], isTest: true }))!;
+    expect(gradleTest.args).toContain(DELEGATED_DEBUG);
+    expect(gradleTest.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(cfg({ id: "p", kind: "maven", args: ["package"] }))).toBeNull();
     expect(jdwpLaunch(cfg({ id: "n", kind: "npm", args: ["test"] }))).toBeNull();
   });
@@ -314,8 +381,14 @@ describe("debugging build tool configurations", () => {
   ])("debugs Maven's own JVM for the in-process goal %s", (goal) => {
     const out = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["clean", goal], env: { MAVEN_OPTS: "-Xmx1g" } }))!;
     expect(out.args).toEqual(["clean", goal]);
-    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -agentlib:jdwp=/);
+    expect(out.env.MAVEN_OPTS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(out.env.MAVEN_OPTS).toMatch(AGENT);
+  });
+
+  it("honours Rebuild on a Maven debug command", () => {
+    const out = jdwpLaunch(cfg({ id: "r", kind: "maven", args: ["spring-boot:run"], buildPolicy: "rebuild" }))!;
+    expect(out.args[0]).toBe("clean");
+    expect(out.args.at(-1)).toMatch(/^-Dspring-boot\.run\.jvmArguments=-XX:\+StartAttachListener -agentlib:jdwp=/);
   });
 
   it("keeps plain Maven builds out of the debugger unless set to the Java debugger", () => {
@@ -333,9 +406,72 @@ describe("debugging build tool configurations", () => {
     const out = jdwpLaunch(rc)!;
     expect(out.command).toBe(command);
     expect(out.args).toEqual(args);
+    expect(out.env.JAVA_TOOL_OPTIONS).toMatch(/^-XX:\+StartAttachListener -agentlib:jdwp=/);
     expect(out.env.JAVA_TOOL_OPTIONS).toMatch(AGENT);
     const merged = jdwpLaunch({ ...rc, env: { JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8" } })!;
-    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -agentlib:jdwp=/);
+    expect(merged.env.JAVA_TOOL_OPTIONS).toMatch(/^-Dfile\.encoding=UTF-8 -XX:\+StartAttachListener -agentlib:jdwp=/);
+  });
+
+  it("debugs a single Java file: the agent before the file, or for java only on a javac line", () => {
+    const source = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "/bin/java", args: ["Hi.java"] }))!;
+    expect(source.args).toEqual(["-XX:+StartAttachListener", expect.stringMatching(AGENT), "Hi.java"]);
+    const line = "mkdir -p /tmp/c && /bin/javac -g -d /tmp/c Test.java && /bin/java -cp /tmp/c Test";
+    const compiled = jdwpLaunch(
+      cfg({ id: "f", kind: "java-file", command: line, env: { JDK_JAVA_OPTIONS: "-Xmx1g" } }),
+    )!;
+    expect(compiled).toMatchObject({ command: line, args: [] });
+    expect(compiled.env.JDK_JAVA_OPTIONS).toMatch(/^-Xmx1g -XX:\+StartAttachListener -agentlib:jdwp=/);
+    expect(compiled.env.JAVA_TOOL_OPTIONS).toBeUndefined();
+  });
+
+  it("adds the agent without the attach listener when the JVM runs on Windows", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "windows" });
+    try {
+      const script = cfg({ id: "s", kind: "shell", command: "run.cmd", debugAdapter: "java-debug" });
+      expect(jdwpLaunch(script)!.env.JAVA_TOOL_OPTIONS).toBe(JDWP_AGENT);
+      const boot = jdwpLaunch(cfg({ id: "b", kind: "maven", args: ["spring-boot:run"] }))!;
+      expect(boot.args[1]).toBe(`-Dspring-boot.run.jvmArguments=${JDWP_AGENT}`);
+      const test = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["verify"] }))!;
+      expect(test.args).toEqual([
+        "verify",
+        `-Dmaven.surefire.debug=${JDWP_AGENT}`,
+        `-Dmaven.failsafe.debug=${JDWP_AGENT}`,
+      ]);
+      const maven = jdwpLaunch(cfg({ id: "m", kind: "maven", args: ["jetty:run"] }))!;
+      expect(maven.env.MAVEN_OPTS).toBe(JDWP_AGENT);
+      const file = jdwpLaunch(cfg({ id: "f", kind: "java-file", command: "java", args: ["Hi.java"] }))!;
+      expect(file.args).toEqual([JDWP_AGENT, "Hi.java"]);
+    } finally {
+      usePlatform.setState({ os });
+    }
+  });
+
+  it("keeps the user's attach opt-out: the agent is still added, the listener is not", () => {
+    const off = "-XX:+DisableAttachMechanism";
+    const script = cfg({ id: "s", kind: "shell", command: "./run.sh", debugAdapter: "java-debug" });
+    expect(jdwpLaunch({ ...script, env: { JAVA_TOOL_OPTIONS: off } })!.env.JAVA_TOOL_OPTIONS).toBe(
+      `${off} ${JDWP_AGENT}`,
+    );
+    const maven = cfg({ id: "m", kind: "maven", args: ["jetty:run"], env: { MAVEN_OPTS: "-XX:-StartAttachListener" } });
+    expect(jdwpLaunch(maven)!.env.MAVEN_OPTS).toBe(`-XX:-StartAttachListener ${JDWP_AGENT}`);
+    const javaFile = cfg({ id: "j", kind: "java-file", command: "java", env: { JDK_JAVA_OPTIONS: off } });
+    expect(jdwpLaunch(javaFile)!.env.JDK_JAVA_OPTIONS).toBe(`${off} ${JDWP_AGENT}`);
+    const file = cfg({ id: "f", kind: "java-file", command: "java", args: [off, "Hi.java"] });
+    expect(jdwpLaunch(file)!.args).toEqual([JDWP_AGENT, off, "Hi.java"]);
+    const boot = cfg({ id: "b", kind: "maven", args: ["spring-boot:run", `-Dspring-boot.run.jvmArguments=${off}`] });
+    expect(jdwpLaunch(boot)!.args[1]).toBe(`-Dspring-boot.run.jvmArguments=${off} ${JDWP_AGENT}`);
+    const surefire = jdwpLaunch(cfg({ id: "t", kind: "maven", args: ["test", `-DargLine=${off}`] }))!;
+    expect(surefire.args).toEqual(["test", `-DargLine=${off}`, `-Dmaven.surefire.debug=${JDWP_AGENT}`]);
+    // VM options of the configuration count as well as the channel's own value.
+    const withVm = jdwpLaunch({ ...script, params: { vmOptions: off } })!;
+    expect(withVm.env.JAVA_TOOL_OPTIONS).toBe(JDWP_AGENT);
+  });
+
+  it("detects VM options that decide about the attach mechanism", () => {
+    for (const text of ["-XX:+StartAttachListener", "-XX:-StartAttachListener", "-Xmx1g -XX:+DisableAttachMechanism"])
+      expect(optsOutOfAttach(text)).toBe(true);
+    for (const text of ["", "-Xmx1g -agentlib:jdwp=transport=dt_socket"]) expect(optsOutOfAttach(text)).toBe(false);
   });
 
   it("leaves Application configurations and other debuggers alone", () => {
@@ -349,7 +485,7 @@ describe("debugging build tool configurations", () => {
 describe("JUnit XML reports", () => {
   it("become tree results with failure output and source location", () => {
     const events = testReportEvents([
-      { className: "a.B", name: "ok", status: "passed", durationMs: 3, message: null, output: null },
+      { className: "a.B", name: "ok", status: "passed", durationMs: 3, message: null, output: null, stdout: null },
       {
         className: "a.B$Inner",
         name: "bad",
@@ -357,6 +493,7 @@ describe("JUnit XML reports", () => {
         durationMs: null,
         message: "expected 1",
         output: "AssertionError\n\tat org.junit.Assert.fail(Assert.java:1)\n\tat a.B$Inner.bad(B.java:42)",
+        stdout: null,
       },
     ]);
     expect(events[0]).toEqual({ type: "result", path: ["a.B", "ok"], status: "passed", durationMs: 3 });
@@ -377,6 +514,7 @@ describe("JUnit XML reports", () => {
         durationMs: null,
         message: null,
         output: "AssertionFailedError\n\tat app//a.LibraryTest.cannot lend twice(LibraryTest.kt:43)",
+        stdout: null,
       },
     ]);
     expect(events).toContainEqual({
@@ -384,6 +522,58 @@ describe("JUnit XML reports", () => {
       path: ["a.LibraryTest", "cannot lend twice"],
       location: { path: "a/LibraryTest.kt", line: 43, resolve: "name", className: "a.LibraryTest" },
     });
+  });
+});
+
+describe("what JUnit XML reports say a test printed", () => {
+  const report = (over: Partial<TestCaseReport> & { name: string }): TestCaseReport => ({
+    className: "a.B",
+    status: "passed",
+    durationMs: null,
+    message: null,
+    output: null,
+    stdout: null,
+    ...over,
+  });
+  const output = (r: TestResults, name: string) => r.get(["a.B", name].join("\u0000"))?.output;
+
+  it("is shown for passed tests, and before a failure", () => {
+    const r = new TestResults();
+    applyTestReports(r, [
+      report({ name: "ok", stdout: "setUp\nok says hi" }),
+      report({
+        name: "bad",
+        status: "failed",
+        message: "boom",
+        output: "Error: boom\n\tat a.B.bad(B.java:3)",
+        stdout: "bad says hi",
+      }),
+    ]);
+    expect(output(r, "ok")).toEqual(["setUp", "ok says hi"]);
+    expect(output(r, "bad")).toEqual(["bad says hi", "boom", "Error: boom", "\tat a.B.bad(B.java:3)"]);
+  });
+
+  it("goes before the failure Surefire's console reported, once", () => {
+    const r = new TestResults();
+    r.apply([
+      { type: "result", path: ["a.B", "bad"], status: "failed" },
+      { type: "output", path: ["a.B", "bad"], line: "Error: boom" },
+    ]);
+    const reports = [report({ name: "bad", status: "failed", output: "Error: boom", stdout: "bad says hi" })];
+    applyTestReports(r, reports);
+    expect(output(r, "bad")).toEqual(["bad says hi", "Error: boom"]);
+    applyTestReports(r, reports);
+    expect(output(r, "bad")).toEqual(["bad says hi", "Error: boom"]);
+  });
+
+  it("is not repeated for tests the Gradle init script reported with their output", () => {
+    const r = new TestResults();
+    r.apply([
+      { type: "output", path: ["a.B", "ok"], line: "ok says hi" },
+      { type: "result", path: ["a.B", "ok"], status: "passed" },
+    ]);
+    applyTestReports(r, [report({ name: "ok", stdout: "ok says hi" })]);
+    expect(output(r, "ok")).toEqual(["ok says hi"]);
   });
 });
 

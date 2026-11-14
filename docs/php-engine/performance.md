@@ -25,7 +25,7 @@ Phase 6.3 of the [roadmap](ROADMAP.md). The budgets are criterion benches in `cr
 | `php_fixture/completion_after_keystroke`                   | 50 ms  | 0.24 ms               |
 | `php_fixture/diagnostics_after_edit`                       | 300 ms | 126 ms                |
 
-Release (bench) profile on the development machine (Windows 11, 16 threads). laravel/framework is the pinned corpus from `scripts/php-corpus.sh` (3,177 PHP files); without the corpus the `php_laravel/*` benches and their budgets are skipped. The `php_fixture/*` benches use `fixtures/php-app`.
+Release (bench) profile on the development machine (Windows 11, 16 threads). laravel/framework is the pinned corpus from `scripts/php-corpus.sh` (3,177 PHP files); without the corpus the `php_laravel/*` benches and their budgets are skipped. The `php_fixture/*` benches use `fixtures/php-library`.
 
 What the benches measure:
 

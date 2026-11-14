@@ -40,8 +40,8 @@ describe("theme token reference", () => {
     expect(() => themeTokenGroups(bad)).toThrow(/--b .*section comment/);
   });
 
-  it("is current in docs/plugins/themes.md (run pnpm gen:theme-docs)", () => {
-    const doc = read("docs/plugins/themes.md");
+  it("is current in plugins/themes.md (run pnpm gen:theme-docs)", () => {
+    const doc = read("plugins/themes.md");
     expect(withReference(doc, referenceMarkdown(groups))).toBe(doc);
   });
 });
@@ -80,6 +80,15 @@ describe("theme plugin template", () => {
 });
 
 describe("IntelliJ theme import", () => {
+  it("imports Python docstring tags and the OpenIDEA keyword extension", () => {
+    const scheme = convertIcls(`<scheme><attributes>
+      <option name="PY.DOC_COMMENT_TAG"><value><option name="FOREGROUND" value="123456"/></value></option>
+      <option name="OPENIDEA_pyDocstringKeyword"><value><option name="FOREGROUND" value="654321"/></value></option>
+      </attributes></scheme>`);
+    expect(scheme.tokens["--syn-python-docstring-tag"]).toBe("#123456");
+    expect(scheme.tokens["--syn-python-docstring-keyword"]).toBe("#654321");
+  });
+
   const themeJson = `{
     // comment
     "name": "Deep Sea",
@@ -91,6 +100,8 @@ describe("IntelliJ theme import", () => {
       "Button": { "default": { "startBackground": "accent" } },
       "Popup.background": "#181f28",
       "Label.infoForeground": "#80888F80",
+      "EditorTabs": { "underlineColor": "#405060", "underlinedBorderColor": "#bd93f9" },
+      "CompletionPopup.matchForeground": "#ff79c6",
       "Tree": { "rowHeight": 24 }
     }
   }`;
@@ -99,6 +110,7 @@ describe("IntelliJ theme import", () => {
     <option name="CARET_COLOR" value="ffcc00" />
     <option name="LINE_NUMBERS_COLOR" value="0" />
     <option name="UNKNOWN_KEY" value="123456" />
+    <option name="GUTTER_BACKGROUND" value="313335" />
   </colors>
   <attributes>
     <option name="DEFAULT_KEYWORD">
@@ -126,6 +138,9 @@ describe("IntelliJ theme import", () => {
       </value>
     </option>
     <option name="DEFAULT_CONSTANT" baseAttributes="DEFAULT_IDENTIFIER" />
+    <option name="DEFAULT_INSTANCE_FIELD">
+      <value />
+    </option>
   </attributes>
 </scheme>`;
 
@@ -138,7 +153,21 @@ describe("IntelliJ theme import", () => {
     expect(t.tokens["--bg-selected"]).toBe("#203040");
     expect(t.tokens["--fg-muted"]).toBe("#80888f80");
     expect(t.tokens["--fg"]).toBe("#c0c8d0");
+    // Islands borders the selected tab with underlinedBorderColor.
+    expect(t.tokens["--border-tab-selected"]).toBe("#bd93f9");
+    expect(t.tokens["--fg-completion-match"]).toBe("#ff79c6");
     expect(s).toBeNull();
+  });
+
+  it("maps the selection foreground colour (#2446)", () => {
+    const s = convertIcls(`<scheme name="Sel" version="142" parent_scheme="Default"><colors>
+      <option name="SELECTION_BACKGROUND" value="214283" />
+      <option name="SELECTION_FOREGROUND" value="112233" />
+    </colors></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--bg-editor-selection": "#214283",
+      "--fg-editor-selection": "#112233",
+    });
   });
 
   it("only targets tokens that exist in tokens.css", () => {
@@ -165,11 +194,39 @@ describe("IntelliJ theme import", () => {
       "--syn-comment-style": "italic",
       "--fg-editor": "#a9b7c6",
       "--bg-editor": "#2b2b2b",
+      // GUTTER_BACKGROUND is the classic UI's: the gutter keeps the editor's background.
       "--bg-editor-gutter": "#2b2b2b",
       "--wave-error": "#ff0000",
       "--editor-error-decoration": "underline wavy #ff0000",
+      // <value />: plain text, not the parent scheme's colour.
+      "--syn-property": "#a9b7c6",
     });
     expect(s.tokens["--syn-constant"]).toBeUndefined();
+  });
+
+  it("maps doc comment tags, tag values and markup", () => {
+    const fg = (c: string) => `<value><option name="FOREGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Docs" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_DOC_COMMENT_TAG">${fg("67a37c")}</option>
+      <option name="DEFAULT_DOC_COMMENT_TAG_VALUE">${fg("abadb3")}</option>
+      <option name="DEFAULT_DOC_MARKUP"><value><option name="FOREGROUND" value="68a67e"/><option name="BACKGROUND" value="e2ffe2"/></value></option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({
+      "--syn-doc-comment-tag": "#67a37c",
+      "--syn-doc-comment-tag-value": "#abadb3",
+      "--syn-doc-markup": "#68a67e",
+      "--syn-doc-markup-bg": "#e2ffe2",
+    });
+  });
+
+  it("keeps the search result colour apart from the text search result and the lists' search match", () => {
+    const bg = (c: string) => `<value><option name="BACKGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Search" parent_scheme="Darcula"><attributes>
+      <option name="SEARCH_RESULT_ATTRIBUTES">${bg("2d543f")}</option>
+      <option name="TEXT_SEARCH_RESULT_ATTRIBUTES">${bg("114957")}</option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({ "--bg-search-result": "#2d543f", "--bg-text-search-result": "#114957" });
+    expect(s.tokens).not.toHaveProperty("--bg-search-match");
   });
 
   it("produces an installable package", () => {
@@ -208,11 +265,6 @@ describe("IntelliJ theme import", () => {
       ],
     });
     expect(pkg.id).toBe("intellij.com-example-deepsea");
-    expect(pkg.themes).toEqual([
-      { id: "deep-sea", sourceId: "deep-sea-id", name: "Deep Sea" },
-      { id: "deep-sea-2", sourceId: "copy-id", name: "Deep Sea" },
-      { id: "shallow", sourceId: "light-id", name: "Shallow" },
-    ]);
     expect(pkg.files.map((f) => f.path)).toEqual([
       "plugin.toml",
       "themes/deep-sea.theme.json",

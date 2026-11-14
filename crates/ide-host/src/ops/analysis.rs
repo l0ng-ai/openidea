@@ -137,24 +137,27 @@ pub async fn inspect_code(
     let cancel = host.begin_request(request);
     let listed = {
         let (project, cancel) = (project.clone(), cancel.clone());
-        blocking(move || files_in_scope(&project, &scope, &cancel)).await
+        blocking(move || {
+            let files = files_in_scope(&project, &scope, &cancel)?;
+            let total = files.len() as u32;
+            // The native PHP engine inspects its own files; the rest go to the language servers.
+            let php = project.php.engine().is_some();
+            let (engine_files, files): (Vec<SourceFile>, Vec<SourceFile>) =
+                files.into_iter().partition(|f| php && ide_php::project::is_php_path(&f.path));
+            let rel: std::collections::HashMap<_, _> =
+                files.into_iter().filter(|f| project.lsp.serves_path(&f.path)).map(|f| (f.path, f.rel_path)).collect();
+            Ok((total, engine_files, rel))
+        })
+        .await
     };
-    let files = match listed {
+    let (total_in_scope, engine_files, rel) = match listed {
         Ok(files) => files,
         Err(e) => {
             host.end_request(request);
             return Err(e);
         }
     };
-    let total_in_scope = files.len() as u32;
     let php = project.php.engine();
-    let (engine_files, files): (Vec<SourceFile>, Vec<SourceFile>) =
-        files.into_iter().partition(|f| php.is_some() && ide_php::project::is_php_path(&f.path));
-    let rel: std::collections::HashMap<_, _> = files
-        .iter()
-        .filter(|f| project.lsp.serves_path(&f.path))
-        .map(|f| (f.path.clone(), f.rel_path.clone()))
-        .collect();
     let inspected = (rel.len() + engine_files.len()) as u32;
     let mut summary = InspectSummary { skipped: total_in_scope - inspected, ..Default::default() };
     let _ = on_event.send(InspectEvent::Started { total: inspected });

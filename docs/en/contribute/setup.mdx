@@ -1,0 +1,101 @@
+---
+title: "Development setup"
+description: "Install the toolchain, build OpenIDEA from source, run it from a worktree and avoid the usual first-build pitfalls."
+---
+
+OpenIDEA is a Tauri 2 app: a Rust backend (`crates/`, `src-tauri/`) and a React + TypeScript frontend (`src/`). You need both toolchains to run it.
+
+## Prerequisites
+
+| Tool                      | Version               | Notes                                                                                                     |
+| ------------------------- | --------------------- | --------------------------------------------------------------------------------------------------------- |
+| Rust                      | stable, at least 1.96 | `rust-version` in the root `Cargo.toml`. Install `clippy` and `rustfmt` too.                              |
+| Node.js                   | 22.18 or newer        | The repo's scripts (`scripts/*.ts`, `perf/*.ts`) are run directly by Node as TypeScript. CI uses Node 22. |
+| pnpm                      | 11                    | The version CI uses.                                                                                      |
+| Tauri system dependencies | —                     | Per OS: see [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).                             |
+
+On Linux (Ubuntu 22.04, as in CI) the system packages are:
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+```
+
+Optional, only for the parts you work on:
+
+- `rustup target add wasm32-wasip2` — building plugins and the plugin SDK (`plugins/build.sh`).
+- `cargo install cargo-nextest` — the test runner CI uses (`cargo test` also works).
+- The language servers, debuggers and toolchains of a language, for its [smoke tests](/en/contribute/testing/smoke).
+
+You don't need a JDK to build: the Java extension bundles in `java/` are checked in as jars and embedded at build time.
+
+## Clone and run
+
+<Steps>
+  <Step title="Clone">```sh git clone https://github.com/l0ng-ai/openidea.git cd openidea ```</Step>
+  <Step title="Install frontend dependencies">
+    ```sh pnpm install ``` This also installs the pre-commit hook (`simple-git-hooks` + `lint-staged`), which runs
+    `oxlint --fix`, `oxfmt` and `rustfmt` on staged files.
+  </Step>
+  <Step title="Run the app">
+    ```sh pnpm tauri dev ``` The first run is a full debug build of the workspace and takes several minutes. Later runs
+    are incremental; frontend changes reload through Vite without a rebuild.
+  </Step>
+</Steps>
+
+`pnpm dev:app` is the same as `pnpm tauri dev`, plus the global Tauri API (`window.__TAURI__`, from `src-tauri/tauri.dev.conf.json`), which is useful when you drive the app from scripts.
+
+Other everyday commands:
+
+| Command             | What it does                                                                                                   |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `pnpm build`        | Typecheck and bundle the frontend, then check the bundle against the WebKit floor (`scripts/check-webkit.ts`). |
+| `pnpm gen:bindings` | Regenerate `src/bindings.ts` from the Rust command signatures.                                                 |
+| `pnpm dev`          | Vite alone: the UI in a plain browser with in-memory backends (no Rust).                                       |
+
+## Worktrees
+
+Several worktrees can be developed and run side by side. Create one per task:
+
+```sh
+git worktree add ../my-task -b my-branch origin/main
+cd ../my-task
+pnpm install
+pnpm tauri dev
+```
+
+Always launch through `pnpm tauri dev` / `pnpm dev:app`, not the raw `pnpm exec tauri dev`. The wrapper (`scripts/tauri.ts`):
+
+- starts Vite on a port derived from the worktree path (moving on if it is taken) and passes the actual URL to Tauri;
+- refuses to start a second launcher for the same worktree and prints the running session instead;
+- gives each worktree's debug build its own app identity (`ai.l0ng.openidea.dev.w<hash>`), so data, settings, logs and the single-instance lock are separate per worktree. Different worktrees and an installed release can run at the same time.
+
+Launching the same debug binary again focuses its running window and forwards its path argument. `--release` uses the normal release identity and bypasses the wrapper.
+
+When you are done with a worktree: stop its app and dev session, delete its build output (`target/`), then `git worktree remove ../my-task`.
+
+<Warning>
+  Keep each worktree's Cargo output separate. Don't point `CARGO_TARGET_DIR` or a `target` symlink at a shared
+  directory. A worktree's `target/` grows to around 9 GB after one build, more with tests and clippy, so avoid running
+  several heavy builds on one machine at once.
+</Warning>
+
+## MCP bridge and ports
+
+Debug builds load the Tauri MCP bridge plugin (`tauri-plugin-mcp-bridge`, bound to `127.0.0.1`), which lets tools and agents drive the running app. Release builds don't include it.
+
+Bridge ports are dynamic, in the range 9223–9322. To find the one for your worktree:
+
+```sh
+pnpm dev:status
+```
+
+It prints the worktree, its app identifier and the bridges that belong to it (`port`, `appIdentifier`). Connect to that port and pass `appIdentifier` explicitly; don't assume the default MCP session belongs to your worktree. If no bridge is found, the app is still compiling or not running.
+
+## Common pitfalls
+
+- **Running a subset of frontend tests:** use `pnpm vitest run <path>`. `pnpm test -- <path>` ignores the filter and runs the whole suite, which takes several minutes.
+- **Clippy while iterating:** don't. `pnpm tauri dev` compiles anyway. Run `cargo fmt --all` and `cargo clippy -p <crate> --all-targets -- -D warnings` once, before committing. A passing clippy doesn't make the first launch faster: `pnpm tauri dev` still does a full debug build.
+- **Long checks in one shell call:** a cold build cache takes around 5 minutes. Run long checks one at a time rather than chained.
+- **`src/bindings.ts` changes on launch:** every debug launch re-exports the bindings (only rewriting the file when it differs). If you changed IPC types, commit the regenerated file; CI fails when it is stale.
+- **Stopping processes:** stop only what you started for your worktree. Never use broad kills such as `pkill openidea`; they hit other worktrees and the installed app.
+- **Raw Tauri CLI:** `pnpm exec tauri dev` skips the worktree isolation above, so it can collide with another worktree's Vite port or app identity.

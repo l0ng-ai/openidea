@@ -567,11 +567,11 @@ fn doc_types<'d>(doc: &'d DocBlock, outer: &[String], out: &mut Vec<(Vec<String>
     }
 }
 
-/// Every PHPDoc type in fixtures/php-app parses, and the templated
+/// Every PHPDoc type in fixtures/php-library parses, and the templated
 /// collection's types name its template parameter.
 #[test]
 fn php_app_fixture_doc_types_parse() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library");
     let mut files = Vec::new();
     php_files(&root, &mut files);
     let summaries: Vec<FileSummary> = files

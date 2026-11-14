@@ -8,13 +8,36 @@
 use crate::{DebugSessionId, Diagnostic, DocId, RunId, ServerId, TaskId, TerminalId, TextChange};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
+/// line) in the Run tool window's agent tab `name`, on pipes, answered once the process
+/// started or failed to.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum McpUiRequest {
+    Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
+    OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
+    AgentRun { name: String, command: String, cwd: crate::IpcPath, env: BTreeMap<String, String> },
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum IdeEvent {
+    /// Project data source settings changed; reload the Database tree.
+    DbSourcesChanged,
+    McpRequest {
+        id: u32,
+        request: McpUiRequest,
+    },
+    McpRequestClosed {
+        id: u32,
+    },
     /// Project window membership or selection changed.
     WindowGroupsChanged,
+    /// A window entered or left full screen, itself or as a member of a full-screen window group.
+    WindowFullscreenChanged,
     ProjectTrustChanged {
         root: crate::IpcPath,
         trusted: bool,
@@ -24,6 +47,10 @@ pub enum IdeEvent {
         created: Vec<crate::IpcPath>,
         modified: Vec<crate::IpcPath>,
         removed: Vec<crate::IpcPath>,
+        /// Subtrees whose ignore rules changed, after the matchers were rebuilt.
+        #[serde(default)]
+        #[specta(optional)]
+        ignore_rules: Vec<crate::IpcPath>,
     },
     /// Excluded or ignored folders whose contents changed; they stay out of `FsChanged`.
     ExcludedDirsChanged {
@@ -50,6 +77,9 @@ pub enum IdeEvent {
     WorkspaceEditApplied {
         id: u32,
         paths: Vec<crate::IpcPath>,
+        /// Made by an agent through the MCP server's tools: undoable like a refactoring, but
+        /// not announced as one.
+        by_agent: bool,
     },
     /// An open document's language changed (Settings › File Types, Override File
     /// Type), or its UI mode (a framework's root marker appeared or went).
@@ -129,6 +159,12 @@ pub enum IdeEvent {
     /// global value, the project's for a project value) re-read their effective settings.
     SettingsChanged {
         key: String,
+    },
+    UpdateStatusChanged {
+        status: crate::updates::UpdateStatus,
+    },
+    UpdateAvailable {
+        update: crate::updates::UpdateInfo,
     },
     /// The project's source / test / resource / excluded roots changed (build files
     /// changed or folders were marked); the UI re-reads them with `project_roots`.
@@ -229,6 +265,9 @@ pub enum DebugEvent {
         thread_id: i64,
         started: bool,
     },
+    /// The program runs in a terminal the IDE gave it (`runInTerminal`): what is typed for it
+    /// in the debug console reaches its input.
+    ProgramInput,
     BreakpointsChanged {
         path: crate::IpcPath,
     },
@@ -242,6 +281,82 @@ pub enum DebugEvent {
         change_type: String,
         message: String,
     },
+    /// The session's capabilities changed after it started: fetch them again.
+    Capabilities,
+    /// The adapter's `invalidated` event: what it shows for `areas` (`all`, `stacks`, `threads`,
+    /// `variables`; empty means all) is stale and has to be fetched again.
+    Invalidated {
+        areas: Vec<String>,
+    },
+    JvmBackend {
+        state: JvmBackendState,
+    },
+    /// A step in the life of one request of a debugged page.
+    JsNetwork {
+        event: JsNetworkEvent,
+    },
+    /// The adapter does not report the requests of this page: there will be no `JsNetwork`.
+    JsNetworkUnavailable,
+}
+
+/// Which step of a request a [`JsNetworkEvent`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum JsNetworkKind {
+    Request,
+    Response,
+    Finished,
+    Failed,
+}
+
+/// The script frame that made a request, where the browser ran it (0-based line and column).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JsInitiator {
+    pub function: String,
+    pub url: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// What a debugged page's browser reports about a request, reduced to what the Network view
+/// shows. Events of one request share `request_id`; each kind fills its own fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct JsNetworkEvent {
+    pub kind: JsNetworkKind,
+    pub request_id: String,
+    /// The browser's monotonic clock, comparable between the events of a page.
+    pub timestamp_ms: u64,
+    /// Request and response.
+    pub url: Option<String>,
+    pub method: Option<String>,
+    /// `Fetch`, `XHR`, `Script`, `Document`, …
+    pub resource_type: Option<String>,
+    pub status: Option<u16>,
+    pub mime_type: Option<String>,
+    /// The request's headers, or the response's.
+    pub headers: BTreeMap<String, String>,
+    /// Bytes received over the network, once finished.
+    pub encoded_length: Option<u64>,
+    pub error_text: Option<String>,
+    pub initiator: Option<JsInitiator>,
+}
+
+/// The backend that reads a debugged JVM's objects (instances, fields, referrers).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum JvmBackendState {
+    Ready,
+    /// Turned off for the rest of the session: the debug adapter lacks what it needs.
+    Unsupported {
+        detail: String,
+    },
+    /// The Kotlin JDWP link only forwards now; inspecting stops.
+    Degraded {
+        detail: String,
+    },
+    Closed,
 }
 
 /// Where backend crates publish [`IdeEvent`]s. Cheap to clone via `Arc`.
@@ -262,4 +377,28 @@ pub struct NullSink;
 
 impl EventSink for NullSink {
     fn emit(&self, _: IdeEvent) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn jvm_backend_events_json_shape() {
+        let degraded = DebugEvent::JvmBackend { state: JvmBackendState::Degraded { detail: "x".into() } };
+        assert_eq!(
+            serde_json::to_value(&degraded).unwrap(),
+            json!({"kind": "jvmBackend", "state": {"kind": "degraded", "detail": "x"}})
+        );
+        assert_eq!(serde_json::to_value(DebugEvent::Capabilities).unwrap(), json!({"kind": "capabilities"}));
+    }
+
+    #[test]
+    fn invalidated_event_json_shape() {
+        assert_eq!(
+            serde_json::to_value(DebugEvent::Invalidated { areas: vec!["variables".into()] }).unwrap(),
+            json!({"kind": "invalidated", "areas": ["variables"]})
+        );
+    }
 }

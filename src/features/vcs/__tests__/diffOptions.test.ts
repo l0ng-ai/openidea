@@ -32,6 +32,7 @@ describe("diff options", () => {
         collapse: false,
         syncScroll: false,
         alignChanges: false,
+        softWrap: true,
       }),
     ).toEqual({
       mode: "split",
@@ -40,8 +41,18 @@ describe("diff options", () => {
       collapse: false,
       syncScroll: false,
       alignChanges: false,
+      softWrap: true,
     });
-    expect(parseDiffOptions({ ignore: "bogus", highlight: 3, collapse: "x" })).toEqual(DEFAULT_DIFF_OPTIONS);
+    expect(parseDiffOptions({ ignore: "bogus", highlight: 3, collapse: "x", softWrap: "yes" })).toEqual(
+      DEFAULT_DIFF_OPTIONS,
+    );
+    // Options saved before soft wraps existed follow the editor's setting.
+    expect(parseDiffOptions({ mode: "unified" }).softWrap).toBeNull();
+  });
+
+  it.each([true, false, null])("round-trips the soft-wrap override %s", (softWrap) => {
+    const options = { ...DEFAULT_DIFF_OPTIONS, softWrap };
+    expect(parseDiffOptions(JSON.parse(JSON.stringify(options)))).toEqual(options);
   });
 
   it("ignore whitespace policies", () => {
@@ -260,6 +271,34 @@ describe("diff options", () => {
     expect(numbers(mv.a, "cm-diffGutter-modified")).toEqual(["2"]);
     expect(numbers(mv.b, "cm-diffGutter-modified")).toEqual(["2", "3"]);
     expect(numbers(mv.b, "cm-diffGutter-inserted")).toEqual(["5"]);
+    mv.destroy();
+    parent.remove();
+  });
+
+  it("puts the left pane's line numbers next to the divider, as IDEA's mirrored editor", () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const mv = new MergeView({
+      a: {
+        doc: "keep\nlet x = 1;\nend\n",
+        extensions: [viewerBase({ readOnly: true, lineNumbers: "after" }), changedLineGutters],
+      },
+      b: { doc: "keep\nlet x = 2;\nend\n", extensions: [viewerBase({ readOnly: true }), changedLineGutters] },
+      parent,
+      gutter: false,
+      diffConfig: ideaDiffConfig("none", "words"),
+    });
+    const numbers = (v: typeof mv.a, side: "before" | "after") =>
+      [...v.dom.querySelectorAll(`.cm-gutters-${side} .cm-lineNumbers .cm-gutterElement:not([style*='hidden'])`)]
+        .map((e) => e.textContent)
+        .filter(Boolean);
+    expect(numbers(mv.a, "after")).toEqual(["1", "2", "3", "4"]);
+    expect(numbers(mv.a, "before")).toEqual([]);
+    expect(numbers(mv.b, "before")).toEqual(["1", "2", "3", "4"]);
+    // The change background still reaches the moved numbers.
+    expect(
+      [...mv.a.dom.querySelectorAll(".cm-gutters-after .cm-diffGutter-modified")].map((e) => e.textContent),
+    ).toEqual(["2"]);
     mv.destroy();
     parent.remove();
   });

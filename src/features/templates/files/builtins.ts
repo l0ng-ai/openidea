@@ -39,6 +39,51 @@ import LARAVEL_LIVEWIRE_VIEW from "./laravel/livewire.blade.php.ft?raw";
 /** Includes tab: fragments file templates pull in with `#parse("…")`. */
 export const BUILTIN_INCLUDES: readonly TemplateFragment[] = [{ name: "File Header", body: "" }];
 
+/** Opens empty: the notebook editor adds the first cell. */
+const JUPYTER_NOTEBOOK_BODY = `{
+ "cells": [],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`;
+
+/** Starts with a Markdown heading named after the file. */
+const JUPYTER_TITLED_NOTEBOOK_BODY = `{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "cell-title",
+   "metadata": {},
+   "source": [
+    "# $NAME$"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
+`;
+
 /** Code tab: the members the built-in test templates generate. */
 export const BUILTIN_CODE_TEMPLATES: readonly TemplateFragment[] = [
   {
@@ -65,6 +110,11 @@ export const BUILTIN_CODE_TEMPLATES: readonly TemplateFragment[] = [
     name: "Vitest Test",
     description: "TypeScript File › Test",
     body: 'it("works", () => {\n  $END$\n});\n',
+  },
+  {
+    name: "PHPUnit Test Method",
+    description: "PHP Class › PHPUnit Test",
+    body: "public function testSomething(): void\n{\n    $END$\n}\n",
   },
   {
     name: "pytest Test Function",
@@ -232,6 +282,17 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     ],
   },
   {
+    id: "jupyter",
+    name: "Jupyter Notebook",
+    icon: "file-jupyter",
+    extension: "ipynb",
+    nameStyle: "asis",
+    kinds: [
+      { id: "notebook", label: "Notebook", body: JUPYTER_NOTEBOOK_BODY },
+      { id: "titled", label: "Notebook with a title", body: JUPYTER_TITLED_NOTEBOOK_BODY },
+    ],
+  },
+  {
     id: "go",
     name: "Go File",
     icon: "file-go",
@@ -256,6 +317,49 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     nameStyle: "asis",
     defaultName: "go",
     kinds: [{ id: "module", label: "Module", body: "module $PROJECT_NAME$\n\ngo 1.20\n" }],
+  },
+  {
+    id: "php",
+    name: "PHP File",
+    icon: "file-php",
+    extension: "php",
+    nameStyle: "asis",
+    kinds: [{ id: "file", label: "File", body: "<?php\n\n$END$\n" }],
+  },
+  {
+    id: "php-class",
+    name: "PHP Class",
+    icon: "class",
+    extension: "php",
+    nameStyle: "pascal",
+    packageStyle: "php",
+    kinds: [
+      {
+        id: "class",
+        label: "Class",
+        body: '<?php\n\nnamespace $PACKAGE$;\n\n#parse("File Header")\nclass $NAME$\n{\n    $END$\n}\n',
+      },
+      {
+        id: "interface",
+        label: "Interface",
+        body: '<?php\n\nnamespace $PACKAGE$;\n\n#parse("File Header")\ninterface $NAME$\n{\n    $END$\n}\n',
+      },
+      {
+        id: "trait",
+        label: "Trait",
+        body: '<?php\n\nnamespace $PACKAGE$;\n\n#parse("File Header")\ntrait $NAME$\n{\n    $END$\n}\n',
+      },
+      {
+        id: "enum",
+        label: "Enum",
+        body: '<?php\n\nnamespace $PACKAGE$;\n\n#parse("File Header")\nenum $NAME$\n{\n    $END$\n}\n',
+      },
+      {
+        id: "test",
+        label: "PHPUnit Test",
+        body: '<?php\n\nnamespace $PACKAGE$;\n\nuse PHPUnit\\Framework\\TestCase;\n\n#parse("File Header")\nfinal class $NAME$ extends TestCase\n{\n    #parse("PHPUnit Test Method")\n}\n',
+      },
+    ],
   },
   {
     id: "java",
@@ -297,6 +401,27 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
         body: 'package $PACKAGE$;\n\nimport org.junit.jupiter.api.Test;\n\nimport static org.junit.jupiter.api.Assertions.*;\n\n#parse("File Header")\nclass $NAME$ {\n\n    #parse("JUnit5 Test Method")\n}\n',
       },
     ],
+  },
+  {
+    id: "csharp",
+    name: "C# Class",
+    icon: "class",
+    extension: "cs",
+    nameStyle: "pascal",
+    packageStyle: "csharp",
+    kinds: (
+      [
+        ["class", "Class", "class"],
+        ["interface", "Interface", "interface"],
+        ["struct", "Struct", "struct"],
+        ["enum", "Enum", "enum"],
+        ["record", "Record", "record"],
+      ] as const
+    ).map(([id, label, keyword]) => ({
+      id,
+      label,
+      body: `namespace $PACKAGE$;\n\n#parse("File Header")\npublic ${keyword} $NAME$\n{\n    $END$\n}\n`,
+    })),
   },
   {
     id: "kotlin",
@@ -446,5 +571,20 @@ export const BUILTIN_FILE_TEMPLATES: readonly FileTemplate[] = [
     nameStyle: "asis",
     defaultName: ".gitignore",
     kinds: [{ id: "gitignore", label: ".gitignore file", body: "$END$\n" }],
+  },
+  {
+    id: "tomcat-context",
+    name: "Tomcat Context Descriptor",
+    icon: "file-config",
+    extension: "xml",
+    nameStyle: "asis",
+    defaultName: "context",
+    kinds: [
+      {
+        id: "context",
+        label: "Tomcat Context Descriptor (context.xml)",
+        body: '<?xml version="1.0" encoding="UTF-8"?>\n<Context antiJARLocking="true" path="$END$">\n</Context>\n',
+      },
+    ],
   },
 ];

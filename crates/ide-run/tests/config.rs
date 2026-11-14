@@ -262,3 +262,27 @@ cwd = "sibling"
         assert_eq!(loaded[0].cwd.as_deref(), Some(std::path::Path::new("sibling")));
     }
 }
+
+#[test]
+fn java_config_without_build_policy_loads_and_saves_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = user_configs_path(dir.path());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"[[configurations]]
+id = "user:main"
+name = "Main"
+kind = "application"
+command = "java"
+args = ["-cp", "${classpath}", "demo.Main"]
+"#,
+    )
+    .unwrap();
+    let configs = load_user_configs(dir.path()).unwrap();
+    assert_eq!(configs.len(), 1);
+    assert_eq!(configs[0].extras.build_policy, None);
+    save_user_configs(dir.path(), &configs).unwrap();
+    assert!(!fs::read_to_string(path).unwrap().contains("build-policy"));
+    assert_eq!(load_user_configs(dir.path()).unwrap(), configs);
+}

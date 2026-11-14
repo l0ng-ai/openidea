@@ -1,0 +1,92 @@
+.highlight {
+  background: var(--accent-soft);
+}
+.search {
+  background: var(--bg-search-match);
+  color: var(--fg-search-match);
+}
+.added {
+  background: color-mix(in srgb, var(--vcs-added) 18%, transparent);
+}
+.modified {
+  background: color-mix(in srgb, var(--vcs-modified) 18%, transparent);
+}
+.removed {
+  background: color-mix(in srgb, var(--vcs-deleted) 18%, transparent);
+}
+.warning {
+  text-decoration: underline wavy var(--warning);
+}
+.error {
+  text-decoration: underline wavy var(--danger);
+}
+.info {
+  text-decoration: underline dotted var(--info);
+}
+.typo {
+  text-decoration: underline wavy var(--wave-typo, var(--success));
+}
+.weak {
+  color: var(--fg-weak-warning);
+}
+.underline {
+  text-decoration: underline;
+}
+.strikethrough {
+  text-decoration: line-through;
+}
+.muted {
+  color: var(--fg-muted);
+}
+/* A zero-width anchor at the line end with the message in an absolutely positioned inner box,
+   the way the code-vision hint is drawn: the annotation takes no part in the line's flow, so it
+   neither stretches the line nor moves the caret at the line end. The message's own offset is a
+   custom property: the blame steps past the message by measuring this inner box plus that
+   offset (inlineBlame.ts). */
+.after {
+  --openidea-message-offset: var(--space-2);
+  display: inline-block;
+  width: 0;
+  position: relative;
+  line-height: 1;
+  user-select: none;
+}
+.afterInner {
+  position: absolute;
+  left: var(--openidea-message-offset);
+  bottom: -2px;
+  white-space: pre;
+  color: var(--fg-muted);
+  /* No width cap and no overflow: a descender (g, y, p) would be clipped by a
+     line-height-1 box, and a long message simply runs past the editor's edge,
+     where the scroller clips it — the way IDEA paints line-end inlays. */
+  pointer-events: auto;
+}
+
+/* Inline text follows the scheme's Error / Warning colours, the way Inspection Lens
+   colours an annotation. The message span carries the severity class, and the line-end
+   text itself is never underlined: the wave belongs to the code token. */
+.after .error {
+  color: var(--wave-error);
+  text-decoration: none;
+}
+.after .warning {
+  color: var(--wave-warning);
+  text-decoration: none;
+}
+.after .info {
+  color: var(--info, var(--fg-weak-warning));
+  text-decoration: none;
+}
+.after .typo {
+  color: var(--wave-typo, var(--success));
+  text-decoration: none;
+}
+.after .weak {
+  color: var(--fg-weak-warning);
+  text-decoration: none;
+}
+.after .underline,
+.after .strikethrough {
+  text-decoration: none;
+}

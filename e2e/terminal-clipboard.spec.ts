@@ -29,6 +29,11 @@ test("local terminal stores clipboard media and pastes one shell-quoted argument
     try {
       session.attach(container);
       await session.start();
+      // xterm opens on a later frame, once the pane has a size.
+      const openDeadline = Date.now() + 5000;
+      while (!container.querySelector("textarea") && Date.now() < openDeadline) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
       const transfer = new DataTransfer();
       transfer.items.add(new File([new Uint8Array([137, 80, 78, 71])], "image.png", { type: "image/png" }));
       const event = new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: transfer });

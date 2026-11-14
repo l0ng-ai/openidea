@@ -151,6 +151,16 @@ fn cases(dir: &Path) -> Vec<Case> {
             field: None,
             config: launch("lldb-dap", &c.join("main"), &c, serde_json::json!({"env": ["OPENIDEA_FIXTURE=1"]})),
         },
+        // GDB's own DAP interpreter needs GDB 14+; older ones are skipped by `installed`.
+        Case {
+            adapter: "gdb",
+            source: c.join("main.c"),
+            loop_line: 13,
+            after_loop: 15,
+            function: "parse",
+            field: None,
+            config: launch("gdb", &c.join("main"), &c, serde_json::json!({})),
+        },
     ]);
     out
 }
@@ -230,6 +240,16 @@ fn installed(adapter: &str) -> bool {
         "js-debug" => "js-debug-adapter",
         "delve" => "dlv",
         "java-debug" => return true,
+        // Only a GDB with the DAP interpreter (14+) counts as installed.
+        "gdb" => {
+            return std::process::Command::new("gdb").arg("--version").output().is_ok_and(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .and_then(adapter::parse_gdb_version)
+                    .is_some_and(|(major, _)| major >= 14)
+            });
+        }
         other => other,
     };
     adapter::resolve_binary(cmd, Path::new("/")).is_some()
@@ -537,6 +557,17 @@ async fn attach_to_processes() {
             extra: |pid, _| serde_json::json!({"pid": pid}),
         },
     ];
+    // A .NET app built into `dotnet/bin` (`<OutDir>bin</OutDir>`), attached by its apphost.
+    let dotnet_app = dir.join("dotnet/bin").join(if cfg!(windows) { "Server.exe" } else { "Server" });
+    if dotnet_app.is_file() {
+        cases.push(AttachCase {
+            kind: attach::AttachKind::Dotnet,
+            command: vec![s(&dotnet_app)],
+            source: dir.join("dotnet/Program.cs"),
+            line: 1,
+            extra: |pid, _| serde_json::json!({"processId": pid, "justMyCode": true}),
+        });
+    }
     if java_server.is_some() {
         cases.insert(
             0,

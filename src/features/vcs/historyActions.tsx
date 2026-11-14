@@ -1,3 +1,4 @@
+import { writeClipboardText } from "@/platform/clipboard";
 import { parseCommitBookmark } from "./logBookmarks";
 import { commitKey, commitRepo } from "./multiRoot";
 /**
@@ -60,7 +61,6 @@ import {
   unshelve,
 } from "./shelf";
 import { currentRepo, focusRepo, useVcs } from "./store";
-import { openExternalLog } from "./RevisionBrowser";
 
 const VCS = "vcsAvailable";
 const IN_GIT_LOG = "(vcsAvailable || projectOpen) && (activeToolWindow == git || vcsLogFocus)";
@@ -250,7 +250,7 @@ export function registerHistoryActions(): () => void {
       id: "vcs.log.openExternal",
       title: "Open External Git Log…",
       category: "Git Log",
-      run: openExternalLog,
+      run: async () => (await import("./RevisionBrowser")).openExternalLog(),
     },
     {
       id: "vcs.log.goToRef",
@@ -282,7 +282,7 @@ export function registerHistoryActions(): () => void {
       icon: "copy",
       when: "vcsAvailable || projectOpen || vcsLogFocus",
       keyWhen: IN_GIT_LOG,
-      run: withCommits((cs) => navigator.clipboard?.writeText(cs.map((c) => c.id).join(" ")), true),
+      run: withCommits((cs) => writeClipboardText(cs.map((c) => c.id).join(" ")), true),
     },
     {
       id: "vcs.log.createPatch",
@@ -445,7 +445,7 @@ export function registerHistoryActions(): () => void {
       category: "Git Log",
       icon: "branch",
       when: VCS,
-      run: withCommit((c) => newBranch(c.id)),
+      run: withCommit((c) => newBranch(c.id, commitRepo(c) ?? currentRepo())),
     },
     {
       id: "vcs.log.newTag",

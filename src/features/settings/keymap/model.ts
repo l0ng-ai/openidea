@@ -27,6 +27,11 @@ export function resolveBindings(draft: KeymapDraft, id: string): string[] {
   return draft.overrides[id]?.map(normalizeBinding) ?? presetBindings(draft.preset, id);
 }
 
+/** Hidden actions with shortcuts stay configurable even after their bindings are removed. */
+export function isKeymapAction(action: Action, draft: KeymapDraft): boolean {
+  return !action.hidden || action.id in draft.overrides || presetBindings(draft.preset, action.id).length > 0;
+}
+
 export function isModified(draft: KeymapDraft, id: string): boolean {
   return id in draft.overrides;
 }

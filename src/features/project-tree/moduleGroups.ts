@@ -29,7 +29,9 @@ export function gradleModuleGroups(
   projects: readonly { path: string; dir: string; build?: string | null }[],
   rootName: string,
   projectRoot: string,
+  buildDir?: string,
 ): ExtraRoot[] {
+  const identity = (name: string) => (buildDir === undefined ? name : JSON.stringify([buildDir, name]));
   const modules: Module[] = projects.map((p) => {
     const path = p.path.split(":").filter(Boolean);
     // An included build's modules are named after that build (`lib.core`); buildSrc and
@@ -51,7 +53,13 @@ export function gradleModuleGroups(
 
   const moduleNode = (m: Module): ExtraRoot => {
     const label = nameOf(m.dir) || m.dir;
-    return { id: m.name, label, detail: m.name === label ? undefined : m.name, icon: "gradle-module", path: m.dir };
+    return {
+      id: identity(m.name),
+      label,
+      detail: m.name === label ? undefined : m.name,
+      icon: "gradle-module",
+      path: m.dir,
+    };
   };
   // `modulesAndGroups`: ungrouped top-level modules as they are (the project folder is
   // shown anyway), one node for the common group path of the grouped ones.
@@ -82,7 +90,7 @@ export function gradleModuleGroups(
     const seen = new Set<string>();
     const moduleNodes = members.filter((m) => !seen.has(m.dir) && !!seen.add(m.dir)).map(moduleNode);
     return {
-      id: `gradleGroup:${group.join(".")}`,
+      id: identity(`gradleGroup:${group.join(".")}`),
       label: group[group.length - 1]!,
       icon: "gradle-project",
       children: [...[...childGroups.values()].map(node).sort(byLabel), ...moduleNodes.sort(byLabel)],

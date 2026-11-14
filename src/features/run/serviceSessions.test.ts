@@ -11,6 +11,8 @@ const { stopRun, waitForExit, getSession } = vi.hoisted(() => ({
 }));
 vi.mock("./store", () => ({
   stopSession: stopRun,
+  // The real predicate: a stopping run is still live.
+  isLive: (s: RunSession) => s.status === "running" || s.status === "starting" || s.status === "stopping",
   waitForExit,
   useRun: { getState: () => ({ sessions: [getSession()].filter(Boolean) }) },
 }));

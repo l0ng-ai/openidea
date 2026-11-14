@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import type { BuildModel, GradleDependency, GradleModel, MavenDependency } from "@/platform/ipc";
@@ -72,7 +72,7 @@ const model: BuildModel = {
     stale: false,
     syncError: null,
   },
-  gradle: null,
+  gradle: [],
 };
 
 describe("dependency analyzer", () => {
@@ -159,7 +159,7 @@ describe("dependency analyzer for Gradle", () => {
     provideEditorService({ openInput, activePath: () => null } as unknown as EditorService);
     setContext("projectOpen", true);
     dispose = activate();
-    act(() => useBuild.setState({ root: "/g", model: { maven: null, gradle } }));
+    act(() => useBuild.setState({ root: "/g", model: { maven: null, gradle: [gradle] } }));
   });
   afterEach(() => {
     dispose();
@@ -170,13 +170,13 @@ describe("dependency analyzer for Gradle", () => {
   it("opens for a project from the action and from its build script's menus", async () => {
     await executeAction("gradle.analyzeDependencies", { gradlePath: ":app" });
     expect(openInput).toHaveBeenCalledWith(expect.objectContaining({ kind: ANALYZER_KIND }), { focus: true });
-    expect(useAnalyzer.getState().module).toBe("gradle::app");
+    expect(useAnalyzer.getState().module).toBe('gradle:["",":app"]');
     const items = menuGroupItems("projectView", { paths: ["/g/app/build.gradle.kts"] });
     expect(items).toContainEqual(
       expect.objectContaining({ action: "gradle.analyzeDependencies", arg: { path: "/g/app/build.gradle.kts" } }),
     );
     await executeAction("gradle.analyzeDependencies", { path: "/g/build.gradle" });
-    expect(useAnalyzer.getState().module).toBe("gradle::");
+    expect(useAnalyzer.getState().module).toBe('gradle:["",":"]');
     expect(menuGroupItems("editor", { paths: ["/g/other/build.gradle"] })).toEqual([]);
   });
 
@@ -187,9 +187,9 @@ describe("dependency analyzer for Gradle", () => {
       ]),
       gradleDep("com.fasterxml.jackson.core:jackson-databind:2.15.3", null),
     ]);
-    act(() => useAnalyzer.setState({ module: "gradle::app" }));
+    act(() => useAnalyzer.setState({ module: 'gradle:["",":app"]' }));
     render(<DependencyAnalyzer input={{ kind: ANALYZER_KIND, key: ANALYZER_KIND }} />);
-    expect(ipc.gradle).toHaveBeenCalledWith(":app", "runtimeClasspath", false, expect.any(Number));
+    expect(ipc.gradle).toHaveBeenCalledWith(":app", "runtimeClasspath", false, expect.any(Number), "");
     await screen.findByText("com.fasterxml.jackson.core:jackson-databind");
     fireEvent.click(screen.getByRole("checkbox", { name: "Show conflicts only" }));
     expect(screen.queryByText("org.springframework.boot:spring-boot-starter-json")).toBeNull();
@@ -203,9 +203,32 @@ describe("dependency analyzer for Gradle", () => {
     expect(screen.queryByRole("button", { name: "Jump to Source" })).toBeNull();
   });
 
+  it("routes identical project paths and report caches by linked build", async () => {
+    const builds = ["one", "two"].map((dir) => ({
+      ...gradle,
+      dir,
+      syncedAt: 1,
+      projects: gradle.projects.map((p) => ({ ...p, dir: `${dir}/${p.dir}`, buildFile: `${dir}/${p.buildFile}` })),
+    }));
+    ipc.gradle.mockResolvedValue([]);
+    act(() => {
+      useBuild.setState({ model: { maven: null, gradle: builds } });
+      useAnalyzer.setState({ module: 'gradle:["one",":app"]' });
+    });
+    render(<DependencyAnalyzer input={{ kind: ANALYZER_KIND, key: ANALYZER_KIND }} />);
+    await waitFor(() =>
+      expect(ipc.gradle).toHaveBeenCalledWith(":app", "runtimeClasspath", false, expect.any(Number), "one"),
+    );
+    act(() => useAnalyzer.setState({ module: 'gradle:["two",":app"]' }));
+    await waitFor(() =>
+      expect(ipc.gradle).toHaveBeenLastCalledWith(":app", "runtimeClasspath", false, expect.any(Number), "two"),
+    );
+    expect(ipc.gradle).toHaveBeenCalledTimes(2);
+  });
+
   it("shows why Gradle could not resolve the configuration", async () => {
     ipc.gradle.mockRejectedValue(new Error("Could not resolve all files for configuration ':app:runtimeClasspath'."));
-    act(() => useAnalyzer.setState({ module: "gradle::" }));
+    act(() => useAnalyzer.setState({ module: 'gradle:["",":"]' }));
     render(<DependencyAnalyzer input={{ kind: ANALYZER_KIND, key: ANALYZER_KIND }} />);
     expect(await screen.findByText("Cannot resolve dependencies")).toBeTruthy();
     expect(screen.getByText(/Could not resolve all files/)).toBeTruthy();

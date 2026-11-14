@@ -11,7 +11,7 @@ import { setLocalChanges, type LocalChangelist } from "@/workbench/contributions
 import type { CheckState } from "./changes";
 import { groupOf } from "./changes";
 import { effectiveKind, relTo, stripSlash } from "./model";
-import { useVcs } from "./store";
+import { localChangesMayBeAside, useVcs } from "./store";
 
 export const DEFAULT_LIST_ID = "default";
 export const DEFAULT_LIST_NAME = "Changes";
@@ -32,14 +32,20 @@ export function activeList(state: ChangelistState): Changelist {
 
 /**
  * Pins files that just became changed to the active list and forgets files that
- * are no longer changed. Returns null when nothing changed.
+ * are no longer changed, unless `keepGone`: while a merge, rebase or update has the
+ * local changes put aside, their files keep their lists for when they come back.
+ * Returns null when nothing changed.
  */
-export function syncAssignments(state: ChangelistState, changed: readonly string[]): ChangelistState | null {
+export function syncAssignments(
+  state: ChangelistState,
+  changed: readonly string[],
+  keepGone = false,
+): ChangelistState | null {
   const live = new Set(changed);
   const files: Record<string, string> = {};
   let dirty = false;
   for (const [rel, id] of Object.entries(state.files ?? {})) {
-    if (live.has(rel) && state.lists.some((l) => l.id === id)) files[rel] = id;
+    if ((keepGone || live.has(rel)) && state.lists.some((l) => l.id === id)) files[rel] = id;
     else dirty = true;
   }
   for (const rel of changed) {
@@ -195,7 +201,7 @@ export function installChangelists(): () => void {
   const sync = () => {
     const { status, root, available, statusLoaded } = useVcs.getState();
     if (!available || !root || !statusLoaded || !useChangelists.getState().loaded) return;
-    const next = syncAssignments(useChangelists.getState().state, changedRels(status, root));
+    const next = syncAssignments(useChangelists.getState().state, changedRels(status, root), localChangesMayBeAside());
     if (next) updateChangelists(() => next);
   };
   const load = () => {

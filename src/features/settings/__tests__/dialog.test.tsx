@@ -25,11 +25,12 @@ import { registerAction, executeAction } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { useKeymap } from "@/platform/keymap";
-import { ContextMenuHost } from "@/ui";
+import { ContextMenuHost, hideContextMenu, useContextMenuStore } from "@/ui";
 import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt } from "../model/schema";
 import { openSettings, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
+import { ProjectStructureDialog } from "../languages/ProjectStructurePage";
 import { SettingsWindow } from "../window/SettingsWindow";
 import dialogStyles from "../dialog/SettingsDialog.module.css";
 import { activate } from "..";
@@ -51,7 +52,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => useSettingsDialog.setState({ open: false }));
+  act(() => useSettingsDialog.setState({ open: false, projectStructureOpen: false }));
+  act(hideContextMenu);
   dispose();
 });
 
@@ -69,6 +71,15 @@ async function openDialog(page?: string) {
 }
 
 describe("Settings dialog", () => {
+  it("offers only new window, current window and ask, including old attach settings", async () => {
+    current = setAt(current, "general.openProjectIn", "attach");
+    const dialog = await openDialog("general");
+    const group = within(dialog).getByRole("radiogroup", { name: "Open project in" });
+    expect(within(group).getAllByRole("radio")).toHaveLength(3);
+    expect(within(group).getByRole("radio", { name: "Ask" })).toBeChecked();
+    expect(within(group).queryByRole("radio", { name: "Attach" })).not.toBeInTheDocument();
+  });
+
   it("stages properties conversion through its action and applies the checkbox", async () => {
     const dialog = await openDialog("editor.fileEncodings");
     const checkbox = within(dialog).getByRole("checkbox", { name: "Transparent native-to-ascii conversion" });
@@ -130,6 +141,36 @@ describe("Settings dialog", () => {
         ["project", "languages.java.gradle.userHome", '"/gradle-cache"'],
       ]),
     );
+  });
+
+  it("persists Maven toolchains and profiles in project settings", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Toolchains file"), {
+      target: { value: "config files/toolchains.xml" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Active profiles"), { target: { value: "a, b,!c" } });
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+    expect(settingsSet.mock.calls).toEqual(
+      expect.arrayContaining([
+        ["project", "languages.java.maven.toolchains", '"config files/toolchains.xml"'],
+        ["project", "languages.java.maven.activeProfiles", '"a, b,!c"'],
+      ]),
+    );
+  });
+
+  it("finds the Maven active profiles setting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Active profiles" } });
+    expect(within(dialog).getByLabelText("Active profiles")).toBeInTheDocument();
+  });
+
+  it("finds the Maven toolchains setting", async () => {
+    useProject.setState({ project: { root: "/project" } as never });
+    const dialog = await openDialog("build.maven");
+    fireEvent.change(within(dialog).getByLabelText("Search settings"), { target: { value: "Toolchains" } });
+    expect(within(dialog).getByLabelText("Toolchains file")).toBeInTheDocument();
   });
 
   it("searches pages and highlights matching option labels", async () => {
@@ -327,8 +368,10 @@ describe("Settings dialog", () => {
     });
     registerAction({ id: "t.mine", title: "My Action", category: "Code", when: "editorFocus", run: () => {} });
     const dialog = await openDialog("keymap");
+    render(<ContextMenuHost />);
     const row = within(dialog).getByText("My Action");
     fireEvent.doubleClick(row);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" }));
     const recorder = await screen.findByRole("dialog", { name: /Keyboard Shortcut: My Action/ });
     const first = within(recorder).getByRole("textbox", { name: "First stroke" });
     fireEvent.keyDown(first, { code: "KeyD", key: "d", metaKey: true });
@@ -348,6 +391,67 @@ describe("Settings dialog", () => {
     expect(useSettingsDialog.getState().open).toBe(false);
   });
 
+  it.each(["double-click", "Enter"])(
+    "opens the shortcut menu on %s and clears mouse recording mode",
+    async (activation) => {
+      render(<ContextMenuHost />);
+      registerAction({ id: "t.activate", title: "Activation Target", category: "Code", run: () => {} });
+      const dialog = await openDialog("keymap");
+      const row = within(dialog).getByText("Activation Target").closest('[role="treeitem"]')!;
+      const tree = within(dialog).getByRole("tree", { name: "Actions" });
+      const rect = vi.spyOn(row, "getBoundingClientRect").mockReturnValue({
+        left: 100,
+        bottom: 150,
+        top: 126,
+        right: 500,
+        width: 400,
+        height: 24,
+        x: 100,
+        y: 126,
+        toJSON: () => ({}),
+      });
+      const activateRow = () => {
+        fireEvent.mouseDown(row, { button: 0 });
+        if (activation === "double-click") fireEvent.doubleClick(row, { clientX: 220, clientY: 138 });
+        else fireEvent.keyDown(tree, { key: "Enter" });
+      };
+      activateRow();
+      expect(useContextMenuStore.getState().menu).toMatchObject(
+        activation === "double-click" ? { x: 220, y: 138 } : { x: 100, y: 150 },
+      );
+      expect(screen.queryByRole("dialog", { name: /Shortcut: Activation Target/ })).not.toBeInTheDocument();
+      const keyboard = await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" });
+      expect(keyboard).toHaveFocus();
+      fireEvent.keyDown(keyboard, { key: "ArrowDown" });
+      const mouse = screen.getByRole("menuitem", { name: "Add Mouse Shortcut" });
+      expect(mouse).toHaveFocus();
+      fireEvent.keyDown(mouse, { key: "Enter" });
+      const recorder = await screen.findByRole("dialog", { name: "Mouse Shortcut: Activation Target" });
+      fireEvent.mouseDown(within(recorder).getByRole("textbox", { name: "Mouse shortcut" }), {
+        button: 0,
+        altKey: true,
+      });
+      fireEvent.click(within(recorder).getByRole("button", { name: "OK" }));
+      const overrides = useSettingsDialog.getState().staged["global|keymapOverrides"]?.value;
+      expect(overrides).toEqual({ "t.activate": ["Alt+Button1"] });
+      activateRow();
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" }));
+      const keys = await screen.findByRole("dialog", { name: "Keyboard Shortcut: Activation Target" });
+      expect(within(keys).getByRole("textbox", { name: "First stroke" })).toBeInTheDocument();
+      fireEvent.click(within(keys).getByRole("button", { name: "Cancel" }));
+      fireEvent.contextMenu(row);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Add Mouse Shortcut" }));
+      fireEvent.click(
+        within(await screen.findByRole("dialog", { name: "Mouse Shortcut: Activation Target" })).getByRole("button", {
+          name: "Cancel",
+        }),
+      );
+      fireEvent.click(within(dialog).getByRole("button", { name: "Add Keyboard Shortcut" }));
+      expect(await screen.findByRole("dialog", { name: "Keyboard Shortcut: Activation Target" })).toBeInTheDocument();
+      rect.mockRestore();
+    },
+  );
+
   it("duplicates the keymap from the gear menu and edits the copy", async () => {
     render(<ContextMenuHost />);
     registerAction({ id: "t.dup", title: "Dup Target", category: "Code", run: () => {} });
@@ -363,6 +467,7 @@ describe("Settings dialog", () => {
       "custom.macos-copy": { name: "macOS copy", parent: "intellij-macos", overrides: {} },
     });
     fireEvent.doubleClick(within(dialog).getByText("Dup Target"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add Keyboard Shortcut" }));
     const recorder = await screen.findByRole("dialog", { name: /Keyboard Shortcut: Dup Target/ });
     fireEvent.keyDown(within(recorder).getByRole("textbox", { name: "First stroke" }), {
       code: "F9",
@@ -416,6 +521,58 @@ describe("Settings dialog", () => {
         fireEvent.click(within(dialog).getByRole("button", { name: "Apply" }));
       });
       expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsVmArgs", '"-Xmx2g"']]);
+    });
+
+    it("stages shared JDT LS in the project and writes it on Apply", async () => {
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).not.toBeChecked();
+      fireEvent.click(checkbox);
+      expect(checkbox).toBeChecked();
+      expect(settingsSet).not.toHaveBeenCalled();
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["project", "languages.java.jdtlsShared", "true"]]);
+    });
+
+    it("keeps the global shared JDT LS preference separate from the project's override", async () => {
+      global = setAt(global, "languages.java.jdtlsShared", true);
+      current = setAt(global, "languages.java.jdtlsShared", false);
+      useProject.setState({ settings: current });
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      expect(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" })).not.toBeChecked();
+      fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).toBeChecked();
+      fireEvent.click(checkbox);
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "false"]]);
+    });
+
+    it("discards a shared JDT LS toggle on Cancel", async () => {
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      fireEvent.click(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" }));
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(settingsSet).not.toHaveBeenCalled();
+      expect(current.languages?.java?.jdtlsShared).toBe(false);
+    });
+
+    it("disables shared JDT LS only in a native Workspace's project scope", async () => {
+      useProject.setState((s) => ({
+        project: { ...s.project!, workspace: { version: 1, name: "Workspace", projects: ["/p/member"] } },
+      }));
+      const dialog = await openDialog("languages.java");
+      fireEvent.click(within(dialog).getByRole("radio", { name: "This project" }));
+      expect(within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" })).toBeDisabled();
+      expect(within(dialog).getByText(/Open a workspace member as a project/)).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("radio", { name: "Global" }));
+      const checkbox = within(dialog).getByRole("checkbox", { name: "Share JDT LS across builds" });
+      expect(checkbox).toBeEnabled();
+      fireEvent.click(checkbox);
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Apply" })));
+      expect(settingsSet.mock.calls).toEqual([["global", "languages.java.jdtlsShared", "true"]]);
     });
 
     it("Settings for New Projects edits the global layer on every page", async () => {
@@ -472,6 +629,87 @@ describe("Settings dialog", () => {
     expect(within(dialog).getByRole("button", { name: "Theme" })).toHaveTextContent("Islands Light");
     expect(within(dialog).getByLabelText("UI font size")).toHaveValue("13");
   });
+
+  it("keeps Project Structure out of the Settings page tree", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    const dialog = await openDialog("appearance");
+    const tree = within(dialog).getByRole("tree", { name: "Settings pages" });
+    expect(within(tree).queryByText("Project Structure")).toBeNull();
+  });
+
+  it("opens Project Structure as its own standalone IDEA-style dialog instead of Settings", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(
+      <>
+        <SettingsDialog />
+        <ProjectStructureDialog />
+        <MessagesHost />
+      </>,
+    );
+    await act(async () => {
+      await executeAction("file.projectStructure");
+    });
+    expect(useSettingsDialog.getState().open).toBe(false);
+    expect(useSettingsDialog.getState().projectStructureOpen).toBe(true);
+    const psDialog = screen.getByRole("dialog", { name: "Project Structure" });
+    const nav = within(psDialog).getByRole("navigation", { name: "Project Structure sections" });
+    expect(within(nav).getByText("Project Settings")).toBeInTheDocument();
+    expect(within(nav).getByText("Platform Settings")).toBeInTheDocument();
+    expect(within(nav).getByRole("button", { name: "Project" })).toHaveAttribute("aria-current", "page");
+    await act(async () => {
+      fireEvent.click(within(nav).getByRole("button", { name: "Modules" }));
+    });
+    expect(within(nav).getByRole("button", { name: "Modules" })).toHaveAttribute("aria-current", "page");
+    expect(within(psDialog).getByRole("tab", { name: "Sources" })).toBeInTheDocument();
+    expect(within(psDialog).getByRole("tab", { name: "Paths" })).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(within(nav).getByRole("button", { name: "Dependencies" }));
+    });
+    expect(within(nav).getByRole("button", { name: "Dependencies" })).toHaveAttribute("aria-current", "page");
+    expect(within(psDialog).getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
+  });
+
+  it("preserves pending Project Structure edits when its shortcut is invoked again", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure"));
+    fireEvent.change(screen.getByLabelText("Compiler output"), { target: { value: "out/classes" } });
+    await act(async () => executeAction("file.projectStructure"));
+    expect(screen.getByLabelText("Compiler output")).toHaveValue("out/classes");
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Apply" })));
+    expect(settingsSet).toHaveBeenCalledWith("project", "projectStructure.compilerOutput", '"out/classes"');
+  });
+
+  it("disables Project Structure controls whose settings have no execution support", async () => {
+    useProject.setState({ project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure", "modules"));
+    fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
+    expect(screen.getByLabelText("Test output path")).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Dependencies" }));
+    // Project dependencies are supported: the checklist is live, no disabled placeholder.
+    expect(screen.getByRole("group", { name: "The project depends on these projects" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Project…" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
+    expect(screen.getByRole("button", { name: "JAR" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "WAR" })).toBeDisabled();
+  });
+
+  it("shows the selected module's source tree", async () => {
+    current = setAt(current, "projectStructure.modules", {
+      service: { jdk: "", languageLevel: "", compilerOutput: "", testCompilerOutput: "", dependencies: [] },
+    });
+    useProject.setState({ settings: current, project: { name: "demo", root: "/project" } as never });
+    render(<ProjectStructureDialog />);
+    await act(async () => executeAction("file.projectStructure", "modules"));
+    fireEvent.click(screen.getByRole("button", { name: /service\s*custom/ }));
+    const tree = screen.getByRole("tree", { name: "Content root" });
+    expect(within(tree).getByRole("treeitem")).toHaveTextContent("service");
+    expect(within(tree).queryByText("demo")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Paths" }));
+    expect(screen.getByLabelText("Module language level")).toBeDisabled();
+    expect(screen.getByLabelText("Output path")).toBeDisabled();
+  });
 });
 
 describe("native Settings window root", () => {
@@ -515,4 +753,30 @@ describe("native Settings window background", () => {
       native.mockRestore();
     }
   });
+});
+
+it("uses the attached primary name for run-target paths", async () => {
+  useProject.setState({ project: { name: "primary", displayName: "primary, other", root: "/primary" } as never });
+  await openDialog("build.runTargets");
+  fireEvent.click(
+    within(screen.getByRole("toolbar", { name: "Run targets actions" })).getByRole("button", { name: "Add" }),
+  );
+  expect(screen.getByPlaceholderText("~/primary")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Type" }));
+  fireEvent.click(screen.getByRole("option", { name: "Docker" }));
+  expect(screen.getByPlaceholderText("/workspaces/primary")).toBeInTheDocument();
+});
+
+it("uses the primary name for module labels and artifact defaults", async () => {
+  useProject.setState({ project: { name: "primary", displayName: "primary, other", root: "/primary" } as never });
+  render(<ProjectStructureDialog />);
+  await act(async () => executeAction("file.projectStructure", "modules"));
+  expect(screen.getByRole("button", { name: /primary\s*custom/ })).toBeInTheDocument();
+  expect(screen.getByRole("tree", { name: "Content root" })).toHaveTextContent("primary");
+  fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
+  // Packaging is pending, but its default generator must still use the primary name.
+  screen.getByRole("button", { name: "JAR" }).closest("fieldset")!.removeAttribute("disabled");
+  fireEvent.click(screen.getByRole("button", { name: "JAR" }));
+  expect(screen.getByLabelText("Name")).toHaveValue("primary:jar");
+  expect(screen.getByLabelText("Output directory")).toHaveValue("out/artifacts/primary_jar");
 });

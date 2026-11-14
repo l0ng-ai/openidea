@@ -3,20 +3,25 @@
  * simulation in plain-browser development and tests (no network, ever).
  */
 import { Channel } from "@tauri-apps/api/core";
-import type { InstallEvent, RequestId, ToolInfo } from "@/bindings";
+import type { InstallEvent, RequestId, ToolInfo, ToolUpdate } from "@/bindings";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 
 export interface LanguageChoice {
   id: string;
   name: string;
+  /** For the language's file icon. */
+  extensions?: string[];
+  filenames?: string[];
 }
 
 export interface ToolsBackend {
   list(): Promise<ToolInfo[]>;
   install(name: string, request: RequestId, onEvent: (e: InstallEvent) => void): Promise<ToolInfo>;
   uninstall(name: string): Promise<ToolInfo>;
+  /** Newer versions of the tools the IDE installed (release downloads and npm packages). */
+  updates(request: RequestId): Promise<ToolUpdate[]>;
   cancel(request: RequestId): void;
-  /** Restarts running language servers named `name` (after an install). */
+  /** Restarts the language servers named `name` in every open project (after an install). */
   restartServers(name: string): Promise<void>;
   /** File chooser for an executable; null when cancelled. */
   chooseExecutable(title: string, defaultPath?: string): Promise<string | null>;
@@ -32,25 +37,21 @@ export const tauriToolsBackend: ToolsBackend = {
     return call(commands.toolsInstall(name, request, channel));
   },
   uninstall: (name) => call(commands.toolsUninstall(name)),
+  updates: (request) => call(commands.toolsUpdates(request)),
   cancel: (request) => void commands.cancelRequest(request).catch(() => {}),
+  // Every open project: Settings belongs to one project window, but all of them run the tool.
   restartServers: async (name) => {
-    let servers;
-    try {
-      servers = await call(commands.lspServers());
-    } catch {
-      return; // no project open
-    }
-    await Promise.all(
-      servers.filter((s) => s.name === name).map((s) => call(commands.lspRestart(s.id)).catch(() => {})),
-    );
+    await call(commands.lspRestartNamed(name));
   },
   chooseExecutable: async (title, defaultPath) => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: false, multiple: false, title, defaultPath: defaultPath || undefined });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   languages: async () =>
-    (await commands.languages()).map((l) => ({ id: l.id, name: l.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    (await commands.languages())
+      .map((l) => ({ id: l.id, name: l.name, extensions: l.extensions, filenames: l.filenames }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
 };
 
 function tool(partial: Partial<ToolInfo> & Pick<ToolInfo, "name" | "languages">): ToolInfo {
@@ -157,6 +158,8 @@ export class MemoryToolsBackend implements ToolsBackend {
   /** Delay between simulated steps (ms). */
   stepMs: number;
   failNext: string | null = null;
+  /** What `updates` reports, for the tools that are installed. */
+  available: ToolUpdate[] = [];
   private cancelled = new Set<RequestId>();
 
   constructor(tools: ToolInfo[] = sampleTools(), stepMs = 120) {
@@ -166,6 +169,10 @@ export class MemoryToolsBackend implements ToolsBackend {
 
   async list() {
     return this.tools.map((t) => ({ ...t }));
+  }
+
+  async updates() {
+    return this.available.filter((u) => this.tools.some((t) => t.name === u.name && t.status === "installed"));
   }
 
   private replace(next: ToolInfo) {

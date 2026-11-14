@@ -1,0 +1,131 @@
+---
+title: "Build tools"
+description: "Build the project from the Build menu, work with Maven and Gradle in their tool windows, and manage .NET, CMake, Cargo, Go and npm projects."
+---
+
+OpenIDEA does not have its own build system. It reads your build files, runs the build tool you already use, and shows the results in the IDE.
+
+## Build menu
+
+The **Build** menu works with every supported build system. OpenIDEA picks the build system of the project, or of the module that holds the current file.
+
+| Action                                              | macOS  | Windows / Linux |
+| --------------------------------------------------- | ------ | --------------- |
+| **Build Project**: compile sources and tests        | `⌘F9`  | `Ctrl+F9`       |
+| **Build Module**: compile the current file's module | `⌘⇧F9` | `Ctrl+Shift+F9` |
+| **Rebuild Project**: clean, then build              | —      | —               |
+| **Build Artifacts**: package the outputs            | —      | —               |
+
+What each action runs:
+
+| Build system | Detected by                                   | Build                                                 | Rebuild                     | Build Artifacts                                       |
+| ------------ | --------------------------------------------- | ----------------------------------------------------- | --------------------------- | ----------------------------------------------------- |
+| Maven        | `pom.xml`                                     | `mvn test-compile` (a module: `-pl <module> -am`)     | `clean test-compile`        | `package -DskipTests`                                 |
+| Gradle       | `build.gradle(.kts)`, `settings.gradle(.kts)` | `classes testClasses`                                 | `clean classes testClasses` | `assemble`                                            |
+| Cargo        | `Cargo.toml`                                  | `cargo build --all-targets`                           | `cargo clean`, then build   | `cargo build --release`                               |
+| Go           | `go.mod`, `go.work`                           | `go build ./...` (every module of a `go.work`)        | `go build -a ./...`         | —                                                     |
+| TypeScript   | `tsconfig.json`, `package.json`               | `tsc --noEmit` (the project's own `tsc` if installed) | —                           | the `build` script with the project's package manager |
+| CMake        | `CMakeLists.txt`                              | configure if needed, then `cmake --build`             | `--clean-first`             | —                                                     |
+
+Maven and Gradle use the wrapper or installation configured in Settings (see below). A TypeScript project without a `tsconfig.json` but with a `build` script runs that script.
+
+Output streams into the **Build** tool window (bottom). Compiler errors and warnings are grouped by file, appear in the Problems view and are underlined in the editor. **Stop Build** cancels a running build.
+
+## Maven
+
+When the project has a `pom.xml`, a **Maven** tool window appears on the right. On first open, OpenIDEA imports the project with Maven in the background (effective POMs and dependency trees).
+
+The tree shows **Profiles**, then each project with **Lifecycle**, **Plugins** (expand to see goals), **Dependencies**, **Run Configurations** and its modules. Double-click a goal to run it, or select several and run them together. Right-click a goal for **Run '…'**, **Debug '…'** and **Create Run Configuration…**. Running a goal from the tree creates a temporary run configuration.
+
+Toolbar:
+
+- **Reload All Maven Projects** re-reads the POMs and dependency trees.
+- **Add Maven Projects** adds a `pom.xml` the import did not find. Right-click a project to unlink it.
+- **Run Maven Build** runs the selected goal.
+- **Execute Maven Goal…** opens a prompt with goal completion (`Tab` to complete, `Enter` to run). It also lists recent commands.
+- **Toggle Offline Mode** (`-o`) and **Toggle 'Skip Tests' Mode** (`-DskipTests`) apply to every Maven run.
+- **Analyze Dependencies…** opens the Dependency Analyzer.
+- **Maven Settings…** opens **Settings › Build, Execution, Deployment › Maven**.
+
+Profile checkboxes in the tree apply to every Maven run as well.
+
+### Reloading after changes
+
+When you edit a POM in the editor, the tool window shows **Build files changed since the last reload** with a **Load Maven Changes** button. When build files change outside the editor (a `git pull`, another tool), the Maven project reloads on its own.
+
+### Editor support in `pom.xml`
+
+`⌘`-click / `Ctrl`-click (or **Navigate › Declaration or Usages**, `⌘B` / `Ctrl+B`) on a `${property}` opens the property that defines it, in this POM or a parent POM. On a dependency or plugin without a version, it opens the `<dependencyManagement>` or `<pluginManagement>` entry that supplies it.
+
+### Maven settings
+
+**Settings › Build, Execution, Deployment › Maven**:
+
+| Setting                                     | What it does                                                                                                              |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Delegate IDE build/run actions to Maven** | Run and Debug build Maven modules with Maven (`javac`) instead of jdtls                                                   |
+| **JRE**                                     | JDK for Maven sync, builds, goals and tests                                                                               |
+| **Maven home path**                         | A Maven installation to use instead of the project's `mvnw`                                                               |
+| **User settings file**                      | Passed as `-s`                                                                                                            |
+| **Toolchains file**                         | Passed as `-t`                                                                                                            |
+| **Local repository**                        | Passed as `-Dmaven.repo.local`                                                                                            |
+| **Active profiles**                         | Comma-separated profiles (`-P`); `!id` excludes one                                                                       |
+| **Thread count**                            | Passed as `-T` (for example `4` or `2C`)                                                                                  |
+| **Use Maven Daemon (mvnd)**                 | Runs builds, sync and run configurations through `mvnd`; falls back to `mvn` if it is missing or the JDK is older than 17 |
+
+## Gradle
+
+When the project has Gradle build files, a **Gradle** tool window appears on the right. On first open, OpenIDEA reads the task list with Gradle in the background.
+
+The tree shows the root project with its **Tasks** (grouped), **Run Configurations** and subprojects. Double-click a task to run it. The toolbar has **Reload All Gradle Projects**, **Link Gradle Projects** (add a build the project did not find), **Run Gradle Task**, **Execute Gradle Task…**, **Toggle Offline Mode** (`--offline`) and **Analyze Dependencies…**.
+
+When a build script changes, the tool window shows **Build files changed since the last reload** with a **Load Gradle Changes** button.
+
+In build scripts, **Navigate › Declaration or Usages** on a version catalog alias (`libs.spring.boot.starter`) opens its entry in `gradle/libs.versions.toml`, and hover shows the declaration. In the catalog, `version.ref` and bundle members link to their entries.
+
+### Gradle settings
+
+**Settings › Build, Execution, Deployment › Gradle**:
+
+| Setting                 | What it does                                                                                                                     |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Build and run using** | **Gradle** runs a main class as a `JavaExec` task; **OpenIDEA** launches it on the Java language server's classpath              |
+| **Gradle JVM**          | JDK for Gradle sync, tasks, run configurations and tests                                                                         |
+| **Distribution**        | **Gradle wrapper** (or a `mise` / `asdf` pinned Gradle, then Gradle on `PATH`), or **Local installation** with a **Gradle home** |
+| **Gradle user home**    | Sets `GRADLE_USER_HOME`                                                                                                          |
+
+## Dependency Analyzer
+
+**Analyze Dependencies…** (Maven or Gradle tool window, or the context menu of a `pom.xml` / build script) opens the Dependency Analyzer in an editor tab. It shows:
+
+- a Maven module's dependency tree (read with `dependency:tree -Dverbose`, so omitted duplicates are listed too), or a Gradle project's resolved dependencies per configuration;
+- version conflicts (**Show conflicts only**), as a tree or a list;
+- every path that brings a library in, with **Jump to Source** to the declaration.
+
+For Maven, **Exclude** adds an `<exclusion>` to the POM and reloads.
+
+## .NET
+
+The **.NET** tool window (right side; open it with **.NET Workspace** in Find Action) lists the solution's projects. Select a project to see its target frameworks, project references, NuGet packages and tests:
+
+- search NuGet, install, update and remove packages;
+- **Discover .NET Tests** and **Run all tests** / **Run test**;
+- **Install TRX reporting** adds the reporting extension that Microsoft.Testing.Platform projects need to show results in the test tree.
+
+**Reload .NET Workspace** re-reads the projects. .NET run and test configurations are detected automatically (see [Run configurations](/en/guide/run)).
+
+## CMake
+
+**Settings › Build, Execution, Deployment › CMake** holds CMake profiles: build type, generator, CMake arguments, build directory, build arguments and environment variables. **Build Project** uses the first profile. Without a profile it uses the first directory that already has a `CMakeCache.txt`, else `build`. CMake targets show up as run configurations.
+
+## Cargo, Go, npm and others
+
+These build systems have no tool window of their own:
+
+- **Cargo**: run configurations for each binary, `cargo test` and `cargo build`, plus the Build menu. In `Cargo.toml`, version completion lists published crate versions, and the **Newer dependency version available** inspection offers a quick fix to update a requirement.
+- **Go**: run and test configurations per module (`go.work` workspaces included) and the Build menu. In `go.mod`, version completion lists module versions.
+- **npm, pnpm, yarn, bun, Deno**: one run configuration per `package.json` script or Deno task, and ▶ icons on the `scripts` entries in `package.json`. The package manager follows the lock file.
+- **Make** and **just**: one run configuration per target or recipe.
+- **Composer**: when `vendor/` is missing or out of date with `composer.lock`, a banner offers to run `composer install`.
+
+Dependencies of these projects (crates, Go modules, `node_modules` packages, Maven and Gradle jars, the JDK, the Python interpreter's libraries) appear under **External Libraries** in the Project view and open read-only.

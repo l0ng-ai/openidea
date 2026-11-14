@@ -23,4 +23,4 @@ adapter = "codelldb"
 command = "codelldb"
 args = ["--port", "${port}"]
 transport = "tcp"
-install-hint = "Install the CodeLLDB adapter (https://github.com/vadimcn/codelldb/releases) and put `codelldb` on PATH"
+install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Language Servers"

@@ -50,9 +50,21 @@ export function Section({ title, children, className }: { title?: string; childr
           <span className={styles.sectionRule} aria-hidden />
         </div>
       )}
-      <div className={styles.sectionBody}>{children}</div>
+      <FormGroup className={styles.sectionBody}>{children}</FormGroup>
     </section>
   );
+}
+
+export function FormGroup({
+  children,
+  indented,
+  className,
+}: {
+  children: ReactNode;
+  indented?: boolean;
+  className?: string;
+}) {
+  return <div className={clsx(styles.formGroup, indented && styles.indented, className)}>{children}</div>;
 }
 
 export interface RowProps {
@@ -116,6 +128,7 @@ export interface NumberInputProps {
   /** Integer-only input. */
   integer?: boolean;
   unit?: string;
+  disabled?: boolean;
   "aria-label"?: string;
 }
 
@@ -131,7 +144,18 @@ export function parseNumberInput(
 }
 
 /** Number field: edits commit while valid; invalid text is flagged and reverted on blur. */
-export function NumberInput({ id, value, onChange, min, max, step = 1, integer, unit, ...aria }: NumberInputProps) {
+export function NumberInput({
+  id,
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  integer,
+  unit,
+  disabled,
+  ...aria
+}: NumberInputProps) {
   const [draft, setDraft] = useState<string | null>(null);
   const text = draft ?? String(value);
   const invalid = draft !== null && parseNumberInput(draft, { min, max, integer }) === null;
@@ -143,6 +167,7 @@ export function NumberInput({ id, value, onChange, min, max, step = 1, integer, 
         inputMode={integer ? "numeric" : "decimal"}
         value={text}
         invalid={invalid}
+        disabled={disabled}
         aria-label={aria["aria-label"]}
         aria-valuemin={min}
         aria-valuemax={max}
@@ -171,17 +196,28 @@ export interface SelectProps<V extends string> {
   options: readonly SelectOption<V>[];
   onChange: (value: V) => void;
   disabled?: boolean;
+  onPreview?: (value: V | null) => void;
+  className?: string;
   "aria-label"?: string;
 }
 
-export function Select<V extends string>({ value, options, onChange, disabled, ...aria }: SelectProps<V>) {
+export function Select<V extends string>({
+  value,
+  options,
+  onChange,
+  disabled,
+  onPreview,
+  className,
+  ...aria
+}: SelectProps<V>) {
   return (
     <UiSelect<V>
       value={value}
       options={options}
       onChange={onChange}
       disabled={disabled}
-      className={styles.select}
+      onPreview={onPreview}
+      className={clsx(styles.select, className)}
       aria-label={aria["aria-label"]}
     />
   );

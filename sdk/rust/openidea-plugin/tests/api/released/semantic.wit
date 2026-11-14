@@ -1,0 +1,31 @@
+package openidea:plugin@1.7.0;
+
+/// Optional export (world `plugin-semantic-tokens`): semantic colouring of
+/// documents of the languages declared with the `semantic-tokens` provider
+/// kind, including languages the plugin doesn't contribute. The tokens join
+/// the language server's and win where they overlap one.
+interface semantic-tokens-provider {
+    use types.{range};
+
+    /// The document to colour (the editor's text while it is open).
+    record document {
+        /// Absolute path.
+        path: string,
+        language: string,
+        version: u64,
+        text: string,
+    }
+
+    /// A token: part of one line.
+    record semantic-token {
+        range: range,
+        /// An LSP token type in kebab-case (`method`, `property`, `type`, …).
+        kind: string,
+        /// LSP token modifiers in kebab-case (`static`, `deprecated`, …).
+        modifiers: list<string>,
+    }
+
+    /// The document's tokens, at most 65,536; asked again after each edit,
+    /// under the edit-path budget.
+    semantic-tokens: func(doc: document) -> list<semantic-token>;
+}

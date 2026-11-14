@@ -237,7 +237,7 @@ the last three are guesses only what the editor shows uses
 - Unit tests sit next to each module (`tests.rs`, `*_tests.rs`):
   `cargo nextest run -p ide-php` or `cargo test -p ide-php`.
 - `crates/ide-host/tests/language_smoke.rs`: `php_native` runs the full smoke
-  table on `fixtures/php-app` with the engine; the ignored `php` case runs it on
+  table on `fixtures/php-library` with the engine; the ignored `php` case runs it on
   the Intelephense fallback.
 - `crates/ide-php/tests/differential.rs` (ignored; needs Intelephense and the
   corpora from `scripts/php-corpus.sh`) compares definition and hover with

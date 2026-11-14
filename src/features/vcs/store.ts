@@ -110,6 +110,28 @@ export function attentionRepo(
   return Object.keys(now).find((root) => !before[root]) ?? null;
 }
 
+let gitWork = 0;
+
+/** Marks a git command as running until the returned function is called. */
+export function beginGitWork(): () => void {
+  gitWork++;
+  let ended = false;
+  return () => {
+    if (!ended) gitWork--;
+    ended = true;
+  };
+}
+
+/**
+ * A git command is running or an operation is stopped in some repository: local
+ * changes may be put aside for the time being (merge, rebase, update), so files that
+ * look unchanged now may come back.
+ */
+export function localChangesMayBeAside(): boolean {
+  const s = useVcs.getState();
+  return gitWork > 0 || !!s.remoteBusy || Object.keys(s.operations).length > 0 || !!s.branch?.operation;
+}
+
 /** Selects the repository branch / log / remote operations act on. */
 export function selectRepo(root: string): Promise<void> {
   if (useVcs.getState().repo === root) return Promise.resolve();
@@ -128,6 +150,12 @@ export function conflictedFiles(status: readonly FileStatus[] = useVcs.getState(
 }
 
 let timer: ReturnType<typeof setTimeout> | undefined;
+/** A full refresh is queued; it answers for every path an incremental one would. */
+let pendingFull = false;
+/** Paths of watcher batches waiting for an incremental refresh. */
+const pendingPaths = new Set<string>();
+/** Above this many paths one full read is cheaper than a pathspec that big. */
+const PATH_BATCH_LIMIT = 200;
 let inflight: Promise<void> | null = null;
 /** The refresh queued behind `inflight` (it may have started before the caller's change). */
 let followUp: Promise<void> | null = null;
@@ -146,8 +174,31 @@ export function onConflictsCleared(fn: () => void) {
 
 export function scheduleRefresh(delay = 200) {
   if (!useVcs.getState().available) return;
+  pendingFull = true;
+  pendingPaths.clear();
   clearTimeout(timer);
-  timer = setTimeout(() => void refreshNow(), delay);
+  timer = setTimeout(() => void runScheduled(), delay);
+}
+
+/**
+ * Queues `paths` for an incremental refresh: a watcher batch names a few files, and asking git
+ * about those only keeps the work proportional to the batch. Nothing is queued behind a full
+ * refresh, which answers for them anyway.
+ */
+export function schedulePathsRefresh(paths: readonly string[], delay = 250) {
+  if (!useVcs.getState().available || pendingFull) return;
+  for (const path of paths) pendingPaths.add(path);
+  clearTimeout(timer);
+  timer = setTimeout(() => void runScheduled(), delay);
+}
+
+async function runScheduled(): Promise<void> {
+  const full = pendingFull;
+  pendingFull = false;
+  if (full || pendingPaths.size === 0) return refreshNow();
+  const paths = [...pendingPaths];
+  pendingPaths.clear();
+  return refreshPathsNow(paths);
 }
 
 /**
@@ -158,9 +209,12 @@ export function scheduleRefresh(delay = 200) {
 export function refreshNow(): Promise<void> {
   if (!useVcs.getState().available) return Promise.resolve();
   if (inflight) {
+    // A full refresh answers for every path: queue it as one, drained after the running read, so a
+    // pending batch of paths cannot swallow it (and the caller still reads the state it produced).
+    pendingFull = true;
     followUp ??= inflight.then(() => {
       followUp = null;
-      return refreshNow();
+      return runScheduled();
     });
     return followUp;
   }
@@ -196,7 +250,8 @@ export function refreshNow(): Promise<void> {
       const repo = attentionRepo(shown, s.operations, operations) ?? shown;
       const heads = Object.fromEntries(vcsRoots.map((r) => [r.root, { head: r.head, headCommit: r.headCommit }]));
       useVcs.setState({ operations, heads });
-      if (repo !== s.repo || roots.join("\n") !== s.roots.join("\n")) useVcs.setState({ roots, repo });
+      const sameRoots = roots.join("\n") === s.roots.join("\n");
+      if (repo !== s.repo || !sameRoots) useVcs.setState({ roots: sameRoots ? s.roots : roots, repo });
       applyStatus(status, branch);
       useVcs.setState({ branches, stashes, error: null });
       // Branch info and branches above are of another repository: load the selected one's.
@@ -212,6 +267,100 @@ export function refreshNow(): Promise<void> {
     }
   })();
   return inflight;
+}
+
+/**
+ * Refreshes the status of `paths` only and merges it into the loaded one. Anything that makes a
+ * scoped answer unreliable — nothing loaded yet, a large batch, a full refresh in flight — falls
+ * back to the full refresh, which is always correct.
+ */
+export function refreshPathsNow(paths: readonly string[]): Promise<void> {
+  const state = useVcs.getState();
+  if (!state.available || !state.statusLoaded || paths.length === 0 || paths.length > PATH_BATCH_LIMIT) {
+    return refreshNow();
+  }
+  if (inflight) {
+    // Coalesce with the running refresh: the queued run drains every path that arrived meanwhile,
+    // so a second batch is not answered with the first one's list.
+    for (const path of paths) pendingPaths.add(path);
+    followUp ??= inflight.then(() => {
+      followUp = null;
+      return runScheduled();
+    });
+    return followUp;
+  }
+  const run = (async () => {
+    try {
+      const fresh = await call(commands.vcsStatusPaths([...paths]));
+      const current = useVcs.getState();
+      if (!current.statusLoaded || pairsRenames(current.status, paths, fresh)) return false;
+      applyStatus(mergeStatus(current.status, paths, fresh), current.branch);
+      useVcs.setState((st) => ({ version: st.version + 1 }));
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  const done = run.then((ok) => {
+    inflight = null;
+    return ok ? undefined : refreshNow();
+  });
+  inflight = done;
+  return done;
+}
+
+/**
+ * `base` with the entries of `changed` replaced by `fresh`: a path that is no longer changed drops
+ * out of the list, a directory that went away drops everything below it, and new entries land in
+ * path order. Only whole path segments match, so `src/a.txt` never absorbs `src/a.txt.bak`.
+ */
+export function mergeStatus(
+  base: readonly FileStatus[],
+  changed: readonly string[],
+  fresh: readonly FileStatus[],
+): FileStatus[] {
+  const inBatch = coveredBy(changed);
+  // A path the read answered for replaces its old entry even when the batch did not name it.
+  const answered = new Set(fresh.map((f) => stripSlash(f.path)));
+  const keep = (f: FileStatus) => !inBatch(f.path) && !answered.has(stripSlash(f.path));
+  // Byte order, as the backend sorts a full status: a locale-aware compare would reorder it.
+  return [...base.filter(keep), ...fresh].sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
+}
+
+/** Whether `path` is one of `changed` or lies below one of them (whole segments only). */
+function coveredBy(changed: readonly string[]): (path: string) => boolean {
+  const exact = new Set(changed.map(stripSlash));
+  const dirs = [...exact].map((path) => `${path}/`);
+  return (path) => {
+    const p = stripSlash(path);
+    return exact.has(p) || dirs.some((dir) => p.startsWith(dir));
+  };
+}
+
+/**
+ * Whether a scoped read of `changed` may have split or missed a rename. Git pairs a deletion with an
+ * addition across the whole index, and a pathspec read sees only one side: a staged `a → b` read for
+ * `b` alone comes back as "added b" with the deletion of `a` gone. Such a batch takes the full status.
+ */
+export function pairsRenames(
+  base: readonly FileStatus[],
+  changed: readonly string[],
+  fresh: readonly FileStatus[],
+): boolean {
+  if (fresh.some((f) => f.renamedFrom)) return true;
+  const inBatch = coveredBy(changed);
+  const renamedFrom = (f: FileStatus) => {
+    const path = stripSlash(f.path);
+    return f.renamedFrom && path.endsWith(f.relPath)
+      ? path.slice(0, path.length - f.relPath.length) + f.renamedFrom
+      : "";
+  };
+  if (base.some((f) => f.renamedFrom && (inBatch(f.path) || inBatch(renamedFrom(f))))) return true;
+  // An addition and a deletion on either side of the batch may now pair up into a rename.
+  const outside = base.filter((f) => !inBatch(f.path));
+  const has = (list: readonly FileStatus[], kind: "added" | "deleted") =>
+    list.some((f) => f.staged === kind || f.unstaged === kind);
+  return (has(fresh, "added") && has(outside, "deleted")) || (has(fresh, "deleted") && has(outside, "added"));
 }
 
 export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
@@ -243,7 +392,7 @@ export function statusOf(path: string): FileStatus | undefined {
 }
 
 /** Repositories found below a project that is not itself under git (scanned in the background). */
-async function discoverRoots() {
+export async function discoverRoots() {
   const root = useVcs.getState().root;
   if (!root || !isTauri()) return;
   const roots = await call(commands.vcsRoots()).catch(() => []);
@@ -278,8 +427,13 @@ export function installVcsStore(): () => void {
   // `.git/**` internals show up through other watchers too; refreshing status
   // on those alone rewrites `.git/index` and re-triggers this handler.
   const offFs = onIdeEvent("fsChanged", (e) => {
-    const worktree = [...e.created, ...e.modified, ...e.removed].some((p) => !/(^|[/\\])\.git([/\\]|$)/.test(p));
-    if (worktree) scheduleRefresh(250);
+    // Ignore-rule changes re-filter every path: only a full status answers for them.
+    if (e.ignoreRules?.length) {
+      scheduleRefresh(250);
+      return;
+    }
+    const changed = [...e.created, ...e.modified, ...e.removed].filter((p) => !/(^|[/\\])\.git([/\\]|$)/.test(p));
+    if (changed.length) schedulePathsRefresh(changed, 250);
   });
   const offSettings = onWorkflowSettingsChange(
     (s) => s.vcs.showDirtyDirectories,

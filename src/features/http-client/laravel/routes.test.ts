@@ -5,8 +5,9 @@ import { provideEditorService, provideNotificationService } from "@/workbench/co
 import { endpointEntries, routeMenuItems, routesOf, type RouteActions } from "./routes";
 import { matchRoutes } from "../../search/everywhere/routes";
 
-vi.mock("@tauri-apps/api/path", () => ({
-  appDataDir: async () => String.raw`C:\Users\me\AppData\Roaming\ai.l0ng.openidea`,
+vi.mock("@/platform/platformInfo", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/platform/platformInfo")>()),
+  appDataDir: async () => "C:/Users/me/AppData/Roaming/ai.l0ng.openidea",
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {

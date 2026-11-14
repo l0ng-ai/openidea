@@ -1,0 +1,59 @@
+package openidea:plugin@1.7.0;
+
+/// Project-scoped targets owned by the registering plugin (API 1.4).
+interface run-targets {
+    use types.{error};
+    use workspace.{project};
+
+    /// An argv wrapper using a granted, pinned process program. No shell is used.
+    /// Normally: program + args + workdir-args + command + command arguments.
+    /// An override matches wrap::program_name(command) and replaces args AND command:
+    /// program + override + workdir-args + command arguments.
+    /// DDEV: program="ddev", args=["exec"], commands=[("composer", ["composer"])]:
+    /// `ddev exec php x.php` and `ddev composer install`.
+    /// Each workdir-args element may contain {cwd}, mapped under container-root.
+    /// All workdir-args are omitted without container-root or for cwd outside the project.
+    /// Without workdir-args the wrapper manages its container directory itself.
+    /// The wrapper always starts in the configuration's LOCAL working directory.
+    /// Environment reaches the wrapper; forwarding into a container depends on its conventions.
+    /// Registration never selects the target. Debugging plugin targets is invalid.
+    record run-target {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        workdir-args: list<string>,
+        container-root: option<string>,
+        commands: list<tuple<string, list<string>>>,
+    }
+
+    /// Registers/replaces this plugin's target in an open, trusted project.
+    /// Targets survive idle reclamation, and disappear on unregister or plugin stop.
+    /// Remote project registration and execution take place on the server.
+    register: func(project: borrow<project>, target: run-target) -> result<_, error>;
+    /// Per-command prefix and optional replacement working-directory arguments (API 1.5).
+    /// None inherits the target's workdir-args; some([]) omits them.
+    /// Replacement arguments use the same {cwd} substitution and path restrictions.
+    record command-override {
+        name: string,
+        args: list<string>,
+        workdir-args: option<list<string>>,
+    }
+
+    /// Like run-target, with per-command working-directory argument control (API 1.5).
+    /// Matching commands use program + override args + selected workdir-args + command arguments.
+    record run-target-with-overrides {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        workdir-args: list<string>,
+        container-root: option<string>,
+        commands: list<command-override>,
+    }
+
+    /// Same ownership, trust, process grant and pin checks as register (API 1.5).
+    register-with-overrides: func(project: borrow<project>, target: run-target-with-overrides) -> result<_, error>;
+    /// Removes only this plugin's target from the project; missing ids are harmless.
+    unregister: func(project: borrow<project>, id: string);
+}

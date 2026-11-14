@@ -64,7 +64,7 @@ export function languageNames(ids: readonly string[], known: readonly LanguageCh
 // Form building blocks (IDEA layout: "Label: [control]", titled separators)
 
 /** A titled separator; `collapsible` ones fold away like IDEA's hideable separators. */
-function Section({
+export function Section({
   title,
   note,
   collapsible,
@@ -358,11 +358,10 @@ export function ToolSettings({ tool }: { tool: ToolInfo }) {
  * group instead of an on/off box per server. Automatic keeps them all on, so
  * the first one available runs.
  */
-function AlternativesRow({ tool }: { tool: ToolInfo }) {
+export function AlternativesRow({ tool, names }: { tool: ToolInfo; names: string[] }) {
   const form = useSettingsForm();
   const tools = useTools((s) => s.tools);
   const servers = (form.useValue("languageServers") ?? {}) as Record<string, ServerEntry>;
-  const names = tool.alternatives;
   const members = names.map((name) => tools.find((t) => t.name === name));
   const common = members.reduce<string[]>(
     (acc, t) => (t ? acc.filter((l) => t.languages.includes(l)) : acc),
@@ -388,7 +387,11 @@ function AlternativesRow({ tool }: { tool: ToolInfo }) {
     { value: "auto", label: tx("Automatic") },
     ...names.map((name, i) => {
       const t = members[i];
-      return { value: name, label: short[i]!, detail: t ? tx(STATUS_LABEL[t.status]) : undefined };
+      return {
+        value: name,
+        label: short[i]!,
+        detail: t ? tx(STATUS_LABEL[t.status]) : undefined,
+      };
     }),
     { value: "none", label: tx("None") },
   ];
@@ -414,7 +417,16 @@ function AlternativesRow({ tool }: { tool: ToolInfo }) {
 }
 
 /** A language server: on/off, executable, startup options, workspace configuration. */
-export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boolean }) {
+export function ServerSettings({
+  tool,
+  pending,
+  showAlternatives = true,
+}: {
+  tool: ToolInfo;
+  pending: boolean;
+  /** False where the page already shows the picker for the server's alternatives. */
+  showAlternatives?: boolean;
+}) {
   const form = useSettingsForm();
   const entry = useServerEntry(tool.name);
   const custom = (entry.languages?.length ?? 0) > 0;
@@ -430,11 +442,20 @@ export function ServerSettings({ tool, pending }: { tool: ToolInfo; pending: boo
     }
   }, [tool.defaultInitializationOptions]);
   const overridden = !custom && Object.keys(entry).length > 0;
+  // A server can be an alternative for several languages (kmp-lsp: Java and Kotlin): one picker each.
+  const tools = useTools((s) => s.tools);
+  const groups = useMemo(() => {
+    const byKey = new Map<string, string[]>();
+    for (const t of [tool, ...tools])
+      if (t.alternatives.length > 1 && t.alternatives.includes(tool.name))
+        byKey.set(t.alternatives.join("\n"), t.alternatives);
+    return [...byKey.values()];
+  }, [tool, tools]);
 
   return (
     <div className={styles.form}>
-      {tool.alternatives.length > 1 ? (
-        <AlternativesRow tool={tool} />
+      {groups.length ? (
+        showAlternatives && groups.map((names) => <AlternativesRow key={names.join("\n")} tool={tool} names={names} />)
       ) : (
         <Checkbox
           checked={entry.enabled !== false}
@@ -588,7 +609,13 @@ export function NewServerDialog({
       title={tx("New Language Server")}
       width={480}
       buttons={[
-        { label: "OK", role: "default", disabled: !!problem, title: problem ?? undefined, onClick: add },
+        {
+          label: "OK",
+          role: "default",
+          disabled: !!problem,
+          title: problem ?? undefined,
+          onClick: add,
+        },
         { label: "Cancel", role: "cancel" },
       ]}
     >

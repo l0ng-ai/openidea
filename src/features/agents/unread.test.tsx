@@ -1,15 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
-import { dropOnEditor, useContributions, type EditorInput, type OpenEditorTab } from "@/workbench/contributions";
+import {
+  dropOnEditor,
+  useContributions,
+  useEditorTabTitles,
+  type EditorInput,
+  type OpenEditorTab,
+} from "@/workbench/contributions";
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
+import { openChangeDiff } from "./SessionEditor";
 import * as actions from "@/platform/actions";
 import { TASK_DRAG } from "./model";
 import {
   connect,
   disconnect,
+  loadEntries,
   dockTask,
   markVisible,
   openHome,
@@ -24,6 +32,7 @@ const backend = vi.hoisted(() => ({
   tabs: [] as OpenEditorTab[],
   channel: null as { onmessage: (event: AgentEvent) => void } | null,
   tasks: [] as AgentTask[],
+  entries: null as Promise<AgentEntry[]> | null,
   notify: vi.fn(),
   openInput: vi.fn(),
   closeInput: vi.fn(),
@@ -46,6 +55,9 @@ vi.mock("@/platform/ipc", async (original) => ({
     },
     agentProviders: async () => ({ status: "ok", data: [] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
+    agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
+    agentBaseText: async (_task: string, path: string) => ({ status: "ok", data: `base of ${path}` }),
+    agentEntries: async () => ({ status: "ok", data: await backend.entries }),
   },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
@@ -111,6 +123,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("agent tab titles", () => {
+  it("refreshes restored tab titles when tasks finish loading", async () => {
+    disconnect();
+    const revision = useEditorTabTitles.getState().revision;
+    backend.tasks = [{ ...task("one"), title: "Saved rename" }];
+    await connect();
+    expect(useAgents.getState().tasks.get("one")?.title).toBe("Saved rename");
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
+  });
+
+  it("refreshes titles for user and provider renames, but not unchanged task updates", () => {
+    const revision = useEditorTabTitles.getState().revision;
+    emit({ type: "task", task: { ...task("one"), title: "User rename" } });
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
+    emit({ type: "task", task: { ...task("one"), title: "User rename", updatedMs: 1 } });
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 1);
+    emit({ type: "task", task: { ...task("two", "ready"), title: "Provider title" } });
+    expect(useEditorTabTitles.getState().revision).toBe(revision + 2);
+  });
+});
+
 describe("agent unread activity", () => {
   it("does not mark historical tasks unread, but tracks replies even without loaded entries", () => {
     expect(useAgents.getState().unread.size).toBe(0);
@@ -120,6 +153,14 @@ describe("agent unread activity", () => {
     expect([...useAgents.getState().unread]).toEqual(["one", "two"]);
     expect(useAgents.getState().entries.size).toBe(0);
     expect(backend.notify).not.toHaveBeenCalled();
+  });
+
+  it("tracks a reply that streams on as appends, but not a thought", () => {
+    reply("one", "");
+    emit({ type: "append", task: "one", subagent: null, index: 0, from: 0, text: "Done" });
+    emit({ type: "entry", task: "two", subagent: null, index: 0, entry: { type: "thought", text: "" } });
+    emit({ type: "append", task: "two", subagent: null, index: 0, from: 0, text: "Hmm" });
+    expect([...useAgents.getState().unread]).toEqual(["one"]);
   });
 
   it.each(["ready", "needsInput", "failed", "limited"] as const)("marks background %s transitions unread", (status) => {
@@ -342,5 +383,53 @@ describe("docking a conversation in the tool window", () => {
     disconnect();
     expect(useAgents.getState().docked).toBeNull();
     expect(useAgents.getState().sessionLocation).toBe("toolWindow");
+  });
+});
+
+describe("streaming while the conversation loads", () => {
+  it("applies what arrived meanwhile on top of the loaded copy", async () => {
+    let resolve!: (entries: AgentEntry[]) => void;
+    backend.entries = new Promise((r) => (resolve = r));
+    const load = loadEntries("one");
+    // Sent before the copy was read, then after.
+    emit({ type: "entry", task: "one", subagent: null, index: 1, entry: { type: "agent", text: "He" } });
+    emit({ type: "append", task: "one", subagent: null, index: 1, from: 2, text: "llo" });
+    emit({ type: "append", task: "one", subagent: null, index: 1, from: 5, text: " there" });
+    const user: AgentEntry = { type: "user", text: "Hi", attachments: [] };
+    await act(async () => {
+      resolve([user, { type: "agent", text: "Hello" }]);
+      await load;
+    });
+    expect(useAgents.getState().entries.get("one")).toEqual([user, { type: "agent", text: "Hello there" }]);
+    emit({ type: "append", task: "one", subagent: null, index: 1, from: 11, text: "!" });
+    expect(useAgents.getState().entries.get("one")?.[1]).toEqual({ type: "agent", text: "Hello there!" });
+    expect(useAgents.getState().entryLoads.size).toBe(0);
+  });
+});
+
+describe("the diff of an agent change", () => {
+  const change = (path: string) => ({
+    path,
+    relPath: path.slice("/project/".length),
+    kind: "modified" as const,
+    added: 1,
+    removed: 1,
+    oldPath: null,
+  });
+
+  it("lists the task's other changed files, so F7 moves on to the next one", async () => {
+    useAgents.setState({ changes: new Map([["one", [change("/project/a.ts"), change("/project/b.ts")]]]) });
+    await openChangeDiff(task("one"), "/project/b.ts");
+    const input = backend.openInput.mock.lastCall![0];
+    expect(input.data.path).toBe("/project/b.ts");
+    expect(input.data.left).toEqual({ type: "text", text: "base of /project/b.ts", label: "Base" });
+    expect(input.data.chain.map((d: { path: string }) => d.path)).toEqual(["/project/a.ts", "/project/b.ts"]);
+    expect(input.data.chain[0].left.text).toBe("base of /project/a.ts");
+  });
+
+  it("opens a file outside the change list on its own", async () => {
+    useAgents.setState({ changes: new Map([["one", [change("/project/a.ts")]]]) });
+    await openChangeDiff(task("one"), "/project/c.ts");
+    expect(backend.openInput.mock.lastCall![0].data.chain).toBeUndefined();
   });
 });

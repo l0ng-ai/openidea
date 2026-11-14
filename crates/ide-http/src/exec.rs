@@ -87,12 +87,19 @@ pub fn prepare(
     } else {
         with_scheme(&url)
     };
+    // Multipart bodies delimit parts with CRLF per RFC 2046 §5.1; joining
+    // with bare LF leaves servers (e.g. Tomcat) unable to find the boundary.
+    let is_multipart = headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .is_some_and(|(_, v)| v.to_ascii_lowercase().starts_with("multipart/"));
+    let eol = if is_multipart { "\r\n" } else { "\n" };
     Ok(PreparedRequest {
         name: raw.block.name.clone(),
         method: raw.block.method.clone(),
         url,
         headers,
-        body: (!body_lines.is_empty()).then(|| body_lines.join("\n")),
+        body: (!body_lines.is_empty()).then(|| body_lines.join(eol)),
     })
 }
 
@@ -206,6 +213,22 @@ mod tests {
     }
 
     #[test]
+    fn multipart_bodies_join_lines_with_crlf() {
+        let f = parse(
+            "POST https://api.test/upload\nContent-Type: multipart/form-data; boundary=xyz\n\n--xyz\nfield\n--xyz--\n",
+        );
+        let p = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap();
+        assert_eq!(p.body.as_deref(), Some("--xyz\r\nfield\r\n--xyz--"));
+    }
+
+    #[test]
+    fn non_multipart_bodies_join_lines_with_lf() {
+        let f = parse("POST https://api.test/x\nContent-Type: application/json\n\n{\n\"a\": 1\n}\n");
+        let p = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap();
+        assert_eq!(p.body.as_deref(), Some("{\n\"a\": 1\n}"));
+    }
+
+    #[test]
     fn relative_urls_use_the_host_header() {
         let f = parse("GET /status\nHost: localhost:9000\n");
         let p = prepare(&f.requests[0], &f.variables, &Environments::default(), None, None).unwrap();
@@ -224,6 +247,68 @@ mod tests {
             "http://localhost:8080/login?next=http://localhost:3000/"
         );
         assert_eq!(url("GET https://api.test/cb?u=http://x\n"), "https://api.test/cb?u=http://x");
+    }
+
+    #[tokio::test]
+    async fn sends_exact_environment_numbers_to_a_local_server() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let (headers, body) = loop {
+                let mut buffer = [0u8; 4096];
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "request ended before its body");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
+                let headers = String::from_utf8_lossy(&request[..end]);
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if request.len() >= end + 4 + length {
+                    break (
+                        String::from_utf8(request[..end].to_vec()).unwrap(),
+                        String::from_utf8(request[end + 4..end + 4 + length].to_vec()).unwrap(),
+                    );
+                }
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            (headers, body)
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(crate::env::PUBLIC_FILE),
+            r#"{"dev":{"id":123456789012345678901234567890,"amount":1.0000000000000000002,"tiny":1e-400}}"#,
+        )
+        .unwrap();
+        let file = tmp.path().join("precision.http");
+        let text = format!(
+            "POST http://{addr}/echo?id={{{{id}}}}\nContent-Type: application/json\nX-Exact-Amount: {{{{amount}}}}\n\n{{\"id\":{{{{id}}}},\"amount\":{{{{amount}}}},\"tiny\":{{{{tiny}}}}}}\n"
+        );
+        let input =
+            crate::RunInput { text: &text, index: 0, file: Some(&file), root: Some(tmp.path()), env: Some("dev") };
+        let exchange =
+            tokio::time::timeout(std::time::Duration::from_secs(5), crate::run(input, &CancellationToken::new()))
+                .await
+                .unwrap()
+                .unwrap();
+        let expected = r#"{"id":123456789012345678901234567890,"amount":1.0000000000000000002,"tiny":1e-400}"#;
+        let (headers, body) = server.await.unwrap();
+        assert_eq!(headers.lines().next().unwrap(), "POST /echo?id=123456789012345678901234567890 HTTP/1.1");
+        assert!(headers.lines().any(|line| line.eq_ignore_ascii_case("x-exact-amount: 1.0000000000000000002")));
+        assert_eq!(body, expected);
+        assert_eq!(exchange.request.body.as_deref(), Some(expected));
+        assert_eq!(exchange.response.unwrap().body.as_deref(), Some(expected));
     }
 
     #[tokio::test]

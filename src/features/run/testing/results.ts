@@ -10,8 +10,13 @@ export interface TestNode {
   own: TestStatus | null;
   durationMs?: number;
   location?: TestLocation;
-  /** Failure output captured for this node. */
+  /** Output captured for this node: its console output and failure details. */
   output: string[];
+}
+
+/** A node's output followed by its descendants' in tree order: a group shows the output of its tests. */
+export function nodeOutput(node: TestNode): string[] {
+  return [...node.output, ...node.children.flatMap(nodeOutput)];
 }
 
 export interface TestCounts {
@@ -74,6 +79,13 @@ export class TestResults {
     return !!own && own !== "running";
   }
 
+  /** Puts lines before a test's output (what it printed, read after the run, goes before its failure). */
+  prependOutput(path: string[], lines: readonly string[]) {
+    const n = this.node(path);
+    n.output = [...lines, ...n.output].slice(0, MAX_OUTPUT_LINES);
+    this.version++;
+  }
+
   /** Finds a test by a suffix of its path (pytest failure headers name `Class.test`). */
   findBySuffix(suffix: string[]): TestNode | undefined {
     let best: TestNode | undefined;
@@ -128,7 +140,9 @@ export class TestResults {
         }
         case "location": {
           const n = this.node(e.path);
-          n.location ??= e.location;
+          // The first location wins, except that a place to search for (Ruby tests) gives way to a real one.
+          if (!n.location || (n.location.resolve === "rubyTest" && e.location.resolve !== "rubyTest"))
+            n.location = e.location;
           break;
         }
         case "output": {

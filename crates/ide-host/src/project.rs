@@ -8,18 +8,21 @@ use ide_language::{FileTypes, LanguageRegistry, SyntaxCache};
 use ide_lsp::LspManager;
 use ide_syntax::StructureService;
 use ide_text::{AppliedChange, ByteEdit};
-use ide_vcs::{Repo, Repos};
+use ide_vcs::{Backend, Repo, Repos};
 use ide_vfs::Watcher;
 use ide_workspace::documents::DocumentObserver;
 use ide_workspace::{DocumentInfo, Documents, FileMoves, LocalHistory, ProjectRoots, SettingsStore, SourceFolder};
 use parking_lot::{Mutex, RwLock};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// Everything bound to one open project folder.
 pub struct Project {
     pub(crate) trusted: Arc<AtomicBool>,
+    pub(crate) files_events_active: Arc<AtomicBool>,
     pub root: PathBuf,
     /// Window-scoped event sink, for commands that emit project events.
     pub sink: SharedSink,
@@ -27,6 +30,7 @@ pub struct Project {
     pub languages: Arc<LanguageRegistry>,
     pub settings: Arc<SettingsStore>,
     pub documents: Arc<Documents>,
+    pub(crate) plugin_diagnostics: Arc<crate::plugins::diagnostics::Diagnostics>,
     pub history: Arc<LocalHistory>,
     /// Undo stack of file move / rename refactorings.
     pub moves: FileMoves,
@@ -46,6 +50,8 @@ pub struct Project {
     pub cache_dir: PathBuf,
     /// Superseded launch snapshots retained until this project session ends.
     pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
+    /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
+    pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -61,13 +67,16 @@ pub struct Project {
     pub(crate) php_analyzers: Option<Arc<crate::php_analyzers::PhpAnalyzers>>,
     /// In-process language services, asked before the language servers (`ops/lsp.rs`).
     pub services: Arc<crate::language_service::LanguageServices>,
-    pub(crate) watcher: Watcher,
+    pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
+    pub(crate) watcher: Arc<Watcher>,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     /// Watchers of folders outside the project that language servers registered file
     /// watchers for (a virtualenv elsewhere, a path dependency).
     lsp_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     pub(crate) _scratch_watcher: Option<Watcher>,
+    /// Picks up data sources edited on disk outside the Database tool window.
+    _db_sources_watch: Option<ide_db::SourcesWatch>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
     /// nothing indexed, no language servers, repositories or project services.
     pub light: bool,
@@ -83,8 +92,10 @@ impl Host {
             lap = std::time::Instant::now();
         };
         let root = dunce::canonicalize(root)?;
+        let opening = self.opening(window);
+        let _opening = opening.lock();
         // Reject a damaged manifest before replacing the currently open project.
-        ide_workspace::workspace::Workspace::load(&root)?;
+        let is_workspace = ide_workspace::workspace::Workspace::load(&root)?.is_some();
         // The window reloaded (or asked again) for the project it already has: keep
         // it, with its warm index, language servers and unsaved documents.
         if let Ok(current) = self.project(window)
@@ -94,9 +105,10 @@ impl Host {
             return Ok(current);
         }
         self.close_project(window);
+        self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
-        let trusted = Arc::new(AtomicBool::new(self.trust.trusted(&root)?));
+        let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
         let post_start =
             trusted.load(Ordering::Acquire).then(|| self.environment.project_opened(&root, &sink)).flatten();
         let settings = SettingsStore::load(&self.config_dir, Some(&root));
@@ -135,9 +147,21 @@ impl Host {
         )?;
         mark("index");
         let lsp = LspManager::new(root.clone(), languages.clone(), sink.clone());
+        crate::plugins::injections::configure_lsp(&lsp);
         lsp.set_execution_allowed(trusted.load(Ordering::Acquire));
         lsp.set_content_roots(extra_roots.clone());
+        lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
+            &root,
+            &settings.effective().languages.java.maven.linked_projects,
+        ));
         let settings = Arc::new(settings);
+        {
+            let settings = settings.clone();
+            // Workspace members have independent settings.
+            lsp.set_jdtls_shared_hook(Box::new(move || {
+                !is_workspace && settings.effective().languages.java.jdtls_shared
+            }));
+        }
         {
             let settings = settings.clone();
             let root = root.clone();
@@ -154,15 +178,16 @@ impl Host {
                     .as_ref()
                     .map(|p| SettingsStore::load(&config_dir, Some(p)).effective())
                     .unwrap_or_else(|| settings.effective());
-                let root = member.as_ref().unwrap_or(&root);
+                let window_root = &root;
+                let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 crate::php::associate_ide_json_schema(cfg);
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
-                        Some(member) => build_cache.join(crate::project::project_key(member)),
-                        None => build_cache.clone(),
+                        Some(member) if member != window_root => build_cache.join(crate::project::project_key(member)),
+                        _ => build_cache.clone(),
                     };
                     let profiles = ide_build::maven_profiles(&cache);
                     ide_sdk::maven_profiles::configure_jdtls(cfg, root, &effective, &profiles, &cache);
@@ -198,9 +223,11 @@ impl Host {
                             &effective.project_structure,
                         ),
                     );
+                    ide_lsp::jdtls::configure_project_structure(cfg, root, server_root, &effective.project_structure);
                     let bundles: Vec<PathBuf> = ide_tools::managed_bundle(&data_dir, "java-debug")
                         .into_iter()
                         .chain(ide_sdk::java::usages_bundle(&data_dir))
+                        .chain(ide_sdk::java::jvm_inspect_bundle(&data_dir))
                         .chain(ide_sdk::java::kotlin_bridge_bundle(&data_dir))
                         .collect();
                     let min_java = ide_sdk::java::jdtls_min_java(cfg);
@@ -218,17 +245,25 @@ impl Host {
                         cfg.launch_error = Some(e);
                         None
                     });
+                    let lang_level = ide_sdk::apply::effective_java_language_level(root, server_root, &effective);
+                    ide_sdk::apply::configure_java_compiler_with_level(
+                        cfg,
+                        &data_dir,
+                        &effective.inspections,
+                        lang_level,
+                    );
                     ide_sdk::java::configure_jdtls(
                         cfg,
                         server_root,
                         &data_dir,
                         &jdks,
-                        ide_sdk::apply::project_jdk(root, &effective).as_ref(),
+                        ide_sdk::apply::module_jdk(root, server_root, &effective).as_ref(),
                         server_jdk.as_ref(),
                         min_java,
                         &bundles,
                         lombok.jar(),
                     );
+                    ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
                 ide_sdk::apply::server_protocol_overrides(cfg, &effective);
@@ -237,6 +272,11 @@ impl Host {
                 if cfg.name == "jdtls" {
                     let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
                     ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
+                    ide_sdk::apply::configure_gradle_import(
+                        cfg,
+                        effective.languages.java.gradle.linked_projects.as_deref(),
+                        build_files.as_deref(),
+                    );
                 }
             }));
         }
@@ -330,12 +370,30 @@ impl Host {
         for language in crate::laravel_files::PAGE_LANGUAGES {
             services.register(LanguageId::new(language), pages.clone());
         }
+        let phpstan = crate::phpstan::Phpstan::new(
+            root.clone(),
+            self.config_dir.clone(),
+            settings.clone(),
+            sink.clone(),
+            trusted.clone(),
+        );
+        documents.add_observer(phpstan.clone());
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
+        // Shared handle: `unwatched_reason` is a live query on the watcher,
+        // filled after `start` returns so the on-change callback can reach it.
+        let watcher_weak = Arc::new(std::sync::OnceLock::<std::sync::Weak<Watcher>>::new());
+        // One-shot latch for the post-start watch-limit warning (#1915): the
+        // synchronous startup walk and a later batch can both observe it.
+        let notify_watch_exhausted = Arc::new(AtomicBool::new(false));
+        let files_events_active = Arc::new(AtomicBool::new(true));
         let watcher = {
+            let files_events_active = files_events_active.clone();
+            let window = window.to_owned();
             let kotlin_bridge = kotlin_bridge.clone();
+            let phpstan = phpstan.clone();
             let repos = repos.clone();
             let settings = settings.clone();
             let index = index.clone();
@@ -351,6 +409,8 @@ impl Host {
             let trusted = trusted.clone();
             let build_cache = build_cache.clone();
             let php = php.clone();
+            let notify_watch_exhausted = notify_watch_exhausted.clone();
+            let watcher_weak = watcher_weak.clone();
             Watcher::start(
                 &root.clone(),
                 excludes.clone(),
@@ -358,9 +418,11 @@ impl Host {
                 Box::new(move |batch| {
                     let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
                     let (ignored, ignored_gone) = ignored_changes(batch);
+                    index.ignore_rules_changed(&batch.ignore_rules);
                     index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
                     kotlin_bridge.files_changed(changed.iter().chain(&batch.removed));
                     php.files_changed(&changed, &batch.removed);
+                    phpstan.files_removed(batch.removed.iter());
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
                     if composer_changed(&root, changed.iter().chain(&batch.removed)) {
@@ -368,6 +430,10 @@ impl Host {
                     }
                     // Atomic saves by external tools surface as `created`.
                     documents.on_disk_changed(&[&changed[..], &ignored].concat());
+                    if let Some(plugins) = crate::plugins::editor_plugin_host() {
+                        plugins.invalidate_endpoints(&root, &[changed.clone(), batch.removed.clone()].concat());
+                        plugins.post_files_changed(&window, &root, &files_events_active, batch);
+                    }
                     // A framework's root marker (`angular.json`) created or deleted: its
                     // templates gain or lose their mode. Markers in `node_modules` only
                     // count here when the folder isn't excluded (it is by default).
@@ -430,6 +496,11 @@ impl Host {
                             .collect();
                         matches!(rest.as_slice(), [first, ..] if first == "worktrees" && rest.len() <= 2)
                     });
+                    // A repository folder moved or restored into the project: no `.git` event is
+                    // written inside it before the watcher sees the new directory, its creation is
+                    // the signal. A `git clone` / `git init` inside the project already arrives
+                    // through the `.git` paths above; this covers the whole tree being brought in.
+                    git_dirs |= batch.created.iter().any(|p| p.join(".git").exists());
                     if git_dirs {
                         scan_repositories(&root, &repos, &settings, &sink, &build_cache);
                     }
@@ -437,15 +508,43 @@ impl Host {
                     if git_dirs || vcs_moved {
                         sink.emit(IdeEvent::VcsChanged { root: root.clone().into() });
                     }
+                    // A watch limit hit after startup (per-directory mode, Linux):
+                    // folders past the limit never sync — surface it once, like
+                    // the polling fallback below (#1915). The check itself is
+                    // deferred to here, on a batch that already had events.
+                    if !notify_watch_exhausted.load(Ordering::Relaxed)
+                        && let Some(msg) =
+                            watcher_weak.get().and_then(std::sync::Weak::upgrade).and_then(|w| w.unwatched_reason())
+                    {
+                        sink.emit(IdeEvent::Notify {
+                            level: ide_core::event::NotifyLevel::Warning,
+                            title: "External file changes sync may be slow".into(),
+                            body: Some(msg),
+                        });
+                        notify_watch_exhausted.store(true, Ordering::Relaxed);
+                    }
                 }),
             )?
         };
+        let watcher = Arc::new(watcher);
+        let _ = watcher_weak.set(Arc::downgrade(&watcher));
         if let Some(reason) = watcher.polling() {
             sink.emit(IdeEvent::Notify {
                 level: ide_core::event::NotifyLevel::Warning,
                 title: "External file changes sync may be slow".into(),
                 body: Some(reason.into()),
             });
+        }
+        // A watch can also be refused part-way through the synchronous startup
+        // walk (large tree, SYNC_WATCH_BUDGET) — after start() returns, before
+        // any batch. Emit the same warning so the limit isn't silent there either.
+        if let Some(reason) = watcher.unwatched_reason() {
+            sink.emit(IdeEvent::Notify {
+                level: ide_core::event::NotifyLevel::Warning,
+                title: "External file changes sync may be slow".into(),
+                body: Some(reason),
+            });
+            notify_watch_exhausted.store(true, Ordering::Relaxed);
         }
 
         // Scratch files live outside the project; watch them too so the
@@ -480,6 +579,7 @@ impl Host {
                     &history,
                     &lsp,
                     Some(&kotlin_bridge),
+                    Some(&phpstan),
                 )?;
                 Some((r.clone(), w))
             })
@@ -495,13 +595,19 @@ impl Host {
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
 
-        let (db, http_history, agents) = self.project_services(&root, &project_key);
+        let (db, http_history, agents) = self.project_services(&root, &project_key, &settings, &sink);
+        let db_sources_watch = db_sources_watch(&db, &sink, &self.runtime);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
         );
+        notebooks.set_observer(Arc::new(NotebookLspObserver(lsp.clone())));
         ide_agent::registry::maintain(crate::ops::agent::registry_paths(self));
+        let plugin_diagnostics =
+            crate::plugins::diagnostics::Diagnostics::new(sink.clone(), self.runtime.clone(), &documents, &root);
+        documents.add_observer(plugin_diagnostics.clone());
         let project = Arc::new(Project {
+            plugin_diagnostics,
             trusted,
             root,
             sink,
@@ -521,6 +627,7 @@ impl Host {
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
                 self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
+            kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
             agents,
@@ -529,10 +636,13 @@ impl Host {
             php,
             php_analyzers: Some(php_analyzers),
             services,
+            phpstan: Some(phpstan),
             watcher,
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: scratch_watcher,
+            _db_sources_watch: db_sources_watch,
+            files_events_active,
             light: false,
         });
         {
@@ -555,7 +665,14 @@ impl Host {
                 weak.upgrade().map(|p| p.exclude_globs()).unwrap_or_default()
             }));
         }
+        {
+            let weak = Arc::downgrade(&project);
+            project.agents.set_security_hook(Arc::new(move || {
+                weak.upgrade().map(|p| p.settings.effective().agent_security).unwrap_or_default()
+            }));
+        }
         self.insert_project(window, project.clone());
+        project.lsp.prewarm_java_configuration();
         if let Some(bridge) = &project.kotlin_bridge {
             bridge.start(&self.runtime);
         }
@@ -563,6 +680,9 @@ impl Host {
         project.php.apply(&project.settings.effective());
         if !project.light {
             crate::ops::laravel::refresh_schema_if_changed(&project, &self.runtime);
+        }
+        if let Some(phpstan) = &project.phpstan {
+            phpstan.start(&self.runtime);
         }
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
@@ -575,13 +695,18 @@ impl Host {
         &self,
         root: &Path,
         project_key: &str,
+        settings: &Arc<SettingsStore>,
+        sink: &SharedSink,
     ) -> (Arc<ide_db::DbManager>, Arc<ide_http::History>, Arc<ide_agent::AgentManager>) {
-        let db = Arc::new(ide_db::DbManager::new(
-            root.to_path_buf(),
-            self.data_dir.join("db-passwords.json"),
-            self.data_dir.join("db-history.json"),
-            self.ssh.clone(),
-        ));
+        let db = Arc::new(
+            ide_db::DbManager::new(
+                root.to_path_buf(),
+                self.data_dir.join("db-passwords.json"),
+                self.data_dir.join("db-history.json"),
+                self.ssh.clone(),
+            )
+            .with_global_sources(self.data_dir.clone()),
+        );
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(project_key)));
         let agents = Arc::new(ide_agent::AgentManager::new(
             ide_agent::AgentPaths {
@@ -598,9 +723,25 @@ impl Host {
                 models_file: self.data_dir.join("agents").join("models.json"),
                 custom_agents_dir: Some(self.config_dir.join("agents")),
                 home_dir: dirs::home_dir(),
+                env_secrets: Some(Arc::new(AgentEnvSecrets {
+                    secrets: self.agent_secrets.clone(),
+                    sink: sink.clone(),
+                    told: AtomicBool::new(false),
+                })),
             },
             self.runtime.clone(),
         ));
+        let settings = settings.clone();
+        {
+            let settings = settings.clone();
+            agents.set_new_task_approvals_hook(Arc::new(move || settings.effective().agents.new_task_approvals));
+        }
+        let approvals = self.mcp_approvals.clone();
+        let secrets = self.agent_secrets.clone();
+        let root = root.to_path_buf();
+        agents.set_mcp_servers_hook(Box::new(move || {
+            crate::ops::agent::session_mcp_servers(&settings, &approvals, &secrets, &root)
+        }));
         (db, http_history, agents)
     }
 }
@@ -616,6 +757,8 @@ impl Host {
             return Err(IdeError::invalid(format!("{} is a folder", file.display())));
         }
         let dir = file.parent().map(Path::to_path_buf).ok_or_else(|| IdeError::invalid("no parent folder"))?;
+        let opening = self.opening(window);
+        let _opening = opening.lock();
         if let Ok(current) = self.project(window)
             && current.light
         {
@@ -623,6 +766,7 @@ impl Host {
             return Ok(current);
         }
         self.close_project(window);
+        self.wait_detached_closes();
         let sink: SharedSink = (self.sink_for)(window);
         let settings = Arc::new(SettingsStore::load(&self.config_dir, None));
         let effective = settings.effective();
@@ -639,7 +783,7 @@ impl Host {
         documents.add_observer(Arc::new(HistoryObserver(history.clone())));
         let watcher = light_watcher(&dir, &sink, &documents, &history)?;
         let project_key = project_key(&dir);
-        let (db, http_history, agents) = self.project_services(&dir, &project_key);
+        let (db, http_history, agents) = self.project_services(&dir, &project_key, &settings, &sink);
         let notebooks = crate::notebook::NotebookService::new(
             self.local_data_dir.join("notebook-runtime").join(uuid::Uuid::new_v4().to_string()),
             sink.clone(),
@@ -651,7 +795,11 @@ impl Host {
             sink.clone(),
             documents.clone(),
         ));
+        let plugin_diagnostics =
+            crate::plugins::diagnostics::Diagnostics::new(sink.clone(), self.runtime.clone(), &documents, &dir);
+        documents.add_observer(plugin_diagnostics.clone());
         let project = Arc::new(Project {
+            plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
             sink,
             languages,
@@ -670,6 +818,7 @@ impl Host {
             java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
                 self.local_data_dir.join("cache").join(&project_key).join("build"),
             )),
+            kotlin_debug_notices: Mutex::default(),
             db,
             http_history,
             agents,
@@ -678,10 +827,13 @@ impl Host {
             php,
             php_analyzers: None,
             services: Arc::default(),
-            watcher,
+            phpstan: None,
+            watcher: Arc::new(watcher),
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
+            _db_sources_watch: None,
+            files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
             root: dir,
         });
@@ -733,6 +885,28 @@ fn documents(sink: &SharedSink, languages: &Arc<LanguageRegistry>, root: Option<
     )
 }
 
+/// Data sources edited on disk outside the Database tool window (by hand, by a coding
+/// agent): connections made with the old settings close and the tree re-reads them,
+/// without reopening the project.
+fn db_sources_watch(
+    db: &Arc<ide_db::DbManager>,
+    sink: &SharedSink,
+    runtime: &tokio::runtime::Handle,
+) -> Option<ide_db::SourcesWatch> {
+    let (weak, sink, runtime) = (Arc::downgrade(db), sink.clone(), runtime.clone());
+    db.watch_sources(Box::new(move || {
+        let Some(db) = weak.upgrade() else { return };
+        let sink = sink.clone();
+        runtime.spawn(async move {
+            if db.reconcile_sources().await {
+                sink.emit(IdeEvent::DbSourcesChanged);
+            }
+        });
+    }))
+    .inspect_err(|e| tracing::warn!("{}", e.message))
+    .ok()
+}
+
 fn light_watcher(
     dir: &Path,
     sink: &SharedSink,
@@ -762,6 +936,20 @@ fn scan_repositories(
     sink: &SharedSink,
     build_cache: &Path,
 ) {
+    match discover_repositories(root, settings, build_cache) {
+        Ok(found) => {
+            if found.roots() != repos.read().roots() {
+                *repos.write() = found;
+                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
+            }
+        }
+        Err(e) => tracing::warn!("looking for git repositories: {e}"),
+    }
+}
+
+/// The repository containing `root` and those nested below it or below a content root.
+/// The project-open scan and the watcher's rescan share these skip rules.
+fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path) -> IdeResult<Repos> {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
@@ -773,15 +961,7 @@ fn scan_repositories(
     };
     let mut roots = vec![root.to_path_buf()];
     roots.extend(content_roots(&settings.effective(), root, build_cache));
-    match Repos::discover_roots(&roots, &skip) {
-        Ok(found) => {
-            if found.roots() != repos.read().roots() {
-                *repos.write() = found;
-                sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
-            }
-        }
-        Err(e) => tracing::warn!("looking for git repositories: {e}"),
-    }
+    Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {
@@ -870,6 +1050,11 @@ impl Project {
         }
     }
 
+    /// `with_repo_of` through the backend-agnostic Changes-view surface.
+    pub fn with_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_repo_of(path, |r| f(r as &dyn Backend))
+    }
+
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
         if self.is_trusted() {
@@ -877,6 +1062,40 @@ impl Project {
         }
         repo.set_ignored_names(settings.ignored_names());
         f(repo)
+    }
+
+    /// `with_repo_at` through the backend-agnostic Changes-view surface.
+    pub fn with_backend_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_repo_at(at, |r| f(r as &dyn Backend))
+    }
+
+    /// `with_log_repo_at` through the backend-agnostic Changes-view surface.
+    pub fn with_log_backend_at<T>(
+        &self,
+        at: Option<&Path>,
+        f: impl FnOnce(&dyn Backend) -> IdeResult<T>,
+    ) -> IdeResult<T> {
+        self.with_log_repo_at(at, |r| f(r as &dyn Backend))
+    }
+
+    /// `with_log_repo_of` through the backend-agnostic Changes-view surface.
+    pub fn with_log_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_log_repo_of(path, |r| f(r as &dyn Backend))
+    }
+
+    /// `with_repo` through the backend-agnostic Changes-view surface.
+    pub fn with_backend<T>(&self, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        self.with_backend_at(None, f)
+    }
+
+    /// `with_repo_recorded` through the backend-agnostic Changes-view surface.
+    pub fn with_backend_recorded<T>(
+        &self,
+        at: Option<&Path>,
+        operation: Option<&str>,
+        f: impl FnOnce(&dyn Backend) -> IdeResult<T>,
+    ) -> IdeResult<T> {
+        self.with_repo_recorded(at, operation, |r| f(r as &dyn Backend))
     }
 
     /// Runs `f` with the project's primary git repository, or fails when the project is not under git.
@@ -903,7 +1122,7 @@ impl Project {
     ) -> IdeResult<T> {
         let Some(name) = operation else { return self.with_disk_sync(|| self.with_repo_at(at, f)) };
         self.history_label(&format!("Before {name}"));
-        if let Ok(changed) = self.with_repo_at(at, |r| r.status()) {
+        if let Ok(changed) = self.with_backend_at(at, |r| r.status()) {
             for file in changed.iter().take(HISTORY_BATCH_LIMIT) {
                 if let Err(e) = self.history.record_file(&file.path, &format!("Before {name}"), false) {
                     tracing::debug!("local history: {e}");
@@ -937,8 +1156,14 @@ impl Project {
 
     /// Effective source / test / resource / excluded roots (detected + Project Structure marks).
     pub fn roots(&self) -> ProjectRoots {
-        let detected = with_gradle_roots(&self.root, &self.build_cache_dir(), &self.detected_roots.read());
-        linked_roots(&self.root, &self.settings.effective(), &detected)
+        let settings = self.settings.effective();
+        let detected = with_gradle_roots(
+            &self.root,
+            &self.build_cache_dir(),
+            &settings.languages.java.gradle,
+            &self.detected_roots.read(),
+        );
+        linked_roots(&self.root, &settings, &detected)
     }
 
     /// Where the Maven / Gradle tool windows cache what the build tools reported.
@@ -983,12 +1208,13 @@ impl Project {
         let Some(root) = root else {
             return ide_lsp::CandidateFiles::default();
         };
-        let query = ide_search::WordQuery {
-            word: q.word.clone(),
-            dir: q.root.clone(),
-            exclude: self.search_excludes(),
-            limit: q.limit,
-        };
+        let mut exclude = self.search_excludes();
+        // Directories the server analyses fully: their files are never read.
+        exclude.extend(q.skip.iter().filter_map(|dir| {
+            let rel = dir.strip_prefix(&root).ok()?.to_str()?.replace('\\', "/");
+            (!rel.is_empty() && !rel.contains(['*', '?', '[', ']', '{', '}', '!', ','])).then(|| format!("{rel}/**"))
+        }));
+        let query = ide_search::WordQuery { word: q.word.clone(), dir: q.root.clone(), exclude, limit: q.limit };
         let filter = |rel: &str| q.languages.contains(&self.languages.detect(&root.join(rel), None));
         match ide_search::files_with_word(&root, &query, Some(&filter), &|p| self.documents.search_text_of(p), cancel) {
             Ok(found) => ide_lsp::CandidateFiles { files: found.files, limit_hit: found.limit_hit },
@@ -1028,6 +1254,10 @@ impl Project {
         }
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
         self.lsp.set_content_roots(roots.clone());
+        self.lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
+            &self.root,
+            &self.settings.effective().languages.java.maven.linked_projects,
+        ));
         self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
         self.watcher.set_excludes(&excludes);
         let mut watchers = self.content_watchers.lock();
@@ -1048,6 +1278,7 @@ impl Project {
                 &self.history,
                 &self.lsp,
                 self.kotlin_bridge.as_ref(),
+                self.phpstan.as_ref(),
             ) {
                 watchers.push((r, w));
             }
@@ -1126,20 +1357,124 @@ pub fn history_retention(settings: &ide_core::settings::Settings) -> ide_workspa
     }
 }
 
-/// A workspace uses its root only for state, never as indexed content.
+/// Only explicit workspace containers exclude their root from indexed content.
 fn index_roots(root: &Path, folders: Vec<PathBuf>) -> ide_index::IndexRoots {
-    ide_index::IndexRoots { include_root: !root.join(ide_workspace::workspace::FILE).is_file(), folders }
+    let container =
+        ide_workspace::workspace::Workspace::load(root).ok().flatten().is_some_and(|w| w.is_container(root));
+    ide_index::IndexRoots { include_root: !container, folders: folders.into_iter().filter(|p| p != root).collect() }
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories and the
-/// Gradle project folders outside the project as of the last sync (`build_cache`).
+/// The member roots of an explicit workspace container (empty for a plain
+/// project): how the editor and the language servers resolve a file's own
+/// project in a project window group. Also the roots the plugin surface may
+/// reach into — see `plugins::api`.
+pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
+    ide_workspace::workspace::Workspace::load(root)
+        .ok()
+        .flatten()
+        .filter(|w| w.is_container(root))
+        .map(|w| w.projects)
+        .unwrap_or_default()
+}
+
+/// Workspace members in manifest order, or extra Project Structure directories, Gradle
+/// project folders outside the project, and directories of Maven POMs linked from
+/// outside it (`build_cache` is the Gradle sync cache).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
-        return workspace.projects;
+        if workspace.is_container(root) {
+            return workspace.projects;
+        }
+        let mut roots = workspace.projects.into_iter().filter(|p| !p.starts_with(root)).collect::<Vec<_>>();
+        for path in extra_content_roots(settings, root, build_cache) {
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+        return roots;
     }
+    extra_content_roots(settings, root, build_cache)
+}
+
+/// The roots a file may navigate into: its own root (the workspace member containing it, or
+/// the project root) plus that root's configured dependencies. A workspace member depends
+/// only on the roots picked per member in Project Structure › Dependencies —
+/// being attached to the workspace never makes its code navigable by itself.
+/// Cached navigation roots per (project, file), with the instant they were computed.
+type NavigationRootsCache = HashMap<(PathBuf, PathBuf), (Instant, Vec<PathBuf>)>;
+
+pub(crate) fn navigation_roots(project: &Project, from: &Path) -> Vec<PathBuf> {
+    // Hover probes and import-segment clicks repeat these lookups for the same file,
+    // and each uncached call re-reads the workspace file: memoize briefly. The short
+    // TTL keeps settings and workspace edits near-immediate.
+    static CACHE: Mutex<Option<NavigationRootsCache>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(1);
+    const CAP: usize = 256;
+    let key = (project.root.clone(), from.to_path_buf());
+    if let Some((at, roots)) = CACHE.lock().as_ref().and_then(|m| m.get(&key))
+        && at.elapsed() < TTL
+    {
+        return roots.clone();
+    }
+    let roots = navigation_roots_uncached(project, from);
+    if let Some(map) = CACHE.lock().as_mut() {
+        if map.len() >= CAP {
+            map.retain(|_, (at, _)| at.elapsed() < TTL);
+        }
+        map.insert(key, (Instant::now(), roots.clone()));
+    }
+    roots
+}
+
+fn navigation_roots_uncached(project: &Project, from: &Path) -> Vec<PathBuf> {
+    let settings = project.settings.effective();
+    let workspace = ide_workspace::workspace::Workspace::load(&project.root).ok().flatten();
+    let own = workspace
+        .as_ref()
+        .and_then(|w| w.projects.iter().filter(|p| from.starts_with(p)).max_by_key(|p| p.components().count()).cloned())
+        .unwrap_or_else(|| project.root.clone());
+    let mut roots = vec![own.clone()];
+    let own_key = ide_core::ipc_path::to_ipc(&own);
+    if let Some(deps) = member_dependencies_for(&settings.project_structure.member_dependencies, &own_key) {
+        for dep in deps {
+            let dep = PathBuf::from(dep.trim());
+            if dep.is_absolute() && dep.is_dir() && !roots.contains(&dep) {
+                roots.push(dep);
+            }
+        }
+    }
+    if workspace.is_none() {
+        for root in content_roots(&settings, &project.root, &project.build_cache_dir()) {
+            if !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+    }
+    roots
+}
+
+/// The dependency roots configured for `own`, keyed by IPC path. The settings UI writes
+/// keys as it received the member paths (IPC form); a hand-edited settings.toml may not,
+/// so compare normalized rather than only by exact match.
+fn member_dependencies_for<'a>(map: &'a BTreeMap<String, Vec<String>>, own_key: &str) -> Option<&'a Vec<String>> {
+    if let Some(deps) = map.get(own_key) {
+        return Some(deps);
+    }
+    map.iter().find(|(key, _)| ide_core::ipc_path::to_ipc(&PathBuf::from(key)) == own_key).map(|(_, deps)| deps)
+}
+
+fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
-    let user = settings.project_structure.content_roots.iter().map(|r| PathBuf::from(r.trim()));
-    for p in user.chain(ide_build::gradle_external_roots(root, build_cache)) {
+    let user = settings
+        .project_structure
+        .content_roots
+        .iter()
+        .chain(settings.project_structure.dependencies.iter())
+        .map(|r| PathBuf::from(r.trim()));
+    for p in user
+        .chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle))
+        .chain(ide_build::maven_external_roots(root, &settings.languages.java.maven.linked_projects))
+    {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
         }
@@ -1183,8 +1518,9 @@ fn content_root_watcher(
     history: &Arc<LocalHistory>,
     lsp: &Arc<LspManager>,
     kotlin_bridge: Option<&Arc<crate::kotlin_bridge::KotlinBridge>>,
+    phpstan: Option<&Arc<crate::phpstan::Phpstan>>,
 ) -> Option<Watcher> {
-    let kotlin_bridge = kotlin_bridge.cloned();
+    let (kotlin_bridge, phpstan) = (kotlin_bridge.cloned(), phpstan.cloned());
     let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
     let root = dir.to_path_buf();
     Watcher::start(
@@ -1194,6 +1530,7 @@ fn content_root_watcher(
         Box::new(move |batch| {
             let changed: Vec<PathBuf> = batch.created.iter().chain(&batch.modified).cloned().collect();
             let (ignored, ignored_gone) = ignored_changes(batch);
+            index.ignore_rules_changed(&batch.ignore_rules);
             index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
             // A workspace member's PHP language level follows its own composer.json.
             if composer_changed(&root, changed.iter().chain(&batch.removed)) {
@@ -1201,6 +1538,9 @@ fn content_root_watcher(
             }
             if let Some(bridge) = &kotlin_bridge {
                 bridge.files_changed(changed.iter().chain(&batch.removed));
+            }
+            if let Some(phpstan) = &phpstan {
+                phpstan.files_removed(batch.removed.iter());
             }
             documents.on_disk_changed(&[&changed[..], &ignored].concat());
             record_external_changes(&history, &changed, &batch.removed);
@@ -1243,31 +1583,93 @@ pub(crate) fn jdtls_maven_import(
     settings: &ide_core::settings::Settings,
 ) -> (Vec<PathBuf>, Option<Vec<String>>) {
     let maven = &settings.languages.java.maven;
-    if maven.unlinked_projects.is_empty() {
+    let gradle = &settings.languages.java.gradle;
+    if maven.unlinked_projects.is_empty() && gradle.linked_projects.is_none() {
         return (Vec::new(), None);
     }
-    let model = ide_build::maven::load(root);
+    let model = ide_build::maven::load_linked(root, maven);
     let unlinked = ide_build::maven::UnlinkedProjects::from_model(&model, maven);
     let excluded = unlinked.poms().map(PathBuf::from).collect();
-    let build_files = unlinked.import_poms(&model).map(|poms| {
-        let gradle = ide_build::gradle::load(root).and_then(|g| {
+    let poms = unlinked.import_poms(&model).or_else(|| {
+        gradle.linked_projects.as_ref().map(|_| {
+            model
+                .projects
+                .iter()
+                .filter(|p| !p.aggregated && !unlinked.contains(&p.pom))
+                .map(|p| p.pom.clone())
+                .collect()
+        })
+    });
+    let build_files = poms.map(|poms| {
+        let gradle = ide_build::gradle::load_linked(root, gradle).into_iter().filter_map(|g| {
             let dir = root.join(&g.dir);
             let names = ide_build::gradle::SETTINGS_FILES.iter().chain(ide_build::gradle::BUILD_FILES);
             names.map(|n| dir.join(n)).find(|f| f.is_file())
         });
-        poms.iter().map(|pom| root.join(pom)).chain(gradle).map(|f| ide_lsp::path_to_uri_string(&f)).collect()
+        let eclipse = if settings.languages.java.gradle.linked_projects.is_some() {
+            independent_eclipse_projects(root)
+        } else {
+            Vec::new()
+        };
+        poms.iter()
+            .map(|pom| root.join(pom))
+            .chain(gradle)
+            .chain(eclipse)
+            .map(|f| ide_lsp::path_to_uri_string(&f))
+            .collect()
     });
     (excluded, build_files)
+}
+
+/// Explicit Gradle imports must retain Eclipse projects without re-importing generated build metadata.
+fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
+    let managed = |dir: &Path| {
+        std::iter::once("pom.xml")
+            .chain(ide_build::gradle::SETTINGS_FILES.iter().copied())
+            .chain(ide_build::gradle::BUILD_FILES.iter().copied())
+            .any(|name| dir.join(name).is_file())
+    };
+    if managed(root) {
+        return Vec::new();
+    }
+    let walker = ignore::WalkBuilder::new(root)
+        .standard_filters(false)
+        .filter_entry(move |entry| {
+            if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                return false;
+            }
+            if entry.depth() > 0
+                && (entry.file_name().to_string_lossy().starts_with('.')
+                    || matches!(
+                        entry.file_name().to_str(),
+                        Some("node_modules" | "target" | "build" | "dist" | "out" | "bin" | "vendor")
+                    )
+                    || entry.path().parent().is_some_and(|parent| parent.join(".project").is_file()))
+            {
+                return false;
+            }
+            !managed(entry.path())
+        })
+        .build();
+    let mut projects: Vec<_> =
+        walker.flatten().map(|entry| entry.path().join(".project")).filter(|path| path.is_file()).collect();
+    projects.sort();
+    projects
 }
 
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
 /// static detection guesses. Folders outside the project keep their absolute path, which
 /// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
-fn with_gradle_roots(root: &Path, build_cache: &Path, detected: &[SourceFolder]) -> Vec<SourceFolder> {
+fn with_gradle_roots(
+    root: &Path,
+    build_cache: &Path,
+    settings: &ide_core::settings::GradleSettings,
+    detected: &[SourceFolder],
+) -> Vec<SourceFolder> {
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
     let mut out: Vec<SourceFolder> = Vec::new();
-    for (dir, kind) in ide_build::gradle_source_roots(build_cache) {
+    for (dir, kind) in ide_build::gradle_source_roots(root, build_cache, settings) {
         if !dir.is_dir() {
             continue;
         }
@@ -1314,6 +1716,37 @@ pub(crate) fn project_key(root: &Path) -> String {
     format!("{h:016x}")
 }
 
+/// The environment values of agent files in [`crate::agent_secrets::AgentSecrets`]; the
+/// window is told (once) when they had to go to the owner-only file instead.
+struct AgentEnvSecrets {
+    secrets: Arc<crate::agent_secrets::AgentSecrets>,
+    sink: SharedSink,
+    told: AtomicBool,
+}
+
+impl ide_agent::EnvSecrets for AgentEnvSecrets {
+    fn get(&self, key: &str) -> Option<String> {
+        self.secrets.get(key)
+    }
+
+    fn set(&self, key: &str, value: &str) -> IdeResult<()> {
+        if self.secrets.set(key, value)? == crate::agent_secrets::Kept::LocalFile
+            && !self.told.swap(true, Ordering::Relaxed)
+        {
+            self.secrets.notify_kept_locally(&self.sink);
+        }
+        Ok(())
+    }
+
+    fn delete(&self, key: &str) {
+        self.secrets.delete(key);
+    }
+
+    fn keys(&self, prefix: &str) -> Vec<String> {
+        self.secrets.keys(prefix)
+    }
+}
+
 struct LspObserver(Arc<LspManager>);
 
 impl DocumentObserver for LspObserver {
@@ -1343,6 +1776,25 @@ impl DocumentObserver for LspObserver {
     }
     fn closed(&self, doc: ide_core::DocId, _path: &Path) {
         self.0.did_close(doc);
+    }
+}
+
+/// Feeds the code cells of open notebooks to the Python language servers that sync notebooks.
+struct NotebookLspObserver(Arc<LspManager>);
+
+impl crate::notebook::NotebookObserver for NotebookLspObserver {
+    fn changed(&self, path: &Path, snapshot: &ide_notebook::NotebookSnapshot) {
+        let cells: Vec<ide_lsp::NotebookCell> = snapshot
+            .cells
+            .iter()
+            .filter(|c| c.cell_type == "code")
+            .map(|c| ide_lsp::NotebookCell { id: c.id.clone(), source: c.source.clone() })
+            .collect();
+        // Notebooks run Python kernels only.
+        self.0.sync_notebook(path, &LanguageId::new("python"), &cells);
+    }
+    fn closed(&self, path: &Path) {
+        self.0.close_notebook(path);
     }
 }
 
@@ -1438,6 +1890,37 @@ pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
 #[cfg(test)]
 mod maven_linkage_tests {
     #[test]
+    fn explicit_gradle_links_preserve_independent_eclipse_projects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in
+            ["linked", "unlinked", "eclipse", "nested/eclipse", "unlinked/subproject", "maven", "build/generated"]
+        {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join(".project"), "<projectDescription/>").unwrap();
+        }
+        for dir in ["linked", "unlinked"] {
+            std::fs::write(root.join(dir).join("settings.gradle"), "").unwrap();
+        }
+        std::fs::write(root.join("maven/pom.xml"), "<project/>").unwrap();
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.gradle.linked_projects = Some(vec!["linked".into()]);
+        let (_, files) = super::jdtls_maven_import(root, &settings);
+        let files = files.unwrap();
+        let uri = |path: &str| ide_lsp::path_to_uri_string(&root.join(path));
+        assert!(files.contains(&uri("linked/settings.gradle")));
+        assert!(files.contains(&uri("maven/pom.xml")));
+        assert!(files.contains(&uri("eclipse/.project")));
+        assert!(files.contains(&uri("nested/eclipse/.project")));
+        assert!(!files.iter().any(|path| path.contains("unlinked") || path.contains("build/generated")));
+        assert!(!files.contains(&uri("linked/.project")));
+        assert!(!files.contains(&uri("maven/.project")));
+        settings.languages.java.gradle.linked_projects = Some(vec![]);
+        let (_, files) = super::jdtls_maven_import(root, &settings);
+        assert_eq!(files.unwrap(), [uri("maven/pom.xml"), uri("eclipse/.project"), uri("nested/eclipse/.project")]);
+    }
+
+    #[test]
     fn jdtls_imports_the_linked_modules_and_the_gradle_build_once_a_reactor_module_is_unlinked() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -1456,6 +1939,26 @@ mod maven_linkage_tests {
         // The whole reactor unlinked: the import exclusions are enough.
         settings.languages.java.maven.unlinked_projects = vec!["pom.xml".into()];
         assert_eq!(super::jdtls_maven_import(root, &settings).1, None);
+    }
+
+    #[test]
+    fn external_maven_link_is_a_content_root_and_not_its_sibling_module() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let a = base.join("A");
+        let b = base.join("B");
+        let c = base.join("C");
+        for dir in [&a, &b, &c] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join("pom.xml"), "<project/>").unwrap();
+        }
+        let mut settings = ide_core::settings::Settings::default();
+        settings.languages.java.maven.linked_projects = vec!["../B/pom.xml".into()];
+        assert_eq!(super::content_roots(&settings, &a, &base.join("cache")), vec![b]);
+        // External links must not replace jdtls's scan of the opened root with a build-file list.
+        assert_eq!(super::jdtls_maven_import(&a, &settings), (Vec::new(), None));
+        settings.languages.java.maven.linked_projects.clear();
+        assert!(super::content_roots(&settings, &a, &base.join("cache")).is_empty());
     }
 
     #[test]
@@ -1534,7 +2037,8 @@ mod gradle_roots_tests {
         std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
         let guessed = SourceFolder { path: "src/it/java".into(), kind: RootKind::Source, detected_from: None };
         let other = SourceFolder { path: "web".into(), kind: RootKind::Source, detected_from: None };
-        let out = with_gradle_roots(&root, &cache, &[guessed, other.clone()]);
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
         let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
         assert_eq!(
@@ -1649,5 +2153,36 @@ mod composer_tests {
         assert!(changed(&["src/a.php", "composer.json"]));
         assert!(!changed(&["composer.lock", "vendor/acme/lib/composer.json", "packages/b/composer.json"]));
         assert!(!changed(&[]));
+    }
+}
+
+#[cfg(test)]
+mod content_roots_tests {
+    use super::content_roots;
+
+    #[test]
+    #[cfg(windows)]
+    fn member_dependencies_match_hand_written_keys() {
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("B:\\proj\\member".to_string(), vec!["B:/dep".to_string()]);
+        let deps = super::member_dependencies_for(&map, "B:/proj/member");
+        assert_eq!(deps.map(Vec::as_slice), Some(["B:/dep".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn dependency_projects_join_the_content_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("app");
+        let shared = tmp.path().join("shared");
+        let dep = tmp.path().join("lib");
+        for dir in [&root, &shared, &dep] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let mut settings = ide_core::settings::Settings::default();
+        settings.project_structure.content_roots = vec![shared.to_string_lossy().into_owned()];
+        settings.project_structure.dependencies =
+            vec![dep.to_string_lossy().into_owned(), root.to_string_lossy().into_owned()];
+        let roots = content_roots(&settings, &root, &tmp.path().join("build"));
+        assert_eq!(roots, vec![shared, dep]);
     }
 }

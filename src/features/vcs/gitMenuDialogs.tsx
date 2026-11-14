@@ -1,18 +1,39 @@
 /** Git menu dialogs: Pull…, Merge…, Rebase…, Manage Remotes… and Worktrees. */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import type { Branch, MergeOptions, Remote, Worktree } from "@/bindings";
+import type { Branch, BranchInfo, MergeOptions, Remote, Worktree } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
-import { Checkbox, Dialog, IconButton, Input, Select, T, type SelectOption } from "@/ui";
+import {
+  Checkbox,
+  Dialog,
+  HighlightedText,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  T,
+  Tree,
+  useSanitizedField,
+  type SelectOption,
+} from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
+import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
-import { currentRepo, loadBranches, refreshNow, repoName, selectRepo, useVcs } from "./store";
+import { currentRepo, loadBranches, refreshNow, repoName, useVcs } from "./store";
+import {
+  groupWorktrees,
+  isCurrentWorktree,
+  worktreeContainsProject,
+  worktreeMoveTarget,
+  type RepoWorktrees,
+} from "./worktrees";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
 
 // --- shared -----------------------------------------------------------------
 
@@ -81,8 +102,7 @@ function MergeFlags({
   );
 }
 
-function useBranches(): Branch[] {
-  const [repo] = useState(currentRepo);
+function useBranches(repo: string | null): Branch[] {
   const [branches, setBranches] = useState<Branch[]>([]);
   useEffect(() => {
     let live = true;
@@ -92,7 +112,7 @@ function useBranches(): Branch[] {
     return () => {
       live = false;
     };
-  }, []);
+  }, [repo]);
   return branches;
 }
 
@@ -113,15 +133,55 @@ export function showPullDialog() {
   openDialog((close) => <PullDialog onClose={close} />);
 }
 
+/** IDEA's Git Root choice: shown only when the project holds several repositories. */
+function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+  const [roots] = useState(() => useVcs.getState().roots);
+  if (roots.length < 2) return null;
+  return (
+    <Select
+      aria-label="Repository"
+      value={repo ?? roots[0] ?? null}
+      options={roots.map((root) => ({ value: root, label: repoName(root), verbatim: true }))}
+      onChange={onChange}
+    />
+  );
+}
+
+/** The repository's branch info: the store's for the selected repository, else read from git. */
+function useBranchInfo(repo: string | null) {
+  const [initial] = useState(() => ({ repo: currentRepo(), info: useVcs.getState().branch }));
+  const [loaded, setLoaded] = useState<{ repo: string | null; info: BranchInfo | null } | null>(null);
+  useEffect(() => {
+    if (repo === initial.repo) return;
+    let live = true;
+    void call(commands.vcsBranchInfo(repo))
+      .then((info) => live && setLoaded({ repo, info }))
+      .catch(() => live && setLoaded({ repo, info: null }));
+    return () => {
+      live = false;
+    };
+  }, [repo, initial.repo]);
+  if (repo === initial.repo) return initial.info;
+  return loaded?.repo === repo ? loaded.info : null;
+}
+
 function PullDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
-  const [info] = useState(() => useVcs.getState().branch);
-  const branches = useBranches();
+  const [repo, setRepo] = useState(currentRepo);
+  const info = useBranchInfo(repo);
+  const branches = useBranches(repo);
   const [remotes, setRemotes] = useState<Remote[] | null>(null);
   const [remote, setRemote] = useState<string | null>(null);
   const [chosenBranch, setBranch] = useState<string | null>(null);
   const [rebase, setRebase] = useState(false);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
+
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setRemotes(null);
+    setRemote(null);
+    setBranch(null);
+  };
 
   useEffect(() => {
     let alive = true;
@@ -136,7 +196,7 @@ function PullDialog({ onClose }: { onClose: () => void }) {
     return () => {
       alive = false;
     };
-  }, [info?.upstream]);
+  }, [repo, info?.upstream]);
 
   const remoteBranches = useMemo(() => (remote ? remoteBranchesOf(branches, remote) : []), [branches, remote]);
   // Default: the upstream's branch, else the same name as the current branch.
@@ -179,11 +239,15 @@ function PullDialog({ onClose }: { onClose: () => void }) {
     >
       <div className={styles.form}>
         {remotes && !remotes.length ? (
-          <div className={styles.hint}>
-            <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
-          </div>
+          <>
+            <RepoPicker repo={repo} onChange={chooseRepo} />
+            <div className={styles.hint}>
+              <T>No remotes are configured. Add one with Git › Manage Remotes….</T>
+            </div>
+          </>
         ) : (
           <div className={styles.fieldRow}>
+            <RepoPicker repo={repo} onChange={chooseRepo} />
             <Select
               aria-label="Remote"
               value={remote}
@@ -222,7 +286,7 @@ export function showMergeDialog() {
 function MergeDialog({ onClose }: { onClose: () => void }) {
   const [repo] = useState(currentRepo);
   const [head] = useState(() => useVcs.getState().branch?.head ?? null);
-  const branches = useBranches();
+  const branches = useBranches(repo);
   const [branch, setBranch] = useState<string | null>(null);
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
   const [withMessage, setWithMessage] = useState(false);
@@ -294,7 +358,7 @@ export function showRebaseDialog() {
 function RebaseDialog({ onClose }: { onClose: () => void }) {
   const [repo] = useState(currentRepo);
   const [head] = useState(() => useVcs.getState().branch?.head ?? null);
-  const branches = useBranches();
+  const branches = useBranches(repo);
   const [upstream, setUpstream] = useState<string | null>(null);
   const [useOnto, setUseOnto] = useState(false);
   const [onto, setOnto] = useState<string | null>(null);
@@ -543,9 +607,10 @@ export function showWorktrees() {
   openDialog((close) => <WorktreesDialog onClose={close} />);
 }
 
-export function showNewWorktree(onCreated?: () => void) {
+export function showNewWorktree(onCreated?: () => void, repo?: string | null) {
   openDialog((close) => (
     <NewWorktreeDialog
+      repo={repo}
       onClose={(created) => {
         close();
         if (created) onCreated?.();
@@ -568,31 +633,83 @@ function WorktreesDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** A repository section of the Worktrees tree; its children are the repository's worktrees. */
+interface WorktreeNode {
+  key: string;
+  label: string;
+  worktree?: Worktree;
+  children?: WorktreeNode[];
+}
+
 /**
- * The worktrees of the current repository with New / Remove / Open: the Worktrees
- * dialog's content and the Git tool window's Worktrees tab. `listClassName` replaces
- * the dialog's bordered list box.
+ * The worktrees of every repository of the project as one tree, styled like the Log's
+ * Branches pane, with New / Remove / Open: the Worktrees dialog's content and the Git
+ * tool window's Worktrees tab. `listClassName` replaces the dialog's default height.
  */
 export function WorktreesPanel({ className, listClassName }: { className?: string; listClassName?: string }) {
+  const projectRoot = useProject((s) => s.project?.root);
   const repo = useVcs((s) => s.repo);
   const repos = useVcs((s) => s.roots);
-  const [list, setList] = useState<Worktree[]>([]);
+  const [groups, setGroups] = useState<RepoWorktrees[]>([]);
+  /** The selected tree row (`r:` repository, `w:` worktree). */
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const reload = () =>
-    call(commands.vcsWorktrees(repo))
-      .then((l) => {
-        setList(l);
-        setError(null);
-      })
-      .catch((e) => setError(errorMessage(e)));
+  /** The last reload wins: a scan of the roots may change them while it runs. */
+  const run = useRef(0);
+  const reload = () => {
+    const id = ++run.current;
+    return Promise.all(
+      repos.map((root) =>
+        call(commands.vcsWorktrees(root)).then(
+          (worktrees): RepoWorktrees => ({ root, worktrees }),
+          (e): RepoWorktrees => ({ root, worktrees: [], error: errorMessage(e) }),
+        ),
+      ),
+    ).then((lists) => {
+      if (id !== run.current) return;
+      setGroups(groupWorktrees(lists));
+      setError(null);
+    });
+  };
   useEffect(() => {
     void reload();
-  }, [repo]);
-  const current = list.find((w) => w.path === selected);
+  }, [repos]);
+  const tree = useMemo(
+    () =>
+      groups.map((group): WorktreeNode => ({
+        // The main worktree names a repository across reloads (its linked roots come and go).
+        key: `r:${group.worktrees.find((w) => w.main)?.path ?? group.root}`,
+        label: repoName(group.root),
+        children: group.worktrees.map((w): WorktreeNode => ({
+          key: `w:${w.path}`,
+          label: w.branch ?? (w.head ? w.head.slice(0, 8) : tx("(bare)")),
+          worktree: w,
+        })),
+      })),
+    [groups],
+  );
+  const currentGroup = selected?.startsWith("w:")
+    ? groups.find((g) => g.worktrees.some((w) => `w:${w.path}` === selected))
+    : undefined;
+  const current = currentGroup?.worktrees.find((w) => `w:${w.path}` === selected);
+  const containsProject = !!current && worktreeContainsProject(current.path, projectRoot);
+  const selectedKeys = useMemo(() => new Set(selected ? [selected] : []), [selected]);
+  const isCurrent = (path: string) => repos.some((root) => isCurrentWorktree(path, root));
+  const icon = (node: WorktreeNode) =>
+    node.worktree ? (isCurrent(node.worktree.path) ? "current-branch" : "branch") : "folder";
+  const detail = (node: WorktreeNode) => {
+    const w = node.worktree;
+    if (!w) return "";
+    const current = isCurrent(w.path);
+    // "main" only when the main worktree is not the one this window works in.
+    const flags = [
+      current ? tx("current") : w.main ? "main" : w.locked ? tx("locked") : w.prunable ? tx("prunable") : "",
+    ].filter(Boolean);
+    return [...flags, w.path].join("  ");
+  };
 
   const remove = async () => {
-    if (!current || current.main) return;
+    if (!current || !currentGroup || current.main || containsProject) return;
     const ok = await confirmDialog({
       title: "Remove Worktree",
       message: tx`Remove the worktree at ${current.path}? Its folder is deleted.`,
@@ -601,7 +718,7 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
     });
     if (!ok) return;
     try {
-      await call(commands.vcsRemoveWorktree(repo, current.path, false));
+      await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, false));
     } catch (e) {
       const force = await confirmDialog({
         title: "Remove Worktree",
@@ -610,36 +727,67 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
         danger: true,
       });
       if (force)
-        await call(commands.vcsRemoveWorktree(repo, current.path, true)).catch((x) => setError(errorMessage(x)));
+        await call(commands.vcsRemoveWorktree(currentGroup.root, current.path, true)).catch((x) =>
+          setError(errorMessage(x)),
+        );
     }
     setSelected(null);
+    await reload();
+  };
+
+  const move = async () => {
+    if (!current || !currentGroup || current.main || containsProject) return;
+    const { open } = await import("@/platform/dialog");
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: tx("Move Worktree"),
+      defaultPath: current.path.replace(/[\\/][^\\/]+[\\/]?$/, "") || undefined,
+    });
+    const folder = Array.isArray(picked) ? picked[0] : picked;
+    if (!folder) return;
+    const to = worktreeMoveTarget(current.path, folder);
+    if (isCurrentWorktree(to, current.path)) return;
+    const ok = await confirmDialog({
+      title: "Move Worktree",
+      message: tx`Move the worktree at ${current.path} to ${to}?`,
+      okLabel: "Move",
+    });
+    if (!ok) return;
+    try {
+      await call(commands.vcsMoveWorktree(currentGroup.root, current.path, to));
+      setSelected(`w:${to}`);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
     await reload();
   };
 
   return (
     <div className={className}>
       <div className={styles.manageBar} role="toolbar" aria-label={tx("Worktrees")}>
-        {repos.length > 1 && (
-          <Select
-            aria-label="Repository"
-            value={repo}
-            options={repos.map((r) => ({ value: r, label: repoName(r) }))}
-            onChange={(r) => void selectRepo(r)}
-          />
-        )}
         <IconButton icon="refresh" title="Refresh" size="small" onClick={() => void reload()} />
         <IconButton
           icon="plus"
           title="New Worktree…"
           size="small"
-          onClick={() => showNewWorktree(() => void reload())}
+          onClick={() => showNewWorktree(() => void reload(), currentGroup?.root ?? repo ?? repos[0])}
         />
         <IconButton
           icon="minus"
-          title="Remove Worktree"
+          title={containsProject ? "Cannot remove a worktree containing the open project." : "Remove Worktree"}
+          aria-label="Remove Worktree"
           size="small"
-          disabled={!current || current.main}
+          disabled={!current || current.main || containsProject}
           onClick={() => void remove()}
+        />
+        <IconButton
+          icon="export"
+          title={containsProject ? "Cannot move a worktree containing the open project." : "Move Worktree…"}
+          aria-label="Move Worktree…"
+          size="small"
+          disabled={!current || current.main || containsProject}
+          onClick={() => void move()}
         />
         <IconButton
           icon="folder"
@@ -649,37 +797,57 @@ export function WorktreesPanel({ className, listClassName }: { className?: strin
           onClick={() => current && void executeAction("file.openProjectPath", current.path)}
         />
       </div>
-      <div className={listClassName ?? styles.choiceList} role="listbox" aria-label={tx("Worktrees")}>
-        {list.map((w) => (
-          <button
-            key={w.path}
-            type="button"
-            role="option"
-            aria-selected={w.path === selected}
-            className={clsx(styles.manageRow, w.path === selected && styles.manageRowSelected)}
-            onClick={() => setSelected(w.path)}
-            onDoubleClick={() => void executeAction("file.openProjectPath", w.path)}
-          >
-            <span className={styles.fileName}>{w.branch ?? (w.head ? w.head.slice(0, 8) : <T>(bare)</T>)}</span>
-            <span className={clsx(styles.fileDir, styles.mono)}>{w.path}</span>
-            {(w.main || w.locked || w.prunable) && (
-              <span className={styles.fileDir}>{w.main ? "main" : w.locked ? tx("locked") : tx("prunable")}</span>
-            )}
-          </button>
-        ))}
-      </div>
+      <Tree<WorktreeNode>
+        // A new set of repositories starts with every section expanded.
+        key={tree.map((n) => n.key).join("|")}
+        roots={tree}
+        getKey={(n) => n.key}
+        getLabel={(n) => n.label}
+        getChildren={(n) => n.children}
+        isExpandable={(n) => !!n.children}
+        renderNode={(node, state) => (
+          <>
+            <Icon name={icon(node)} size={16} className={styles.worktreeIcon} />
+            <HighlightedText className={styles.worktreeLabel} text={node.label} indices={state.matches} tone="accent" />
+            {node.worktree && <span className={styles.worktreeDetail}>{detail(node)}</span>}
+          </>
+        )}
+        defaultExpanded={tree.map((n) => n.key)}
+        selected={selectedKeys}
+        multiSelect={false}
+        onSelectionChange={(selection) => setSelected([...selection][0] ?? null)}
+        onActivate={(n) => n.worktree && void executeAction("file.openProjectPath", n.worktree.path)}
+        className={listClassName ?? styles.worktreeListDialog}
+        aria-label="Worktrees"
+      />
+      {groups.map(
+        (group) =>
+          group.error && (
+            <div key={group.root} className={styles.error}>
+              {group.error}
+            </div>
+          ),
+      )}
       {error && <div className={styles.error}>{error}</div>}
     </div>
   );
 }
 
-function NewWorktreeDialog({ onClose }: { onClose: (created: boolean) => void }) {
-  const [repo] = useState(currentRepo);
-  const [root] = useState(() => useVcs.getState().repo ?? useVcs.getState().root ?? "");
-  const branches = useBranches();
+function NewWorktreeDialog({
+  repo: initialRepo,
+  onClose,
+}: {
+  /** The repository to add the worktree to; the selected one when omitted. */
+  repo?: string | null;
+  onClose: (created: boolean) => void;
+}) {
+  const [repo] = useState(() => initialRepo ?? currentRepo());
+  const [root] = useState(() => initialRepo ?? useVcs.getState().repo ?? useVcs.getState().root ?? "");
+  const branches = useBranches(repo);
   const [source, setSource] = useState<string | null>(null);
   const [createBranch, setCreateBranch] = useState(true);
   const [newBranch, setNewBranch] = useState("");
+  const { ref: branchRef, clean: cleanBranch } = useSanitizedField(cleanUpBranchNameOnTyping);
   const [path, setPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const options = useMemo(
@@ -737,11 +905,12 @@ function NewWorktreeDialog({ onClose }: { onClose: (created: boolean) => void })
         <Checkbox label="Create a new branch" checked={createBranch} onChange={setCreateBranch} />
         {createBranch && (
           <Input
+            ref={branchRef}
             aria-label="New branch name"
             mono
             value={newBranch}
             placeholder={suggestedBranch}
-            onChange={(e) => setNewBranch(e.target.value)}
+            onChange={(e) => setNewBranch(cleanBranch(e))}
           />
         )}
         <div className={styles.fieldLabel}>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PRESETS } from "@/platform/keymap";
-import { exOfRhs, IDEA_ACTIONS, parseVimrc, resolveActionId } from "../rc";
+import { exOfRhs, parseVimrc, resolveActionId } from "../rc";
+import { IDEA_ACTIONS } from "@/platform/ideaActions";
 import { readSourcedFiles } from "../rcFile";
 
 const RC = `
@@ -47,6 +48,107 @@ describe("ideavimrc parsing", () => {
       { kind: "mapEx", mode: "visual", lhs: "<Space>c", ex: "action code.commentLine" },
       { kind: "mapEx", mode: "normal", lhs: ",w", ex: "w" },
     ]);
+  });
+
+  it("canonicalises special-key names in mappings, whatever their case", () => {
+    const { commands } = parseVimrc("inoremap jk <esc>\nmap <c-c> <C-C>\nimap <CR> <cr>");
+    expect(commands).toEqual([
+      { kind: "map", mode: "insert", noremap: true, lhs: "jk", rhs: "<Esc>" },
+      { kind: "map", mode: undefined, noremap: false, lhs: "<C-c>", rhs: "<C-C>" },
+      { kind: "map", mode: "insert", noremap: false, lhs: "<CR>", rhs: "<CR>" },
+    ]);
+  });
+
+  it.each([
+    ["esc", "<Esc>"],
+    ["cr", "<CR>"],
+    ["enter", "<CR>"],
+    ["return", "<CR>"],
+    ["tab", "<Tab>"],
+    ["bs", "<BS>"],
+    ["backspace", "<BS>"],
+    ["space", "<Space>"],
+    ["del", "<Del>"],
+    ["delete", "<Del>"],
+    ["up", "<Up>"],
+    ["down", "<Down>"],
+    ["left", "<Left>"],
+    ["right", "<Right>"],
+    ["home", "<Home>"],
+    ["end", "<End>"],
+    ["pageup", "<PageUp>"],
+    ["pagedown", "<PageDown>"],
+    ["ins", "<Ins>"],
+    ["insert", "<Ins>"],
+    ["bar", "|"],
+    ["bslash", "\\"],
+    ...Array.from({ length: 12 }, (_, i) => [`f${i + 1}`, `<F${i + 1}>`]),
+  ])("normalizes %s on both sides in any case", (name, canonical) => {
+    for (const spelling of [name!, name!.toUpperCase(), name![0]!.toUpperCase() + name!.slice(1)]) {
+      expect(parseVimrc(`nmap <${spelling}> <${spelling}>`).commands[0]).toMatchObject({
+        lhs: canonical,
+        rhs: canonical,
+      });
+    }
+  });
+
+  it.each([
+    ["<c-f>", "<C-f>"],
+    ["<s-tab>", "<S-Tab>"],
+    ["<s-cr>", "<S-CR>"],
+    ["<a-x>", "<A-x>"],
+    ["<m-x>", "<A-x>"],
+    ["<d-x>", "<M-x>"],
+    ["<s-c-x>", "<C-S-X>"],
+    ["<C-S-x>", "<C-S-X>"],
+    ["<s-x>", "X"],
+    ["<d-a-c-s-x>", "<C-A-M-S-X>"],
+    ["<c-C>", "<C-C>"],
+    ["<frob>", "<frob>"],
+    ["<c-Frob>", "<c-Frob>"],
+    ["<z-esc>", "<z-esc>"],
+    ["<constructor>", "<constructor>"],
+    ["<toString>", "<toString>"],
+    ["<", "<"],
+    ["<<esc>", "<<Esc>"],
+    ["<c->", "<c->"],
+  ])("normalizes modifiers and preserves unknown tokens: %s", (keys, canonical) => {
+    expect(parseVimrc(`nmap ${keys} ${keys}`).commands[0]).toMatchObject({ lhs: canonical, rhs: canonical });
+  });
+
+  it("keeps escaped less-than separate from following key names", () => {
+    expect(parseVimrc("nmap <LT> <Lt>Esc>").commands[0]).toMatchObject({ lhs: "<", rhs: "<lt>Esc>" });
+    expect(parseVimrc("nmap <c-f> <pageup><lt>x").commands[0]).toMatchObject({
+      lhs: "<C-f>",
+      rhs: "<PageUp><lt>x",
+    });
+  });
+
+  it("expands mixed-case leaders on both sides without replacement-string interpolation", () => {
+    expect(parseVimrc('let mapleader="$&"\nnmap <LeAdEr>a <LEADER>b').commands[0]).toMatchObject({
+      lhs: "$&a",
+      rhs: "$&b",
+    });
+    expect(parseVimrc('let mapleader="\\<tAb>"\nnmap <LEADER>a <leader>b').commands[0]).toMatchObject({
+      lhs: "<Tab>a",
+      rhs: "<Tab>b",
+    });
+  });
+
+  it("normalizes Ex mapping lhs while preserving command and action text", () => {
+    expect(parseVimrc("nmap <f1> <Action>(GotoDeclaration)\nnmap <s-tab> :echo <cr>").commands).toEqual([
+      { kind: "mapEx", mode: "normal", lhs: "<F1>", ex: "action GotoDeclaration" },
+      { kind: "mapEx", mode: "normal", lhs: "<S-Tab>", ex: "echo" },
+    ]);
+  });
+
+  it.each(["cr", "CR", "enter", "ENTER", "return", "RETURN"])("recognizes Ex terminator <%s>", (enter) => {
+    expect(parseVimrc(`nmap <f1> :w<${enter}>`).commands[0]).toEqual({
+      kind: "mapEx",
+      mode: "normal",
+      lhs: "<F1>",
+      ex: "w",
+    });
   });
 
   it("reports everything else as ignored, never executed", () => {

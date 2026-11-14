@@ -5,7 +5,6 @@
  */
 import { useEffect, useMemo, useRef } from "react";
 import clsx from "clsx";
-import { setContext } from "@/platform/context";
 import { useTxTemplate, tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
@@ -25,6 +24,7 @@ import {
 } from "@/ui";
 import {
   useServiceProviders,
+  useToolWindowShown,
   serviceProviders,
   type ServiceProviderContribution,
   type ServiceTreeItem,
@@ -40,6 +40,7 @@ import {
   useServicesTree,
 } from "./tree";
 import styles from "./Services.module.css";
+import { viewFilterMenu } from "./ops";
 import { selectionActions, selectionMenu, selectedServices } from "./selection";
 
 export const SERVICES_VIEW_FOCUS = "servicesViewFocus";
@@ -88,6 +89,7 @@ export function ServicesTreeView() {
   const selectedKeys = useServicesTree((s) => s.selectedKeys);
   const expanded = useServicesTree((s) => s.expanded);
   const addRef = useRef<HTMLButtonElement>(null);
+  const filterRef = useRef<HTMLButtonElement>(null);
 
   const roots = useMemo(() => orderedRoots(rootsByProvider, providers), [rootsByProvider, providers]);
   const index = useMemo(() => indexTree(rootsByProvider), [rootsByProvider]);
@@ -134,7 +136,19 @@ export function ServicesTreeView() {
     ...(selected && selectedKeys.size === 1 ? moveActions(selected.item) : []),
   ];
 
+  /** Expands / collapses many nodes at once, telling their providers what changed. */
+  const setExpanded = (next: Set<string>) => {
+    useServicesTree.setState({ expanded: next });
+    for (const key of new Set([...expanded, ...next])) {
+      const at = index.get(key);
+      if (!at || expanded.has(key) === next.has(key)) continue;
+      providers.find((p) => p.id === at.provider)?.expand?.(at.item, next.has(key));
+    }
+  };
+
   const Detail = owner?.detail;
+  // A hidden tool window stays mounted: drop the pane so a log it follows stops.
+  const shown = useToolWindowShown();
   const add = shortcutLabel("services.addService");
 
   return (
@@ -159,7 +173,7 @@ export function ServicesTreeView() {
           iconSize={16}
           title="Expand All"
           disabled={!roots.length}
-          onClick={() => useServicesTree.setState({ expanded: new Set(expandableKeys(roots)) })}
+          onClick={() => setExpanded(new Set(expandableKeys(roots)))}
         />
         <IconButton
           icon="collapse-all"
@@ -167,7 +181,19 @@ export function ServicesTreeView() {
           iconSize={16}
           title="Collapse All"
           disabled={!roots.length}
-          onClick={() => useServicesTree.setState({ expanded: new Set() })}
+          onClick={() => setExpanded(new Set())}
+        />
+        <IconButton
+          ref={filterRef}
+          icon="filter"
+          size="small"
+          iconSize={16}
+          title="View Options"
+          disabled={!roots.length}
+          onClick={() => {
+            const r = filterRef.current?.getBoundingClientRect();
+            showContextMenu({ x: r?.left ?? 140, y: (r?.bottom ?? 100) + 2 }, viewFilterMenu());
+          }}
         />
         {actions.length > 0 && <span className={styles.sep} />}
         {actions.map((a) => (
@@ -193,29 +219,30 @@ export function ServicesTreeView() {
           </button>
         </div>
       ) : (
-        <SplitGroup orientation="horizontal" className={styles.split}>
-          <SplitPanel defaultSize="40%" minSize="160px">
-            <div
-              className={styles.tree}
-              onFocus={(e) =>
-                setContext(SERVICES_VIEW_FOCUS, (e.target as HTMLElement).getAttribute("role") === "tree")
-              }
-              onBlur={() => setContext(SERVICES_VIEW_FOCUS, false)}
-            >
+        <SplitGroup orientation="horizontal" className={styles.split} storageKey="openidea.services.detailSplit">
+          <SplitPanel id="services-items" defaultSize="40%" minSize="160px">
+            <div className={styles.tree}>
               <Tree<ServiceTreeItem>
                 key={location}
+                focusContext={SERVICES_VIEW_FOCUS}
                 reorder={reorder}
                 roots={roots}
                 getKey={(n) => n.key}
                 getLabel={(n) => n.label}
                 getChildren={(n) => n.children}
-                isExpandable={(n) => !!n.children?.length}
+                isExpandable={(n) => !!n.children?.length || !!n.expandable}
                 expanded={expanded}
-                onExpandedChange={(next) => useServicesTree.setState({ expanded: next })}
+                onExpandedChange={(next, node, open) => {
+                  useServicesTree.setState({ expanded: next });
+                  providers.find((p) => p.id === index.get(node.key)?.provider)?.expand?.(node, open);
+                }}
                 selected={selectedKeys}
-                onSelectionChange={(keys, lead) =>
-                  useServicesTree.setState({ selectedKeys: keys, selectedKey: keys.size ? (lead?.key ?? null) : null })
-                }
+                onSelectionChange={(keys, lead) => {
+                  const selectedKey = keys.size ? (lead?.key ?? null) : null;
+                  const changed = selectedKey !== useServicesTree.getState().selectedKey;
+                  useServicesTree.setState({ selectedKeys: keys, selectedKey });
+                  if (lead && changed) providers.find((p) => p.id === index.get(lead.key)?.provider)?.select?.(lead);
+                }}
                 renderNode={(n, state) => <Row item={n} state={state} />}
                 onActivate={(n) => {
                   const p = index.get(n.key);
@@ -245,8 +272,15 @@ export function ServicesTreeView() {
             </div>
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel minSize="200px">
-            {selected && Detail ? (
+          <SplitPanel
+            id="services-detail"
+            minSize="200px"
+            // The panel library puts `overflow: auto` inline; the detail content
+            // (a console, a log) owns its scrolling, so the pane must not add a second
+            // bar. A column flex box lets that content fill the pane.
+            style={{ overflow: "hidden", height: "100%", display: "flex", flexDirection: "column" }}
+          >
+            {selected && Detail && shown ? (
               <Detail key={selected.item.key} item={selected.item} />
             ) : (
               <EmptyState title="Select service to view details" />

@@ -1,8 +1,10 @@
+import { writeClipboardText } from "@/platform/clipboard";
+import { onEndpointsChanged } from "@/workbench/contributions";
 import { useFilePresentation } from "@/platform/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { actionToggled, executeAction, executeActionFrom, getAction } from "@/platform/actions";
-import type { ProjectFileSet } from "@/platform/ipc";
+import { onIdeEvent, type ProjectFileSet } from "@/platform/ipc";
 import { tx as translate, useTx } from "@/platform/i18n";
 import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim, shortcutLabel } from "@/platform/keymap";
 import {
@@ -14,6 +16,9 @@ import {
   List,
   Menu,
   Spinner,
+  SplitGroup,
+  SplitPanel,
+  SplitHandle,
   SymbolBadge,
   Select,
   Toggle,
@@ -83,8 +88,6 @@ export function claimSearchKeys(input: () => HTMLElement | null): () => void {
 const ROW = 24;
 const MAX_LIST = 672;
 const MIN_LIST = 10 * ROW;
-/** List cap while the preview pane takes the lower part of the popup. */
-const MAX_LIST_PREVIEW = 312;
 const DEBOUNCE_MS = 60;
 
 export function SearchEverywhereOverlay() {
@@ -109,6 +112,15 @@ function SearchEverywhereDialog() {
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const tabs = tabsRef.current;
+    const selected = tabs?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!tabs || !selected) return;
+    if (selected.offsetLeft < tabs.scrollLeft) tabs.scrollLeft = selected.offsetLeft;
+    else if (selected.offsetLeft + selected.offsetWidth > tabs.scrollLeft + tabs.clientWidth)
+      tabs.scrollLeft = selected.offsetLeft + selected.offsetWidth - tabs.clientWidth;
+  }, [tab]);
   const [debounced, setDebounced] = useState(query);
   const [extra, setExtra] = useState<Partial<Record<SectionId, number>>>({});
   const [snap, setSnap] = useState<SeSnapshot | null>(null);
@@ -140,6 +152,25 @@ function SearchEverywhereDialog() {
   const bumpToggles = () => setToggleTick((t) => t + 1);
 
   useEffect(() => () => controller.dispose(), [controller]);
+  const [endpointVersion, setEndpointVersion] = useState(0);
+  const [filesVersion, setFilesVersion] = useState(0);
+  useEffect(
+    () =>
+      onIdeEvent("indexState", (e) => {
+        if (e.indexing) return;
+        controller.invalidateFiles();
+        setFilesVersion((v) => v + 1);
+      }),
+    [controller],
+  );
+  useEffect(
+    () =>
+      onEndpointsChanged(() => {
+        controller.invalidateEndpoints();
+        setEndpointVersion((v) => v + 1);
+      }),
+    [controller],
+  );
 
   useEffect(() => {
     if (query === debounced) return;
@@ -182,7 +213,7 @@ function SearchEverywhereDialog() {
       includeDisabled: tab === "actions" ? includeNonProject : undefined,
       extra,
     });
-  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra]);
+  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra, endpointVersion, filesVersion]);
 
   useEffect(() => {
     inputRef.current?.select();
@@ -282,6 +313,8 @@ function SearchEverywhereDialog() {
         return;
       }
       case "file":
+        if (row.folder) return closeThen(() => void executeAction("navigate.selectInProjectView", row.path));
+        return closeThen(() => void openResult(row, { side }));
       case "symbol":
       case "text":
         return closeThen(() => void openResult(row, { side }));
@@ -334,7 +367,7 @@ function SearchEverywhereDialog() {
     if (row.kind === "action") return assignShortcut(row.id);
     const anchor = listRef.current?.querySelector('[data-lead="true"]') ?? inputRef.current;
     if (!anchor) return;
-    const copy = (text: string) => void navigator.clipboard?.writeText(text).catch(() => {});
+    const copy = (text: string) => void writeClipboardText(text).catch(() => {});
     const items: MenuItem[] =
       row.kind === "setting"
         ? [{ label: "Open Settings Page", run: () => activate(row) }]
@@ -399,10 +432,9 @@ function SearchEverywhereDialog() {
     select(next, e);
   };
 
-  const maxList = preview ? MAX_LIST_PREVIEW : MAX_LIST;
   // While a query is typed the list keeps a minimum height so the popup doesn't jump with every keystroke.
   const minList = parsed.text.trim() && !listing ? MIN_LIST : 0;
-  const listHeight = Math.min(maxList, Math.max(minList, rows.length * ROW));
+  const listHeight = Math.min(MAX_LIST, Math.max(minList, rows.length * ROW));
   const previewTarget = previewOf(activeRow);
   const emptyQuery = !parsed.text.trim();
   const showEmpty = !rows.length && snap && !snap.loading && (!emptyQuery || tab !== "all");
@@ -418,12 +450,54 @@ function SearchEverywhereDialog() {
   useEffect(() => {
     if (nothingInProject) widenSearchEverywhere(searchQuery);
   }, [nothingInProject, searchQuery]);
-  const canSplit = activeRow?.kind === "file" || activeRow?.kind === "symbol" || activeRow?.kind === "text";
+  const canSplit =
+    (activeRow?.kind === "file" && !activeRow.folder) || activeRow?.kind === "symbol" || activeRow?.kind === "text";
   const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
     cycleTab(e.key === "ArrowRight" ? 1 : -1);
   };
+
+  const results = (
+    <div
+      ref={listRef}
+      className={styles.results}
+      style={{ height: rows.length && !preview ? listHeight + 8 : undefined }}
+    >
+      {rows.length > 0 && (
+        <List<SeRow>
+          id="se-results"
+          items={rows}
+          getKey={(r) => r.key}
+          isSection={isSectionRow}
+          renderSection={(r) => <span className={styles.section}>{r.kind === "section" ? <T>{r.title}</T> : ""}</span>}
+          activeIndex={active}
+          onSelect={select}
+          isSelected={(r) => !!sel.keys?.has(r.key)}
+          onActivate={(r, _i, e) => activate(r, (e as MouseEvent).shiftKey)}
+          focusable={false}
+          rowHeight={ROW}
+          sectionHeight={ROW}
+          className={styles.list}
+          aria-label={tx("Results")}
+          renderItem={(r, state) => (
+            <ResultRow
+              row={r}
+              active={state.active}
+              repeat={sameFile(rows[state.index - 1], r)}
+              toggleTick={toggleTick}
+              onToggled={bumpToggles}
+            />
+          )}
+        />
+      )}
+      {showEmpty && (
+        <div className={styles.empty}>
+          {tx(emptyQuery ? "Type to search" : includeNonProject ? "Nothing found" : "Nothing found in project files")}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <Dialog
@@ -436,7 +510,7 @@ function SearchEverywhereDialog() {
       className={styles.dialog}
     >
       <div className={styles.header} data-dialog-drag="">
-        <div role="tablist" aria-label={tx("Search scope")} className={styles.tabs} onKeyDown={onTabKey}>
+        <div ref={tabsRef} role="tablist" aria-label={tx("Search scope")} className={styles.tabs} onKeyDown={onTabKey}>
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -452,61 +526,63 @@ function SearchEverywhereDialog() {
             </button>
           ))}
         </div>
-        {tab === "all" || tab === "actions" ? (
-          <Checkbox
-            className={styles.include}
-            checked={includeNonProject}
-            onChange={(v) => {
-              setIncludeNonProject(v);
-              inputRef.current?.focus();
-            }}
-            label={tab === "actions" ? "Include disabled actions" : "Include non-project items"}
-          />
-        ) : (
-          // IDEA's scope chooser of the Classes / Files / Symbols / Text tabs.
-          <Select<SeScope>
-            variant="ghost"
-            className={clsx(styles.include, styles.scope)}
-            value={includeNonProject ? "allPlaces" : fileSet}
-            options={SE_SCOPES}
-            onChange={(v) => {
-              if (v === "allPlaces") setIncludeNonProject(true);
-              else setIncludeNonProject(false, { fileSet: v });
-              inputRef.current?.focus();
-            }}
-            aria-label="Search scope"
-          />
-        )}
-        <IconButton
-          icon="list"
-          size="small"
-          className={styles.headerButton}
-          title={tx("Preview")}
-          pressed={preview}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setSearchEverywherePreview(!preview)}
-        />
-        {isFilterTab(tab) && (
+        <div className={styles.tools}>
+          {tab === "all" || tab === "actions" ? (
+            <Checkbox
+              className={styles.include}
+              checked={includeNonProject}
+              onChange={(v) => {
+                setIncludeNonProject(v);
+                inputRef.current?.focus();
+              }}
+              label={tab === "actions" ? "Include disabled actions" : "Include non-project items"}
+            />
+          ) : (
+            // IDEA's scope chooser of the Classes / Files / Symbols / Text tabs.
+            <Select<SeScope>
+              variant="ghost"
+              className={clsx(styles.include, styles.scope)}
+              value={includeNonProject ? "allPlaces" : fileSet}
+              options={SE_SCOPES}
+              onChange={(v) => {
+                if (v === "allPlaces") setIncludeNonProject(true);
+                else setIncludeNonProject(false, { fileSet: v });
+                inputRef.current?.focus();
+              }}
+              aria-label="Search scope"
+            />
+          )}
           <IconButton
-            icon="filter"
+            icon="list"
             size="small"
             className={styles.headerButton}
-            title={tx("Filter")}
-            pressed={filterActive(filters, tab)}
-            aria-haspopup="dialog"
-            aria-expanded={!!filterAnchor}
+            title={tx("Preview")}
+            pressed={preview}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={(e) => setFilterAnchor(filterAnchor ? null : e.currentTarget)}
+            onClick={() => setSearchEverywherePreview(!preview)}
           />
-        )}
-        <IconButton
-          icon="open-in-tool-window"
-          size="small"
-          className={styles.headerButton}
-          title={tx("Open in Find Tool Window")}
-          shortcut={tab === "text" ? formatBinding(hostBinding("Meta+Enter")) : undefined}
-          onClick={() => closeThen(() => void executeAction("find.inPath", { query: parsed.text }))}
-        />
+          {isFilterTab(tab) && (
+            <IconButton
+              icon="filter"
+              size="small"
+              className={styles.headerButton}
+              title={tx("Filter")}
+              pressed={filterActive(filters, tab)}
+              aria-haspopup="dialog"
+              aria-expanded={!!filterAnchor}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => setFilterAnchor(filterAnchor ? null : e.currentTarget)}
+            />
+          )}
+          <IconButton
+            icon="open-in-tool-window"
+            size="small"
+            className={styles.headerButton}
+            title={tx("Open in Find Tool Window")}
+            shortcut={tab === "text" ? formatBinding(hostBinding("Meta+Enter")) : undefined}
+            onClick={() => closeThen(() => void executeAction("find.inPath", { query: parsed.text }))}
+          />
+        </div>
       </div>
       <div className={styles.queryRow}>
         <div className={styles.field}>
@@ -535,6 +611,7 @@ function SearchEverywhereDialog() {
             aria-expanded
             aria-controls="se-results"
             aria-autocomplete="list"
+            aria-activedescendant={active >= 0 ? `se-results-${active}` : undefined}
             aria-label={tx("Search query")}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
@@ -547,60 +624,33 @@ function SearchEverywhereDialog() {
           )}
         </div>
       </div>
-      {(rows.length > 0 || showEmpty) && (
-        <div
-          ref={listRef}
-          id="se-results"
-          className={styles.results}
-          style={{ height: rows.length ? listHeight + 8 : undefined }}
-        >
-          {rows.length > 0 && (
-            <List<SeRow>
-              items={rows}
-              getKey={(r) => r.key}
-              isSection={isSectionRow}
-              renderSection={(r) => (
-                <span className={styles.section}>{r.kind === "section" ? <T>{r.title}</T> : ""}</span>
-              )}
-              activeIndex={active}
-              onSelect={select}
-              isSelected={(r) => !!sel.keys?.has(r.key)}
-              onActivate={(r, _i, e) => activate(r, (e as MouseEvent).shiftKey)}
-              focusable={false}
-              rowHeight={ROW}
-              sectionHeight={ROW}
-              className={styles.list}
-              aria-label={tx("Results")}
-              renderItem={(r, state) => (
-                <ResultRow
-                  row={r}
-                  active={state.active}
-                  repeat={sameFile(rows[state.index - 1], r)}
-                  toggleTick={toggleTick}
-                  onToggled={bumpToggles}
-                />
-              )}
+      <div className={clsx(styles.content, preview && rows.length > 0 && styles.withPreview)}>
+        {preview && rows.length > 0 ? (
+          <SplitGroup
+            orientation="vertical"
+            storageKey="openidea.search.everywhere.layout"
+            defaultLayout={{ results: 33, preview: 67 }}
+          >
+            <SplitPanel id="results" minSize="20%">
+              {results}
+            </SplitPanel>
+            <SplitHandle
+              aria-label={tx("Preview")}
+              onPointerDown={() => inputRef.current?.focus({ preventScroll: true })}
             />
-          )}
-          {showEmpty && (
-            <div className={styles.empty}>
-              {tx(
-                emptyQuery ? "Type to search" : includeNonProject ? "Nothing found" : "Nothing found in project files",
-              )}
-            </div>
-          )}
-        </div>
-      )}
-      {!rows.length && !showEmpty && <div id="se-results" ref={listRef} hidden />}
-      {preview && rows.length > 0 && (
-        <div className={styles.preview}>
-          <CodePreview
-            path={previewTarget?.path ?? null}
-            line={previewTarget?.line ?? 0}
-            highlights={previewTarget?.highlights ?? []}
-          />
-        </div>
-      )}
+            <SplitPanel id="preview" minSize="20%" className={styles.preview}>
+              <CodePreview
+                path={previewTarget?.path ?? null}
+                line={previewTarget?.line ?? 0}
+                highlights={previewTarget?.highlights ?? []}
+              />
+            </SplitPanel>
+          </SplitGroup>
+        ) : rows.length > 0 || showEmpty ? (
+          results
+        ) : null}
+        {!rows.length && <div id="se-results" hidden />}
+      </div>
       {rows.length > 0 && (
         <footer className={styles.footer}>
           <span className={styles.footerInfo}>{describe(activeRow)}</span>
@@ -661,7 +711,7 @@ function describe(row: SeRow | undefined): string {
 function previewOf(row: SeRow | undefined): { path: string; line: number; highlights: PreviewHighlight[] } | null {
   switch (row?.kind) {
     case "file":
-      return { path: row.path, line: row.line ?? 0, highlights: [] };
+      return row.folder ? null : { path: row.path, line: row.line ?? 0, highlights: [] };
     case "symbol":
       return {
         path: row.path,
@@ -733,7 +783,16 @@ function ResultRow({
         </span>
       );
     case "file":
-      return <FileRow path={row.path} name={row.name} dir={row.dir} indices={row.nameIndices} line={row.line} />;
+      return (
+        <FileRow
+          path={row.path}
+          name={row.name}
+          dir={row.dir}
+          indices={row.nameIndices}
+          line={row.line}
+          folder={row.folder}
+        />
+      );
     case "symbol":
       return (
         <>
@@ -758,7 +817,7 @@ function ResultRow({
           <span className={styles.icon}>{row.icon ? <Icon name={row.icon} size={16} /> : null}</span>
           <span className={styles.main}>
             <HighlightedText className={styles.name} text={row.title} indices={row.indices} tone={tone} />
-            {shortcut && <span className={clsx(styles.location, styles.shortcut)}>{shortcut}</span>}
+            {shortcut && <span className={styles.shortcut}>{shortcut}</span>}
           </span>
           {toggled !== undefined ? (
             <span
@@ -864,18 +923,20 @@ function FileRow({
   dir,
   indices,
   line,
+  folder,
 }: {
   path: string;
   name: string;
   dir: string;
   indices: number[];
   line: number | null;
+  folder?: boolean;
 }) {
   const deco = useFileDecoration(path);
   const { icon } = useFilePresentation(path);
   return (
     <>
-      <Icon name={icon} size={16} className={styles.icon} />
+      <Icon name={folder ? "folder" : icon} size={16} className={styles.icon} />
       <span className={styles.main}>
         <span className={styles.name} style={deco.color ? { color: deco.color } : undefined}>
           <HighlightedText text={name} indices={indices} tone="strong" />
@@ -888,8 +949,9 @@ function FileRow({
 }
 
 type NavigationRow = Extract<SeRow, { kind: "file" | "symbol" | "text" }>;
+/** A row that opens in an editor (a directory selects in the Project view instead). */
 function isNavigationRow(row: SeRow): row is NavigationRow {
-  return row.kind === "file" || row.kind === "symbol" || row.kind === "text";
+  return (row.kind === "file" && !row.folder) || row.kind === "symbol" || row.kind === "text";
 }
 function openResult(row: NavigationRow, options: Parameters<typeof openLocation>[2]): Promise<void> {
   if (row.kind === "file")

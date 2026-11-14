@@ -67,7 +67,7 @@ The design:
       Add `scripts/php-corpus.sh`, which needs nothing beyond git. It shallow-clones pinned tags of laravel/framework, symfony/symfony and WordPress/WordPress into `${PHP_CORPUS_DIR:-../php-corpus}`, and skips any that are already there. Document in RULES.md how to install Intelephense (`npm i -g intelephense`) and `cargo-nextest`. Run the script, and check that Intelephense starts with `intelephense --stdio` and a scripted `initialize`. Test: a shell check, plus a mention in PROGRESS.md.
 
 - [x] Phase 0.3: PHP fixture project
-      Add `fixtures/php-app`, modelled on the other fixtures and listed in `fixtures/README.md`. It has:
+      Add `fixtures/php-library`, modelled on the other fixtures and listed in `fixtures/README.md`. It has:
   - `composer.json` with PSR-4 autoloading `App\\` → `src/` and `Tests\\` → `tests/`, and `require.php: ^8.2`
   - classes, an interface, an abstract class, a trait and an enum
   - a generic `Collection<T>` written with `@template`
@@ -79,7 +79,7 @@ The design:
   Keep it small: about 15 files.
 
 - [x] Phase 0.4: Intelephense baseline smoke test
-      Add a `php` case to `crates/ide-host/tests/language_smoke.rs` using the existing `Checks` table: definition, references, hover, completion, diagnostic, rename (if the free tier supports it; otherwise mark it as unsupported the way other languages do), format, signature and structure, on `fixtures/php-app`. It runs with `cargo test -p ide-host --test language_smoke -- --ignored --exact php` and must pass with Intelephense installed. This is the baseline the engine has to match.
+      Add a `php` case to `crates/ide-host/tests/language_smoke.rs` using the existing `Checks` table: definition, references, hover, completion, diagnostic, rename (if the free tier supports it; otherwise mark it as unsupported the way other languages do), format, signature and structure, on `fixtures/php-library`. It runs with `cargo test -p ide-host --test language_smoke -- --ignored --exact php` and must pass with Intelephense installed. This is the baseline the engine has to match.
 
 - [x] Phase 0.5: Mago test-drive and `ide-php` skeleton
   1. Create `crates/ide-php`: workspace member, `ide-core` dependency, crate docs.
@@ -90,7 +90,7 @@ The design:
   If Mago can't be used (licence, API or recovery problems), block the phase and explain why.
 
 - [x] Phase 0.6: Comparison harness
-      Add `crates/ide-php/tests/differential.rs` (ignored; needs Intelephense and the corpora). Over N sampled identifier positions in a corpus, it asks Intelephense (through `ide-lsp`) and the engine (through its public API, once that exists) for definition and hover. It writes a JSON and Markdown report of agreements and differences to `target/php-differential/`. Until the engine answers, only the Intelephense side and the report format run. Test: the report is produced on `fixtures/php-app`.
+      Add `crates/ide-php/tests/differential.rs` (ignored; needs Intelephense and the corpora). Over N sampled identifier positions in a corpus, it asks Intelephense (through `ide-lsp`) and the engine (through its public API, once that exists) for definition and hover. It writes a JSON and Markdown report of agreements and differences to `target/php-differential/`. Until the engine answers, only the Intelephense side and the report format run. Test: the report is produced on `fixtures/php-library`.
 
 ## Plan 1: Syntax, summaries, index
 
@@ -122,7 +122,7 @@ The design:
   - attributes (names only)
   - ranges for name and declaration
 
-  Each summary is serializable with postcard and records a schema version. Tests: golden snapshots of summaries for `fixtures/php-app`.
+  Each summary is serializable with postcard and records a schema version. Tests: golden snapshots of summaries for `fixtures/php-library`.
 
 - [x] Phase 1.4: PHPDoc in summaries
       Parse doc blocks with `mago-phpdoc-syntax`:

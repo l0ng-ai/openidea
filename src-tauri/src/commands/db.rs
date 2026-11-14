@@ -44,6 +44,18 @@ pub async fn db_test(
     ide_host::ops::db::test(&state.host, window.label(), source, password, ssh_secret).await
 }
 
+/// Data Source › SSH/SSL › Test SSH Tunnel.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_test_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    source: DataSource,
+    ssh_secret: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::db::test_tunnel(&state.host, window.label(), source, ssh_secret).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn db_set_ssh_secret(
@@ -106,6 +118,48 @@ pub async fn db_disconnect(window: Window, state: State<'_, AppState>, id: Strin
 #[specta::specta]
 pub async fn db_databases(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<ide_db::Databases> {
     ide_host::ops::db::databases(&state.host, window.label(), &id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_database_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    database: String,
+) -> IdeResult<Vec<ide_db::CatalogSchema>> {
+    ide_host::ops::db::database_catalog(&state.host, window.label(), &id, &database).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_saved_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<Option<ide_db::SourceCatalog>> {
+    ide_host::ops::db::saved_catalog(&state.host, window.label(), &id).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_retain_catalog(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    databases: Vec<String>,
+) -> IdeResult<()> {
+    ide_host::ops::db::retain_catalog(&state.host, window.label(), &id, databases).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn db_session_context(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+) -> IdeResult<ide_db::SessionContext> {
+    ide_host::ops::db::session_context(&state.host, window.label(), &id).await
 }
 
 #[tauri::command]
@@ -181,8 +235,9 @@ pub async fn db_explain(
     request: RequestId,
     id: String,
     statement: String,
+    schema: Option<String>,
 ) -> IdeResult<Vec<ide_db::PlanNode>> {
-    ide_host::ops::db::explain(&state.host, window.label(), request, &id, &statement).await
+    ide_host::ops::db::explain(&state.host, window.label(), request, &id, &statement, schema.as_deref()).await
 }
 
 #[tauri::command]
@@ -244,15 +299,19 @@ pub fn db_statements(
 
 #[tauri::command]
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub async fn db_execute(
     window: Window,
     state: State<'_, AppState>,
     request: RequestId,
     id: String,
     statements: Vec<SqlStatement>,
+    skip: u32,
     max_rows: u32,
+    schema: Option<String>,
 ) -> IdeResult<Vec<StatementOutcome>> {
-    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, max_rows).await
+    ide_host::ops::db::execute(&state.host, window.label(), request, &id, statements, skip, max_rows, schema.as_deref())
+        .await
 }
 
 #[tauri::command]

@@ -126,6 +126,7 @@ fn project_path(text: &str) -> String {
 /// `configuration` and returns its tree.
 pub fn gradle_dependencies(
     root: &Path,
+    model: &gradle::GradleModel,
     options: &SyncOptions,
     project: &str,
     configuration: &str,
@@ -137,7 +138,6 @@ pub fn gradle_dependencies(
     if !project.starts_with(':') || project.chars().any(char::is_whitespace) {
         return Err(IdeError::invalid(format!("not a Gradle project path: {project}")));
     }
-    let model = gradle::load(root).ok_or_else(|| IdeError::not_found("no Gradle build in this project"))?;
     let task = if project == ":" { ":dependencies".to_owned() } else { format!("{project}:dependencies") };
     let mut args: Vec<String> =
         vec!["--console=plain".into(), "-q".into(), task, "--configuration".into(), configuration.into()];
@@ -226,8 +226,12 @@ runtimeClasspath - Runtime classpath of source set 'main'.
         let tmp = tempfile::tempdir().unwrap();
         let options = SyncOptions::default();
         let cancel = CancellationToken::new();
-        assert!(gradle_dependencies(tmp.path(), &options, ":", "x --init-script y", &cancel).is_err());
-        assert!(gradle_dependencies(tmp.path(), &options, "app", "runtimeClasspath", &cancel).is_err());
+        assert!(
+            gradle_dependencies(tmp.path(), &Default::default(), &options, ":", "x --init-script y", &cancel).is_err()
+        );
+        assert!(
+            gradle_dependencies(tmp.path(), &Default::default(), &options, "app", "runtimeClasspath", &cancel).is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -246,8 +250,15 @@ runtimeClasspath - Runtime classpath of source set 'main'.
             offline: true,
             ..Default::default()
         };
-        let tree =
-            gradle_dependencies(root, &options, ":app", "testRuntimeClasspath", &CancellationToken::new()).unwrap();
+        let tree = gradle_dependencies(
+            root,
+            &gradle::load(root).unwrap(),
+            &options,
+            ":app",
+            "testRuntimeClasspath",
+            &CancellationToken::new(),
+        )
+        .unwrap();
         assert_eq!(tree, vec![dep("org.a", "b", Some("1.0"))]);
         assert_eq!(
             std::fs::read_to_string(root.join("args")).unwrap().trim(),

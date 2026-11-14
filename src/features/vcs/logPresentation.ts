@@ -1,4 +1,12 @@
-import { collapseLinear, computeGraph, hideLongEdges, linearizeMerges } from "./graph";
+import {
+  collapseLinear,
+  compactLanes,
+  computeGraph,
+  hideLongEdges,
+  linearizeMerges,
+  pruneFilteredEdges,
+  straightenLaneChanges,
+} from "./graph";
 import { commitKey, graphCommit, type RepoCommit } from "./multiRoot";
 import type { LogOptions } from "./logOptions";
 
@@ -22,9 +30,10 @@ export function presentLogGraph(
     ? new Set(source.filter((c) => !fragments.merges.has(c.id)).map((c) => c.id))
     : fragments.merges;
   const linear = options.linearizeMerges ? linearizeMerges(collapsed?.graph ?? source, expanded) : null;
-  const graph = linear?.graph ?? collapsed?.graph ?? source;
+  const graph = pruneFilteredEdges(linear?.graph ?? collapsed?.graph ?? source);
   const byId = new Map(all.map((c) => [commitKey(c), c]));
   const commits = graph.map((c) => byId.get(c.id)!);
   const laid = computeGraph(graph).rows;
-  return { commits, graph, rows: options.longEdges ? laid : hideLongEdges(laid), linear, collapsed };
+  const rows = straightenLaneChanges(compactLanes(options.longEdges ? laid : hideLongEdges(laid)));
+  return { commits, graph, rows, linear, collapsed };
 }

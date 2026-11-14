@@ -3,14 +3,27 @@
  *
  * Closing a window (traffic light, Quit closing every window) runs
  * `decideClose`: confirm exit when this is the last window and
- * `general.confirmExit` is on, then Save All / Don't Save / Cancel when
- * documents have unsaved changes. Quit confirms once, then the backend closes
- * every window, each of which runs only its unsaved-changes check.
+ * `general.confirmExit` is on, then Terminate / Cancel when Run/Debug processes
+ * still run and `run.confirmTerminate` is on, then Save All / Don't Save / Cancel
+ * when documents have unsaved changes. Quit confirms once, then the backend
+ * closes every window, each of which runs its own checks.
+ *
+ * The last project or LightEdit window returns to the Welcome screen unless
+ * `general.closeWithoutWelcome` is on, in which case it closes. When
+ * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
 import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
 import { t } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
-import { maybeEditorService, notifications, type EditorCloseSession } from "@/workbench/contributions";
+import { workflowSettings } from "@/platform/workflowSettings";
+import {
+  maybeEditorService,
+  notifications,
+  runningProcesses as liveProcesses,
+  stopRunningProcesses,
+  type EditorCloseSession,
+} from "@/workbench/contributions";
+import { beginTermination, endTermination } from "./termination";
 import { ask, type Ask } from "@/workbench/messages";
 import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
@@ -25,10 +38,33 @@ export function confirmExitEnabled(settings: Settings | null | undefined): boole
   return settings?.general?.confirmExit === true;
 }
 
+/** Last window closes instead of showing Welcome. Only an explicit choice does. */
+export function closeWithoutWelcomeEnabled(settings: Settings | null | undefined): boolean {
+  return settings?.general?.closeWithoutWelcome === true;
+}
+
+/** A closed window does not restore its editor tabs next time. Only an explicit choice does. */
+export function closeTabsWithWindowEnabled(settings: Settings | null | undefined): boolean {
+  return settings?.general?.closeTabsWithWindow === true;
+}
+
+/** The last project or LightEdit window shows Welcome instead of closing. */
+export function returnsToWelcome(
+  quitting: boolean,
+  windows: number,
+  hasSession: boolean,
+  settings: Settings | null | undefined,
+): boolean {
+  return !quitting && windows <= 1 && hasSession && !closeWithoutWelcomeEnabled(settings);
+}
+
 export interface CloseInput {
   quitting: boolean;
   windows: number;
   confirmExit: boolean;
+  confirmTerminate: boolean;
+  /** Running Run/Debug process names this close would terminate. */
+  processes: readonly string[];
   dirty: number;
   project: string | null;
 }
@@ -37,6 +73,13 @@ export interface CloseDeps {
   ask: Ask;
   saveAll: () => Promise<void>;
   disableConfirmExit: () => Promise<void>;
+  disableConfirmTerminate: () => Promise<void>;
+  /** Running Run/Debug process names in this window. */
+  runningProcesses: () => Promise<readonly string[]>;
+  /** Stops them, gracefully first and SIGKILL when asked, as IDEA's close does. */
+  terminate?: (kill: boolean) => Promise<void>;
+  /** Resolves once no process of this window is left. */
+  waitForProcesses?: () => Promise<void>;
   onSaveFailed: (e: unknown) => void;
   /** Stops custom document edits/execution before reading their final dirty state. */
   prepareClose?: () => Promise<EditorCloseSession | undefined>;
@@ -53,6 +96,27 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
     });
     if (r.button !== "exit") return false;
     if (r.checked) await deps.disableConfirmExit().catch(() => {});
+  }
+  let terminateNames: readonly string[] = [];
+  if (input.confirmTerminate && input.processes.length > 0) {
+    const names = input.processes;
+    const r = await deps.ask({
+      title:
+        names.length === 1
+          ? t("app.terminateProcesses.titleOne", { name: names[0]! })
+          : t("app.terminateProcesses.titleMany", { count: names.length }),
+      body:
+        names.length === 1
+          ? t("app.terminateProcesses.bodyOne", { name: names[0]! })
+          : t("app.terminateProcesses.bodyMany", { count: names.length, names: names.join(", ") }),
+      buttons: [{ id: "terminate", label: t("app.terminateProcesses.terminate"), primary: true }],
+      checkbox: t("app.terminateProcesses.dontAsk"),
+      icon: "warning",
+    });
+    if (r.button !== "terminate") return false;
+    if (r.checked) await deps.disableConfirmTerminate().catch(() => {});
+    // Terminated after the save question below, so cancelling that keeps the processes alive.
+    terminateNames = names;
   }
   let session: EditorCloseSession | undefined;
   let authorized = false;
@@ -73,6 +137,9 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
       else if (r.button === "discard") await session?.discard();
       else return false;
     }
+    // IDEA asks, then shows "Terminating 'X'" while the graceful shutdown runs; a Kill button
+    // there kills the processes and the close finishes once none is left.
+    if (terminateNames.length > 0) await terminateForClose(terminateNames, deps);
     session?.commit();
     authorized = true;
     return true;
@@ -94,6 +161,15 @@ const defaultDeps: CloseDeps = {
     const r = await commands.settingsSet("global", "general.confirmExit", "false");
     if (r.status === "ok") useProject.setState({ settings: r.data });
   },
+  disableConfirmTerminate: async () => {
+    const r = await commands.settingsSet("global", "run.confirmTerminate", "false");
+    if (r.status === "ok") useProject.setState({ settings: r.data });
+  },
+  runningProcesses: async () => (await liveProcesses()).map((p) => p.name),
+  terminate: (kill) => stopRunningProcesses(kill),
+  waitForProcesses: async () => {
+    while ((await liveProcesses()).length > 0) await new Promise((r) => setTimeout(r, 100));
+  },
   onSaveFailed: (e) =>
     notifications().notify({
       level: "error",
@@ -102,11 +178,43 @@ const defaultDeps: CloseDeps = {
     }),
 };
 
+/** The close waits for the processes, with the progress panel and a Kill escape hatch. */
+async function terminateForClose(names: readonly string[], deps: CloseDeps): Promise<void> {
+  if (!deps.terminate) return;
+  beginTermination(names, () => {
+    void deps.terminate?.(true).catch(() => undefined);
+  });
+  try {
+    await deps.terminate(false);
+    await deps.waitForProcesses?.();
+  } finally {
+    endTermination();
+  }
+}
+
+/** Process names this close would terminate; an unavailable feature list never blocks closing. */
+async function processNames(deps: CloseDeps): Promise<string[]> {
+  return [...new Set(await deps.runningProcesses().catch(() => []))].filter(Boolean);
+}
+
 let closing = false;
+
+/** Drops saved tabs when that setting is on. The result says whether a cancelled close should put them back. */
+function forgetTabs(): boolean {
+  if (!closeTabsWithWindowEnabled(useProject.getState().settings)) return false;
+  maybeEditorService()?.forgetSavedTabs?.();
+  return true;
+}
 
 async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   if (closing) return false;
   closing = true;
+  let forgot = false;
+  const undoForget = () => {
+    if (!forgot) return;
+    forgot = false;
+    maybeEditorService()?.keepSavedTabs?.();
+  };
   try {
     const ctx = await commands.windowCloseContext();
     if (!(await closeDocumentWindows())) {
@@ -114,25 +222,44 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       return false;
     }
     const s = useProject.getState();
-    // Closing the last project (or LightEdit) window closes its project and shows the welcome
-    // screen (to open another one); closing the welcome screen, or quitting, closes the window.
-    if (!ctx.quitting && ctx.windows <= 1 && (s.project || s.lightEdit)) {
-      if (await confirmLeave(deps)) await closeProject();
+    // The last project or LightEdit window can return to Welcome. Otherwise it closes.
+    if (returnsToWelcome(ctx.quitting, ctx.windows, !!(s.project || s.lightEdit), s.settings)) {
+      if (await confirmLeave(deps)) {
+        forgot = forgetTabs();
+        try {
+          await closeProject();
+          // Welcome is showing; keep the tabs dropped.
+          forgot = false;
+        } catch (e) {
+          undoForget();
+          throw e;
+        }
+      }
+      await commands.windowGroupCancelClose();
       return false;
     }
+    const confirmTerminate = workflowSettings().run.confirmTerminate;
     const ok = await decideClose(
       {
         quitting: ctx.quitting,
         windows: ctx.windows,
         confirmExit: confirmExitEnabled(s.settings),
+        confirmTerminate,
+        processes: confirmTerminate ? await processNames(deps) : [],
         dirty: dirtyCount(),
-        project: s.project?.name ?? null,
+        project: s.project?.displayName || s.project?.name || null,
       },
       deps,
     );
-    if (!ok) await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
-    return ok;
+    if (!ok) {
+      await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+      return false;
+    }
+    // The window is closing. Drop the tabs now so pagehide cannot write them back.
+    forgetTabs();
+    return true;
   } catch (e) {
+    undoForget();
     maybeEditorService()?.cancelClose?.();
     void commands.windowGroupCancelClose().catch(() => {});
     deps.onSaveFailed(e);
@@ -148,18 +275,39 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
  */
 export async function confirmLeave(
   deps: CloseDeps = defaultDeps,
-  project = useProject.getState().project?.name ?? null,
+  project = (useProject.getState().project?.displayName || useProject.getState().project?.name) ?? null,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
-  return decideClose({ quitting: false, windows: 2, confirmExit: false, dirty: dirtyCount(), project }, deps);
+  const confirmTerminate = workflowSettings().run.confirmTerminate;
+  return decideClose(
+    {
+      quitting: false,
+      windows: 2,
+      confirmExit: false,
+      confirmTerminate,
+      processes: confirmTerminate ? await processNames(deps) : [],
+      dirty: dirtyCount(),
+      project,
+    },
+    deps,
+  );
 }
 
 /** Quit: confirm once (if enabled), then let the backend close every window. */
 export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
   if (!isTauri()) return;
   if (confirmExitEnabled(useProject.getState().settings)) {
+    // Each window asks about its own processes as the backend closes it.
     const ok = await decideClose(
-      { quitting: false, windows: 1, confirmExit: true, dirty: 0, project: null },
+      {
+        quitting: false,
+        windows: 1,
+        confirmExit: true,
+        confirmTerminate: false,
+        processes: [],
+        dirty: 0,
+        project: null,
+      },
       { ...deps, prepareClose: undefined },
     );
     if (!ok) return;

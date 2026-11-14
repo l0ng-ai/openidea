@@ -1,0 +1,102 @@
+---
+title: "架构与沙箱"
+description: "插件代码如何运行：WebAssembly 组件、WIT world、宿主调用、沙箱、资源限制，以及每个插件一个线程的模型。"
+---
+
+代码插件是一个 WebAssembly **组件**（组件模型，WASI preview 2），在 IDE 内部由 [wasmtime](https://wasmtime.dev) 运行。它不能直接访问文件、网络、环境变量或进程。除纯计算外，它做的一切都要通过 IDE 提供的函数，而每个函数都会检查用户授予的[能力](/zh/plugins/capabilities)。
+
+## 组成部分
+
+| 部分     | 位置                                                                                                       | 作用                                                                                   |
+| -------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| 插件 API | [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit)                                                | 契约：WIT 包 `openidea:plugin@1.7.0`、其中的 interface 和 world                        |
+| Rust SDK | [`sdk/rust/openidea-plugin`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin)       | WIT 的类型化封装、`Plugin` trait、`register_plugin!`，以及给 `cargo test` 用的模拟宿主 |
+| 插件包   | [`crates/ide-extension`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-extension)               | 清单、能力及其风险等级、授权记录、贡献点、`.oiplugin` 包和插件市场索引                 |
+| 运行时   | [`crates/ide-plugin`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-plugin)                     | wasmtime 引擎、每个插件一个 `Store`、各项限制、每个活跃插件一个 actor 线程             |
+| 宿主     | [`crates/ide-host/src/plugins`](https://github.com/l0ng-ai/openidea/tree/main/crates/ide-host/src/plugins) | 实现宿主 API，负责安装和监管插件；桌面应用和 `openidea-server` 运行的是同一份代码      |
+
+宿主内部如何组织，见贡献者文档中的 [插件宿主](/zh/contribute/architecture/plugin-host)。
+
+## World、导入与导出
+
+插件 API 是一个 WIT 包。基础 world `plugin` 列出组件可以**导入**的宿主 interface（插件调用它们），以及组件必须**导出**的插件 interface（IDE 调用它们）：
+
+- 导入：`log`、`ui`、`storage`、`fs`、`workspace`、`editor`、`decorations`、`invocation`、`vcs`、`commit`、`events`、`tasks`、`diagnostics`、`net`、`secrets`、`process`、`ipc`、`output`、`auth`、`command-runner`、`views`、`run`、`run-targets`、`database`、`mcp`、`settings`。
+- 导出：`lifecycle`（activate、deactivate）、`commands`（执行命令）、`event-handler`（处理一批事件）。
+
+可选功能各自是一个独立的 world：它 include `plugin` 并多一个导出。只有清单声明了对应的贡献时，插件才需要导出它：
+
+| World                          | 新增导出                   | 在清单中如何声明                                | SDK `register_plugin!` 参数 |
+| ------------------------------ | -------------------------- | ----------------------------------------------- | --------------------------- |
+| `plugin-syntax`                | `syntax-provider`          | 没有语法定义的语言                              | `syntax`                    |
+| `plugin-providers`             | `providers`                | `[[contributes.providers]]`                     | `providers`                 |
+| `plugin-views`                 | `view-provider`            | `views`、`customEditors`                        | `views`                     |
+| `plugin-indexing`              | `document-indexer`         | `documentIndexers`                              | `indexing`                  |
+| `plugin-semantic-tokens`       | `semantic-tokens-provider` | provider kind `semantic-tokens`                 | `semantic_tokens`           |
+| `plugin-hover`                 | `hover-provider`           | provider kind `hover`                           | `hover`                     |
+| `plugin-inlay-hints`           | `inlay-hints-provider`     | provider kind `inlay-hints`                     | `inlay_hints`               |
+| `plugin-diagnostics`           | `diagnostics-provider`     | provider kind `diagnostics`                     | `diagnostics`               |
+| `plugin-file-actions`          | `file-actions`             | provider kind `code-actions`                    | `file_actions`              |
+| `plugin-details`               | `detail-provider`          | `location = "services"` 的视图                  | `details`                   |
+| `plugin-commit-checks`         | `commit-checker`           | `commitChecks`                                  | `commit_checks`             |
+| `plugin-endpoints`             | `endpoints-provider`       | `endpoints`                                     | `endpoints`                 |
+| `plugin-run-configurations`    | `run-configurations`       | `runConfigurations`                             | `run_configurations`        |
+| `plugin-test-results`          | `test-results`             | `framework = "plugin"` 的运行检测器             | `test_results`              |
+| `plugin-language-features`     | `language-features`        | API 1.4 的 provider kind                        | `language_features`         |
+| `plugin-injections`            | `injections`               | provider kind `injections`                      | `injections`                |
+| `plugin-mcp`                   | `mcp-provider`             | `mcpTools`                                      | `mcp`                       |
+| `plugin-run-target-validation` | `run-target-validation`    | 无需声明，针对插件自己的运行目标调用（API 1.5） | `run_target_validation`     |
+
+在 Rust 里把参数列出来即可：`register_plugin!(MyPlugin, providers, views)`。每个可选 world 还有一个只含导出的孪生 world（`syntax`、`editor-providers`、`views-provider` 等），由组件工具与 `plugin` 合并。
+
+## 双向调用
+
+- **IDE → 插件**（导出）：用户执行命令时 IDE 调用 `commands.run`；有订阅的事件时调用 `event-handler.handle` 并传入一批事件；编辑器需要补全、悬停等时调用 provider 函数；绘制视图时调用 `view-provider.render`。
+- **插件 → IDE**（导入）：在上述任一调用中，插件可以调用 `editor.text-editor.document`、`workspace.project.read-file`、`net.fetch` 等宿主函数。缺少能力时宿主函数返回 `error::denied("<capability>")`，插件继续运行，可以降级处理。
+
+  1.x 的所有调用都是**同步**的：宿主调用返回前插件实例一直阻塞；编辑器 provider 每次调用都会收到完整的文档文本。位置坐标是从 0 开始的行号和 UTF-16 列，与编辑器和 LSP 一致（syntax provider 使用 UTF-8 字节偏移，由 IDE 转换）。
+
+## 沙箱
+
+每个插件都有自己的 wasmtime `Store`：
+
+- 没有预打开的目录、没有环境变量、没有网络，也不继承 stdin/stdout；
+- WASI 只提供时钟和随机数；
+- stderr 会被捕获：`eprintln!` 的输出写进 IDE 日志，panic 的信息会随崩溃一起显示。
+
+文件、网络、进程、套接字和密钥都只能通过宿主函数访问，每个函数都受某个能力约束。路径会先解析到真实位置再检查，所以符号链接无法逃出项目根目录或已授权的目录。
+
+Web 视图和 Web 自定义编辑器运行在 `<iframe sandbox="allow-scripts">` 中，从 IDE 自己的 `openidea-plugin` URL scheme 加载：opaque origin，没有网络、Cookie 或存储，没有 IDE API，只能加载页面自己的文件。页面通过 `postMessage` 与插件代码通信。
+
+## 限制
+
+每次调用插件都有上限：
+
+| 限制                                                  | 值                                          |
+| ----------------------------------------------------- | ------------------------------------------- |
+| CPU                                                   | 每次调用约 5·10⁹ 条 wasm 指令的 fuel 预算   |
+| 命令、事件、activate、deactivate                      | 5 秒墙钟时间                                |
+| 开启了任务（`tasks.begin`）的调用                     | 60 秒；任务每次报告进度或检查取消时重新计时 |
+| 编辑器 provider（语法、补全、代码操作、导航、行标记） | 超过 50 ms 的结果被丢弃；500 ms 时中断调用  |
+| 内存                                                  | 256 MiB 线性内存                            |
+| 空闲实例                                              | 5 分钟没有调用就回收                        |
+
+等待用户操作（选择器、输入框、确认框）的时间不计入时间限制。各个宿主函数还有自己的上限（文件大小、句柄数、响应大小等），详见 [`plugins/README.md`](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md)。
+
+## 线程与崩溃
+
+每个活跃插件运行在自己的线程上（一个持有该插件运行时的 actor）。调用方把任务排进队列并等待回复，所以同一实例内的调用永远不会并发。编辑器调用方可以在软截止时间放弃等待，而调用本身继续执行到硬截止时间；任何线程都可以取消调用。墙钟限制通过 wasmtime 的 epoch 中断实现。
+
+panic、trap、权限违规或超出限制都会丢弃该实例。用户只会收到一次提示，下次需要时插件重新启动；连续崩溃时重启前的等待时间逐次翻倍（1 秒、2 秒……最长 60 秒）。连续崩溃三次后，插件在本次会话中被标记为 **失败**，**设置 › 插件** 中会显示原因；点 **重启**、关闭再打开，或 **从磁盘重新加载** 都能让它重新启动。只要有一次调用正常返回，计数就会清零。插件崩溃不会影响 IDE 本身。
+
+**设置 › 插件** 会显示每个插件的激活次数、近期调用延迟（p95）、崩溃次数、超时的编辑器结果和空闲回收次数。
+
+## 远程项目
+
+插件代码在项目所在的机器上运行。窗口打开远程项目时，桌面端会把已启用的代码插件及其授权发送给 `openidea-server`，由它在文件旁边运行：文件读取、搜索、进程、网络请求和诊断都作用于远程机器，`process:` 程序也在那里解析。密钥始终留在桌面端的钥匙串中，服务器在请求需要时向桌面端索取。远程插件的视图、通知、状态栏项和终端照常显示在窗口中。
+
+目前的限制：项目插件（`.openidea/plugins`）还不能在远程项目中运行；插件在服务器上的存储初始为空。
+
+## 异步与 API 2.0
+
+1.x API 有意设计为同步。WASI 0.3 异步组件计划在 API 2.0 引入，宿主中会有一个适配层让 1.x 插件继续运行。见 [API 版本与兼容](/zh/plugins/versioning)。

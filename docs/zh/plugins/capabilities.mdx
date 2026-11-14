@@ -1,0 +1,96 @@
+---
+title: "权限与能力"
+description: "能力（capability）模型：插件声明什么、用户批准什么，以及每个能力解锁了什么。"
+---
+
+插件代码只能做它的**能力**（capability）允许的事。插件在 `plugin.toml` 中声明能力；用户在安装时批准，新版本要求更多能力时再批准一次。缺少能力时调用受限函数会返回 `Error::Denied("<capability>")`，插件继续运行，可以降级处理（例如 Git Toolbox 没有 `vcs.write` 时依然显示分支）。
+
+```toml
+[capabilities]
+required = ["project.read", "editor.write"]
+optional = ["net:api.example.com", "secrets"]
+```
+
+日志、通知、状态栏项、任务和运行时贡献不需要任何能力。
+
+## 授权对话框
+
+安装插件包，或允许链接插件、项目插件运行时，会弹出对话框（“安装 Word Tools 1.2.0？”或“允许 Word Tools 运行？”），逐项列出请求的能力：
+
+- 能力 id（如 `net:api.example.com`）及其允许做什么的说明；
+- 风险标记：**低**、**中** 或 **高**；
+- **optional** 能力前有复选框（低风险的默认勾选），**required** 能力前是圆点，安装即视为同意。
+
+只要授予的能力里有高风险的，对话框就会提示：“高风险权限相当于在这台计算机上运行任意代码。”插件包未签名，或签名密钥与已安装版本不同时，对话框也会给出警告（见 [审核规则与安全](/zh/plugins/publishing/policy)）。
+
+之后：
+
+- 不要求新能力的更新沿用已安装版本的授权。要求更多能力的更新会在 **设置 › 插件** 中显示 **需要授权**，在你点击 **查看权限…** 并允许之前保持停用。
+- 可以在 **设置 › 插件** 的插件详情中撤销 optional 能力。
+- 链接的插件（`openidea-plugin link`）按文件夹授权；项目插件（`.openidea/plugins`）只在受信任的项目中、且你允许后才运行。
+
+## 能力一览
+
+| 能力                | 风险 | 解锁                                                                                                                           | API                        |
+| ------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| `project.read`      | 低   | `Project::root`、`read_file`、`find_files`、`symbols`、`search_text`、`host::projects`、发布诊断、`problems`、打开编辑器、装饰 | 1.0                        |
+| `project.write`     | 高   | `Project::write_file`：在打开的项目中创建和替换文本文件，但不能写 git 自己的文件（`.git`）                                     | 1.3                        |
+| `editor.read`       | 低   | `TextEditor::document`、`selections`、`host::open_editors`                                                                     | 1.0                        |
+| `editor.write`      | 中   | `TextEditor::apply_edits`                                                                                                      | 1.0                        |
+| `vcs.read`          | 低   | `vcs_status`、`vcs_remotes`、`vcs_log`、`vcs_blame`、`vcs_diff`、待提交的内容、提交前检查                                      | 1.0                        |
+| `vcs.write`         | 中   | `vcs_fetch`（仅受信任项目）、`host::set_commit_message`                                                                        | 1.0                        |
+| `storage`           | 低   | `host::storage`，每个插件 64 MiB                                                                                               | 1.0                        |
+| `events`            | 低   | 文件打开、关闭、保存，文件变化，编辑器焦点变化，仓库变化，设置变化                                                             | 1.0                        |
+| `events.input`      | 中   | `action-performed` 和 `input-mode-changed` 事件（按键和编辑器输入）                                                            | 1.0                        |
+| `clipboard`         | 中   | `host::copy_to_clipboard`，以及插件 Web 视图中的剪贴板 API                                                                     | 1.0                        |
+| `secrets`           | 中   | 请求头中的 `{{secret:<name>}}`、`secret_is_set`、`secret_set`、`secret_delete`                                                 | 1.0                        |
+| `net:<host>`        | 中   | `host::fetch` 通过 HTTPS（以及回环地址的 HTTP）访问该主机；`*.example.com` 匹配子域名                                          | 1.0                        |
+| `net:ask`           | 中   | 第一次请求未声明的 HTTPS 主机时询问用户                                                                                        | 1.5                        |
+| `net.http:<host>`   | 中   | 通过未加密的 HTTP 访问该主机                                                                                                   | 1.4                        |
+| `database.sources`  | 中   | 只管理插件自己的项目数据源并写入其凭据；仅限受信任项目                                                                         | 1.4                        |
+| `fs.read:<path>`    | 高   | 通过 `host::fs` 读取项目外、该路径下的文件                                                                                     | 1.0（`fs` interface：1.3） |
+| `fs.write:<path>`   | 高   | 通过 `host::fs` 写入项目外、该路径下的文件；不包含读权限                                                                       | 1.3                        |
+| `process:<program>` | 高   | 运行该程序：`run_process`、`run_command`、`start`、终端、语言服务器、调试适配器、运行配置                                      | 1.0                        |
+| `ipc:<path>`        | 高   | 项目所在机器上的本地 Unix 套接字或 Windows 命名管道                                                                            | 1.4                        |
+| `ide.commands`      | 高   | 像用户亲自选择一样运行任意 IDE 操作或其他插件的命令，包括运行程序、提交和推送。插件自己的命令不受此限制。                      | 1.4                        |
+
+**API** 一列是声明该能力时清单最低可以兼容的插件 API。例如声明了 `net.http:` 的清单必须要求 `engines.openidea = "^1.4"` 或更高，否则安装和 `openidea-plugin check` 都会拒绝。
+
+## 进程
+
+`process:<program>` 是最强的能力，相当于在机器上运行任意代码。
+
+- 声明一个程序名（`process:checkstyle`）。授权时，IDE 在项目所在机器的 `PATH` 中把它解析为绝对路径，并记录文件内容的哈希。每次启动前都会重新检查两者；文件被替换后会被拒绝，直到用户重新批准。
+- 用户可以在 **设置 › 插件** 中为 `process:` 授权选择其他可执行文件，全局或仅对当前项目生效。新选择同样会被批准并固定。插件代码仍然使用它声明的程序名。
+- `process:` 授权也会从贡献中推导出来：语言的 `language-servers` 和 `debugger`，以及运行检测器的 `command`。这些都是 optional 的，拒绝其中一个不影响插件的其他功能。
+- 进程在受信任项目的项目根目录中运行。插件只能新增环境变量，不能替换或删除已有的变量。
+
+## 项目以外的文件
+
+- `fs.read:<path>` 授权读取打开的项目之外的一个目录（任意深度）或一个文件。路径先解析到真实位置再比较，所以指向授权目录之外的符号链接会被拒绝，`/opt/see` 也不覆盖 `/opt/seeyon`。授权整个文件系统（`/`、`C:\`）会被拒绝。`~/` 表示用户主目录。
+- `fs.write:<path>` 授权在该路径下创建和替换文件。写入是原子的，会保留文件原有的编码和 BOM，单个文件上限 16 MiB；编辑器中该文件有未保存修改时写入会被拒绝。
+- `host::fs::plugin_dir()` 返回只属于该插件的私有目录，在其中读写不需要任何能力。它在重新加载、更新和重启后都保留，卸载时删除。
+
+## 网络
+
+- `net:<host>` 允许通过 HTTPS（以及 HTTP 访问回环地址）连接该主机的任意端口。`*.example.com` 匹配所有子域名，不包括主域名本身。
+- `net.http:<host>` 允许未加密的 HTTP，但不包含 HTTPS。从 HTTPS 重定向到 HTTP 也需要 `net.http:`。
+- 每次重定向都会在连接前检查。响应上限 16 MiB。请求在项目所在的机器上发出。
+- `net:ask`（API 1.5）允许插件访问清单中没有列出的 HTTPS 主机。第一次请求新主机时会询问用户，显示插件名和主机名，选项为 **这次允许**、**一直允许** 和 **拒绝**（远程会话中为 **本次会话内允许** 和 **拒绝**）。“一直允许”按精确主机记住，并显示在插件的权限中，可以随时移除。没有窗口的调用（定时任务、事件处理、provider）从不询问，直接得到 `denied`。普通 HTTP 永远不走这个流程。
+
+## 密钥
+
+密钥在清单中声明，由用户在 **设置 › 插件** 中填写，保存在系统钥匙串里。
+
+```toml
+[[contributes.secrets]]
+name = "api-key"
+label = "API key"
+description = "Used only with the OpenAI backend."
+```
+
+插件永远读不到密钥本身。它在请求头里写 `{{secret:api-key}}`，由宿主在发出请求时填入。`host::secret_is_set` 可以判断用户是否已经填写。API 1.4 新增 `secret_set` 和 `secret_delete`（例如用来保存 OAuth token），它们同样不会返回密钥值。在远程项目中，密钥始终留在桌面端的钥匙串里。
+
+## 受信任项目
+
+无论插件被授予了什么，有些功能只在受信任项目中可用：运行进程、`vcs_fetch` 和较新的 Git 读取、数据库数据源、运行目标以及项目插件。在受限模式下打开的项目中，可以浏览插件市场，但不能改变正在运行哪些插件代码。

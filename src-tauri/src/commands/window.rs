@@ -9,7 +9,7 @@ use specta::Type;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, State, WebviewWindow, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -52,17 +52,17 @@ pub async fn window_open_file_in_new_window(
     windows::open_file_in_new_window(&app, project, file)
 }
 
-/// [`window_open_project`] for folder `path` on the host of SSH configuration
-/// `ssh_config` (Remote Development); a new window connects itself.
+/// [`window_open_project`] for folder `path` of `target` (an SSH host or a WSL distribution;
+/// Remote Development); a new window connects itself.
 #[tauri::command]
 #[specta::specta]
 pub async fn window_open_remote(
     app: AppHandle,
-    ssh_config: String,
+    target: crate::remote_dev::RemoteTarget,
     path: String,
     new_window: bool,
 ) -> IdeResult<OpenOutcome> {
-    windows::open_remote_window(&app, &ssh_config, &path, new_window)
+    windows::open_remote_window(&app, &target, &path, new_window)
 }
 
 /// Opens an empty (welcome) window; returns its label.
@@ -100,6 +100,19 @@ pub async fn window_open_comparison(
     windows::open_comparison_window(&app, &window, comparison, background)
 }
 
+/// Opens a window showing `diff` next to this window ("Show Diff in New Window").
+/// `background` (`#rrggbb`) paints it until its page has loaded.
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_diff(
+    app: AppHandle,
+    window: WebviewWindow,
+    diff: windows::DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_diff_window(&app, &window, diff, background)
+}
+
 /// Opens this window's Sync with Deployed window comparing `paths` with `server` (or hands them
 /// to the open one). `background` (`#rrggbb`) paints a new window until its page has loaded.
 #[tauri::command]
@@ -127,6 +140,28 @@ pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
+/// Fills the work area without the platform zoom animation. Returns whether it is filled now.
+#[tauri::command]
+#[specta::specta]
+pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
+    crate::window_zoom::toggle(&window)
+}
+
+/// Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
+/// breakpoint is hit while the window is in the background (macOS bounces the dock icon,
+/// Linux sets the urgency hint). A focused window is never flashed: the user is already
+/// looking at it, and re-flashing it would steal attention for nothing.
+#[tauri::command]
+#[specta::specta]
+pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
+    if flash && window.is_focused().unwrap_or(false) {
+        return Ok(());
+    }
+    window
+        .request_user_attention(flash.then_some(tauri::UserAttentionType::Critical))
+        .map_err(|e| IdeError::internal(e.to_string()))
+}
+
 /// Height of the web title bar in native logical pixels (CSS height × IDE zoom).
 #[tauri::command]
 #[specta::specta]
@@ -146,6 +181,14 @@ pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResu
 #[specta::specta]
 pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
     windows.take_launch(window.label())
+}
+
+/// Release the opening window's reservation after navigation or cancellation.
+#[tauri::command]
+#[specta::specta]
+pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
+    windows.complete_launch(window.label());
+    Ok(())
 }
 
 #[derive(Serialize, Deserialize, Type)]
@@ -178,6 +221,13 @@ pub fn window_open_projects(
         .collect())
 }
 
+/// Whether this window is in native full screen (on macOS, also a tab of a fullscreen group).
+#[tauri::command]
+#[specta::specta]
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
+    window.is_fullscreen().unwrap_or(false)
+}
+
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CloseContext {
@@ -189,8 +239,18 @@ pub struct CloseContext {
 
 #[tauri::command]
 #[specta::specta]
-pub fn window_close_context(app: AppHandle, windows: State<'_, WindowsState>) -> CloseContext {
-    CloseContext { quitting: windows.quitting(), windows: windows::project_window_labels(&app).len() as u32 }
+pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, WindowsState>) -> CloseContext {
+    let all = windows::project_window_labels(&app);
+    let pending: Vec<String> = windows::sorted_labels(
+        windows.pending_closes().iter().map(String::as_str).filter(|l| all.iter().any(|a| a == l)),
+    );
+    // Members of a tab group asking to close together are one window closing: the first of them
+    // is the last window left (the frontend may return it to the welcome screen); the others just close.
+    let count = match pending.first() {
+        Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
+        _ => all.len(),
+    };
+    CloseContext { quitting: windows.quitting(), windows: count as u32 }
 }
 
 /// Quits: closes every window, each of which runs its own unsaved-changes check.
@@ -214,20 +274,38 @@ pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
     });
 }
 
-/// Sets the menu's labels / shortcut text (on locale or keymap change) and rebuilds it.
+/// Sets the menu's labels / accelerators and updates the menu when the visible
+/// items changed. Accelerators of actions that are not on the menu must not call
+/// `set_menu`, which redraws the macOS menu bar.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
+    window: WebviewWindow,
     app: AppHandle,
     menu_state: State<'_, MenuState>,
     state: State<'_, AppState>,
     config: MenuConfig,
 ) {
-    *menu_state.config.lock() = config;
-    menu::install(&app, &menu_state, &state.recent.list());
+    if menu::native_menu_bar()
+        && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
+    {
+        return;
+    }
+    if menu::store_config(&menu_state, config) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
-/// Rebuilds the menu (e.g. after the recent-projects list changed).
+fn owns_menu_config(source: &str, target: &str) -> bool {
+    let owner = match windows::auxiliary(target) {
+        Some((windows::AuxKind::Settings, parent)) => parent,
+        _ => target,
+    };
+    source == owner
+}
+
+/// Updates the menu after the recent-projects list changed. Only the Open Recent
+/// submenu is rewritten when the rest of the menu is unchanged.
 #[tauri::command]
 #[specta::specta]
 pub fn menu_refresh(app: AppHandle, menu_state: State<'_, MenuState>, state: State<'_, AppState>) {
@@ -279,6 +357,27 @@ pub fn app_log_location() -> IdeResult<LogLocation> {
 
 #[derive(Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct CliInstallation {
+    pub path: ide_core::IpcPath,
+    pub path_directory: Option<ide_core::IpcPath>,
+}
+
+/// Installs the `openidea` command for this user.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_cli_install() -> IdeResult<CliInstallation> {
+    tauri::async_runtime::spawn_blocking(crate::cli::install).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// Removes the installed `openidea` command; returns the links removed.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_cli_uninstall() -> IdeResult<Vec<ide_core::IpcPath>> {
+    tauri::async_runtime::spawn_blocking(crate::cli::uninstall).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+#[derive(Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
     pub version: String,
     /// Build id from CI (`OPENIDEA_BUILD` at compile time), else `dev`.
@@ -305,24 +404,10 @@ pub fn app_build_info(app: AppHandle) -> BuildInfo {
     }
 }
 
-#[derive(Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateInfo {
-    pub version: String,
-    pub current_version: String,
-    pub notes: Option<String>,
-    pub date: Option<String>,
-}
+use ide_core::updates::UpdateInfo;
+pub use ide_core::updates::{UpdateCheck, UpdateSource, UpdateStatus};
 
-#[derive(Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateCheck {
-    /// False when no update endpoint is configured (no request was made).
-    pub enabled: bool,
-    pub update: Option<UpdateInfo>,
-}
-
-fn update_endpoint_env() -> Option<String> {
+pub(crate) fn update_endpoint_env() -> Option<String> {
     std::env::var("OPENIDEA_UPDATE_ENDPOINT").ok().filter(|s| !s.trim().is_empty())
 }
 
@@ -330,39 +415,86 @@ fn update_endpoint_env() -> Option<String> {
 /// tauri.conf.json, or the `OPENIDEA_UPDATE_ENDPOINT` environment variable. Empty by
 /// default, and "Check for Updates…" is hidden then.
 pub fn updates_configured<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
-    let in_config = app
-        .config()
+    !config_endpoints(app).is_empty() || update_endpoint_env().is_some()
+}
+
+const CNB_ENDPOINT: &str = "https://cnb.cool/l0ng-ai/openidea/-/releases/latest/download/latest.json";
+
+fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    app.config()
         .plugins
         .0
         .get("updater")
         .and_then(|u| u.get("endpoints"))
         .and_then(|e| e.as_array())
-        .is_some_and(|e| !e.is_empty());
-    in_config || update_endpoint_env().is_some()
+        .map(|e| e.iter().filter_map(|u| u.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
-fn updater(app: &AppHandle) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
+/// The endpoints tried in order: `source` first, the other source when it fails or has
+/// no manifest. Bundles are signed, so either source's manifest and downloads verify.
+/// No official endpoint (a build without updates) means no mirror either. Nightly builds
+/// aren't mirrored: the mirror's manifest would move them to the stable version.
+fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
+    if official.is_empty() || nightly {
+        return official;
+    }
+    let mirror = vec![CNB_ENDPOINT.to_string()];
+    match source {
+        UpdateSource::Github => [official, mirror].concat(),
+        UpdateSource::Cnb => [mirror, official].concat(),
+    }
+}
+
+fn is_nightly(version: &str) -> bool {
+    version.contains("-nightly.")
+}
+
+fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
         return Ok(None);
     }
-    let env = update_endpoint_env();
+    let endpoints = match update_endpoint_env() {
+        Some(url) => vec![url],
+        None => source_endpoints(config_endpoints(app), source, is_nightly(&app.package_info().version.to_string())),
+    };
+    let endpoints = endpoints
+        .iter()
+        .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
+        .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    let mut builder = app.updater_builder().configure_client(move |b| ide_http::client::with_proxy(b, &proxy));
-    if let Some(url) = env {
-        let url = url.parse().map_err(|e| IdeError::invalid(format!("OPENIDEA_UPDATE_ENDPOINT: {e}")))?;
-        builder = builder.endpoints(vec![url]).map_err(|e| IdeError::invalid(e.to_string()))?;
+    let mut builder = app.updater_builder();
+    if let Some(target) = crate::updates::portable_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tauri::utils::platform::bundle_type(),
+    ) {
+        builder = builder.target(target);
     }
-    builder.build().map(Some).map_err(|e| IdeError::unavailable(e.to_string()))
+    builder
+        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
+        .endpoints(endpoints)
+        .map_err(|e| IdeError::invalid(e.to_string()))?
+        .build()
+        .map(Some)
+        .map_err(|e| IdeError::unavailable(e.to_string()))
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn app_check_update(app: AppHandle) -> IdeResult<UpdateCheck> {
-    let Some(updater) = updater(&app)? else {
+pub async fn app_check_update(app: AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
+    crate::updates::check(&app, Some(source)).await
+}
+
+pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
+    let Some(updater) = updater(app, source)? else {
         return Ok(UpdateCheck { enabled: false, update: None });
     };
-    let update = updater.check().await.map_err(|e| IdeError::unavailable(e.to_string()))?;
+    let update = tokio::time::timeout(std::time::Duration::from_secs(60), updater.check())
+        .await
+        .map_err(|e| IdeError::unavailable(e.to_string()))?
+        .map_err(|e| IdeError::unavailable(e.to_string()))?;
     Ok(UpdateCheck {
         enabled: true,
         update: update.map(|u| UpdateInfo {
@@ -374,23 +506,29 @@ pub async fn app_check_update(app: AppHandle) -> IdeResult<UpdateCheck> {
     })
 }
 
-/// The background check made once per process when the first window starts;
-/// later calls (other windows) and debug builds get `None`. Failures are logged,
-/// not reported: the user didn't ask for this check.
 #[tauri::command]
 #[specta::specta]
-pub async fn app_startup_update_check(app: AppHandle) -> Option<UpdateInfo> {
-    static DONE: AtomicBool = AtomicBool::new(false);
-    if cfg!(debug_assertions) || DONE.swap(true, Ordering::SeqCst) {
-        return None;
-    }
-    match app_check_update(app).await {
-        Ok(check) => check.update,
-        Err(e) => {
-            tracing::warn!("startup update check failed: {e}");
-            None
-        }
-    }
+pub fn app_update_window_ready(
+    app: AppHandle,
+    window: WebviewWindow,
+    ready: bool,
+    system_locale: String,
+) -> IdeResult<()> {
+    crate::updates::window_ready(&app, window.label(), ready, system_locale);
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn app_update_status(state: State<'_, AppState>) -> IdeResult<UpdateStatus> {
+    Ok(state.updates.state.lock().policy.status.clone())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn app_update_announcement(state: State<'_, AppState>, version: String, automatic: bool) -> IdeResult<bool> {
+    let claimed = state.updates.state.lock().policy.announce(&version);
+    Ok(!automatic || claimed)
 }
 
 /// Progress of [`app_install_update`], streamed to the UI's background task.
@@ -452,6 +590,7 @@ impl Drop for InstallingGuard {
 pub async fn app_install_update(
     app: AppHandle,
     state: State<'_, AppState>,
+    source: UpdateSource,
     request: RequestId,
     on_progress: Channel<UpdateProgress>,
 ) -> IdeResult<()> {
@@ -459,7 +598,7 @@ pub async fn app_install_update(
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
     let result = async {
-        let updater = updater(&app)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
         let update = tokio::select! {
             r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
             _ = token.cancelled() => return Err(IdeError::cancelled()),
@@ -480,18 +619,97 @@ pub async fn app_install_update(
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?
-            .map_err(|e| IdeError::internal(e.to_string()))
+        tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(windows)]
+            if update.target.ends_with("-portable") {
+                let exe = tauri::utils::platform::current_exe()?;
+                return ide_tools::portable_update::install(&exe, &bytes);
+            }
+            update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
     .await;
     state.host.end_request(request);
     result
 }
 
+/// Release notes of `version` from the update manifest (`latest.json`), read
+/// through the configured source. An install records the notes it saw, so this
+/// is only for an update installed outside the app. `Ok(None)` when the manifest
+/// covers another version or carries no notes.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSource) -> IdeResult<Option<String>> {
+    let endpoints = match update_endpoint_env() {
+        Some(url) => vec![url],
+        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
+    };
+    let client = ide_http::client::shared()?;
+    for endpoint in endpoints {
+        // A hanging endpoint must not leave the page on "Fetching release notes…".
+        let fetched = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let Ok(response) = client.get(&endpoint).send().await else {
+                return None;
+            };
+            if !response.status().is_success() {
+                return None;
+            }
+            response.text().await.ok()
+        })
+        .await;
+        let Ok(Some(text)) = fetched else { continue };
+        if let Some(notes) = notes_for(&text, &version) {
+            return Ok(Some(notes));
+        }
+    }
+    Ok(None)
+}
+
+/// The notes of `version` in a manifest, when that is the entry it lists.
+fn notes_for(manifest: &str, version: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(manifest).ok()?;
+    if value.get("version")?.as_str()? != version {
+        return None;
+    }
+    let notes = value.get("notes")?.as_str()?.trim();
+    (!notes.is_empty()).then(|| notes.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_notes_come_from_the_manifest_of_that_version() {
+        let manifest = serde_json::json!({
+            "version": "0.1.40",
+            "notes": "## What's new\n\n- dev containers",
+            "pub_date": "2026-11-01T00:00:00Z",
+        })
+        .to_string();
+        assert_eq!(notes_for(&manifest, "0.1.40").as_deref(), Some("## What's new\n\n- dev containers"));
+        // Another version, empty notes, or not JSON: nothing to show.
+        assert_eq!(notes_for(&manifest, "0.1.41"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40", "notes": "  " }"#, "0.1.40"), None);
+        assert_eq!(notes_for(r#"{ "version": "0.1.40" }"#, "0.1.40"), None);
+        assert_eq!(notes_for("not json", "0.1.40"), None);
+    }
+
+    #[test]
+    fn menu_configuration_follows_the_active_window_or_its_settings_parent() {
+        for (source, target, allowed) in [
+            ("main", "main", true),
+            ("project-1", "main", false),
+            ("main", "settings-main", true),
+            ("project-1", "settings-main", false),
+            ("project-1", "settings-project-1", true),
+            ("comparison-main-1", "comparison-main-1", true),
+            ("main", "comparison-main-1", false),
+        ] {
+            assert_eq!(super::owns_menu_config(source, target), allowed, "{source} → {target}");
+        }
+    }
+
     use super::*;
 
     fn downloading(p: Option<UpdateProgress>) -> Option<(f64, Option<f64>)> {
@@ -520,6 +738,27 @@ mod tests {
         assert_eq!(downloading(t.chunk(256 * 1024, None)), Some(((256 * 1024 + 1034) as f64, None)));
         // A zero length is treated as unknown, not divided by.
         assert!(ProgressThrottle::default().chunk(1, Some(0)).is_some());
+    }
+
+    #[test]
+    fn chosen_source_is_tried_first_and_the_other_after_it() {
+        let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
+        assert_eq!(
+            source_endpoints(vec![github.clone()], UpdateSource::Github, false),
+            [github.clone(), CNB_ENDPOINT.into()]
+        );
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb, false), [CNB_ENDPOINT.into(), github]);
+        // A build without an update endpoint stays without one.
+        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb, false).is_empty());
+    }
+
+    #[test]
+    fn nightly_builds_update_from_their_own_manifest_whatever_the_source() {
+        let nightly = "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json".to_string();
+        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Cnb, true), vec![nightly.clone()]);
+        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
+        assert!(is_nightly("0.1.40-nightly.202611081417"));
+        assert!(!is_nightly("0.1.40"));
     }
 
     #[test]

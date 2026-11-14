@@ -290,7 +290,8 @@ impl Timeline {
     /// and records when the turn ended (`done`) on the message that started it.
     pub fn end_turn(&mut self, done: Option<f64>) -> Vec<usize> {
         let mut changed = Vec::new();
-        let started = self.entries.iter().rposition(|e| matches!(e, AgentEntry::User { .. }));
+        // A steered message rides along in a running turn; the one that started it owns its end.
+        let started = self.entries.iter().rposition(|e| matches!(e, AgentEntry::User { steered: false, .. }));
         for (i, e) in self.entries.iter_mut().enumerate() {
             match e {
                 AgentEntry::User { done_ms, .. } if Some(i) == started && done.is_some() && done_ms.is_none() => {
@@ -434,7 +435,14 @@ mod tests {
         t.push(AgentEntry::Agent { text: "between".into() });
         assert_eq!(t.apply(&plan("completed")).changed, vec![0]);
         t.apply(&json!({"sessionUpdate": "tool_call", "toolCallId": "c", "title": "Run", "status": "in_progress"}));
-        t.push(AgentEntry::Permission { id: 1, title: "Run?".into(), options: vec![], chosen: None });
+        t.push(AgentEntry::Permission {
+            id: 1,
+            title: "Run?".into(),
+            command: None,
+            options: vec![],
+            questions: vec![],
+            chosen: None,
+        });
         assert_eq!(t.end_turn(None), vec![2, 3]);
         let again = Timeline::from_entries(t.entries.clone());
         assert_eq!(again.plan, Some(0));
@@ -460,6 +468,27 @@ mod tests {
         assert!(matches!(t.entries[2], AgentEntry::User { done_ms: Some(5.0), .. }));
         // Settled once: a later end (a restart) doesn't move it.
         assert_eq!(t.end_turn(Some(9.0)), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn end_turn_records_on_the_message_that_started_the_turn() {
+        let user = |sent: f64, steered: bool| AgentEntry::User {
+            text: "q".into(),
+            attachments: vec![],
+            images: vec![],
+            sent_ms: Some(sent),
+            done_ms: None,
+            steered,
+        };
+        let mut t = Timeline::default();
+        t.push(user(1.0, false));
+        t.push(AgentEntry::Agent { text: "a".into() });
+        t.push(user(2.0, true));
+        // The steered message rides along in the turn: the reply's time belongs to the
+        // message that started it.
+        assert_eq!(t.end_turn(Some(5.0)), vec![0]);
+        assert!(matches!(t.entries[0], AgentEntry::User { done_ms: Some(5.0), .. }));
+        assert!(matches!(t.entries[2], AgentEntry::User { done_ms: None, .. }));
     }
 
     #[test]

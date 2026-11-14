@@ -13,6 +13,12 @@
 /* Room for the native macOS traffic lights (Overlay title bar). */
 .overlay {
   padding-left: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+  /* Keep the gear on the icon-only right stripe's centre line, including compact mode. */
+  padding-right: calc(var(--stripe-outer-padding) + (var(--stripe-icon-button) - var(--titlebar-tool-button)) / 2);
+}
+/* Native full screen moves the window buttons out of the bar. */
+.overlayFullscreen {
+  padding-left: 10px;
 }
 /* Welcome window: plain title on the frame colour with a hairline, like IntelliJ's welcome frame. */
 .minimal {
@@ -23,6 +29,26 @@
 .dialogBar {
   background: var(--bg-dialog, var(--bg-elev));
   box-shadow: none;
+}
+/* IDEA's compact header (Distraction Free, toolbar hidden): the window title, centred. */
+.compactHeader {
+  --h-titlebar: var(--h-compact-header);
+}
+.overlay.compactHeader {
+  padding-right: max(82px, calc(82px / var(--titlebar-zoom, 1)));
+}
+.overlayFullscreen.compactHeader {
+  padding-right: 10px;
+}
+.compactTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: var(--fs-ui);
+  color: var(--fg-secondary);
+  cursor: default;
 }
 .windowTitle {
   min-width: 0;
@@ -59,7 +85,6 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 500;
 }
 .chevron {
   flex: none;
@@ -92,8 +117,8 @@
   margin-left: 12px;
 }
 .tool {
-  width: 30px;
-  height: 30px;
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
   border-radius: var(--radius-popup);
   color: var(--fg-secondary);
 }
@@ -101,11 +126,16 @@
 /* Frameless window (Windows, Linux): caption buttons sit flush with the right and top edges. */
 .frameless {
   padding-right: 0;
+  /* The main menu button leads the left stripe, so the bar starts where the
+     stripe's own padding does and the two share a centre line. */
+  padding-left: var(--stripe-outer-padding);
 }
+/* The button heads the tool window stripe below it, so it takes the stripe's
+   size: both shrink in compact mode. */
 .mainMenuButton {
   flex: none;
-  width: 30px;
-  height: 30px;
+  width: var(--stripe-icon-button);
+  height: var(--stripe-icon-button);
   margin-right: 4px;
   padding: 0;
   display: inline-flex;
@@ -122,11 +152,13 @@
   outline-offset: -2px;
 }
 /* Preserve the menu's natural width while allowing its slot to yield to toolbar controls. */
+/* Ends where the stripe column below it does, the bar's padding being the
+   stripe's own. */
 .mainMenuSlot {
   position: relative;
   flex: 0 1 auto;
-  min-width: 34px;
-  height: 30px;
+  min-width: calc(var(--stripe-icon-button) + var(--island-gap));
+  height: var(--stripe-icon-button);
   overflow: hidden;
 }
 .mainMenuSlot ~ .item,
@@ -145,6 +177,16 @@
   height: 100%;
   display: flex;
   align-items: center;
+}
+/* Main menu › Separate toolbar: the titles in their own row below the title bar. */
+.menuRow {
+  flex: none;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  -webkit-user-select: none;
+  user-select: none;
 }
 /* The main menu titles. */
 .menuBar {

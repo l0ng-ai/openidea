@@ -9,7 +9,9 @@
 import type { ActiveTheme, PluginEvent, PluginUpdate } from "@/bindings";
 import { useEditorRegistry } from "@/editor/api";
 import { refreshLanguageInfos } from "@/editor/core/cm/languages";
-import { notifications } from "@/workbench/contributions";
+import { clearBackoffs } from "@/editor/lsp/availability";
+import { endpointsChanged, notifications } from "@/workbench/contributions";
+import { useI18n } from "@/platform/i18n";
 import { useProducerNames } from "@/platform/inspections";
 import { languageListChanged } from "@/platform/languageList";
 import {
@@ -32,9 +34,18 @@ import { useProject } from "@/platform/project";
 import { pluginsBackend } from "./backend";
 import { trackIconTheme } from "./iconThemes";
 import { defineBuiltinUiPoints } from "./points";
+import { localizeContributions, loadPluginCatalogs, usePluginCatalogs } from "./pluginText";
 import { clearUiContributions, syncUiContributions } from "./projection";
 import { handleRuntimeEvent, refreshEventKinds, startRuntimeUi } from "./runtimeUi";
-import { grantPlugin, refreshPlugins, selectPluginTheme, updateAllPlugins, usePlugins } from "./store";
+import { refreshRunTargets } from "./runTargets";
+import {
+  grantPlugin,
+  runPluginCommand,
+  refreshPlugins,
+  selectPluginTheme,
+  updateAllPlugins,
+  usePlugins,
+} from "./store";
 
 export { pluginActionId } from "./points";
 
@@ -42,16 +53,33 @@ export { pluginActionId } from "./points";
 export function syncProjection(): () => void {
   const apply = () => {
     const s = usePlugins.getState();
-    syncUiContributions(s.ui, s.plugins);
+    syncUiContributions(localizeContributions(s.ui, usePluginCatalogs.getState().catalogs), s.plugins);
     // Their problems are listed by name in Settings › Inspections.
-    useProducerNames.setState({ names: new Map(s.plugins.map((p) => [`plugin:${p.id}`, p.name])) });
+    useProducerNames.setState({
+      names: new Map(
+        s.plugins.flatMap((p): [string, string][] => [
+          [`plugin:${p.id}`, p.name],
+          [`plugin-provider:${p.id}`, p.name],
+        ]),
+      ),
+    });
   };
+  const loadCatalogs = () => void loadPluginCatalogs(usePlugins.getState().ui, useI18n.getState().locale);
   apply();
-  const unsubscribe = usePlugins.subscribe((s, prev) => {
-    if (s.ui !== prev.ui || s.plugins !== prev.plugins) apply();
-  });
+  loadCatalogs();
+  const unsubscribe = [
+    usePlugins.subscribe((s, prev) => {
+      if (s.ui !== prev.ui) loadCatalogs();
+      if (s.ui !== prev.ui || s.plugins !== prev.plugins) {
+        clearBackoffs();
+        apply();
+      }
+    }),
+    usePluginCatalogs.subscribe((s, prev) => s.catalogs !== prev.catalogs && apply()),
+    useI18n.subscribe((s, prev) => s.locale !== prev.locale && loadCatalogs()),
+  ];
   return () => {
-    unsubscribe();
+    unsubscribe.forEach((u) => u());
     clearUiContributions();
   };
 }
@@ -80,7 +108,12 @@ export function pluginThemeCss(theme: ActiveTheme["theme"]): string {
  */
 export function applyPluginTheme(theme: ActiveTheme | null, root: HTMLElement = document.documentElement) {
   const doc = root.ownerDocument;
-  doc.getElementById(PLUGIN_THEME_STYLE_ID)?.remove();
+  const current = doc.getElementById(PLUGIN_THEME_STYLE_ID);
+  const id = theme && `${theme.pluginId}/${theme.theme.id}`;
+  const css = theme && pluginThemeCss(theme.theme);
+  // The same theme again (each window hears every selection): replacing its stylesheet restyles the page.
+  if (theme && current?.textContent === css && root.dataset.pluginTheme === id) return;
+  current?.remove();
   const had = root.dataset.pluginTheme !== undefined;
   if (!theme) {
     delete root.dataset.pluginTheme;
@@ -89,9 +122,9 @@ export function applyPluginTheme(theme: ActiveTheme | null, root: HTMLElement = 
   } else {
     const style = doc.createElement("style");
     style.id = PLUGIN_THEME_STYLE_ID;
-    style.textContent = pluginThemeCss(theme.theme);
+    style.textContent = css;
     doc.head.appendChild(style);
-    root.dataset.pluginTheme = `${theme.pluginId}/${theme.theme.id}`;
+    root.dataset.pluginTheme = id!;
     root.dataset.pluginThemeKind = theme.theme.kind === "light" ? "light" : "dark";
     applyThemeAttributes(currentThemeId(), root);
   }
@@ -216,8 +249,10 @@ export function followThemeSetting(): () => void {
   };
   reconcile();
   const disposers = [
+    // Not on the host's theme changing: another window selects it before this one's settings
+    // say so, and selecting this window's choice back would flip it until they agree.
     usePlugins.subscribe((s, prev) => {
-      if (s.loaded !== prev.loaded || s.activeTheme !== prev.activeTheme) reconcile();
+      if (s.loaded !== prev.loaded) reconcile();
     }),
     useProject.subscribe((s, prev) => {
       if (s.settings?.appearance !== prev.settings?.appearance) reconcile();
@@ -264,12 +299,25 @@ export function handlePluginEvent(e: PluginEvent) {
     case "commandsChanged":
       scheduleRefresh();
       break;
+    case "endpointsChanged":
+      if (e.root === useProject.getState().project?.root) endpointsChanged();
+      break;
     case "updatesAvailable":
       announceUpdates(e.updates);
       break;
     case "notification": {
       const name = usePlugins.getState().plugins.find((p) => p.id === e.pluginId)?.name ?? e.pluginId;
-      notifications().notify({ group: "plugins", level: e.level, title: e.title || name, body: e.body || undefined });
+      notifications().notify({
+        group: "plugins",
+        level: e.level,
+        title: e.title || name,
+        body: e.body || undefined,
+        verbatim: true,
+        actions: e.actions.map((a) => ({
+          label: a.label,
+          run: () => void runPluginCommand(e.pluginId, a.command, a.argument),
+        })),
+      });
       break;
     }
     case "themeChanged":
@@ -294,6 +342,7 @@ export function handlePluginEvent(e: PluginEvent) {
  */
 export function followPluginChanges(): () => void {
   return pluginsBackend().onEvent((e) => {
+    if (e.type === "runTargetsChanged") void refreshRunTargets(false).catch(() => {});
     if (e.type === "commandsChanged" || e.type === "themeChanged" || e.type === "languagesChanged")
       handlePluginEvent(e);
   });

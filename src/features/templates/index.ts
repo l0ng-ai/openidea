@@ -21,10 +21,11 @@ import { fileTemplates, useFileTemplates, watchTemplateProject } from "./files/s
 import type { FileTemplate } from "./files/model";
 import { syncTemplatesFromStorage } from "./sync";
 import { tagAtCaret, updateTag } from "./emmet/editor";
+import { loadEmmet } from "./emmet/model";
 import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
 import { tx } from "@/platform/i18n";
 
-const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || !toolWindowFocus)";
 const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
 
 async function updateTagWithEmmet() {
@@ -35,7 +36,7 @@ async function updateTagWithEmmet() {
     notifications().notify({ level: "info", title: "No tag at the caret", key: "emmet-update-tag" });
     return;
   }
-  const abbreviation = await promptAbbreviation(tag);
+  const [abbreviation] = await Promise.all([promptAbbreviation(tag), loadEmmet()]);
   editor.view.focus();
   if (abbreviation && !updateTag(editor.view, abbreviation))
     notifications().notify({

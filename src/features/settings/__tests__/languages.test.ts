@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LANGUAGES,
+  JAVA_LANGUAGE_LEVELS,
   PHP_LANGUAGE_LEVELS,
   folderRole,
   markFolder,
@@ -17,6 +18,9 @@ import { validateSettings } from "../model/schema";
 describe("languages settings", () => {
   it("defaults and normalises malformed values", () => {
     expect(validateLanguages(undefined)).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ pluginFormatters: { sql: "example.formatter", text: 42 } }).pluginFormatters).toEqual({
+      sql: "example.formatter",
+    });
     const v = validateLanguages({
       python: { interpreter: " /usr/bin/python3 ", activateVirtualenv: "yes" },
       node: { packageManager: "pip" },
@@ -26,10 +30,16 @@ describe("languages settings", () => {
         jdtlsVmArgs: " -Xmx2g ",
         jdk: 21,
         jdtlsJdk: " /opt/jdk-25 ",
-        maven: { home: " /opt/maven ", daemon: "yes", mvndHome: " /opt/mvnd " },
+        maven: {
+          runnerJre: " /opt/jdk-21 ",
+          home: " /opt/maven ",
+          daemon: "yes",
+          mvndHome: " /opt/mvnd ",
+          threads: " 2C ",
+        },
       },
     });
-    expect(v.python).toEqual({ interpreter: "/usr/bin/python3", activateVirtualenv: true });
+    expect(v.python).toEqual({ ...DEFAULT_LANGUAGES.python, interpreter: "/usr/bin/python3" });
     expect(v.node.packageManager).toBe("");
     expect(v.rust.checkCommand).toBe("clippy");
     expect(v.rust.checkOnSave).toBe(false);
@@ -38,14 +48,52 @@ describe("languages settings", () => {
     expect(v.java.jdk).toBe("");
     expect(v.java.jdtlsJdk).toBe("/opt/jdk-25");
     expect(v.java.maven).toEqual({
+      runnerJre: "/opt/jdk-21",
       home: "/opt/maven",
       userSettings: "",
+      toolchains: "",
       localRepository: "",
       unlinkedProjects: [],
+      linkedProjects: [],
       daemon: false,
       mvndHome: "/opt/mvnd",
+      threads: "2C",
+      activeProfiles: "",
+      delegateBuild: false,
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
+    expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
+  });
+
+  it("defaults the Maven runner JRE to the project JDK and preserves a chosen JDK", () => {
+    expect(validateSettings({}).languages.java.maven.runnerJre).toBe("");
+    expect(validateSettings({}).languages.java.maven.delegateBuild).toBe(false);
+    expect(validateLanguages({ java: { maven: { runnerJre: 21 } } }).java.maven.runnerJre).toBe("");
+    expect(validateLanguages({ java: { maven: { delegateBuild: true } } }).java.maven.delegateBuild).toBe(true);
+    expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
+    const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
+    expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
+  });
+
+  it("keeps the IDE-wide interpreter list and its view options, defaulting them", () => {
+    expect(validateLanguages({}).python).toMatchObject({
+      interpreters: [],
+      hiddenInterpreters: [],
+      hideOtherProjectInterpreters: false,
+      showInterpreterPaths: true,
+    });
+    const v = validateLanguages({
+      python: {
+        interpreters: [" /envs/a/bin/python ", "", "/envs/a/bin/python", 3],
+        hiddenInterpreters: [" /usr/bin/python3.9 "],
+        hideOtherProjectInterpreters: "yes",
+        showInterpreterPaths: false,
+      },
+    });
+    expect(v.python.interpreters).toEqual(["/envs/a/bin/python"]);
+    expect(v.python.hiddenInterpreters).toEqual(["/usr/bin/python3.9"]);
+    expect(v.python.hideOtherProjectInterpreters).toBe(false);
+    expect(v.python.showInterpreterPaths).toBe(false);
   });
 
   it("keeps the Ruby interpreter through settings normalization and defaults to Auto", () => {
@@ -58,11 +106,17 @@ describe("languages settings", () => {
 
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
     expect(validateSettings({}).languages.php).toEqual({
+      runTarget: "",
       interpreter: "",
       languageLevel: "",
       includePaths: [],
       stubs: [],
+      phpstanConfig: "",
     });
+    expect(validateLanguages({ php: { phpstanConfig: " build/phpstan.neon " } }).php.phpstanConfig).toBe(
+      "build/phpstan.neon",
+    );
+    expect(validateLanguages({ php: { phpstanConfig: 3 } }).php.phpstanConfig).toBe("");
     const lists = validateLanguages({ php: { includePaths: [" ../platform ", "", 3, "../platform"], stubs: "redis" } });
     expect(lists.php.includePaths).toEqual(["../platform"]);
     expect(lists.php.stubs).toEqual([]);
@@ -72,7 +126,9 @@ describe("languages settings", () => {
     }
     expect(PHP_LANGUAGE_LEVELS[0]).toBe("");
     expect(PHP_LANGUAGE_LEVELS).toContain("5.6");
-    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("8.5");
+    // Newest first after Auto (#1557).
+    expect(PHP_LANGUAGE_LEVELS[1]).toBe("8.5");
+    expect(PHP_LANGUAGE_LEVELS.at(-1)).toBe("5.6");
   });
 
   it("finds the PHP page by its language level", () => {
@@ -86,7 +142,13 @@ describe("languages settings", () => {
       validateLanguages({
         prettier: { path: " ./bin/prettier ", languages: ["markdown", 4, "markdown"], prefer: true, runOnSave: true },
       }).prettier,
-    ).toEqual({ path: "./bin/prettier", languages: ["markdown"], prefer: true, runOnSave: true });
+    ).toEqual({
+      path: "./bin/prettier",
+      configurationDirectory: "",
+      languages: ["markdown"],
+      prefer: true,
+      runOnSave: true,
+    });
     expect(validateLanguages({ prettier: { languages: [] } }).prettier.languages).toEqual([]);
   });
 
@@ -96,8 +158,41 @@ describe("languages settings", () => {
       prettier: { runOnSave: true },
       oxfmt: { path: " ./bin/oxfmt ", languages: ["typescript", null, "typescript"], prefer: true },
     });
-    expect(v.oxfmt).toEqual({ path: "./bin/oxfmt", languages: ["typescript"], prefer: true, runOnSave: false });
+    expect(v.oxfmt).toEqual({
+      path: "./bin/oxfmt",
+      configurationDirectory: "",
+      languages: ["typescript"],
+      prefer: true,
+      runOnSave: false,
+    });
     expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
+  });
+
+  it("enables Ruff for Python by default and keeps its settings separate", () => {
+    expect(validateLanguages({}).ruff).toMatchObject({
+      path: "",
+      configurationDirectory: "",
+      languages: ["python"],
+      prefer: false,
+      runOnSave: false,
+    });
+    const v = validateLanguages({
+      ruff: {
+        path: " ./bin/ruff ",
+        configurationDirectory: " ./config/ruff ",
+        languages: ["python", null, "python", "pyi"],
+        prefer: true,
+        runOnSave: true,
+      },
+    });
+    expect(v.ruff).toEqual({
+      path: "./bin/ruff",
+      configurationDirectory: "./config/ruff",
+      languages: ["python", "pyi"],
+      prefer: true,
+      runOnSave: true,
+    });
+    expect(v.prettier).toEqual(DEFAULT_LANGUAGES.prettier);
   });
 
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
@@ -121,19 +216,126 @@ describe("languages settings", () => {
     ps = markFolder(ps, "src", null);
     expect(folderRole(ps, "src")).toBeNull();
   });
+
+  it("defaults shared JDT LS to off and accepts only boolean values", () => {
+    expect(DEFAULT_LANGUAGES.java.jdtlsShared).toBe(false);
+    expect(validateLanguages({}).java.jdtlsShared).toBe(false);
+    expect(validateSettings({ languages: { java: { jdtlsShared: true } } }).languages.java.jdtlsShared).toBe(true);
+    expect(validateLanguages({ java: { jdtlsShared: false } }).java.jdtlsShared).toBe(false);
+    for (const invalid of ["true", 1, null, []])
+      expect(validateLanguages({ java: { jdtlsShared: invalid } }).java.jdtlsShared).toBe(false);
+  });
+
+  it("defaults Java language level to SDK default and keeps only supported levels", () => {
+    expect(validateLanguages({}).java.languageLevel).toBe("");
+    expect(validateLanguages({ java: { languageLevel: "8" } }).java.languageLevel).toBe("8");
+    expect(validateLanguages({ java: { languageLevel: "21" } }).java.languageLevel).toBe("21");
+    expect(validateLanguages({ java: { languageLevel: "6" } }).java.languageLevel).toBe("6");
+    for (const invalid of ["4", "1.6", "26", 17, null]) {
+      expect(validateLanguages({ java: { languageLevel: invalid } }).java.languageLevel).toBe("");
+    }
+    expect(JAVA_LANGUAGE_LEVELS[0]).toBe("");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("8");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("25");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("5");
+    expect(JAVA_LANGUAGE_LEVELS).toContain("14");
+  });
+
+  it("normalizes project structure modules, libraries, facets, and artifacts", () => {
+    const ps = validateProjectStructure({
+      compilerOutput: " out/production ",
+      modules: {
+        " ./modules/core/ ": {
+          jdk: " /opt/jdk-21 ",
+          languageLevel: "17",
+          compilerOutput: " target/classes ",
+          testCompilerOutput: " target/test-classes ",
+          dependencies: [
+            { target: " common-lib ", kind: "library", scope: "provided", exported: true },
+            { target: " ", kind: "module", scope: "invalid" },
+          ],
+        },
+      },
+      libraries: [
+        {
+          name: " servlet-api ",
+          classes: [" lib/servlet-api.jar ", "lib/servlet-api.jar", ""],
+          sources: [" lib/servlet-api-sources.jar "],
+          javadocs: [],
+          scope: "provided",
+        },
+        { name: "  ", classes: [], sources: [] },
+      ],
+      facets: [
+        {
+          kind: "web",
+          module: " ./modules/web/ ",
+          descriptor: " src/main/webapp/WEB-INF/web.xml ",
+          webRoot: " src/main/webapp ",
+        },
+      ],
+      artifacts: [
+        {
+          name: " app:war exploded ",
+          kind: "warExploded",
+          module: " ./modules/web/ ",
+          outputDirectory: " target/app-exploded ",
+          mainClass: " com.example.Main ",
+          includeLibraries: [" servlet-api ", "servlet-api", ""],
+        },
+      ],
+    });
+    expect(ps.compilerOutput).toBe("out/production");
+    expect(ps.modules).toEqual({
+      "modules/core": {
+        jdk: "/opt/jdk-21",
+        languageLevel: "17",
+        compilerOutput: "target/classes",
+        testCompilerOutput: "target/test-classes",
+        dependencies: [{ target: "common-lib", kind: "library", scope: "provided", exported: true }],
+      },
+    });
+    expect(ps.libraries).toEqual([
+      {
+        name: "servlet-api",
+        classes: ["lib/servlet-api.jar"],
+        sources: ["lib/servlet-api-sources.jar"],
+        javadocs: [],
+        scope: "provided",
+      },
+    ]);
+    expect(ps.facets).toEqual([
+      {
+        kind: "web",
+        module: "modules/web",
+        descriptor: "src/main/webapp/WEB-INF/web.xml",
+        webRoot: "src/main/webapp",
+      },
+    ]);
+    expect(ps.artifacts).toEqual([
+      {
+        name: "app:war exploded",
+        kind: "warExploded",
+        module: "modules/web",
+        outputDirectory: "target/app-exploded",
+        mainClass: "com.example.Main",
+        includeLibraries: ["servlet-api"],
+      },
+    ]);
+  });
 });
 
 describe("language pages", () => {
   it("keeps every language under Languages & Frameworks, as in IntelliJ IDEA", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
-    expect(tree.map((n) => n.title)).toEqual(["Project Structure", "Languages & Frameworks"]);
+    expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
       "Go",
       "Java",
+      "JavaScript Runtime",
       "Markdown",
-      "Node.js",
-      "Python Interpreter",
+      "Python",
       "PHP",
       "Prettier",
       "oxfmt",
@@ -141,6 +343,21 @@ describe("language pages", () => {
       "Rust",
       "TypeScript",
     ]);
+  });
+
+  it("puts the Python pages in a Python folder, in PyCharm's order", () => {
+    const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
+    const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
+    const python = langs.children.find((n) => n.title === "Python")!;
+    expect(python.children.map((n) => n.title)).toEqual(["All Interpreters", "Dependencies", "Docstrings", "Ruff"]);
+    expect(python.children.map((n) => n.key)).toEqual([
+      "python.interpreters",
+      "python.interpreter",
+      "python.docstrings",
+      "python.ruff",
+    ]);
+    // The folder itself has no page body: it links to the pages below it.
+    expect(python.page?.component).toBeUndefined();
   });
 
   it("filters packages and shortens home paths", () => {

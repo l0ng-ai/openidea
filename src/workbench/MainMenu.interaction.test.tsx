@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { registerActions } from "@/platform/actions";
+import { usePlatform } from "@/platform/platformInfo";
 import { MainMenu } from "./MainMenu";
 
 let available = 500;
@@ -35,13 +36,13 @@ beforeEach(() => {
       kind: "submenu",
       id: "file",
       label: "File",
-      children: [{ kind: "action", id: "test.open", label: "Open", hint: null, arg: null }],
+      children: [{ kind: "action", id: "test.open", label: "Open", hint: null, arg: null, checked: null }],
     },
     {
       kind: "submenu",
       id: "edit",
       label: "Edit",
-      children: [{ kind: "action", id: "test.undo", label: "Undo", hint: null, arg: null }],
+      children: [{ kind: "action", id: "test.undo", label: "Undo", hint: null, arg: null, checked: null }],
     },
   ]);
   dispose = registerActions([
@@ -106,6 +107,35 @@ describe("main menu presentation", () => {
     await act(() => new Promise((resolve) => setTimeout(resolve)));
     expect(screen.queryByRole("menu")).toBeNull();
     expect(expanded).not.toHaveBeenCalledWith(true);
+  });
+
+  it.each(["hamburger", "merged"])("%s ignores a lone Alt press when the setting is off", async (style) => {
+    setStyle(style);
+    const setAltMenu = (on: boolean) =>
+      act(() =>
+        useProject.setState({ settings: { appearance: { mainMenuStyle: style, mainMenuAlt: on } } as Settings }),
+      );
+    await setAltMenu(false);
+    render(
+      <>
+        <button>Editor</button>
+        <MainMenu />
+      </>,
+    );
+    if (style === "merged") await screen.findByRole("menubar");
+    const editor = screen.getByRole("button", { name: "Editor" });
+    editor.focus();
+    alt();
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
+    expect(screen.queryByRole("menu")).toBeNull();
+    if (style === "hamburger") expect(screen.queryByRole("menubar")).toBeNull();
+    else expect(editor).toHaveFocus();
+    // Turning it back on restores the behavior without a remount.
+    await setAltMenu(true);
+    alt();
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
+    if (style === "hamburger") expect(await screen.findByRole("menu", { name: "File" })).toBeInTheDocument();
+    else expect(titles().getByRole("menuitem", { name: "File" })).toHaveFocus();
   });
 
   it.each(["hamburger", "merged"])(
@@ -223,6 +253,25 @@ describe("main menu presentation", () => {
     expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
   });
 
+  it("shows the titles in the separate toolbar row, which never collapses to the button", async () => {
+    act(() => useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings }));
+    render(<MainMenu row />);
+    await screen.findByRole("menubar");
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+    fireEvent.click(titles().getByRole("menuitem", { name: "File" }));
+    expect(await screen.findByRole("menu", { name: "File" })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.getByRole("menubar")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Main Menu" })).toBeNull();
+  });
+
+  it("keeps the hamburger button in a title bar whose menu has its own row", () => {
+    act(() => useProject.setState({ settings: { appearance: { mainMenuStyle: "toolbar" } } as Settings }));
+    render(<MainMenu />);
+    expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
+  });
+
   it("applies the setting immediately and restores toolbar visibility when switching from an expanded hamburger", async () => {
     const expanded = vi.fn();
     render(<MainMenu onExpandedChange={expanded} />);
@@ -237,4 +286,40 @@ describe("main menu presentation", () => {
     expect(screen.queryByRole("menubar")).toBeNull();
     expect(screen.getByRole("button", { name: "Main Menu" })).toBeInTheDocument();
   });
+});
+
+it.each(["windows", "linux"] as const)("renders toggle and widget checks in the %s main menu", async (os) => {
+  const platform = usePlatform.getState();
+  usePlatform.setState({ os, framelessTitleBar: true, overlayTitleBar: false });
+  const off = registerActions([
+    { id: "view.toggleToolbar", title: "Toolbar", toggled: () => true, run: () => {} },
+    { id: "view.toggleStatusBarWidget", title: "Status Bar Widget", run: () => {} },
+  ]);
+  vi.mocked(commands.menuModel).mockResolvedValue([
+    {
+      kind: "submenu",
+      id: "view",
+      label: "View",
+      children: [
+        { kind: "action", id: "view.toggleToolbar", label: "Toolbar", hint: null, arg: null, checked: null },
+        {
+          kind: "action",
+          id: "view.toggleStatusBarWidget",
+          label: "Memory Indicator",
+          hint: null,
+          arg: "memory",
+          checked: false,
+        },
+      ],
+    },
+  ]);
+  try {
+    render(<MainMenu />);
+    fireEvent.click(screen.getByRole("button", { name: "Main Menu" }));
+    expect(await screen.findByRole("menuitemcheckbox", { name: "Toolbar" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("menuitemcheckbox", { name: "Memory Indicator" })).toHaveAttribute("aria-checked", "false");
+  } finally {
+    off();
+    usePlatform.setState(platform);
+  }
 });

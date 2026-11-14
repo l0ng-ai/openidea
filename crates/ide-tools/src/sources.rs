@@ -47,38 +47,146 @@ pub fn github_latest_url(repo: &str) -> String {
     format!("https://api.github.com/repos/{repo}/releases/latest")
 }
 
+/// The latest release's web page; it redirects to `…/releases/tag/<tag>`. Web pages don't
+/// count against the API's rate limit for unauthenticated clients (60 requests an hour).
+pub fn github_latest_page(repo: &str) -> String {
+    format!("https://github.com/{repo}/releases/latest")
+}
+
+/// The tag `github_latest_page` redirected to.
+pub fn github_tag_from_url(url: &str) -> Option<String> {
+    let (_, tag) = url.split_once("/releases/tag/")?;
+    let tag = tag.split(['?', '#']).next().unwrap_or(tag).trim_end_matches('/');
+    (!tag.is_empty()).then(|| percent_decode(tag))
+}
+
+pub fn github_tag_page(repo: &str, tag: &str) -> String {
+    format!("https://github.com/{repo}/releases/tag/{tag}")
+}
+
+/// The asset list the release page loads (HTML).
+pub fn github_assets_page(repo: &str, tag: &str) -> String {
+    format!("https://github.com/{repo}/releases/expanded_assets/{tag}")
+}
+
+/// One file of a release, from the API or its web page.
+struct ReleaseAsset {
+    name: String,
+    url: String,
+    size: Option<u64>,
+    sha256: Option<String>,
+}
+
 /// Picks the platform asset from a GitHub `releases/latest` response. Links
 /// in the release notes count as assets too (some projects host binaries on
 /// a CDN and only link them).
 pub fn github_pick(json: &str, rules: &[AssetRule], platform: Platform) -> IdeResult<Download> {
     let rel: GhRelease = serde_json::from_str(json).map_err(|e| proto(format!("unexpected GitHub response: {e}")))?;
-    let version = rel.tag_name.trim_start_matches('v').to_string();
-    let names: Vec<&str> = rel.assets.iter().map(|a| a.name.as_str()).collect();
+    let assets: Vec<ReleaseAsset> = rel
+        .assets
+        .into_iter()
+        .map(|a| ReleaseAsset {
+            sha256: a.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).map(str::to_ascii_lowercase),
+            name: a.name,
+            url: a.browser_download_url,
+            size: a.size,
+        })
+        .collect();
+    pick_release(&rel.tag_name, &assets, rel.body.as_deref().unwrap_or(""), rules, platform)
+}
+
+/// [`github_pick`] from the release's web pages: `assets_html` from [`github_assets_page`] and,
+/// for projects that only link their builds, `notes_html` from [`github_tag_page`].
+pub fn github_pick_web(
+    repo: &str,
+    tag: &str,
+    assets_html: &str,
+    notes_html: Option<&str>,
+    rules: &[AssetRule],
+    platform: Platform,
+) -> IdeResult<Download> {
+    let prefix = format!("href=\"/{repo}/releases/download/");
+    let mut assets: Vec<ReleaseAsset> = Vec::new();
+    let mut rest = assets_html;
+    while let Some(i) = rest.find(&prefix) {
+        let tail = &rest[i + "href=\"".len()..];
+        let Some(end) = tail.find('"') else { break };
+        let path = html_unescape(&tail[..end]);
+        rest = &tail[end..];
+        let name = percent_decode(file_name(&path));
+        if name.is_empty() || assets.iter().any(|a| a.name == name) {
+            continue;
+        }
+        // `<clipboard-copy aria-label="Copy to clipboard digest for <name>" … value="sha256:<hex>">`
+        let sha256 = assets_html.find(&format!("digest for {}\"", html_escape(&name))).and_then(|at| {
+            let tag_end = assets_html[at..].find('>').map_or(assets_html.len(), |e| at + e);
+            let value = assets_html[at..tag_end].split_once("value=\"sha256:")?.1;
+            let hex: String = value.chars().take_while(char::is_ascii_hexdigit).collect();
+            (hex.len() == 64).then(|| hex.to_ascii_lowercase())
+        });
+        assets.push(ReleaseAsset { url: format!("https://github.com{path}"), name, size: None, sha256 });
+    }
+    pick_release(tag, &assets, &html_unescape(notes_html.unwrap_or("")), rules, platform)
+}
+
+fn pick_release(
+    tag: &str,
+    assets: &[ReleaseAsset],
+    notes: &str,
+    rules: &[AssetRule],
+    platform: Platform,
+) -> IdeResult<Download> {
+    let version = tag.trim_start_matches('v').to_string();
+    let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
     if let Some(name) = select_asset(&names, rules, platform) {
-        let a = rel.assets.iter().find(|a| a.name == name).expect("selected from list");
-        let sha256 = a.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")).map(str::to_ascii_lowercase);
-        let checksum_url = rel
-            .assets
+        let a = assets.iter().find(|a| a.name == name).expect("selected from list");
+        let checksum_url = assets
             .iter()
             .find(|c| c.name == format!("{name}.sha256") || c.name == format!("{name}.sha256sum"))
-            .map(|c| c.browser_download_url.clone());
+            .map(|c| c.url.clone());
         return Ok(Download {
             version,
             name: a.name.clone(),
-            url: a.browser_download_url.clone(),
+            url: a.url.clone(),
             size: a.size,
-            sha256,
+            sha256: a.sha256.clone(),
             checksum_url,
         });
     }
-    let links = extract_links(rel.body.as_deref().unwrap_or(""));
+    let links = extract_links(notes);
     let link_names: Vec<&str> = links.iter().map(|u| file_name(u)).collect();
     if let Some(name) = select_asset(&link_names, rules, platform) {
         let url = links.iter().find(|u| file_name(u) == name).expect("selected from list").clone();
         let checksum_url = links.iter().find(|u| *u == &format!("{url}.sha256")).cloned();
         return Ok(Download { version, name: name.to_string(), url, size: None, sha256: None, checksum_url });
     }
-    Err(IdeError::unavailable(format!("release {} has no build for this platform", rel.tag_name)))
+    Err(IdeError::unavailable(format!("release {tag} has no build for this platform")))
+}
+
+fn html_unescape(s: &str) -> String {
+    s.replace("&quot;", "\"").replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(b) = s.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
 }
 
 fn file_name(url: &str) -> &str {
@@ -334,6 +442,71 @@ mod tests {
         assert!(d.url.starts_with("https://download-cdn.jetbrains.com/"));
         let d = github_pick(json, rules, LINUX).unwrap();
         assert_eq!(d.name, "kotlin-lsp-0.253.10629-linux-x64.zip");
+    }
+
+    #[test]
+    fn github_tag_from_redirect() {
+        let url = "https://github.com/Kotlin/kotlin-lsp/releases/tag/kotlin-lsp/v263.7084.0";
+        assert_eq!(github_tag_from_url(url).as_deref(), Some("kotlin-lsp/v263.7084.0"));
+        let url = "https://github.com/o/r/releases/tag/v1.0%2Bbuild";
+        assert_eq!(github_tag_from_url(url).as_deref(), Some("v1.0+build"));
+        // A repository without releases stays on the list.
+        assert_eq!(github_tag_from_url("https://github.com/o/r/releases"), None);
+    }
+
+    /// Trimmed from `github.com/<repo>/releases/expanded_assets/<tag>`.
+    const ASSETS_HTML: &str = r#"<li><div><a href="/LuaLS/lua-language-server/releases/download/3.13.5/lua-language-server-3.13.5-darwin-arm64.tar.gz" rel="nofollow" data-turbo="false" class="wb-break-all">
+          <span class="text-bold">lua-language-server-3.13.5-darwin-arm64.tar.gz</span></a></div>
+        <span class="Truncate-text">sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789</span>
+        <clipboard-copy id="clipboard-button-sha256:abc" aria-label="Copy to clipboard digest for lua-language-server-3.13.5-darwin-arm64.tar.gz" type="button" value="sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789" class="Button"></clipboard-copy></li>
+      <li><a href="/LuaLS/lua-language-server/releases/download/3.13.5/lua-language-server-3.13.5-linux-x64.tar.gz" rel="nofollow">lua-language-server-3.13.5-linux-x64.tar.gz</a></li>
+      <li><a href="/LuaLS/lua-language-server/archive/refs/tags/3.13.5.zip" rel="nofollow">Source code (zip)</a></li>"#;
+
+    #[test]
+    fn github_web_assets_with_digest() {
+        let rules = find("lua-language-server").unwrap().asset_rules();
+        let d = github_pick_web("LuaLS/lua-language-server", "3.13.5", ASSETS_HTML, None, rules, MAC_ARM).unwrap();
+        assert_eq!(d.version, "3.13.5");
+        assert_eq!(d.name, "lua-language-server-3.13.5-darwin-arm64.tar.gz");
+        assert_eq!(
+            d.url,
+            "https://github.com/LuaLS/lua-language-server/releases/download/3.13.5/lua-language-server-3.13.5-darwin-arm64.tar.gz"
+        );
+        assert_eq!(d.sha256.as_deref(), Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));
+        let d = github_pick_web("LuaLS/lua-language-server", "3.13.5", ASSETS_HTML, None, rules, LINUX).unwrap();
+        assert_eq!(d.sha256, None);
+        let win = Platform { os: Os::Windows, arch: Arch::X64 };
+        let err = github_pick_web("LuaLS/lua-language-server", "3.13.5", ASSETS_HTML, None, rules, win).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn github_web_sibling_checksum_and_notes_links() {
+        let html = r#"<a href="/artempyanykh/marksman/releases/download/2024-12-18/marksman-macos" rel="nofollow">
+            <a href="/artempyanykh/marksman/releases/download/2024-12-18/marksman-macos.sha256" rel="nofollow">"#;
+        let d = github_pick_web(
+            "artempyanykh/marksman",
+            "2024-12-18",
+            html,
+            None,
+            find("marksman").unwrap().asset_rules(),
+            MAC_ARM,
+        )
+        .unwrap();
+        assert_eq!(
+            d.checksum_url.as_deref(),
+            Some("https://github.com/artempyanykh/marksman/releases/download/2024-12-18/marksman-macos.sha256")
+        );
+
+        let notes = r#"<li><a href="https://download-cdn.jetbrains.com/kotlin-lsp/0.253.10629/kotlin-lsp-0.253.10629-mac-aarch64.zip?a=1&amp;b=2" rel="nofollow">macOS arm</a></li>"#;
+        let rules = find("kotlin-lsp").unwrap().asset_rules();
+        let d =
+            github_pick_web("Kotlin/kotlin-lsp", "kotlin-lsp/v0.253.10629", "", Some(notes), rules, MAC_ARM).unwrap();
+        assert_eq!(d.name, "kotlin-lsp-0.253.10629-mac-aarch64.zip");
+        assert_eq!(
+            d.url,
+            "https://download-cdn.jetbrains.com/kotlin-lsp/0.253.10629/kotlin-lsp-0.253.10629-mac-aarch64.zip?a=1&b=2"
+        );
     }
 
     #[test]

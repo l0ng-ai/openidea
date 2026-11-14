@@ -1,14 +1,16 @@
 /**
  * Result-set export formats (IDEA's data extractors): CSV, TSV, JSON, SQL
- * INSERT statements and a Markdown table. Values arrive as text; numeric
- * columns are written unquoted where the format distinguishes them.
+ * INSERT statements, a Markdown table and One-Row (all values on one `, ` list).
+ * Values arrive as text; numeric columns are written unquoted where the format
+ * distinguishes them.
  */
 import type { DbDriver } from "@/platform/ipc";
+import { jsonNumber } from "@/platform/losslessJson";
 import { isNumericColumn } from "./Grid";
-import { toCsv, toTsv, type Cell } from "./model";
+import { toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { quoteIdent } from "./sql/complete";
 
-export type ExportFormat = "csv" | "tsv" | "json" | "sql" | "markdown";
+export type ExportFormat = "csv" | "tsv" | "json" | "sql" | "markdown" | "onerow";
 
 export const EXPORT_FORMATS: ReadonlyArray<{ id: ExportFormat; label: string; extension: string }> = [
   { id: "csv", label: "CSV", extension: "csv" },
@@ -16,6 +18,7 @@ export const EXPORT_FORMATS: ReadonlyArray<{ id: ExportFormat; label: string; ex
   { id: "json", label: "JSON", extension: "json" },
   { id: "sql", label: "SQL Inserts", extension: "sql" },
   { id: "markdown", label: "Markdown", extension: "md" },
+  { id: "onerow", label: "One-Row", extension: "txt" },
 ];
 
 export interface ExportData {
@@ -47,6 +50,16 @@ function laidOut(d: ExportData, o: ExportOptions): { head: string[] | null; rows
   return { head: null, rows: head.map((h, c) => [...(o.columnHeader ? [h] : []), ...rows.map((r) => r[c] ?? null)]) };
 }
 
+/** A cell as JSON: numeric columns keep their exact digits, everything else is a string. */
+function jsonCell(v: Cell, numeric: boolean): string {
+  if (v === null) return "null";
+  if (!numeric) return JSON.stringify(v);
+  const literal = jsonNumber(v);
+  if (literal !== null) return literal;
+  const number = Number(v);
+  return Number.isFinite(number) ? JSON.stringify(number) : JSON.stringify(v);
+}
+
 export function exportData(
   format: ExportFormat,
   d: ExportData,
@@ -69,13 +82,12 @@ export function exportData(
       return toTsv(t.head, t.rows);
     }
     case "json": {
-      const value = (v: Cell, i: number) =>
-        v === null ? null : numeric[i] && Number.isFinite(Number(v)) ? Number(v) : v;
-      return JSON.stringify(
-        d.rows.map((r) => Object.fromEntries(names.map((n, i) => [n, value(r[i] ?? null, i)]))),
-        null,
-        2,
-      );
+      const rows = d.rows.map((r) => {
+        const cells = Object.fromEntries(names.map((n, i) => [n, jsonCell(r[i] ?? null, numeric[i]!)]));
+        const members = Object.entries(cells).map(([name, value]) => `    ${JSON.stringify(name)}: ${value}`);
+        return members.length ? `  {\n${members.join(",\n")}\n  }` : "  {}";
+      });
+      return rows.length ? `[\n${rows.join(",\n")}\n]` : "[]";
     }
     case "sql": {
       const literal = (v: Cell, i: number) =>
@@ -83,7 +95,7 @@ export function exportData(
           ? "NULL"
           : numeric[i] && Number.isFinite(Number(v))
             ? v
-            : `'${(d.driver === "clickhouse" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
+            : `'${(d.driver === "clickhouse" || d.driver === "snowflake" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
       const head = `INSERT INTO ${quoteIdent(d.table, d.driver)} (${names.map((n) => quoteIdent(n, d.driver)).join(", ")}) VALUES`;
       return d.rows.map((r) => `${head} (${r.map(literal).join(", ")});`).join("\n");
     }
@@ -99,5 +111,7 @@ export function exportData(
           : [...(options.rowHeader ? ["--:"] : []), ...numeric.map((n) => (n ? "--:" : "---"))];
       return [head.map(cell), align, ...t.rows.map((r) => r.map(cell))].map((r) => `| ${r.join(" | ")} |`).join("\n");
     }
+    case "onerow":
+      return toOneRow(d.rows, (c) => numeric[c]!);
   }
 }

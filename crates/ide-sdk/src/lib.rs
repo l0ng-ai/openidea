@@ -7,6 +7,8 @@
 
 mod angular;
 pub mod apply;
+pub mod arduino;
+mod astro;
 mod discover;
 mod exec;
 pub mod go;
@@ -28,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
 
-pub use discover::{detect, jdk_sdk};
+pub use discover::{detect, jdk_sdk, python_interpreter_sdk};
 
 /// What [`detect`] looks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -319,3 +319,94 @@ async fn browser_mappings_resolve_symlinks_and_download_to_the_project() {
     assert!(report.errors.is_empty());
     assert_eq!(std::fs::read_to_string(local).unwrap(), "from the server");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn deployment_downloads_never_write_through_links_out_of_the_mapping() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("mounted");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(target.join("app/config")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(target.join("app/config/keys"), "from the server").unwrap();
+    std::fs::write(target.join("app/note.txt"), "from the server").unwrap();
+    std::fs::write(outside.join("keys"), "kept").unwrap();
+    std::fs::write(outside.join("other"), "kept").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("config")).unwrap();
+    std::os::unix::fs::symlink(outside.join("other"), root.join("note.txt")).unwrap();
+    let service = service(tmp.path());
+    let settings = settings(&target);
+    let cancel = CancellationToken::new();
+
+    let report = service
+        .download(&settings, &root, None, std::slice::from_ref(&root), cancel.clone(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 0, "{report:?}");
+    assert_eq!(report.errors.len(), 2, "{report:?}");
+    let steps = [
+        SyncStep { path: "config/keys".into(), action: SyncAction::Download },
+        SyncStep { path: "note.txt".into(), action: SyncAction::Download },
+        SyncStep { path: "config/keys".into(), action: SyncAction::DeleteLocal },
+    ];
+    let report = service.sync(&settings, &root, None, &steps, cancel, &mut |_, _, _| {}).await.unwrap();
+    assert_eq!(report.files, 0, "{report:?}");
+    assert_eq!(report.errors.len(), 3, "{report:?}");
+    assert_eq!(std::fs::read_to_string(outside.join("keys")).unwrap(), "kept");
+    assert_eq!(std::fs::read_to_string(outside.join("other")).unwrap(), "kept");
+}
+
+#[tokio::test]
+async fn download_into_copies_only_the_selected_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = tmp.path().join("srv/www/site/current");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(server.join("drush/sub")).unwrap();
+    std::fs::create_dir_all(server.join("drush/empty")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(server.join("drush/a.txt"), "a").unwrap();
+    std::fs::write(server.join("drush/sub/b.txt"), "b").unwrap();
+    std::fs::write(server.join("index.php"), "php").unwrap();
+    std::fs::write(project.join("index.php"), "old").unwrap();
+    let service = service(tmp.path());
+    // Remote paths use `/`, as the local file system lists them on Windows too.
+    let remotes = [server.join("drush"), server.join("index.php")].map(|p| p.to_str().unwrap().replace('\\', "/"));
+    let report = service
+        .download_into(&FsConnection::Local, &remotes, &project, &CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 3, "{report:?}");
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(std::fs::read_to_string(project.join("drush/a.txt")).unwrap(), "a");
+    assert_eq!(std::fs::read_to_string(project.join("drush/sub/b.txt")).unwrap(), "b");
+    assert!(project.join("drush/empty").is_dir());
+    assert_eq!(std::fs::read_to_string(project.join("index.php")).unwrap(), "php");
+    assert!(!project.join("srv").exists() && !project.join("www").exists());
+
+    // A link already in the folder doesn't take the download elsewhere.
+    #[cfg(unix)]
+    {
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::remove_dir_all(project.join("drush/sub")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, project.join("drush/sub")).unwrap();
+        std::fs::remove_file(project.join("drush/a.txt")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("a.txt"), project.join("drush/a.txt")).unwrap();
+        let report = service
+            .download_into(&FsConnection::Local, &remotes[..1], &project, &CancellationToken::new(), &mut |_, _, _| {})
+            .await
+            .unwrap();
+        // The linked folder, the file below it, and the linked file.
+        assert_eq!((report.files, report.errors.len()), (0, 3), "{report:?}");
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written through the links");
+    }
+
+    let missing = [server.join("gone").to_str().unwrap().to_owned()];
+    let report = service
+        .download_into(&FsConnection::Local, &missing, &project, &CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.errors.len()), (0, 1), "{report:?}");
+}

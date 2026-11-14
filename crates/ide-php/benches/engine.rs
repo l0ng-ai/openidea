@@ -9,7 +9,7 @@
 //! - diagnostics after an edit: from the change until the background run
 //!   has inspected the new version (debounce included), under 300 ms.
 //!
-//! `php_fixture/*` runs on `fixtures/php-app`. `php_laravel/*` runs on
+//! `php_fixture/*` runs on `fixtures/php-library`. `php_laravel/*` runs on
 //! laravel/framework from the corpora (`PHP_CORPUS_DIR`, default
 //! `../php-corpus` next to the workspace; `scripts/php-corpus.sh`) and is
 //! skipped when the corpus isn't there: cold index under 30 s, warm start
@@ -76,7 +76,7 @@ struct Workload {
 fn fixture() -> Workload {
     Workload {
         group: "php_fixture",
-        root: canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app")),
+        root: canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library")),
         file: "src/Library.php",
         hover: ("->save($book)", 2),
         anchor: "$lent = $book->withAvailability(false);",

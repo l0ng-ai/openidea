@@ -13,6 +13,7 @@ import {
   completeFromList,
   completionStatus,
   currentCompletions,
+  moveCompletionSelection,
   pickedCompletion,
   selectedCompletion,
   snippet,
@@ -51,12 +52,12 @@ import { selectableText } from "@/ui/selectableText";
 import { iconNode } from "./iconMarkup";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
-import { pathCompletionSource } from "./fileReferences";
+import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
-import { phpConstructDocumentation } from "./phpConstructs";
+import { languageSemantics } from "./semantic";
 
 interface RequestContext {
   doc: number;
@@ -298,7 +299,7 @@ export function callParens(
 ): "inside" | "after" | null {
   if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || /[(<[{]/.test(item.insertText)) return null;
   const next = line.text.charAt(end - line.from);
-  if (next && /[(\p{L}\p{N}_$]/u.test(next)) return null;
+  if (next && /[(\p{L}\p{N}_$'"`]/u.test(next)) return null;
   if (IMPORT_LINE.test(line.text.slice(0, start - line.from))) return null;
   const sig = item.labelDetail ?? item.detail ?? "";
   return /^\s*\(\s*\)/.test(sig) || /^\s*fn\s*\(\s*\)|^\s*\(\)\s*(=>|->|:)/.test(sig) ? "after" : "inside";
@@ -369,7 +370,7 @@ async function fallback(ctx: CompletionContext): Promise<CompletionResult | null
 
 export function makeCompletion(item: CompletionItem, req: RequestContext): LspCompletion {
   if (item.kind === "keyword" && isEmptyMarkup(item.documentation)) {
-    const value = phpConstructDocumentation(req.language, item.label);
+    const value = languageSemantics(req.language)?.constructDocumentation?.(item.label);
     if (value) item = { ...item, documentation: { kind: "markdown", value } };
   }
   // The lookup handles commit characters itself (focused lookups only, see `lookupKeys`).
@@ -431,7 +432,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (completionBackoff.active(doc.doc)) return fallback(ctx);
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -444,6 +445,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       () => commands.lspCompletion(id, doc.doc, offsetToPos(ctx.state.doc, ctx.pos), trigger),
       () => inflight === id,
     );
+    completionBackoff.clear(doc.doc);
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
@@ -630,6 +632,12 @@ const lookupKeys = Prec.highest(
   }),
 );
 
+function moveLookup(view: EditorView, forward: boolean): boolean {
+  if (completionStatus(view.state) !== "active") return false;
+  focusedLookups.add(view);
+  return moveCompletionSelection(forward)(view);
+}
+
 /** IDEA inserts a sole candidate right away on explicit invocation (Code Completion › Automatically insert single suggestions). */
 const AUTO_INSERT_DELAY = 80; // past CodeMirror's interactionDelay
 
@@ -750,8 +758,15 @@ const completionFooter = ViewPlugin.fromClass(
             ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
           ];
           for (const t of tooltips) {
-            if (t.querySelector(":scope > .cm-lsp-completion-footer")) continue;
-            const footer = document.createElement("div");
+            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+            if (footer) {
+              // CodeMirror rebuilds the option list by appending a fresh <ul>,
+              // which would leave an existing footer above the list.
+              const list = t.querySelector(":scope > ul");
+              if (list && list.nextElementSibling !== footer) list.after(footer);
+              continue;
+            }
+            footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
@@ -764,12 +779,39 @@ const completionFooter = ViewPlugin.fromClass(
   },
 );
 
+let pluginClaim: { pos: number; claimed: Promise<boolean> } | null = null;
+
+const claimingLspSource: CompletionSource = (ctx) => {
+  const result = Promise.resolve(lspCompletionSource(ctx));
+  pluginClaim = {
+    pos: ctx.pos,
+    claimed: result.then((r) => !!r?.options.some((o) => isLsp(o) && o.lsp.server === 0)).catch(() => false),
+  };
+  return result;
+};
+
+const PATH_ONLY_WHEN_PATH_LIKE = new Set(["php", "blade"]);
+
+export function offersPaths(language: string, before: string): boolean {
+  if (!PATH_ONLY_WHEN_PATH_LIKE.has(language)) return true;
+  const found = pathContext(before, language);
+  return !!found && pathLike(found.prefix);
+}
+
+const pathFallbackSource: CompletionSource = async (ctx) => {
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  if (!offersPaths(ctx.state.facet(lspDoc)?.language ?? "", line.text.slice(0, ctx.pos - line.from))) return null;
+  const claim = pluginClaim;
+  if (claim && claim.pos === ctx.pos && (await claim.claimed)) return null;
+  return pathCompletionSource(ctx);
+};
+
 export function completionExtension() {
   return [
     lookupKeys,
     prefetchResolve,
     autocompletion({
-      override: [gated(lspCompletionSource), gated(contributedSource), gated(pathCompletionSource)],
+      override: [gated(claimingLspSource), gated(contributedSource), gated(pathFallbackSource)],
       icons: false,
       addToOptions: [
         { render: kindBadge, position: 20 },
@@ -788,6 +830,9 @@ export function completionExtension() {
     lookupTracker,
     Prec.highest(
       keymap.of([
+        // macOS: ⌃N / ⌃P are line down / up in text, so they move through the lookup as ↓ / ↑ do.
+        { mac: "Ctrl-n", run: (view) => moveLookup(view, true) },
+        { mac: "Ctrl-p", run: (view) => moveLookup(view, false) },
         {
           key: "Tab",
           run: (view) => {

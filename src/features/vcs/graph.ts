@@ -21,6 +21,9 @@ export interface GraphSegment {
   arrow?: "up" | "down";
   /** Destination row of a long-edge arrow in the displayed graph. */
   targetRow?: number;
+  /** Drawn lane positions when they differ from `from` / `to` (see {@link straightenLaneChanges}). */
+  fromX?: number;
+  toX?: number;
 }
 
 export interface GraphRow {
@@ -261,14 +264,61 @@ export function collapseLinear<
   return { commits: visible, graph };
 }
 
-/** Ids of the loaded commits reachable from `head` (log order: children before parents). */
+/**
+ * A filtered log connects a commit to the nearest matching ancestor along every merge
+ * path. Ancestors that another of the commit's connections already reaches would each
+ * open a lane of their own without adding one, so their filtered edges are dropped;
+ * real parents and collapsed-fragment connections stay as they are.
+ */
+export function pruneFilteredEdges(commits: readonly GraphCommit[]): GraphCommit[] {
+  const positions = new Map(commits.map((c, i) => [c.id, i]));
+  const kindOf = (c: GraphCommit, i: number) => c.edgeTypes?.[i] ?? (c.dashed?.[i] ? "filtered" : "normal");
+  return commits.map((c) => {
+    if (c.parents.length < 2) return c;
+    if (!c.parents.some((_, i) => kindOf(c, i) === "filtered")) return c;
+    // Walk the parents shallowest first, tracking the rows the kept connections reach:
+    // a filtered parent already covered by them adds nothing (and a dropped one was
+    // covered itself, so its own reach is covered too). Parents only appear later in
+    // the log, so no walk goes past the deepest parent of the commit.
+    const limit = Math.max(...c.parents.map((p) => positions.get(p) ?? -1));
+    const drop = new Set<number>();
+    const covered = new Set<number>();
+    for (const i of c.parents
+      .map((_, i) => i)
+      .sort((a, b) => (positions.get(c.parents[a]!) ?? Infinity) - (positions.get(c.parents[b]!) ?? Infinity))) {
+      const pos = positions.get(c.parents[i]!);
+      if (kindOf(c, i) === "filtered" && pos != null && covered.has(pos)) {
+        drop.add(i);
+        continue;
+      }
+      for (const stack = pos == null ? [] : [pos]; stack.length;) {
+        const at = stack.pop()!;
+        if (covered.has(at)) continue;
+        covered.add(at);
+        for (const p of commits[at]!.parents) {
+          const next = positions.get(p);
+          if (next != null && next <= limit) stack.push(next);
+        }
+      }
+    }
+    if (!drop.size) return c;
+    const keep = c.parents.map((_, i) => i).filter((i) => !drop.has(i));
+    return {
+      ...c,
+      parents: keep.map((i) => c.parents[i]!),
+      ...(c.dashed ? { dashed: keep.map((i) => c.dashed![i]!) } : {}),
+      ...(c.edgeTypes ? { edgeTypes: keep.map((i) => c.edgeTypes![i]!) } : {}),
+    };
+  });
+}
+
+/** Ids reachable from the given heads (log order: children before parents). */
 export function reachableFrom(
   commits: ReadonlyArray<{ id: string; parents: readonly string[] }>,
-  head: string | null,
+  heads: Iterable<string>,
 ): Set<string> {
-  const out = new Set<string>();
-  if (!head) return out;
-  out.add(head);
+  const out = new Set(heads);
+  if (!out.size) return out;
   for (const c of commits) if (out.has(c.id)) for (const p of c.parents) out.add(p);
   return out;
 }
@@ -456,7 +506,14 @@ const LONG_EDGE_STUB = 2;
 
 const onLane = (i: number) => (s: GraphSegment) => s.from === i && s.to === i;
 
-const passes = (row: GraphRow, i: number) => row.lane !== i && row.up.some(onLane(i)) && row.down.some(onLane(i));
+/** Lanes a row's vertical lines pass straight through (other than its node's). */
+function passingLanes(row: GraphRow): Set<number> {
+  const out = new Set<number>();
+  for (const s of row.up)
+    if (s.from === s.to && s.from !== row.lane && row.down.some((d) => d.from === s.from && d.to === s.from))
+      out.add(s.from);
+  return out;
+}
 
 /**
  * Show Long Edges off: the middle of a straight run of a lane through `minLength` or
@@ -464,41 +521,102 @@ const passes = (row: GraphRow, i: number) => row.lane !== i && row.up.some(onLan
  */
 export function hideLongEdges(rows: readonly GraphRow[], minLength = LONG_EDGE): GraphRow[] {
   const out = rows.slice();
-  const width = rows.reduce((max, row) => Math.max(max, row.width), 0);
   const edit = (r: number, fn: (row: GraphRow) => GraphRow) => {
     out[r] = fn(out[r]!);
   };
-  for (let i = 0; i < width; i++) {
+  const hide = (i: number, start: number, end: number) => {
     const lane = onLane(i);
-    let start = -1;
-    for (let r = 0; r <= rows.length; r++) {
-      if (r < rows.length && passes(rows[r]!, i)) {
-        if (start < 0) start = r;
-        continue;
-      }
-      if (start >= 0 && r - start >= minLength) {
-        const from = start + LONG_EDGE_STUB;
-        const to = r - 1 - LONG_EDGE_STUB;
-        for (let k = from; k <= to; k++) {
-          edit(k, (row) => ({
-            ...row,
-            up: row.up.filter((s) => !lane(s)),
-            down: row.down.filter((s) => !lane(s)),
-            upTargets: row.upTargets?.filter((_, i) => !lane(row.up[i]!)),
-            downTargets: row.downTargets?.filter((_, i) => !lane(row.down[i]!)),
-          }));
-        }
-        edit(from - 1, (row) => ({
-          ...row,
-          down: row.down.map((s) => (lane(s) ? { ...s, arrow: "down", targetRow: r } : s)),
-        }));
-        edit(to + 1, (row) => ({
-          ...row,
-          up: row.up.map((s) => (lane(s) ? { ...s, arrow: "up", targetRow: start - 1 } : s)),
-        }));
-      }
-      start = -1;
+    const from = start + LONG_EDGE_STUB;
+    const to = end - 1 - LONG_EDGE_STUB;
+    for (let k = from; k <= to; k++) {
+      edit(k, (row) => ({
+        ...row,
+        up: row.up.filter((s) => !lane(s)),
+        down: row.down.filter((s) => !lane(s)),
+        upTargets: row.upTargets?.filter((_, i) => !lane(row.up[i]!)),
+        downTargets: row.downTargets?.filter((_, i) => !lane(row.down[i]!)),
+      }));
     }
+    edit(from - 1, (row) => ({
+      ...row,
+      down: row.down.map((s) => (lane(s) ? { ...s, arrow: "down", targetRow: end } : s)),
+    }));
+    edit(to + 1, (row) => ({
+      ...row,
+      up: row.up.map((s) => (lane(s) ? { ...s, arrow: "up", targetRow: start - 1 } : s)),
+    }));
+  };
+  // One pass over the rows, following every lane's current run at once.
+  const runs = new Map<number, number>();
+  for (let r = 0; r <= rows.length; r++) {
+    const through = r < rows.length ? passingLanes(rows[r]!) : new Set<number>();
+    for (const [lane, start] of runs) {
+      if (through.has(lane)) continue;
+      if (r - start >= minLength) hide(lane, start, r);
+      runs.delete(lane);
+    }
+    for (const lane of through) if (!runs.has(lane)) runs.set(lane, r);
+  }
+  return out;
+}
+
+/**
+ * Packs each row's lanes side by side, in their order: lanes laid out by branch leave
+ * gaps (one per branch) and hidden long edges free theirs. Each row boundary and each
+ * node level is packed on its own; adjacent rows share the boundary, so lines stay joined.
+ */
+export function compactLanes(rows: readonly GraphRow[]): GraphRow[] {
+  const ranks = (lanes: Iterable<number>) => new Map([...new Set(lanes)].sort((a, b) => a - b).map((l, i) => [l, i]));
+  const boundaries = Array.from({ length: rows.length + 1 }, (_, r) =>
+    ranks([...(rows[r]?.up.map((s) => s.from) ?? []), ...(rows[r - 1]?.down.map((s) => s.to) ?? [])]),
+  );
+  return rows.map((row, r) => {
+    const node = ranks([row.lane, ...row.up.map((s) => s.to), ...row.down.map((s) => s.from)]);
+    const top = boundaries[r]!;
+    const bottom = boundaries[r + 1]!;
+    return {
+      ...row,
+      lane: node.get(row.lane)!,
+      up: row.up.map((s) => ({ ...s, from: top.get(s.from)!, to: node.get(s.to)! })),
+      down: row.down.map((s) => ({ ...s, from: node.get(s.from)!, to: bottom.get(s.to)! })),
+      width: Math.max(node.size, top.size, bottom.size),
+    };
+  });
+}
+
+/**
+ * Draws a lane change as one straight diagonal across the row boundary, like IDEA: a half-row
+ * segment that changes lane and the vertical half of the neighbouring row that continues it meet
+ * halfway between the two lanes. Only the drawn positions change; `from` / `to` stay the lanes.
+ */
+export function straightenLaneChanges(rows: readonly GraphRow[]): GraphRow[] {
+  const out = rows.map((r) => ({ ...r, up: [...r.up], down: [...r.down] }));
+  const vertical = (s: GraphSegment, lane: number) => s.from === lane && s.to === lane && !s.arrow;
+  for (let r = 0; r < out.length; r++) {
+    const row = out[r]!;
+    // Leaving the node towards another lane: continues straight down in the next row.
+    const next = out[r + 1];
+    // Another line ending at the same lane (a merge into a lane that continues) keeps its position.
+    const shared = (list: readonly GraphSegment[], lane: number, end: "from" | "to") =>
+      list.filter((x) => x[end] === lane).length > 1;
+    row.down.forEach((s, i) => {
+      if (s.from === s.to || s.arrow || !next || shared(row.down, s.to, "to")) return;
+      const j = next.up.findIndex((u) => vertical(u, s.to) && u.edge === s.edge && u.fromX === undefined);
+      if (j < 0) return;
+      const mid = (s.from + s.to) / 2;
+      row.down[i] = { ...s, toX: mid };
+      next.up[j] = { ...next.up[j]!, fromX: mid };
+    });
+    // Converging into the node from another lane: continues a vertical line of the previous row.
+    const prev = out[r - 1];
+    row.up.forEach((s, i) => {
+      if (s.from === s.to || s.arrow || !prev || shared(prev.down, s.from, "to")) return;
+      const j = prev.down.findIndex((d) => vertical(d, s.from) && d.edge === s.edge && d.toX === undefined);
+      if (j < 0) return;
+      const mid = (s.from + s.to) / 2;
+      row.up[i] = { ...s, fromX: mid };
+      prev.down[j] = { ...prev.down[j]!, toX: mid };
+    });
   }
   return out;
 }

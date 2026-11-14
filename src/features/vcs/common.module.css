@@ -85,6 +85,7 @@
   white-space: nowrap;
 }
 .commitHash {
+  flex-shrink: 0;
   color: var(--fg-subtle);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
@@ -97,6 +98,7 @@
   color: var(--fg);
 }
 .commitMeta {
+  flex-shrink: 0;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
@@ -105,12 +107,23 @@
   color: var(--fg-faint);
   text-align: center;
 }
+.commitListBody {
+  flex: 1;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+}
 .boxList {
   flex: 1;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
 }
-/* Push dialogs: the list fills the body so a resizable window shows more rows. */
+/* Push and commit list dialogs: the list fills the body so a resizable window shows more rows. */
+.pushDialog > [data-dialog-body],
+.listDialog > [data-dialog-body] {
+  display: flex;
+  flex-direction: column;
+}
 .pushTreeWrap {
   flex: 1;
   min-height: 220px;
@@ -125,14 +138,32 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
+/* Push dialog: commits above their changed files, split by a draggable divider; the pair fills the body. */
+.pushSplit {
+  flex: 1;
+  min-height: min(540px, 60vh);
+}
+/* The panel's own `height: 100%` doesn't resolve against a flex-basis height in WebKit: stretch instead. */
+.pushSplit .pushSplitPanel {
+  height: auto;
+  align-self: stretch;
+}
+.pushSplitPanel > .pushListWrap {
+  min-height: 0;
+  padding-bottom: 8px;
+}
 /* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
 .pushChanges {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  padding-top: 8px;
 }
 .pushChanges .comparison {
-  height: min(360px, 45vh);
+  flex: 1;
+  height: auto;
+  min-height: 0;
   padding: 0 14px 14px;
 }
 .pushChangesTitle {
@@ -142,6 +173,27 @@
   min-height: 24px;
   padding: 0 14px 6px;
   color: var(--fg-subtle);
+}
+.pushGrouping {
+  margin-left: auto;
+}
+.pushCommitDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 96px;
+  margin: 0 14px 8px;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  -webkit-user-select: text;
+  user-select: text;
+}
+.pushCommitMessage {
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .todoList {
   margin: 8px 0 0;
@@ -232,6 +284,86 @@
   width: 220px;
   margin-left: 6px;
 }
+.targetPopup {
+  /* What a list row (ui/List.module.css) adds around its name: the inset from the popup edge
+     plus row padding, then the icon and the gap after it. */
+  --target-row-inset: calc(6px + 8px);
+  --target-row-leading: calc(14px + 6px);
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Rows are out of flow inside the virtual list: this hidden column gives the popup their width. */
+.targetSizer {
+  width: max-content;
+  /* As wide as the longest branch name, up to a cap (Popup limits it to the window). */
+  max-width: min(640px, 70vw);
+  box-sizing: border-box;
+  height: 0;
+  padding-inline: var(--target-row-inset);
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+}
+/* Stands in for the row's branch icon, so a name is measured with the row around it. */
+.targetSizer > span {
+  padding-left: var(--target-row-leading);
+  white-space: nowrap;
+}
+.targetListWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.targetList {
+  flex: 1;
+}
+.targetRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.targetIcon {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.targetName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Fits the remote and target fields into a 22px tree row. */
+.pushRowTarget {
+  --h-field: var(--h-control-small);
+  --h-control: var(--h-control-small);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.pushRowTarget button {
+  font-size: var(--fs-small);
+}
+.pushRowSeparator {
+  color: var(--fg-faint);
+}
+.pushRowInput {
+  min-width: 0;
+  font-size: var(--fs-small);
+}
+.pushRowInput[data-changed]:not(:focus-visible) {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .choiceList {
   max-height: 240px;
   overflow: auto;
@@ -278,6 +410,31 @@
 .manageRowSelected,
 .manageRowSelected:hover {
   background: var(--bg-list-selected);
+}
+/* Worktrees dialog: the tree needs a height of its own inside the auto-sized body. */
+.worktreeListDialog {
+  height: 340px;
+  min-height: 0;
+}
+/* Worktrees tree rows: the worktree name keeps its width, the path is what gets cut short. */
+.worktreeIcon {
+  flex: none;
+  margin-right: 2px;
+  color: var(--fg-muted);
+}
+.worktreeLabel {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.worktreeDetail {
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
 }
 
 .comparisonDialog > [data-dialog-body] {

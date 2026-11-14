@@ -439,3 +439,34 @@ fn create_file_bytes_does_not_follow_existing_symlink() {
     assert_eq!(error.kind, ide_core::error::ErrorKind::AlreadyExists);
     assert!(!target.exists());
 }
+
+#[test]
+fn rule_changes_notify_the_affected_subtree() {
+    for (rule, subtree) in [(".git/info/exclude", ""), ("sub/.gitignore", "sub"), ("sub/.ignore", "sub")] {
+        let (_t, r) = root();
+        write(&r.join(".git/HEAD"), "ref: refs/heads/main\n");
+        write(&r.join(rule), "");
+        write(&r.join("sub/generated/file.txt"), "x");
+        let batches: Arc<Mutex<Vec<FsBatch>>> = Arc::default();
+        let events: Arc<Mutex<Vec<IdeEvent>>> = Arc::default();
+        let sink: SharedSink = {
+            let events = events.clone();
+            Arc::new(move |event: IdeEvent| events.lock().push(event))
+        };
+        let watcher = {
+            let batches = batches.clone();
+            Watcher::start(&r, vec![], sink, Box::new(move |batch| batches.lock().push(batch.clone()))).unwrap()
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        write(&r.join(rule), "generated/\n");
+        let expected = r.join(subtree);
+        assert!(wait_for(&batches, |batches| batches
+            .iter()
+            .any(|b| b.ignore_rules.as_slice() == std::slice::from_ref(&expected))));
+        assert!(events.lock().iter().any(|event| matches!(
+            event,
+            IdeEvent::FsChanged { ignore_rules, .. } if ignore_rules.as_slice() == [ide_core::IpcPath::from(expected.clone())]
+        )), "{rule}: {:?}", events.lock());
+        drop(watcher);
+    }
+}

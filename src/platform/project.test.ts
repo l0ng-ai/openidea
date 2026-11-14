@@ -15,11 +15,12 @@ type BackendProject = NonNullable<Awaited<ReturnType<typeof commands.projectCurr
 const old: BackendProject = {
   root: "/old",
   name: "old",
+  displayName: "old",
   trusted: true,
   isGit: false,
   settings: {} as BackendProject["settings"],
 };
-const next: BackendProject = { ...old, root: "/new", name: "new" };
+const next: BackendProject = { ...old, root: "/new", name: "new", displayName: "new" };
 
 beforeEach(() => {
   vi.clearAllMocks();

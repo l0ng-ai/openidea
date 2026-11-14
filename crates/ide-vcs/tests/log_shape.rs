@@ -171,7 +171,7 @@ fn remotes_and_worktrees_are_managed() {
     .unwrap();
     assert_eq!(
         repo.remotes().unwrap(),
-        vec![Remote { name: "upstream".into(), url: "https://example.com/b.git".into() }]
+        vec![Remote { name: "upstream".into(), url: "https://example.com/b.git".into(), resolved_url: None }]
     );
     assert!(repo.edit_remote(&RemoteEdit::Add { name: "--bad".into(), url: "x".into() }).is_err());
     repo.edit_remote(&RemoteEdit::Remove { name: "upstream".into() }).unwrap();
@@ -184,6 +184,17 @@ fn remotes_and_worktrees_are_managed() {
     assert!(list[0].main && list[0].branch.as_deref() == Some("main"));
     assert_eq!(list[1].branch.as_deref(), Some("fix"));
     assert!(wt.join("a.txt").exists());
+    // An empty folder at the target is replaced, not moved into; anything else there is refused.
+    let moved = tmp.path().join("elsewhere/work-fix");
+    std::fs::create_dir_all(&moved).unwrap();
+    std::fs::write(moved.join("keep.txt"), "x").unwrap();
+    assert!(repo.move_worktree(&wt, &moved).is_err());
+    std::fs::remove_file(moved.join("keep.txt")).unwrap();
+    repo.move_worktree(&wt, &moved).unwrap();
+    assert!(!wt.exists() && moved.join("a.txt").exists());
+    let list = repo.worktrees().unwrap();
+    assert_eq!(dunce::canonicalize(&list[1].path).unwrap(), dunce::canonicalize(&moved).unwrap());
+    let wt = moved;
     repo.remove_worktree(&wt, false).unwrap();
     assert_eq!(repo.worktrees().unwrap().len(), 1);
 }

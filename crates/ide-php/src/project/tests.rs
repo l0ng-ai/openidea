@@ -433,7 +433,7 @@ fn exclude_from_classmap_patterns() {
 
 #[test]
 fn php_app_fixture() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-app");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/php-library");
     let layout = layout(&root, &[], &[]);
     let root = normalize(&root);
     let map = layout.autoload();

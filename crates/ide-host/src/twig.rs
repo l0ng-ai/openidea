@@ -88,6 +88,7 @@ fn completion_item(item: TwigCompletion, server: ServerId) -> CompletionItem {
     CompletionItem {
         label: item.label,
         label_detail: None,
+        label_description: None,
         detail: item.detail,
         kind: Some(kind),
         documentation: item.documentation.map(|value| Markup { kind: "markdown".into(), value }),

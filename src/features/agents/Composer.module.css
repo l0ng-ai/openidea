@@ -16,27 +16,68 @@
     inset 0 0 0 1px var(--focus-ring),
     0 0 0 1px var(--focus-ring);
 }
-.textarea {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  resize: none;
-  border: 0;
-  outline: none;
+/* A file or folder dragged over it from the Project view or the OS. */
+.fileOver {
+  box-shadow:
+    inset 0 0 0 1px var(--focus-ring),
+    0 0 0 1px var(--focus-ring);
+}
+/* The CodeMirror text field: the UI font, wrapping, growing with the text up to a limit. */
+.field {
+  position: relative;
+  min-width: 0;
+}
+.field :global(.cm-editor) {
   background: transparent;
   color: var(--fg-strong);
-  font: inherit;
   font-size: var(--fs-ui);
-  line-height: 1.5;
-  padding: 10px 12px 2px;
-  -webkit-user-select: text;
-  user-select: text;
 }
-.textarea:focus-visible {
+.field :global(.cm-editor.cm-focused) {
   outline: none;
 }
-.textarea::placeholder {
+.field :global(.cm-scroller) {
+  min-height: 44px;
+  max-height: 280px;
+  overflow-y: auto;
+  font-family: inherit;
+  line-height: 1.5;
+}
+.field :global(.cm-content) {
+  padding: 10px 12px 2px;
+  caret-color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.field :global(.cm-line) {
+  padding: 0;
+}
+/* A wide card (a ``` block) takes the text's width, its code scrolling inside, rather than
+   widening the text past the box. */
+.field :global(.cm-content) {
+  min-width: 0;
+}
+.field :global(.cm-placeholder) {
   color: var(--fg-faint);
+}
+.field :global(.cm-cursor) {
+  border-left-color: var(--fg-strong);
+}
+.field ::selection {
+  background: var(--bg-editor-selection);
+}
+/* A dragged file over the box: what dropping does. */
+.dropOverlay {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg-popup) 82%, transparent);
+  color: var(--fg-strong);
+  pointer-events: none;
 }
 .bar {
   display: flex;
@@ -58,8 +99,14 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-left: auto;
+}
+/* Attach/reference buttons share the send button's 24px footprint and chrome. */
+/* Plain toolbar icons, framed only on hover like the rest of the IDE's toolbars. */
+.composerButton {
+  width: var(--h-control);
+  height: var(--h-control);
 }
 .spacer {
   flex: 1;
@@ -94,10 +141,158 @@
   color: var(--fg-muted);
   overflow-wrap: anywhere;
 }
+/* A ghost button showing a value and its detail, like a ghost Select. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--h-control);
+  min-width: 0;
+  padding: 0 4px 0 6px;
+  border-radius: var(--radius-control);
+  color: var(--fg-secondary);
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease);
+}
+.chip:hover,
+.chip[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+.chipValue {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chipDetail {
+  display: inline-grid;
+  color: var(--fg-subtle);
+}
+.chipDetail > span {
+  grid-area: 1 / 1;
+}
+.chipSizer {
+  visibility: hidden;
+}
+.chipChevron {
+  flex: none;
+  color: var(--fg-muted);
+}
+.modelEffortPopup {
+  width: min(340px, calc(100vw - 24px));
+  padding: 12px 0 6px;
+}
+.effortBlock {
+  padding: 0 12px 8px;
+}
+/* The list takes the height of its models; with many it scrolls inside the popup. */
+.modelEffortPopup .modelList {
+  max-height: 216px;
+}
+.effortHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.effortValue {
+  color: var(--fg-strong);
+}
+.effortSlider {
+  --thumb: 14px;
+  margin-top: 8px;
+}
+.effortSlider input {
+  display: block;
+  width: 100%;
+  height: var(--thumb);
+  margin: 0;
+  appearance: none;
+  background: transparent;
+}
+.effortSlider input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill), var(--control-off) var(--fill));
+}
+.effortSlider input::-webkit-slider-thumb {
+  width: var(--thumb);
+  height: var(--thumb);
+  margin-top: calc((4px - var(--thumb)) / 2);
+  border-radius: 50%;
+  appearance: none;
+  background: var(--fg-on-accent);
+  box-shadow:
+    0 0 0 1px var(--border-button),
+    var(--shadow-tooltip);
+}
+.effortSlider input:focus-visible {
+  outline: none;
+}
+.effortSlider input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+/* One dot per level, centred under the thumb's positions. */
+.effortTicks {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 calc(var(--thumb) / 2 - 2px);
+  margin-top: 4px;
+}
+.effortTicks > span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--control-off);
+}
+.effortTicks > .effortTickActive {
+  background: var(--accent);
+}
+.modePopup {
+  min-width: 200px;
+  padding: 6px 0;
+}
+.modeList {
+  display: flex;
+  flex-direction: column;
+}
+.modeOption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  margin: 0 6px;
+  padding: 0 8px;
+  border-radius: var(--radius-row);
+  color: var(--fg-strong);
+  text-align: left;
+  white-space: nowrap;
+}
+.modeOption:hover,
+.modeOption:focus-visible {
+  outline: none;
+  background: var(--bg-list-selected);
+}
+.modeCheck {
+  width: 12px;
+  flex: none;
+  color: var(--fg-muted);
+}
+.modeFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 8px 14px 2px;
+  border-top: 1px solid var(--border);
+}
 @container agent-composer (max-width: 600px) {
+  /* Narrow: keep one row of icons next to the agent picker. The model/mode pickers
+     collapse into the settings menu, so nothing has to wrap onto a second line. */
   .bar {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
     gap: 6px;
   }
   .toolbar {
@@ -107,10 +302,26 @@
   .toolbar > .configPicker {
     flex: 0 1 auto;
     min-width: 0;
-    max-width: calc((100% - 28px) / 2);
   }
   .configPicker > button {
-    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The agent picker keeps its icon and truncates its name instead of taking the row. */
+  .toolbar > :first-child {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The effort is in the model popup: the button keeps the model's name readable. */
+  .chipDetail {
+    display: none;
   }
   .inlineSetting {
     display: none;
@@ -121,8 +332,13 @@
     margin-left: auto;
   }
   .actions {
-    width: 100%;
+    width: auto;
+    flex: none;
     margin-left: 0;
+    justify-content: flex-end;
+  }
+  .actions .spacer {
+    display: none;
   }
 }
 .pickerValue {
@@ -135,17 +351,19 @@
   color: var(--fg-subtle);
 }
 
-.images {
+/* Above the text: the current file to reference, attached files and images. */
+.context {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   padding: 8px 10px 0;
   cursor: default;
 }
 .image {
   position: relative;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
@@ -185,39 +403,77 @@
   opacity: 1;
 }
 
-/* `@` / `/` completion; Popup keeps the list within the viewport. */
-.caretMirror {
-  position: fixed;
-  top: 0;
-  left: 0;
-  box-sizing: border-box;
-  visibility: hidden;
-  pointer-events: none;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+/* Attached files and the current-file suggestion: one height, like the chips in the text. */
+.attachment,
+.suggestion {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  height: 24px;
+  padding: 0 4px 0 7px;
+  border-radius: var(--radius-control);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: var(--fs-small);
+  color: var(--fg-strong);
 }
+.suggestion {
+  padding-right: 8px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  outline: 1px dashed var(--border-strong);
+  outline-offset: -1px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.suggestion:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.suggestion:focus-visible {
+  outline: 2px solid var(--focus-ring);
+}
+.suggestionHint {
+  color: var(--fg-faint);
+}
+.removeChip {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.removeChip:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.attachmentName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `@` / `/` completion; Popup keeps the list within the viewport. */
 .popup {
+  display: flex;
+  flex-direction: column;
   width: min(560px, calc(100vw - 12px));
   border-radius: var(--radius-popup);
   cursor: default;
 }
 .items {
   max-height: 300px;
-  overflow: auto;
-  padding: 4px 0;
-}
-.item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: var(--h-row);
-  margin: 0 4px;
-  padding: 0 8px;
-  border-radius: var(--radius-row);
-  white-space: nowrap;
-}
-.active {
-  background: var(--bg-list-selected);
+  margin: 4px 0;
 }
 .itemName {
   flex: none;
@@ -234,4 +490,31 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);
+}
+.match {
+  background: none;
+  color: var(--fg-completion-match, var(--accent));
+  font-weight: 600;
+}
+.popupFooter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 5px 12px 6px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+}
+.popupFooter kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  margin-right: 2px;
+  padding: 0 3px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-family: var(--font-keys, inherit);
+  font-size: var(--fs-tiny, 11px);
 }

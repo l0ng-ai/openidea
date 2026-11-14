@@ -26,6 +26,7 @@ import {
   moveRow,
   planIsNoop,
   planProblem,
+  protectedBranchProblem,
   rebaseRange,
   singleCommitPlan,
   squashPlan,
@@ -84,9 +85,9 @@ describe("commit plan and rollback with renames", () => {
     expect(renamedFromPath(fs("a.ts"))).toBeNull();
   });
 
-  it("unstages both sides of an excluded rename so the deletion is not committed alone", () => {
+  it("leaves both sides of an excluded rename out so the deletion is not committed alone", () => {
     const plan = planCommit([renamed], new Map([[renamed.path, "none"]]));
-    expect(plan.unstage).toEqual(["/p/src/new.ts", "/p/src/old.ts"]);
+    expect(plan.exclude).toEqual(["/p/src/new.ts", "/p/src/old.ts"]);
     expect(plan.included).toEqual([]);
   });
 
@@ -130,6 +131,16 @@ describe("Undo Commit", () => {
     expect(headPushed(info({ upstream: "origin/main", ahead: 0 }))).toBe(true);
     expect(headPushed(info({ upstream: "origin/main", ahead: 1 }))).toBe(false);
     expect(headPushed(info())).toBe(false);
+  });
+
+  it("refuses history rewriting on a protected branch with an upstream", () => {
+    const problem = (head: string | null, upstream: string | null) =>
+      protectedBranchProblem({ head, upstream }, (name) => /^(main|master)$/.test(name));
+    expect(problem("main", "origin/main")).toMatch(/protected branch 'main'/);
+    expect(problem("master", "origin/master")).toMatch(/protected branch 'master'/);
+    expect(problem("feature", "origin/main")).toBeNull();
+    expect(problem("main", null)).toBeNull();
+    expect(problem(null, "origin/main")).toBeNull();
   });
 });
 

@@ -9,29 +9,27 @@
 .topBar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.tabs {
-  flex: none;
-  border-bottom: 0;
-}
-.tabCount {
-  margin-left: 6px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-  font-variant-numeric: tabular-nums;
+  gap: 6px;
 }
 .side {
   display: flex;
   flex: none;
   flex-direction: column;
-  width: 280px;
+  width: 340px;
   min-height: 0;
   border-right: 1px solid var(--border);
 }
-.search {
-  margin: 8px;
+.searchField {
+  flex: 0 1 340px;
+  min-width: 0;
+}
+/* The installed and marketplace lists scroll together, as one list. */
+.lists {
+  overflow: auto;
+}
+.lists .list {
+  flex: none;
+  overflow: visible;
 }
 .spacer {
   flex: 1;
@@ -43,6 +41,7 @@
 }
 .body {
   display: flex;
+  min-width: 640px;
   flex: 1;
   min-height: 0;
   border-radius: var(--radius-small);
@@ -70,6 +69,27 @@
 }
 .groupCount {
   font-variant-numeric: tabular-nums;
+}
+.groupToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.groupToggle:hover {
+  color: var(--fg);
+}
+.groupToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-small);
 }
 .notice {
   display: flex;
@@ -281,6 +301,17 @@
   font-family: var(--font-mono);
   font-size: var(--fs-small);
 }
+.facts .homepage {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.homepageLink {
+  color: var(--link);
+  text-decoration: none;
+}
+.homepageLink:hover {
+  text-decoration: underline;
+}
 .muted {
   color: var(--fg-muted);
 }
@@ -322,6 +353,41 @@
 }
 
 /* Permission dialog and notices */
+.capabilityItem {
+  min-width: 0;
+  padding: 8px 10px;
+}
+.capabilityItem + .capabilityItem {
+  border-top: 1px solid var(--border);
+}
+.capabilityHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.capabilityHeader > .mono {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.capabilityDescription {
+  margin: 4px 0 0 26px;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.programPermission {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 6px 0 0 26px;
+}
+.programPath {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .consent {
   display: flex;
   flex-direction: column;
@@ -351,26 +417,89 @@
   margin-bottom: 12px;
 }
 
-.settingsPage {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 560px;
-}
-
-.settingRow {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.marketItem {
-  list-style: none;
-  padding: 4px 8px;
-}
-
 .categorySelect {
-  width: 100%;
+  flex: none;
+  width: 150px;
+}
+.ownIcon {
+  background: transparent;
+}
+
+.marketRow .rowMain {
+  align-items: flex-start;
+  min-height: 60px;
+}
+.marketRow .icon {
+  margin-top: 2px;
+}
+.rowTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rowDescription {
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.downloads {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.exampleTag {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: var(--bg-control);
+  color: var(--fg-muted);
+  font-size: var(--fs-tiny);
+  line-height: 14px;
+}
+.groupNote {
+  padding: 0 12px 4px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.suggestNotice {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+/* plugins without an icon: their initial on a tint picked by id */
+.monogram {
+  font-weight: 600;
+  font-size: var(--fs-input-large);
+  --tone: var(--info);
+  background: color-mix(in srgb, var(--tone) 18%, transparent);
+  color: var(--tone);
+}
+.iconLarge.monogram {
+  font-size: 24px;
+}
+.tone0 {
+  --tone: var(--info);
+}
+.tone1 {
+  --tone: var(--success);
+}
+.tone2 {
+  --tone: var(--warning);
+}
+.tone3 {
+  --tone: var(--danger);
+}
+.tone4 {
+  --tone: var(--ansi-magenta);
+}
+.tone5 {
+  --tone: var(--ansi-cyan);
 }
 
 .detailsNotice {
@@ -407,37 +536,30 @@
   padding: 8px 10px;
   color: var(--fg-muted);
 }
-.intellijTheme {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.intellijTheme > .muted {
-  flex-shrink: 0;
-  font-size: var(--fs-small);
-}
 .intellijPlugin {
   display: flex;
   flex: 1;
-  align-items: center;
-  gap: 8px;
-  align-self: stretch;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
   min-width: 0;
 }
-/* A line above each plugin but the first, as in IDEA's Theme list. */
-.intellijPluginNext {
-  border-top: 1px solid var(--border);
+.intellijPluginHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
-.intellijPluginName {
+.intellijPluginThemes {
   overflow: hidden;
-  color: var(--fg-secondary);
-  font-weight: 600;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .intellijPluginIde {
   flex-shrink: 0;
   margin-left: auto;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }
