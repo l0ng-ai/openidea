@@ -372,6 +372,31 @@ describe("run config → launch config", () => {
     },
   );
 
+  it("Zig under CodeLLDB: no source-language mode, so evaluation stays LLDB's own", () => {
+    const exe = launchConfigFor(
+      rc({ kind: "zig-application", command: "./zig-out/bin/app", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(exe.adapter).toBe("codelldb");
+    expect(extra(exe)).toEqual({ sourceLanguages: [] });
+    const single = launchConfigFor(
+      rc({
+        kind: "native",
+        command: "/tmp/openidea-run/calc-1",
+        debugAdapter: "codelldb",
+        params: { language: "zig" },
+      }),
+      "/p",
+    )!;
+    expect(extra(single)).toEqual({ sourceLanguages: [] });
+    // Rust-compiled binaries keep CodeLLDB's default (Rust) source mode.
+    const rust = launchConfigFor(
+      rc({ kind: "native", command: "/tmp/openidea-run/app-1", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(rust.extraJson).toBeNull();
+  });
+
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({
       kind: "godot",

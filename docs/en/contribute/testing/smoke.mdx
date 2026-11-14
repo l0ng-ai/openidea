@@ -7,12 +7,12 @@ Smoke tests check each language end to end with the real tools the IDE uses: lan
 
 They are not part of `cargo nextest run` or `pnpm test`, because they need the tools installed. CI runs them in the **Language smoke** workflow with pinned versions.
 
-| Suite                                     | What it checks                                                                 | Languages                                               |
-| ----------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| `crates/ide-host/tests/language_smoke.rs` | Code intelligence through the `ops` the app's commands call                    | typescript, python, rust, go, java, kotlin, php         |
-| `crates/ide-host/tests/project_smoke.rs`  | Opening a fixture with its build tool and SDK                                  | `maven_sync`, `jdk`, `gradle_sync`, `python_venv`       |
-| `smoke/run.test.ts`                       | Run and test configurations through the run store and a real `openidea-server` | typescript, python, rust, go, java, kotlin, php         |
-| `smoke/debug.test.ts`                     | Debugging the entry point with the debugger the IDE installs                   | typescript, python, rust, go, java, kotlin, c, cpp, php |
+| Suite                                     | What it checks                                                                 | Languages                                                    |
+| ----------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `crates/ide-host/tests/language_smoke.rs` | Code intelligence through the `ops` the app's commands call                    | typescript, python, rust, go, java, kotlin, php              |
+| `crates/ide-host/tests/project_smoke.rs`  | Opening a fixture with its build tool and SDK                                  | `maven_sync`, `jdk`, `gradle_sync`, `python_venv`            |
+| `smoke/run.test.ts`                       | Run and test configurations through the run store and a real `openidea-server` | typescript, python, rust, go, java, kotlin, php, zig         |
+| `smoke/debug.test.ts`                     | Debugging the entry point with the debugger the IDE installs                   | typescript, python, rust, go, java, kotlin, c, cpp, zig, php |
 
 ## Language smoke
 
@@ -56,7 +56,7 @@ Each test file starts its own server and toolchains, so files run one at a time 
 
 ## In CI
 
-`.github/workflows/language-smoke.yml` runs one job per language (typescript, python, rust, go, java, kotlin, php, c, cpp) on pushes to `main` and on PRs that touch `crates/`, `languages/`, `fixtures/`, `Cargo.toml`/`Cargo.lock`, `src/features/run/`, `src/features/debugger/`, `src/platform/`, `smoke/`, `package.json`/`pnpm-lock.yaml` or the workflow itself. Each job runs the language smoke test, the relevant project smoke tests, then the run and debug smoke tests.
+`.github/workflows/language-smoke.yml` runs one job per language (typescript, python, rust, go, java, kotlin, php, c, cpp, zig) on pushes to `main` and on PRs that touch `crates/`, `languages/`, `fixtures/`, `Cargo.toml`/`Cargo.lock`, `src/features/run/`, `src/features/debugger/`, `src/platform/`, `smoke/`, `package.json`/`pnpm-lock.yaml` or the workflow itself. Each job runs the language smoke test, the relevant project smoke tests, then the run and debug smoke tests.
 
 Server versions are pinned in the workflow's `env` so a server release can't fail an unrelated PR; bump them deliberately:
 

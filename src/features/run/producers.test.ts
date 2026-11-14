@@ -423,7 +423,12 @@ describe("single-file producers (scratches)", () => {
     expect(main.debug!.build.command).toMatch(
       /^mkdir -p \/tmp\/openidea-run && \/bin\/zig build-exe calc\.zig -femit-bin=\/tmp\/openidea-run\/calc-\w+$/,
     );
-    expect(main.debug!.config).toMatchObject({ kind: "native", debugAdapter: "codelldb", args: [] });
+    expect(main.debug!.config).toMatchObject({
+      kind: "native",
+      debugAdapter: "codelldb",
+      args: [],
+      params: { language: "zig" },
+    });
 
     const test = produceContext(scratch("calc.zig", src, 3), e)!;
     expect(test).toMatchObject({ name: "adds two numbers", scope: "element" });

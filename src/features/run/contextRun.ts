@@ -196,9 +196,9 @@ export async function compiledDebugPlan(config: RunConfig): Promise<Produced | n
   const input: ContextInput = { ...projectContext(), root, path, content };
   const env = await toolEnv(neededTools(input), path, root, false);
   if (m[2]) {
-    // A test: find the target by name again.
+    // A test: find the target by name again (targets and the id carry the unescaped name).
     if (config.kind === "zig") {
-      const test = zigTargets(content ?? "").find((t) => t.name.replace(/\\(.)/g, "$1") === m[2]);
+      const test = zigTargets(content ?? "").find((t) => t.name === m[2]);
       return test ? produceContext({ ...input, line: test.line }, env) : null;
     }
     const lines = (content ?? "").split("\n");
@@ -349,7 +349,7 @@ function peekContent(path: string): string | undefined {
 /** Whether the file's runnability depends on its text (`package main`, `fn main`, `#!`…). */
 function needsContent(path: string): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1);
-  return /\.(go|rs|java|kt|c|cpp|cc|cxx)$/.test(name) || !name.includes(".");
+  return /\.(go|rs|java|kt|c|cpp|cc|cxx|zig)$/.test(name) || !name.includes(".");
 }
 
 export async function prepareMenu(_menu: ContextMenuId, ctx: MenuGroupContext): Promise<void> {

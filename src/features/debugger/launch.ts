@@ -360,6 +360,10 @@ function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig
       env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`),
       ...(from && to && from !== to ? { sourceMap: [[from, to]] } : {}),
     });
+  } else if (rc.kind === "zig-application" || rc.params?.language === "zig") {
+    // Zig under CodeLLDB: without a source language, evaluation stays LLDB's own
+    // (the default Rust mode would shape `Evaluate Expression` as Rust).
+    out.extraJson = JSON.stringify({ sourceLanguages: [] });
   }
   return out;
 }

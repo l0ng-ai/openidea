@@ -660,7 +660,15 @@ function zigFile(input: ContextInput, env: ToolEnv, s: FileSite, test?: { name: 
     isTest: false,
     debugAdapter: null,
   };
-  const binary: RunConfig = { ...config, kind: "native", command: out, args: [], isTest: false };
+  const binary: RunConfig = {
+    ...config,
+    kind: "native",
+    command: out,
+    args: [],
+    isTest: false,
+    // Marks the debugged program as Zig: CodeLLDB's source mode stays off (see nativeLaunch).
+    params: { language: "zig" },
+  };
   return { name, scope, config, debug: { build: buildConfig, config: binary } };
 }
 

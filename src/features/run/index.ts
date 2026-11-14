@@ -177,7 +177,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     await executeAction("debug.startConfig", show === false ? { config, show: false } : config);
     return;
   }
-  // A single compiled file (rustc / clang): build with debug info, then debug the binary.
+  // A single compiled file (rustc / clang / zig): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
     await launchProduced(compiled, true, show);
