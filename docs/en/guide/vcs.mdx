@@ -218,6 +218,8 @@ Turn on **Combine stashes and shelves in one tab** in the Git settings to show b
 - **Show History for Selection** shows the commits that changed the selected lines.
 - **Show Current Revision** reveals the commit of the caret line in the log.
 
+Annotate skips the commits listed in the file `blame.ignoreRevsFile` names — git's convention is `.git-blame-ignore-revs` at the repository root — so a reformatting or mass-rename commit does not claim every line. **Ignore This Commit** in an annotated line's menu adds the current line's commit to that file and refreshes the annotations.
+
 ### Local history
 
 Local history keeps snapshots of your files independent of Git, including deleted files and labelled states such as the one taken before a refactoring.

@@ -241,6 +241,17 @@ pub async fn vcs_add_to_ignore(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_write_blame_ignore_revs(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    content: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_write_blame_ignore_revs(&state.host, window.label(), path, content).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_unstage(window: Window, state: State<'_, AppState>, paths: Vec<PathBuf>) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_unstage(&state.host, window.label(), paths).await
 }

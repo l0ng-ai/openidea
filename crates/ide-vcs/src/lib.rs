@@ -884,6 +884,12 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
     }
+    /// Replaces the annotate ignore list (`.git-blame-ignore-revs` at the worktree root) with
+    /// `content`, and makes `blame.ignoreRevsFile` name it when the local config names none.
+    pub fn write_blame_ignore_revs(&self, content: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::write_blame_ignore_revs(self, content)
+    }
     /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
     /// current text: `current_text`, or the file on disk), mapped to HEAD's lines first.
     pub fn block_history(

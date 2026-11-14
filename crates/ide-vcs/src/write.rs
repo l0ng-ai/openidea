@@ -43,6 +43,42 @@ fn run_paths(r: &Repo, args: &[&str], paths: &[String]) -> IdeResult<()> {
     cli::run_paths(r.root(), &base, paths).map(|_| ())
 }
 
+/// The annotate ignore list at the worktree root: git's conventional `blame.ignoreRevsFile`.
+pub const BLAME_IGNORE_REVS_FILE: &str = ".git-blame-ignore-revs";
+
+/// Arguments for the file `blame.ignoreRevsFile` names, which git does not accept as an
+/// absent file: with a value configured but missing from disk, `--no-ignore-revs-file`
+/// clears it so annotate still works. A relative value is resolved from the worktree root,
+/// as git does. The value comes from the gitoxide config snapshot, which Restricted Mode
+/// still parses, so resolving it starts no program.
+fn ignore_revs_args(r: &Repo) -> Vec<String> {
+    let Ok(repo) = r.gix() else { return Vec::new() };
+    let Some(configured) = repo.config_snapshot().string("blame.ignoreRevsFile") else { return Vec::new() };
+    let configured = configured.to_str_lossy().into_owned();
+    let configured = configured.trim();
+    if configured.is_empty() {
+        return Vec::new();
+    }
+    let path = Path::new(configured);
+    let path = if path.is_absolute() { path.to_path_buf() } else { r.root().join(path) };
+    if path.is_file() {
+        vec!["--ignore-revs-file".to_string(), path.to_string_lossy().into_owned()]
+    } else {
+        vec!["--no-ignore-revs-file".to_string()]
+    }
+}
+
+/// Replaces the annotate ignore list and points `blame.ignoreRevsFile` at it unless the
+/// repository's local config already names a file. The caller decides the list's text.
+pub(crate) fn write_blame_ignore_revs(r: &Repo, content: &str) -> IdeResult<()> {
+    std::fs::write(r.root().join(BLAME_IGNORE_REVS_FILE), content)?;
+    let configured = cli::run_raw(r.root(), &["config", "--local", "--get", "blame.ignoreRevsFile"], None)?;
+    if configured.code != Some(0) || configured.stdout_str().trim().is_empty() {
+        cli::run(r.root(), &["config", "--local", "blame.ignoreRevsFile", BLAME_IGNORE_REVS_FILE], None)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn blame(
     r: &Repo,
     path: &Path,
@@ -61,8 +97,9 @@ pub(crate) fn blame(
         Err(error) => return Err(error.into()),
     };
     let text = current_text.map(str::to_owned).unwrap_or_else(|| decode(&disk, encoding).into_owned());
+    let ignore = ignore_revs_args(r);
     if encoding.has_ascii_conversion() {
-        return converted_blame(r, path, &rel, &text, revision, encoding);
+        return converted_blame(r, path, &rel, &text, revision, encoding, &ignore);
     }
     let contents = match current_text {
         Some(_) if crate::diff::normalize_eol(&text) == crate::diff::normalize_eol(&decode(&disk, encoding)) => disk,
@@ -94,23 +131,32 @@ pub(crate) fn blame(
     // older releases reject the pair (`fatal: cannot use --contents with final
     // commit object name`) and take the same plain path — the edited lines are
     // marked uncommitted below either way (issue #755).
-    let contents_args = ["--literal-pathspecs", "blame", "--porcelain", "--contents", "-", revision, "--", &rel];
-    let plain_args: &[&str] = if crate::execution_allowed() {
-        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", &rel]
-    } else {
-        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", &rel]
+    let contents_args = {
+        let mut args = vec!["--literal-pathspecs", "blame", "--porcelain"];
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--contents", "-", revision, "--", &rel]);
+        args
+    };
+    let plain_args: Vec<&str> = {
+        let mut args = vec!["--literal-pathspecs", "blame"];
+        if !crate::execution_allowed() {
+            args.push("--no-textconv");
+        }
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--porcelain", revision, "--", &rel]);
+        args
     };
     let (out, contents_blame) = if crate::execution_allowed() {
         let out = cli::run_raw(r.root(), &contents_args, Some(&contents))?;
         if out.code == Some(0) {
             (out, true)
         } else if String::from_utf8_lossy(&out.stderr).contains("cannot use --contents") {
-            (run(r.root(), plain_args, None)?, false)
+            (run(r.root(), &plain_args, None)?, false)
         } else {
             return Err(cli::failure(&contents_args, &out.stderr, &out.stdout, out.code));
         }
     } else {
-        (run(r.root(), plain_args, None)?, false)
+        (run(r.root(), &plain_args, None)?, false)
     };
     let mut lines = crate::blame::parse_porcelain(&out.stdout_str());
     for line in &mut lines {
@@ -142,16 +188,21 @@ fn converted_blame(
     text: &str,
     revision: &str,
     encoding: TextEncoding,
+    ignore: &[String],
 ) -> IdeResult<Vec<BlameLine>> {
     let current = crate::diff::normalize_eol(text);
     let mut result = uncommitted_lines(current.split_inclusive('\n').count());
     let Some(base) = r.file_bytes_at(path, Some(revision))? else { return Ok(result) };
-    let args: &[&str] = if crate::execution_allowed() {
-        &["--literal-pathspecs", "blame", "--porcelain", revision, "--", rel]
-    } else {
-        &["--literal-pathspecs", "blame", "--no-textconv", "--porcelain", revision, "--", rel]
+    let args: Vec<&str> = {
+        let mut args = vec!["--literal-pathspecs", "blame"];
+        if !crate::execution_allowed() {
+            args.push("--no-textconv");
+        }
+        args.extend(ignore.iter().map(String::as_str));
+        args.extend(["--porcelain", revision, "--", rel]);
+        args
     };
-    let out = run(r.root(), args, None)?;
+    let out = run(r.root(), &args, None)?;
     let physical = crate::blame::parse_porcelain(&out.stdout_str());
     let raw = crate::text_encoding::decode_raw(&base, encoding);
     let raw = crate::diff::normalize_eol(&raw);

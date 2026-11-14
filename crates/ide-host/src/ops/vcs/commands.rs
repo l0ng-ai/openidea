@@ -585,6 +585,21 @@ pub async fn vcs_stage(host: &Host, window: &str, paths: Vec<PathBuf>) -> IdeRes
     blocking(move || per_backend(&project, &paths, None, |r, paths| r.stage(paths))).await
 }
 
+/// Writes annotate's ignore list from `path`'s repository root and points
+/// `blame.ignoreRevsFile` at it when unset; the UI composes the list's text.
+pub async fn vcs_write_blame_ignore_revs(host: &Host, window: &str, path: PathBuf, content: String) -> IdeResult<()> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    blocking(move || {
+        let result = project.with_disk_sync(|| project.with_repo_of(&path, |r| r.write_blame_ignore_revs(&content)));
+        if result.is_ok() {
+            project.sink.emit(ide_core::IdeEvent::VcsChanged { root: project.root.clone().into() });
+        }
+        result
+    })
+    .await
+}
+
 /// Project-host operation (also registered with the remote dispatcher).
 /// Returns the ignore files that were updated, so the UI can show them.
 pub async fn vcs_add_to_ignore(
@@ -1461,6 +1476,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_stage", |c| async move { vcs_stage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_add_to_ignore", |c| async move {
         vcs_add_to_ignore(&c.host, &c.window, c.arg("paths")?, c.arg("destination")?).await
+    });
+    d.add("vcs_write_blame_ignore_revs", |c| async move {
+        vcs_write_blame_ignore_revs(&c.host, &c.window, c.arg("path")?, c.arg("content")?).await
     });
     d.add("vcs_unstage", |c| async move { vcs_unstage(&c.host, &c.window, c.arg("paths")?).await });
     d.add("vcs_stage_patch", |c| async move { vcs_stage_patch(&c.host, &c.window, c.arg("patch")?).await });

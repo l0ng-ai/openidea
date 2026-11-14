@@ -9,8 +9,9 @@ import { call, commands } from "@/platform/ipc";
 import { showContextMenu } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
+import { appendIgnoreRevision, BLAME_IGNORE_REVS_FILE } from "./blameIgnore";
 import { formatDate } from "./model";
-import { useVcs } from "./store";
+import { repoOf, useVcs } from "./store";
 
 const ZERO = /^0+$/;
 
@@ -126,6 +127,13 @@ const blameField = StateField.define<BlameState>({
   },
 });
 
+/** Re-blames `path` and repaints the gutter while annotations are still shown. */
+async function refreshAnnotations(view: EditorView, path: string) {
+  const lines = await call(commands.vcsBlame(path, null, null)).catch(() => null);
+  if (!lines || !view.state.field(blameField, false)) return;
+  view.dispatch({ effects: setBlame.of(lines) });
+}
+
 /** Re-blames after edits and whenever HEAD moves (commit, Undo Commit, update, checkout). */
 class BlameRefresher implements PluginValue {
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -145,12 +153,7 @@ class BlameRefresher implements PluginValue {
   private schedule(delay: number) {
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      void call(commands.vcsBlame(this.path, null, null))
-        .then((lines) => {
-          if (!this.destroyed && this.view.state.field(blameField, false))
-            this.view.dispatch({ effects: setBlame.of(lines) });
-        })
-        .catch(() => undefined);
+      if (!this.destroyed) void refreshAnnotations(this.view, this.path);
     }, delay);
   }
   destroy() {
@@ -281,6 +284,11 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       run: () => void writeClipboardText(l.commit),
                     },
                     {
+                      label: "Ignore This Commit",
+                      icon: "hide",
+                      run: () => void ignoreCommit(view, path, l.commit, live),
+                    },
+                    {
                       label: tx("Annotate at Revision…"),
                       icon: "clock",
                       run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
@@ -316,6 +324,27 @@ export function annotationsShown(view: EditorView): boolean {
 function setAnnotations(view: EditorView, lines: BlameLine[] | null, path: string, live: boolean) {
   if (!lines) closeBlamePopup(view);
   view.dispatch({ effects: blameCompartment.reconfigure(lines ? blameExtension(lines, path, live) : []) });
+}
+
+/**
+ * Appends `commit` to the repository's ignore list so annotate skips it, then re-blames
+ * the gutter (a live one shows the commit before it on those lines).
+ */
+async function ignoreCommit(view: EditorView, path: string, commit: string, live: boolean) {
+  const root = repoOf(path);
+  try {
+    // An open editor's unsaved text of the list is the newest.
+    const existing = root ? await call(commands.fsReadText(`${root}/${BLAME_IGNORE_REVS_FILE}`)).catch(() => "") : "";
+    await call(commands.vcsWriteBlameIgnoreRevs(path, appendIgnoreRevision(existing, commit)));
+    if (live) await refreshAnnotations(view, path);
+  } catch (e) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: "Cannot ignore the commit",
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 /** Toggles annotations in `view`; `text` blames that content instead of the file on
