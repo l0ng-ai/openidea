@@ -19,7 +19,8 @@ import { isVirtualUri } from "@/platform/virtualDocs";
 import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
-import { baseName, memberAt, methodStop, superMethods } from "./structureNav";
+import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
+import { baseName, memberAt, methodStop, superMethods, type SuperDeps } from "./structureNav";
 import { tx } from "@/platform/i18n";
 
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
@@ -71,17 +72,27 @@ async function superFallback(ctx: EditorDocContext, pos: Pos): Promise<Location[
   return dedupeLocations(locs).filter((l) => !(l.path === ctx.path && l.range.start.line === pos.line));
 }
 
+/** Super Method deps: Python answers them from the IDE's inheritance graph (its servers have no type hierarchy). */
+async function superDeps(ctx: EditorDocContext): Promise<SuperDeps> {
+  const outline = (path: string) => withDoc(path, outlineOf);
+  if (ctx.language === "python") {
+    const hierarchy = await projectPythonHierarchy().catch(() => null);
+    if (hierarchy) return pythonSuperDeps(hierarchy, outline);
+  }
+  return {
+    supertypes: (path: string, pos: Pos) =>
+      withDoc(path, (doc) => lspRequest(() => commands.lspTypeHierarchy(doc, pos, "incoming"))),
+    outline,
+  };
+}
+
 async function superMethod(view: EditorView) {
   const ctx = docOf(view);
   if (!ctx) return;
   const at = await caretOutline(view, ctx);
   if (!at) return;
   const { method, type } = memberAt(at.outline, at.caret);
-  const deps = {
-    supertypes: (path: string, pos: Pos) =>
-      withDoc(path, (doc) => lspRequest(() => commands.lspTypeHierarchy(doc, pos, "incoming"))),
-    outline: (path: string) => withDoc(path, outlineOf),
-  };
+  const deps = await superDeps(ctx);
   let locs: Location[] = [];
   if (method && type) locs = await superMethods(ctx.path, type.selection_range.start, method.name, deps);
   else if (type) {
