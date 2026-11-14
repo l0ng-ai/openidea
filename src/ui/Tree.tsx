@@ -26,6 +26,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Icon, type IconName } from "./icons";
 import { HighlightedText } from "./HighlightedText";
 import { Spinner } from "./Feedback";
+import { IconButton } from "./Button";
 import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
@@ -118,6 +119,11 @@ export interface TreeProps<T> {
 
   speedSearch?: boolean;
   speedSearchMode?: "highlight" | "filter";
+  /**
+   * Speed search shows as a field over the bar right above the tree (a tool window's toolbar)
+   * instead of a popup over its first rows, with a toggle to show only the matches.
+   */
+  speedSearchField?: boolean;
   rowHeight?: number;
   indent?: number;
   className?: string;
@@ -262,6 +268,7 @@ export function Tree<T>(props: TreeProps<T>) {
     onContextMenu,
     speedSearch = true,
     speedSearchMode = "highlight",
+    speedSearchField = false,
     rowHeight: fixedRowHeight,
     indent = 20,
     className,
@@ -275,6 +282,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const [lead, setLead] = useState<string | null>(() => [...selected][0] ?? null);
   const [anchor, setAnchor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const filterMatches = speedSearchMode === "filter" || (speedSearchField && onlyMatches);
   const scrollRef = useRef<HTMLDivElement>(null);
   const baseId = useId();
 
@@ -320,14 +329,14 @@ export function Tree<T>(props: TreeProps<T>) {
   }, [allRows, query, getLabel]);
 
   const rows = useMemo(() => {
-    if (!query || speedSearchMode !== "filter") return allRows;
+    if (!query || !filterMatches) return allRows;
     const keep = new Set<number>();
     allRows.forEach((r, i) => {
       if (!matchMap.has(r.key)) return;
       for (let j = i; j >= 0 && !keep.has(j); j = allRows[j]!.parent) keep.add(j);
     });
     return allRows.filter((_, i) => keep.has(i));
-  }, [allRows, matchMap, query, speedSearchMode]);
+  }, [allRows, matchMap, query, filterMatches]);
 
   const byKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows]);
   const emptyState = !rows.length && !!empty && !query;
@@ -806,12 +815,33 @@ export function Tree<T>(props: TreeProps<T>) {
           })}
         </div>
       </div>
-      {query && (
-        <div className={clsx(styles.speedSearch, noMatch && styles.noMatch)} role="status" aria-live="polite">
-          <Icon name="search" size={12} />
-          <span className={styles.speedQuery}>{query}</span>
-        </div>
-      )}
+      {query &&
+        (speedSearchField ? (
+          // Typing stays in the tree: a press here must not take its focus, which would end the search.
+          <div
+            className={clsx(styles.speedSearch, styles.speedField, noMatch && styles.noMatch)}
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            <Icon name="search" size={14} />
+            <span className={styles.speedQuery} role="status" aria-live="polite">
+              {query}
+            </span>
+            <span className={styles.caret} aria-hidden="true" />
+            <IconButton
+              icon="filter"
+              size="small"
+              className={styles.onlyMatches}
+              title="Show Only Matches"
+              pressed={onlyMatches}
+              onClick={() => setOnlyMatches(!onlyMatches)}
+            />
+          </div>
+        ) : (
+          <div className={clsx(styles.speedSearch, noMatch && styles.noMatch)} role="status" aria-live="polite">
+            <Icon name="search" size={12} />
+            <span className={styles.speedQuery}>{query}</span>
+          </div>
+        ))}
     </div>
   );
 }
