@@ -807,6 +807,7 @@
   "Changes to include:": "要包括的更改：",
   "Changes were not submitted": "更改未提交",
   "Check TODO": "检查 TODO",
+  "TODO": "TODO 项",
   "Checked out pull request #{number}": "已检出拉取请求 #{number}",
   "Checking installed tools…": "正在检查已安装的工具…",
   "Checking tools": "正在检查工具",
