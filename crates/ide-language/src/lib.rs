@@ -198,6 +198,10 @@ pub struct LanguageServerConfig {
     /// it parses a document.
     #[serde(default)]
     pub resync_on_configuration: bool,
+    /// Set by the settings hook: what the user sees as the server when another program serves
+    /// in its place (TypeScript 7's own `tsc --lsp` for vtsls).
+    #[serde(skip)]
+    pub display_name: Option<String>,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,

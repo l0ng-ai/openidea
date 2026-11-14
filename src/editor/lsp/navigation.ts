@@ -71,7 +71,7 @@ import {
 import { showHint, showPendingHint } from "./hint";
 import { outsideProjectReason } from "./outsideProject";
 import { caretAnchor, openPopup, updatePopup, type ListPopupItem } from "./popupStore";
-import { readManyFileLines, targetLabel } from "./files";
+import { readManyFileLines, targetLabel, withDocument } from "./files";
 import {
   documentLinks,
   followReference,
@@ -85,6 +85,7 @@ import { featureBackoff } from "./availability";
 import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { enclosingType } from "@/editor/navigation/lineMarkers";
+import { projectPythonHierarchy, pythonImplementationTargets } from "@/editor/navigation/pythonHierarchy";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
@@ -370,6 +371,30 @@ async function onDeclarationName(view: EditorView, offset: number): Promise<bool
   return isDeclarationName(at);
 }
 
+/**
+ * Go to Implementation targets for Python from the IDE's inheritance graph: its servers
+ * declare no type hierarchy and analyse one root, so the graph also knows the attached
+ * dependency project's implementations.
+ */
+async function pythonImplementations(doc: EditorDocContext, pos: Pos): Promise<DeclarationTarget[]> {
+  if (doc.language !== "python") return [];
+  const outline = (path: string) =>
+    path === doc.path
+      ? lspRequest(() => commands.docOutline(doc.doc))
+      : withDocument(path, (d) => lspRequest(() => commands.docOutline(d)));
+  const hierarchy = await projectPythonHierarchy().catch(() => null);
+  if (!hierarchy) return [];
+  return pythonImplementationTargets(hierarchy, doc.path, pos, outline).catch(() => []);
+}
+
+/** `more` after `first`, without a target whose declaration line is already there. */
+function mergeTargets(first: readonly DeclarationTarget[], more: readonly DeclarationTarget[]): DeclarationTarget[] {
+  return dedupeLocations([
+    ...first,
+    ...more.filter((m) => !first.some((f) => f.path === m.path && f.range.start.line === m.range.start.line)),
+  ]);
+}
+
 async function gotoResolved(
   view: EditorView,
   kind: GotoKind,
@@ -419,6 +444,9 @@ async function gotoResolved(
       return;
     }
   }
+  // Python: its servers have no type hierarchy and see one root, so the IDE's inheritance
+  // graph answers implementations too (merged with the server's, not replacing them).
+  const graphTargets = kind === "implementation" ? pythonImplementations(doc, pos) : null;
   let serverDown = false;
   let streamed: ReturnType<typeof streamedImplementations> | null = null;
   try {
@@ -429,32 +457,38 @@ async function gotoResolved(
   } catch (e) {
     // The chooser shows the first ones: closing it cancelled the search, or the rest failed.
     if (streamed && (await streamed.opened())) {
-      await streamed.complete([]);
+      await streamed.complete(graphTargets ? await graphTargets : []);
       return;
     }
     if (superseded()) return;
-    if (isCancelled(e) || !declaration) {
-      reportLspError(view, e, true);
-      return;
-    }
-    // Web references and links need no server.
-    if (
-      (await gotoWebReference(view, doc, pos, offset, superseded)) ||
-      (await followReferenceAt(view, doc, offset, superseded))
-    )
-      return;
-    serverDown = isUnavailable(e);
-    // Dumb mode: the server is not ready / failing — answer from the syntax tree.
-    // An import path is not a name to look up: only its file matters.
-    const fb = moduleName ? null : await gotoFallback(view, doc, pos);
+    // Python: the graph answers implementations the server cannot (no type hierarchy).
+    const graph = graphTargets ? await graphTargets : [];
     if (superseded()) return;
-    if (!fb) {
+    if (graph.length) locs = graph;
+    else if (isCancelled(e) || !declaration) {
       reportLspError(view, e, true);
       return;
+    } else {
+      // Web references and links need no server.
+      if (
+        (await gotoWebReference(view, doc, pos, offset, superseded)) ||
+        (await followReferenceAt(view, doc, offset, superseded))
+      )
+        return;
+      serverDown = isUnavailable(e);
+      // Dumb mode: the server is not ready / failing — answer from the syntax tree.
+      // An import path is not a name to look up: only its file matters.
+      const fb = moduleName ? null : await gotoFallback(view, doc, pos);
+      if (superseded()) return;
+      if (!fb) {
+        reportLspError(view, e, true);
+        return;
+      }
+      locs = fb;
+      fromSyntax = true;
     }
-    locs = fb;
-    fromSyntax = true;
   }
+  if (graphTargets) locs = mergeTargets(locs, await graphTargets);
   if (streamed && (await streamed.opened())) {
     await streamed.complete(locs);
     return;

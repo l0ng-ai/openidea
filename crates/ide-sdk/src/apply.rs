@@ -1163,6 +1163,7 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         cfg.command = native.to_string_lossy().into_owned();
         cfg.args = vec!["--lsp".into(), "--stdio".into()];
+        cfg.display_name = Some("TypeScript 7".into());
         cfg.initialization_options = None;
         cfg.tsserver_project = false;
         return;
@@ -1306,6 +1307,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }

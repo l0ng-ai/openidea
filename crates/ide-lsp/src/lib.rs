@@ -3855,6 +3855,7 @@ impl LspManager {
                 languages: s.languages(),
                 status: s.status(),
                 pid: s.running().and_then(|r| r.peer.pid()),
+                label: s.display_name(),
             })
             .collect()
     }
