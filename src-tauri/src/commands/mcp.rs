@@ -65,8 +65,9 @@ pub fn apply(state: &AppState) {
     }
     // Another address, port or token: clients connect anew.
     if let Some(running) = server.take() {
+        let held = (running.address(), running.port());
         running.stop();
-        if let Some(port) = wanted.port {
+        if let Some(port) = port_to_wait_for(held, address, wanted.port) {
             wait_until_free(address, port);
         }
     }
@@ -102,6 +103,13 @@ pub fn apply(state: &AppState) {
             *state.mcp.error.lock() = Some(e.to_string());
         }
     }
+}
+
+/// The port a restart listening on `address` and `wanted` waits for after stopping the server
+/// that listened on `held`: only its own. A port another program holds (the run fell back to a
+/// free one) stays taken, and waiting for it would block the window.
+fn port_to_wait_for(held: (IpAddr, u16), address: IpAddr, wanted: Option<u16>) -> Option<u16> {
+    wanted.filter(|port| held == (address, *port))
 }
 
 /// Waits briefly for a stopped server's port to close, so the restart gets it again.
@@ -242,4 +250,21 @@ pub fn mcp_respond(
     error: Option<String>,
 ) -> IdeResult<()> {
     state.host.mcp_requests.answer(window.label(), id, allow, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn a_restart_waits_only_for_the_port_the_stopped_server_held() {
+        let local = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let any = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+        assert_eq!(port_to_wait_for((local, 64342), local, Some(64342)), Some(64342));
+        // The fixed port was taken by another program: the server ran on a free one.
+        assert_eq!(port_to_wait_for((local, 51234), local, Some(64342)), None);
+        assert_eq!(port_to_wait_for((local, 64342), any, Some(64342)), None);
+        assert_eq!(port_to_wait_for((local, 64342), local, None), None);
+    }
 }
