@@ -1,8 +1,8 @@
 /**
- * Annotate Previous Revision (IDEA): the file as it was at the first parent of the
- * annotated line's commit, annotated by that history. Shown as a diff against the
- * commit so the change that introduced the line stays visible; the left pane is
- * annotated by the viewer provider in `annotatePreviousProvider`.
+ * Annotating a file as of an earlier revision (IDEA's annotate family): the file at the first
+ * parent of the annotated line's commit, or at a revision the user picks. Shown as a diff so the
+ * change stays visible; the left pane is annotated by the viewer provider in
+ * `annotatePreviousProvider`.
  */
 import type { Commit } from "@/bindings";
 import { tx } from "@/platform/i18n";
@@ -10,6 +10,7 @@ import { call, commands } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 import type { DiffData } from "./diffInput";
 import { openDiff } from "./diffInput";
+import { repositoryPath } from "./repositoryPaths";
 import { repoOf } from "./store";
 
 /** The diff that shows `commit` against its first parent; `null` for a root commit. */
@@ -27,6 +28,41 @@ export function previousRevisionDiffData(
     ...(line === undefined ? {} : { line, lineSide: "right" as const }),
     annotateLeft: true,
   };
+}
+
+/**
+ * The diff of `commit` (or any revision) against the working file, annotated on the left.
+ * `historyPath` follows a rename: the file had another name at that revision.
+ */
+export function revisionDiffData(
+  path: string,
+  repo: string | null,
+  commit: Pick<Commit, "id" | "shortId"> & { historyPath?: string | null },
+): DiffData {
+  const history = commit.historyPath ? repositoryPath(repo, commit.historyPath) : path;
+  return {
+    path,
+    left: { type: "rev", rev: commit.id, label: commit.shortId, path: history },
+    right: { type: "worktree" },
+    annotateLeft: true,
+  };
+}
+
+/** Opens `commit` against the working file, annotated on that side. */
+export async function annotateAtRevision(
+  path: string,
+  commit: Pick<Commit, "id" | "shortId"> & { historyPath?: string | null },
+): Promise<void> {
+  try {
+    await openDiff(revisionDiffData(path, repoOf(path), commit), { preview: false });
+  } catch (e) {
+    notifications().notify({
+      group: "vcs",
+      level: "error",
+      title: tx("Cannot annotate"),
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
 }
 
 /** Opens the previous revision of `commit`, annotated: the line's history before the change. */

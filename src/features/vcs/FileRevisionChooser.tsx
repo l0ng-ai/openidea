@@ -3,6 +3,7 @@ import type { Commit } from "@/bindings";
 import { call, commands, nextRequestId } from "@/platform/ipc";
 import { Dialog, List, SearchField, Spinner, T, listNavigate } from "@/ui";
 import { openDialog } from "./dialogs";
+import { annotateAtRevision } from "./annotatePrevious";
 import { openVcsDiff } from "./diffInput";
 import { hasFileHistory } from "./fileRevisions";
 import { formatTime } from "./model";
@@ -31,6 +32,24 @@ export function compareWithFileRevision(path: string | null | undefined) {
           },
           right: { type: "worktree" },
         });
+      }}
+    />
+  ));
+}
+
+/** Annotate the file as of a revision the user picks: who last changed each line up to there. */
+export function annotateFileRevision(path: string | null | undefined) {
+  if (!path || !hasFileHistory(path)) return;
+  const repo = repoOf(path);
+  openDialog((close) => (
+    <FileRevisionChooser
+      path={path}
+      repo={repo}
+      onClose={close}
+      onChoose={(commit) => {
+        close();
+        if (repoOf(path) !== repo) return;
+        void annotateAtRevision(path, commit);
       }}
     />
   ));

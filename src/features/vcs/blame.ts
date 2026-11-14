@@ -281,6 +281,11 @@ function blameExtension(lines: BlameLine[], path: string, live: boolean): Extens
                       run: () => void writeClipboardText(l.commit),
                     },
                     {
+                      label: tx("Annotate at Revision…"),
+                      icon: "clock",
+                      run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
+                    },
+                    {
                       label: tx("Annotate Previous Revision"),
                       icon: "history",
                       run: () => {

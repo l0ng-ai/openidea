@@ -2,7 +2,12 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
-import { annotatePreviousRevision, previousRevisionDiffData } from "../annotatePrevious";
+import {
+  annotateAtRevision,
+  annotatePreviousRevision,
+  previousRevisionDiffData,
+  revisionDiffData,
+} from "../annotatePrevious";
 import { activateAnnotatePreviousRevision } from "../annotatePreviousProvider";
 import type { DiffData } from "../diffInput";
 import { createDiffViewerContributions, type DiffViewerHost } from "../diffViewerProviders";
@@ -96,5 +101,24 @@ describe("annotate previous revision", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mocks.blame).toHaveBeenCalledTimes(1);
     view.destroy();
+  });
+});
+
+describe("annotate at a chosen revision", () => {
+  it("shows the revision against the working file, following a rename", () => {
+    expect(revisionDiffData("/repo/a.py", "/repo", { id: sha, shortId: "f122f5af", historyPath: "old/a.py" })).toEqual({
+      path: "/repo/a.py",
+      left: { type: "rev", rev: sha, label: "f122f5af", path: "/repo/old/a.py" },
+      right: { type: "worktree" },
+      annotateLeft: true,
+    });
+  });
+
+  it("opens that diff in a tab", async () => {
+    await annotateAtRevision("/repo/a.py", { id: sha, shortId: "f122f5af" });
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/repo/a.py", right: { type: "worktree" }, annotateLeft: true }),
+      { preview: false },
+    );
   });
 });

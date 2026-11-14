@@ -647,6 +647,7 @@
   "Analyze Stack Trace or Thread Dump…": "分析堆栈跟踪或线程转储…",
   "Analyze code": "分析代码",
   "Annotate Previous Revision": "标注上一版本",
+  "Annotate at Revision…": "标注指定版本…",
   "Annotate with Git Blame": "使用 Git Blame 注解",
   "Annotation": "注解",
   "Anonymize literals": "匿名化字面量",
