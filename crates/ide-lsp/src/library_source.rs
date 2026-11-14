@@ -482,7 +482,8 @@ mod tests {
         std::fs::create_dir_all(output.join("test001")).unwrap();
         // As jdtls writes it: the class's source file name in the path, the library's
         // classpath attributes after the folder.
-        let escaped = output.to_string_lossy().replace('/', "\\/");
+        // JDT writes the folder as a portable path, `/` on Windows too, each `/` escaped.
+        let escaped = output.to_string_lossy().replace('\\', "/").replace('/', "\\/");
         let handle = format!("=demo/{escaped}=/ai.openidea.kotlin=/true=/<test001(Db.class");
         let uri = format!("jdt://contents/main-0/test001/Db.kt?{}", utf8_percent_encode(&handle, PATH));
         assert_eq!(folder_class(&uri), Some(("test001".into(), "Db".into())));

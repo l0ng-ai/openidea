@@ -182,6 +182,7 @@
   "This debugger cannot list instances.": "This debugger cannot list instances.",
   "The debugger cannot list instances: {detail}": "The debugger cannot list instances: {detail}",
   "Pause the program to see instances.": "Pause the program to see instances.",
+  "The Memory view is available once the program has started.": "The Memory view is available once the program has started.",
   "The object has been garbage collected.": "The object has been garbage collected.",
   "The class is not loaded in the JVM.": "The class is not loaded in the JVM.",
   "Could not tell which JVM this session debugs.": "Could not tell which JVM this session debugs.",

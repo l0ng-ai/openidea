@@ -115,6 +115,19 @@ export function dragSession(data: DragData): DragSession {
 /** Movement before a press becomes a drag, px. */
 const DRAG_THRESHOLD = 4;
 
+/**
+ * Marks a pointer drag as running until the returned function is called: no text
+ * selection, and editable text out of hit testing. WebKit starts a selection in
+ * editable text the pointer passes over even when the press selected nothing
+ * (#3334), so every pointer-driven drag, built on `startPointerDrag` or not, uses this.
+ */
+export function beginDrag(): () => void {
+  window.getSelection()?.removeAllRanges();
+  const html = document.documentElement;
+  html.classList.add(styles.dragging!);
+  return () => html.classList.remove(styles.dragging!);
+}
+
 /** Settings › Appearance › "Drag-and-drop with Alt pressed only" for tabs and stripe buttons. */
 let requiresAlt = () => false;
 export function setDragRequiresAlt(fn: () => boolean) {
@@ -150,6 +163,7 @@ export function startPointerDrag(
   if (e.button !== 0 || (!opts.always && requiresAlt() && !e.altKey)) return;
   const start = { x: e.clientX, y: e.clientY };
   let ghost: HTMLElement | null = null;
+  let endDrag: (() => void) | null = null;
   const session = dragSession(data);
   const onMove = (ev: PointerEvent) => {
     if (!ghost) {
@@ -172,7 +186,7 @@ export function startPointerDrag(
         height: `${r.height}px`,
       });
       document.body.appendChild(ghost);
-      document.documentElement.classList.add(styles.dragging!);
+      endDrag = beginDrag();
       opts.onStart?.();
     }
     // Late moves after release may still precede the pointerup; ignore, don't cancel the drop.
@@ -204,7 +218,7 @@ export function startPointerDrag(
     window.removeEventListener("pointercancel", onCancel);
     window.removeEventListener("keydown", onKey, true);
     ghost?.remove();
-    document.documentElement.classList.remove(styles.dragging!);
+    endDrag?.();
   };
   const onCancel = () => {
     session.cancel();

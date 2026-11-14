@@ -1830,10 +1830,17 @@ pub fn without_derived_in(config: &RunConfig, root: &Path, fallback: Option<&Pat
     if path.is_absolute()
         && let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned())
     {
-        let mut probe = out.clone();
-        probe.command = name.clone();
-        if applied(&probe).command == config.command {
-            out.command = name;
+        // Generated configurations name the bare program (`java`), also on Windows where the
+        // derived path ends in `java.exe`.
+        let bare =
+            name.len().checked_sub(4).filter(|&at| name[at..].eq_ignore_ascii_case(".exe")).map(|at| &name[..at]);
+        for candidate in bare.into_iter().chain([name.as_str()]) {
+            let mut probe = out.clone();
+            probe.command = candidate.to_owned();
+            if applied(&probe).command == config.command {
+                out.command = candidate.to_owned();
+                break;
+            }
         }
     }
     out
