@@ -4693,6 +4693,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-p4"
+version = "0.1.43"
+dependencies = [
+ "ide-core",
+ "regex-lite",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "tracing",
+ "which",
+]
+
+[[package]]
 name = "ide-plugin"
 version = "0.1.44"
 dependencies = [
