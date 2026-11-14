@@ -293,11 +293,11 @@ for (const placement of ["editor", "toolWindow"] as const) {
     workbench: page,
   }) => {
     await seed(page, placement);
-    await selectDraft(page);
     const stream = history(page);
-    await stream.evaluate((element) => {
-      element.scrollTop = 0;
-    });
+    await stream.click({ position: { x: 12, y: 20 } });
+    await stream.press("Home");
+    await expect.poll(() => stream.evaluate((element) => element.scrollTop)).toBe(0);
+    await selectDraft(page);
     for (const [value, name] of [
       ["budget-23", "Balanced"],
       ["budget-91", "Deep"],
