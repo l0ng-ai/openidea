@@ -56,11 +56,9 @@ export async function commitChanges(): Promise<string | undefined> {
   // IDEA: failed checks show in the commit panel; the next Commit ("Commit Anyway") skips them.
   const checked = !useCommit.getState().checkProblems.length;
   if (checked) {
-    const problems = await runCommitChecks(candidates, amend);
-    if (problems.length) {
-      useCommit.setState({ checkProblems: problems });
-      return undefined;
-    }
+    const { problems, blocked } = await runCommitChecks(candidates, amend);
+    if (problems.length) useCommit.setState({ checkProblems: problems });
+    if (blocked) return undefined;
   }
   // After the checks: their modifications (reformat…) are part of the commit.
   const selection = await selectionOf(plan);
