@@ -112,7 +112,7 @@ describe("inline blame formatting", () => {
 });
 
 describe("current line decoration", () => {
-  it("debounces caret moves and reuses blame for the same document version", async () => {
+  it("debounces caret moves until the document is blamed, then follows the caret at once", async () => {
     const v = editor();
     await vi.advanceTimersByTimeAsync(299);
     expect(mocks.blame).not.toHaveBeenCalled();
@@ -121,9 +121,10 @@ describe("current line decoration", () => {
     expect(mocks.blame).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(hint()?.textContent).toContain("Bob Jones");
+    // The blame is at hand: the caret's new line shows without the delay.
     v.dispatch({ selection: { anchor: 0 } });
     expect(hint()).toBeNull();
-    await tick();
+    await vi.advanceTimersByTimeAsync(0);
     expect(hint()?.textContent).toContain("Alice Smith");
     expect(mocks.blame).toHaveBeenCalledTimes(1);
     expect(mocks.file).toHaveBeenCalledTimes(1);
@@ -207,6 +208,9 @@ describe("current line decoration", () => {
     mocks.blame.mockResolvedValue({ status: "ok", data: [uncommitted, bob, uncommitted] });
     v.dispatch({ changes: { from: 0, insert: "x" } });
     expect(hint()).toBeNull();
+    // An edit still waits, so typing doesn't run git per keystroke.
+    await vi.advanceTimersByTimeAsync(299);
+    expect(mocks.blame).toHaveBeenCalledTimes(1);
     await tick();
     expect(mocks.blame).toHaveBeenLastCalledWith(ctx.path, "xone\ntwo\nthree", null);
     expect(hint()?.textContent).toBe("You, now · Uncommitted changes");
