@@ -69,7 +69,11 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 /// root, else the Python the project pins for mise / asdf. A configured
 /// interpreter whose executable is gone (uninstalled, moved) is skipped like
 /// PyCharm's "Invalid" SDKs, so runs fall back instead of failing on a dead path.
+/// `None` when the project interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
+    if s.languages.python.run_target().is_some() {
+        return None;
+    }
     setting_path(root, &s.languages.python.interpreter)
         .filter(|p| p.is_file())
         .or_else(|| project_venv_python(root))
@@ -78,6 +82,9 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
 pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
+    if s.languages.python.run_target().is_some() {
+        return None;
+    }
     if let Some(python) = setting_path(root, &s.languages.python.interpreter).filter(|p| p.is_file()) {
         return Some(python);
     }
@@ -1156,6 +1163,7 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         cfg.command = native.to_string_lossy().into_owned();
         cfg.args = vec!["--lsp".into(), "--stdio".into()];
+        cfg.display_name = Some("TypeScript 7".into());
         cfg.initialization_options = None;
         cfg.tsserver_project = false;
         return;
@@ -1299,6 +1307,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }
@@ -1476,6 +1485,9 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
         || matches!(config.kind.as_str(), "node" | "npm" | "vitest" | "jest" | "mocha")
     {
         &settings.languages.node.run_target
+    } else if let Some(target) = settings.languages.python.run_target().filter(|_| is_python_config(config, &name)) {
+        // The project interpreter is a run target's: Python runs there.
+        return Some(target);
     } else {
         return non_empty(&settings.run.default_target);
     };
@@ -1486,6 +1498,10 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
     } else {
         Some(target)
     }
+}
+
+fn is_python_config(config: &RunConfig, program: &str) -> bool {
+    matches!(config.kind.as_str(), "python" | "pytest" | "django-test") || is_python_command(program)
 }
 
 /// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,

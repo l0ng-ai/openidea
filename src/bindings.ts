@@ -136,6 +136,8 @@ export const commands = {
 	/**  Streams the project's agent events to this window; returns every task. */
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
+	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -1036,6 +1038,40 @@ export const commands = {
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
+	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
+	sdkContainerPython: () => typedError<{
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+} | null, IdeError>(__TAURI_INVOKE("sdk_container_python")),
+	/**  Copies the container's Python libraries again (after the image changed). */
+	sdkContainerPythonRefresh: () => typedError<{
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+} | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**
 	 *  The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
 	 *  project root).
@@ -1223,6 +1259,15 @@ export const commands = {
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
 	/**  The body of a response a debugged page received. */
 	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
+	/**
+	 *  The responses a debugged page gets in place of the server's, by a part of the URL; none
+	 *  switches the replacing off.
+	 */
+	debugJsResponseOverrides: (session: DebugSessionId, rules: JsResponseRule[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_response_overrides", { session, rules })),
+	/**  Starts recording a debugged page's CPU profile. */
+	debugJsStartProfile: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_start_profile", { session })),
+	/**  Ends the recording: a directory holding the profile as `page.cpuprofile`. */
+	debugJsStopProfile: (session: DebugSessionId) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("debug_js_stop_profile", { session })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -1970,6 +2015,8 @@ export type AgentEvent =
 { type: "append"; task: string; subagent: string | null; index: number; from: number; text: string } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 { type: "limits"; provider: string; limits: AgentLimit[] } | 
+/**  A model lookup started or completed, including unsuccessful lookups. */
+{ type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
 { type: "providers" };
 
@@ -2023,6 +2070,17 @@ export type AgentMcpServer_Serialize = {
 	 *  empty means enabled for all agents.
 	 */
 	agents?: string[],
+};
+
+/**  Authoritative choices for new tasks, independent of any running session's settings. */
+export type AgentModelCatalog = {
+	provider: string,
+	config: AgentConfigOption[],
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
+	refreshing: boolean,
+	refreshedAtMs: number | null,
+	retryAtMs: number | null,
+	error: string | null,
 };
 
 export type AgentPermissionOption = {
@@ -3365,6 +3423,24 @@ export type ConsoleSettings = {
 
 export type ContainerOp = "start" | "stop" | "restart" | "pause" | "unpause" | "kill";
 
+/**  The project interpreter when it is a run target's. */
+export type ContainerPython = {
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+};
+
 /**  ContentAction data exchanged with the IDE. */
 export type ContentAction = {
 	id: string,
@@ -4044,6 +4120,8 @@ export type DebuggerSettings = {
 	showOnBreakpoint?: boolean,
 	focusAppOnBreakpoint?: boolean,
 	hideOnTermination?: boolean,
+	/**  A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front. */
+	variablesOnBreakpoint?: boolean,
 	breakpointsAnyFile?: boolean,
 	/**  While suspended, hovering the start of a line shows a Run to Cursor button. */
 	runToCursorInlay?: boolean,
@@ -5977,7 +6055,9 @@ cancellable: boolean } |
 /**  Project indexing state changed (dumb mode on/off). */
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
-{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; 
+/**  What the user sees as the server when another program serves in its place. */
+label?: string | null; status: ServerStatus; message: string | null } | 
 /**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
 { type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
@@ -6496,6 +6576,14 @@ export type JsResponseBody = {
 	base64Encoded: boolean,
 	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
 	truncated: boolean,
+};
+
+/**  A response given in place of the server's to every request whose URL contains `url_contains`. */
+export type JsResponseRule = {
+	urlContains: string,
+	status: number,
+	contentType: string,
+	body: string,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
@@ -8700,7 +8788,10 @@ export type PythonPackage = {
 };
 
 export type PythonSettings = {
-	/**  Project interpreter executable; empty = auto-detect (project venv, else `python3`). */
+	/**
+	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
+	 *  `target:<run-target-id>` = the Python of a Docker or Compose run target.
+	 */
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,
@@ -9441,6 +9532,8 @@ export type ServerInfo = {
 	status: ServerStatus,
 	/**  OS process of the running instance (for memory attribution). */
 	pid: number | null,
+	/**  What the user sees as the server when another program serves in its place. */
+	label?: string | null,
 };
 
 export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped" | "missing" | 

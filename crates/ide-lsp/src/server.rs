@@ -213,6 +213,11 @@ impl Server {
         config
     }
 
+    /// The configured server's display name for the current (or last) instance.
+    pub fn display_name(&self) -> Option<String> {
+        self.effective.lock().as_ref().and_then(|c| c.display_name.clone())
+    }
+
     pub fn set_effective_config(&self, generation: u64, config: LanguageServerConfig) {
         let st = self.state.lock();
         if st.generation == generation && matches!(st.conn, Conn::Starting | Conn::Ready(_)) {
@@ -507,7 +512,13 @@ impl Server {
             return;
         }
         *cur = (status, message.clone());
-        st.events.push_back(IdeEvent::LanguageServer { server: self.id, name: self.name.clone(), status, message });
+        st.events.push_back(IdeEvent::LanguageServer {
+            server: self.id,
+            name: self.name.clone(),
+            label: self.display_name(),
+            status,
+            message,
+        });
     }
 
     fn queue_cleanup(&self, st: &mut State) {

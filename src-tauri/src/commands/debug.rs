@@ -244,6 +244,18 @@ pub async fn debug_restart_frame(state: State<'_, AppState>, session: DebugSessi
     ide_host::ops::debug::debug_restart_frame(&state.host, "", session, frame_id).await
 }
 
+/// The responses a debugged page gets in place of the server's, by a part of the URL; none
+/// switches the replacing off.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_response_overrides(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+    rules: Vec<ide_dap::JsResponseRule>,
+) -> IdeResult<()> {
+    ide_host::ops::debug::debug_js_response_overrides(&state.host, "", session, rules).await
+}
+
 /// The body of a response a debugged page received.
 #[tauri::command]
 #[specta::specta]
@@ -265,6 +277,23 @@ pub async fn debug_js_custom_breakpoints(
     xhr: Vec<String>,
 ) -> IdeResult<()> {
     ide_host::ops::debug::debug_js_custom_breakpoints(&state.host, "", session, ids, xhr).await
+}
+
+/// Starts recording a debugged page's CPU profile.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_start_profile(state: State<'_, AppState>, session: DebugSessionId) -> IdeResult<()> {
+    ide_host::ops::debug::debug_js_start_profile(&state.host, "", session).await
+}
+
+/// Ends the recording: a directory holding the profile as `page.cpuprofile`.
+#[tauri::command]
+#[specta::specta]
+pub async fn debug_js_stop_profile(
+    state: State<'_, AppState>,
+    session: DebugSessionId,
+) -> IdeResult<ide_core::IpcPath> {
+    ide_host::ops::debug::debug_js_stop_profile(&state.host, "", session).await
 }
 
 #[tauri::command]

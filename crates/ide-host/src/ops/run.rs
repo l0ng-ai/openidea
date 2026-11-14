@@ -508,7 +508,7 @@ pub fn list(host: &Host) -> Vec<RunInfo> {
 }
 
 mod commands;
-mod container;
+pub(crate) mod container;
 pub use commands::*;
 
 #[cfg(test)]

@@ -38,6 +38,26 @@ pub fn sdk_python_effective(
     ide_host::ops::sdk::sdk_python_effective(&state.host, window.label(), near)
 }
 
+/// The project interpreter when it is a Docker or Compose run target's, with its snapshot.
+#[tauri::command]
+#[specta::specta]
+pub fn sdk_container_python(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::sdk::ContainerPython>> {
+    ide_host::ops::sdk::sdk_container_python(&state.host, window.label())
+}
+
+/// Copies the container's Python libraries again (after the image changed).
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_container_python_refresh(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Option<ide_host::ops::sdk::ContainerPython>> {
+    ide_host::ops::sdk::sdk_container_python_refresh(&state.host, window.label()).await
+}
+
 /// The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`.
 #[tauri::command]
 #[specta::specta]

@@ -24,7 +24,7 @@ import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
 import styles from "./Session.module.css";
 import chipStyles from "./ReferenceChip.module.css";
-import { textOf, typeIn } from "./composerTesting";
+import { caretOf, textOf, typeIn } from "./composerTesting";
 
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
@@ -1564,6 +1564,31 @@ describe("conversation loading", () => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("updates input focus availability while the task changes status without losing its draft caret", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const message = screen.getByRole("textbox", { name: "Message" });
+    typeIn(message, "Draft to keep", 3);
+    const conversation = stream();
+    act(() => conversation.focus());
+    act(() =>
+      useAgents.setState((s) => ({
+        tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }),
+      })),
+    );
+    act(() => focusedSession()?.focusInput?.());
+    expect(conversation).toHaveFocus();
+    act(() =>
+      useAgents.setState((s) => ({
+        tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "running" }),
+      })),
+    );
+    act(() => focusedSession()?.focusInput?.());
+    await waitFor(() => expect(message).toHaveFocus());
+    expect(textOf(message)).toBe("Draft to keep");
+    expect(caretOf(message)).toBe(3);
+  });
+
   it("leaves a task unread while its kept-alive tab is hidden, and reads it once shown", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     useAgents.setState({ unread: new Set(["A"]) });

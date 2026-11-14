@@ -5,6 +5,7 @@
 import { executeAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { registerRunExecutor, registerToolWindow } from "@/workbench/contributions";
+import { showCpuProfiles } from "./cpuProfiles";
 import { profilerExecutor } from "./executor";
 import { ProfilerTabs, ProfilerView } from "./ProfilerView";
 import { resetProfiler } from "./store";
@@ -34,6 +35,16 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["profiler", "flame graph", "cpu"],
         run: () => executeAction("run.withExecutor", { executor: "profiler" }).then(() => undefined),
+      },
+      {
+        id: "profiler.showCpuProfiles",
+        title: "Show CPU Profile",
+        description:
+          "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).",
+        category: "Run",
+        icon: "profile",
+        hidden: true,
+        run: ({ arg }) => showCpuProfiles(arg),
       },
       {
         id: "run.profileAllocations",

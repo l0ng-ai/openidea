@@ -56,10 +56,17 @@ it("puts a button on the marker's line that goes to its target", async () => {
   expect(calls.navigate).toHaveBeenCalledWith(target);
 });
 
-it("hides markers on edit and when the entry goes away", async () => {
+it("keeps markers on their lines while typing and hides them when the entry goes away", async () => {
   setup();
   await vi.waitFor(() => expect(button()).not.toBeNull());
+  // Typing must not empty the column: it would collapse and shift the text (#3370).
+  view!.dispatch({ changes: { from: source.indexOf("SELECT"), insert: "x" } });
+  expect(button()).not.toBeNull();
   view!.dispatch({ changes: { from: 0, insert: "\n" } });
+  expect(button()).not.toBeNull();
+  // Deleting the marker's line drops it.
+  const line = view!.state.doc.line(3);
+  view!.dispatch({ changes: { from: line.from - 1, to: line.to } });
   expect(button()).toBeNull();
   usePluginMarkers.setState({ entries: new Map() });
   await vi.waitFor(() => expect(button()).toBeNull());

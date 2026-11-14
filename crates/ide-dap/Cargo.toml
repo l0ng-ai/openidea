@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 futures.workspace = true
+tokio-tungstenite.workspace = true
+base64.workspace = true
 tempfile.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
