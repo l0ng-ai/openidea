@@ -123,7 +123,9 @@ describe("current line decoration", () => {
     expect(hint()?.textContent).toContain("Bob Jones");
     v.dispatch({ selection: { anchor: 0 } });
     expect(hint()).toBeNull();
-    await tick();
+    // The document's blame is already loaded, so the new line shows without the
+    // 300 ms debounce that protects a git call (#3396).
+    await vi.advanceTimersByTimeAsync(0);
     expect(hint()?.textContent).toContain("Alice Smith");
     expect(mocks.blame).toHaveBeenCalledTimes(1);
     expect(mocks.file).toHaveBeenCalledTimes(1);
@@ -135,6 +137,17 @@ describe("current line decoration", () => {
     ]);
     hint()?.click();
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", alice.commit);
+  });
+
+  it("still debounces the git call after an edit (#3396)", async () => {
+    const v = editor();
+    await tick();
+    mocks.blame.mockClear();
+    v.dispatch({ changes: { from: 0, insert: "x" } });
+    await vi.advanceTimersByTimeAsync(299);
+    expect(mocks.blame).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(mocks.blame).toHaveBeenCalledTimes(1);
   });
 
   it("uses only the primary selection and hides multiline selections", async () => {
