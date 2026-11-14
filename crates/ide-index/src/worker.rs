@@ -54,7 +54,7 @@ pub(crate) struct Shared {
     pub store: Option<Store>,
     pub indexing: AtomicBool,
     pub cancelled: AtomicBool,
-    /// Files whose content was (re)read and parsed; observability for tests.
+    /// Non-cached content reads, including binary/unsupported files; used by tests.
     pub parsed: std::sync::atomic::AtomicUsize,
     queue: Mutex<Queue>,
     wake: Condvar,
@@ -146,14 +146,38 @@ impl Shared {
             q.busy = true;
         }
         if scan {
+            let startup_started = Instant::now();
             // A warm start can trust the snapshot when neither the scope nor any
             // directory/file metadata changed. Rebuilding the walk's file list is
             // the expensive part; validate the flat manifest first.
-            if !self.try_fast_start() {
+            let snapshot_started = Instant::now();
+            let fast = self.try_fast_start();
+            let snapshot_elapsed = snapshot_started.elapsed();
+            if !fast {
                 let snapshot_guard = SystemTime::now();
+                let walk_started = Instant::now();
                 let found = self.walk_roots(None);
+                let walk_elapsed = walk_started.elapsed();
+                let hydration_started = Instant::now();
                 self.load_persisted(&found);
+                let hydration_elapsed = hydration_started.elapsed();
                 self.full_scan(Some(found), snapshot_guard);
+                if !self.is_cancelled() {
+                    tracing::info!(
+                        mode = "fallback",
+                        snapshot_attempt_ms = snapshot_elapsed.as_millis() as u64,
+                        walk_ms = walk_elapsed.as_millis() as u64,
+                        hydration_ms = hydration_elapsed.as_millis() as u64,
+                        elapsed_ms = startup_started.elapsed().as_millis() as u64,
+                        "index startup completed"
+                    );
+                }
+            } else if !self.is_cancelled() {
+                tracing::info!(
+                    mode = "snapshot",
+                    elapsed_ms = startup_started.elapsed().as_millis() as u64,
+                    "index startup completed"
+                );
             }
         } else {
             self.indexing.store(false, Ordering::SeqCst);
@@ -220,6 +244,7 @@ impl Shared {
             return false;
         }
         let root = filter.root();
+        let validation_started = Instant::now();
         for i in 0..snapshot.dirs_len() {
             let rel = snapshot.dir(i);
             let path = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
@@ -251,6 +276,7 @@ impl Shared {
                 return false;
             }
         }
+        let validation_elapsed = validation_started.elapsed();
         let build_started = Instant::now();
         let entries: Vec<Option<(FileEntry, Vec<StoredSymbol>)>> = (0..snapshot.len())
             .into_par_iter()
@@ -286,9 +312,16 @@ impl Shared {
         d.load_bulk(entries, dirs);
         drop(d);
         tracing::info!(
-            "index snapshot: warm start in {:?} (load {loaded:?}, validate/build {built:?}, insert {:?})",
-            started.elapsed(),
-            insert_started.elapsed()
+            mode = "snapshot",
+            snapshot_hydrated = snapshot.len(),
+            discovered = 0usize,
+            symbol_extractions = 0usize,
+            load_ms = loaded.as_millis() as u64,
+            directory_validation_ms = validation_elapsed.as_millis() as u64,
+            file_validation_build_ms = built.as_millis() as u64,
+            insert_ms = insert_started.elapsed().as_millis() as u64,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "index snapshot hydrated"
         );
         #[cfg(test)]
         eprintln!(
@@ -421,7 +454,7 @@ impl Shared {
         self.scan(None, found, guard);
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) {
+    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) -> Option<ScanCounts> {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -436,10 +469,15 @@ impl Shared {
         });
 
         let filter = self.filter();
+        let was_prewalked = prewalked.is_some();
+        let walk_started = Instant::now();
         let found = prewalked.unwrap_or_else(|| self.walk_roots(dirs));
+        let walk_elapsed = walk_started.elapsed();
         if self.is_cancelled() {
-            return self.end_scan(task);
+            self.end_scan(task);
+            return None;
         }
+        let reconcile_started = Instant::now();
         let seen: HashSet<&Path> = found.iter().map(|f| f.path.as_path()).collect();
         let (todo, stale): (Vec<&Found>, Vec<PathBuf>) = {
             let d = self.data.read();
@@ -461,14 +499,18 @@ impl Shared {
         let stale: Vec<String> = stale.iter().filter_map(|p| filter.store_key(p)).collect();
         self.persist(&[], &stale, false);
 
+        let reconcile_elapsed = reconcile_started.elapsed();
+        let update_started = Instant::now();
+        let mut outcomes = ExtractionCounts::default();
         let total = todo.len();
         let mut done = 0usize;
         let mut last_progress = Instant::now();
         for chunk in todo.chunks(CHUNK) {
             if self.is_cancelled() {
-                return self.end_scan(task);
+                self.end_scan(task);
+                return None;
             }
-            self.index_files(chunk.iter().copied(), false);
+            outcomes.add(self.index_files(chunk.iter().copied(), false));
             done += chunk.len();
             if last_progress.elapsed() >= PROGRESS_EVERY {
                 last_progress = Instant::now();
@@ -482,7 +524,13 @@ impl Shared {
                 });
             }
         }
+        if self.is_cancelled() {
+            self.end_scan(task);
+            return None;
+        }
         self.persist(&[], &[], true);
+        let update_elapsed = update_started.elapsed();
+        let snapshot_started = Instant::now();
         if let Some(store) = &self.store {
             let recent: Vec<String> = self.recent.lock().iter().filter_map(|p| filter.store_key(p)).collect();
             let d = self.data.read();
@@ -493,6 +541,7 @@ impl Shared {
                 tracing::warn!("index recent snapshot: {e}");
             }
         }
+        let snapshot_elapsed = snapshot_started.elapsed();
         *self.snapshot_due.lock() = None;
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
@@ -504,22 +553,42 @@ impl Shared {
             cancellable: false,
         });
         self.emit_state();
+        let counts =
+            ScanCounts { discovered: found.len(), metadata_reused: found.len() - total, scheduled: total, outcomes };
+        let outcomes = &counts.outcomes;
         let d = self.data.read();
         tracing::info!(
-            "indexed {} files ({} parsed, {} symbols) in {:?}",
-            d.file_count,
-            total,
-            d.symbol_count,
-            started.elapsed()
+            scope = if dirs.is_some() { "subtree" } else { "full" },
+            files = d.file_count,
+            symbols = d.symbol_count,
+            discovered = counts.discovered,
+            metadata_reused = counts.metadata_reused,
+            scheduled = counts.scheduled,
+            hash_reused = outcomes.hash_reused,
+            symbol_extractions = outcomes.symbol_extractions,
+            ignored = outcomes.ignored,
+            oversized = outcomes.oversized,
+            binary = outcomes.binary,
+            unsupported = outcomes.unsupported,
+            read_failed = outcomes.read_failed,
+            not_processed = outcomes.not_processed,
+            prewalked = was_prewalked,
+            walk_ms = walk_elapsed.as_millis() as u64,
+            snapshot_write_ms = snapshot_elapsed.as_millis() as u64,
+            reconcile_ms = reconcile_elapsed.as_millis() as u64,
+            update_ms = update_elapsed.as_millis() as u64,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "index scan completed"
         );
+        Some(counts)
     }
 
     /// Extracts records in parallel, then publishes them to memory and disk.
     /// `force` re-parses files whose content is unchanged (their language changed).
-    fn index_files<'a>(&self, files: impl Iterator<Item = &'a Found>, force: bool) {
+    fn index_files<'a>(&self, files: impl Iterator<Item = &'a Found>, force: bool) -> ExtractionCounts {
         let files: Vec<&Found> = files.collect();
         let filter = self.filter();
-        let extracted: Vec<(String, FileRecord, PathBuf)> = files
+        let extracted: Vec<(String, FileRecord, PathBuf, Extraction)> = files
             .par_iter()
             .filter_map(|f| {
                 if self.is_cancelled() {
@@ -534,26 +603,31 @@ impl Shared {
                         rec.mtime = f.mtime;
                         rec.size = f.size;
                         rec.ignored = f.ignored;
-                        Some((rel, rec, f.path.clone()))
+                        Some((rel, rec, f.path.clone(), Extraction::HashReused))
                     }
-                    Extracted::New(rec) => Some((rel, rec, f.path.clone())),
+                    Extracted::New(rec, outcome) => Some((rel, rec, f.path.clone(), outcome)),
                 }
             })
             .collect();
+        let mut counts = ExtractionCounts { not_processed: files.len() - extracted.len(), ..Default::default() };
+        for (_, _, _, outcome) in &extracted {
+            counts.record(*outcome);
+        }
         if extracted.is_empty() {
-            return;
+            return counts;
         }
         let puts: Vec<(String, FileRecord)> =
-            extracted.iter().filter_map(|(_, rec, path)| Some((filter.store_key(path)?, rec.clone()))).collect();
+            extracted.iter().filter_map(|(_, rec, path, _)| Some((filter.store_key(path)?, rec.clone()))).collect();
         {
             let entries: Vec<(FileEntry, Vec<StoredSymbol>)> =
-                extracted.into_iter().map(|(rel, rec, path)| FileEntry::new(path, rel, rec)).collect();
+                extracted.into_iter().map(|(rel, rec, path, _)| FileEntry::new(path, rel, rec)).collect();
             let mut d = self.data.write();
             for (e, symbols) in entries {
                 d.insert(e, symbols);
             }
         }
         self.persist(&puts, &[], false);
+        counts
     }
 
     fn schedule_snapshot(&self) {
@@ -596,15 +670,18 @@ impl Shared {
 
     fn extract(&self, f: &Found, prev_hash: Option<[u8; 32]>) -> Extracted {
         let mut rec = FileRecord { mtime: f.mtime, size: f.size, ignored: f.ignored, ..Default::default() };
-        if f.ignored || f.size > MAX_SYMBOL_FILE {
-            return Extracted::New(rec);
+        if f.ignored {
+            return Extracted::New(rec, Extraction::Ignored);
+        }
+        if f.size > MAX_SYMBOL_FILE {
+            return Extracted::New(rec, Extraction::Oversized);
         }
         let mut bytes = Vec::with_capacity(f.size as usize);
         match std::fs::File::open(&f.path).and_then(|mut file| file.read_to_end(&mut bytes)) {
             Ok(_) => {}
             Err(e) => {
                 tracing::debug!("index: cannot read {}: {e}", f.path.display());
-                return Extracted::New(rec);
+                return Extracted::New(rec, Extraction::ReadFailed);
             }
         }
         rec.hash = *blake3::hash(&bytes).as_bytes();
@@ -613,7 +690,7 @@ impl Shared {
         }
         self.parsed.fetch_add(1, Ordering::Relaxed);
         if bytes[..bytes.len().min(8192)].contains(&0) {
-            return Extracted::New(rec);
+            return Extracted::New(rec, Extraction::Binary);
         }
         let text = String::from_utf8_lossy(&bytes);
         let lang = self.languages.detect(&f.path, Some(first_line(&text)));
@@ -624,8 +701,9 @@ impl Shared {
                 .into_iter()
                 .map(|t| StoredSymbol { name: t.name, kind: t.kind, container: t.container, range: t.range })
                 .collect();
+            return Extracted::New(rec, Extraction::Symbols);
         }
-        Extracted::New(rec)
+        Extracted::New(rec, Extraction::Unsupported)
     }
 
     fn process(&self, jobs: Vec<Job>) {
@@ -790,7 +868,274 @@ fn first_line(text: &str) -> &str {
 enum Extracted {
     /// Content hash matches the indexed version.
     Unchanged,
-    New(FileRecord),
+    New(FileRecord, Extraction),
+}
+
+/// Mutually exclusive outcomes for this batch, not all files in the index. "Symbols"
+/// means tags() was called, even when no symbols were found.
+#[derive(Clone, Copy)]
+enum Extraction {
+    HashReused,
+    Symbols,
+    Ignored,
+    Oversized,
+    Binary,
+    Unsupported,
+    ReadFailed,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct ExtractionCounts {
+    hash_reused: usize,
+    symbol_extractions: usize,
+    ignored: usize,
+    oversized: usize,
+    binary: usize,
+    unsupported: usize,
+    read_failed: usize,
+    /// Cancellation, a changed root configuration, or a concurrently removed entry.
+    not_processed: usize,
+}
+
+impl ExtractionCounts {
+    fn record(&mut self, outcome: Extraction) {
+        *match outcome {
+            Extraction::HashReused => &mut self.hash_reused,
+            Extraction::Symbols => &mut self.symbol_extractions,
+            Extraction::Ignored => &mut self.ignored,
+            Extraction::Oversized => &mut self.oversized,
+            Extraction::Binary => &mut self.binary,
+            Extraction::Unsupported => &mut self.unsupported,
+            Extraction::ReadFailed => &mut self.read_failed,
+        } += 1;
+    }
+
+    fn add(&mut self, other: Self) {
+        self.hash_reused += other.hash_reused;
+        self.symbol_extractions += other.symbol_extractions;
+        self.ignored += other.ignored;
+        self.oversized += other.oversized;
+        self.binary += other.binary;
+        self.unsupported += other.unsupported;
+        self.read_failed += other.read_failed;
+        self.not_processed += other.not_processed;
+    }
+}
+
+struct ScanCounts {
+    /// Files yielded by the filtered walker, not every file on disk.
+    discovered: usize,
+    /// Metadata matched an in-memory entry (possibly loaded from disk cache).
+    metadata_reused: usize,
+    scheduled: usize,
+    outcomes: ExtractionCounts,
+}
+
+#[cfg(test)]
+mod metric_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn shared(root: &Path) -> Shared {
+        Shared::new(
+            PathFilter::new(root, &crate::IndexRoots::from(Vec::new()), &[]),
+            Arc::new(LanguageRegistry::load(None).unwrap()),
+            Arc::new(Syntax::new()),
+            Arc::new(ide_core::NullSink),
+            None,
+        )
+    }
+
+    #[test]
+    fn scan_distinguishes_cold_metadata_and_hash_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let path = root.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let shared = shared(&root);
+        let cold = shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!((cold.discovered, cold.metadata_reused, cold.scheduled), (1, 0, 1));
+        assert_eq!(cold.outcomes, ExtractionCounts { symbol_extractions: 1, ..Default::default() });
+        let hot = shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!((hot.discovered, hot.metadata_reused, hot.scheduled), (1, 1, 0));
+        assert_eq!(hot.outcomes, ExtractionCounts::default());
+        // Force a metadata mismatch without a timestamp-resolution-dependent sleep.
+        let mut rec = shared.data.read().record_of(&path).unwrap();
+        rec.mtime = rec.mtime.wrapping_add(1);
+        let (entry, symbols) = FileEntry::new(path.clone(), "main.rs".into(), rec);
+        shared.data.write().insert(entry, symbols);
+        let touched = shared.scan(None, None, SystemTime::now()).unwrap();
+        assert_eq!((touched.discovered, touched.metadata_reused, touched.scheduled), (1, 0, 1));
+        assert_eq!(touched.outcomes, ExtractionCounts { hash_reused: 1, ..Default::default() });
+        assert_eq!(shared.data.read().symbol_count, 1);
+    }
+
+    #[test]
+    fn extraction_outcomes_are_exclusive_and_forced_parsing_is_counted() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let shared = shared(&root);
+        let mut found = Vec::new();
+        for (name, contents, ignored, size) in [
+            ("source.rs", "fn source() {}", false, 14),
+            ("ignored.rs", "fn hidden() {}", true, 14),
+            ("huge.rs", "", false, MAX_SYMBOL_FILE + 1),
+            ("binary.rs", "\0", false, 1),
+            ("plain.unknown", "plain", false, 5),
+            ("missing.rs", "", false, 0),
+        ] {
+            let path = root.join(name);
+            if name != "missing.rs" {
+                std::fs::write(&path, contents).unwrap();
+            }
+            found.push(Found { path, mtime: 0, size, ignored });
+        }
+        let counts = shared.index_files(found.iter(), false);
+        assert_eq!(
+            counts,
+            ExtractionCounts {
+                symbol_extractions: 1,
+                ignored: 1,
+                oversized: 1,
+                binary: 1,
+                unsupported: 1,
+                read_failed: 1,
+                hash_reused: 0,
+                not_processed: 0,
+            }
+        );
+        assert_eq!(shared.data.read().file_count as usize, found.len());
+        assert_eq!(shared.index_files(found[..1].iter(), false).hash_reused, 1);
+        assert_eq!(shared.index_files(found[..1].iter(), true).symbol_extractions, 1);
+    }
+
+    #[test]
+    fn reopened_cache_counts_metadata_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let cache = dir.path().join("cache");
+        {
+            let mut index = shared(&root);
+            index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+            assert_eq!(index.scan(None, None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
+        }
+        let mut index = shared(&root);
+        index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+        let found = index.walk_roots(None);
+        index.load_persisted(&found);
+        let counts = index.scan(None, Some(found), SystemTime::now()).unwrap();
+        assert_eq!((counts.discovered, counts.metadata_reused, counts.scheduled), (1, 1, 0));
+        assert_eq!(counts.outcomes, ExtractionCounts::default());
+        assert_eq!(index.data.read().symbol_count, 1);
+    }
+
+    #[test]
+    fn warm_snapshot_hydrates_without_symbol_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let cache = dir.path().join("cache");
+        {
+            let mut index = shared(&root);
+            index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+            assert_eq!(index.scan(None, None, SystemTime::now()).unwrap().outcomes.symbol_extractions, 1);
+        }
+        let mut index = shared(&root);
+        index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+        assert!(index.try_fast_start());
+        assert_eq!(index.parsed.load(Ordering::Relaxed), 0);
+        assert_eq!(index.data.read().file_count, 1);
+        assert_eq!(index.data.read().symbol_count, 1);
+    }
+
+    #[test]
+    fn cancelled_warm_start_does_not_log_completion() {
+        struct CompletionCounter(Arc<std::sync::atomic::AtomicUsize>);
+        impl tracing::Subscriber for CompletionCounter {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                struct Message(bool);
+                impl tracing::field::Visit for Message {
+                    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                        if field.name() == "message" && format!("{value:?}").contains("index startup completed") {
+                            self.0 = true;
+                        }
+                    }
+                }
+                let mut message = Message(false);
+                event.record(&mut message);
+                if message.0 {
+                    self.0.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let root = dunce::canonicalize(root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        let cache = dir.path().join("cache");
+        {
+            let mut index = shared(&root);
+            index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+            index.scan(None, None, SystemTime::now()).unwrap();
+        }
+        let mut index = shared(&root);
+        index.store = Some(Store::open(&cache, &root, "metrics-test").unwrap());
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        index.cancel();
+        tracing::subscriber::with_default(CompletionCounter(count.clone()), || {
+            tracing::info!("index startup completed");
+            assert_eq!(count.swap(0, Ordering::Relaxed), 1);
+            index.run(true);
+        });
+        assert_eq!(index.parsed.load(Ordering::Relaxed), 0);
+        assert_eq!(index.data.read().file_count, 1);
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn files_outside_current_scope_and_cancelled_batches_are_accounted_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let index = shared(&root);
+        // A scan can retain Found values from a root removed by set_scope.
+        let outside = Found { path: dir.path().join("outside.rs"), mtime: 0, size: 0, ignored: false };
+        assert_eq!(
+            index.index_files([&outside].into_iter(), false),
+            ExtractionCounts { not_processed: 1, ..Default::default() }
+        );
+        index.cancel();
+        let inside = Found { path: root.join("inside.rs"), mtime: 0, size: 0, ignored: false };
+        assert_eq!(
+            index.index_files([&inside].into_iter(), false),
+            ExtractionCounts { not_processed: 1, ..Default::default() }
+        );
+    }
+
+    #[test]
+    fn cancelled_scan_does_not_report_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = shared(dir.path());
+        shared.cancel();
+        assert!(shared.scan(None, None, SystemTime::now()).is_none());
+        assert!(!shared.indexing.load(Ordering::Relaxed));
+    }
 }
 
 #[cfg(test)]
