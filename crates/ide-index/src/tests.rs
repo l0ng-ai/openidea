@@ -773,11 +773,40 @@ fn persisted_symbols_do_not_load_through_escaping_symlink_ancestors() {
 }
 
 #[test]
+fn incremental_changes_refresh_the_warm_start_snapshot() {
+    let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
+    let idx = f.open();
+    let changed = f.write("src/a.rs", "fn renamed() {}\n");
+    idx.update(&[changed], &[]);
+    assert!(idx.wait_idle(WAIT));
+    std::thread::sleep(Duration::from_millis(150));
+    assert!(f.cache.join("index.snapshot").exists(), "a watcher update must regenerate the snapshot");
+}
+
+#[test]
+fn warm_start_detects_changed_ignore_rules() {
+    let f = Fixture::new(&[("sub/generated/a.rs", "fn a() {}\n"), (".git/HEAD", "ref: refs/heads/main\n")]);
+    f.write("sub/.gitignore", "");
+    let idx = f.open();
+    assert_eq!(idx.status().files, 2, "generated/a.rs plus .gitignore itself");
+    drop(idx);
+
+    std::thread::sleep(Duration::from_millis(20));
+    f.write("sub/.gitignore", "generated/\n");
+    let idx = f.open();
+    assert_eq!(idx.status().files, 1, "an updated ignore rule invalidates the warm snapshot");
+}
+
+#[test]
 fn warm_start_detects_a_new_file_in_an_existing_empty_directory() {
     let f = Fixture::new(&[("src/a.rs", "fn a() {}\n")]);
     std::fs::create_dir(f.root.join("empty")).unwrap();
     let idx = f.open();
     assert_eq!(idx.status().files, 1);
+    assert!(idx.find_dirs("empty", 10).is_empty());
+    drop(idx);
+    let idx = f.open();
+    assert!(idx.find_dirs("empty", 10).is_empty(), "empty folders are not searchable after warm start");
     drop(idx);
 
     f.write("empty/new.rs", "fn new_symbol() {}\n");

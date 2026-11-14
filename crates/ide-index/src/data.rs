@@ -15,6 +15,19 @@ pub(crate) fn char_mask(s: &str) -> u64 {
     m
 }
 
+/// A relative index key must stay below the project root.
+pub(crate) fn safe_rel(rel: &str) -> bool {
+    let mut any = false;
+    for component in Path::new(rel).components() {
+        if matches!(component, std::path::Component::Normal(_)) {
+            any = true;
+        } else {
+            return false;
+        }
+    }
+    any
+}
+
 #[inline]
 pub(crate) fn mask_bit(b: u8) -> u64 {
     match b.to_ascii_lowercase() {

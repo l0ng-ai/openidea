@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const FILES: TableDefinition<&str, &[u8]> = TableDefinition::new("files");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
@@ -50,6 +51,10 @@ pub(crate) struct Snapshot {
     dir_counts: Vec<u32>,
     filter: String,
     stamp: String,
+    ignore_paths: String,
+    ignore_ends: Vec<u32>,
+    ignore_mtimes: Vec<u64>,
+    ignore_sizes: Vec<u64>,
 }
 
 impl Snapshot {
@@ -78,6 +83,23 @@ impl Snapshot {
         self.dir_counts[dir]
     }
 
+    pub(crate) fn ignore_len(&self) -> usize {
+        self.ignore_mtimes.len()
+    }
+
+    pub(crate) fn ignore_path(&self, i: usize) -> &str {
+        let start = if i == 0 { 0 } else { self.ignore_ends[i - 1] as usize };
+        &self.ignore_paths[start..self.ignore_ends[i] as usize]
+    }
+
+    pub(crate) fn ignore_mtime(&self, i: usize) -> u64 {
+        self.ignore_mtimes[i]
+    }
+
+    pub(crate) fn ignore_size(&self, i: usize) -> u64 {
+        self.ignore_sizes[i]
+    }
+
     pub(crate) fn mtime(&self, file: usize) -> u64 {
         self.meta[file].mtime
     }
@@ -91,15 +113,24 @@ impl Snapshot {
         if self.rel_ends.len() != self.meta.len() {
             return false;
         }
+        let boundary = |text: &str, end: u32| end as usize <= text.len() && text.is_char_boundary(end as usize);
         let mut rel_end = 0;
         for end in &self.rel_ends {
-            if *end < rel_end || *end as usize > self.rels.len() {
+            if *end < rel_end || !boundary(&self.rels, *end) {
                 return false;
             }
             rel_end = *end;
         }
         if rel_end as usize != self.rels.len() {
             return false;
+        }
+        let mut start = 0;
+        for end in &self.rel_ends {
+            let rel = &self.rels[start..*end as usize];
+            if !crate::data::safe_rel(rel) {
+                return false;
+            }
+            start = *end as usize;
         }
         let mut sym_end = 0;
         for meta in &self.meta {
@@ -111,15 +142,22 @@ impl Snapshot {
         if sym_end as usize != self.symbols.len() {
             return false;
         }
-        if self.dir_ends.len() != self.dir_mtimes.len() {
+        if !self.symbols.iter().all(|s| {
+            let name_end = s.name_start as usize + s.name_len as usize;
+            let container_end = s.container_start as usize + s.container_len as usize;
+            boundary(&self.text, s.name_start)
+                && boundary(&self.text, name_end as u32)
+                && (s.container_start == u32::MAX
+                    || (boundary(&self.text, s.container_start) && boundary(&self.text, container_end as u32)))
+        }) {
             return false;
         }
-        if self.dir_counts.len() != self.dir_mtimes.len() {
+        if self.dir_ends.len() != self.dir_mtimes.len() || self.dir_counts.len() != self.dir_mtimes.len() {
             return false;
         }
         let mut dir_end = 0;
         for end in &self.dir_ends {
-            if *end < dir_end || *end as usize > self.dirs.len() {
+            if *end < dir_end || !boundary(&self.dirs, *end) {
                 return false;
             }
             dir_end = *end;
@@ -127,13 +165,35 @@ impl Snapshot {
         if dir_end as usize != self.dirs.len() {
             return false;
         }
-        self.symbols.iter().all(|s| {
-            let name_end = s.name_start as usize + s.name_len as usize;
-            let container_end = s.container_start as usize + s.container_len as usize;
-            name_end <= self.text.len()
-                && (s.container_start == u32::MAX
-                    || (s.container_start as usize <= self.text.len() && container_end <= self.text.len()))
-        })
+        let mut start = 0;
+        for end in &self.dir_ends {
+            let dir = &self.dirs[start..*end as usize];
+            if !dir.is_empty() && !crate::data::safe_rel(dir) {
+                return false;
+            }
+            start = *end as usize;
+        }
+        if self.ignore_ends.len() != self.ignore_mtimes.len() || self.ignore_sizes.len() != self.ignore_mtimes.len() {
+            return false;
+        }
+        let mut ignore_end = 0;
+        for end in &self.ignore_ends {
+            if *end < ignore_end || !boundary(&self.ignore_paths, *end) {
+                return false;
+            }
+            ignore_end = *end;
+        }
+        if ignore_end as usize != self.ignore_paths.len() {
+            return false;
+        }
+        let mut start = 0;
+        for end in &self.ignore_ends {
+            if start == *end as usize {
+                return false;
+            }
+            start = *end as usize;
+        }
+        true
     }
 
     pub(crate) fn rel(&self, file: usize) -> &str {
@@ -169,6 +229,10 @@ type Result<T> = std::result::Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+fn fit(n: usize) -> Result<u32> {
+    u32::try_from(n).map_err(|_| "index snapshot exceeds the 4 GiB span limit".to_owned())
 }
 
 pub(crate) struct Store {
@@ -292,7 +356,8 @@ impl Store {
     /// Writes the current index as one columnar snapshot for fast next start-up.
     /// Only records persisted below `root` are included; content roots outside it
     /// are rescanned, as they are for the per-file records.
-    pub(crate) fn save_snapshot(&self, data: &IndexData, filter: &PathFilter) -> Result<()> {
+    pub(crate) fn save_snapshot(&self, data: &IndexData, filter: &PathFilter, not_after: SystemTime) -> Result<()> {
+        let guard = not_after.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64);
         let root = filter.root();
         let mut snap = Snapshot { filter: filter.stamp(), stamp: self.stamp.clone(), ..Default::default() };
         let mut dirs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -305,21 +370,21 @@ impl Store {
         for e in data.files.iter().flatten().filter(|e| e.path.starts_with(root)) {
             dirs.insert(e.dir().trim_end_matches('/').to_owned());
             snap.rels.push_str(&e.rel);
-            snap.rel_ends.push(snap.rels.len() as u32);
+            snap.rel_ends.push(fit(snap.rels.len())?);
             for s in e.symbols.iter() {
-                let name_start = snap.text.len() as u32;
+                let name_start = fit(snap.text.len())?;
                 snap.text.push_str(&s.name);
                 let (container_start, container_len) = match s.container.as_deref() {
                     Some(c) => {
-                        let start = snap.text.len() as u32;
+                        let start = fit(snap.text.len())?;
                         snap.text.push_str(c);
-                        (start, c.len() as u32)
+                        (start, fit(c.len())?)
                     }
                     None => (u32::MAX, 0),
                 };
                 snap.symbols.push(FlatSymbol {
                     name_start,
-                    name_len: s.name.len() as u32,
+                    name_len: fit(s.name.len())?,
                     container_start,
                     container_len,
                     kind: s.kind,
@@ -331,22 +396,80 @@ impl Store {
                 size: e.size,
                 hash: e.hash,
                 ignored: e.ignored,
-                sym_end: snap.symbols.len() as u32,
+                sym_end: fit(snap.symbols.len())?,
             });
         }
-        for rel in dirs {
-            let path = if rel.is_empty() { root.to_owned() } else { root.join(&rel) };
+        let dir_list: Vec<String> = dirs.into_iter().collect();
+        for rel in &dir_list {
+            let path = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
             let mtime = std::fs::symlink_metadata(&path).ok().map(|m| mtime_of(&m)).unwrap_or(0);
+            if mtime > guard {
+                let _ = std::fs::remove_file(&self.snapshot);
+                return Ok(());
+            }
             let count = if rel.is_empty() {
                 0
             } else {
                 let key = format!("{rel}/");
                 data.dirs.get(key.as_str()).map_or(0, |d| d.1)
             };
-            snap.dirs.push_str(&rel);
-            snap.dir_ends.push(snap.dirs.len() as u32);
+            snap.dirs.push_str(rel);
+            snap.dir_ends.push(fit(snap.dirs.len())?);
             snap.dir_mtimes.push(mtime);
             snap.dir_counts.push(count);
+        }
+        let mut ignore_files: std::collections::BTreeSet<std::path::PathBuf> = std::collections::BTreeSet::new();
+        for rel in &dir_list {
+            let dir = if rel.is_empty() { root.to_owned() } else { root.join(rel) };
+            for name in [".gitignore", ".ignore"] {
+                let path = dir.join(name);
+                if path.is_file() {
+                    ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
+                }
+            }
+        }
+        for path in [root.join(".git/info/exclude")] {
+            if path.is_file() {
+                ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
+            }
+        }
+        if let Some(path) = ignore::gitignore::gitconfig_excludes_path()
+            && path.is_file()
+        {
+            ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
+        }
+        // Git config can redirect `core.excludesFile`; its mtime invalidates the
+        // snapshot even when the old global ignore file is unchanged.
+        let mut configs = vec![root.join(".git/config"), std::path::PathBuf::from("/etc/gitconfig")];
+        if let Some(path) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+            configs.push(path.into());
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = std::path::PathBuf::from(home);
+            configs.push(home.join(".gitconfig"));
+            configs.push(
+                std::env::var_os("XDG_CONFIG_HOME")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| home.join(".config"))
+                    .join("git/config"),
+            );
+        }
+        for path in configs {
+            if path.is_file() {
+                ignore_files.insert(dunce::canonicalize(&path).unwrap_or(path));
+            }
+        }
+        for path in ignore_files {
+            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+            let mtime = mtime_of(&meta);
+            if mtime > guard {
+                let _ = std::fs::remove_file(&self.snapshot);
+                return Ok(());
+            }
+            snap.ignore_paths.push_str(&path.to_string_lossy());
+            snap.ignore_ends.push(fit(snap.ignore_paths.len())?);
+            snap.ignore_mtimes.push(mtime);
+            snap.ignore_sizes.push(meta.len());
         }
         let bytes = postcard::to_allocvec(&snap).map_err(err)?;
         let tmp = self.snapshot.with_extension("snapshot.tmp");
@@ -488,7 +611,9 @@ mod tests {
         data.insert(FileEntry::new(std::path::PathBuf::from("/p/src/Order.rs"), "src/Order.rs".into(), record));
         // Content roots outside the project root are rescanned, not snapshotted.
         data.insert(FileEntry::new(std::path::PathBuf::from("/elsewhere/x.rs"), "x.rs".into(), FileRecord::default()));
-        store.save_snapshot(&data, &PathFilter::new(Path::new("/p"), &Vec::new().into(), &[])).unwrap();
+        store
+            .save_snapshot(&data, &PathFilter::new(Path::new("/p"), &Vec::new().into(), &[]), SystemTime::now())
+            .unwrap();
 
         let snapshot = store.load_snapshot().expect("snapshot");
         assert_eq!(snapshot.len(), 1);
@@ -501,5 +626,16 @@ mod tests {
 
         store.apply(&[], &[], false).unwrap();
         assert!(store.load_snapshot().is_none(), "a file change invalidates the snapshot");
+    }
+
+    #[test]
+    fn snapshot_validation_rejects_bad_paths_and_split_utf8() {
+        let escaping =
+            Snapshot { rels: "../x".into(), rel_ends: vec![4], meta: vec![FileMeta::default()], ..Default::default() };
+        assert!(!escaping.valid());
+
+        let split =
+            Snapshot { rels: "é".into(), rel_ends: vec![1], meta: vec![FileMeta::default()], ..Default::default() };
+        assert!(!split.valid());
     }
 }

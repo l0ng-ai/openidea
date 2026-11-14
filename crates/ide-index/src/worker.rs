@@ -1,7 +1,7 @@
 //! The background indexing thread: initial load + full scan, then incremental
 //! updates queued by the watcher.
 
-use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol};
+use crate::data::{FileEntry, FileRecord, IndexData, StoredSymbol, safe_rel};
 use crate::filter::{Found, PathFilter, mtime_of};
 use crate::store::Store;
 use ide_core::{IdeEvent, SharedSink, TaskId};
@@ -12,26 +12,17 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Files larger than this are listed but not parsed for symbols.
 pub const MAX_SYMBOL_FILE: u64 = 2 * 1024 * 1024;
 const CHUNK: usize = 512;
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+#[cfg(not(test))]
+const SNAPSHOT_DELAY: Duration = Duration::from_secs(2);
+#[cfg(test)]
+const SNAPSHOT_DELAY: Duration = Duration::from_millis(50);
 pub(crate) const MAX_RECENT: usize = 50;
-
-/// A cache key must stay below the project root: relative, normal components only.
-fn safe_rel(rel: &str) -> bool {
-    let mut any = false;
-    for component in Path::new(rel).components() {
-        if matches!(component, std::path::Component::Normal(_)) {
-            any = true;
-        } else {
-            return false;
-        }
-    }
-    any
-}
 
 pub(crate) enum Job {
     Changed(Vec<PathBuf>),
@@ -68,6 +59,8 @@ pub(crate) struct Shared {
     queue: Mutex<Queue>,
     wake: Condvar,
     idle: Condvar,
+    /// Coalesced post-update snapshot refresh.
+    snapshot_due: Mutex<Option<Instant>>,
 }
 
 impl Shared {
@@ -92,6 +85,7 @@ impl Shared {
             queue: Mutex::default(),
             wake: Condvar::new(),
             idle: Condvar::new(),
+            snapshot_due: Mutex::default(),
         }
     }
 
@@ -152,9 +146,10 @@ impl Shared {
             // directory/file metadata changed. Rebuilding the walk's file list is
             // the expensive part; validate the flat manifest first.
             if !self.try_fast_start() {
+                let snapshot_guard = SystemTime::now();
                 let found = self.walk_roots(None);
                 self.load_persisted(&found);
-                self.full_scan(Some(found));
+                self.full_scan(Some(found), snapshot_guard);
             }
         } else {
             self.indexing.store(false, Ordering::SeqCst);
@@ -166,17 +161,38 @@ impl Shared {
             self.idle.notify_all();
         }
         loop {
+            let mut save_due = false;
             let jobs: Vec<Job> = {
                 let mut q = self.queue.lock();
-                while q.jobs.is_empty() && !self.is_cancelled() {
-                    self.wake.wait(&mut q);
+                loop {
+                    if self.is_cancelled() {
+                        return;
+                    }
+                    if !q.jobs.is_empty() {
+                        break;
+                    }
+                    let due = *self.snapshot_due.lock();
+                    if let Some(due) = due {
+                        if Instant::now() >= due {
+                            save_due = true;
+                            break;
+                        }
+                        self.wake.wait_until(&mut q, due);
+                    } else {
+                        self.wake.wait(&mut q);
+                    }
                 }
-                if self.is_cancelled() {
-                    return;
+                if save_due {
+                    Vec::new()
+                } else {
+                    q.busy = true;
+                    q.jobs.drain(..).collect()
                 }
-                q.busy = true;
-                q.jobs.drain(..).collect()
             };
+            if save_due {
+                self.save_snapshot_now();
+                continue;
+            }
             self.process(jobs);
             let mut q = self.queue.lock();
             q.busy = false;
@@ -208,6 +224,13 @@ impl Shared {
                 return false;
             }
         }
+        for i in 0..snapshot.ignore_len() {
+            let path = Path::new(snapshot.ignore_path(i));
+            let Ok(meta) = std::fs::symlink_metadata(path) else { return false };
+            if !meta.is_file() || mtime_of(&meta) != snapshot.ignore_mtime(i) || meta.len() != snapshot.ignore_size(i) {
+                return false;
+            }
+        }
         let build_started = Instant::now();
         let entries: Vec<Option<FileEntry>> = (0..snapshot.len())
             .into_par_iter()
@@ -232,7 +255,7 @@ impl Shared {
         let dirs: Vec<(Box<str>, PathBuf, u32)> = (0..snapshot.dirs_len())
             .filter_map(|i| {
                 let rel = snapshot.dir(i);
-                (!rel.is_empty()).then(|| {
+                (!rel.is_empty() && snapshot.dir_count(i) > 0).then(|| {
                     let key = format!("{rel}/");
                     (key.into_boxed_str(), root.join(rel), snapshot.dir_count(i))
                 })
@@ -369,11 +392,11 @@ impl Shared {
         found
     }
 
-    fn full_scan(&self, found: Option<Vec<Found>>) {
-        self.scan(None, found);
+    fn full_scan(&self, found: Option<Vec<Found>>, guard: SystemTime) {
+        self.scan(None, found, guard);
     }
 
-    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>) {
+    fn scan(&self, dirs: Option<&[PathBuf]>, prewalked: Option<Vec<Found>>, guard: SystemTime) {
         let started = Instant::now();
         self.indexing.store(true, Ordering::SeqCst);
         self.emit_state();
@@ -437,10 +460,11 @@ impl Shared {
         self.persist(&[], &[], true);
         if let Some(store) = &self.store {
             let d = self.data.read();
-            if let Err(e) = store.save_snapshot(&d, &filter) {
+            if let Err(e) = store.save_snapshot(&d, &filter, guard) {
                 tracing::warn!("index snapshot: {e}");
             }
         }
+        *self.snapshot_due.lock() = None;
         self.indexing.store(false, Ordering::SeqCst);
         self.sink.emit(IdeEvent::Task {
             id: task,
@@ -502,6 +526,28 @@ impl Shared {
             }
         }
         self.persist(&puts, &[], false);
+    }
+
+    fn schedule_snapshot(&self) {
+        if self.store.is_none() {
+            return;
+        }
+        let mut due = self.snapshot_due.lock();
+        if due.is_none() {
+            *due = Some(Instant::now() + SNAPSHOT_DELAY);
+        }
+    }
+
+    fn save_snapshot_now(&self) {
+        if let Some(store) = &self.store {
+            let filter = self.filter();
+            let guard = SystemTime::now();
+            let d = self.data.read();
+            if let Err(e) = store.save_snapshot(&d, &filter, guard) {
+                tracing::warn!("index snapshot: {e}");
+            }
+        }
+        *self.snapshot_due.lock() = None;
     }
 
     fn persist(&self, puts: &[(String, FileRecord)], deletes: &[String], durable: bool) {
@@ -577,14 +623,14 @@ impl Shared {
                 }
             }
             if !rescan {
-                self.scan(Some(&roots), None);
+                self.scan(Some(&roots), None, SystemTime::now());
                 changed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
                 removed.retain(|p| !roots.iter().any(|root| p.starts_with(root)));
             }
         }
         if rescan {
             // The scan also picks up whatever `changed` / `removed` reported.
-            self.full_scan(None);
+            self.full_scan(None, SystemTime::now());
             changed.clear();
             removed.clear();
         }
@@ -679,6 +725,7 @@ impl Shared {
         if touched {
             self.persist(&[], &[], true);
             self.emit_state();
+            self.schedule_snapshot();
         }
     }
 }
@@ -701,7 +748,7 @@ enum Extracted {
 
 #[cfg(test)]
 mod tests {
-    use super::safe_rel;
+    use crate::data::safe_rel;
 
     #[test]
     fn cache_keys_stay_below_the_root() {
