@@ -9,6 +9,9 @@ import { call, commands, IpcError, isTauri } from "@/platform/ipc";
 export interface LanguageChoice {
   id: string;
   name: string;
+  /** For the language's file icon. */
+  extensions?: string[];
+  filenames?: string[];
 }
 
 export interface ToolsBackend {
@@ -43,7 +46,9 @@ export const tauriToolsBackend: ToolsBackend = {
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   languages: async () =>
-    (await commands.languages()).map((l) => ({ id: l.id, name: l.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    (await commands.languages())
+      .map((l) => ({ id: l.id, name: l.name, extensions: l.extensions, filenames: l.filenames }))
+      .sort((a, b) => a.name.localeCompare(b.name)),
 };
 
 function tool(partial: Partial<ToolInfo> & Pick<ToolInfo, "name" | "languages">): ToolInfo {

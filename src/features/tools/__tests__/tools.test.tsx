@@ -6,7 +6,7 @@ import { provideNotificationService, type NotificationService } from "@/workbenc
 import { useTasks } from "@/workbench/tasks";
 import { MemoryToolsBackend, sampleTools, setToolsBackend } from "../backend";
 import { cancelInstall, installTool, refreshTools, uninstallTool, useTools } from "../store";
-import { filterTools, LanguageServersPage } from "../LanguageServersPage";
+import { filterLanguages, groupByLanguage, LanguageServersPage } from "../LanguageServersPage";
 import { installMissingServerPrompts, installServerWarningPrompts, missingKey, promptInstall } from "../missing";
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
@@ -19,7 +19,14 @@ beforeEach(() => {
   provideNotificationService({ notify: (n) => void notes.push(n) });
   backend = new MemoryToolsBackend(sampleTools(), 1);
   setToolsBackend(backend);
-  useTools.setState({ tools: [], loaded: false, loading: false, error: null, jobs: {}, logs: {} });
+  useTools.setState({
+    tools: [],
+    loaded: false,
+    loading: false,
+    error: null,
+    jobs: {},
+    logs: {},
+  });
 });
 
 afterEach(() => setToolsBackend(null));
@@ -39,7 +46,10 @@ describe("tools store", () => {
     expect(useTools.getState().jobs["gopls"]).toBeUndefined();
     expect(useTools.getState().logs["gopls"]?.lines.at(-1)).toContain("installed");
     expect(backend.restarted).toEqual(["gopls"]);
-    expect(notes.at(-1)).toMatchObject({ level: "info", title: "gopls installed" });
+    expect(notes.at(-1)).toMatchObject({
+      level: "info",
+      title: "gopls installed",
+    });
     expect(useTasks.getState().tasks.find((t) => t.id === "tools:gopls")?.done ?? true).toBe(true);
   });
 
@@ -55,7 +65,10 @@ describe("tools store", () => {
     await refreshTools();
     backend.failNext = "gopls";
     expect(await installTool("gopls")).toBeNull();
-    expect(notes.at(-1)).toMatchObject({ level: "error", title: "Failed to install gopls" });
+    expect(notes.at(-1)).toMatchObject({
+      level: "error",
+      title: "Failed to install gopls",
+    });
     expect(notes.at(-1)?.actions?.[0]?.label).toBe("Show details");
     expect(useTools.getState().logs["gopls"]?.error).toContain("failed");
   });
@@ -92,14 +105,49 @@ describe("tools store", () => {
     expect(useTools.getState().tools.find((t) => t.name === "rust-analyzer")?.status).toBe("missing");
   });
 
-  it("filters by text and status", () => {
-    const tools = sampleTools();
-    expect(filterTools(tools, "go", "all").map((t) => t.name)).toEqual(["gopls", "delve"]);
-    expect(filterTools(tools, "", "installed").map((t) => t.name)).toEqual([
-      "rust-analyzer",
-      "typescript-language-server",
+  it("groups tools by language and filters by text and missing tools", () => {
+    const langs = groupByLanguage(sampleTools());
+    expect(langs.map((l) => l.name)).toEqual([
+      "C",
+      "C++",
+      "Go",
+      "JavaScript",
+      "Kotlin",
+      "Python",
+      "Ruby",
+      "Rust",
+      "TypeScript",
+      "Zig",
     ]);
-    expect(filterTools(tools, "kotlin", "missing").map((t) => t.name)).toEqual(["kotlin-lsp"]);
+    const go = langs.find((l) => l.name === "Go")!;
+    expect(go.tools.map((t) => t.name)).toEqual(["gopls", "delve"]);
+    expect(go.state).toBe("none");
+    expect(go.missing.map((t) => t.name)).toEqual(["gopls", "delve"]);
+    // One installed server is enough; the missing alternative isn't offered.
+    expect(langs.find((l) => l.name === "TypeScript")).toMatchObject({
+      state: "ready",
+      missing: [],
+    });
+    // Rust has its server; only the debugger is missing.
+    expect(langs.find((l) => l.name === "Rust")!.missing.map((t) => t.name)).toEqual(["codelldb"]);
+    // The first installable of interchangeable servers.
+    expect(langs.find((l) => l.name === "Python")!.missing.map((t) => t.name)).toEqual(["basedpyright"]);
+
+    expect(filterLanguages(langs, "dlv", false).map((l) => l.name)).toEqual(["Go"]);
+    expect(filterLanguages(langs, "codelldb", false).map((l) => l.name)).toEqual(["C", "C++", "Rust"]);
+    expect(filterLanguages(langs, "", true).map((l) => l.name)).not.toContain("TypeScript");
+  });
+
+  it("lists tools serving no language under Other Tools, last", () => {
+    const cli = {
+      ...sampleTools()[0]!,
+      name: "devcontainer",
+      kind: "cli" as const,
+      languages: [],
+    };
+    expect(groupByLanguage([cli, ...sampleTools()]).at(-1)).toMatchObject({
+      name: "Other Tools",
+    });
   });
 });
 
@@ -125,16 +173,28 @@ describe("missing language server prompt", () => {
     });
     expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Install", "Language Servers…"]);
     await promptInstall("prettier", false);
-    expect(notes.at(-1)).toMatchObject({ key: missingKey("prettier"), sticky: false });
+    expect(notes.at(-1)).toMatchObject({
+      key: missingKey("prettier"),
+      sticky: false,
+    });
     notes[0]!.actions![0]!.run();
     await waitFor(() =>
-      expect(notes.at(-1)).toMatchObject({ title: "Prettier installed", key: missingKey("prettier") }),
+      expect(notes.at(-1)).toMatchObject({
+        title: "Prettier installed",
+        key: missingKey("prettier"),
+      }),
     );
   });
 
   it("offers Install for installable servers, once, replacing the generic notice", async () => {
     const off = installMissingServerPrompts();
-    const ev = { type: "languageServer", server: 1, name: "gopls", status: "missing", message: null } as const;
+    const ev = {
+      type: "languageServer",
+      server: 1,
+      name: "gopls",
+      status: "missing",
+      message: null,
+    } as const;
     emitLocalIdeEvent(ev);
     emitLocalIdeEvent(ev);
     await waitFor(() => expect(notes).toHaveLength(1));
@@ -143,7 +203,12 @@ describe("missing language server prompt", () => {
     expect(n.key).toBe(missingKey("gopls"));
     n.actions![0]!.run();
     await waitFor(() => expect(backend.restarted).toEqual(["gopls"]));
-    await waitFor(() => expect(notes.at(-1)).toMatchObject({ title: "gopls installed", key: missingKey("gopls") }));
+    await waitFor(() =>
+      expect(notes.at(-1)).toMatchObject({
+        title: "gopls installed",
+        key: missingKey("gopls"),
+      }),
+    );
     off();
   });
 
@@ -169,7 +234,13 @@ describe("missing language server prompt", () => {
   it("stays silent when an installed alternative serves the same languages", async () => {
     const off = installMissingServerPrompts();
     // typescript-language-server (on PATH) covers vtsls' languages.
-    emitLocalIdeEvent({ type: "languageServer", server: 4, name: "vtsls", status: "missing", message: null });
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: 4,
+      name: "vtsls",
+      status: "missing",
+      message: null,
+    });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 20));
     });
@@ -181,7 +252,13 @@ describe("missing language server prompt", () => {
     const off = installMissingServerPrompts();
     // basedpyright is missing, so its fallbacks start and turn out missing too; gopls isn't one of them.
     ["basedpyright", "pyright", "ty", "pyrefly", "gopls"].forEach((name, i) =>
-      emitLocalIdeEvent({ type: "languageServer", server: 10 + i, name, status: "missing", message: null }),
+      emitLocalIdeEvent({
+        type: "languageServer",
+        server: 10 + i,
+        name,
+        status: "missing",
+        message: null,
+      }),
     );
     await waitFor(() => expect(notes).toHaveLength(2));
     await act(async () => {
@@ -200,7 +277,13 @@ describe("missing language server prompt", () => {
     );
     const off = installMissingServerPrompts();
     for (const [i, name] of ["basedpyright", "pyright", "ty"].entries()) {
-      emitLocalIdeEvent({ type: "languageServer", server: 20 + i, name, status: "missing", message: null });
+      emitLocalIdeEvent({
+        type: "languageServer",
+        server: 20 + i,
+        name,
+        status: "missing",
+        message: null,
+      });
     }
     await waitFor(() => expect(notes).toHaveLength(1));
     await act(async () => {
@@ -214,7 +297,13 @@ describe("missing language server prompt", () => {
     const off = installMissingServerPrompts();
     // basedpyright turned off in settings never starts, so never reports.
     for (const [i, name] of ["pyright", "ty"].entries()) {
-      emitLocalIdeEvent({ type: "languageServer", server: 40 + i, name, status: "missing", message: null });
+      emitLocalIdeEvent({
+        type: "languageServer",
+        server: 40 + i,
+        name,
+        status: "missing",
+        message: null,
+      });
     }
     await waitFor(() => expect(notes).toHaveLength(1));
     await act(async () => {
@@ -226,8 +315,20 @@ describe("missing language server prompt", () => {
 
   it("stays silent for tools without an installer", async () => {
     const off = installMissingServerPrompts();
-    emitLocalIdeEvent({ type: "languageServer", server: 2, name: "solargraph", status: "missing", message: null });
-    emitLocalIdeEvent({ type: "languageServer", server: 3, name: "rust-analyzer", status: "ready", message: null });
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: 2,
+      name: "solargraph",
+      status: "missing",
+      message: null,
+    });
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: 3,
+      name: "rust-analyzer",
+      status: "ready",
+      message: null,
+    });
     await act(async () => {
       await new Promise((r) => setTimeout(r, 20));
     });
@@ -244,41 +345,85 @@ describe("LanguageServersPage", () => {
         <LanguageServersPage />
       </TestSettingsForm>,
     );
-  const listItem = (name: string) =>
-    screen.getByRole("list", { name: /language servers/i }).querySelector<HTMLElement>(`[data-tool="${name}"]`)!;
+  const languages = () => screen.getByRole("list", { name: "Languages" });
+  const language = (name: string) => languages().querySelector<HTMLElement>(`[data-language="${name}"]`);
+  const toolItem = (name: string) => document.querySelector<HTMLElement>(`[data-tool="${name}"]`)!;
+  const open = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+    await waitFor(() => expect(language(name)).not.toBeNull());
+    await user.click(language(name)!);
+    return screen.getByLabelText(`${name} tools`);
+  };
 
-  it("lists tools and installs from the details pane", async () => {
+  it("shows a language's tools and installs from the details", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("gopls");
-    await user.click(listItem("gopls"));
+    const go = await open(user, "Go");
+    expect(within(go).getByText("Not set up")).toBeInTheDocument();
+    expect(within(go).getByRole("list", { name: "Language Servers" })).toContainElement(toolItem("gopls"));
+    expect(within(go).getByRole("list", { name: "Debuggers" })).toContainElement(toolItem("delve"));
+    // The first tool is selected.
+    expect(toolItem("gopls")).toHaveAttribute("aria-current", "true");
+    expect(toolItem("gopls")).toHaveTextContent("Missing");
     const details = screen.getByLabelText("gopls details");
-    expect(within(details).getByText("Missing")).toBeInTheDocument();
     await user.click(within(details).getByRole("button", { name: "Install gopls" }));
-    await waitFor(() => expect(screen.getByLabelText("gopls details")).toHaveTextContent("Installed"));
-    expect(screen.getByLabelText("gopls details")).toHaveTextContent("1.0.0");
-    // Installed tools move to the Available group, still selected.
-    expect(listItem("gopls")).toHaveAttribute("aria-current", "true");
+    await waitFor(() => expect(toolItem("gopls")).toHaveTextContent("1.0.0 · Installed"));
+    expect(toolItem("gopls")).toHaveAttribute("aria-current", "true");
+    expect(language("Go")).toHaveTextContent("1 missing");
     // The install log can be shown afterwards.
     await user.click(screen.getByRole("button", { name: "Show install log" }));
     expect(screen.getByLabelText("gopls install log")).toHaveTextContent("Installing gopls");
   });
 
+  it("installs what a language is missing in one go", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const go = await open(user, "Go");
+    await user.click(within(go).getByRole("button", { name: "Install Missing (2)" }));
+    await waitFor(() => expect(within(screen.getByLabelText("Go tools")).getByText("Ready")).toBeInTheDocument());
+    expect(language("Go")).not.toHaveTextContent("missing");
+  });
+
+  it("shows the picker of interchangeable servers once, above them", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const python = await open(user, "Python");
+    expect(
+      within(python).getAllByRole("button", {
+        name: "Language server for Python",
+      }),
+    ).toHaveLength(1);
+    const rows = within(within(python).getByRole("list", { name: "Language Servers" })).getAllByRole("button", {
+      name: /^(?!Install)/,
+    });
+    expect(rows.map((r) => r.dataset.tool)).toEqual(["basedpyright", "pyright", "ty", "pyrefly"]);
+    await user.click(toolItem("ty"));
+    expect(
+      within(screen.getByLabelText("ty (Python) details")).queryByRole("button", { name: /^Language server/ }),
+    ).toBeNull();
+  });
+
   it("explains why a tool cannot be installed", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("solargraph");
-    await user.click(listItem("solargraph"));
+    await open(user, "Ruby");
     expect(screen.getByText("gem install solargraph")).toBeInTheDocument();
-    await user.click(listItem("zls"));
+    await open(user, "Zig");
     expect(screen.getByText("curl is required to download tools")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Install Missing/ })).toBeNull();
+  });
+
+  it("notes the other languages a shared tool serves", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await open(user, "Rust");
+    await user.click(toolItem("codelldb"));
+    expect(screen.getByLabelText("CodeLLDB details")).toHaveTextContent("Also used for C, C++");
   });
 
   it("stages and clears a custom path", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("gopls");
-    await user.click(listItem("gopls"));
+    await open(user, "Go");
     const path = within(screen.getByLabelText("gopls details")).getByRole("textbox", { name: "Path" });
     await user.type(path, "/opt/go/bin/gopls");
     expect(stagedFor("tools.gopls.path")).toBe("/opt/go/bin/gopls");
@@ -286,7 +431,11 @@ describe("LanguageServersPage", () => {
     expect(stagedFor("tools.gopls.path")).toBeNull();
     // Picked with the file chooser.
     backend.chosen = "/usr/local/bin/gopls";
-    await user.click(within(screen.getByLabelText("gopls details")).getByRole("button", { name: "Browse…" }));
+    await user.click(
+      within(screen.getByLabelText("gopls details")).getByRole("button", {
+        name: "Browse…",
+      }),
+    );
     expect(stagedFor("tools.gopls.path")).toBe("/usr/local/bin/gopls");
     expect(path).toHaveValue("/usr/local/bin/gopls");
   });
@@ -294,22 +443,21 @@ describe("LanguageServersPage", () => {
   it("moves the selection with the arrow keys", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("gopls");
-    await user.click(listItem("rust-analyzer"));
+    await open(user, "Go");
     await user.keyboard("{ArrowDown}");
-    expect(screen.getByLabelText("typescript-language-server details")).toBeInTheDocument();
+    expect(screen.getByLabelText("JavaScript tools")).toBeInTheDocument();
   });
 
-  it("filters to missing tools", async () => {
+  it("filters to languages missing tools and by tool name", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByText("gopls");
-    await user.click(screen.getByRole("radio", { name: /missing/i }));
-    expect(screen.queryByText("rust-analyzer")).not.toBeInTheDocument();
-    expect(screen.getByText("gopls")).toBeInTheDocument();
-    await user.type(screen.getByRole("textbox", { name: /filter language servers/i }), "zig");
-    expect(screen.queryByText("gopls")).not.toBeInTheDocument();
-    expect(listItem("zls")).toHaveTextContent("ZLS (Zig)");
+    await waitFor(() => expect(language("TypeScript")).not.toBeNull());
+    await user.click(screen.getByRole("button", { name: "Show Only Languages Missing Tools" }));
+    expect(language("TypeScript")).toBeNull();
+    expect(language("Go")).not.toBeNull();
+    await user.type(screen.getByRole("textbox", { name: "Filter languages" }), "zls");
+    expect(language("Go")).toBeNull();
+    expect(language("Zig")).toHaveAttribute("aria-current", "true");
   });
 
   it("shows backend errors", async () => {
@@ -325,7 +473,11 @@ describe("tools.install action", () => {
     const { activate } = await import("../index");
     const opened: unknown[] = [];
     const disposers = [
-      registerAction({ id: "file.settings", title: "Settings", run: ({ arg }) => void opened.push(arg) }),
+      registerAction({
+        id: "file.settings",
+        title: "Settings",
+        run: ({ arg }) => void opened.push(arg),
+      }),
       activate(),
     ];
     try {
@@ -364,11 +516,19 @@ describe("language server capability warning", () => {
       emitLocalIdeEvent(event);
       emitLocalIdeEvent(event);
       await waitFor(() => expect(notes).toHaveLength(1));
-      expect(notes[0]).toMatchObject({ title: "clangd", level: "warning", sticky: true, body: event.message });
+      expect(notes[0]).toMatchObject({
+        title: "clangd",
+        level: "warning",
+        sticky: true,
+        body: event.message,
+      });
       expect(notes[0]!.actions!.map((a) => a.label)).toEqual(["Install", "Language Servers…"]);
       notes[0]!.actions![0]!.run();
       await waitFor(() => expect(backend.restarted).toEqual(["clangd"]));
-      expect(notes.at(-1)).toMatchObject({ title: "clangd installed", key: notes[0]!.key });
+      expect(notes.at(-1)).toMatchObject({
+        title: "clangd installed",
+        key: notes[0]!.key,
+      });
     } finally {
       off();
     }
