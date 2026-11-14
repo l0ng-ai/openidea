@@ -67,6 +67,7 @@
 }
 /* Main toolbar dropdown widgets. */
 .widget {
+  min-width: 0;
   height: 30px;
   margin: 0;
   padding: 0 8px;
@@ -161,7 +162,6 @@
   height: var(--stripe-icon-button);
   overflow: hidden;
 }
-.mainMenuSlot ~ .item,
 .mainMenuSlot ~ .tools {
   flex-shrink: 0;
 }
@@ -235,4 +235,29 @@
 .captionClose:active {
   background: var(--caption-close-pressed);
   color: var(--fg-caption-close-hover);
+}
+
+/* A narrow window: tighter spacing, and the widgets give way (ellipsis) before anything overlaps. */
+@media (max-width: 560px) {
+  .bar {
+    gap: 2px;
+  }
+  .widget {
+    padding: 0 4px;
+  }
+  .tools {
+    margin-left: 2px;
+  }
+  .drag {
+    min-width: 0;
+  }
+  .mainMenuButton {
+    margin-right: 0;
+  }
+  .captions {
+    margin-left: 0;
+  }
+  .caption {
+    width: 28px;
+  }
 }

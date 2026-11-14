@@ -15,7 +15,7 @@ import { EditorSelection, MapMode, StateEffect, StateField, type Extension, type
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { codeLenses, onEditorEvent, shownAgain, type CodeLens } from "@/editor/api";
 import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
-import { executeAction, getAction } from "@/platform/actions";
+import { executeAction } from "@/platform/actions";
 import { commands, nextRequestId, onIdeEvent, type OutlineItem, type RequestId, type SymbolKind } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
@@ -112,10 +112,10 @@ const lensField = StateField.define<CodeLens[]>({
 const usagesEnabled = () => editorPrefs().inlay.codeVisionUsages;
 const authorEnabled = () => editorPrefs().inlay.codeVisionAuthor;
 
-/** The author hint opens the file's blame annotations, and leaves them open when shown. */
-function showAnnotations(view: EditorView) {
+/** The author hint runs Annotate with Git Blame: it shows the file's annotations, or closes them when shown. */
+function toggleAnnotations(view: EditorView) {
   view.focus();
-  if (!getAction("vcs.annotate")?.toggled?.()) void executeAction("vcs.annotate");
+  void executeAction("vcs.annotate");
 }
 
 function openUsages(view: EditorView, offset: number) {
@@ -309,7 +309,7 @@ class UsagesLensPlugin {
             icon: "user",
             order: 20,
             kind: "author",
-            run: showAnnotations,
+            run: toggleAnnotations,
           });
         const n = usages ? this.cache.get(key(t)) : undefined;
         if (n !== undefined) {

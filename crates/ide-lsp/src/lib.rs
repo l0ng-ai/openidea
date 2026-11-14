@@ -343,6 +343,10 @@ impl<T> Outcome<T> {
 /// How often a rename the server withdrew (`ContentModified`) is asked, and the pause between.
 const RENAME_ATTEMPTS: u32 = 5;
 const RENAME_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// How often a semantic tokens, inlay hints or code lens request the server withdrew
+/// (`ContentModified`) is asked again, and the pause between.
+const STALE_RETRIES: u32 = 2;
+const STALE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Implementation requests of one line-marker pass in flight at once.
 const IMPLEMENTATION_CONCURRENCY: usize = 4;
@@ -654,8 +658,9 @@ impl LspManager {
     }
 
     /// The servers serving `path`: every regular one, and each `fallback` one
-    /// only while all servers listed before it are missing. One that requires a
-    /// root marker serves only files below one, and stands in for no other.
+    /// only while all servers listed before it have given up (missing, not
+    /// launchable, or crashed for good). One that requires a root marker serves
+    /// only files below one, and stands in for no other.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
@@ -672,7 +677,7 @@ impl LspManager {
                 continue;
             }
             let server = self.server_for(sc, language, path);
-            available_before |= !sc.require_root_marker && server.status() != ide_core::event::ServerStatus::Missing;
+            available_before |= !sc.require_root_marker && !server.gave_up();
             out.push(server);
         }
         out
@@ -748,9 +753,14 @@ impl LspManager {
         if self.shutting_down.load(Ordering::Acquire) || !self.execution_allowed.load(Ordering::Acquire) {
             return;
         }
+        // A server dropped meanwhile (disabled in settings, shadowed by another) must not come
+        // back as a process nothing lists, serves or stops: a crash backoff can outlive it.
+        if !self.servers.lock().iter().any(|s| s.id == server.id) {
+            return;
+        }
         let workspace = is_local_jdtls(&server.config).then(|| self.jdtls_workspace_state());
         if let Some(state) = &workspace {
-            if state.transitioning || !self.servers.lock().iter().any(|s| s.id == server.id) {
+            if state.transitioning {
                 return;
             }
             let (shared, roots) = self.desired_jdtls_workspace();
@@ -861,24 +871,28 @@ impl LspManager {
             }
             Err(LaunchError::Config(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                server.fail_start(
+                if server.fail_start(
                     generation,
                     Conn::Failed,
                     &self.sink,
                     ide_core::event::ServerStatus::Misconfigured,
                     Some(message),
-                );
+                ) {
+                    self.attach_fallbacks();
+                }
                 return;
             }
             Err(LaunchError::Failed(message)) => {
                 tracing::warn!("{}: {message}", server.name);
-                server.fail_start(
+                if server.fail_start(
                     generation,
                     Conn::Failed,
                     &self.sink,
                     ide_core::event::ServerStatus::Crashed,
                     Some(message),
-                );
+                ) {
+                    self.attach_fallbacks();
+                }
                 return;
             }
         };
@@ -920,9 +934,18 @@ impl LspManager {
             }
             Err(e) => {
                 tracing::warn!("{}: initialize failed: {e}", server.name);
-                if matches!(e, RpcError::Closed) {
+                match e {
                     // The server is exiting: let it, so the crash report has its exit code and last output.
-                    let _ = tokio::time::timeout(Duration::from_secs(3), peer.closed()).await;
+                    RpcError::Closed => {
+                        let _ = tokio::time::timeout(Duration::from_secs(3), peer.closed()).await;
+                    }
+                    RpcError::Timeout => {
+                        server.set_start_error(
+                            generation,
+                            format!("it did not answer initialize within {} s", INITIALIZE_TIMEOUT.as_secs()),
+                        );
+                    }
+                    e => server.set_start_error(generation, format!("initialize failed ({e})")),
                 }
                 Self::kill_peer(&server, &peer).await;
                 // Treated like a crash so transient failures retry with backoff.
@@ -1008,11 +1031,15 @@ impl LspManager {
             self.forget(std::slice::from_ref(&server));
             return;
         }
-        if let Some(delay) = delay {
-            tokio::time::sleep(delay).await;
-            if server.is_idle_gen(generation) {
-                self.ensure_started(&server);
+        match delay {
+            Some(delay) => {
+                tokio::time::sleep(delay).await;
+                if server.is_idle_gen(generation) {
+                    self.ensure_started(&server);
+                }
             }
+            // Gave up (crashed repeatedly, or its build expired): the fallbacks it hid take over.
+            None => self.attach_fallbacks(),
         }
     }
 
@@ -1456,6 +1483,28 @@ impl LspManager {
             self.check_injected_request(doc, version)?;
         }
         result
+    }
+
+    /// [`Self::call`], asked again when the server withdrew the answer because the text changed
+    /// (`ContentModified`, which arrives as a cancellation as no cancel token is passed).
+    /// The client advertises `retryOnContentModified` for the methods that use it.
+    async fn call_retrying<P: Serialize + Clone, R: DeserializeOwned>(
+        &self,
+        t: &Target,
+        method: &str,
+        params: P,
+        timeout: Duration,
+    ) -> IdeResult<R> {
+        let mut attempt = 0;
+        loop {
+            match self.call(t, method, params.clone(), None, timeout).await {
+                Err(e) if e.kind == ErrorKind::Cancelled && attempt < STALE_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(STALE_RETRY_DELAY).await;
+                }
+                result => return result,
+            }
+        }
     }
 
     // ---- features ----
@@ -2892,11 +2941,10 @@ impl LspManager {
             async move {
                 (
                     t,
-                    self.call::<_, Option<Vec<lsp::InlayHint>>>(
+                    self.call_retrying::<_, Option<Vec<lsp::InlayHint>>>(
                         t,
                         "textDocument/inlayHint",
                         params,
-                        None,
                         DEFAULT_TIMEOUT,
                     )
                     .await,
@@ -2927,7 +2975,8 @@ impl LspManager {
             self.ready_targets(&snap.servers, |c| c.semantic_tokens_full() && c.semantic_legend.is_some()).await;
         let Some(t) = targets.first() else { return Ok(None) };
         let params = json!({ "textDocument": snap.ident() });
-        let r: Option<Value> = self.call(t, "textDocument/semanticTokens/full", params, None, DEFAULT_TIMEOUT).await?;
+        let r: Option<Value> =
+            self.call_retrying(t, "textDocument/semanticTokens/full", params, DEFAULT_TIMEOUT).await?;
         let Some(data) = r.as_ref().and_then(|v| v.get("data")).and_then(Value::as_array) else { return Ok(None) };
         let data: Vec<i64> = data.iter().map(|n| n.as_i64().unwrap_or(0)).collect();
         let (enc, legend) = {
@@ -2948,7 +2997,7 @@ impl LspManager {
             let params = json!({ "textDocument": snap.ident() });
             async move {
                 let lenses = self
-                    .call::<_, Option<Vec<lsp::CodeLens>>>(t, "textDocument/codeLens", params, None, DEFAULT_TIMEOUT)
+                    .call_retrying::<_, Option<Vec<lsp::CodeLens>>>(t, "textDocument/codeLens", params, DEFAULT_TIMEOUT)
                     .await?;
                 let lenses = lenses.unwrap_or_default();
                 if !t.caps().has_sub("codeLensProvider", "resolveProvider") {
@@ -3876,26 +3925,35 @@ impl LspManager {
     }
 
     pub async fn restart(&self, server: ide_core::ServerId) -> IdeResult<()> {
-        let _reconfigure = self.reconfigure_lock.lock().await;
-        let s = self
-            .servers
-            .lock()
-            .iter()
-            .find(|s| s.id == server)
-            .cloned()
-            .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
-        if !s.root.is_dir() {
-            return Err(IdeError::unavailable(format!(
-                "the workspace root of {} is gone: {}",
-                s.name,
-                s.root.display()
-            )));
-        }
-        self.stop_instance(&s, false).await;
-        s.reset_for_restart();
-        self.ensure_started(&s);
+        let s = {
+            // Only the restart itself holds the lock: a start can take minutes (a Gradle or
+            // Maven import), and `reconfigure` and `shutdown_all` wait for it.
+            let _reconfigure = self.reconfigure_lock.lock().await;
+            let s = self
+                .servers
+                .lock()
+                .iter()
+                .find(|s| s.id == server)
+                .cloned()
+                .ok_or_else(|| IdeError::not_found(format!("unknown language server {server}")))?;
+            if !s.root.is_dir() {
+                return Err(IdeError::unavailable(format!(
+                    "the workspace root of {} is gone: {}",
+                    s.name,
+                    s.root.display()
+                )));
+            }
+            self.stop_instance(&s, false).await;
+            s.reset_for_restart();
+            self.ensure_started(&s);
+            // Started again: it shadows the fallbacks that took over while it was down.
+            self.detach_shadowed_fallbacks().await;
+            s
+        };
         match s.wait_ready(Duration::from_secs(60)).await {
             Some(_) => Ok(()),
+            // Still importing the project: the restart worked, the server is just not ready yet.
+            None if s.is_starting() => Ok(()),
             None => {
                 Err(IdeError::unavailable(s.status_message().unwrap_or_else(|| format!("{} failed to start", s.name))))
             }

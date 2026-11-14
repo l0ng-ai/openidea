@@ -1440,6 +1440,7 @@
   "Hide Active Tool Window": "隐藏活动工具窗口",
   "Hide All Tool Windows": "隐藏所有工具窗口",
   "Hide changes": "隐藏更改",
+  "Resize changes": "调整更改面板宽度",
   "Hide Coverage": "隐藏覆盖率",
   "Hide Library Frames": "隐藏库帧",
   "Hide Replace": "隐藏替换",
@@ -4719,7 +4720,6 @@
   "Headers ({count})": "标头 ({count})",
   "Headers": "标头",
   "Delete the macro '{name}'?": "是否删除宏 '{name}'？",
-  "{count} processes": "{count} 个进程",
   "Memory: {usage}": "内存：{usage}",
   " Memory {before} → {after}.": " 内存 {before} → {after}。",
   "{count} syntax tree dropped, index compacted.{memory}": "已丢弃 {count} 个语法树，已压缩索引。{memory}",
@@ -8162,5 +8162,9 @@
   "{name} (copy)": "{name}（副本）",
   "{name} (copy {n})": "{name}（副本 {n}）",
   "New Project Library": "新建项目库",
-  "Copy Library": "复制库"
+  "Copy Library": "复制库",
+  "PID {pid}": "进程号 {pid}",
+  "PID {pid} · {count} processes": "进程号 {pid} · {count} 个进程",
+  "End Process {label}": "结束进程 {label}",
+  "Diff too large: a side is over {max} MiB": "差异过大：有一侧超过 {max} MiB"
 }

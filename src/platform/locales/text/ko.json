@@ -4101,7 +4101,6 @@
   "Headers ({count})": "헤더({count})",
   "Headers": "헤더",
   "Delete the macro '{name}'?": "매크로 '{name}'을(를) 삭제하시겠습니까?",
-  "{count} processes": "프로세스 {count}개",
   "Memory: {usage}": "메모리: {usage}",
   " Memory {before} → {after}.": " 메모리 {before} → {after}.",
   "{count} syntax tree dropped, index compacted.{memory}": "구문 트리 {count}개를 삭제하고 색인을 압축했습니다.{memory}",

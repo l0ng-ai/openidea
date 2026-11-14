@@ -5,8 +5,9 @@
  * edits and mapped through changes in between.
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, type EditorDocContext } from "@/editor/api";
+import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { shortcutLabel } from "@/platform/keymap";
@@ -174,7 +175,11 @@ class RunMarker extends GutterMarker {
   }
 }
 
-const runSpacer = gutterSpacer(styles.runMarker ?? "");
+/** Settings › Editor › General › Gutter Icons › Run icons (on with the gutter icons). */
+function runIconsShown(): boolean {
+  const prefs = editorPrefs();
+  return prefs.showGutterIcons && !prefs.gutterIconsDisabled.includes("run");
+}
 
 /** The gutter asks for markers on every update: rebuild only when targets or test results changed. */
 const markerCache = new WeakMap<readonly PlacedTarget[], { version: number; set: RangeSet<GutterMarker> }>();
@@ -262,22 +267,21 @@ export function runGutter(ctx: EditorDocContext): Extension {
   return [
     targetsField,
     detector,
-    gutter({
-      class: `${styles.runGutter} cm-openidea-gutter-run`,
-      markers: (view) => markers(view.state, path),
-      // One icon of width only while the file has run targets; other files keep a narrow gutter.
-      initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, update) => (update.state.field(targetsField).length ? runSpacer : emptyGutterSpacer),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const target = view.state.field(targetsField).find((t) => t.pos === block.from);
-          if (!target || (event as MouseEvent).button !== 0) return false;
-          const el = (event.target as HTMLElement).closest?.(`.${styles.runMarker}`) as HTMLElement | null;
-          const rect = (el ?? (event.target as HTMLElement)).getBoundingClientRect();
-          event.preventDefault();
-          showTargetMenu(view, target, path, { x: rect.left, y: rect.bottom + 2 });
-          return true;
-        },
+    // In the shared icon area, beside the inheritance icons and the rendered-doc toggle.
+    iconAreaSource.of({
+      order: 10,
+      markers: (view) => (runIconsShown() ? markers(view.state, path) : RangeSet.empty),
+      // One icon of width while the file has run targets, so icons don't shift the text as they load.
+      reserve: (state) => runIconsShown() && state.field(targetsField).length > 0,
+      mousedown: (view, block, event) => {
+        if (event.button !== 0 || !runIconsShown()) return false;
+        const el = (event.target as HTMLElement).closest?.(`.${styles.runMarker}`) as HTMLElement | null;
+        const target = el && view.state.field(targetsField).find((t) => t.pos === block.from);
+        if (!el || !target) return false;
+        const rect = el.getBoundingClientRect();
+        event.preventDefault();
+        showTargetMenu(view, target, path, { x: rect.left, y: rect.bottom + 2 });
+        return true;
       },
     }),
   ];

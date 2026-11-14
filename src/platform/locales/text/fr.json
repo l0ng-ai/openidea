@@ -3904,7 +3904,6 @@
   "Headers ({count})": "En-têtes ({count})",
   "Headers": "En-têtes",
   "Delete the macro '{name}'?": "Supprimer la macro '{name}' ?",
-  "{count} processes": "{count} processus",
   "Memory: {usage}": "Mémoire : {usage}",
   " Memory {before} → {after}.": " Mémoire {before} → {after}.",
   "{count} syntax tree dropped, index compacted.{memory}": "{count} arbre syntaxique supprimé, index compacté.{memory}",

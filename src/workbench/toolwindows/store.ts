@@ -102,6 +102,10 @@ export interface ToolWindowLayoutState {
   viewModes: Readonly<Record<string, ToolWindowViewMode>>;
   /** Layout before Distraction Free Mode; restored on exit and persisted in place of `visible` meanwhile. */
   distractionFreeStash: SlotRecord | null;
+  /** Side windows a narrow window hides; reopened from the stripe, put back when it widens, never saved. */
+  narrowStash: Partial<SlotRecord> | null;
+  /** Bumped each time a project's layout loads, even for the project that was already loaded. */
+  layoutLoads: number;
 }
 
 const initial = (): ToolWindowLayoutState => ({
@@ -120,6 +124,8 @@ const initial = (): ToolWindowLayoutState => ({
   stripeButtons: {},
   viewModes: {},
   distractionFreeStash: null,
+  narrowStash: null,
+  layoutLoads: 0,
 });
 
 export const useToolWindowLayout = create<ToolWindowLayoutState>(initial);
@@ -249,9 +255,10 @@ function persist() {
     stripeButtons,
     viewModes,
     distractionFreeStash,
+    narrowStash,
   } = useToolWindowLayout.getState();
-  // Distraction Free Mode is not saved: the layout to restore is.
-  const visible = withoutSessionWindows(distractionFreeStash ?? current);
+  // Distraction Free Mode and a narrow window's collapsed sides are not saved: the layout to restore is.
+  const visible = withoutSessionWindows({ ...(distractionFreeStash ?? current), ...narrowStash });
   try {
     localStorage.setItem(
       storageKey(scope),
@@ -382,6 +389,7 @@ export function loadToolWindowLayout(scope: string) {
   visible = reconcile(visible, placements) ?? visible;
   useToolWindowLayout.setState({
     ...initial(),
+    layoutLoads: useToolWindowLayout.getState().layoutLoads + 1,
     scope,
     visible,
     sizes: sanitizeSizes(saved?.sizes),
@@ -453,6 +461,7 @@ function publishVisibility() {
 
 function update(patch: Partial<ToolWindowLayoutState>, save = true) {
   useToolWindowLayout.setState(patch);
+  keepNarrowStashToHiddenSides();
   publishVisibility();
   if (save) persist();
 }
@@ -589,6 +598,58 @@ export function exitDistractionFreeLayout() {
   if (s.focused && !Object.values(visible).includes(s.focused)) focusEditor();
 }
 
+const SIDE_SLOTS: readonly ToolWindowSlot[] = ["left", "left-split", "right", "right-split"];
+
+/** A side area the user fills while the window is narrow is their choice now, so it leaves the stash. */
+function keepNarrowStashToHiddenSides() {
+  const { narrowStash, visible } = useToolWindowLayout.getState();
+  if (!narrowStash) return;
+  const kept: Partial<SlotRecord> = {};
+  for (const slot of SIDE_SLOTS) if (narrowStash[slot] && !visible[slot]) kept[slot] = narrowStash[slot];
+  if (Object.keys(kept).length === Object.keys(narrowStash).length) return;
+  useToolWindowLayout.setState({ narrowStash: Object.keys(kept).length ? kept : null });
+}
+
+/**
+ * A window too narrow for the side areas to leave the editor any room hides them; their stripe
+ * buttons stay, so one click reopens a window. The layout on disk is untouched.
+ */
+export function collapseSidesForNarrowWindow() {
+  const s = useToolWindowLayout.getState();
+  if (!s.scope || s.narrowStash || s.distractionFreeStash) return;
+  const shown = SIDE_SLOTS.filter((slot) => s.visible[slot]);
+  if (!shown.length) return;
+  const stash: Partial<SlotRecord> = {};
+  const visible = { ...s.visible };
+  for (const slot of shown) {
+    stash[slot] = s.visible[slot];
+    visible[slot] = null;
+  }
+  const hadFocus = !!s.focused && shown.some((slot) => s.visible[slot] === s.focused);
+  update({
+    narrowStash: stash,
+    visible,
+    maximized: s.maximized === "bottom" ? s.maximized : null,
+    lastActive: shown.some((slot) => s.visible[slot] === s.lastActive) ? null : s.lastActive,
+  });
+  if (hadFocus) focusEditor();
+}
+
+/** Puts back the side windows a narrow window hid, except in areas the user has since filled. */
+export function restoreSidesAfterNarrowWindow() {
+  const s = useToolWindowLayout.getState();
+  if (!s.narrowStash) return;
+  const visible = { ...s.visible };
+  const mounted = new Set(s.mounted);
+  for (const slot of SIDE_SLOTS) {
+    const id = s.narrowStash[slot];
+    if (!id || visible[slot]) continue;
+    visible[slot] = id;
+    mounted.add(id);
+  }
+  update({ visible, mounted, narrowStash: null });
+}
+
 export function hideActiveToolWindow() {
   const s = useToolWindowLayout.getState();
   if (s.maximized && !hasRegisteredVisibleOn(s.maximized, s.visible, s.placements)) {
@@ -699,7 +760,7 @@ export interface ToolWindowLayoutSnapshot {
 export function toolWindowLayoutSnapshot(): ToolWindowLayoutSnapshot {
   const s = useToolWindowLayout.getState();
   return {
-    visible: { ...(s.distractionFreeStash ?? s.visible) },
+    visible: { ...(s.distractionFreeStash ?? s.visible), ...s.narrowStash },
     sizes: { ...s.sizes },
     splits: { ...s.splits },
     placements: { ...s.placements },
@@ -746,6 +807,7 @@ export function applyToolWindowLayout(snapshot: ToolWindowLayoutSnapshot) {
     maximized: null,
     stashed: null,
     distractionFreeStash: null,
+    narrowStash: null,
   });
   if (hadFocus) focusEditor();
 }

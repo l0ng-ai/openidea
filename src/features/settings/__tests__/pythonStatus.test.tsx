@@ -32,6 +32,7 @@ vi.mock("@/workbench/contributions", () => ({
     return () => {};
   },
 }));
+import { isStatusWidgetAvailable } from "@/workbench/statusBarWidgets";
 import { activatePythonStatus, interpreterChoices, isPythonPath, nearMember } from "../languages/PythonStatus";
 
 let dispose: () => void;
@@ -118,6 +119,7 @@ describe("Python interpreter status", () => {
     await waitFor(() => expect(mocks.files).toHaveBeenCalled());
     expect(screen.queryByRole("button")).toBeNull();
     expect(mocks.detect).not.toHaveBeenCalled();
+    await waitFor(() => expect(isStatusWidgetAvailable("python.interpreter")).toBe(false));
   });
   it("shows a warning for Python files without an interpreter", async () => {
     mocks.files.mockResolvedValue([{ path: "/project/src/main.py" }]);

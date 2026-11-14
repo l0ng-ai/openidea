@@ -3999,7 +3999,6 @@
   "Headers ({count})": "Nagłówki ({count})",
   "Headers": "Nagłówki",
   "Delete the macro '{name}'?": "Usunąć makro '{name}'?",
-  "{count} processes": "Liczba procesów: {count}",
   "Memory: {usage}": "Pamięć: {usage}",
   " Memory {before} → {after}.": " Pamięć {before} → {after}.",
   "{count} syntax tree dropped, index compacted.{memory}": "Odrzucono drzewo składniowe ({count}), indeks skompresowany.{memory}",

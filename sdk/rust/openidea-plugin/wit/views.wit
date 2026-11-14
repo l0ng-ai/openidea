@@ -153,7 +153,8 @@ interface views {
     /// (API 1.7): a review's file before and after, say. `file-name` (a name or
     /// relative path, at most 256 characters) picks the syntax highlighting and
     /// names the tab when `diff.title` is absent. Only from a command or event
-    /// of a window; each side at most 1 MiB.
+    /// of a window. Each side at most 8 MiB (earlier hosts: 1 MiB); a larger
+    /// side fails with `invalid("diff too large: …")`.
     open-diff: func(diff: content-diff, file-name: option<string>) -> result<_, error>;
 
     /// The view (or every custom editor of that id) shows outdated content:

@@ -883,6 +883,7 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
 pub(crate) struct ProgramTerminal {
     writer: ide_core::input::InputWriter,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
     /// Set once the program has exited and been reaped.
     exited: Arc<AtomicBool>,
@@ -895,6 +896,7 @@ impl ProgramTerminal {
     }
 
     /// The program's process id while it runs.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn process_id(&self) -> Option<u32> {
         if self.exited.load(Ordering::Acquire) { None } else { self.pid }
     }

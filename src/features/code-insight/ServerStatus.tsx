@@ -88,7 +88,6 @@ export function ServerStatus() {
                         icon="refresh"
                         size="small"
                         title={s.status === "missing" ? tx`Check for ${s.name} again` : tx`Restart ${serverLabel(s)}`}
-                        disabled={s.status === "starting"}
                         onClick={() => void restartServer(s.id)}
                       />
                     </>

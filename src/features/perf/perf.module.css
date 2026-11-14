@@ -2,7 +2,7 @@
   gap: 6px;
 }
 .panel {
-  width: 340px;
+  width: 380px;
   padding: 6px 0;
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
@@ -60,6 +60,47 @@
   font-size: var(--fs-small);
   color: var(--fg-emphasis);
   white-space: nowrap;
+}
+.columns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.columns .groupTitle {
+  color: var(--fg-subtle);
+}
+.processRow {
+  padding-right: 4px;
+}
+.columns {
+  padding-right: 4px;
+}
+.cpu,
+.memory {
+  flex: none;
+  text-align: right;
+}
+.cpu {
+  width: 44px;
+}
+.memory {
+  width: 60px;
+}
+.processRow .value {
+  margin-left: 0;
+}
+.end {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  width: 20px;
+}
+.end button {
+  opacity: 0;
+}
+.processRow:hover .end button,
+.end button:focus-visible {
+  opacity: 1;
 }
 .error {
   padding: 2px 12px;

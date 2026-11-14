@@ -38,4 +38,11 @@ describe("Language server status popup", () => {
     fireEvent.click(screen.getByRole("button", { name: /Language servers/ }));
     expect(screen.getByRole("button", { name: "Check for jdtls again" })).toBeEnabled();
   });
+
+  it("restarts a server that is still starting (an import can take minutes)", () => {
+    useServers.setState({ servers: new Map([[1 as never, server("starting", null)]]) });
+    render(<ServerStatus />);
+    fireEvent.click(screen.getByRole("button", { name: /Language servers/ }));
+    expect(screen.getByRole("button", { name: "Restart jdtls" })).toBeEnabled();
+  });
 });
