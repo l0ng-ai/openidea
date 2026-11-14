@@ -20,7 +20,7 @@ pub(crate) fn status(r: &Repo) -> IdeResult<Vec<FileStatus>> {
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
     // gitoxide stops at the first IO error (a directory it may not read), where git warns
     // and lists the rest: git answers then.
-    let (map, conflicts) = gix_status(r, &ignored).or_else(|e| {
+    let (map, conflicts) = gix_status(r, &ignored, &[]).or_else(|e| {
         tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
         cli_status(r, &ignored)
     })?;
@@ -37,7 +37,12 @@ pub(crate) fn status_paths(r: &Repo, paths: &[String]) -> IdeResult<Vec<FileStat
         return status(r);
     }
     let ignored = r.ignored.read().unwrap_or_else(|p| p.into_inner()).clone();
-    let (map, conflicts) = cli_status_paths(r, &ignored, paths)?;
+    // gitoxide's status takes the pathspec in-process: no `git` process, so a watcher batch on a
+    // large repository costs the index check for its paths and nothing else.
+    let (map, conflicts) = gix_status(r, &ignored, paths).or_else(|e| {
+        tracing::debug!("status via gitoxide failed, asking git: {}", e.message);
+        cli_status_paths(r, &ignored, paths)
+    })?;
     Ok(collect(r, &ignored, map, conflicts))
 }
 
@@ -116,7 +121,7 @@ impl DiskSpelling {
 
 type Entries = (BTreeMap<String, Entry>, HashSet<String>);
 
-fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
+fn gix_status(r: &Repo, ignored: &IgnoredNames, pathspec: &[String]) -> IdeResult<Entries> {
     let repo = r.gix()?;
     let mut map: BTreeMap<String, Entry> = BTreeMap::new();
     let mut conflicts: HashSet<String> = HashSet::new();
@@ -134,7 +139,8 @@ fn gix_status(r: &Repo, ignored: &IgnoredNames) -> IdeResult<Entries> {
         .index_worktree_rewrites(None)
         .index_worktree_submodules(gix::status::Submodule::AsConfigured { check_dirty: true })
         .tree_index_track_renames(gix::status::tree_index::TrackRenames::Given(gix::diff::Rewrites::default()));
-    let mut iter = platform.into_iter(Vec::<gix::bstr::BString>::new()).map_err(gx)?;
+    let patterns: Vec<gix::bstr::BString> = pathspec.iter().map(|path| path.as_bytes().into()).collect();
+    let mut iter = platform.into_iter(patterns).map_err(gx)?;
     for item in iter.by_ref() {
         let item = item.map_err(gx)?;
         match item {
@@ -436,7 +442,7 @@ mod tests {
             (m, c)
         };
         let from_git = show(cli_status(&repo, &ignored).unwrap());
-        assert_eq!(from_git, show(gix_status(&repo, &ignored).unwrap()));
+        assert_eq!(from_git, show(gix_status(&repo, &ignored, &[]).unwrap()));
         assert!(from_git.0.iter().any(|l| l.starts_with("renamed with space.txt: Some(Renamed)")), "{from_git:?}");
         assert_eq!(from_git.1, ["conflict.txt"]);
     }
