@@ -8,6 +8,7 @@ const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
   lspReferences: vi.fn(),
   cancelRequest: vi.fn<(id: number) => Promise<void>>(async () => {}),
+  vcsBlame: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
@@ -99,6 +100,22 @@ describe("usages lens targets", () => {
       ]),
     ];
     expect(lensTargets(items).map((t) => t.name)).toEqual(["Cart", "count"]);
+  });
+});
+
+describe("author hint", () => {
+  it("toggles the blame annotations on every click", async () => {
+    ipc.vcsBlame.mockResolvedValue(ok([{ commit: "c1", author: "Ann", timeMs: 1, summary: "init" }]));
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: true } } } as never,
+    });
+    const view = editor();
+    await settle();
+    const author = view.state.facet(codeLenses).find((l) => l.kind === "author")!;
+    expect(author.title).toContain("Ann");
+    author.run!(view, new MouseEvent("click"));
+    author.run!(view, new MouseEvent("click"));
+    expect(executeAction.mock.calls).toEqual([["vcs.annotate"], ["vcs.annotate"]]);
   });
 });
 
