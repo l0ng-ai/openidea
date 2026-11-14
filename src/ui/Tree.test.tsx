@@ -283,6 +283,19 @@ describe("Tree speed search", () => {
     for (const c of "App") key(c);
     expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
   });
+
+  it("the field's toggle switches to showing only matches without ending the search", () => {
+    const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchField: true });
+    for (const c of "App") key(c);
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx", "index.ts", "util.ts", "README.md"]);
+    const toggle = screen.getByRole("button", { name: "Show Only Matches" });
+    expect(fireEvent.mouseDown(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
+    fireEvent.click(toggle);
+    expect(labels(tree)).toHaveLength(6);
+  });
 });
 
 describe("Tree occurrences", () => {
