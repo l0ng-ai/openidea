@@ -1104,6 +1104,52 @@ async fn a_page_whose_requests_the_adapter_does_not_report_says_so() {
     h.wait_event(|e| matches!(e, DebugEvent::JsNetworkUnavailable)).await;
 }
 
+/// The file the fake adapter says it records a CPU profile into (`profileStarted`).
+static PROFILE_FILE: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
+
+fn profiling_adapter(msg: &Value) -> Option<CustomReply> {
+    match msg["command"].as_str()? {
+        "startProfile" => {
+            Some((json!({}), vec![("profileStarted", json!({ "file": *PROFILE_FILE.lock(), "type": "cpu" }))]))
+        }
+        "stopProfile" => Some((json!({}), vec![("profilerStateUpdate", json!({ "label": "", "running": false }))])),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn a_pages_cpu_profile_is_handed_over_as_a_cpuprofile_file() {
+    let recorded = std::env::temp_dir().join(format!("openidea-dap-profile-{}", std::process::id()));
+    std::fs::write(&recorded, r#"{"nodes":[],"samples":[]}"#).unwrap();
+    *PROFILE_FILE.lock() = recorded.to_string_lossy().into_owned();
+
+    let h = harness(Script { start_debugging: true, custom: Some(profiling_adapter), ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+
+    // Nothing is being recorded yet.
+    let idle = h.manager.js_stop_profile(page).await.unwrap_err();
+    assert_eq!(idle.kind, ide_core::error::ErrorKind::InvalidInput);
+
+    h.manager.js_start_profile(page).await.unwrap();
+    assert_eq!(requests(&h, "startProfile"), [json!({ "type": "cpu" })]);
+    let dir = h.manager.js_stop_profile(page).await.unwrap();
+    assert_eq!(requests(&h, "stopProfile").len(), 1);
+    let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(files, ["page.cpuprofile"]);
+    assert_eq!(std::fs::read_to_string(dir.join("page.cpuprofile")).unwrap(), r#"{"nodes":[],"samples":[]}"#);
+    // One recording is handed over once.
+    assert_eq!(h.manager.js_stop_profile(page).await.unwrap_err().kind, ide_core::error::ErrorKind::InvalidInput);
+
+    // The adapter's file isn't there when it is asked for (the hand-over above took the first one).
+    assert!(!recorded.exists());
+    h.manager.js_start_profile(page).await.unwrap();
+    assert_eq!(h.manager.js_stop_profile(page).await.unwrap_err().kind, ide_core::error::ErrorKind::Unavailable);
+
+    assert_eq!(h.manager.js_start_profile(browser).await.unwrap_err().kind, ide_core::error::ErrorKind::Unavailable);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn a_child_session_is_named_by_the_adapter_unless_it_is_a_blank_page() {
     assert_eq!(child_name(&json!({ "name": "server.js [4120]" }), "Server"), "server.js [4120]");

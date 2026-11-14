@@ -1669,5 +1669,13 @@
   "Evaluate watches while the program runs": "Evaluate watches while the program runs",
   "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
   "Stash Selected Files…": "Stash Selected Files…",
-  "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first"
+  "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first",
+  "Start CPU Profile": "Start CPU Profile",
+  "Stop CPU Profile": "Stop CPU Profile",
+  "Show CPU Profile": "Show CPU Profile",
+  "Record where the debugged page spends its time": "Record where the debugged page spends its time",
+  "Stop recording the page and open the profile": "Stop recording the page and open the profile",
+  "Cannot record a CPU profile": "Cannot record a CPU profile",
+  "No CPU profile to show": "No CPU profile to show",
+  "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root }).": "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root })."
 }
