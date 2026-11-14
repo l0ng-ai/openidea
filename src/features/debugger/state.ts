@@ -392,6 +392,7 @@ export function publishContext() {
   );
   // Refresh Memory View acts on the selected session only.
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
+  setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
 }
 
 // --- console -----------------------------------------------------------------

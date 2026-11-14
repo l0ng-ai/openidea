@@ -29,6 +29,7 @@ import {
   addWatch,
   closeSessionTab,
   evaluate,
+  isLive,
   selectFrame,
   selectSession,
   selectThread,
@@ -43,6 +44,7 @@ import { sessionTabs } from "./sessionTabs";
 import { stopNote } from "../js/eventBreakpoints";
 import { NetworkView } from "../js/NetworkView";
 import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
+import { pageProfileItems, useJsProfile } from "../js/profile";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
@@ -86,6 +88,12 @@ const MORE_ITEMS: MenuItem[] = [
 function MoreActions() {
   const ref = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const page = useDebug((s) => {
+    const a = s.active == null ? undefined : s.sessions[s.active];
+    return a && isLive(a) && a.caps?.jsPage ? a.id : null;
+  });
+  const recording = useJsProfile((s) => page != null && !!s.recording[page]);
+  const items = useMemo(() => [...MORE_ITEMS, ...pageProfileItems(page != null, recording)], [page, recording]);
   return (
     <>
       <IconButton
@@ -99,7 +107,7 @@ function MoreActions() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       />
-      <Menu open={open} anchor={ref} items={MORE_ITEMS} placement="bottom-start" onClose={() => setOpen(false)} />
+      <Menu open={open} anchor={ref} items={items} placement="bottom-start" onClose={() => setOpen(false)} />
     </>
   );
 }

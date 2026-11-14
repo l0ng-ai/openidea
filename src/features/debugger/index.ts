@@ -23,6 +23,7 @@ import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { watchNetworkSessions } from "./js/networkSessions";
 import { loadResponseOverrides, watchOverrideSessions } from "./js/responseOverrides";
+import { watchProfiledSessions } from "./js/profile";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
@@ -154,6 +155,7 @@ export function activate(): () => void {
     watchPageSessions(),
     watchNetworkSessions(),
     watchOverrideSessions(),
+    watchProfiledSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());
 }

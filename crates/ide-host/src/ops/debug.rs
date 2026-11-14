@@ -400,6 +400,18 @@ pub async fn debug_js_response_body(
     host.debugger.js_response_body(session, request_id).await
 }
 
+pub async fn debug_js_start_profile(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.js_start_profile(session).await
+}
+
+pub async fn debug_js_stop_profile(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+) -> IdeResult<ide_core::IpcPath> {
+    host.debugger.js_stop_profile(session).await.map(Into::into)
+}
+
 pub fn debug_capabilities(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
     host.debugger.capabilities(session)
 }
@@ -625,6 +637,14 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("debug_js_custom_breakpoints", |c| async move {
         debug_js_custom_breakpoints(&c.host, &c.window, c.arg("session")?, c.arg("ids")?, c.arg("xhr")?).await
     });
+    d.add(
+        "debug_js_start_profile",
+        |c| async move { debug_js_start_profile(&c.host, &c.window, c.arg("session")?).await },
+    );
+    d.add(
+        "debug_js_stop_profile",
+        |c| async move { debug_js_stop_profile(&c.host, &c.window, c.arg("session")?).await },
+    );
     d.add("debug_set_function_breakpoints", |c| async move {
         debug_set_function_breakpoints(&c.host, &c.window, c.arg("breakpoints")?).await
     });

@@ -1264,6 +1264,10 @@ export const commands = {
 	 *  switches the replacing off.
 	 */
 	debugJsResponseOverrides: (session: DebugSessionId, rules: JsResponseRule[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_response_overrides", { session, rules })),
+	/**  Starts recording a debugged page's CPU profile. */
+	debugJsStartProfile: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_start_profile", { session })),
+	/**  Ends the recording: a directory holding the profile as `page.cpuprofile`. */
+	debugJsStopProfile: (session: DebugSessionId) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("debug_js_stop_profile", { session })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
