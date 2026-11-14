@@ -40,8 +40,8 @@ export function activate(): () => void {
     registerOverlay({ id: "app.termination", component: TerminationOverlay }),
     registerStatusItem({
       id: "app.lightEdit",
-      align: "right",
-      priority: 60,
+      align: "left",
+      priority: 20,
       component: LightEditStatus,
       lightEdit: true,
     }),
