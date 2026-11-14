@@ -1309,8 +1309,8 @@ export function StashesPanel() {
                 {repos.length > 1 && s.repo ? `${repoName(s.repo)} · ` : ""}
                 {text}
               </span>
-              {branch && <span className={styles.detail}>{branch}</span>}
-              <span className={styles.detail}>{formatTime(s.timeMs)}</span>
+              {branch && <span className={clsx(styles.detail, styles.stashBranch)}>{branch}</span>}
+              <span className={clsx(styles.detail, styles.stashTime)}>{formatTime(s.timeMs)}</span>
             </span>
           );
         }}
