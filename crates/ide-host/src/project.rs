@@ -1458,7 +1458,7 @@ fn content_root_watcher(
 ) -> Option<Watcher> {
     let (kotlin_bridge, phpstan) = (kotlin_bridge.cloned(), phpstan.cloned());
     let (index, documents, history, lsp) = (index.clone(), documents.clone(), history.clone(), lsp.clone());
-    let root = dir.to_path_buf();
+    let (root, events) = (dir.to_path_buf(), sink.clone());
     Watcher::start(
         dir,
         excludes.to_vec(),
@@ -1480,6 +1480,11 @@ fn content_root_watcher(
             }
             documents.on_disk_changed(&[&changed[..], &ignored].concat());
             record_external_changes(&history, &changed, &batch.removed);
+            // A member outside the project folder: its repository changes (commit, checkout,
+            // fetch, pull) reach the UI only through this watcher.
+            if batch.vcs.iter().any(|p| vcs_path_changed(p)) {
+                events.emit(IdeEvent::VcsChanged { root: root.clone().into() });
+            }
         }),
     )
     .map_err(|e| tracing::warn!("content root watcher {}: {e}", dir.display()))
