@@ -10,8 +10,10 @@ import {
   deleteLayout,
   layoutNames,
   renameLayout,
+  restoreCurrentLayout,
   restoreDefaultLayout,
   restoreLayout,
+  saveCurrentLayout,
   saveLayout,
   useToolWindowLayouts,
 } from "./layouts";
@@ -91,6 +93,28 @@ function layoutActions(): Action[] {
         exitDistractionFree();
         const name = typeof arg === "string" ? arg : await pick("Restore Layout");
         if (name) restoreLayout(name);
+      },
+    },
+    {
+      id: "layout.restoreCurrent",
+      title: "Restore Current Layout",
+      description: "Restores the active saved layout, or the default layout when none is active.",
+      category: "Window",
+      keywords: ["tool window layout", "reset"],
+      when: "projectOpen",
+      run: () => {
+        exitDistractionFree();
+        restoreCurrentLayout();
+      },
+    },
+    {
+      id: "layout.saveCurrent",
+      title: "Save Changes in Current Layout",
+      category: "Window",
+      keywords: ["tool window layout", "store layout"],
+      when: "projectOpen && toolWindowLayoutActive",
+      run: () => {
+        saveCurrentLayout();
       },
     },
     {
@@ -175,7 +199,11 @@ export function installToolWindowActions(): () => void {
   const unsubscribe = useContributions.subscribe((s, prev) => {
     if (s.toolWindows !== prev.toolWindows) sync();
   });
-  const publishLayouts = () => setContext("toolWindowLayoutsSaved", useToolWindowLayouts.getState().layouts.length > 0);
+  const publishLayouts = () => {
+    const { layouts, active } = useToolWindowLayouts.getState();
+    setContext("toolWindowLayoutsSaved", layouts.length > 0);
+    setContext("toolWindowLayoutActive", !!active);
+  };
   publishLayouts();
   const unsubscribeLayouts = useToolWindowLayouts.subscribe(publishLayouts);
   /** The window an Options menu names, else the active one. */

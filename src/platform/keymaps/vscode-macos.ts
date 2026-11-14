@@ -65,6 +65,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "toolwindow.resizeRight": [],
   "toolwindow.resizeUp": [],
   "toolwindow.resizeDown": [],
+  "layout.restoreCurrent": [],
   "layout.restoreDefault": [],
   "workbench.stopBackgroundProcesses": [],
   "navigate.typeHierarchy": [],

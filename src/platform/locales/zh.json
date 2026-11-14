@@ -457,6 +457,8 @@
   "menu.runAnything.show": "运行任何内容…",
   "menu.localHistory.putLabel": "添加标签…",
   "menu.toolWindowLayouts": "工具窗口布局",
+  "menu.layout.saveCurrent": "保存对当前布局的更改",
+  "menu.layout.restoreCurrent": "恢复当前布局",
   "menu.layout.save": "将当前布局另存为…",
   "menu.layout.restoreDefault": "恢复默认布局",
   "menu.layout.rename": "重命名布局…",
