@@ -625,10 +625,6 @@ export const commands = {
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
-	/**  Git repositories below the project that the project does not manage. */
-	vcsUnregisteredRoots: () => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_unregistered_roots")),
-	/**  Rescans the project for Git repositories, registering the ones it does not manage. */
-	vcsRefreshRoots: () => typedError<null, IdeError>(__TAURI_INVOKE("vcs_refresh_roots")),
 	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
