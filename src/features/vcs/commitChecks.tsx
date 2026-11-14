@@ -15,7 +15,7 @@ import { maybeEditorService, toolWindowService } from "@/workbench/contributions
 import { baseName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole } from "./ops";
 import { useVcs } from "./store";
-import type { CommitCandidate, CommitCheck, CommitCheckContext } from "./commitCheckRegistry";
+import type { CommitCheck, CommitCheckContext } from "./commitCheckRegistry";
 import { getCommitChecks, registerCommitCheck } from "./commitCheckRegistry";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
@@ -423,7 +423,7 @@ const builtinChecks: readonly CommitCheck[] = [
       const crlf: string[] = [];
       for (const p of ctx.existing) {
         try {
-          if ((await call(commands.fsReadText(p))).includes("\r\n")) crlf.push(p);
+          if (await containsCrlf(p)) crlf.push(p);
         } catch {
           // skip
         }
@@ -444,6 +444,26 @@ const builtinChecks: readonly CommitCheck[] = [
     },
   },
 ];
+
+/**
+ * Whether the text file on disk has CRLF line separators; false for a binary file. The editor's text
+ * is LF-normalised, so the check reads bytes (`fsReadRange` returns base64), and a CRLF can straddle
+ * two chunks.
+ */
+export async function containsCrlf(path: string): Promise<boolean> {
+  if ((await call(commands.fsProbe(path))).binary) return false;
+  const CHUNK = 1024 * 1024;
+  let offset = 0;
+  let carry = "";
+  for (;;) {
+    const range = await call(commands.fsReadRange(path, offset, CHUNK));
+    const bytes = atob(range.data);
+    if ((carry + bytes).includes("\r\n")) return true;
+    offset = range.offset + bytes.length;
+    if (!bytes || offset >= range.total) return false;
+    carry = bytes.slice(-1);
+  }
+}
 
 /** Registers the built-in checks; called when the VCS feature activates. */
 export function installCommitChecks(): () => void {
@@ -466,11 +486,13 @@ const failureText = (e: unknown) => (e instanceof Error ? e.message : String(e))
  * about to be committed. `blocked` means a check reported an error (or could not
  * run): the commit waits for Commit Anyway; warnings are shown without stopping it.
  */
-export async function runCommitChecks(files: readonly CommitCandidate[], amend: boolean): Promise<CommitCheckRun> {
+export async function runCommitChecks(
+  files: readonly { path: string; exists: boolean }[],
+  amend: boolean,
+): Promise<CommitCheckRun> {
   const { commit, git } = workflowSettings().vcs;
   const { root, repo, status, branch } = useVcs.getState();
   const ctx: CommitCheckContext = {
-    files,
     existing: files.filter((f) => f.exists).map((f) => f.path),
     amend,
     root: root ?? "",

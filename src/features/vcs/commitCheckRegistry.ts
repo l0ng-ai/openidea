@@ -26,22 +26,13 @@ export interface CommitCheckResult {
   fix?: CommitFix;
 }
 
-export interface CommitCandidate {
-  /** Absolute path. */
-  path: string;
-  /** False for deletions. */
-  exists: boolean;
-}
-
 /**
  * What a check runs on: plain data collected before the commit, not the VCS store.
  * The settings are already normalised, and `diagnostics` reports what the language
  * servers have seen so far.
  */
 export interface CommitCheckContext {
-  /** The changes the commit would include. */
-  files: readonly CommitCandidate[];
-  /** Absolute paths of `files` that still exist in the working tree. */
+  /** Absolute paths of the changes that still exist in the working tree. */
   existing: readonly string[];
   amend: boolean;
   /** The selected repository's root, or "" without one. */
