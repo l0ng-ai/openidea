@@ -297,3 +297,81 @@ export const enterInLineComment: Command = (view) => {
   view.dispatch(state.update(tr, { scrollIntoView: true, userEvent: "input" }));
   return true;
 };
+
+/**
+ * Enter inside a `/* … *\/` comment (a docblock, mostly), as in IDEA:
+ *
+ * - on a line of it, the new line starts with ` * ` under the comment's
+ *   opening, and the rest of the line moves down with it;
+ * - right after an opening that nothing closes yet (`/**` just typed), the
+ *   closing ` *\/` is added below as well;
+ * - between the opening and the closing on one line (`/** | *\/`), the
+ *   closing moves to a line of its own.
+ *
+ * Only for one caret, and only on the first line of the comment or a line
+ * that already starts with `*` (a block comment holding code stays as is).
+ */
+export const enterInBlockComment: Command = (view) => {
+  const { state } = view;
+  const range = state.selection.main;
+  if (state.readOnly || state.selection.ranges.length !== 1 || !range.empty) return false;
+  const pos = range.head;
+  const tree = syntaxTree(state);
+  if (!tree.length) return false;
+  // An opening nothing closes isn't a comment to the parser (PHP reads
+  // `/**` as operators): a line that is only the opening, the caret after it.
+  const own = state.doc.lineAt(pos);
+  const typed = /^(\s*)\/\*\*?$/.exec(state.sliceDoc(own.from, pos));
+  if (typed && !state.sliceDoc(pos, own.to).trim() && !/comment|string/i.test(tree.resolveInner(pos, -1).type.name)) {
+    const br = state.lineBreak;
+    const star = `${typed[1]} * `;
+    view.dispatch(
+      state.update({
+        changes: { from: pos, to: own.to, insert: `${br}${star}${br}${typed[1]} */` },
+        selection: EditorSelection.cursor(pos + br.length + star.length),
+        scrollIntoView: true,
+        userEvent: "input",
+      }),
+    );
+    return true;
+  }
+  let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(pos, -1);
+  for (let up = 0; node && up < 3 && !/comment/i.test(node.type.name); up++) node = node.parent;
+  if (!node || !/comment/i.test(node.type.name)) return false;
+  const text = state.sliceDoc(node.from, node.to);
+  if (!text.startsWith("/*") || pos < node.from + 2) return false;
+  // Closed by its own `*/`: not one swallowed from a comment further down.
+  const closed = text.length >= 4 && text.endsWith("*/") && !text.slice(2, -2).includes("/*");
+  if (closed && pos > node.to - 2) return false;
+  const first = state.doc.lineAt(node.from);
+  const line = state.doc.lineAt(pos);
+  if (line.number !== first.number && !/^\s*\*/.test(line.text)) return false;
+  const indent = first.text.slice(0, node.from - first.from).replace(/\S/g, " ");
+  const star = `${indent} * `;
+  const after = state.sliceDoc(pos, line.to);
+  const br = state.lineBreak;
+  let insert: string;
+  let to = pos;
+  if (!closed) {
+    if (after.trim()) return false;
+    to = line.to;
+    insert = `${br}${star}${br}${indent} */`;
+  } else if (after.trim() === "*/") {
+    to = pos + (after.length - after.trimStart().length);
+    insert = `${br}${star}${br}${indent} `;
+  } else {
+    to = pos + (after.length - after.trimStart().length);
+    insert = `${br}${star}`;
+  }
+  // Nothing but spaces before the caret on a line of stars: keep the star.
+  const from = pos - (state.sliceDoc(line.from, pos).length - state.sliceDoc(line.from, pos).trimEnd().length);
+  view.dispatch(
+    state.update({
+      changes: { from, to, insert },
+      selection: EditorSelection.cursor(from + br.length + star.length),
+      scrollIntoView: true,
+      userEvent: "input",
+    }),
+  );
+  return true;
+};

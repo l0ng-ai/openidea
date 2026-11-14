@@ -5,6 +5,7 @@ import { ensureSyntaxTree, indentUnit } from "@codemirror/language";
 import { insertNewlineAndIndent } from "@codemirror/commands";
 import { findLanguageDescription, loadSupport } from "./languages";
 import { trailingBracketIndent } from "./smartKeys";
+import { enterInBlockComment } from "./comments";
 
 const php = (await loadSupport(findLanguageDescription("PHP", "index.php")!))!;
 
@@ -26,7 +27,7 @@ function enter(body: string, extensions = [Prec.high(trailingBracketIndent)]): s
   });
   views.push(view);
   ensureSyntaxTree(view.state, doc.length, 5000);
-  insertNewlineAndIndent(view);
+  if (!enterInBlockComment(view)) insertNewlineAndIndent(view);
   const out = view.state.doc.toString();
   const caret = view.state.selection.main.head;
   const shown = out.slice(0, caret) + "|" + out.slice(caret);
@@ -73,5 +74,61 @@ describe("Enter after a bracket that ends its line", () => {
   it("ignores brackets in strings", () => {
     const body = "        $x = ['a', '([',|";
     expect(enter(body)).toBe(enter(body, []));
+  });
+
+  it("indents an array opened on a line of its own inside another", () => {
+    expect(enter("        $this->add([\n            'a' => [|\n        ]);")).toBe(
+      "        $this->add([\n            'a' => [\n                |\n        ]);",
+    );
+    // Without the rule the PHP mode puts it under the `[`.
+    expect(enter("        $this->add([\n            'a' => [|\n        ]);", [])).toBe(
+      "        $this->add([\n            'a' => [\n                   |\n        ]);",
+    );
+    expect(enter("        $this->add([\n            'a' => [\n                1,\n            ],|\n        ]);")).toBe(
+      "        $this->add([\n            'a' => [\n                1,\n            ],\n            |\n        ]);",
+    );
+  });
+});
+
+describe("Enter after a case label", () => {
+  it("indents the label's statements", () => {
+    expect(enter("        switch ($a) {\n            case 1:|\n        }")).toBe(
+      "        switch ($a) {\n            case 1:\n                |\n        }",
+    );
+    expect(enter("        switch ($a) {\n            default:|\n        }")).toBe(
+      "        switch ($a) {\n            default:\n                |\n        }",
+    );
+  });
+
+  it("leaves other lines ending in a colon alone", () => {
+    const body = "        $a = $b ? 1 :|";
+    expect(enter(body)).toBe(enter(body, []));
+  });
+});
+
+describe("Enter in a block comment", () => {
+  it("closes a docblock just opened", () => {
+    expect(enter("        /**|")).toBe("        /**\n         * |\n         */");
+  });
+
+  it("continues a line of a docblock with a star", () => {
+    expect(enter("        /**\n         * Does a thing.|\n         */")).toBe(
+      "        /**\n         * Does a thing.\n         * |\n         */",
+    );
+    // The rest of the line moves down.
+    expect(enter("        /**\n         * Does |a thing.\n         */")).toBe(
+      "        /**\n         * Does\n         * |a thing.\n         */",
+    );
+  });
+
+  it("opens up a docblock written on one line", () => {
+    expect(enter("        /** |*/")).toBe("        /**\n         * |\n         */");
+  });
+
+  it("leaves code after the comment, and a comment holding code, alone", () => {
+    const afterIt = "        /** Note. */|";
+    expect(enter(afterIt)).toBe("        /** Note. */\n        |");
+    const code = "        /*\n        $a = 1;|\n        */";
+    expect(enter(code)).toBe("        /*\n        $a = 1;\n        |\n        */");
   });
 });

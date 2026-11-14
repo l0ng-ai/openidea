@@ -45,7 +45,7 @@ import {
   selectHumpLeft,
   selectHumpRight,
 } from "./editing";
-import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterInBlockComment, enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
 import { skipClosingBracket, skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
 
 // --- soft wraps ---------------------------------------------------------------
@@ -569,6 +569,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly) keys.push({ key: "Enter", run: enterInLineComment });
+  if (!o.readOnly) keys.push({ key: "Enter", run: enterInBlockComment });
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });
   else if (smartBackspaceApplies(k.backspaceUnindent, o.language)) keys.push({ key: "Backspace", run: smartBackspace });
