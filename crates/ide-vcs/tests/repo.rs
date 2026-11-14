@@ -769,11 +769,11 @@ fn stash_push_list_apply_pop() {
     let repo = fx.repo();
 
     fx.write("s.txt", "change 1\n");
-    repo.stash_push(Some("first stash"), false, false).unwrap();
+    repo.stash_push(Some("first stash"), false, false, &[]).unwrap();
     assert_eq!(fx.read("s.txt"), "base\n");
     fx.write("s.txt", "change 2\n");
     fx.write("u.txt", "untracked\n");
-    repo.stash_push(None, true, false).unwrap();
+    repo.stash_push(None, true, false, &[]).unwrap();
     assert!(!fx.path("u.txt").exists());
 
     let stashes = repo.stashes().unwrap();
@@ -808,7 +808,7 @@ fn stash_keep_index_reinstate_index_and_branch() {
     fx.write("a.txt", "a staged\n");
     fx.git(&["add", "a.txt"]);
     fx.write("b.txt", "b unstaged\n");
-    repo.stash_push(Some("keep"), false, true).unwrap();
+    repo.stash_push(Some("keep"), false, true, &[]).unwrap();
     // Keep index: the staged change stays, the unstaged one is stashed.
     assert_eq!(fx.read("a.txt"), "a staged\n");
     assert_eq!(fx.read("b.txt"), "b\n");
