@@ -75,6 +75,9 @@ describe("incoming and outgoing commits popup", () => {
     expect(rows[1]).toHaveTextContent("Grace Hopper");
     expect(ipc.log).toHaveBeenCalledWith("/p", expect.objectContaining({ range: "main..origin/main" }));
     expect(ipc.log).toHaveBeenCalledWith("/p", expect.objectContaining({ range: "origin/main..main" }));
+    // Both sides are listed, so each section names its direction once.
+    expect(screen.getAllByText("Incoming commits")).toHaveLength(1);
+    expect(screen.getAllByText("Outgoing commits")).toHaveLength(1);
   });
 
   it("asks only for the side whose marker was clicked", async () => {
@@ -85,6 +88,8 @@ describe("incoming and outgoing commits popup", () => {
     expect(screen.getByRole("dialog", { name: "Outgoing commits" })).toBeInTheDocument();
     expect(ipc.log).toHaveBeenCalledTimes(1);
     expect(ipc.log).toHaveBeenCalledWith("/p", expect.objectContaining({ range: "origin/main..main" }));
+    // The title already says the direction: the list must not repeat it as a section header.
+    expect(screen.getAllByText("Outgoing commits")).toHaveLength(1);
   });
 
   it("opens a commit's diff from its row and closes the popup", async () => {

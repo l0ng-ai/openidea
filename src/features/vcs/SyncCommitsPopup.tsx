@@ -135,8 +135,10 @@ function SyncCommitsPopup({
   const rows = useMemo<PopupRow[]>(() => {
     if (!lists) return [];
     const out: PopupRow[] = [];
+    // One direction is already the popup's title; only a list of both needs its section headers.
+    const withSections = sections.length > 1;
     sections.forEach((section, i) => {
-      out.push({ type: "section", key: `section:${section.direction}`, section });
+      if (withSections) out.push({ type: "section", key: `section:${section.direction}`, section });
       for (const commit of lists[i] ?? [])
         out.push({ type: "commit", key: `${section.direction}:${commit.id}`, commit });
     });
