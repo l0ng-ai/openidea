@@ -966,16 +966,16 @@ async fn a_browser_page_session_has_the_page_capability() {
     let h = harness(Script { start_debugging: true, ..Script::default() });
     let browser = h.start(js_config("pwa-chrome")).await.unwrap();
     let page = h.manager.capabilities(child_of(&h, browser).await).unwrap();
-    assert!(page.js_page);
+    assert!(page.js_page && page.live_evaluate);
     assert!(!h.manager.capabilities(browser).unwrap().js_page, "the launch itself is not a page");
 
     let node = h.start(js_config("pwa-node")).await.unwrap();
     let process = h.manager.capabilities(child_of(&h, node).await).unwrap();
-    assert!(!process.js_page);
+    assert!(!process.js_page && process.live_evaluate);
 
     let python = h.start(config()).await.unwrap();
     let script = h.manager.capabilities(child_of(&h, python).await).unwrap();
-    assert!(!script.js_page);
+    assert!(!script.js_page && !script.live_evaluate);
 }
 
 #[tokio::test]

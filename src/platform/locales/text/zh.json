@@ -8033,5 +8033,7 @@
   "Debug a dev server's page in the browser": "在浏览器中调试开发服务器的页面",
   "Debug in Browser": "在浏览器中调试",
   "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).": "在 Chrome 或 Edge 中打开 URL 并附加调试器（参数：URL）。",
-  "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.": "调试启动 Vite、Next.js 等开发服务器的脚本时，同时在 Chrome 或 Edge 中打开其页面并附加调试器。"
+  "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.": "调试启动 Vite、Next.js 等开发服务器的脚本时，同时在 Chrome 或 Edge 中打开其页面并附加调试器。",
+  "Evaluate watches while the program runs": "程序运行时计算监视表达式",
+  "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "仅适用于无需暂停即可计算的调试器（JavaScript）。带副作用的监视表达式在每次刷新时都会再次执行。"
 }

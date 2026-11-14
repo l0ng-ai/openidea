@@ -1647,6 +1647,8 @@
   "Debug in Browser": "Debug in Browser",
   "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).": "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).",
   "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.": "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.",
+  "Evaluate watches while the program runs": "Evaluate watches while the program runs",
+  "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.": "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
   "Stash Selected Files…": "Stash Selected Files…",
   "Select the files to stash in the Commit view first": "Select the files to stash in the Commit view first"
 }
