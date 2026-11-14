@@ -74,9 +74,15 @@ pub async fn lsp_completion(
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
-    let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
+    let (covered, items) = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref()))
+        .await
+        .unwrap_or_default();
     if items.is_empty() {
-        return Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }));
+        return if covered {
+            Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }))
+        } else {
+            result
+        };
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
     list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
