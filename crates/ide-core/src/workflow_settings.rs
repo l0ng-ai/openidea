@@ -291,7 +291,7 @@ impl Default for DebuggerSettings {
             value_tooltip_on_selection: true,
             value_tooltip_delay: 700,
             skip_library_code: true,
-            debug_server_page: true,
+            debug_server_page: false,
             python: PythonDebuggerSettings::default(),
         }
     }

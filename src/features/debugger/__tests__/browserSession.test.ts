@@ -98,6 +98,12 @@ describe("the browser of a project under the debugger", () => {
 });
 
 describe("a debugged program that serves a page", () => {
+  const settings = (debugServerPage: boolean) =>
+    useProject.setState({
+      settings: { debugger: { debugServerPage } } as ReturnType<typeof useProject.getState>["settings"],
+    });
+  beforeEach(() => settings(true));
+
   it("gets a browser session on the first address that answers with a page, once", async () => {
     ipc.pages.add("http://localhost:5173/");
     const dev = await startSession(server);
@@ -121,10 +127,12 @@ describe("a debugged program that serves a page", () => {
     expect(ipc.debugStart).toHaveBeenCalledTimes(1);
   });
 
-  it("gets none when that is turned off in the settings", async () => {
+  it.each([
+    ["turned off in the settings", () => settings(false)],
+    ["left at the default", () => useProject.setState({ settings: null })],
+  ])("gets none when that is %s", async (_, configure) => {
+    configure();
     ipc.pages.add("http://localhost:5173/");
-    const off = { debugger: { debugServerPage: false } };
-    useProject.setState({ settings: off as ReturnType<typeof useProject.getState>["settings"] });
     const dev = await startSession(server);
     await prints(dev!, "Local: http://localhost:5173/\n");
     expect(ipc.webServesPage).not.toHaveBeenCalled();

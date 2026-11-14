@@ -297,7 +297,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     valueTooltipOnSelection: true,
     valueTooltipDelay: 700,
     skipLibraryCode: true,
-    debugServerPage: true,
+    debugServerPage: false,
     python: { attachSubprocess: true, gevent: false },
   },
   run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
