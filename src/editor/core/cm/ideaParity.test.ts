@@ -245,6 +245,22 @@ describe("closing brackets", () => {
     expect(closesBracketAt(v.state, v.state.selection.main.head, ")")).toBe(true);
     expect(closesBracketAt(v.state, v.state.selection.main.head, "}")).toBe(false);
   });
+
+  it("steps over a closing brace in PHP, whose whole file is a `Template` node", async () => {
+    const php = await languages.find((l) => l.name === "PHP")!.load();
+    const v = make("<?php\nfunction f() {\n    g();\n|}\n", [php, skipClosingBracket]);
+    expect(type(v, "}")).toBe(true);
+    expect(show(v)).toBe("<?php\nfunction f() {\n    g();\n}|\n");
+    // Inside a PHP string a brace is still text.
+    const s = make("<?php\n$a = 'x|}';\n", [php, skipClosingBracket]);
+    expect(type(s, "}")).toBe(false);
+  });
+
+  it("steps over a closing brace in a JavaScript template's interpolation", () => {
+    const v = make("const s = `a ${b|} c`;", [javascript, skipClosingBracket]);
+    expect(type(v, "}")).toBe(true);
+    expect(show(v)).toBe("const s = `a ${b}| c`;");
+  });
 });
 
 describe("folding actions", () => {

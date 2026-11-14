@@ -176,14 +176,21 @@ export function closesStringAt(state: EditorState, pos: number, quote: string): 
 
 const OPEN_OF: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
 
-/** Whether `pos` is inside a string or comment (brackets there don't count). */
+/**
+ * Whether `pos` is inside a string or comment (brackets there don't count).
+ * Code embedded in a string is code again (`${x}` in a template, `{$x}` in a
+ * PHP string), and a file's root node is never a literal, whatever it is
+ * called (PHP's is `Template`).
+ */
 function inLiteral(state: EditorState, pos: number): boolean {
   for (
     let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, 1);
     n;
     n = n.parent
-  )
+  ) {
+    if (n.type.isTop || /Interpolation|Substitution/.test(n.type.name)) return false;
     if (/String|Char|Template|Comment|Rune|Heredoc/.test(n.type.name) && n.from < pos + 1 && n.to > pos) return true;
+  }
   return false;
 }
 
