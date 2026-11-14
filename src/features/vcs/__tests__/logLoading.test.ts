@@ -254,6 +254,19 @@ describe("commit navigation", () => {
     expect(api.log.mock.lastCall?.[1]).toMatchObject({ branches: ["main"], range: null, ranges: ["a..b", "c..d"] });
   });
 
+  it("opens a new Update Info tab per update, each repository limited to its own range", async () => {
+    useVcs.setState({ roots: ["/a", "/b", "/c"] });
+    const ranges = { "/a": "a1..a2", "/b": "b1..b2" };
+    const first = openLogTab("update", "14:32", "toolWindow", Object.keys(ranges), { repoRanges: ranges });
+    await vi.waitFor(() => expect(api.log).toHaveBeenCalledTimes(2));
+    const byRepo = Object.fromEntries(
+      api.log.mock.calls.map((call) => [call[0] as string, (call[1] as LogQuery).ranges]),
+    );
+    expect(byRepo).toEqual({ "/a": ["a1..a2"], "/b": ["b1..b2"] });
+    expect(openLogTab("update", "14:32", "toolWindow", ["/a"], { repoRanges: { "/a": "a2..a3" } })).not.toBe(first);
+    expect(useGitLog.getState().logTabs.filter((t) => t.kind === "update")).toHaveLength(2);
+  });
+
   it("offers both merge parents and selects the chosen repository-scoped commit", async () => {
     const commits = [c("merge", ["main", "side"]), c("main"), c("side")].map((c) => ({ ...c, repo: "/repo" }));
     useGitLog.setState({ commits, done: true });

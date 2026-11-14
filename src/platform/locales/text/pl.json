@@ -2581,7 +2581,7 @@
   "Restored branch {name}": "Przywrócono gałąź {name}",
   "Commits of {name}": "Zatwierdzenia dla {name}",
   "All files are up-to-date": "Wszystkie pliki są aktualne",
-  "Update Info": "Informacje o aktualizacji",
+  "Update Info: {target}": "Informacje o aktualizacji: {target}",
   "Press again to go to the next file": "Naciśnij ponownie, aby przejść do następnego pliku",
   "Press again to go to the previous file": "Naciśnij ponownie, aby przejść do poprzedniego pliku",
   "Include in commit": "Dołącz do zatwierdzenia",

@@ -2604,7 +2604,7 @@
   "Restored branch {name}": "Rama {name} restaurada",
   "Commits of {name}": "Confirmaciones de {name}",
   "All files are up-to-date": "Todos los archivos están actualizados",
-  "Update Info": "Información de actualización",
+  "Update Info: {target}": "Información de actualización: {target}",
   "Press again to go to the next file": "Presiona de nuevo para ir al siguiente archivo",
   "Press again to go to the previous file": "Presiona de nuevo para ir al archivo anterior",
   "Include in commit": "Incluir en la confirmación",

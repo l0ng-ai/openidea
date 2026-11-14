@@ -2582,7 +2582,7 @@
   "Restored branch {name}": "Branch {name} restaurada",
   "Commits of {name}": "Commits de {name}",
   "All files are up-to-date": "Todos os arquivos estão atualizados",
-  "Update Info": "Informações de atualização",
+  "Update Info: {target}": "Informações de atualização: {target}",
   "Press again to go to the next file": "Pressione novamente para ir para o próximo arquivo",
   "Press again to go to the previous file": "Pressione novamente para ir para o arquivo anterior",
   "Include in commit": "Incluir no commit",

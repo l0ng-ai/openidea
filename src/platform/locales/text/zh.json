@@ -3232,7 +3232,7 @@
   "Restored branch {name}": "已恢复分支 {name}",
   "Commits of {name}": "{name} 的提交",
   "All files are up-to-date": "所有文件都是最新的",
-  "Update Info": "更新信息",
+  "Update Info: {target}": "更新信息: {target}",
   "Press again to go to the next file": "再按一次转到下一个文件",
   "Press again to go to the previous file": "再按一次转到上一个文件",
   "Include in commit": "包含在提交中",
