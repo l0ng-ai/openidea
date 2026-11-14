@@ -57,6 +57,8 @@ pub(crate) struct Session {
     pub job: Mutex<Option<ide_core::process::Job>>,
     /// Set once `configurationDone` was sent; breakpoint updates go out live after that.
     pub configured: AtomicBool,
+    /// Set once the adapter answered `launch` / `attach`, after the configuration.
+    pub launched: watch::Sender<bool>,
     pub initialized: watch::Sender<bool>,
     pub startup_cancel: ide_core::CancellationToken,
     pub output_drained: watch::Sender<bool>,
@@ -89,6 +91,9 @@ pub(crate) struct Session {
     progress: Mutex<HashMap<String, TaskId>>,
     /// Relay between a Kotlin adapter and its JVM. Dropping it closes both sockets.
     pub jdwp_link: parking_lot::Mutex<Option<ide_jdwp::JdwpLink>>,
+    /// The `type` of the launch or attach request (js-debug's `pwa-node`, `pwa-chrome`); a child
+    /// session's comes from the configuration the adapter started it with.
+    pub launch_type: std::sync::OnceLock<String>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
     /// One inspector request per session at a time.
     pub inspect_lock: tokio::sync::Mutex<()>,
@@ -230,6 +235,7 @@ impl Session {
             #[cfg(windows)]
             job: Mutex::new(job),
             configured: AtomicBool::new(false),
+            launched: watch::channel(false).0,
             initialized: watch::channel(false).0,
             startup_cancel: ide_core::CancellationToken::new(),
             output_drained: watch::channel(true).0,
@@ -248,6 +254,7 @@ impl Session {
             resolved_paths: Mutex::new(HashMap::new()),
             progress: Mutex::new(HashMap::new()),
             jdwp_link: parking_lot::Mutex::new(None),
+            launch_type: std::sync::OnceLock::new(),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
             ended: ide_core::CancellationToken::new(),

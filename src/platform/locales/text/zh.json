@@ -8010,5 +8010,20 @@
   "Web root": "Web 根目录",
   "Folder whose files the URL serves": "该 URL 所提供文件的所在文件夹",
   "JavaScript Debug isn't available in a remote project yet.": "远程项目暂不支持 JavaScript 调试。",
-  "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.": "未找到 {runtime}（查找了 `{command}`）。请从 {site} 安装，或在“设置 › 语言和框架 › JavaScript 运行时”中选择其他首选运行时。"
+  "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.": "未找到 {runtime}（查找了 `{command}`）。请从 {site} 安装，或在“设置 › 语言和框架 › JavaScript 运行时”中选择其他首选运行时。",
+  "JavaScript events and requests": "JavaScript 事件和请求",
+  "JavaScript Events and Requests": "JavaScript 事件和请求",
+  "Stop when a page in the browser handles an event or sends a request.": "浏览器中的页面处理事件或发送请求时暂停。",
+  "Requests whose URL contains": "URL 包含以下内容的请求",
+  "Remove Request Breakpoint": "移除请求断点",
+  "Add Request Breakpoint": "添加请求断点",
+  "e.g. /api/": "例如 /api/",
+  "Part of a request URL": "请求 URL 的一部分",
+  "Mouse": "鼠标",
+  "Keyboard": "键盘",
+  "Form": "表单",
+  "Page": "页面",
+  "Timers": "定时器",
+  "Also stops at errors a framework catches, such as one thrown in an event handler. Library code is skipped while \"Do not step into library scripts\" is on.": "也会在框架捕获的错误处暂停，例如事件处理函数中抛出的错误。开启“不要步入库脚本”时会跳过库代码。",
+  "The debugger of the running page does not take these breakpoints: {why}": "正在运行的页面的调试器不接受这些断点：{why}"
 }

@@ -146,6 +146,10 @@ struct Script {
     delay_initialize: Option<Duration>,
     initialized_delay: Duration,
     launch_delay: Duration,
+    /// Answer a child session's `launch` this long after its `configurationDone`, reading
+    /// requests meanwhile. Like js-debug, one of `accept` that arrives in between is answered
+    /// and has no effect: the log gets a `dropped` entry for it.
+    child_launch_delay: Duration,
     /// Leave startup pending before `initialized` (false) or after configuration (true).
     pending_startup: Option<bool>,
     startup_error: Option<&'static str>,
@@ -154,6 +158,8 @@ struct Script {
     /// `launch`, and a `configurationDone` sent while it runs is refused with `notStopped`.
     gdb15_starts_at_launch: bool,
     launch_after_configuration: bool,
+    /// Requests of the adapter's own (js-debug's `setCustomBreakpoints`…) answered with an empty body.
+    accept: &'static [&'static str],
 }
 
 impl Default for Script {
@@ -181,11 +187,13 @@ impl Default for Script {
             delay_initialize: None,
             initialized_delay: Duration::ZERO,
             launch_delay: Duration::ZERO,
+            child_launch_delay: Duration::ZERO,
             pending_startup: None,
             startup_error: None,
             close_during_startup: false,
             gdb15_starts_at_launch: false,
             launch_after_configuration: false,
+            accept: &[],
         }
     }
 }
@@ -218,10 +226,15 @@ impl AdapterLauncher for FakeLauncher {
 }
 
 async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream: S, log: Log, script: Script) {
-    let (r, mut w) = tokio::io::split(stream);
+    let (r, w) = tokio::io::split(stream);
+    // Shared with the task that answers a child's `launch` late (`child_launch_delay`).
+    let w = Arc::new(tokio::sync::Mutex::new(w));
     let mut r = BufReader::new(r);
     let mut seq = 1000;
     let mut pending_launch: Option<i64> = None;
+    let mut child = false;
+    // Between `configurationDone` and the answer to `launch`.
+    let starting = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut held: Vec<Value> = Vec::new();
     let mut stopped = false;
     let mut running = false;
@@ -230,7 +243,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             let mut v: Value = $v;
             seq += 1;
             v["seq"] = seq.into();
-            framing::write_message(&mut w, &serde_json::to_vec(&v).unwrap()).await.unwrap();
+            framing::write_message(&mut *w.lock().await, &serde_json::to_vec(&v).unwrap()).await.unwrap();
         }};
     }
     macro_rules! ok {
@@ -292,6 +305,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     continue;
                 }
                 pending_launch = msg["seq"].as_i64();
+                child = msg["arguments"]["isChild"] == true;
                 if let Some(args) = &script.run_in_terminal {
                     send!(
                         json!({"type": "request", "command": "runInTerminal", "arguments": {"kind": "integrated", "args": args, "cwd": std::env::temp_dir()}})
@@ -299,7 +313,8 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
                 if script.start_debugging && msg["arguments"]["isChild"] != true {
                     send!(
-                        json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true}}})
+                        // Like js-debug, the child's configuration repeats the launch's `type`.
+                        json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true, "type": msg["arguments"]["type"]}}})
                     );
                 }
                 if script.pending_startup != Some(false) {
@@ -378,7 +393,21 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
                 tokio::time::sleep(script.launch_delay).await;
                 if let Some(l) = pending_launch.take() {
-                    send!(json!({"type": "response", "request_seq": l, "command": "launch", "success": true}));
+                    let answer = json!({"type": "response", "request_seq": l, "command": "launch", "success": true});
+                    if child && !script.child_launch_delay.is_zero() {
+                        starting.store(true, Ordering::Release);
+                        let (w, starting, delay) = (w.clone(), starting.clone(), script.child_launch_delay);
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            let mut answer = answer;
+                            answer["seq"] = 999_999.into();
+                            let _ = framing::write_message(&mut *w.lock().await, &serde_json::to_vec(&answer).unwrap())
+                                .await;
+                            starting.store(false, Ordering::Release);
+                        });
+                    } else {
+                        send!(answer);
+                    }
                 }
                 if let Some(pid) = script.debuggee_pid {
                     let event = if script.java_process_id {
@@ -474,8 +503,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             }
             "disconnect" => {
                 ok!(msg, Value::Null);
-                let _ = w.shutdown().await;
+                let _ = w.lock().await.shutdown().await;
                 break;
+            }
+            other if script.accept.contains(&other) => {
+                if starting.load(Ordering::Acquire) {
+                    log.lock().push(json!({"type": "dropped", "command": other}));
+                }
+                ok!(msg, json!({}))
             }
             other => send!(
                 json!({"type": "response", "request_seq": msg["seq"], "command": other, "success": false, "message": "unsupported"})
@@ -903,6 +938,83 @@ async fn blocked_program_input_does_not_hold_up_shutdown() {
     assert!(started.elapsed() < std::time::Duration::from_millis(250));
     h.manager.stop(session).await.unwrap();
     assert!(h.manager.send_input(session, "later").is_err());
+}
+
+fn js_config(launch_type: &str) -> LaunchConfig {
+    LaunchConfig {
+        adapter: "js-debug".into(),
+        program: None,
+        args: Vec::new(),
+        extra_json: Some(format!(r#"{{"type": "{launch_type}"}}"#)),
+        ..config()
+    }
+}
+
+/// The session the adapter started under `parent`.
+async fn child_of(h: &Harness, parent: DebugSessionId) -> DebugSessionId {
+    for _ in 0..200 {
+        if let Some(child) = h.manager.sessions(Some("main")).into_iter().find(|s| s.parent == Some(parent)) {
+            return child.id;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no child session of {parent:?}");
+}
+
+#[tokio::test]
+async fn a_browser_page_session_has_the_page_capability() {
+    let h = harness(Script { start_debugging: true, ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = h.manager.capabilities(child_of(&h, browser).await).unwrap();
+    assert!(page.js_page);
+    assert!(!h.manager.capabilities(browser).unwrap().js_page, "the launch itself is not a page");
+
+    let node = h.start(js_config("pwa-node")).await.unwrap();
+    let process = h.manager.capabilities(child_of(&h, node).await).unwrap();
+    assert!(!process.js_page);
+
+    let python = h.start(config()).await.unwrap();
+    let script = h.manager.capabilities(child_of(&h, python).await).unwrap();
+    assert!(!script.js_page);
+}
+
+#[tokio::test]
+async fn custom_breakpoints_are_sent_to_a_page_and_refused_elsewhere() {
+    let h = harness(Script { start_debugging: true, accept: &["setCustomBreakpoints"], ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+    h.manager.js_set_custom_breakpoints(page, vec!["listener:click".into()], vec!["api/".into()]).await.unwrap();
+    assert_eq!(requests(&h, "setCustomBreakpoints"), [json!({"ids": ["listener:click"], "xhr": ["api/"]})]);
+
+    let not_a_page = h.manager.js_set_custom_breakpoints(browser, Vec::new(), Vec::new()).await.unwrap_err();
+    assert_eq!(not_a_page.kind, ide_core::error::ErrorKind::Unavailable);
+
+    // A js-debug build without the request.
+    let old = harness(Script { start_debugging: true, ..Script::default() });
+    let browser = old.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&old, browser).await;
+    let refused = old.manager.js_set_custom_breakpoints(page, Vec::new(), Vec::new()).await.unwrap_err();
+    assert_eq!(refused.kind, ide_core::error::ErrorKind::Unavailable);
+}
+
+/// js-debug answers a request of its own that reaches a page after `configurationDone` and
+/// before the page's `launch` is answered, and then does nothing with it.
+#[tokio::test]
+async fn a_page_gets_its_requests_once_its_session_has_started() {
+    let h = harness(Script {
+        start_debugging: true,
+        accept: &["setCustomBreakpoints"],
+        child_launch_delay: Duration::from_millis(150),
+        ..Script::default()
+    });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+    // Past the page's `configurationDone`, with its `launch` still unanswered.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    h.manager.js_set_custom_breakpoints(page, vec!["listener:click".into()], Vec::new()).await.unwrap();
+    assert_eq!(requests(&h, "setCustomBreakpoints"), [json!({"ids": ["listener:click"], "xhr": []})]);
+    let dropped = h.log.lock().iter().filter(|m| m["type"] == "dropped").count();
+    assert_eq!(dropped, 0, "the request reached the page before it took requests");
 }
 
 #[test]
