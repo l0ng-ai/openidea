@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState, StateEffect } from "@codemirror/state";
+import { EditorState, StateEffect, type Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import type { CompletionItem } from "@/bindings";
 import type { EditorDocContext } from "@/editor/api";
 import { lspDoc } from "./lsp";
+import { insertTab, tabOut, tabOutOfScope } from "@/editor/core/cm/smartKeys";
 import {
   completionSymbolKind,
   identifierEnd,
@@ -250,10 +251,10 @@ describe("applying completions", () => {
   });
 
   /** `|` marks the caret where completion was requested; `typed` is typed afterwards. */
-  function setup(text: string, typed = "") {
+  function setup(text: string, typed = "", extensions: Extension[] = []) {
     const pos = text.indexOf("|");
     const doc = text.replace("|", "");
-    const state = EditorState.create({ doc, selection: { anchor: pos } });
+    const state = EditorState.create({ doc, selection: { anchor: pos }, extensions });
     view = new EditorView({ state, parent: document.body });
     const req = { doc: 1, path: "/p/a.ts", language: null, pos, text: view.state.doc };
     if (typed) view.dispatch({ changes: { from: pos, insert: typed }, selection: { anchor: pos + typed.length } });
@@ -268,6 +269,35 @@ describe("applying completions", () => {
     apply(view, makeCompletion(item({ insertText: "create" }), req), 8);
     expect(view.state.doc.toString()).toBe("service.createOrder()");
     expect(view.state.selection.main.head).toBe(14);
+  });
+
+  it("lets Tab step out of the parentheses a completion inserted", () => {
+    const { view, req } = setup("service.cr|", "", [tabOut]);
+    applyLspCompletion(view, makeCompletion(item(), req), 8, 10, "insert");
+    expect(view.state.doc.toString()).toBe("service.create()");
+    expect(view.state.selection.main.head).toBe(15);
+    expect(insertTab(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe("service.create()");
+    expect(view.state.selection.main.head).toBe(16);
+  });
+
+  it("lets Tab step out of a call snippet without stops", async () => {
+    const { view, req } = setup("new Arr|", "", [tabOut]);
+    view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+    apply(view, makeCompletion(item({ kind: "constructor", insertText: "ArrayList<>()", isSnippet: true }), req), 4);
+    expect(view.state.doc.toString()).toBe("new ArrayList<>()");
+    expect(view.state.selection.main.head).toBe(16);
+    expect(insertTab(view)).toBe(true);
+    expect(view.state.doc.toString()).toBe("new ArrayList<>()");
+    expect(view.state.selection.main.head).toBe(17);
+    // The parameter-info fallback also moves past `)`; let it settle before teardown.
+    await vi.waitFor(() => expect(view.state.selection.main.head).toBe(17));
+  });
+
+  it("does not register a scope when jumping outside closing brackets is off", () => {
+    const { view, req } = setup("service.cr|");
+    applyLspCompletion(view, makeCompletion(item(), req), 8, 10, "insert");
+    expect(tabOutOfScope(view)).toBe(false);
   });
 
   it("keeps overloads sharing a filterText apart", () => {

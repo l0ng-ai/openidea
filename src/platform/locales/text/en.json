@@ -1624,5 +1624,6 @@
   "Start the page's server first, e.g. the dev script of package.json": "Start the page's server first, e.g. the dev script of package.json",
   "Web root": "Web root",
   "Folder whose files the URL serves": "Folder whose files the URL serves",
-  "JavaScript Debug isn't available in a remote project yet.": "JavaScript Debug isn't available in a remote project yet."
+  "JavaScript Debug isn't available in a remote project yet.": "JavaScript Debug isn't available in a remote project yet.",
+  "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.": "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime."
 }

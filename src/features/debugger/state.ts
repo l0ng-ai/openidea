@@ -1066,23 +1066,38 @@ export function removeWatch(expression: string) {
   persistWatches();
 }
 
-const WATCH_KEY = "openidea.debugger.watches";
+/** Watches used to be one list for every project; it is only read now, as a project's first list. */
+const SHARED_WATCH_KEY = "openidea.debugger.watches";
+const watchKey = (root: string) => `${SHARED_WATCH_KEY}:${root}`;
+
+/** The project whose watches are loaded; without one they aren't stored. */
+let watchRoot: string | null = null;
 
 function persistWatches() {
+  if (watchRoot == null) return;
   try {
-    localStorage.setItem(WATCH_KEY, JSON.stringify(useDebug.getState().watches));
+    localStorage.setItem(watchKey(watchRoot), JSON.stringify(useDebug.getState().watches));
   } catch {
     // ignore
   }
 }
 
-export function loadWatches() {
+function storedWatches(key: string): string[] | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(WATCH_KEY) ?? "[]") as unknown;
-    if (Array.isArray(raw)) useDebug.setState({ watches: raw.filter((w): w is string => typeof w === "string") });
+    const stored = localStorage.getItem(key);
+    const raw = stored == null ? null : (JSON.parse(stored) as unknown);
+    return Array.isArray(raw) ? raw.filter((w): w is string => typeof w === "string") : null;
   } catch {
-    // ignore
+    return null;
   }
+}
+
+/** The watches of the project at `root`. */
+export function loadWatches(root: string | null) {
+  watchRoot = root;
+  const own = root == null ? [] : storedWatches(watchKey(root));
+  useDebug.setState({ watches: own ?? storedWatches(SHARED_WATCH_KEY) ?? [] });
+  if (own == null) persistWatches();
 }
 
 /**

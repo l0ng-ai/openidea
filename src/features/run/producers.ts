@@ -529,7 +529,7 @@ function pythonCommand(input: ContextInput, env: ToolEnv, s: FileSite): { comman
 function preferredMissing(file: string, runtime: string, command: string, site: string): Missing {
   return {
     title: tx`Cannot run '${file}'`,
-    body: `${runtime} was not found (looked for \`${command}\`). Install it from ${site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.`,
+    body: tx`${runtime} was not found (looked for \`${command}\`). Install it from ${site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.`,
   };
 }
 
