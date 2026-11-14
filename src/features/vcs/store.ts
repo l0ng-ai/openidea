@@ -293,7 +293,7 @@ export function refreshPathsNow(paths: readonly string[]): Promise<void> {
     try {
       const fresh = await call(commands.vcsStatusPaths([...paths]));
       const current = useVcs.getState();
-      if (!current.statusLoaded) return false;
+      if (!current.statusLoaded || pairsRenames(current.status, paths, fresh)) return false;
       applyStatus(mergeStatus(current.status, paths, fresh), current.branch);
       useVcs.setState((st) => ({ version: st.version + 1 }));
       return true;
@@ -319,14 +319,48 @@ export function mergeStatus(
   changed: readonly string[],
   fresh: readonly FileStatus[],
 ): FileStatus[] {
-  const exact = new Set(changed.map(stripSlash));
-  const dirs = [...exact].map((path) => `${path}/`);
-  const keep = (f: FileStatus) => {
-    const path = stripSlash(f.path);
-    return !exact.has(path) && !dirs.some((dir) => path.startsWith(dir));
-  };
+  const inBatch = coveredBy(changed);
+  // A path the read answered for replaces its old entry even when the batch did not name it.
+  const answered = new Set(fresh.map((f) => stripSlash(f.path)));
+  const keep = (f: FileStatus) => !inBatch(f.path) && !answered.has(stripSlash(f.path));
   // Byte order, as the backend sorts a full status: a locale-aware compare would reorder it.
   return [...base.filter(keep), ...fresh].sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
+}
+
+/** Whether `path` is one of `changed` or lies below one of them (whole segments only). */
+function coveredBy(changed: readonly string[]): (path: string) => boolean {
+  const exact = new Set(changed.map(stripSlash));
+  const dirs = [...exact].map((path) => `${path}/`);
+  return (path) => {
+    const p = stripSlash(path);
+    return exact.has(p) || dirs.some((dir) => p.startsWith(dir));
+  };
+}
+
+/**
+ * Whether a scoped read of `changed` may have split or missed a rename. Git pairs a deletion with an
+ * addition across the whole index, and a pathspec read sees only one side: a staged `a → b` read for
+ * `b` alone comes back as "added b" with the deletion of `a` gone. Such a batch takes the full status.
+ */
+export function pairsRenames(
+  base: readonly FileStatus[],
+  changed: readonly string[],
+  fresh: readonly FileStatus[],
+): boolean {
+  if (fresh.some((f) => f.renamedFrom)) return true;
+  const inBatch = coveredBy(changed);
+  const renamedFrom = (f: FileStatus) => {
+    const path = stripSlash(f.path);
+    return f.renamedFrom && path.endsWith(f.relPath)
+      ? path.slice(0, path.length - f.relPath.length) + f.renamedFrom
+      : "";
+  };
+  if (base.some((f) => f.renamedFrom && (inBatch(f.path) || inBatch(renamedFrom(f))))) return true;
+  // An addition and a deletion on either side of the batch may now pair up into a rename.
+  const outside = base.filter((f) => !inBatch(f.path));
+  const has = (list: readonly FileStatus[], kind: "added" | "deleted") =>
+    list.some((f) => f.staged === kind || f.unstaged === kind);
+  return (has(fresh, "added") && has(outside, "deleted")) || (has(fresh, "deleted") && has(outside, "added"));
 }
 
 export function applyStatus(status: FileStatus[], branch: BranchInfo | null) {
