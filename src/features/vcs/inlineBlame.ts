@@ -69,18 +69,29 @@ export function inlineBlameSegments(line: BlameLine, now = Date.now()): BlameSeg
 class BlameCache {
   private doc: Text | undefined;
   private pending: Promise<BlameLine[]> | undefined;
+  private lines: BlameLine[] | undefined;
 
   clear() {
     this.doc = undefined;
     this.pending = undefined;
+    this.lines = undefined;
   }
 
   get(doc: Text, load: () => Promise<BlameLine[]>): Promise<BlameLine[]> {
     if (doc !== this.doc || !this.pending) {
       this.doc = doc;
-      this.pending = load();
+      this.lines = undefined;
+      this.pending = load().then((lines) => {
+        if (this.doc === doc) this.lines = lines;
+        return lines;
+      });
     }
     return this.pending;
+  }
+
+  /** The resolved blame for `doc`, when it is already loaded. */
+  peek(doc: Text): BlameLine[] | undefined {
+    return doc === this.doc ? this.lines : undefined;
   }
 }
 
@@ -265,7 +276,15 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         if (update.docChanged) this.cache.clear();
         if (update.docChanged || update.selectionSet) {
           this.line = undefined;
-          this.schedule();
+          // A caret move in a document whose blame is already loaded needs no git
+          // call, so show it without the debounce that protects that call (#3396).
+          if (!update.docChanged && this.cache.peek(update.state.doc) !== undefined) {
+            clearTimeout(this.timer);
+            ++this.generation;
+            void this.refresh();
+          } else {
+            this.schedule();
+          }
         }
       }
 
