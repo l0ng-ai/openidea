@@ -269,25 +269,69 @@ export async function baseDeclarations(index: InheritanceIndex, cls: ClassInheri
 }
 
 /**
- * Every ancestor of `cls`, nearest first (breadth-first, each declaration once), up to
- * `depth` levels. The order within a level follows the source's base order.
+ * Standard bases that declare no method a project class could override or implement (only
+ * dunders), so a chain ending in them is still fully known: `class Shape(ABC)`.
  */
+const EMPTY_BASES: ReadonlySet<string> = new Set(["object", "ABC", "Generic", "Protocol"]);
+
+/** One class `cls` inherits from, and how far up it sits (its direct bases are depth 1). */
+export interface AncestorNode {
+  decl: ClassInheritance;
+  depth: number;
+}
+
+/** Ancestors of `cls`, and how deep the first base the project does not declare sits. */
+export interface AncestryResolution {
+  /** The declarations `cls` inherits from, nearest first. */
+  ancestors: AncestorNode[];
+  /**
+   * Depth of the shallowest base name that names no class of the project (`dict`, a library
+   * class), or `Infinity` when the chain resolved completely. A rule may trust the chain up
+   * to that depth only: a foreign base can declare or implement anything.
+   */
+  firstUnresolvedDepth: number;
+}
+
+/**
+ * Walks `cls`'s ancestry nearest first (breadth-first, each declaration once) and reports
+ * at which depth the chain leaves the project. A rule that reasons about an ancestor at
+ * depth `d` is sound exactly while `firstUnresolvedDepth > d`.
+ */
+export async function ancestryResolution(
+  index: InheritanceIndex,
+  cls: ClassInheritance,
+  depth = 8,
+): Promise<AncestryResolution> {
+  const seen = new Set<string>([declarationKey(cls)]);
+  const out: AncestorNode[] = [];
+  let firstUnresolvedDepth = Infinity;
+  let level: ClassInheritance[] = [cls];
+  for (let d = 1; d <= depth && level.length; d++) {
+    const next: ClassInheritance[] = [];
+    for (const current of level) {
+      for (const base of current.bases) {
+        const found = await index.resolve(base, current.path);
+        if (!found.length) {
+          if (!EMPTY_BASES.has(base)) firstUnresolvedDepth = Math.min(firstUnresolvedDepth, d);
+          continue;
+        }
+        for (const parent of found) {
+          if (!seen.add(declarationKey(parent))) continue;
+          out.push({ decl: parent, depth: d });
+          next.push(parent);
+        }
+      }
+    }
+    level = next;
+  }
+  return { ancestors: out, firstUnresolvedDepth };
+}
+
+/** Every ancestor of `cls`, nearest first, up to `depth` levels. */
 export async function ancestors(
   index: InheritanceIndex,
   cls: ClassInheritance,
   depth = 8,
 ): Promise<ClassInheritance[]> {
-  const seen = new Set<string>([declarationKey(cls)]);
-  const out: ClassInheritance[] = [];
-  let level = await baseDeclarations(index, cls);
-  for (let d = 0; d < depth && level.length; d++) {
-    const next: ClassInheritance[] = [];
-    for (const parent of level) {
-      if (!seen.add(declarationKey(parent))) continue;
-      out.push(parent);
-      next.push(...(await baseDeclarations(index, parent)));
-    }
-    level = next;
-  }
-  return out;
+  return (await ancestryResolution(index, cls, depth)).ancestors.map((node) => node.decl);
 }

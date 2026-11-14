@@ -1753,5 +1753,17 @@
   "YAML File": "YAML File",
   "TOML File": "TOML File",
   "EditorConfig File": "EditorConfig File",
-  ".gitignore File": ".gitignore File"
+  ".gitignore File": ".gitignore File",
+  "Circular inheritance": "Circular inheritance",
+  "Inconsistent '@override'": "Inconsistent '@override'",
+  "Abstract method not implemented": "Abstract method not implemented",
+  "Redundant override": "Redundant override",
+  "Reports a Python class that ends up among its own ancestors: Python raises 'Cannot create a consistent MRO' when the module is imported.": "Reports a Python class that ends up among its own ancestors: Python raises 'Cannot create a consistent MRO' when the module is imported.",
+  "Reports a method marked typing.override that no base class declares. Only hierarchies the IDE's index knows completely are checked: a base outside the project may declare the method, so those are left alone.": "Reports a method marked typing.override that no base class declares. Only hierarchies the IDE's index knows completely are checked: a base outside the project may declare the method, so those are left alone.",
+  "Reports a class that leaves a base class's @abstractmethod unimplemented, in a hierarchy the IDE's index knows completely. A class that declares an abstract method of its own is abstract, so it is not reported.": "Reports a class that leaves a base class's @abstractmethod unimplemented, in a hierarchy the IDE's index knows completely. A class that declares an abstract method of its own is abstract, so it is not reported.",
+  "Reports a method whose body only repeats the inherited one — 'pass' over a method that does nothing, or calling 'super()' with the same arguments — so the override can be removed.": "Reports a method whose body only repeats the inherited one — 'pass' over a method that does nothing, or calling 'super()' with the same arguments — so the override can be removed.",
+  "Circular inheritance: '{name}' inherits from itself": "Circular inheritance: '{name}' inherits from itself",
+  "Method '{name}' is marked @override but no base class declares it": "Method '{name}' is marked @override but no base class declares it",
+  "Class '{name}' does not implement abstract method '{method}'": "Class '{name}' does not implement abstract method '{method}'",
+  "Redundant override of '{name}'": "Redundant override of '{name}'"
 }

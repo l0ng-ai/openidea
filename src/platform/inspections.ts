@@ -240,6 +240,16 @@ export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
 export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
 export const CONFLICT_MARKERS_INSPECTION = "builtin:merge-conflict-markers";
 
+/** Python inheritance checks the IDE computes from its own inheritance graph (no server offers one). */
+export const PYTHON_CIRCULAR_BASES_PRODUCER = "python-circular-bases";
+export const PYTHON_CIRCULAR_BASES_INSPECTION = "builtin:python-circular-bases";
+export const PYTHON_OVERRIDE_PRODUCER = "python-override";
+export const PYTHON_OVERRIDE_INSPECTION = "builtin:python-override";
+export const PYTHON_ABSTRACT_METHOD_PRODUCER = "python-abstract-method";
+export const PYTHON_ABSTRACT_METHOD_INSPECTION = "builtin:python-abstract-method";
+export const PYTHON_REDUNDANT_OVERRIDE_PRODUCER = "python-redundant-override";
+export const PYTHON_REDUNDANT_OVERRIDE_INSPECTION = "builtin:python-redundant-override";
+
 /** IDEA's Typo options: which parts of source files are checked (plain text always is). */
 export const SPELLING_OPTIONS = {
   code: "processCode",
@@ -309,6 +319,42 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
       "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root, or the configuration file chosen in Settings › Languages & Frameworks › PHP. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
     defaultLevel: "warning",
     byCode: true,
+  },
+  {
+    id: PYTHON_CIRCULAR_BASES_INSPECTION,
+    producer: PYTHON_CIRCULAR_BASES_PRODUCER,
+    name: "Circular inheritance",
+    group: "Python",
+    description:
+      "Reports a Python class that ends up among its own ancestors: Python raises 'Cannot create a consistent MRO' when the module is imported.",
+    defaultLevel: "error",
+  },
+  {
+    id: PYTHON_OVERRIDE_INSPECTION,
+    producer: PYTHON_OVERRIDE_PRODUCER,
+    name: "Inconsistent '@override'",
+    group: "Python",
+    description:
+      "Reports a method marked typing.override that no base class declares. Only hierarchies the IDE's index knows completely are checked: a base outside the project may declare the method, so those are left alone.",
+    defaultLevel: "warning",
+  },
+  {
+    id: PYTHON_ABSTRACT_METHOD_INSPECTION,
+    producer: PYTHON_ABSTRACT_METHOD_PRODUCER,
+    name: "Abstract method not implemented",
+    group: "Python",
+    description:
+      "Reports a class that leaves a base class's @abstractmethod unimplemented, in a hierarchy the IDE's index knows completely. A class that declares an abstract method of its own is abstract, so it is not reported.",
+    defaultLevel: "warning",
+  },
+  {
+    id: PYTHON_REDUNDANT_OVERRIDE_INSPECTION,
+    producer: PYTHON_REDUNDANT_OVERRIDE_PRODUCER,
+    name: "Redundant override",
+    group: "Python",
+    description:
+      "Reports a method whose body only repeats the inherited one — 'pass' over a method that does nothing, or calling 'super()' with the same arguments — so the override can be removed.",
+    defaultLevel: "weakWarning",
   },
   {
     id: "builtin:sql",

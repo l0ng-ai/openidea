@@ -351,6 +351,8 @@ export const commands = {
 	 *  re-parse); large documents get no syntax structure.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
+	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
+	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
 	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
@@ -7567,6 +7569,15 @@ export type MergeVersions = {
 	merged: string | null,
 };
 
+/**  What a method body does, for the shapes a check can decide without guessing. */
+export type MethodBody = 
+/**  `pass`, `...`, a docstring, or nothing at all. */
+{ kind: "empty" } | 
+/**  Exactly one `super().name(args)` call, optionally `return`ed. */
+{ kind: "superCall"; returns: boolean; target: string; args: string[] } | 
+/**  Anything else. */
+{ kind: "other" };
+
 /**  Per-function totals (a recursive function's samples count once in `total`). */
 export type MethodStat = {
 	frame: number,
@@ -8776,10 +8787,42 @@ export type PullRequestSummary = {
 /**  Push dialog › Push tags: every tag, or only annotated tags on the pushed commits. */
 export type PushTags = "all" | "currentBranch";
 
+/**  A class definition and the methods it declares. */
+export type PythonClassFacts = {
+	name: string,
+	/**  The class name identifier (selection range). */
+	selection: Range,
+	/**  Base names as written, a qualified name reduced to its last segment. */
+	bases: string[],
+	methods: PythonMethodFacts[],
+};
+
 /**  Python Debugger (debugpy launch options). */
 export type PythonDebuggerSettings = {
 	attachSubprocess?: boolean,
 	gevent?: boolean,
+};
+
+/**  One Python module's classes, in source order. */
+export type PythonFacts = {
+	classes: PythonClassFacts[],
+};
+
+/**  A method definition the inspections can reason about. */
+export type PythonMethodFacts = {
+	name: string,
+	/**  The method name identifier (selection range). */
+	selection: Range,
+	/**
+	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
+	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
+	 */
+	params: string[] | null,
+	/**  Decorated with `abstractmethod` (`abc.abstractmethod` included). */
+	abstractMethod: boolean,
+	/**  Decorated with `override` from `typing` / `typing_extensions`. */
+	overrideDecorated: boolean,
+	body: MethodBody,
 };
 
 export type PythonPackage = {

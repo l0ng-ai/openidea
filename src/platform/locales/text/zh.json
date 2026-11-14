@@ -8141,5 +8141,17 @@
   "YAML File": "YAML 文件",
   "TOML File": "TOML 文件",
   "EditorConfig File": "EditorConfig 文件",
-  ".gitignore File": ".gitignore 文件"
+  ".gitignore File": ".gitignore 文件",
+  "Circular inheritance": "循环继承",
+  "Inconsistent '@override'": "不一致的 '@override'",
+  "Abstract method not implemented": "未实现抽象方法",
+  "Redundant override": "冗余的重写",
+  "Reports a Python class that ends up among its own ancestors: Python raises 'Cannot create a consistent MRO' when the module is imported.": "报告最终成为自身祖先的 Python 类：导入该模块时 Python 会抛出 'Cannot create a consistent MRO'。",
+  "Reports a method marked typing.override that no base class declares. Only hierarchies the IDE's index knows completely are checked: a base outside the project may declare the method, so those are left alone.": "报告标记了 typing.override 但没有任何基类声明该方法的方法。只检查 IDE 索引完整已知的继承层次：项目之外的基类可能声明了该方法，因此这些情况不做报告。",
+  "Reports a class that leaves a base class's @abstractmethod unimplemented, in a hierarchy the IDE's index knows completely. A class that declares an abstract method of its own is abstract, so it is not reported.": "报告在 IDE 索引完整已知的继承层次中未实现基类 @abstractmethod 的类。自身声明了抽象方法的类本身就是抽象类，因此不做报告。",
+  "Reports a method whose body only repeats the inherited one — 'pass' over a method that does nothing, or calling 'super()' with the same arguments — so the override can be removed.": "报告方法体只是重复继承来的方法（对什么都不做的方法使用 'pass'，或以相同参数调用 'super()'）的重写，这类重写可以删除。",
+  "Circular inheritance: '{name}' inherits from itself": "循环继承：'{name}' 继承了自身",
+  "Method '{name}' is marked @override but no base class declares it": "方法 '{name}' 标记了 @override，但没有任何基类声明该方法",
+  "Class '{name}' does not implement abstract method '{method}'": "类 '{name}' 未实现抽象方法 '{method}'",
+  "Redundant override of '{name}'": "冗余的重写：'{name}'"
 }
