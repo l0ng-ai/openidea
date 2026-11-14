@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
-// macOS 11 can update to Safari 16. Keep this floor in sync with vite.config.ts.
+// Safari 16 is macOS 13's system engine (the app's minimum). Keep this floor in sync with vite.config.ts.
 // Syntax lowering does not replace newer runtime APIs in dependencies.
 const newerStatics = new Set([
   "Promise.withResolvers",

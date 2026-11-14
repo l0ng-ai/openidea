@@ -1,4 +1,5 @@
 /** Response body presentation: content kind detection and pretty-printing. */
+import { formatJsonText } from "@/platform/losslessJson";
 
 export type BodyKind = "json" | "xml" | "html" | "text";
 
@@ -21,9 +22,10 @@ export function bodyKind(contentType: string | null | undefined, body: string): 
   return "text";
 }
 
+/** Pretty-printed JSON with numeric values kept exact (BIGINT ids, high-precision decimals); other bodies as received. */
 export function prettyJson(body: string): string {
   try {
-    return JSON.stringify(JSON.parse(body), null, 2);
+    return formatJsonText(body) ?? body;
   } catch {
     return body;
   }

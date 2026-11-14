@@ -39,7 +39,7 @@ import { registerLocalHistoryActions } from "./localHistoryActions";
 import { MERGE_KIND, type MergeData } from "./mergeKind";
 import { registerMergeActions } from "./mergeActions";
 import { baseName } from "./model";
-import { installDiagnosticsTracking } from "./commitChecks";
+import { installCommitChecks, installDiagnosticsTracking } from "./commitChecks";
 import { installPreparedMessage, useCommit } from "./commitStore";
 import { installDraftRevision, provideCommit } from "./commitSelection";
 import { activate as activateConflictBanner } from "./conflictBanner";
@@ -221,6 +221,7 @@ export function activate(): () => void {
     installRootSync(),
     installGitLog(),
     installDiagnosticsTracking(),
+    installCommitChecks(),
     installPreparedMessage(),
     installDraftRevision(),
     provideCommit(),

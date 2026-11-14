@@ -1,8 +1,9 @@
 /**
  * Commit checks (Settings › Version Control › Commit / Git): before-commit
  * modifications (Reformat code, Optimize imports, Cleanup) applied through
- * the language servers, then the checks (Analyze code, Check TODO) and the Git
- * warnings (detached HEAD / rebase, file names, large files, CRLF line separators).
+ * the language servers, then the checks registered through
+ * `commitCheckRegistry` (Analyze code, Check TODO) and the Git warnings
+ * (detached HEAD / rebase, file names, large files, CRLF line separators).
  */
 import type { ReactNode } from "react";
 import type { Diagnostic } from "@/bindings";
@@ -13,7 +14,9 @@ import { workflowSettings } from "@/platform/workflowSettings";
 import { maybeEditorService, toolWindowService } from "@/workbench/contributions";
 import { baseName, effectiveKind, relTo, stripSlash } from "./model";
 import { logConsole } from "./ops";
-import { currentRepo, useVcs } from "./store";
+import { useVcs } from "./store";
+import type { CommitCandidate, CommitCheck, CommitCheckContext } from "./commitCheckRegistry";
+import { getCommitChecks, registerCommitCheck } from "./commitCheckRegistry";
 import styles from "./common.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -166,12 +169,39 @@ async function modifyFile(path: string, mods: Modifications) {
   }
 }
 
+/**
+ * The before-commit modifications, as one ordered step ahead of the checks: they
+ * rewrite the files the analysis and TODO checks read, and they report no result
+ * of their own. Errors are logged, never thrown.
+ */
+async function modifyFiles(ctx: CommitCheckContext) {
+  const { commit } = ctx.settings;
+  const mods: Modifications = {
+    reformat: commit.reformat,
+    optimizeImports: commit.optimizeImports,
+    cleanup: commit.cleanup,
+  };
+  if (!mods.reformat && !mods.optimizeImports && !mods.cleanup) return;
+  if (!isTauri() || !ctx.existing.length) return;
+  logConsole(
+    "info",
+    `Before commit: ${[mods.optimizeImports && "optimize imports", mods.cleanup && "cleanup", mods.reformat && "reformat code"].filter(Boolean).join(", ")}`,
+  );
+  for (const p of ctx.existing) await modifyFile(p, mods);
+  try {
+    await maybeEditorService()?.saveAll();
+  } catch {
+    // best effort
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Problems
 
 /**
- * A failed before-commit check, shown in the commit panel (as IDEA)
- * while the Commit button turns into "Commit Anyway".
+ * A before-commit problem, shown in the commit panel (as IDEA). Errors hold the
+ * commit back while the Commit button turns into "Commit Anyway"; warnings are
+ * shown without stopping it.
  */
 export interface CommitProblem {
   title: string;
@@ -225,106 +255,101 @@ async function largeFiles(paths: readonly string[], limit: number): Promise<Arra
 }
 
 // ---------------------------------------------------------------------------
+// Built-in checks, in the order they are reported
 
-export interface CommitCandidate {
-  /** Absolute path. */
-  path: string;
-  /** False for deletions. */
-  exists: boolean;
-}
-
-/**
- * Runs the configured before-commit modifications and checks for the files about to
- * be committed. Resolves the problems found; the commit goes ahead only without any.
- */
-export async function runCommitChecks(files: readonly CommitCandidate[], amend: boolean): Promise<CommitProblem[]> {
-  const { commit, git } = workflowSettings().vcs;
-  const branch = useVcs.getState().branch;
-  const problems: CommitProblem[] = [];
-
-  if (git.warnDetachedHead && branch && (!branch.head || branch.operation === "rebase")) {
-    const rebase = branch.operation === "rebase";
-    problems.push({
-      title: rebase ? "Commit during rebase" : "Commit in detached HEAD",
-      text: rebase
-        ? "A rebase is in progress. The commit will become part of the rebased history; usually you continue the rebase instead."
-        : "HEAD is detached: the commit won't belong to any branch and may be lost after checking out another branch. Create a branch first to keep it.",
-    });
-  }
-
-  const existing = files.filter((f) => f.exists).map((f) => f.path);
-  if (git.warnBadFileNames) {
-    // New paths only: a name already in the repository is not this commit's problem.
-    const kinds = new Map(useVcs.getState().status.map((f) => [stripSlash(f.path), effectiveKind(f)]));
-    const added = existing.filter((p) => ["added", "untracked", "renamed"].includes(kinds.get(p) ?? ""));
-    const bad = badFileName(added, useVcs.getState().root ?? "");
-    if (bad)
-      problems.push({
-        title: "File names",
+/** Every built-in check stops the commit (Commit Anyway goes on), as before the registry. */
+const builtinChecks: readonly CommitCheck[] = [
+  {
+    id: "vcs.rebase",
+    title: "Commit during rebase",
+    order: 10,
+    run: (ctx) =>
+      ctx.settings.git.warnDetachedHead && ctx.branch?.operation === "rebase"
+        ? {
+            severity: "error",
+            text: "A rebase is in progress. The commit will become part of the rebased history; usually you continue the rebase instead.",
+          }
+        : null,
+  },
+  {
+    id: "vcs.detachedHead",
+    title: "Commit in detached HEAD",
+    order: 11,
+    run: (ctx) =>
+      ctx.settings.git.warnDetachedHead && ctx.branch && !ctx.branch.head && ctx.branch.operation !== "rebase"
+        ? {
+            severity: "error",
+            text: "HEAD is detached: the commit won't belong to any branch and may be lost after checking out another branch. Create a branch first to keep it.",
+          }
+        : null,
+  },
+  {
+    id: "vcs.fileNames",
+    title: "File names",
+    order: 20,
+    run: (ctx) => {
+      if (!ctx.settings.git.warnBadFileNames) return null;
+      // New paths only: a name already in the repository is not this commit's problem.
+      const kinds = new Map(ctx.status.map((f) => [stripSlash(f.path), effectiveKind(f)]));
+      const added = ctx.existing.filter((p) => ["added", "untracked", "renamed"].includes(kinds.get(p) ?? ""));
+      const bad = badFileName(added, ctx.root);
+      if (!bad) return null;
+      return {
+        severity: "error",
         text:
           bad.kind === "reserved"
             ? tx`Some files use reserved names that are not allowed on Windows: '${bad.name}'. If you commit, it will not be possible to check out the Git repository on Windows.`
             : tx`Some of the file names contain characters that are not allowed on Windows: '${bad.name}'. If you commit, it might not be possible to check out the Git repository on Windows.`,
-      });
-  }
-  if (!isTauri() || !existing.length) return problems;
-
-  if (git.warnLargeFiles) {
-    const large = await largeFiles(existing, git.largeFileMb * 1024 * 1024);
-    if (large.length) {
+      };
+    },
+  },
+  {
+    id: "vcs.largeFiles",
+    title: "Large files",
+    order: 30,
+    run: async (ctx) => {
+      if (!ctx.settings.git.warnLargeFiles || !isTauri() || !ctx.existing.length) return null;
+      const large = await largeFiles(ctx.existing, ctx.settings.git.largeFileMb * 1024 * 1024);
+      if (!large.length) return null;
       const mb = Math.ceil(large.reduce((n, f) => n + f.size, 0) / (1024 * 1024));
-      problems.push({
-        title: "Large files",
+      return {
+        severity: "error",
         text:
           large.length === 1
             ? tx`You are about to commit a large file into the repository: ${baseName(large[0]!.path)} (${mb} MB). It is not recommended to store large files in a Git repository. Consider using Git LFS.`
             : tx`You are about to commit ${large.length} large files into the repository with the total size of ${mb} MB. It is not recommended to store large files in a Git repository. Consider using Git LFS.`,
-      });
-    }
-  }
-
-  const mods: Modifications = {
-    reformat: commit.reformat,
-    optimizeImports: commit.optimizeImports,
-    cleanup: commit.cleanup,
-  };
-  if (mods.reformat || mods.optimizeImports || mods.cleanup) {
-    logConsole(
-      "info",
-      `Before commit: ${[mods.optimizeImports && "optimize imports", mods.cleanup && "cleanup", mods.reformat && "reformat code"].filter(Boolean).join(", ")}`,
-    );
-    for (const p of existing) await modifyFile(p, mods);
-    try {
-      await maybeEditorService()?.saveAll();
-    } catch {
-      // best effort
-    }
-  }
-
-  if (commit.analyzeCode) {
-    // Opening the files makes their language servers analyse them.
-    const opened: number[] = [];
-    for (const p of existing.filter((p) => !analyzed.has(p))) {
-      try {
-        opened.push((await call(commands.docOpen(p))).id);
-      } catch {
-        // binary / unreadable
+      };
+    },
+  },
+  {
+    id: "vcs.analysis",
+    title: "Code analysis",
+    order: 40,
+    run: async (ctx) => {
+      if (!ctx.settings.commit.analyzeCode || !isTauri() || !ctx.existing.length) return null;
+      // Opening the files makes their language servers analyse them.
+      const opened: number[] = [];
+      for (const p of ctx.existing.filter((p) => !analyzed.has(p))) {
+        try {
+          opened.push((await call(commands.docOpen(p))).id);
+        } catch {
+          // binary / unreadable
+        }
       }
-    }
-    try {
-      await waitForAnalysis(existing, opened.length ? 2000 : 0);
-    } finally {
-      opened.forEach((id) => void commands.docClose(id));
-    }
-    const { errors, warnings, files: n } = problemCounts(existing);
-    if (errors + warnings > 0) {
+      try {
+        await waitForAnalysis(ctx.existing, opened.length ? 2000 : 0);
+      } finally {
+        opened.forEach((id) => void commands.docClose(id));
+      }
+      const { errors, warnings, files: n } = ctx.diagnostics(ctx.existing);
+      if (errors + warnings === 0) return null;
       const errorCount = errors === 1 ? tx`${errors} error` : tx`${errors} errors`;
       const warningCount = warnings === 1 ? tx`${warnings} warning` : tx`${warnings} warnings`;
       const found = !warnings ? errorCount : !errors ? warningCount : tx`${errorCount} and ${warningCount}`;
-      problems.push({
-        title: "Code analysis",
+      return {
+        severity: "error",
         text: n === 1 ? tx`${found} found in ${n} file` : tx`${found} found in ${n} files`,
-        details: {
+        fix: {
           label: "Review",
           run: () => {
             try {
@@ -334,27 +359,30 @@ export async function runCommitChecks(files: readonly CommitCandidate[], amend: 
             }
           },
         },
-      });
-    }
-  }
-
-  if (commit.checkTodo) {
-    const root = useVcs.getState().root ?? "";
-    const hits: TodoHit[] = [];
-    for (const p of existing) {
-      try {
-        const [oldText, newText] = await Promise.all([
-          call(commands.vcsFileAt(p, amend ? "HEAD~1" : "HEAD")).catch(() => null),
-          call(commands.fsReadText(p)),
-        ]);
-        hits.push(...(await todosInChanges(p, oldText ?? "", newText)));
-      } catch {
-        // unreadable / binary
+      };
+    },
+  },
+  {
+    id: "vcs.todo",
+    title: "TODO",
+    order: 50,
+    run: async (ctx) => {
+      if (!ctx.settings.commit.checkTodo || !isTauri() || !ctx.existing.length) return null;
+      const hits: TodoHit[] = [];
+      for (const p of ctx.existing) {
+        try {
+          const [oldText, newText] = await Promise.all([
+            call(commands.vcsFileAt(p, ctx.amend ? "HEAD~1" : "HEAD")).catch(() => null),
+            call(commands.fsReadText(p)),
+          ]);
+          hits.push(...(await todosInChanges(p, oldText ?? "", newText)));
+        } catch {
+          // unreadable / binary
+        }
       }
-    }
-    if (hits.length) {
-      problems.push({
-        title: "TODO",
+      if (!hits.length) return null;
+      return {
+        severity: "error",
         text: (
           <>
             <div>
@@ -372,7 +400,7 @@ export async function runCommitChecks(files: readonly CommitCandidate[], amend: 
                       void maybeEditorService()?.openFile(h.path, { selection: { line: h.line, col: 0 }, focus: true })
                     }
                   >
-                    {relTo(root, h.path)}:{h.line + 1}
+                    {relTo(ctx.root, h.path)}:{h.line + 1}
                   </button>{" "}
                   {h.text}
                 </li>
@@ -381,38 +409,92 @@ export async function runCommitChecks(files: readonly CommitCandidate[], amend: 
             </ul>
           </>
         ),
-      });
-    }
-  }
-
-  if (git.warnCrlf) {
-    const autocrlf = (
-      await call(commands.vcsConfigGet(currentRepo(), "core.autocrlf")).catch(() => null)
-    )?.toLowerCase();
-    if (autocrlf !== "true" && autocrlf !== "input") {
+      };
+    },
+  },
+  {
+    id: "vcs.crlf",
+    title: "Line separators",
+    order: 60,
+    run: async (ctx) => {
+      if (!ctx.settings.git.warnCrlf || !isTauri() || !ctx.existing.length) return null;
+      const autocrlf = (await call(commands.vcsConfigGet(ctx.repo, "core.autocrlf")).catch(() => null))?.toLowerCase();
+      if (autocrlf === "true" || autocrlf === "input") return null;
       const crlf: string[] = [];
-      for (const p of existing) {
+      for (const p of ctx.existing) {
         try {
           if ((await call(commands.fsReadText(p))).includes("\r\n")) crlf.push(p);
         } catch {
           // skip
         }
       }
-      if (crlf.length) {
-        const crlfNames = crlf.slice(0, 5).map(baseName).join(", ") + (crlf.length > 5 ? ", …" : "");
-        problems.push({
-          title: "Line separators",
-          text: (
-            <>
-              {crlf.length === 1
-                ? tx`${crlf.length} file (${crlfNames}) contain CRLF line separators and core.autocrlf is not set, so they would be committed with CRLF. Convert them with the line separator widget in the status bar, or set`
-                : tx`${crlf.length} files (${crlfNames}) contain CRLF line separators and core.autocrlf is not set, so they would be committed with CRLF. Convert them with the line separator widget in the status bar, or set`}{" "}
-              <code>git config core.autocrlf input</code>.
-            </>
-          ),
-        });
-      }
+      if (!crlf.length) return null;
+      const crlfNames = crlf.slice(0, 5).map(baseName).join(", ") + (crlf.length > 5 ? ", …" : "");
+      return {
+        severity: "error",
+        text: (
+          <>
+            {crlf.length === 1
+              ? tx`${crlf.length} file (${crlfNames}) contain CRLF line separators and core.autocrlf is not set, so they would be committed with CRLF. Convert them with the line separator widget in the status bar, or set`
+              : tx`${crlf.length} files (${crlfNames}) contain CRLF line separators and core.autocrlf is not set, so they would be committed with CRLF. Convert them with the line separator widget in the status bar, or set`}{" "}
+            <code>git config core.autocrlf input</code>.
+          </>
+        ),
+      };
+    },
+  },
+];
+
+/** Registers the built-in checks; called when the VCS feature activates. */
+export function installCommitChecks(): () => void {
+  const disposers = builtinChecks.map(registerCommitCheck);
+  return () => disposers.reverse().forEach((dispose) => dispose());
+}
+
+// ---------------------------------------------------------------------------
+
+/** What the before-commit pipeline found: the problems to show, and whether they hold the commit. */
+export interface CommitCheckRun {
+  problems: CommitProblem[];
+  blocked: boolean;
+}
+
+const failureText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Runs the before-commit modifications, then the registered checks, for the files
+ * about to be committed. `blocked` means a check reported an error (or could not
+ * run): the commit waits for Commit Anyway; warnings are shown without stopping it.
+ */
+export async function runCommitChecks(files: readonly CommitCandidate[], amend: boolean): Promise<CommitCheckRun> {
+  const { commit, git } = workflowSettings().vcs;
+  const { root, repo, status, branch } = useVcs.getState();
+  const ctx: CommitCheckContext = {
+    files,
+    existing: files.filter((f) => f.exists).map((f) => f.path),
+    amend,
+    root: root ?? "",
+    repo,
+    status,
+    branch,
+    settings: { commit, git },
+    diagnostics: problemCounts,
+  };
+  await modifyFiles(ctx);
+
+  const problems: CommitProblem[] = [];
+  let blocked = false;
+  for (const check of getCommitChecks()) {
+    try {
+      const result = await check.run(ctx);
+      if (!result) continue;
+      problems.push({ title: check.title, text: result.text, details: result.fix });
+      if (result.severity === "error") blocked = true;
+    } catch (e) {
+      // A broken check must not break the commit: report it and let Commit Anyway go on.
+      problems.push({ title: check.title, text: tx`The check could not run: ${failureText(e)}` });
+      blocked = true;
     }
   }
-  return problems;
+  return { problems, blocked };
 }

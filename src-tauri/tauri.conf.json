@@ -41,7 +41,7 @@
     "longDescription": "OpenIDEA is an open-source IDE inspired by IntelliJ IDEA. Not affiliated with JetBrains.",
     "macOS": {
       "entitlements": "./Entitlements.plist",
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "13.0"
     }
   },
   "mainBinaryName": "openidea",
