@@ -38,7 +38,17 @@ import { interpolateLog, logParts, suspends } from "./breakpoints/model";
 import { syncSpecial, useSpecialBreakpoints } from "./breakpoints/special";
 import { refreshExceptionFilters } from "./breakpoints/exceptions";
 import { flashTaskbarForBreakpoint, stopTaskbarFlash } from "./taskbarFlash";
-import { isBrowserLaunch, launchedBrowser, launchedUrl } from "./browser";
+import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
+import {
+  browserLaunch,
+  installedDebugBrowser,
+  isBrowserLaunch,
+  isNodeLaunch,
+  launchedBrowser,
+  launchedUrl,
+  loopbackUrls,
+} from "./browser";
 import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
@@ -464,6 +474,7 @@ function flushConsoleOutput() {
   cancelOutputFlush();
   if (pendingOutput.length === 0) return;
   const chunks = pendingOutput.splice(0);
+  const printed: Array<[DebugSessionId, string]> = [];
   useDebug.setState((s) => {
     const consoleBySession = { ...s.console };
     for (const { session, category, raw } of chunks) {
@@ -471,6 +482,7 @@ function flushConsoleOutput() {
       const spans = ansiStream(session, category).parse(raw);
       const text = spans.map((sp) => sp.text).join("");
       if (!text) continue;
+      printed.push([session, text]);
       const prev = consoleBySession[session] ?? [];
       const next = [...prev];
       appendConsoleLines(next, category, spans);
@@ -480,6 +492,7 @@ function flushConsoleOutput() {
     return { console: consoleBySession };
   });
   republishForPorts();
+  for (const [session, text] of printed) debugServerPage(session, text);
 }
 
 /**
@@ -519,6 +532,61 @@ export async function startBrowserSession(
     await call(commands.debugEvaluateIn(page.id, null, go, "repl")).catch(() => undefined);
   }
   return running.id;
+}
+
+/**
+ * What a debugged Node.js program has shown about its page: the URLs already asked, and the
+ * browser session on the one that answered (null while it starts, undefined until one does).
+ */
+interface ServerPage {
+  asked: Set<string>;
+  page: DebugSessionId | null | undefined;
+}
+
+const serverPages = new Map<DebugSessionId, ServerPage>();
+
+/** URLs asked per run: a program that keeps logging addresses isn't probed without end. */
+const SERVER_URLS_ASKED = 5;
+
+/**
+ * Debugging a program that serves a page (a dev server behind an npm script, an app with
+ * server-side rendering) also debugs the page: each address of this machine it prints is
+ * asked whether it answers with an HTML document, and a browser session opens on the first
+ * that does. An API never gets one. The session ends with the server (`markTerminated`);
+ * closing the browser leaves the server running.
+ */
+function debugServerPage(id: DebugSessionId, output: string) {
+  if (!workflowSettings().debugger.debugServerPage || isRemoteWindow()) return;
+  const s = useDebug.getState().sessions[id];
+  const root = s && rootOf(s);
+  if (!root || !isLive(root) || !isNodeLaunch(root.launch)) return;
+  const known = serverPages.get(root.id) ?? { asked: new Set<string>(), page: undefined };
+  if (known.page !== undefined) return;
+  for (const url of loopbackUrls(output)) {
+    if (known.asked.has(url) || known.asked.size >= SERVER_URLS_ASKED) continue;
+    known.asked.add(url);
+    serverPages.set(root.id, known);
+    void openServerPage(root, known, url);
+  }
+}
+
+async function openServerPage(server: DebugSession, known: ServerPage, url: string) {
+  const isPage = await call(commands.webServesPage(url)).catch(() => false);
+  // Another address may have answered first, or the server stopped meanwhile.
+  if (!isPage || known.page !== undefined || serverPages.get(server.id) !== known) return;
+  known.page = null;
+  const root = useProject.getState().project?.root ?? server.launch?.cwd ?? "";
+  // The server's directory holds the page's sources; the session itself is the project's.
+  const launch = {
+    ...browserLaunch(new URL(url).host, url, await installedDebugBrowser(), server.launch?.cwd ?? root),
+    cwd: root,
+  };
+  const before = useDebug.getState().sessions;
+  const page = await startBrowserSession(launch, { show: false }).catch(() => null);
+  // A browser the user was already debugging in is theirs to stop.
+  if (page == null || before[page]) return;
+  if (serverPages.get(server.id) === known) known.page = page;
+  else void stopSession(page);
 }
 
 /** Split styled output at real line breaks, retaining partial lines across events. */
@@ -873,6 +941,8 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
 function markTerminated(id: DebugSessionId) {
   stopTaskbarFlash();
   forgetImports(id);
+  const page = serverPages.get(id)?.page;
+  if (serverPages.delete(id) && page != null) void stopSession(page);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
   if (st.active === id) {
@@ -1261,6 +1331,7 @@ export function resetSessions() {
   cancelOutputFlush();
   ansiStreams.clear();
   announcedPorts.clear();
+  serverPages.clear();
   useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0, variablesEpoch: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {}, variables: {} });
   publishContext();

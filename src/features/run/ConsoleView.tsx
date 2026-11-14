@@ -20,7 +20,7 @@ import { spanStyle } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
-import { openTarget, openUrl } from "./navigate";
+import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
@@ -49,8 +49,8 @@ const Line = memo(
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind === "url") void openUrl(link.url);
-      else void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd);
+      else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     // A blank line is an empty row: its height comes from CSS, never from a character in the text.
     if (segments.length === 0) return null;

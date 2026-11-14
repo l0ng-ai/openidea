@@ -544,6 +544,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         web::web_browsers,
         web::web_url,
         web::web_open,
+        web::web_serves_page,
         profiler::profiler_prepare,
         profiler::profiler_collect,
         profiler::profiler_gc_before_stop,

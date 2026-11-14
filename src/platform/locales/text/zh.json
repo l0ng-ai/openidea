@@ -8025,5 +8025,9 @@
   "Page": "页面",
   "Timers": "定时器",
   "Also stops at errors a framework catches, such as one thrown in an event handler. Library code is skipped while \"Do not step into library scripts\" is on.": "也会在框架捕获的错误处暂停，例如事件处理函数中抛出的错误。开启“不要步入库脚本”时会跳过库代码。",
-  "The debugger of the running page does not take these breakpoints: {why}": "正在运行的页面的调试器不接受这些断点：{why}"
+  "The debugger of the running page does not take these breakpoints: {why}": "正在运行的页面的调试器不接受这些断点：{why}",
+  "Debug a dev server's page in the browser": "在浏览器中调试开发服务器的页面",
+  "Debug in Browser": "在浏览器中调试",
+  "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).": "在 Chrome 或 Edge 中打开 URL 并附加调试器（参数：URL）。",
+  "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.": "调试启动 Vite、Next.js 等开发服务器的脚本时，同时在 Chrome 或 Edge 中打开其页面并附加调试器。"
 }

@@ -42,7 +42,7 @@ import { closeInstances, instancesOutdated, showInstances, showReferrers, useIns
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
-import { browserLaunchConfig, isBrowserConfig } from "./browser";
+import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
 import {
   isPythonAttachTarget,
@@ -286,6 +286,16 @@ async function startBrowser(config: RunConfig, root: string, show?: boolean) {
   if (browserUnavailable(config.name)) return;
   const launch = browserLaunchConfig(config, root);
   if (launch) await startBrowserSession(launch, { runConfig: config, show });
+}
+
+/** Debugs the page at a URL without a configuration (a link in a console). */
+async function debugInBrowser(arg: unknown) {
+  const root = useProject.getState().project?.root;
+  const url = typeof arg === "string" ? browserUrl(arg) : null;
+  if (!root || !url) return;
+  const name = new URL(url).host || url;
+  if (browserUnavailable(name)) return;
+  await startBrowserSession(browserLaunch(name, url, await installedDebugBrowser(), root));
 }
 
 /** Preparation belongs to a session from the moment the action begins. */
@@ -847,6 +857,15 @@ export function registerDebugActions(): () => void {
       icon: "attach-to-process",
       description: "Attach the debugger to a running Java, Node.js, Python, Go or native process",
       run: () => void openAttachPopup(),
+    },
+    {
+      id: "debug.debugInBrowser",
+      title: "Debug in Browser",
+      category: "Debug",
+      icon: "browser-chrome",
+      description: "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).",
+      hidden: true,
+      run: ({ arg }) => void debugInBrowser(arg),
     },
     {
       id: "debug.runToCursor",

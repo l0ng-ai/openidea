@@ -1640,5 +1640,9 @@
   "Page": "Page",
   "Timers": "Timers",
   "Also stops at errors a framework catches, such as one thrown in an event handler. Library code is skipped while \"Do not step into library scripts\" is on.": "Also stops at errors a framework catches, such as one thrown in an event handler. Library code is skipped while \"Do not step into library scripts\" is on.",
-  "The debugger of the running page does not take these breakpoints: {why}": "The debugger of the running page does not take these breakpoints: {why}"
+  "The debugger of the running page does not take these breakpoints: {why}": "The debugger of the running page does not take these breakpoints: {why}",
+  "Debug a dev server's page in the browser": "Debug a dev server's page in the browser",
+  "Debug in Browser": "Debug in Browser",
+  "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).": "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).",
+  "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.": "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached."
 }
