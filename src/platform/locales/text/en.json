@@ -1322,5 +1322,12 @@
   "Featured": "Featured",
   "All Plugins": "All Plugins",
   "Examples": "Examples",
-  "Remove File": "Remove File"
+  "Remove File": "Remove File",
+  "Docker Compose service {service}": "Docker Compose service {service}",
+  "Docker image {image}": "Docker image {image}",
+  "Copying the libraries from the container…": "Copying the libraries from the container…",
+  "No run target has this id: choose another interpreter.": "No run target has this id: choose another interpreter.",
+  "The container's libraries have not been copied yet.": "The container's libraries have not been copied yet.",
+  "Copy Libraries from the Container Again": "Copy Libraries from the Container Again",
+  "Packages come from the container image and are read-only here. To change them, edit the image or its requirements and rebuild it, then copy the libraries again.": "Packages come from the container image and are read-only here. To change them, edit the image or its requirements and rebuild it, then copy the libraries again."
 }

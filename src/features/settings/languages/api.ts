@@ -4,10 +4,14 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { create } from "zustand";
+import { tx } from "@/platform/i18n";
+import type { RunTargetValid } from "@/platform/remoteSettings";
+import type { SelectOption } from "@/ui";
 import {
   call,
   commands,
   isTauri,
+  type ContainerPython,
   nextRequestId,
   type PhpLanguageLevels,
   type PythonPackage,
@@ -15,7 +19,7 @@ import {
   type SdkKind,
 } from "@/platform/ipc";
 
-export type { PythonPackage, Sdk, SdkKind };
+export type { ContainerPython, PythonPackage, Sdk, SdkKind };
 
 interface SdkCache {
   byKind: Partial<Record<SdkKind, Sdk[]>>;
@@ -121,6 +125,38 @@ export function pip(
 /** Interpreter the project uses when none is configured (its virtualenv). */
 export function effectivePython(): Promise<string | null> {
   return isTauri() ? call(commands.sdkPythonEffective(null)) : Promise.resolve(null);
+}
+
+/** What `languages.python.interpreter` starts with when the interpreter is a run target's. */
+const TARGET_PREFIX = "target:";
+
+/** The run target id of a `target:<id>` interpreter value; null for a local interpreter. */
+export function interpreterTarget(value: string | null | undefined): string | null {
+  const v = value?.trim() ?? "";
+  if (!v.startsWith(TARGET_PREFIX)) return null;
+  return v.slice(TARGET_PREFIX.length).trim() || null;
+}
+
+/** Docker and Compose run targets as interpreter choices (`target:<id>`). */
+export function targetChoices(targets: readonly RunTargetValid[]): SelectOption[] {
+  return targets
+    .filter((t) => t.kind === "docker" || t.kind === "compose")
+    .map((t) => ({
+      value: `${TARGET_PREFIX}${t.id}`,
+      label: t.name || t.id,
+      verbatim: true,
+      detail: t.kind === "compose" ? tx`Docker Compose service ${t.service}` : tx`Docker image ${t.image}`,
+    }));
+}
+
+/** The project interpreter when it is a Docker or Compose run target's, with its library snapshot. */
+export function containerPython(): Promise<ContainerPython | null> {
+  return isTauri() ? call(commands.sdkContainerPython()) : Promise.resolve(null);
+}
+
+/** Copies the container's libraries again (after the image was rebuilt). */
+export function refreshContainerPython(): Promise<ContainerPython | null> {
+  return isTauri() ? call(commands.sdkContainerPythonRefresh()) : Promise.resolve(null);
 }
 
 /** The PHP language level of the project `path` belongs to; null outside Tauri. */

@@ -168,6 +168,7 @@ impl Host {
                 let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
@@ -616,6 +617,7 @@ impl Host {
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
         }
+        crate::ops::sdk::container_python::ensure(self, &project);
         Ok(project)
     }
 

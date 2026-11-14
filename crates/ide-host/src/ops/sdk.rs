@@ -8,6 +8,9 @@ use ide_sdk::python::PythonPackage;
 use ide_sdk::{Sdk, SdkKind};
 use std::path::PathBuf;
 
+pub(crate) mod container_python;
+pub use container_python::{ContainerPython, sdk_container_python, sdk_container_python_refresh};
+
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
 }
@@ -168,12 +171,17 @@ pub async fn sdk_project_libraries(
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     let cancel = host.begin_project_request(window, request);
+    let container = container_python::library_group(host, &root, &settings);
     let libraries = {
         let (root, settings, cancel, on_groups) = (root.clone(), settings.clone(), cancel.clone(), on_groups.clone());
         tokio::task::spawn_blocking(move || {
-            ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
+            if let Some(group) = &container {
+                let _ = on_groups.send(vec![group.clone()]);
+            }
+            let groups = ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
                 let _ = on_groups.send(groups);
-            })
+            });
+            container.into_iter().chain(groups).collect::<Vec<_>>()
         })
     };
     let dependencies = {
@@ -309,6 +317,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
+    d.add("sdk_container_python", |c| async move { sdk_container_python(&c.host, &c.window) });
+    d.add("sdk_container_python_refresh", |c| async move { sdk_container_python_refresh(&c.host, &c.window).await });
     d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
     d.add(
         "sdk_php_language_level",

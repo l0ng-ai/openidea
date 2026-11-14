@@ -7706,5 +7706,12 @@
   "Download to…": "下载到…",
   "Download to": "下载到",
   "Download Remote Files Into Folder": "将远程文件下载到文件夹",
-  "Download Remote Host files into a local folder (arg: { server, paths, target })": "将远程主机中的文件下载到本地文件夹（参数：{ server, paths, target }）"
+  "Download Remote Host files into a local folder (arg: { server, paths, target })": "将远程主机中的文件下载到本地文件夹（参数：{ server, paths, target }）",
+  "Docker Compose service {service}": "Docker Compose 服务 {service}",
+  "Docker image {image}": "Docker 镜像 {image}",
+  "Copying the libraries from the container…": "正在从容器复制库…",
+  "No run target has this id: choose another interpreter.": "没有使用此 ID 的运行目标：请选择其他解释器。",
+  "The container's libraries have not been copied yet.": "尚未从容器复制库。",
+  "Copy Libraries from the Container Again": "重新从容器复制库",
+  "Packages come from the container image and are read-only here. To change them, edit the image or its requirements and rebuild it, then copy the libraries again.": "软件包来自容器镜像，在此处只读。如需更改，请修改镜像或其依赖要求并重新构建，然后再次复制库。"
 }

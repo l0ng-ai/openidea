@@ -7,8 +7,9 @@ import { tx } from "@/platform/i18n";
 import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
-import { effectivePython, type Sdk } from "./api";
+import { effectivePython, interpreterTarget, targetChoices, type Sdk } from "./api";
 import { tildify } from "./components";
+import { validateRunTargets } from "@/platform/remoteSettings";
 
 /** What the widget last resolved for a project, so the popup action can read it without a render. */
 interface Status {
@@ -69,6 +70,7 @@ function PythonStatus() {
   const root = useProject((s) => s.project?.root);
   const trusted = useProject((s) => s.project?.trusted !== false);
   const configured = useProject((s) => s.settings?.languages?.python?.interpreter ?? "");
+  const runTargets = useProject((s) => s.settings?.runTargets);
   const status = usePopup((s) => s.status);
   const open = usePopup((s) => s.open);
   const anchor = useRef<HTMLButtonElement>(null);
@@ -128,7 +130,12 @@ function PythonStatus() {
   if (!popupShown() || !status) return null;
   const current = status;
   const choices = interpreterChoices(current.sdks, current.python);
-  const label = choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter");
+  // Docker / Compose run targets can be the interpreter too (`target:<id>`).
+  const targets = targetChoices(validateRunTargets(runTargets));
+  const target = interpreterTarget(current.configured) ? current.configured.trim() : null;
+  const targetLabel = target ? (targets.find((t) => t.value === target)?.label ?? target) : null;
+  const label = targetLabel ?? choices.find((sdk) => sdk.path === current.python)?.name ?? tx("No interpreter");
+  const select = (value: string) => void executeAction("python.selectInterpreter", value);
   const names = new Map<string, number>();
   for (const sdk of choices) names.set(sdk.name, (names.get(sdk.name) ?? 0) + 1);
   const items: MenuItem[] = [
@@ -138,8 +145,15 @@ function PythonStatus() {
       verbatim: true,
       // Several system interpreters share a name ("Python 3.11"); their paths tell them apart.
       shortcut: (names.get(sdk.name) ?? 0) > 1 ? tildify(sdk.path) : undefined,
-      checked: sdk.path === current.python,
-      run: () => void executeAction("python.selectInterpreter", sdk.path),
+      checked: !target && sdk.path === current.python,
+      run: () => select(sdk.path),
+    })),
+    ...targets.map((t): MenuItem => ({
+      label: t.label,
+      verbatim: true,
+      shortcut: t.detail,
+      checked: t.value === target,
+      run: () => select(t.value),
     })),
     { kind: "separator" },
     { kind: "action", action: "python.addInterpreter" },
@@ -149,13 +163,17 @@ function PythonStatus() {
     <>
       <BarButton
         ref={anchor}
-        tooltip={current.python ?? tx("No interpreter")}
+        tooltip={
+          target
+            ? (targets.find((t) => t.value === target)?.detail ?? target)
+            : (current.python ?? tx("No interpreter"))
+        }
         aria-label={tx`Python Interpreter: ${label}`}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => void executeAction("python.interpreterPopup")}
       >
-        {!current.python && <Icon name="warning" size={14} />}
+        {!current.python && !target && <Icon name="warning" size={14} />}
         {label}
       </BarButton>
       <Menu

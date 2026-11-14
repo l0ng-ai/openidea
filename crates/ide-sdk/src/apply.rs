@@ -66,8 +66,12 @@ pub fn ruff_configuration(root: &Path, configured: &str) -> IdeResult<Option<Pat
 
 /// The project interpreter: the configured one, else a project virtualenv
 /// (`.venv`, `venv`, …) or pixi environment (`.pixi/envs/<env>`) in the project
-/// root, else the Python the project pins for mise / asdf.
+/// root, else the Python the project pins for mise / asdf. `None` when the project
+/// interpreter is a run target's (see [`crate::container_python`]).
 pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
+    if s.languages.python.run_target().is_some() {
+        return None;
+    }
     setting_path(root, &s.languages.python.interpreter)
         .or_else(|| project_venv_python(root))
         .or_else(|| pinned::pinned_python(root))
@@ -75,6 +79,9 @@ pub fn python_interpreter(root: &Path, s: &Settings) -> Option<PathBuf> {
 
 /// An explicit project interpreter wins; otherwise use the closest virtualenv to the file.
 pub fn python_interpreter_near(root: &Path, near: Option<&Path>, s: &Settings) -> Option<PathBuf> {
+    if s.languages.python.run_target().is_some() {
+        return None;
+    }
     if let Some(python) = setting_path(root, &s.languages.python.interpreter) {
         return Some(python);
     }
@@ -1389,6 +1396,9 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
         || matches!(config.kind.as_str(), "node" | "npm" | "vitest" | "jest" | "mocha")
     {
         &settings.languages.node.run_target
+    } else if let Some(target) = settings.languages.python.run_target().filter(|_| is_python_config(config, &name)) {
+        // The project interpreter is a run target's: Python runs there.
+        return Some(target);
     } else {
         return non_empty(&settings.run.default_target);
     };
@@ -1399,6 +1409,10 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
     } else {
         Some(target)
     }
+}
+
+fn is_python_config(config: &RunConfig, program: &str) -> bool {
+    matches!(config.kind.as_str(), "python" | "pytest" | "django-test") || is_python_command(program)
 }
 
 /// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
@@ -1445,7 +1459,8 @@ pub fn apply_maven_env(c: &mut RunConfig, root: &Path, s: &Settings) {
 /// cargo / go configs the selected toolchain, Maven / Gradle their runner JDK
 /// (and Maven the configured home and options).
 pub fn apply_to_run_configs(configs: &mut [RunConfig], root: &Path, s: &Settings) {
-    let explicit_python = setting_path(root, &s.languages.python.interpreter);
+    let explicit_python =
+        setting_path(root, &s.languages.python.interpreter).filter(|_| s.languages.python.run_target().is_none());
     let pm = non_empty(&s.languages.node.package_manager);
     let php = setting_path(root, &s.languages.php.interpreter);
     let rust = rust_bin(root, s);

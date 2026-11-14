@@ -971,6 +971,40 @@ export const commands = {
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
+	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
+	sdkContainerPython: () => typedError<{
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+} | null, IdeError>(__TAURI_INVOKE("sdk_container_python")),
+	/**  Copies the container's Python libraries again (after the image changed). */
+	sdkContainerPythonRefresh: () => typedError<{
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+} | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**
 	 *  The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
 	 *  project root).
@@ -3122,6 +3156,24 @@ export type ConsoleSettings = {
 };
 
 export type ContainerOp = "start" | "stop" | "restart" | "pause" | "unpause" | "kill";
+
+/**  The project interpreter when it is a run target's. */
+export type ContainerPython = {
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+};
 
 /**  ContentAction data exchanged with the IDE. */
 export type ContentAction = {
@@ -8128,7 +8180,10 @@ export type PythonPackage = {
 };
 
 export type PythonSettings = {
-	/**  Project interpreter executable; empty = auto-detect (project venv, else `python3`). */
+	/**
+	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
+	 *  `target:<run-target-id>` = the Python of a Docker or Compose run target.
+	 */
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,

@@ -98,6 +98,27 @@ describe("Python interpreter status", () => {
     expect(screen.getByText("/usr/local/bin/python3.11")).toBeTruthy();
     expect(screen.queryByText("/venv/bin/python")).toBeNull();
   });
+  it("shows a run target interpreter by name and offers container targets", async () => {
+    mocks.files.mockResolvedValue([{ path: "/project/manage.py" }]);
+    mocks.detect.mockResolvedValue([{ path: "/venv/python", name: "Python 3.12 (.venv)" }]);
+    const runTargets = [
+      { kind: "compose", id: "web", name: "Compose web", service: "web" },
+      { kind: "docker", id: "img", name: "Image", image: "python:3.12" },
+      { kind: "ssh", id: "box", name: "Build box" },
+    ];
+    useProject.setState({
+      settings: { languages: { python: { interpreter: "target:web" } }, runTargets } as never,
+    });
+    mount();
+    const button = await screen.findByRole("button", { name: "Python Interpreter: Compose web" });
+    expect(button.querySelector("svg")).toBeNull();
+    await act(() => executeAction("python.interpreterPopup"));
+    expect(await screen.findByText("Docker Compose service web")).toBeTruthy();
+    expect(screen.getByText("Image")).toBeTruthy();
+    expect(screen.queryByText("Build box")).toBeNull();
+    await act(async () => screen.getByText("Image").click());
+    expect(mocks.set).toHaveBeenCalledWith("project", "languages.python.interpreter", JSON.stringify("target:img"));
+  });
   it("opens the Python page when the widget is hidden", async () => {
     const run = vi.fn();
     const off = registerAction({ id: "file.settings", title: "Settings…", run });
