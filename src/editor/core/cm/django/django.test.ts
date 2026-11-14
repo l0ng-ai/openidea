@@ -168,8 +168,10 @@ describe("Django template grammar", () => {
       moduleStyle: "es",
       typeScript: true,
     });
-    expect(parser).toBe(readFileSync(resolve(dir, "parser.ts"), "utf8"));
-    expect(terms).toBe(readFileSync(resolve(dir, "parser.terms.ts"), "utf8"));
+    // Generated files are checked in with LF; a Windows checkout may hold CRLF.
+    const lf = (s: string) => s.replace(/\r\n/g, "\n");
+    expect(lf(parser)).toBe(lf(readFileSync(resolve(dir, "parser.ts"), "utf8")));
+    expect(lf(terms)).toBe(lf(readFileSync(resolve(dir, "parser.terms.ts"), "utf8")));
   });
 });
 

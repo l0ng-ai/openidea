@@ -21,6 +21,28 @@ pub fn close(host: &Host, window: &str, doc: DocId) -> IdeResult<()> {
     Ok(())
 }
 
+/// Opens an editable untitled buffer (a new-file tab); it reaches the disk
+/// through [`save_as`], which turns it into a regular file document. `name`
+/// re-references an already minted buffer instead of creating one.
+pub async fn open_untitled(host: &Host, window: &str, name: Option<String>) -> IdeResult<DocumentInfo> {
+    let project = host.project(window)?;
+    host.blocking(move || project.documents.open_untitled(name.as_deref())).await
+}
+
+/// Save As for an untitled buffer ([`Documents::save_as`]); LightEdit windows
+/// start watching the saved file's folder.
+pub async fn save_as(host: &Host, window: &str, doc: DocId, path: PathBuf) -> IdeResult<DocumentInfo> {
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let info = project.documents.save_as(doc, &path)?;
+        if let Some(dir) = path.parent().filter(|_| project.light) {
+            project.watch_light_dir(dir);
+        }
+        Ok(info)
+    })
+    .await
+}
+
 /// Applies a CodeMirror change set; returns the new version (`outOfSync` when `base_version` is stale).
 pub fn edit(host: &Host, window: &str, doc: DocId, base_version: u32, changes: ChangeSet) -> IdeResult<u32> {
     host.project(window)?.documents.edit(doc, base_version, changes)

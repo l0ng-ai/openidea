@@ -193,6 +193,12 @@ fn read_only_error(path: &Path) -> IdeError {
     IdeError::new(ErrorKind::PermissionDenied, format!("{} is read-only", path.display()))
 }
 
+/// The synthetic key of an unsaved new-file buffer (`untitled:Untitled-1`);
+/// minted by [`Documents::open_untitled`], replaced by a real path on save.
+fn is_untitled(path: &Path) -> bool {
+    path.to_str().is_some_and(|p| p.starts_with("untitled:"))
+}
+
 impl Documents {
     pub fn new(sink: SharedSink, detect_language: Box<DetectLanguage>) -> Self {
         Self {
@@ -529,6 +535,75 @@ impl Documents {
         Ok(info)
     }
 
+    /// Opens (or re-references) an editable buffer without a file behind it:
+    /// a new-file tab ("Untitled-1"). Keyed by an `untitled:` URI like virtual
+    /// documents, so it never touches the disk until [`Documents::save_as`]
+    /// gives it a path (which also re-detects the language). Encoding, BOM and
+    /// line ending come from the file defaults. `name` re-references an
+    /// existing buffer (`Some("untitled:Untitled-1")`); `None` mints the
+    /// first free one.
+    pub fn open_untitled(&self, name: Option<&str>) -> IdeResult<DocumentInfo> {
+        let _operation = self.operations.lock();
+        let key = name.map(PathBuf::from).unwrap_or_else(|| self.next_untitled_key());
+        if let Some(info) = self.reopen(&key) {
+            return Ok(info);
+        }
+        let defaults = self.file_defaults();
+        let mut doc = Document::new("");
+        doc.set_line_ending(defaults.line_ending);
+        let state = DocState {
+            path: key.clone(),
+            doc,
+            language: LanguageId::plain_text(),
+            ui_mode: None,
+            encoding: defaults.encoding.clone(),
+            has_bom: defaults.encoding == "utf-8" && defaults.utf8_bom,
+            native_to_ascii: false,
+            read_only: false,
+            large: false,
+            editorconfig: None,
+            observed: true,
+            binary: false,
+            dirty: false,
+            can_reload_encoding: false,
+            encoding_chosen: false,
+            disk_mtime: 0.0,
+            disk_len: 0,
+            closed: false,
+            uri: Some(key.to_string_lossy().into_owned()),
+        };
+        let slot: Slot = Arc::new(Mutex::new(state));
+        let st = slot.lock();
+        let id = {
+            let mut reg = self.registry.lock();
+            if reg.by_key.contains_key(&key) {
+                // Lost a race with a concurrent open of the same untitled buffer.
+                drop(reg);
+                drop(st);
+                return self.reopen(&key).ok_or_else(|| IdeError::internal("document vanished while opening"));
+            }
+            let id = DocId::next();
+            reg.by_key.insert(key.clone(), id);
+            reg.docs.insert(id, RegEntry { slot: slot.clone(), refs: 1, keys: vec![key] });
+            id
+        };
+        let info = Self::info(id, &st);
+        for o in self.observers() {
+            o.opened(&info);
+        }
+        Ok(info)
+    }
+
+    /// The first free `untitled:Untitled-N` key.
+    fn next_untitled_key(&self) -> PathBuf {
+        let reg = self.registry.lock();
+        let mut n = 1;
+        while reg.by_key.contains_key(&PathBuf::from(format!("untitled:Untitled-{n}"))) {
+            n += 1;
+        }
+        PathBuf::from(format!("untitled:Untitled-{n}"))
+    }
+
     fn reopen(&self, path: &Path) -> Option<DocumentInfo> {
         let slot = {
             let mut reg = self.registry.lock();
@@ -740,6 +815,90 @@ impl Documents {
         })
     }
 
+    /// Save As for an untitled buffer: writes it to `target` (creating missing
+    /// parent folders) and turns it into a regular file document — the buffer
+    /// keeps its identity (undo history, version), the registry is re-keyed and
+    /// the language is re-detected from the new path. The target path must not
+    /// be open as another document.
+    pub fn save_as(&self, doc: DocId, target: &Path) -> IdeResult<DocumentInfo> {
+        let _operation = self.operations.lock();
+        // The caller picks a real file path; an `untitled:` key is never one
+        // (and must not be resolved against the working directory either).
+        if is_untitled(target) {
+            return Err(IdeError::invalid("cannot save over an untitled buffer"));
+        }
+        let target = absolute(target);
+        {
+            let reg = self.registry.lock();
+            if let Some(other) = Self::lookup(&reg, &target)
+                && other != doc
+            {
+                return Err(IdeError::invalid(format!("{} is already open", target.display())));
+            }
+        }
+        self.with_doc(doc, |st| {
+            if st.uri.is_none() || !is_untitled(&st.path) {
+                return Err(IdeError::invalid("only an untitled document can be saved to a new path"));
+            }
+            let text = st.doc.text_for_save();
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mtime = if st.native_to_ascii {
+                ide_vfs::save_properties_text(&target, &text)?
+            } else {
+                ide_vfs::save_text(&target, &text, &st.encoding, st.has_bom)?
+            };
+            // Re-key the registry before anyone opens the new path in parallel.
+            let keys = keys_for(&target);
+            {
+                let mut reg = self.registry.lock();
+                let old_keys = match reg.docs.get_mut(&doc) {
+                    Some(entry) => std::mem::take(&mut entry.keys),
+                    None => return Err(IdeError::not_found("document closed while saving")),
+                };
+                for k in &old_keys {
+                    if reg.by_key.get(k) == Some(&doc) {
+                        reg.by_key.remove(k);
+                    }
+                }
+                for k in &keys {
+                    reg.by_key.insert(k.clone(), doc);
+                }
+                if let Some(entry) = reg.docs.get_mut(&doc) {
+                    entry.keys = keys;
+                }
+            }
+            let old_path = std::mem::replace(&mut st.path, target.clone());
+            st.uri = None;
+            let defaults = self.file_defaults();
+            let first_line = st.doc.text();
+            let first_line = first_line.lines().next();
+            let language = (self.detect_language)(&st.path, first_line);
+            let ui_mode = (self.detect_ui_mode)(&st.path, &language);
+            let language_changed = language != st.language;
+            st.language = language.clone();
+            st.ui_mode = ui_mode;
+            st.editorconfig = if defaults.editorconfig { self.editorconfig.resolve(&st.path) } else { None };
+            st.native_to_ascii = defaults.native_to_ascii_for(&st.path);
+            st.disk_mtime = mtime;
+            st.disk_len = disk_len(&st.path);
+            self.set_dirty(doc, st, false);
+            let info = Self::info(doc, st);
+            if st.observed {
+                for o in self.observers() {
+                    o.closed(doc, &old_path);
+                    o.opened(&info);
+                    o.saved(doc, &st.path, &st.doc.text());
+                }
+            }
+            if language_changed {
+                self.sink.emit(IdeEvent::DocLanguage { doc, language, ui_mode: st.ui_mode.clone() });
+            }
+            Ok(info)
+        })
+    }
+
     /// Saves every dirty document; reports the first failure after trying all.
     pub fn save_all(&self) -> IdeResult<()> {
         let ids: Vec<DocId> = self.registry.lock().docs.keys().copied().collect();
@@ -894,8 +1053,11 @@ impl Documents {
     /// is kept and the next save writes it in the new encoding.
     pub fn set_encoding(&self, doc: DocId, encoding: &str, reload: bool) -> IdeResult<DocumentEncoding> {
         self.with_doc(doc, |st| {
-            if st.uri.is_some() {
+            if st.uri.is_some() && !is_untitled(&st.path) {
                 return Err(read_only_error(&st.path));
+            }
+            if reload && st.uri.is_some() {
+                return Err(IdeError::invalid("save the file before reloading it with another encoding"));
             }
             ide_vfs::encode("", encoding, false)?;
             if reload {
@@ -937,6 +1099,42 @@ impl Documents {
         self.with_doc(doc, |st| Ok(st.uri.clone()))
     }
 
+    /// Whether this is an untitled (new-file) buffer: editable, no file behind
+    /// it until [`Documents::save_as`].
+    pub fn is_untitled(&self, doc: DocId) -> IdeResult<bool> {
+        self.with_doc(doc, |st| Ok(is_untitled(&st.path)))
+    }
+
+    /// The open untitled buffers: `(key, text, dirty)` — they belong to the
+    /// window rather than a project, and [`Documents::restore_untitled_buffer`]
+    /// carries them into a project's fresh document registry.
+    pub fn untitled_buffers(&self) -> Vec<(String, String, bool)> {
+        let slots: Vec<Slot> = self.registry.lock().docs.values().map(|e| e.slot.clone()).collect();
+        let mut out = Vec::new();
+        for slot in slots {
+            let st = slot.lock();
+            if !st.closed && is_untitled(&st.path) {
+                out.push((st.path.to_string_lossy().into_owned(), st.doc.text(), st.dirty));
+            }
+        }
+        out
+    }
+
+    /// Recreates an untitled buffer carried over from the window's previous
+    /// project: same key, same text, same dirty flag.
+    pub fn restore_untitled_buffer(&self, key: &str, text: &str, dirty: bool) -> IdeResult<()> {
+        let info = self.open_untitled(Some(key))?;
+        if info.text != text {
+            self.replace_all(info.id, text)?;
+        }
+        // `replace_all` marks the buffer dirty; the carried flag is authoritative.
+        self.with_doc(info.id, |st| {
+            self.set_dirty(info.id, st, dirty);
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// Re-decoded content of a virtual document ("Reload with Encoding"):
     /// replaces the text and the encoding label, keeping the document
     /// read-only and clean. The caller re-reads the origin (archive entry,
@@ -967,7 +1165,7 @@ impl Documents {
     /// Adds or removes the BOM on a UTF-8 document; the change is written on save.
     pub fn set_bom(&self, doc: DocId, has_bom: bool) -> IdeResult<DocumentEncoding> {
         self.with_doc(doc, |st| {
-            if st.uri.is_some() || st.read_only {
+            if st.read_only || (st.uri.is_some() && !is_untitled(&st.path)) {
                 return Err(read_only_error(&st.path));
             }
             if st.encoding != "utf-8" || st.native_to_ascii {

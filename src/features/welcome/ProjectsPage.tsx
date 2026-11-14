@@ -33,6 +33,9 @@ function HeaderButtons() {
   const openKey = shortcutLabel("file.openProject");
   return (
     <div className={styles.headerButtons}>
+      <Button disabled={opening} onClick={() => void executeAction("file.newUntitled")}>
+        <T>New File</T>
+      </Button>
       {canCreate && (
         <Button disabled={opening} onClick={() => void executeAction("file.newProject")}>
           <T>New Project</T>
@@ -44,6 +47,9 @@ function HeaderButtons() {
         title={openKey ? tx`Open (${openKey})` : "Open"}
       >
         <T>Open</T>
+      </Button>
+      <Button disabled={opening} onClick={() => void executeAction("file.openFile")}>
+        <T>Open File</T>
       </Button>
       {canClone && (
         <Button onClick={() => void executeAction("vcs.clone")}>
@@ -81,6 +87,12 @@ function Landing() {
         <T>You can also drop a folder onto this window.</T>
       </p>
       <div className={styles.landingActions}>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
+          <span className={styles.landingIcon}>
+            <Icon name="plus" size={20} />
+          </span>
+          <T>New File</T>
+        </button>
         {canCreate && (
           <button
             type="button"
@@ -104,6 +116,12 @@ function Landing() {
             <Icon name="folder-open" size={20} />
           </span>
           <T>Open</T>
+        </button>
+        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.openFile")}>
+          <span className={styles.landingIcon}>
+            <Icon name="file" size={20} />
+          </span>
+          <T>Open File</T>
         </button>
         {canClone && (
           <button type="button" className={styles.landingAction} onClick={() => void executeAction("vcs.clone")}>

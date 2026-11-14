@@ -7,10 +7,13 @@
 import {
   open as pluginOpen,
   save as pluginSave,
+  type DialogFilter,
   type OpenDialogOptions,
   type OpenDialogReturn,
   type SaveDialogOptions,
 } from "@tauri-apps/plugin-dialog";
+
+export type { SaveDialogOptions, DialogFilter };
 import { call, commands } from "@/platform/ipc";
 
 let needsGtk: boolean | undefined;

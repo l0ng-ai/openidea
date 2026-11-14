@@ -75,6 +75,11 @@ export const commands = {
 	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
 	 */
 	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
+	/**
+	 *  LightEdit without a file (File › New File from a welcome window); returns
+	 *  the effective (global) settings.
+	 */
+	lightEditOpenUntitled: () => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open_untitled")),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
 	trusted: boolean,
@@ -325,6 +330,11 @@ export const commands = {
 	 *  editor buffer, so syntax features and language-server requests work in it.
 	 */
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
+	/**
+	 *  Opens an editable untitled buffer (a new-file tab); it reaches the disk
+	 *  through `doc_save_as`, which turns it into a regular file document.
+	 */
+	docOpenUntitled: (name: string | null) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_untitled", { name })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
@@ -332,6 +342,11 @@ export const commands = {
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
+	/**
+	 *  Save As for an untitled buffer: writes it to `path` and re-keys the buffer
+	 *  (undo history and version are kept; the language is re-detected).
+	 */
+	docSaveAs: (doc: DocId, path: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_save_as", { doc, path })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),

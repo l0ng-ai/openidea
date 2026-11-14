@@ -12,6 +12,7 @@ import { TerminationOverlay } from "./termination";
 import { InvalidateCachesOverlay, registerInvalidateCachesActions } from "./InvalidateCaches";
 import { buildInfo } from "./host";
 import { KeymapReferenceOverlay } from "./KeymapReference";
+import { EditorModeStatus } from "./EditorModeStatus";
 import { LightEditStatus } from "./LightEditStatus";
 import { installLocaleSync, registerLocalizedActions } from "./locale";
 import { installMenuBridge } from "./menuBridge";
@@ -40,10 +41,16 @@ export function activate(): () => void {
     registerOverlay({ id: "app.termination", component: TerminationOverlay }),
     registerStatusItem({
       id: "app.lightEdit",
-      align: "left",
-      priority: 20,
+      align: "right",
+      priority: 60,
       component: LightEditStatus,
       lightEdit: true,
+    }),
+    registerStatusItem({
+      id: "app.editorMode",
+      align: "right",
+      priority: 60,
+      component: EditorModeStatus,
     }),
     registerLocalizedActions(projectActions),
     registerPowerSaveBanner(),

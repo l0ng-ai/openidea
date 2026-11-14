@@ -15,6 +15,7 @@ import {
   confirmLeaveProject,
   dirname,
   openLightEdit,
+  openLightEditUntitled,
   openProject,
   provideStartupLaunch,
   useProject,
@@ -26,6 +27,7 @@ import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
 import { chooseProjectWindow } from "@/workbench/projectWindow";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
+import { editorSwitching } from "@/editor/api";
 import { showWorkspaceDialog } from "./WorkspaceDialog";
 
 export const LAUNCH_EVENT = "openidea://launch";
@@ -481,6 +483,35 @@ export function windowActions(): Action[] {
       },
     },
     {
+      id: "file.newUntitled",
+      title: t("app.action.newFile"),
+      category: t("app.category.file"),
+      icon: "plus",
+      keywords: ["new", "create", "untitled", "file", "light edit"],
+      run: async () => {
+        if (desktopOnly()) return;
+        const s = useProject.getState();
+        // A welcome window becomes a LightEdit one first (its buffers need a backend project).
+        if (!s.project && !s.lightEdit) await openLightEditUntitled();
+        await editorService().openUntitled?.({ focus: true });
+      },
+    },
+    {
+      // The status bar's mode switch: this window becomes a file editor one.
+      // Untitled buffers follow the window; project files go through the
+      // unsaved-changes guard inside openLightEditUntitled's project close.
+      id: "app.editorMode",
+      title: t("app.action.editorMode"),
+      category: t("app.category.file"),
+      icon: "file",
+      keywords: ["file editor", "light edit", "switch", "mode"],
+      run: async () => {
+        if (desktopOnly()) return;
+        if (!(await confirmLeaveProject())) return;
+        await openLightEditUntitled();
+      },
+    },
+    {
       // Files and folders dropped on the Welcome screen.
       id: "file.openPaths",
       title: "Open Paths",
@@ -578,7 +609,9 @@ async function closeThisWindow(): Promise<void> {
 export function installLightEditAutoClose(closeWindow: () => Promise<void> = closeThisWindow): () => void {
   const editor = maybeEditorService();
   const off = editor?.onActiveInputChange?.((input) => {
-    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length) return;
+    // A mode switch clears and re-fills the tabs in place: while it runs, the
+    // momentarily empty editor must not read as "the user closed everything".
+    if (input || !useProject.getState().lightEdit || editor?.openTabs?.().length || editorSwitching()) return;
     void closeWindow().catch((e) => console.warn("could not close the window", e));
   });
   return () => off?.();
