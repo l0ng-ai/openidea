@@ -1171,19 +1171,19 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         // Hybrid mode: one program holds every .vue's virtual TypeScript, so the
         // heap must clear it (vtsls' default 3072 dies in a GC death spiral), and
         // the syntax tsserver duplicates the plugin and its file watching.
-        let memory = match s.languages.typescript.tsserver_max_memory {
-            0 => 8192,
-            n => n,
-        };
         merge_init_options(
             cfg,
-            json!({ "typescript": { "tsserver": { "useSyntaxServer": "never", "maxTsServerMemory": memory } } }),
+            json!({ "typescript": { "tsserver": { "useSyntaxServer": "never", "maxTsServerMemory": 8192 } } }),
         );
         // A configured project resolves its own types; the typings installer only
         // serves inferred projects and keeps scanning npm in the background.
         if server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file()) {
             merge_init_options(cfg, json!({ "typescript": { "disableAutomaticTypeAcquisition": true } }));
         }
+    }
+    let memory = s.languages.typescript.tsserver_max_memory;
+    if name == "vtsls" && memory > 0 {
+        merge_init_options(cfg, json!({ "typescript": { "tsserver": { "maxTsServerMemory": memory } } }));
     }
     if name == "vtsls"
         && cfg.tsserver_project
@@ -2179,6 +2179,13 @@ mod maven_linkage_tests {
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
         assert!(options.pointer("/typescript/tsserver/maxTsServerMemory").is_none());
+        // A user-set limit applies to plain TypeScript projects too.
+        s.languages.typescript.tsserver_max_memory = 12288;
+        let mut cfg = custom_server("vtsls", &LanguageServerSettings::default());
+        configure_server(&mut cfg, root, root, &s);
+        let options = serde_json::to_value(cfg.initialization_options).unwrap();
+        assert_eq!(options.pointer("/typescript/tsserver/maxTsServerMemory"), Some(&json!(12288)));
+        assert!(options.pointer("/typescript/tsserver/useSyntaxServer").is_none());
     }
 
     #[test]
