@@ -228,6 +228,20 @@ describe("debug tool window", () => {
     expect(console.getAttribute("aria-selected")).toBe("true");
   });
 
+  it("opens on Console for a running session, and on the view last picked when shown again", () => {
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } }, active: 1 });
+    const first = render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Console" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "Threads & Variables" }));
+    first.unmount();
+    const again = render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Threads & Variables" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "Console" }));
+    again.unmount();
+    render(<DebugToolWindow />);
+    expect(screen.getByRole("tab", { name: "Console" }).getAttribute("aria-selected")).toBe("true");
+  });
+
   it("renders session tabs, views, frames and typed variables", async () => {
     useDebug.setState({ sessions: { 1: session }, active: 1 });
     render(
