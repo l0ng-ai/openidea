@@ -138,6 +138,12 @@ const OWN_MODES = [
     load: () => import("./django").then((m) => m.django()),
   }),
   LanguageDescription.of({
+    name: "Helm Template",
+    alias: ["helm-template", "gotmpl", "tpl"],
+    extensions: ["tpl", "gotmpl"],
+    load: () => import("./helm").then((m) => m.helmTemplate()),
+  }),
+  LanguageDescription.of({
     name: "Astro",
     extensions: ["astro"],
     load: () => import("./astro").then((m) => m.astro()),
