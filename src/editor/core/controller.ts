@@ -1388,6 +1388,7 @@ export class EditorController implements SlotHost {
       try {
         const authorized = new Set<string>();
         const discards = new Map<string, CustomDocument>();
+        let busyConfirmed = false;
         for (;;) {
           const current = useTabs.getState();
           const d = closedDocuments(current, currentRemoval(current), useContributions.getState().editorKinds).find(
@@ -1397,6 +1398,13 @@ export class EditorController implements SlotHost {
             // A later Cancel/save failure must not discard earlier documents.
             const discard = [...discards.values()].find(stillLast);
             if (!discard) break;
+            // Nor may a Cancel on ending a busy tab's session: ask before discarding anything.
+            if (!busyConfirmed) {
+              if (!(await this.confirmBusyClose(currentRemoval))) return false;
+              if (generation !== this.projectGeneration) return false;
+              busyConfirmed = true;
+              continue;
+            }
             discards.delete(discard.input.key);
             await discard.lifecycle.discard(discard.input);
             // The await may have changed which documents lose their last tab.
@@ -1427,7 +1435,7 @@ export class EditorController implements SlotHost {
           }
           authorized.add(d.input.key);
         }
-        if (!(await this.confirmBusyClose(currentRemoval))) return false;
+        if (!busyConfirmed && !(await this.confirmBusyClose(currentRemoval))) return false;
         if (generation !== this.projectGeneration) return false;
         if (options.beforeRemove && !(await options.beforeRemove())) return false;
         // Commit only the original target ids against the latest tab state.
