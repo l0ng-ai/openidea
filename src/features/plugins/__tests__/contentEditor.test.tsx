@@ -369,6 +369,49 @@ describe("plugin-backed content editor tabs", () => {
     }
   });
 
+  it("renders a read-only Markdown tab as a preview and switches layouts like a Markdown file", async () => {
+    const md = "# Fix login\n\n- [docs](https://example.com/docs)\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+    const f = setup({ readOnly: true, language: "markdown", fileName: "MR-12.md", title: "MR !12", content: md });
+    try {
+      const preview = await screen.findByRole("document", { name: "MR !12" });
+      await waitFor(() => expect(preview.querySelector("h1")?.textContent).toBe("Fix login"));
+      expect(preview.querySelector("table")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /Find in Editor/ })).toBeNull();
+      expect(screen.getByRole("button", { name: "Preview Only" }).getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(screen.getByRole("button", { name: "Editor Only" }));
+      expect(screen.queryByRole("document", { name: "MR !12" })).toBeNull();
+      expect(f.view().state.doc.toString()).toBe(md);
+      fireEvent.click(screen.getByRole("button", { name: "Editor and Preview" }));
+      expect(screen.getByRole("document", { name: "MR !12" })).toBeTruthy();
+      // Content the plugin reloads into the editor shows in the preview.
+      act(() => f.view().dispatch({ changes: { from: 0, to: f.view().state.doc.length, insert: "## Reloaded" } }));
+      await waitFor(() =>
+        expect(screen.getByRole("document", { name: "MR !12" }).querySelector("h2")?.textContent).toBe("Reloaded"),
+      );
+    } finally {
+      f.offSender();
+    }
+  });
+
+  it("opens other and editable tabs in the editor without layout buttons", () => {
+    const f = setup();
+    try {
+      expect(screen.queryByRole("button", { name: "Preview Only" })).toBeNull();
+      expect(screen.queryByRole("document")).toBeNull();
+    } finally {
+      f.offSender();
+    }
+    cleanup();
+    closeContentSession(contentTabKey("probe", "inspector", "service-config"));
+    const g = setup({ language: "markdown", fileName: "notes.md" });
+    try {
+      expect(screen.getByRole("button", { name: "Editor Only" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.queryByRole("document")).toBeNull();
+    } finally {
+      g.offSender();
+    }
+  });
+
   it("supports readOnly mode and registers the editor kind with EditorDocumentLifecycle", () => {
     const f = setup({ readOnly: true });
     try {

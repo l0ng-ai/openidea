@@ -1913,7 +1913,10 @@ openidea.postMessage(JSON.stringify({
 are required. `key` (1–128 characters) defaults to `title` and is scoped to the
 calling plugin and view; `fileName` (1–256 characters, no path separators) and
 `language` (1–64 characters) select syntax highlighting and the tab's file icon.
-`readOnly` defaults to `false`. `actions` lists up to 16 toolbar buttons with
+A Markdown tab (`language` `markdown`, or a `fileName` ending in `.md`) has the
+Markdown file editor's layouts (Editor Only, Editor and Preview, Preview Only) and
+opens on the rendered preview when it is read-only; web links in the preview open
+in the browser. `readOnly` defaults to `false`. `actions` lists up to 16 toolbar buttons with
 unique `id`s (1–64 characters), `label`s (1–128 characters), an optional built-in
 `icon` name, `primary`, and `save` (at most one action may set `save: true`).
 Invalid requests send `content-tab-error { error }` through `openidea.onMessage`.

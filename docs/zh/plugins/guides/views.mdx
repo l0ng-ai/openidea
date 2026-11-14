@@ -329,6 +329,8 @@ host::open_content_tab(&ContentTab {
 })?;
 ```
 
+Markdown 标签页（`language` 为 `markdown`，或 `file_name` 以 `.md` 结尾）提供与 Markdown 编辑器相同的布局（仅编辑器、编辑器和预览、仅预览），只读时直接打开渲染后的预览，适合合并请求的描述这类内容。预览中的网页链接在浏览器中打开。
+
 ## 装饰
 
 装饰（API 1.4，WIT `decorations.wit`）用于在编辑器和项目树中添加标注。需要 `project.read`，路径必须在打开的项目内。

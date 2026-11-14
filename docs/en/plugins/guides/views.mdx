@@ -364,6 +364,10 @@ host::open_content_tab(&ContentTab {
 })?;
 ```
 
+A Markdown tab (`language` `markdown`, or a `file_name` ending in `.md`) has the Markdown editor's layouts (Editor Only,
+Editor and Preview, Preview Only) and opens on the rendered preview when it is read-only, such as a merge request's
+description. Web links in the preview open in the browser.
+
 ## Decorations
 
 Decorations (API 1.4, WIT `decorations.wit`) annotate editors and the Project tree. They
