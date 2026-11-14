@@ -877,3 +877,42 @@ fn repository_rule_changes_refresh_members_of_an_unindexed_container() {
     assert!(idx.wait_idle(WAIT));
     assert_eq!(files(&idx, "item.txt"), ["member/generated/item.txt"]);
 }
+
+#[test]
+fn warm_start_sees_edits_deletions_and_renames_made_while_closed() {
+    let f = Fixture::new(&[
+        ("src/a.rs", "fn aaaa() {}\n"),
+        ("src/deep/b.rs", "fn bbbb() {}\n"),
+        ("c.rs", "fn cccc() {}\n"),
+    ]);
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    drop(idx);
+    std::thread::sleep(Duration::from_millis(200));
+    // Warm start of an unchanged tree keeps everything.
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(symbols(&idx, "aaaa", SymbolFilter::All), ["aaaa"]);
+    drop(idx);
+    std::thread::sleep(Duration::from_millis(20));
+    // Same size, new content; a deletion; a new file two levels down; a rename.
+    f.write("src/a.rs", "fn zzzz() {}\n");
+    std::fs::remove_file(f.root.join("c.rs")).unwrap();
+    f.write("src/deep/deeper/n.rs", "fn nnnn() {}\n");
+    std::fs::rename(f.root.join("src/deep/b.rs"), f.root.join("src/deep/r.rs")).unwrap();
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    assert!(symbols(&idx, "aaaa", SymbolFilter::All).is_empty(), "stale content");
+    assert_eq!(symbols(&idx, "zzzz", SymbolFilter::All), ["zzzz"]);
+    assert!(symbols(&idx, "cccc", SymbolFilter::All).is_empty(), "deleted file");
+    assert_eq!(symbols(&idx, "nnnn", SymbolFilter::All), ["nnnn"]);
+    assert_eq!(symbols(&idx, "bbbb", SymbolFilter::All), ["bbbb"]);
+    assert_eq!(idx.status().files, 3);
+    drop(idx);
+    // After the cold rescan, the next warm start agrees.
+    std::thread::sleep(Duration::from_millis(200));
+    let idx = f.open();
+    assert!(idx.wait_idle(WAIT));
+    assert_eq!(idx.status().files, 3);
+    assert_eq!(symbols(&idx, "zzzz", SymbolFilter::All), ["zzzz"]);
+}
