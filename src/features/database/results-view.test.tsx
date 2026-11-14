@@ -263,6 +263,34 @@ describe("editable result grid", () => {
     expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
   });
 
+  it("drops applied edits from a remounted pane even when the refresh fails", async () => {
+    let finish!: (value: { status: string; data: number }) => void;
+    backend.applyEdits.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    backend.execute.mockResolvedValue({ status: "error", error: { kind: "invalid", message: "gone" } });
+    const first = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    const second: ResultTab = {
+      ...first,
+      id: nextId++,
+      title: "Result 2",
+      outcome: { ...first.outcome, result: { ...first.outcome.result! } },
+    };
+    useDatabase.setState((s) => ({ results: [...s.results, second] }));
+    await act(async () => render(<ResultsView />));
+    fireEvent.click(screen.getByRole("button", { name: "Add Row" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Submit" })));
+    await act(async () => useDatabase.setState({ activeResult: second.id }));
+    await act(async () => useDatabase.setState({ activeResult: first.id }));
+
+    await act(async () => finish({ status: "ok", data: 1 }));
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    expect(backend.applyEdits).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the execution schema even after the console selection changes", async () => {
     const tab = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
     Object.assign(tab, { schema: "s2" });
