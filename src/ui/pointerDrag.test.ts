@@ -47,6 +47,23 @@ describe("startPointerDrag with a reordered macOS tap", () => {
     fire("pointerup", 0, 60, 0);
     expect(onEnd).toHaveBeenCalledWith(true, expect.objectContaining({ x: 60 }));
   });
+
+  it("clears a text selection that began before the drag threshold (#3334)", () => {
+    const text = document.body.appendChild(document.createElement("p"));
+    text.textContent = "dragging a file must not select this";
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const { onStart } = start();
+    fire("pointermove", 1, 40, 0);
+    fire("pointerup", 0, 40, 0);
+
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+  });
 });
 
 const viewport = { left: 0, top: 0, right: 1280, bottom: 800 };

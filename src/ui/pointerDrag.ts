@@ -157,6 +157,10 @@ export function startPointerDrag(
       // press with no button held would otherwise start a phantom drag.
       if (!(ev.buttons & 1)) return onCancel();
       if (Math.hypot(ev.clientX - start.x, ev.clientY - start.y) < DRAG_THRESHOLD) return;
+      // A press can begin a text selection before the pointer passes the
+      // threshold, and the `.dragging` class only stops new ones. Drop what the
+      // press selected so a file drag leaves the editor unselected (#3334).
+      window.getSelection()?.removeAllRanges();
       const r = source.getBoundingClientRect();
       ghost = source.cloneNode(true) as HTMLElement;
       ghost.removeAttribute("id");
