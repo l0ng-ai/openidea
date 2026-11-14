@@ -90,10 +90,9 @@ export function activate(): () => void {
     registerExternalFileOpenHandler({
       id: "viewers.associatedApps",
       order: 1,
-      open: (path) => {
-        const patterns = useProject.getState().settings?.files?.associatedApplications ?? [];
-        return associatedApplication(path, patterns) ? openWithSystemApp(path) : false;
-      },
+      matches: (path) =>
+        associatedApplication(path, useProject.getState().settings?.files?.associatedApplications ?? []),
+      open: openWithSystemApp,
     }),
     registerEditorKind({ kind: IMAGE_KIND, component: ImageViewer, title: titleOf, icon: iconOf }),
     registerEditorKind({ kind: BINARY_KIND, component: HexViewer, title: titleOf, icon: iconOf }),

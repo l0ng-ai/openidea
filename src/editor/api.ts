@@ -619,7 +619,7 @@ export function _saveParticipants(): SaveParticipant[] {
 export async function revealRange(
   path: string,
   range: { start: { line: number; col: number }; end?: { line: number; col: number } },
-  options: { preview?: boolean; focus?: boolean } = {},
+  options: { preview?: boolean; focus?: boolean; external?: boolean } = {},
 ): Promise<void> {
   const service = maybeEditorService();
   if (!service) return;

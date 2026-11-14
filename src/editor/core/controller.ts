@@ -27,6 +27,7 @@ import {
   menuGroupItems,
   notifications,
   openFileExternally,
+  opensExternally,
   resolveFileEditor,
   textEditorWrapperFor,
   uriOpenerFor,
@@ -1085,7 +1086,7 @@ export class EditorController implements SlotHost {
     // Files opened with another application, then images/binary/huge files in a
     // contributed viewer, unless already open as text.
     if (!o.asText && !findTab(useTabs.getState(), fileKey(path))) {
-      if (await openFileExternally(path)) return;
+      if (o.external === false ? opensExternally(path) : await openFileExternally(path)) return;
       const viewer = await resolveFileEditor(path);
       if (viewer) {
         try {
