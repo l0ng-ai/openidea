@@ -814,25 +814,31 @@ export async function startTask(
         : (draft.config[o.id] ?? defaults[o.id] ?? null);
     return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
   });
-  const task = await call(
-    commands.agentCreate({
-      projectRoot,
-      prompt: toPrompt(composer),
-      provider: draft.provider,
-      config,
-      isolation,
-      base: isolation === "worktree" ? draft.base : null,
-    }),
-  );
-  // Its events can arrive before this reply: keep the newer state they carried.
-  useAgents.setState((s) => ({
-    tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
-    entries: new Map(s.entries).set(task.id, s.entries.get(task.id) ?? []),
-  }));
-  updateDraft({ projectRoot });
-  remember(composer.text.trim());
-  clearSubmittedComposer(HOME, composer, started);
-  if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
+  try {
+    const task = await call(
+      commands.agentCreate({
+        projectRoot,
+        prompt: toPrompt(composer),
+        provider: draft.provider,
+        config,
+        isolation,
+        base: isolation === "worktree" ? draft.base : null,
+      }),
+    );
+    if (generation !== started) return;
+    // Its events can arrive before this reply: keep the newer state they carried.
+    useAgents.setState((s) => ({
+      tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
+      entries: new Map(s.entries).set(task.id, s.entries.get(task.id) ?? []),
+    }));
+    updateDraft({ projectRoot });
+    remember(composer.text.trim());
+    clearSubmittedComposer(HOME, composer, started);
+    const closed = await editorService().closeInput?.(HOME_KEY);
+    if (generation === started && closed !== false) openTask(task.id);
+  } catch (e) {
+    if (generation === started) throw e;
+  }
 }
 
 /** Sessions on this machine that no task holds yet (a terminal, another editor: #312). */
@@ -955,11 +961,17 @@ export function quoteInComposer(task: string, text: string) {
 
 /** Copies the task's conversation into a new task (up to its first `turns` turns) and opens it. */
 export async function forkTask(task: string, turns: number | null): Promise<void> {
-  const copy = await call(commands.agentFork(task, turns));
-  useAgents.setState((s) => ({
-    tasks: s.tasks.has(copy.id) ? s.tasks : new Map(s.tasks).set(copy.id, copy),
-  }));
-  openTask(copy.id);
+  const started = generation;
+  try {
+    const copy = await call(commands.agentFork(task, turns));
+    if (generation !== started) return;
+    useAgents.setState((s) => ({
+      tasks: s.tasks.has(copy.id) ? s.tasks : new Map(s.tasks).set(copy.id, copy),
+    }));
+    openTask(copy.id);
+  } catch (e) {
+    if (generation === started) throw e;
+  }
 }
 
 /** Puts a message back in the task's composer, above anything typed meanwhile. */

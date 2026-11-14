@@ -4,7 +4,16 @@
  * a toolbar (re-run, export / copy as CSV, JSON, SQL…), the grid and a floating row count.
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type MouseEvent,
+} from "react";
 import clsx from "clsx";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
@@ -198,8 +207,32 @@ function Pager({ tab }: { tab: ResultTab }) {
   );
 }
 
-/** Unsubmitted edits by the rows they were made on, kept while another result tab is shown. */
+/**
+ * Unsubmitted edits by the rows they were made on, and the results whose edits are being
+ * submitted. They live outside the pane, which remounts when another result tab is selected,
+ * so a submit that ends while its pane is unmounted still clears what the remounted one shows.
+ */
 const keptEdits = new WeakMap<DbQueryResult, PendingEdits>();
+const submittingResults = new Set<DbQueryResult>();
+const NO_EDITS = emptyEdits();
+const resultListeners = new Set<() => void>();
+function notifyResults() {
+  for (const listener of resultListeners) listener();
+}
+function subscribeResults(listener: () => void) {
+  resultListeners.add(listener);
+  return () => void resultListeners.delete(listener);
+}
+function setKeptEdits(result: DbQueryResult, edits: PendingEdits) {
+  if (hasEdits(edits)) keptEdits.set(result, edits);
+  else keptEdits.delete(result);
+  notifyResults();
+}
+function setSubmittingResult(result: DbQueryResult, on: boolean) {
+  if (on) submittingResults.add(result);
+  else submittingResults.delete(result);
+  notifyResults();
+}
 
 function Result({ tab }: { tab: ResultTab }) {
   const [view, setView] = useState<"table" | "chart">("table");
@@ -275,20 +308,12 @@ function Result({ tab }: { tab: ResultTab }) {
     driver !== "clickhouse" &&
     sources.some((s) => s !== null);
 
-  // The pending edits belong to the result they were made on: fresh rows (a
-  // re-run, another page) start over, without an effect. They outlive the pane,
-  // which remounts when another result tab is selected.
-  const [pending, setPending] = useState<{ outcome: DbQueryResult | null; edits: PendingEdits }>(() => ({
-    outcome: r ?? null,
-    edits: (r && keptEdits.get(r)) ?? emptyEdits(),
-  }));
-  const edits = pending.outcome === r ? pending.edits : emptyEdits();
-  const setEdits = (f: (e: PendingEdits) => PendingEdits) =>
-    setPending((previous) => {
-      const next = f(previous.outcome === r ? previous.edits : emptyEdits());
-      if (r) keptEdits.set(r, next);
-      return { outcome: r ?? null, edits: next };
-    });
+  // The pending edits belong to the result they were made on: fresh rows (a re-run,
+  // another page) start over.
+  const edits = useSyncExternalStore(subscribeResults, () => (r && keptEdits.get(r)) ?? NO_EDITS);
+  const setEdits = (f: (e: PendingEdits) => PendingEdits) => {
+    if (r) setKeptEdits(r, f(keptEdits.get(r) ?? NO_EDITS));
+  };
   const loaded = r?.rows.length ?? 0;
   const rowCount = loaded + edits.inserts.length;
   const value = useCallback(
@@ -341,14 +366,12 @@ function Result({ tab }: { tab: ResultTab }) {
     });
 
   const dirty = hasEdits(edits);
-  const [submitting, setSubmitting] = useState(false);
-  const submitGuard = useRef(false);
+  const submitting = useSyncExternalStore(subscribeResults, () => !!r && submittingResults.has(r));
   const busy = submitting || !!tab.busy;
 
   const submit = async () => {
-    if (!r || !target || !pk || !editable || busy || submitGuard.current) return;
-    submitGuard.current = true;
-    setSubmitting(true);
+    if (!r || !target || !pk || !editable || busy || submittingResults.has(r)) return;
+    setSubmittingResult(r, true);
     const list = buildRowEdits(resultNames, r.rows, pk, edits);
     try {
       // The Output log shows what the submit is about to change.
@@ -358,7 +381,8 @@ function Result({ tab }: { tab: ResultTab }) {
       );
       log("result", `${target.table}: ${n} row(s) changed`);
       notifications().notify({ level: "info", title: `${target.table}: ${n} row(s) changed`, key: "db-submit" });
-      setEdits(() => emptyEdits());
+      // Also when this pane was unmounted meanwhile: the applied edits must not come back.
+      setKeptEdits(r, NO_EDITS);
       await rerunResult(tab.id);
     } catch (e) {
       log("error", e instanceof Error ? e.message : String(e));
@@ -369,8 +393,7 @@ function Result({ tab }: { tab: ResultTab }) {
         key: "db-submit",
       });
     } finally {
-      submitGuard.current = false;
-      setSubmitting(false);
+      setSubmittingResult(r, false);
     }
   };
 

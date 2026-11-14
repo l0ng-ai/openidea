@@ -682,6 +682,10 @@ export function setShownLine(path: string, line: number | null) {
   }, true);
 }
 
+export function shownLine(path: string): number | null {
+  return useShownLines.getState()[path] ?? null;
+}
+
 export function useShownLine(path: string | null): number | null {
   return useShownLines((s) => (path ? (s[path] ?? null) : null));
 }
