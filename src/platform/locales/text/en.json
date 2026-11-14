@@ -1617,5 +1617,6 @@
   "Runs JavaScript and TypeScript files from the gutter and the editor's Run action.": "Runs JavaScript and TypeScript files from the gutter and the editor's Run action.",
   "deno.json → Deno, bun.lock → Bun, else Node.js": "deno.json → Deno, bun.lock → Bun, else Node.js",
   "Node.js": "Node.js",
-  "Deno": "Deno"
+  "Deno": "Deno",
+  "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime.": "{runtime} was not found (looked for `{command}`). Install it from {site}, or choose another preferred runtime in Settings › Languages & Frameworks › JavaScript Runtime."
 }
