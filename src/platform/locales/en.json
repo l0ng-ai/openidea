@@ -457,6 +457,8 @@
   "menu.runAnything.show": "Run Anything…",
   "menu.localHistory.putLabel": "Put Label…",
   "menu.toolWindowLayouts": "Tool Window Layouts",
+  "menu.layout.saveCurrent": "Save Changes in Current Layout",
+  "menu.layout.restoreCurrent": "Restore Current Layout",
   "menu.layout.save": "Save Current Layout as…",
   "menu.layout.restoreDefault": "Restore Default Layout",
   "menu.layout.rename": "Rename Layout…",
