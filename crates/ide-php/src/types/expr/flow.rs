@@ -1226,6 +1226,19 @@ impl<'t, 'a, 'r> Builder<'t, 'a, 'r> {
                 return;
             }
             "extract" | "get_defined_vars" | "parse_str" | "eval" => self.dynamic(),
+            // `compact('a', 'b')` reads `$a` and `$b`: recorded at each
+            // name's literal, where their types are asked for (the
+            // variables a controller passes to its view).
+            "compact" => {
+                for argument in call.argument_list.arguments.iter() {
+                    if let Expression::Literal(Literal::String(string)) = argument_value(argument)
+                        && let Some(name) = string.value
+                    {
+                        let state = self.env.get(name);
+                        self.flow.borrow_mut().reads.insert(string.span.start.offset, state);
+                    }
+                }
+            }
             _ => {}
         }
         let signature = match call.function {

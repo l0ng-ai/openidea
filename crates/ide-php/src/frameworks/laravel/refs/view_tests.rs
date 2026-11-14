@@ -321,6 +321,10 @@ fn completes_the_variables_passed_to_a_view_in_its_template() {
     let names: Vec<&str> = variables.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["post", "published", "title"]);
     assert_eq!(variables[0].1, "App\\Models\\Post");
+    // Local variables named in `compact()` keep their types, not only the
+    // method's parameters.
+    assert_eq!(variables[1].1, "?Illuminate\\Support\\Carbon");
+    assert_eq!(variables[2].1, "string");
     // An array, from a controller and from `@include` in two templates.
     let welcome = project.engine.laravel_view_variables(&project.root.join("resources/views/welcome.blade.php"));
     assert_eq!(welcome.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["latest"]);

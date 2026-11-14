@@ -765,7 +765,9 @@ fn data<'a>(types: &ExprTypes<'a, '_>, expr: &'a Expression<'a>, out: &mut Vec<(
                 if let Argument::Positional(argument) = argument
                     && let Some(name) = literal_string(argument.value)
                 {
-                    let ty = types.variable_type(name.as_bytes(), at, &frames).widen();
+                    // The flow records the read at the name's literal.
+                    let read = argument.value.span().start.offset;
+                    let ty = types.variable_type(name.as_bytes(), read, &frames).widen();
                     out.push((name, ty));
                 }
             }
