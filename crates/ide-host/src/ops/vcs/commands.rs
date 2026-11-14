@@ -353,28 +353,6 @@ pub fn vcs_roots(host: &Host, window: &str) -> IdeResult<Vec<VcsRoot>> {
         .collect())
 }
 
-/// Git repositories below the project that its repositories do not cover: the scan ran
-/// before they appeared (see [`Project::unregistered_roots`]).
-pub async fn vcs_unregistered_roots(host: &Host, window: &str) -> IdeResult<Vec<String>> {
-    let project = host.project(window)?;
-    blocking(move || {
-        let roots = project.unregistered_roots()?;
-        Ok(roots.into_iter().map(|root| ide_core::ipc_path::to_ipc(&root)).collect())
-    })
-    .await
-}
-
-/// Rescans the project for Git repositories: what `vcs_unregistered_roots` reported is
-/// registered from now on (the scan is the one project open runs).
-pub async fn vcs_refresh_roots(host: &Host, window: &str) -> IdeResult<()> {
-    let project = host.project(window)?;
-    blocking(move || {
-        project.refresh_repositories();
-        Ok(())
-    })
-    .await
-}
-
 pub async fn vcs_branch_info(host: &Host, window: &str, repo: Option<PathBuf>) -> IdeResult<BranchInfo> {
     let project = LogAccess::new(host, window, repo.as_deref());
     blocking(move || project.with_log_repo_at(repo.as_deref(), |r| r.branch_info())).await
@@ -1445,8 +1423,6 @@ pub async fn vcs_write_patch(host: &Host, window: &str, path: PathBuf, patch: St
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("vcs_roots", |c| async move { vcs_roots(&c.host, &c.window) });
-    d.add("vcs_unregistered_roots", |c| async move { vcs_unregistered_roots(&c.host, &c.window).await });
-    d.add("vcs_refresh_roots", |c| async move { vcs_refresh_roots(&c.host, &c.window).await });
     d.add("vcs_branch_info", |c| async move { vcs_branch_info(&c.host, &c.window, c.arg("repo")?).await });
     d.add("vcs_line_hunks", |c| async move { vcs_line_hunks(&c.host, &c.window, c.arg("path")?).await });
     d.add("vcs_file_at", |c| async move { vcs_file_at(&c.host, &c.window, c.arg("path")?, c.arg("rev")?).await });

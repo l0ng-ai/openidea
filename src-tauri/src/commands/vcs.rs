@@ -23,20 +23,6 @@ pub fn vcs_roots(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<Vc
     ide_host::ops::vcs::vcs_roots(&state.host, window.label())
 }
 
-/// Git repositories below the project that the project does not manage.
-#[tauri::command]
-#[specta::specta]
-pub async fn vcs_unregistered_roots(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<String>> {
-    ide_host::ops::vcs::vcs_unregistered_roots(&state.host, window.label()).await
-}
-
-/// Rescans the project for Git repositories, registering the ones it does not manage.
-#[tauri::command]
-#[specta::specta]
-pub async fn vcs_refresh_roots(window: Window, state: State<'_, AppState>) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_refresh_roots(&state.host, window.label()).await
-}
-
 #[tauri::command]
 #[specta::specta]
 pub async fn vcs_branch_info(

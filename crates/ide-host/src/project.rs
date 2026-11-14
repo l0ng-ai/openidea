@@ -447,6 +447,11 @@ impl Host {
                             .collect();
                         matches!(rest.as_slice(), [first, ..] if first == "worktrees" && rest.len() <= 2)
                     });
+                    // A repository folder moved or restored into the project: no `.git` event is
+                    // written inside it before the watcher sees the new directory, its creation is
+                    // the signal. A `git clone` / `git init` inside the project already arrives
+                    // through the `.git` paths above; this covers the whole tree being brought in.
+                    git_dirs |= batch.created.iter().any(|p| p.join(".git").exists());
                     if git_dirs {
                         scan_repositories(&root, &repos, &settings, &sink, &build_cache);
                     }
@@ -876,7 +881,7 @@ fn scan_repositories(
 }
 
 /// The repository containing `root` and those nested below it or below a content root.
-/// The project-open scan and the unregistered-root check share these skip rules.
+/// The project-open scan and the watcher's rescan share these skip rules.
 fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path) -> IdeResult<Repos> {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| {
@@ -895,21 +900,6 @@ fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Pa
 impl Project {
     pub fn refresh_repositories(&self) {
         scan_repositories(&self.root, &self.repos, &self.settings, &self.sink, &self.build_cache_dir());
-    }
-
-    /// Git worktree roots below the project that [`Project::repos`] does not hold: a
-    /// repository the background scan missed (cloned or initialised where the watcher does
-    /// not watch, e.g. an excluded folder) or has not reached yet. The scan and its skip
-    /// rules are the ones [`Project::refresh_repositories`] registers by, so a rescan
-    /// picks these up.
-    pub fn unregistered_roots(&self) -> IdeResult<Vec<PathBuf>> {
-        let found = discover_repositories(&self.root, &self.settings, &self.build_cache_dir())?;
-        let registered = self.repos();
-        Ok(found
-            .roots()
-            .into_iter()
-            .filter(|root| root.starts_with(&self.root) && registered.at_root(root).is_none())
-            .collect())
     }
 
     /// The project's git repositories.
