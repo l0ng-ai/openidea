@@ -24,6 +24,7 @@ vi.mock("@/platform/ipc", async (orig) => {
 const { useDebug } = await import("../state");
 const {
   activeRules,
+  answeredBy,
   loadResponseOverrides,
   overriddenBy,
   removeOverride,
@@ -104,6 +105,26 @@ describe("response overrides", () => {
     ];
     expect(overriddenBy("http://h/api/items?x=1", list)?.id).toBe("on");
     expect(overriddenBy("http://h/api/users", list)).toBeNull();
+  });
+
+  it("marks only the requests sent after a rule came into force", async () => {
+    const { networkSerial } = await import("../js/network");
+    const before = { url: "http://x/api/items?page=1", seq: networkSerial() - 1 };
+    const id = saveOverride({
+      pattern: "/api/items",
+      status: 200,
+      contentType: "application/json",
+      body: "[]",
+      enabled: true,
+    });
+    const rules = useResponseOverrides.getState().rules;
+    const after = { url: "http://x/api/items?page=2", seq: networkSerial() };
+    expect(answeredBy(before, rules)).toBe(false);
+    expect(answeredBy(after, rules)).toBe(true);
+    // Rules the project has when it opens answer every request of its sessions.
+    loadResponseOverrides(useResponseOverrides.getState().root);
+    const loaded = useResponseOverrides.getState().rules;
+    expect(answeredBy(before, loaded)).toBe(loaded.some((r) => r.id === id));
   });
 
   it("syncs every live page session and swallows a refusal", async () => {

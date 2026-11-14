@@ -13,7 +13,7 @@ import {
 } from "./network";
 import { OverridesDialog, type OverrideDraft } from "./OverridesDialog";
 import { useRefused } from "./refusals";
-import { overriddenBy, useResponseOverrides } from "./responseOverrides";
+import { answeredBy, useResponseOverrides } from "./responseOverrides";
 import styles from "./Network.module.css";
 
 const NO_ROWS: NetworkRow[] = [];
@@ -278,7 +278,7 @@ export function NetworkView({ session }: { session: number }) {
               key={row.key}
               row={row}
               selected={row.key === selectedKey}
-              overridden={notReplaced == null && overriddenBy(row.url, overrides) != null}
+              overridden={notReplaced == null && answeredBy(row, overrides)}
               onSelect={setSelectedKey}
             />
           ))}

@@ -8,6 +8,8 @@ import type { JsInitiator, JsNetworkEvent } from "@/platform/ipc";
 export interface NetworkRow {
   /** Unique among rows; a browser reuses request ids. */
   key: string;
+  /** Order in which the IDE saw the requests (`networkSerial`). */
+  seq: number;
   requestId: string;
   url: string;
   name: string;
@@ -37,6 +39,9 @@ export const useJsNetwork = create<{ rows: Record<number, NetworkRow[]> }>(() =>
 let serial = 0;
 
 /** The end of the URL's path with its query, or the host for the root path. */
+/** The `seq` the next request will get. */
+export const networkSerial = () => serial;
+
 export function rowName(url: string): string {
   try {
     const u = new URL(url);
@@ -59,6 +64,7 @@ function apply(rows: NetworkRow[], e: JsNetworkEvent) {
   if (e.kind === "request") {
     const url = e.url ?? "";
     const started: NetworkRow = {
+      seq: serial,
       key: `${e.requestId}#${serial++}`,
       requestId: e.requestId,
       url,
@@ -77,7 +83,7 @@ function apply(rows: NetworkRow[], e: JsNetworkEvent) {
       initiator: e.initiator,
     };
     // Sent again while open: the request was redirected, and goes on under its new URL.
-    if (at >= 0) rows[at] = { ...started, key: rows[at]!.key, startedAt: rows[at]!.startedAt };
+    if (at >= 0) rows[at] = { ...started, key: rows[at]!.key, seq: rows[at]!.seq, startedAt: rows[at]!.startedAt };
     else rows.push(started);
     return;
   }

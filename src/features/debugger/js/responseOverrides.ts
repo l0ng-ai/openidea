@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { call, commands, type JsResponseRule } from "@/platform/ipc";
 import { isLive, isLiveSession, useDebug } from "../state";
+import { networkSerial } from "./network";
 import { recordRefusal } from "./refusals";
 
 export interface ResponseOverride {
@@ -47,7 +48,14 @@ function stored(root: string): ResponseOverride[] {
   }
 }
 
+/**
+ * The first request (`NetworkRow.seq`) each rule can have answered, for rules added, turned on or
+ * pointed at other URLs while pages ran; rules loaded with the project answer from the start.
+ */
+const since = new Map<string, number>();
+
 export function loadResponseOverrides(root: string | null) {
+  since.clear();
   useResponseOverrides.setState({ root, rules: root ? stored(root) : [] });
   void syncResponseOverrides();
 }
@@ -66,10 +74,19 @@ function change(rules: ResponseOverride[]) {
 }
 
 /** Adds a rule, or replaces the one with `rule.id`. Returns the rule's id. */
+
+/** Whether the rule that matches `row` was in force when the page sent it. */
+export function answeredBy(row: { url: string; seq: number }, rules: readonly ResponseOverride[]): boolean {
+  const rule = overriddenBy(row.url, rules);
+  return rule != null && row.seq >= (since.get(rule.id) ?? 0);
+}
+
 export function saveOverride(rule: Omit<ResponseOverride, "id"> & { id?: string }): string {
   const { rules } = useResponseOverrides.getState();
   const id = rule.id ?? `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
   const saved = { ...rule, id, pattern: rule.pattern.trim(), status: validStatus(rule.status) };
+  const before = rules.find((r) => r.id === id);
+  if (saved.enabled && (!before?.enabled || before.pattern !== saved.pattern)) since.set(id, networkSerial());
   change(rules.some((r) => r.id === id) ? rules.map((r) => (r.id === id ? saved : r)) : [...rules, saved]);
   return id;
 }
@@ -79,6 +96,7 @@ export function removeOverride(id: string) {
 }
 
 export function toggleOverride(id: string, on: boolean) {
+  if (on && !useResponseOverrides.getState().rules.find((r) => r.id === id)?.enabled) since.set(id, networkSerial());
   change(useResponseOverrides.getState().rules.map((r) => (r.id === id ? { ...r, enabled: on } : r)));
 }
 
