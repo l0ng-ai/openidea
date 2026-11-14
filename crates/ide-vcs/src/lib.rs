@@ -768,6 +768,11 @@ impl Repo {
     /// dirty-scope refresh after a watcher batch. An empty list is the full status.
     pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
+        // with a pathspec: answer with the full gitoxide status instead.
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return status::status(self);
+        }
         if paths.is_empty() {
             return status::status_paths(self, &[]);
         }
