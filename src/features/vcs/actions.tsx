@@ -145,6 +145,21 @@ function selectedPaths(arg: unknown): string[] {
   return project.length ? project : contextPaths(arg);
 }
 
+/**
+ * The repository a repository-wide dialog (Pull, Merge, Rebase) starts on: the one holding the
+ * action's file, else the Project view's selection while it has focus, else the active editor's
+ * file, else the selected repository.
+ */
+export function operationRepo(arg: unknown): string | null {
+  const roots = useVcs.getState().roots;
+  if (arg && typeof arg === "object" && "repo" in arg) return (arg as { repo: string | null }).repo;
+  const inContext = (paths: readonly string[] | undefined) =>
+    paths?.map((p) => repoOf(p, roots)).find((r) => r != null) ?? null;
+  const fromProject = getContext().activeToolWindow === "project" ? projectViewSelection() : undefined;
+  const active = maybeEditorService()?.activePath();
+  return inContext(argPaths(arg)) ?? inContext(fromProject) ?? inContext(active ? [active] : []) ?? currentRepo();
+}
+
 function showGitWindow() {
   toolWindowService().show("git", true);
 }
@@ -289,7 +304,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "git-pull",
       when: VCS,
-      run: showPullDialog,
+      run: ({ arg }) => showPullDialog(operationRepo(arg)),
     },
     {
       id: "vcs.merge",
@@ -297,7 +312,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["merge branch"],
-      run: showMergeDialog,
+      run: ({ arg }) => showMergeDialog(operationRepo(arg)),
     },
     {
       id: "vcs.rebase",
@@ -305,7 +320,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["rebase branch"],
-      run: showRebaseDialog,
+      run: ({ arg }) => showRebaseDialog(operationRepo(arg)),
     },
     {
       id: "vcs.manageRemotes",

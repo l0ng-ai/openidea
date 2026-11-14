@@ -129,8 +129,9 @@ export function remoteBranchesOf(branches: readonly Branch[], remote: string): s
 
 // --- Pull -------------------------------------------------------------------
 
-export function showPullDialog() {
-  openDialog((close) => <PullDialog onClose={close} />);
+/** `repo`: the repository it starts on (the context's), else the selected one. */
+export function showPullDialog(repo?: string | null) {
+  openDialog((close) => <PullDialog initialRepo={repo} onClose={close} />);
 }
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
@@ -165,8 +166,8 @@ function useBranchInfo(repo: string | null) {
   return loaded?.repo === repo ? loaded.info : null;
 }
 
-function PullDialog({ onClose }: { onClose: () => void }) {
-  const [repo, setRepo] = useState(currentRepo);
+function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const info = useBranchInfo(repo);
   const branches = useBranches(repo);
   const [remotes, setRemotes] = useState<Remote[] | null>(null);
@@ -279,12 +280,13 @@ function PullDialog({ onClose }: { onClose: () => void }) {
 
 // --- Merge ------------------------------------------------------------------
 
-export function showMergeDialog() {
-  openDialog((close) => <MergeDialog onClose={close} />);
+/** `repo`: the repository it starts on (the context's), else the selected one. */
+export function showMergeDialog(repo?: string | null) {
+  openDialog((close) => <MergeDialog initialRepo={repo} onClose={close} />);
 }
 
-function MergeDialog({ onClose }: { onClose: () => void }) {
-  const [repo, setRepo] = useState(currentRepo);
+function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
   const [branch, setBranch] = useState<string | null>(null);
@@ -358,12 +360,13 @@ function MergeDialog({ onClose }: { onClose: () => void }) {
 
 // --- Rebase -----------------------------------------------------------------
 
-export function showRebaseDialog() {
-  openDialog((close) => <RebaseDialog onClose={close} />);
+/** `repo`: the repository it starts on (the context's), else the selected one. */
+export function showRebaseDialog(repo?: string | null) {
+  openDialog((close) => <RebaseDialog initialRepo={repo} onClose={close} />);
 }
 
-function RebaseDialog({ onClose }: { onClose: () => void }) {
-  const [repo, setRepo] = useState(currentRepo);
+function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
+  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
   const [upstream, setUpstream] = useState<string | null>(null);
