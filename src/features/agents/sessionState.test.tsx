@@ -1842,6 +1842,29 @@ describe("meters in the task header", () => {
     );
     expect(root).not.toHaveClass(styles.fitWidth!);
   });
+
+  it("hides the status-bar Terminal button in the local checkout and opens the worktree's terminal otherwise", async () => {
+    const opened: unknown[] = [];
+    const disposeTerminal = registerActions([
+      { id: "terminal.openAt", title: "Open in Terminal", run: ({ arg }) => void opened.push(arg) },
+    ]);
+    try {
+      const view = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+
+      act(() =>
+        useAgents.setState({
+          tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", branch: "agent/a" }]]),
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+      expect(opened).toEqual(["/worktrees/a"]);
+      view.unmount();
+    } finally {
+      disposeTerminal();
+    }
+  });
 });
 
 describe("sessions from other apps", () => {

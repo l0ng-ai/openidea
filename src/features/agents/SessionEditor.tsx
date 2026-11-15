@@ -100,6 +100,7 @@ import {
   branchLabel,
   entriesKey,
   findSubagent,
+  hasTaskTerminal,
   isBusy,
   providerIcon,
   statusLabel,
@@ -466,7 +467,7 @@ function SessionStatus({
         )}
         <span className={styles.statusMeters}>
           <Meters task={task} entries={entries} />
-          <StatusActions task={task} />
+          {hasTaskTerminal(task, projectRoot) && <StatusActions task={task} />}
         </span>
       </span>
     </div>
