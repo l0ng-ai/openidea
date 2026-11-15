@@ -1816,6 +1816,32 @@ describe("meters in the task header", () => {
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
+
+  it("toggles fitWidth on the session root from settings.agents.fitWindowWidth", () => {
+    const { container } = render(<SessionEditor input={input("A")} />);
+    const root = container.querySelector(`.${styles.session}`)!;
+    expect(root).not.toHaveClass(styles.fitWidth!);
+    act(() =>
+      useProject.setState({
+        settings: {
+          agents: {
+            fitWindowWidth: true,
+          },
+        } as never,
+      }),
+    );
+    expect(root).toHaveClass(styles.fitWidth!);
+    act(() =>
+      useProject.setState({
+        settings: {
+          agents: {
+            fitWindowWidth: false,
+          },
+        } as never,
+      }),
+    );
+    expect(root).not.toHaveClass(styles.fitWidth!);
+  });
 });
 
 describe("sessions from other apps", () => {

@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AgentConfigOption, AgentProvider, NewAgentTask } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
+import homeStyles from "./Home.module.css";
 import { HOME, disconnect, savedDraft, updateComposer, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({ providers: [] as AgentProvider[], create: vi.fn() }));
@@ -146,6 +147,21 @@ it.each([
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(backend.create).toHaveBeenCalled());
     expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
+  } finally {
+    useProject.setState({ settings });
+  }
+});
+
+it("applies fitWidth on the New Task page only when fitWindowWidth is enabled", () => {
+  const settings = useProject.getState().settings;
+  try {
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: false } } as never });
+    const { container, rerender } = render(<HomeEditor />);
+    const root = container.querySelector(`.${homeStyles.home}`)!;
+    expect(root).not.toHaveClass(homeStyles.fitWidth!);
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: true } } as never });
+    rerender(<HomeEditor />);
+    expect(root).toHaveClass(homeStyles.fitWidth!);
   } finally {
     useProject.setState({ settings });
   }

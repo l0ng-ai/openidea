@@ -208,6 +208,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [inputFocus, setInputFocus] = useState(0);
+  const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
@@ -235,7 +236,12 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   return (
     <div
       ref={sessionRoot}
-      className={clsx(styles.session, docked && styles.docked, changesOpen && !docked && styles.withChanges)}
+      className={clsx(
+        styles.session,
+        docked && styles.docked,
+        changesOpen && !docked && styles.withChanges,
+        fitWindowWidth && styles.fitWidth,
+      )}
       style={changesWidth}
       onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {

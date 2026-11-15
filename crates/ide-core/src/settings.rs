@@ -86,6 +86,8 @@ pub struct AgentSettings {
     pub fold_turns: bool,
     /// Streaming text is revealed at a steady pace rather than chunk by chunk.
     pub smooth_text: bool,
+    /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
+    pub fit_window_width: bool,
     #[serde(deserialize_with = "or_default")]
     #[specta(type = ThinkingDisplay)]
     pub thinking: ThinkingDisplay,
@@ -127,6 +129,7 @@ impl Default for AgentSettings {
             show_cost: false,
             fold_turns: true,
             smooth_text: true,
+            fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
             tool_calls: ToolCallDisplay::Grouped,
             expand_tool_output: false,
@@ -1715,11 +1718,15 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
+        assert!(!old.agents.fit_window_width);
         assert!(!Settings::default().agents.show_cost);
+        assert!(!Settings::default().agents.fit_window_width);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
+        settings.agents.fit_window_width = true;
         let json = serde_json::to_value(&settings).unwrap();
         assert_eq!(json["agents"]["showUsageLimits"], false);
+        assert_eq!(json["agents"]["fitWindowWidth"], true);
         let restored: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(restored.agents, settings.agents);
     }

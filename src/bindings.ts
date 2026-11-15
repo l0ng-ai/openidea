@@ -2253,6 +2253,8 @@ export type AgentSettings_Deserialize = {
 	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
+	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
+	fitWindowWidth?: boolean,
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2291,6 +2293,8 @@ export type AgentSettings_Serialize = {
 	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
+	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
+	fitWindowWidth: boolean,
 	thinking: ThinkingDisplay,
 	toolCalls: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
