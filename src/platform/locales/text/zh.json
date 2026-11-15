@@ -3226,6 +3226,8 @@
   "Don't Checkout": "不签出",
   "Rebase onto Remote": "变基到远程",
   "Drop Local Commits": "丢弃本地提交",
+  "Branch '{branch}' is already checked out in worktree '{path}'. Open that worktree to work on it?": "分支 '{branch}' 已在工作树 '{path}' 中签出。要打开该工作树来处理它吗？",
+  "Open Worktree": "打开工作树",
   "Checkout {name}": "签出 {name}",
   "Restore": "恢复",
   "View Commits": "查看提交",

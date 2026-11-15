@@ -1111,6 +1111,45 @@ fn smart_and_force_checkout_with_local_changes_in_the_way() {
 }
 
 #[test]
+fn checkout_of_a_branch_held_by_another_worktree_reports_it_and_changes_nothing() {
+    let fx = Fixture::new();
+    fx.write("f.txt", "1\n");
+    fx.commit_all("base");
+    let linked = fx._tmp.path().join("linked");
+    fx.git(&["worktree", "add", "-q", "-b", "topic", linked.to_str().unwrap()]);
+    let repo = fx.repo();
+    let none = CheckoutOptions::default();
+    let linked_path = std::fs::canonicalize(&linked).unwrap();
+
+    // From the main worktree, the branch the linked worktree has checked out.
+    let outcome = repo.checkout_with("topic", false, &none).unwrap();
+    assert_eq!(outcome, CheckoutOutcome::CheckedOutInWorktree { branch: "topic".into(), path: linked_path.clone() });
+    assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"), "nothing changed");
+
+    // With local changes in the way too: reported before any Smart Checkout stash.
+    fx.write("f.txt", "changed\n");
+    let smart = CheckoutOptions { mode: CheckoutMode::Smart, diverged: None };
+    let outcome = repo.checkout_with("topic", false, &smart).unwrap();
+    assert_eq!(outcome, CheckoutOutcome::CheckedOutInWorktree { branch: "topic".into(), path: linked_path.clone() });
+    assert_eq!(fx.read("f.txt"), "changed\n", "local changes untouched");
+    assert!(repo.stashes().unwrap().is_empty());
+    fx.git(&["reset", "-q", "--hard"]);
+
+    // The same refusal from the linked worktree, for the main worktree's branch.
+    let linked_repo = Repo::discover(&linked).unwrap().unwrap();
+    linked_repo.set_execution_allowed(true);
+    let outcome = linked_repo.checkout_with("main", false, &none).unwrap();
+    let main_path = std::fs::canonicalize(&fx.dir).unwrap();
+    assert_eq!(outcome, CheckoutOutcome::CheckedOutInWorktree { branch: "main".into(), path: main_path });
+    assert_eq!(linked_repo.branch_info().unwrap().head.as_deref(), Some("topic"));
+
+    // Overwriting such a branch (New Branch with Checkout) names the worktree, not raw stderr.
+    let error = repo.create_branch_with_overwrite("topic", Some("main"), true, true).unwrap_err();
+    assert!(error.message.contains("branch 'topic' is already checked out in worktree"), "{error}");
+    assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+}
+
+#[test]
 fn checkout_remote_branch_with_existing_local_namesake() {
     let (fx, bare) = with_remote();
     let repo = fx.repo();

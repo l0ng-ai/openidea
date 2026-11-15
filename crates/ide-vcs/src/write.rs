@@ -765,6 +765,18 @@ fn overwritten_untracked(stderr: &str) -> Option<Vec<String>> {
     listed_files(stderr, "untracked working tree files would be")
 }
 
+/// The branch git refused to check out or update because another worktree has it, from
+/// its error message: a switch says `'<branch>' is already used by worktree at '<path>'`,
+/// a forced update says `cannot force update the branch '<branch>' used by worktree at
+/// '<path>'`.
+fn branch_of_other_worktree(stderr: &str) -> Option<(String, String)> {
+    let line = stderr.lines().find(|l| l.contains("used by worktree at '"))?;
+    let (before, path) =
+        line.split_once("' is already used by worktree at '").or_else(|| line.split_once("' used by worktree at '"))?;
+    let branch = before.rsplit('\'').next()?.to_string();
+    Some((branch, path.strip_suffix('\'').unwrap_or(path).to_string()))
+}
+
 fn listed_files(stderr: &str, header: &str) -> Option<Vec<String>> {
     let mut lines = stderr.lines().skip_while(|l| !l.contains(header));
     lines.next()?;
@@ -811,6 +823,9 @@ pub(crate) fn checkout_with(
         return Ok(CheckoutOutcome::Done);
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
+    if let Some((branch, path)) = branch_of_other_worktree(&stderr) {
+        return Ok(CheckoutOutcome::CheckedOutInWorktree { branch, path: path.into() });
+    }
     if let Some(files) = overwritten_untracked(&stderr) {
         return Ok(CheckoutOutcome::UntrackedFiles { files });
     }
@@ -893,7 +908,14 @@ pub(crate) fn create_branch(
         args.extend(["--", name]);
     }
     args.extend(start);
-    run(r.root(), &args, None).map(|_| ())
+    let out = cli::run_raw(r.root(), &args, None)?;
+    if out.code == Some(0) {
+        return Ok(());
+    }
+    if let Some((branch, path)) = branch_of_other_worktree(&String::from_utf8_lossy(&out.stderr)) {
+        return Err(IdeError::invalid(format!("branch '{branch}' is already checked out in worktree at '{path}'")));
+    }
+    Err(cli::failure(&args, &out.stderr, &out.stdout, out.code))
 }
 
 /// Whether `start` is a remote-tracking branch with another name than the new branch

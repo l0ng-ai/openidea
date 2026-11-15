@@ -10,11 +10,22 @@ const mocks = vi.hoisted(() => ({
   restoreBranch: vi.fn(),
   branches: vi.fn(),
   rename: vi.fn(),
+  ask: vi.fn(),
+  checkout: vi.fn(),
+  executeAction: vi.fn(),
 }));
 vi.mock("../dialogs", async (original) => ({
   ...(await original<typeof import("../dialogs")>()),
   promptText: mocks.prompt,
   confirmDialog: mocks.confirm,
+}));
+vi.mock("@/workbench/messages", async (original) => ({
+  ...(await original<typeof import("@/workbench/messages")>()),
+  ask: mocks.ask,
+}));
+vi.mock("@/platform/actions", async (original) => ({
+  ...(await original<typeof import("@/platform/actions")>()),
+  executeAction: mocks.executeAction,
 }));
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify, expire: vi.fn() }) }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -29,10 +40,11 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsRestoreBranch: mocks.restoreBranch,
       vcsBranches: mocks.branches,
       vcsRenameBranch: mocks.rename,
+      vcsCheckout: mocks.checkout,
     },
   };
 });
-import { deleteBranch, deleteBranches, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
+import { checkoutBranch, deleteBranch, deleteBranches, newBranch, newBranchInRepos, renameBranch } from "../branchOps";
 import { useVcs } from "../store";
 import { useProject } from "@/platform/project";
 
@@ -173,6 +185,23 @@ it("deletes a worktree holding the branch before deleting it", async () => {
   expect(mocks.confirm.mock.calls[0]?.[0].message).toContain("/p/front-feature-wt");
   expect(mocks.removeWorktree).toHaveBeenCalledWith("/p/front", "/p/front-feature-wt", false);
   expect(mocks.deleteBranch).toHaveBeenCalledWith("/p/front", "feature/wt");
+});
+
+it("offers to open the worktree that has the branch checked out", async () => {
+  mocks.checkout.mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path: "/p/front-wt" }));
+  mocks.ask.mockResolvedValue({ button: "open" });
+  await checkoutBranch("feature/wt");
+  expect(mocks.checkout).toHaveBeenCalledWith("/p/front", "feature/wt", false, { mode: "normal", diverged: null });
+  expect(mocks.ask.mock.calls[0]?.[0].title).toBe("Checkout feature/wt");
+  expect(mocks.ask.mock.calls[0]?.[0].body).toContain("already checked out in worktree '/p/front-wt'");
+  expect(mocks.executeAction).toHaveBeenCalledWith("file.openProjectPath", "/p/front-wt");
+});
+
+it("does not open the worktree when the checkout offer is declined", async () => {
+  mocks.checkout.mockResolvedValue(ok({ kind: "checkedOutInWorktree", branch: "feature/wt", path: "/p/front-wt" }));
+  mocks.ask.mockResolvedValue({ button: "cancel" });
+  await checkoutBranch("feature/wt");
+  expect(mocks.executeAction).not.toHaveBeenCalled();
 });
 
 it("keeps the branch when the worktree question is turned down", async () => {

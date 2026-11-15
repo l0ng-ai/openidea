@@ -522,6 +522,12 @@ pub enum CheckoutOutcome {
     Conflicts {
         files: Vec<String>,
     },
+    /// Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+    /// changed; the branch can be worked on there.
+    CheckedOutInWorktree {
+        branch: String,
+        path: PathBuf,
+    },
 }
 
 /// HEAD before and after a history rewrite, for its Undo.

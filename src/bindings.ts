@@ -2997,7 +2997,12 @@ export type CheckoutOutcome = { kind: "done" } |
  *  Switched, but restoring the local changes (Smart Checkout) or the rebase stopped
  *  on conflicts in these files.
  */
-{ kind: "conflicts"; files: string[] };
+{ kind: "conflicts"; files: string[] } | 
+/**
+ *  Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+ *  changed; the branch can be worked on there.
+ */
+{ kind: "checkedOutInWorktree"; branch: string; path: string };
 
 export type ChoiceOption = {
 	value: string,

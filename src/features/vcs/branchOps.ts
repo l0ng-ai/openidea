@@ -132,6 +132,20 @@ async function performCheckout(
         options = { ...options, diverged: r.button };
         continue;
       }
+      case "checkedOutInWorktree": {
+        const { branch, path } = outcome;
+        const r = await ask({
+          title: tx`Checkout ${branch}`,
+          body: tx`Branch '${branch}' is already checked out in worktree '${path}'. Open that worktree to work on it?`,
+          icon: "info",
+          buttons: [
+            { id: "open", label: "Open Worktree", primary: true },
+            { id: "cancel", label: "Don't Checkout" },
+          ],
+        });
+        if (r.button === "open") await executeAction("file.openProjectPath", path);
+        return false;
+      }
     }
   }
 }
