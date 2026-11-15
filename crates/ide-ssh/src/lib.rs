@@ -19,7 +19,7 @@ pub mod tunnel;
 pub use filesystem::{FsConnection, RemoteFs};
 pub use manager::SshManager;
 pub use russh::Sig;
-pub use session::{ConnectError, ExecOutput, Output, RemoteProcess, Session, UnknownHostKey};
+pub use session::{ConnectError, ExecOutput, Output, RemoteProcess, Session, UnknownHostKey, ensure_key};
 pub use sftp::RemoteEntry;
 pub use target::{SshFiles, SshTarget, expand, openssh_args, resolve_ssh_remote_url, resolve_ssh_remote_url_with};
 pub use tunnel::Tunnel;

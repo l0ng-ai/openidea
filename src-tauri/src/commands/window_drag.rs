@@ -1,5 +1,7 @@
 //! Native drags started from the web UI: the window from its title bar, files out to other apps.
 
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
 use std::path::PathBuf;
@@ -50,6 +52,11 @@ pub async fn window_drag_files(window: WebviewWindow, paths: Vec<PathBuf>) -> Id
                 .and_then(|gtk_window| ide_drag_out::start(&gtk_window, paths, done));
             #[cfg(any(windows, target_os = "macos"))]
             let started = ide_drag_out::start(&source, paths, done);
+            #[cfg(mobile)]
+            let started = {
+                let _ = (source, paths, done);
+                Err::<(), _>(std::io::Error::other("dragging files out is not supported on this platform"))
+            };
             let _ = started_tx.send(started);
         })
         .map_err(|error| IdeError::internal(format!("Cannot start a drag on the main thread: {error}")))?;

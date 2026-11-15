@@ -8,6 +8,8 @@
 //! The frame to go back to outlives the process in `window-zoom.json`, next to the window-state
 //! plugin's file. That plugin only ever saves the frame the window has now, so a window left zoomed
 //! when the app quits would come back filling the work area with nothing left to restore to.
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};

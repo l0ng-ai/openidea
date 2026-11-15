@@ -40,7 +40,6 @@ pub fn text() -> Option<String> {
 
 /// The clipboard's image as PNG bytes, None when it holds none. Call on the main
 /// thread on macOS.
-#[cfg(any(windows, target_os = "macos"))]
 pub fn png() -> Option<Vec<u8>> {
     imp::png()
 }
@@ -651,6 +650,10 @@ mod imp {
 
     pub fn set_files(_paths: &[PathBuf]) -> bool {
         false
+    }
+
+    pub fn png() -> Option<Vec<u8>> {
+        None
     }
 }
 

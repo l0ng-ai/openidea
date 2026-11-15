@@ -5,6 +5,8 @@
 //! active. Click focuses the window that raised the toast — balloon actions stay
 //! in the IDE.
 
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::LazyLock;

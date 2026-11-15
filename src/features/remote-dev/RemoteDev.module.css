@@ -77,3 +77,22 @@
   align-items: center;
   gap: var(--space-1);
 }
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  margin-top: 4px;
+}
+
+.script {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  resize: vertical;
+}

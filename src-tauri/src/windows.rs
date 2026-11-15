@@ -16,6 +16,8 @@ mod single_instance;
 #[cfg(windows)]
 pub use single_instance::allow_external_launches;
 
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use crate::remote_dev::RemoteTarget;
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;

@@ -1,3 +1,5 @@
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use ide_core::{EventSink, IdeEvent, SharedSink};
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};

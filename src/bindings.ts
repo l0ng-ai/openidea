@@ -1398,6 +1398,13 @@ export const commands = {
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
+	/**
+	 *  Android: the commands that let SSH configuration `ssh` (Termux on this
+	 *  device) connect, pasted once into Termux. They install openssh, authorize this
+	 *  app's key (generated on first use) and install the IDE backend, which
+	 *  [`ensure_server`] then uses as is (not every Android has `curl` to download it).
+	 */
+	remoteTermuxSetup: (ssh: string) => typedError<string, IdeError>(__TAURI_INVOKE("remote_termux_setup", { ssh })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
