@@ -89,6 +89,7 @@ const ICONS = {
   exception: "nodes/exception",
   "jvm-test": "nodes/test",
   "runnable-mark": "nodes/runnableMark",
+  "symlink-mark": "nodes/symlink",
   "kotlin-object": "kotlin/objectKotlin",
   "spring-config": "openidea/runConfigurations/springBoot",
   "gradle-project": "gradle/gradle",
