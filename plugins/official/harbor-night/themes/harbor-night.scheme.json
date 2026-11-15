@@ -9,6 +9,7 @@
     "--syn-type": "#8fd4c9",
     "--syn-function": "#f2d07a",
     "--syn-function-call": "#d9dfe8",
+    "--syn-shell-command": "#e8a46a",
     "--syn-comment": "#6b7a8f",
     "--syn-comment-style": "normal",
     "--syn-doc-comment": "#74889c",
