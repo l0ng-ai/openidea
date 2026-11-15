@@ -114,17 +114,37 @@ impl Plugin for Execution {
         host::storage::set("events", &serde_json::to_string(&received).unwrap()).unwrap();
     }
 }
-impl RunConfigurations for Execution {
-    fn configurations(&mut self, _: &str) -> Vec<PluginRunConfiguration> {
-        vec![PluginRunConfiguration {
-            id: "dynamic".into(),
-            name: "Dynamic tests".into(),
-            program: "execution-tool".into(),
-            args: vec!["test".into()],
-            test: true,
-            framework: Some("plugin".into()),
-            ..Default::default()
-        }]
+impl LaunchConfigurations for Execution {
+    fn launch_configurations(&mut self, _: &str) -> Vec<PluginLaunchConfiguration> {
+        vec![
+            PluginLaunchConfiguration {
+                config: PluginRunConfiguration {
+                    id: "dynamic".into(),
+                    name: "Dynamic tests".into(),
+                    program: "execution-tool".into(),
+                    args: vec!["test".into()],
+                    test: true,
+                    framework: Some("plugin".into()),
+                    ..Default::default()
+                },
+                env: vec![("OPENIDEA_EXECUTION_FIXTURE".into(), "1".into())],
+                debugger: Some(Debugger::Launch { language: "python".into() }),
+            },
+            PluginLaunchConfiguration {
+                config: PluginRunConfiguration {
+                    id: "worker".into(),
+                    name: "Worker".into(),
+                    program: "execution-tool".into(),
+                    args: vec!["start".into()],
+                    ..Default::default()
+                },
+                env: Vec::new(),
+                debugger: Some(Debugger::AttachChild {
+                    kind: "dotnet".into(),
+                    command_contains: Some("Worker.dll".into()),
+                }),
+            },
+        ]
     }
 }
 impl TestResults for Execution {
@@ -181,4 +201,4 @@ impl RunTargetValidation for Execution {
         }
     }
 }
-register_plugin!(Execution, run_configurations, test_results, run_target_validation);
+register_plugin!(Execution, launch_configurations, test_results, run_target_validation);
