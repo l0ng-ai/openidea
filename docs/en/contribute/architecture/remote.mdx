@@ -91,17 +91,15 @@ Forwarded ports go through the SSH connection. In a dev container, each connecti
 
 ## Trust
 
-Restricted mode works the same in remote windows: before forwarding a command that isn't on the restricted-mode allowlist, the desktop asks the server whether the remote project is trusted, and the server authorizes every `invoke` again with `Host::authorize_command`. For a dev container of a folder the user already trusts, the desktop starts the server with that project folder marked trusted (`OPENIDEA_TRUSTED_ROOT`, never persisted).
+Restricted mode works the same in remote windows: before forwarding a command whose trust class isn't `always`, the desktop checks its own decision about the remote project, and the server authorizes every `invoke` again with `Host::authorize` and the class the command declares. For a dev container of a folder the user already trusts, the desktop starts the server with that project folder marked trusted (`OPENIDEA_TRUSTED_ROOT`, never persisted).
 
 The WSL and container transports run programs with arguments directly (`wsl.exe --exec`, `docker exec`); only fixed scripts reach `sh -c`, and every variable value is passed as a positional argument.
 
 ## Making a command work remotely
 
-1. Implement it in `ide-host::ops::<domain>`, taking `&Host` and the window label, not Tauri types.
-2. Register it with the server's `Dispatcher` (`d.add("name", |c| async move { ... })` in `rpc.rs` or the `ops` module), reading arguments with `c.arg("…")`.
-3. Keep the desktop command a thin adapter over the same function.
+Declare it with `#[command(trust = …)]` on its implementation in `ide-host::ops::<domain>` and list it in that module's `domain!` (see [Commands](/en/contribute/architecture/ipc#commands)). The server's `Dispatcher` gets its handler, and the desktop routes it, from that one declaration. The desktop's list of routed commands comes from its own build, never from the server, so a server cannot move a command to the desktop.
 
-If a command is not registered with the dispatcher, a remote window runs it locally — which is wrong for anything that touches the project.
+A command declared with `#[desktop_command]` in `src-tauri` runs on the desktop even in a remote window, which is wrong for anything that touches the project.
 
 ## Testing
 
