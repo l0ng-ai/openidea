@@ -28,6 +28,8 @@ Style components with CSS Modules: `Thing.module.css` next to `Thing.tsx`, impor
 
 Build from the primitives in `src/ui/` before writing your own: `Button`, `BarButton`, `Input`, `Checkbox`, `Select`, `Dialog`, `Popup`, `Menu`, `Tooltip`, `List`, `Tree`, `Tabs`, `Splitter`, `Scrollbar`, `Spinner`, `Kbd`, and `T` for translated text. They already handle focus, keyboard navigation, theming and translation of their labels. Workbench-level pieces (tool windows, status items, overlays) come from [contributions](/en/contribute/architecture/frontend#contributions), not from custom layout.
 
+Toolbar icon actions use `IconButton`: its full hit target uses `--bg-toolbar-hover` on hover, while pressed and selected states use their corresponding toolbar tokens. Keep semantic icon colours and the keyboard focus ring intact.
+
 ## Accessibility
 
 - Use real `<button>` and `<input>` elements (or the primitives that render them), never clickable `<div>`s.
