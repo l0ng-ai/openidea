@@ -4877,6 +4877,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide-streams"
+version = "0.1.45"
+dependencies = [
+ "ide-core",
+ "ide-language",
+ "ide-syntax",
+ "serde",
+ "serde_json",
+ "specta",
+ "tree-sitter",
+]
+
+[[package]]
 name = "ide-syntax"
 version = "0.1.45"
 dependencies = [
