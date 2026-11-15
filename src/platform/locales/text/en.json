@@ -1778,5 +1778,6 @@
   "Class '{name}' does not implement abstract method '{method}'": "Class '{name}' does not implement abstract method '{method}'",
   "Redundant override of '{name}'": "Redundant override of '{name}'",
   "All Configurations": "All Configurations",
-  "'{name}' keeps running without the debugger: {message}": "'{name}' keeps running without the debugger: {message}"
+  "'{name}' keeps running without the debugger: {message}": "'{name}' keeps running without the debugger: {message}",
+  "Run '{name}' with Fuzzing": "Run '{name}' with Fuzzing"
 }
