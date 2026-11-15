@@ -255,7 +255,8 @@ async function selectDraft(page: Page) {
 }
 async function chooseModel(page: Page, name: string) {
   await modelButton(page).click();
-  await page.getByRole("option", { name, exact: true }).click();
+  // A model row also holds its Configure button, whose label joins the option's name.
+  await page.getByRole("option", { name: new RegExp(`^${name}\\b`) }).click();
   await page.keyboard.press("Escape");
   await box(page).focus();
 }

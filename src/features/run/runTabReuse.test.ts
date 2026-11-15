@@ -69,3 +69,14 @@ it("keeps an agent's commands out of other tabs", async () => {
   await startRun(agent, undefined, undefined, { prepared: true });
   expect(useRun.getState().sessions).toHaveLength(2);
 });
+
+it("gives runs started together their own tabs", async () => {
+  useRun.setState({ sessions: [finished("a"), finished("b")], activeSession: "a" });
+  await Promise.all([
+    startRun(config("x"), "a", undefined, { prepared: true }),
+    startRun(config("y"), undefined, undefined, { prepared: true }),
+    startRun(config("z"), undefined, undefined, { prepared: true }),
+  ]);
+  expect(tabs()).toEqual(["a:x", "b:y", expect.stringMatching(/^run\d+:z$/)]);
+  expect(ipc.runStart).toHaveBeenCalledTimes(3);
+});
