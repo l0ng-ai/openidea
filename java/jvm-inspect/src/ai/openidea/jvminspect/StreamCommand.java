@@ -1,0 +1,138 @@
+package ai.openidea.jvminspect;
+
+import ai.openidea.jvminspect.InspectCommand.Failure;
+import ai.openidea.jvminspect.VmSelector.Target;
+import ai.openidea.jvminspect.VmSelector.VmInfo;
+import com.sun.jdi.IncompatibleThreadStateException;
+import com.sun.jdi.ObjectCollectedException;
+import com.sun.jdi.ThreadReference;
+import com.sun.jdi.VMDisconnectedException;
+import com.sun.jdi.VirtualMachine;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
+
+/**
+ * The {@code openidea.jvm.stream.*} commands: trace a stream chain while the program runs it, one
+ * trace per VM. Replies have the shape of {@link InspectCommand}'s; the codes are matched by the Rust
+ * client.
+ */
+public final class StreamCommand implements IDelegateCommandHandler {
+    private static final String PREFIX = "openidea.jvm.stream.";
+    /** {@code stream.wait} holds a JDT LS request thread at most this long. */
+    private static final long MAX_WAIT_MS = 30_000;
+    private static final AtomicLong IDS = new AtomicLong();
+    private static final Map<VirtualMachine, RealRunTrace> TRACES = new IdentityHashMap<>();
+
+    @Override
+    public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
+        try {
+            List<VmInfo> vms = InspectCommand.connected();
+            forgetGone(vms);
+            Target target = Target.of(arguments.get(0));
+            VirtualMachine vm = InspectCommand.select(vms, target);
+            Map<?, ?> args = (Map<?, ?>) arguments.get(1);
+            return InspectCommand.ok(switch (command.substring(PREFIX.length())) {
+                case "arm" -> Values.json("traceId", arm(vm, args));
+                case "wait" -> trace(vm, args).await(Math.min(Math.max(0, number(args, "ms").longValue()), MAX_WAIT_MS));
+                case "stop" -> Values.json("records", trace(vm, args).stopRecording());
+                case "abort", "collect" -> throw new Failure("unsupported", command + " is not available yet");
+                case "release" -> release(vm, trace(vm, args));
+                default -> throw new IllegalArgumentException("unknown command " + command);
+            });
+        } catch (Failure e) {
+            return InspectCommand.error(e.code, e.getMessage());
+        } catch (ConnectedVms.Unsupported e) {
+            return InspectCommand.error("unsupported", e.getMessage());
+        } catch (IncompatibleThreadStateException e) {
+            return InspectCommand.error("notSuspended", "the thread is not stopped at an event: " + e.getMessage());
+        } catch (ObjectCollectedException e) {
+            return InspectCommand.error("collected", String.valueOf(e.getMessage()));
+        } catch (org.eclipse.jdi.TimeoutException e) {
+            return InspectCommand.error("timedOut", String.valueOf(e.getMessage()));
+        } catch (VMDisconnectedException e) {
+            return InspectCommand.error("vmNotFound", "the VM disconnected");
+        }
+    }
+
+    /**
+     * A trace that is still running answers {@code busy}; one that finished (parked or failed) is
+     * released first, since the client never releases a finished trace itself.
+     */
+    private static long arm(VirtualMachine vm, Map<?, ?> args) throws Exception {
+        long threadId = number(args, "threadId").longValue();
+        RealRunPlan plan = RealRunPlan.of(args.get("plan"));
+        Number budget = (Number) args.get("budget");
+        if (!vm.canForceEarlyReturn() || !vm.canGetMethodReturnValues()) {
+            throw new Failure("unsupported", "the VM cannot force early returns or report method return values");
+        }
+        ThreadReference thread = vm.allThreads().stream().filter(t -> t.uniqueID() == threadId).findFirst()
+                .orElseThrow(() -> new Failure("stale", "no thread " + threadId));
+        if (!thread.isSuspended()) throw new Failure("notSuspended", "thread " + threadId + " is running");
+        JavaDebugSessions.Hub hub = JavaDebugSessions.of(vm)
+                .orElseThrow(() -> new Failure("noSession", "java-debug registered no session for this VM (hotCodeReplace is never?)"));
+        // The inspect commands' per-VM lock: it also keeps two arms of one VM apart, and the set-up
+        // invokes into the thread those commands read from.
+        synchronized (InspectCommand.handlesFor(vm)) {
+            RealRunTrace current;
+            synchronized (TRACES) {
+                current = TRACES.get(vm);
+            }
+            if (current != null && current.state().wire.equals("running")) throw new Failure("busy", "trace " + current.id + " is running");
+            if (current != null) release(vm, current);
+            RealRunTrace trace = RealRunTrace.arm(IDS.incrementAndGet(), vm, thread, plan,
+                    budget == null ? RealRunTrace.DEFAULT_BUDGET : budget.intValue(), hub);
+            synchronized (TRACES) {
+                TRACES.put(vm, trace);
+            }
+            return trace.id;
+        }
+    }
+
+    private static RealRunTrace trace(VirtualMachine vm, Map<?, ?> args) throws Failure {
+        long id = number(args, "traceId").longValue();
+        synchronized (TRACES) {
+            RealRunTrace trace = TRACES.get(vm);
+            if (trace == null || trace.id != id) throw new Failure("noTrace", "no trace " + id + " on this VM");
+            return trace;
+        }
+    }
+
+    private static Map<String, Object> release(VirtualMachine vm, RealRunTrace trace) {
+        synchronized (TRACES) {
+            TRACES.remove(vm, trace);
+        }
+        trace.release();
+        return Map.of();
+    }
+
+    /** Releases the traces of VMs java-debug no longer has; their requests and objects went with the VM. */
+    private static void forgetGone(List<VmInfo> vms) {
+        Set<VirtualMachine> live = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (VmInfo v : vms) live.add(v.vm());
+        List<RealRunTrace> gone = new ArrayList<>();
+        synchronized (TRACES) {
+            for (Iterator<Map.Entry<VirtualMachine, RealRunTrace>> i = TRACES.entrySet().iterator(); i.hasNext(); ) {
+                Map.Entry<VirtualMachine, RealRunTrace> e = i.next();
+                if (live.contains(e.getKey())) continue;
+                gone.add(e.getValue());
+                i.remove();
+            }
+        }
+        gone.forEach(RealRunTrace::release);
+        RecorderLoader.retain(live);
+    }
+
+    private static Number number(Map<?, ?> args, String name) {
+        Object value = args.get(name);
+        if (!(value instanceof Number n)) throw new IllegalArgumentException(name + " is not a number: " + value);
+        return n;
+    }
+}
