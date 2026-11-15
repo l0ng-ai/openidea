@@ -533,7 +533,7 @@ async function gotoResolved(
   }
   // A server that only sees its own root answers the import statement for a name it cannot
   // resolve; the import names the module that declares it, also in an attached project.
-  if (declaration) locs = await withImportedDeclaration(view, doc, offset, locs);
+  if (declaration && doc.language === "python") locs = await withImportedDeclaration(view, doc, offset, locs);
   if (graphTargets) locs = mergeTargets(locs, await graphTargets);
   if (streamed && (await streamed.opened())) {
     await streamed.complete(locs);
