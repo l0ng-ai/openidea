@@ -2,6 +2,8 @@
 //! user's answer as the `elicitation/create` response.
 
 use crate::model::{AgentForm, AgentFormField, AgentFormFieldKind, AgentFormOption, AgentPermissionOption};
+use serde::Deserialize;
+use serde::de::{Deserializer, IgnoredAny, MapAccess, Visitor};
 use serde_json::{Map, Value, json};
 
 /// The reply that declines the form; a JSON object of field name to values accepts it, and
@@ -25,6 +27,47 @@ pub(crate) fn form_of(params: &Value) -> Result<AgentForm, String> {
         .map(|(name, property)| field(name, property, required.contains(&name.as_str())))
         .collect::<Result<_, _>>()?;
     Ok(AgentForm { fields })
+}
+
+/// Orders the fields as the request's schema lists them: `Value` keeps object keys sorted, and
+/// the agent's order is the one its form reads in.
+pub(crate) fn in_schema_order(form: &mut AgentForm, raw: &[u8]) {
+    #[derive(Deserialize)]
+    struct Request {
+        params: Params,
+    }
+    #[derive(Deserialize)]
+    struct Params {
+        #[serde(rename = "requestedSchema")]
+        schema: Schema,
+    }
+    #[derive(Deserialize)]
+    struct Schema {
+        properties: Keys,
+    }
+    struct Keys(Vec<String>);
+    impl<'de> Deserialize<'de> for Keys {
+        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct Visit;
+            impl<'de> Visitor<'de> for Visit {
+                type Value = Keys;
+                fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    f.write_str("an object")
+                }
+                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Keys, A::Error> {
+                    let mut keys = Vec::new();
+                    while let Some((key, IgnoredAny)) = map.next_entry::<String, IgnoredAny>()? {
+                        keys.push(key);
+                    }
+                    Ok(Keys(keys))
+                }
+            }
+            deserializer.deserialize_map(Visit)
+        }
+    }
+    let Ok(request) = serde_json::from_slice::<Request>(raw) else { return };
+    let order = request.params.schema.properties.0;
+    form.fields.sort_by_key(|field| order.iter().position(|name| *name == field.name).unwrap_or(usize::MAX));
 }
 
 fn field(name: &str, property: &Value, required: bool) -> Result<AgentFormField, String> {
@@ -174,6 +217,18 @@ mod tests {
                 "q0__other": { "type": "string", "title": "Other (type your own)" }
             } }
         })
+    }
+
+    #[test]
+    fn fields_follow_the_schema_order() {
+        let raw = br#"{ "jsonrpc": "2.0", "id": 3, "method": "elicitation/create", "params": { "mode": "form",
+            "requestedSchema": { "type": "object", "properties": {
+                "strategy": { "type": "string" }, "tests": { "type": "boolean" }, "note": { "type": "string" }
+            } } } }"#;
+        let params = serde_json::from_slice::<Value>(raw).unwrap()["params"].take();
+        let mut form = form_of(&params).unwrap();
+        in_schema_order(&mut form, raw);
+        assert_eq!(form.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["strategy", "tests", "note"]);
     }
 
     #[test]

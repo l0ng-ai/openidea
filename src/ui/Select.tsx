@@ -60,6 +60,8 @@ export interface SelectListboxProps<V extends string = string> {
   onChoose: (value: V) => void;
   searchable?: boolean;
   onPreview?: (value: V | null) => void;
+  /** Optional trailing action control rendered at the end of a non-section row. */
+  renderAction?: (option: SelectOption<V>) => ReactNode;
   /** Extra class for the scrolling list, e.g. to set its height. */
   listClassName?: string;
   "aria-label"?: string;
@@ -72,6 +74,7 @@ export function SelectListbox<V extends string = string>({
   onChoose,
   searchable = false,
   onPreview,
+  renderAction,
   listClassName,
   ...aria
 }: SelectListboxProps<V>) {
@@ -242,20 +245,35 @@ export function SelectListbox<V extends string = string>({
         rowHeight={24}
         aria-label={given(aria["aria-label"])}
         className={clsx(styles.list, listClassName)}
-        renderItem={(o) => (
-          <span className={clsx(styles.option, o.disabled && styles.disabled)} aria-disabled={o.disabled || undefined}>
-            <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
-            {o.icon && <Icon name={o.icon} size={14} />}
-            <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={labelOf(o)}>
-              {labelOf(o)}
-            </span>
-            {o.detail && (
-              <span className={styles.detail} title={o.detail}>
-                {given(o.detail)}
+        renderItem={(o) => {
+          const action = !o.section && !o.disabled ? renderAction?.(o) : null;
+          return (
+            <span
+              className={clsx(styles.option, o.disabled && styles.disabled)}
+              aria-disabled={o.disabled || undefined}
+            >
+              <span className={styles.check}>{o.value === value && <Icon name="check" size={12} />}</span>
+              {o.icon && <Icon name={o.icon} size={14} />}
+              <span className={clsx(styles.optionLabel, o.detail && styles.withDetail)} title={labelOf(o)}>
+                {labelOf(o)}
               </span>
-            )}
-          </span>
-        )}
+              {o.detail && (
+                <span className={styles.detail} title={o.detail}>
+                  {given(o.detail)}
+                </span>
+              )}
+              {action && (
+                <span
+                  className={styles.rowAction}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {action}
+                </span>
+              )}
+            </span>
+          );
+        }}
       />
     </div>
   );

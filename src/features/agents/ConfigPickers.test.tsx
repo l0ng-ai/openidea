@@ -1,7 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigOption } from "@/bindings";
 import { ConfigPickers, configPickerOptions } from "./ConfigPickers";
+import { useAgents } from "./store";
+
+beforeEach(() => {
+  useAgents.setState({ pinnedModels: [] });
+});
 
 const config = (values: AgentConfigOption["values"], category = "model"): AgentConfigOption => ({
   id: "model",
@@ -44,6 +49,26 @@ describe("configPickerOptions", () => {
   it("leaves non-model option labels and descriptions intact", () => {
     expect(configPickerOptions(config([value("a/One", "Custom", "Description")], "mode"))).toEqual([
       { value: "a/One", label: "Custom", detail: "Description" },
+    ]);
+  });
+  it("places pinned models in a top Pinned section and prepends usageMultiplier to detail", () => {
+    const options = configPickerOptions(
+      config([
+        { value: "gpt-6-sol", name: "GPT-6 Sol", description: "Medium cost", usageMultiplier: "1x" },
+        {
+          value: "gemini-4-carbon",
+          name: "Gemini 4 Carbon",
+          description: "Powerful · Medium cost",
+          usageMultiplier: "1x",
+        },
+      ]),
+      ["gemini-4-carbon"],
+    );
+    expect(options).toEqual([
+      { value: "__pinned__", label: "Pinned", section: true },
+      { value: "gemini-4-carbon", label: "Gemini 4 Carbon", detail: "1x · Powerful · Medium cost", keywords: "" },
+      { value: "__models__", label: "Models", section: true },
+      { value: "gpt-6-sol", label: "GPT-6 Sol", detail: "1x · Medium cost", keywords: "" },
     ]);
   });
 });
@@ -276,22 +301,69 @@ describe("model and effort button", () => {
     expect(within(dialog).getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "false");
   });
 
-  it("steps through the advertised effort levels and picks a model from the popup", () => {
+  it("navigates to the detail page for segmented effort, Reset, Pin, and cost badge", () => {
     const onChange = vi.fn();
-    render(<ConfigPickers config={copilotConfig()} values={{ reasoning_effort: "high" }} onChange={onChange} />);
+    const cfg = copilotConfig().map((o) =>
+      o.id === "model"
+        ? {
+            ...o,
+            values: o.values.map((v) =>
+              v.value === "claude-sonnet-5.5" ? { ...v, costCategory: "medium", usageMultiplier: "1x" } : v,
+            ),
+          }
+        : o.id === "reasoning_effort"
+          ? { ...o, defaultValue: "medium" }
+          : o,
+    );
+    cfg.push({
+      id: "contextTier",
+      name: "Context Size",
+      category: "model_config",
+      description: null,
+      current: "long_context",
+      defaultValue: "default",
+      via: "option",
+      values: [value("default", "200K"), value("long_context", "1M")],
+    });
+    render(<ConfigPickers config={cfg} values={{ reasoning_effort: "high" }} onChange={onChange} />);
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Claude Sonnet 5.5high · 1M");
+
     fireEvent.click(screen.getByRole("button", { name: "Model" }));
     const dialog = screen.getByRole("dialog", { name: "Model & effort settings" });
-    const slider = within(dialog).getByRole("slider", { name: "Reasoning Effort" });
-    expect(slider).toHaveAttribute("max", "3");
-    expect(slider).toHaveValue("2");
-    expect(slider).toHaveAttribute("aria-valuetext", "high");
-    fireEvent.change(slider, { target: { value: "3" } });
-    expect(onChange).toHaveBeenLastCalledWith("reasoning_effort", "xhigh");
-    // The model list is in the popup itself, not behind a second dropdown.
-    expect(within(dialog).queryByRole("button", { name: "Model" })).not.toBeInTheDocument();
+    expect(within(dialog).getByText("Medium cost")).toBeVisible();
+
+    // Pick another model directly from Page 1.
     fireEvent.click(within(dialog).getByRole("option", { name: /GPT-6 Sol/ }));
-    expect(onChange).toHaveBeenLastCalledWith("model", "gpt-6-sol");
-    expect(screen.getByRole("dialog", { name: "Model & effort settings" })).toBeInTheDocument();
+    expect(onChange).toHaveBeenCalledWith("model", "gpt-6-sol");
+
+    // Open Page 2 (detail configuration view) for the active model.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Configure model" }));
+    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Reasoning Effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "high" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(within(effortGroup).getByRole("radio", { name: "XHigh" }));
+    expect(onChange).toHaveBeenCalledWith("reasoning_effort", "xhigh");
+
+    const contextGroup = within(dialog).getByRole("radiogroup", { name: "Context Size" });
+    expect(within(contextGroup).getByRole("radio", { name: "1M" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(within(contextGroup).getByRole("radio", { name: "200K" }));
+    expect(onChange).toHaveBeenCalledWith("contextTier", "default");
+
+    // Cost badge & multiplier render in the detail card.
+    expect(within(dialog).getByText("Medium cost")).toBeVisible();
+    expect(within(dialog).getByText("1x")).toBeVisible();
+
+    // Reset restores both effort and contextTier to their agent defaults.
+    onChange.mockClear();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Reset to defaults" }));
+    expect(onChange).toHaveBeenCalledWith("reasoning_effort", "medium");
+    expect(onChange).toHaveBeenCalledWith("contextTier", "default");
+
+    // Pin model, navigate back to Page 1, and verify Pinned + Models sections appear.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Pin model" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back to models" }));
+    const listbox = within(dialog).getByRole("listbox", { name: "Model" });
+    expect(within(listbox).getByText("Pinned")).toBeVisible();
+    expect(within(listbox).getByText("Models")).toBeVisible();
   });
 
   it("filters the model list and picks the highlighted model with the keyboard", () => {

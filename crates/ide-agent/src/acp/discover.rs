@@ -106,18 +106,17 @@ impl ide_jsonrpc::Handler for DiscoveryUpdates {
     }
 }
 
-fn is_thought_level(o: &AgentConfigOption) -> bool {
-    o.category.as_deref() == Some("thought_level")
-        || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
-}
-
 fn levels_for_model_from_slice(options: &[AgentConfigOption]) -> Option<Vec<AgentConfigOption>> {
     let levels: Vec<_> = options
         .iter()
-        .filter(|o| is_thought_level(o))
+        .filter(|o| config::is_per_model_option(o))
         .cloned()
         .map(|mut o| {
-            if o.category.as_deref() != Some("thought_level") {
+            if config::is_context_option(&o.id) {
+                if o.category.is_none() {
+                    o.category = Some("model_config".into());
+                }
+            } else if o.category.as_deref() != Some("thought_level") {
                 o.category = Some("thought_level".into());
             }
             o

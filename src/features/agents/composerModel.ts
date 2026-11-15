@@ -349,12 +349,22 @@ export function atEdgeLine(text: string, caret: number, dir: -1 | 1): boolean {
   return dir < 0 ? !text.slice(0, caret).includes("\n") : !text.slice(caret).includes("\n");
 }
 
-const matchesCategory = (o: AgentConfigOption, category: string) =>
-  o.category === category || (category === "model_config" && (o.category === "model_config" || o.id === "fast"));
+export const isContextOption = (id: string) => /^(context_tier|contextTier)$/.test(id);
 
-/** Cursor / ACP model parameters (`fast`, `context`…), separate from the model id itself. */
+/** Whether an option's available values and default belong to the selected model rather than the provider. */
+export const isPerModelOption = (o: AgentConfigOption) =>
+  o.category === "thought_level" || o.category === "context_tier" || isContextOption(o.id);
+
+const matchesCategory = (o: AgentConfigOption, category: string) =>
+  o.category === category ||
+  (category === "model_config" &&
+    (o.category === "model_config" || o.category === "context_tier" || o.id === "fast" || isContextOption(o.id)));
+
+/** Cursor / ACP model parameters (`fast`, `contextTier`…), separate from the model id itself. */
 export function modelConfigOptions(config: readonly AgentConfigOption[]): AgentConfigOption[] {
-  return config.filter((o) => o.category === "model_config" || o.id === "fast");
+  return config.filter(
+    (o) => o.category === "model_config" || o.category === "context_tier" || o.id === "fast" || isContextOption(o.id),
+  );
 }
 
 /** The settings shown in the composer: model, mode, collaboration mode, permissions, approvals, effort, fast. */
