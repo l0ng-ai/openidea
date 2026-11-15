@@ -308,8 +308,9 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
-  // CLion colours `this` as a keyword.
+  // CLion colours `this` as a keyword, RustRover `self`.
   "C++": { this: t.keyword },
+  Rust: { self: t.keyword },
   PHP: {
     "; ,": t.separator,
     "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,
