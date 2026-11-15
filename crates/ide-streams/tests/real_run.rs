@@ -167,6 +167,13 @@ fn root_skip_counts_earlier_condition_of_else_if() {
 }
 
 #[test]
+fn root_skip_ignores_earlier_branch_bodies() {
+    // The body of the first branch ran only if its condition held, and then the `else if` was never reached.
+    let root = plan_of("C_PLAN_ELSE_IF_BODY").root.unwrap();
+    assert_eq!(root, spec("stream", 0, 0));
+}
+
+#[test]
 fn root_skip_ignores_other_families() {
     // `Optional.of` is not a stream source, so the debugger never sees it as a candidate.
     assert_eq!(plan_of("C_PLAN_OTHER_FAMILY").root, Some(spec("of", 1, 0)));

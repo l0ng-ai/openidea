@@ -294,8 +294,12 @@ impl<'t> Finder<'_, 't> {
         let (root_kind, call) = match family {
             Some(family) => {
                 let args = saturate(self.jvm_args(root));
-                let region = self.skip_region(statement, scope);
-                let skip = saturate(self.earlier_exits(region, root, family));
+                let skip: usize = self
+                    .skip_regions(statement, scope)
+                    .into_iter()
+                    .map(|region| self.earlier_exits(region, root, family))
+                    .sum();
+                let skip = saturate(skip);
                 (RootKind::Call, Some(RootCall { name: self.name(root).into(), args, skip, family }))
             }
             None => (self.value_root_kind(root, scope), None),
@@ -326,25 +330,29 @@ impl<'t> Finder<'_, 't> {
         jvm_arg_count(object_of(call).map(|r| self.text(r).trim()), self.name(call), written)
     }
 
-    /// Where calls that exit before the root can be: the statement holding the
-    /// chain, or, for a chain in a compound statement's header, that statement
-    /// (the whole `if` / `else if` ladder, since earlier conditions ran too).
-    fn skip_region(&self, anchor: Node<'t>, scope: Node<'t>) -> Node<'t> {
+    /// Subtrees where calls that exit before the root can be: the statement holding
+    /// the chain, or, for a chain in a compound statement's header, that statement.
+    /// For an `else if` also the conditions of the `if`s before it, which all ran;
+    /// their branch bodies did not, since the later condition is only reached when
+    /// they were skipped.
+    fn skip_regions(&self, anchor: Node<'t>, scope: Node<'t>) -> Vec<Node<'t>> {
         let is_statement = |n: Node| n.kind().ends_with("_statement") || n.kind() == "switch_expression";
         if anchor.kind() != "method_invocation" {
-            return anchor;
+            return vec![anchor];
         }
         let mut region = std::iter::successors(anchor.parent(), |n| n.parent())
             .take_while(|n| *n != scope)
             .find(|n| is_statement(*n))
             .unwrap_or(anchor);
+        let mut regions = vec![region];
         while let Some(outer) = region
             .parent()
             .filter(|p| p.kind() == "if_statement" && p.child_by_field_name("alternative") == Some(region))
         {
+            regions.extend(outer.child_by_field_name("condition"));
             region = outer;
         }
-        region
+        regions
     }
 
     /// Calls in `region` that the debugger would take for `root`: same name, parameter
