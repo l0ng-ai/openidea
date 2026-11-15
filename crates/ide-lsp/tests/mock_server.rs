@@ -7372,3 +7372,59 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
         .await;
     h.mgr.shutdown_all().await;
 }
+
+/// A plugin's request (`language-servers` in the plugin API) reaches the running server
+/// named in the language definition: only the server's own methods, and never a start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_request_reaches_only_a_running_servers_own_methods() {
+    let servers = [("main", incremental_caps()), ("alt", incremental_caps())];
+    let h = harness_for("mock", "mk", &servers, &["alt"]);
+    let _ = h.open("a.mk", "x");
+    h.wait_status("main", ServerStatus::Ready).await;
+    let s = h.launcher.state("main");
+    s.respond("mock/routes", json!([{ "uri": "/users", "name": "users.index" }]));
+    let cancel = CancellationToken::new();
+    let timeout = Duration::from_secs(5);
+
+    // A request: the params arrive, the result comes back.
+    let routes = h
+        .mgr
+        .server_request(&h.root, "main", "mock/routes", Some(json!({ "method": "GET" })), &cancel, timeout)
+        .await
+        .unwrap();
+    assert_eq!(routes, json!([{ "uri": "/users", "name": "users.index" }]));
+    assert_eq!(s.requested("mock/routes"), [json!({ "method": "GET" })]);
+
+    // A notification.
+    h.mgr.server_notify(&h.root, "main", "mock/changed", Some(json!({ "what": "routes" }))).unwrap();
+    eventually(|| s.notified("mock/changed") == [json!({ "what": "routes" })]).await;
+
+    // LSP's own methods are refused before anything is sent.
+    for method in ["textDocument/hover", "workspace/executeCommand", "$/cancelRequest", "shutdown", "initialize"] {
+        let before = (s.requested(method).len(), s.notified(method).len());
+        let e = h.mgr.server_request(&h.root, "main", method, None, &cancel, timeout).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput, "{method}");
+        assert_eq!(
+            h.mgr.server_notify(&h.root, "main", method, None).unwrap_err().kind,
+            ide_core::error::ErrorKind::InvalidInput
+        );
+        assert_eq!((s.requested(method).len(), s.notified(method).len()), before, "{method}");
+    }
+
+    // A server that is defined but not running is not started; an unknown name is the same.
+    for server in ["alt", "nobody"] {
+        let e = h.mgr.server_request(&h.root, server, "mock/routes", None, &cancel, timeout).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::NotFound, "{server}");
+        assert_eq!(
+            h.mgr.server_notify(&h.root, server, "mock/changed", None).unwrap_err().kind,
+            ide_core::error::ErrorKind::NotFound
+        );
+    }
+    assert_eq!(h.launcher.state("alt").launches.load(Ordering::SeqCst), 0);
+    assert!(h.statuses("alt").is_empty());
+
+    // A cancelled invocation ends the request.
+    cancel.cancel();
+    let e = h.mgr.server_request(&h.root, "main", "mock/routes", None, &cancel, timeout).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled);
+}

@@ -26,6 +26,7 @@ mod launch;
 mod library_source;
 mod loading;
 mod notebook;
+mod plugin_requests;
 mod pull;
 mod scope;
 mod server;
@@ -45,6 +46,7 @@ pub use jdtls::jvm_inspect::JdtJvmInspector;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
+pub use plugin_requests::plugin_method_allowed;
 pub use scope::{CandidateFiles, CandidateFn, CandidateQuery, MAX_CANDIDATES};
 pub use uri::{is_virtual_uri, path_to_uri_string, uri_target, uri_to_path};
 

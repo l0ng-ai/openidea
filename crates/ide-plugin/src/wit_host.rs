@@ -59,6 +59,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -97,6 +98,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -135,6 +137,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/output": super::bindings::openidea::plugin::output,
             "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
             "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
             "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
@@ -2648,6 +2651,57 @@ impl bindings::openidea::plugin::database::Host for StoreData {
         Ok(result.map_err(to_wit))
     }
 }
+/// The longest method name and params a plugin may send a language server.
+const MAX_LSP_METHOD: usize = 256;
+const MAX_LSP_PARAMS: usize = 1 << 20;
+
+impl StoreData {
+    fn lsp_call(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+        notify: bool,
+    ) -> Fallible<String> {
+        if let Err(e) = self.require(Capability::Lsp(server.clone())) {
+            return Ok(Err(e));
+        }
+        if method.len() > MAX_LSP_METHOD || params.as_ref().is_some_and(|p| p.len() > MAX_LSP_PARAMS) {
+            return Ok(Err(wit::Error::Invalid("method exceeds 256 bytes or params exceed 1 MiB".into())));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let outcome = self.host.lsp_request(&root, &server, &method, params, notify, &token, timeout);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map_err(to_wit))
+    }
+}
+
+impl bindings::openidea::plugin::language_servers::Host for StoreData {
+    fn request(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<String> {
+        self.lsp_call(project, server, method, params, false)
+    }
+    fn notify(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<()> {
+        Ok(self.lsp_call(project, server, method, params, true)?.map(|_| ()))
+    }
+}
+
 impl bindings::openidea::plugin::extensions::Host for StoreData {
     fn contributions(&mut self, point: String) -> Fallible<Vec<bindings::openidea::plugin::extensions::Contribution>> {
         Ok(self
