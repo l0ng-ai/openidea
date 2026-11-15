@@ -129,8 +129,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const seenFindMatch = useRef<number | null>(null);
   /** scrollTop set by navigation, whose scroll event isn't the user's. */
   const scrolledTo = useRef<number | null>(null);
-  /** A mount restore that clamped to not-yet-drawn content, retried on the next settle. */
-  const restoreRetry = useRef(false);
+  /** The offset a mount restore clamped short of (content not drawn yet), retried on the next settle. */
+  const restoreRetry = useRef<number | null>(null);
   const scrollFrame = useRef(0);
   /** `<details>` the reader opened or closed, by position: each edit re-renders them as written. */
   const toggled = useRef(new Map<number, boolean>());
@@ -230,7 +230,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const onScroll = () => publishPreviewTop(path, root.scrollTop);
+    const onScroll = () => {
+      // A clamped restore keeps the saved offset until it is applied in full.
+      if (restoreRetry.current !== null && Math.abs(root.scrollTop - (scrolledTo.current ?? -1)) < 1) return;
+      publishPreviewTop(path, root.scrollTop);
+    };
     root.addEventListener("scroll", onScroll, { passive: true });
     return () => root.removeEventListener("scroll", onScroll);
   }, [path]);
@@ -245,21 +249,22 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     scrolledTo.current = root.scrollTop;
     // Images and diagrams draw after this first paint; a clamped offset is
     // applied again by the settle effect below.
-    restoreRetry.current = root.scrollTop < saved;
+    restoreRetry.current = root.scrollTop < saved ? saved : null;
   }, [path, sync]);
 
   // A restore that clamped to the not-yet-drawn document is applied again on
   // each settle, until it fits or a scroll hands the position back to the reader.
   useLayoutEffect(() => {
     const root = ref.current;
-    if (!root || sync || !restoreRetry.current) return;
-    const saved = useLiveMarkdown.getState()[path]?.previewTop ?? 0;
-    if (root.scrollTop >= saved || scrolledTo.current === null) {
-      restoreRetry.current = false;
+    const saved = restoreRetry.current;
+    if (!root || sync || saved === null) return;
+    if (scrolledTo.current === null) {
+      restoreRetry.current = null;
       return;
     }
     root.scrollTop = saved;
     scrolledTo.current = root.scrollTop;
+    if (root.scrollTop >= saved) restoreRetry.current = null;
   }, [html, diagramsDrawn, fontZoom, fontSize, path, sync]);
 
   // Preview only: go where the hidden editor's caret was sent (Structure, Go to Symbol…).
@@ -274,7 +279,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         openDetailsContaining(current, root, toggled.current);
         if (revealPreviewRange(current, root)) {
           scrolledTo.current = root.scrollTop;
-          restoreRetry.current = false;
+          restoreRetry.current = null;
           setShownLine(path, caretLine);
           return;
         }
@@ -285,7 +290,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     if (previewLineAtOffset(blocks, root.scrollTop) !== caretLine) {
       root.scrollTop = previewOffsetForLine(blocks, caretLine, root.scrollHeight);
       scrolledTo.current = root.scrollTop;
-      restoreRetry.current = false;
+      restoreRetry.current = null;
     }
     setShownLine(path, caretLine);
   }, [caretSeq, caretLine, sync, path, find]);
@@ -308,7 +313,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
           seenFindMatch.current = find.currentMatchIndex;
           if (revealPreviewRange(current, root) && !sync) {
             scrolledTo.current = root.scrollTop;
-            restoreRetry.current = false;
+            restoreRetry.current = null;
           }
         }
       } else {
@@ -389,7 +394,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       const own = scrolledTo.current !== null && Math.abs(root.scrollTop - scrolledTo.current) < 1;
       if (own) return;
       scrolledTo.current = null;
-      restoreRetry.current = false;
+      restoreRetry.current = null;
       setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
     });
   };

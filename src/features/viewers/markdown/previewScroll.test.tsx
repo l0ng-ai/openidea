@@ -108,6 +108,9 @@ describe("preview-only scroll position", () => {
       act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "split" } })));
       act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
       expect(preview.scrollTop).toBe(100);
+      // The browser reports the clamped write as a scroll; the saved offset stays.
+      act(() => preview.dispatchEvent(new Event("scroll")));
+      expect(useLiveMarkdown.getState()[mdCtx.path]?.previewTop).toBe(300);
 
       // …and the settle after the heights arrive applies the saved offset again.
       await act(async () => {
