@@ -1,4 +1,5 @@
 {
+  "Cannot paste the image into {name}": "Cannot paste the image into {name}",
   "Worktree Conflict": "Worktree Conflict",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "Branch '{branch}' is already checked out in a worktree at:\n{path}",
   "Checkout Anyway": "Checkout Anyway",
