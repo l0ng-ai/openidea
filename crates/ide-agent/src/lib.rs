@@ -1204,7 +1204,10 @@ impl AgentManager {
     }
 
     /// What `provider` reports about itself, from `initialize` alone: no session is opened,
-    /// so no MCP server, hook or sign-in runs. Remembered until `refresh`.
+    /// so no MCP server, hook or sign-in runs. A successful answer is remembered until
+    /// `refresh`; a failed one is not, so a transient startup failure (a CLI updating itself,
+    /// a busy machine) is retried on the next call instead of being shown for the rest of
+    /// the session.
     pub async fn probe(&self, provider: &str, refresh: bool) -> IdeResult<AgentProbe> {
         if !refresh && let Some(p) = self.shared.probes.lock().get(provider) {
             return Ok(p.clone());
@@ -1266,7 +1269,9 @@ impl AgentManager {
             }
             Err(e) => probe.error = Some(e),
         }
-        self.shared.probes.lock().insert(spec.id, probe.clone());
+        if probe.error.is_none() {
+            self.shared.probes.lock().insert(spec.id, probe.clone());
+        }
         Ok(probe)
     }
 
