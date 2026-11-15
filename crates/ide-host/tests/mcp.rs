@@ -697,3 +697,76 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     let interrupted = h.json("wait_for_run", json!({"name": "interrupt", "timeout": 10000})).await;
     assert_eq!(interrupted["state"], "stoppedByAgent", "{interrupted}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_list_and_run_require_confirmation() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let h = Harness::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await;
+        let body = b"{\"ok\":true}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            std::str::from_utf8(body).unwrap()
+        );
+        let _ = socket.write_all(response.as_bytes()).await;
+    });
+
+    std::fs::write(
+        h.root.join("api.http"),
+        format!(
+            "### Health\nGET http://{addr}/health\nAccept: application/json\n\n### Echo\n# @name echo\nGET http://{addr}/echo\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(h.root.join("http-client.env.json"), r#"{"dev":{"unused":"x"}}"#).unwrap();
+
+    let listed = h.json("http_list_requests", json!({"path": "api.http"})).await;
+    assert_eq!(listed["requests"].as_array().unwrap().len(), 2, "{listed}");
+    assert_eq!(listed["requests"][0]["index"], 0);
+    assert_eq!(listed["requests"][0]["name"], "Health");
+    assert_eq!(listed["requests"][0]["method"], "GET");
+    assert_eq!(listed["requests"][1]["name"], "echo");
+    assert!(listed["requests"][0]["url"].as_str().unwrap().contains("/health"));
+
+    // Write tool is hidden until the project is trusted.
+    assert!(Registry::new(h.host.clone()).tools(&h.root).unwrap().iter().all(|t| t.name != "http_run_request"));
+    h.trust().await;
+    assert!(
+        Registry::new(h.host.clone())
+            .tools(&h.root)
+            .unwrap()
+            .iter()
+            .any(|t| t.name == "http_run_request" && !t.read_only)
+    );
+
+    h.host.mcp_requests.set_ready("main", true);
+    let denied = h.error("http_run_request", json!({"path": "api.http", "index": 0, "env": "dev"}));
+    let deny = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, false, None).unwrap();
+    };
+    let (error, ()) = tokio::join!(denied, deny);
+    assert!(error.contains("denied by the user"), "{error}");
+
+    h.events.lock().unwrap().clear();
+    let run = h.json("http_run_request", json!({"path": "api.http", "index": 0, "env": "dev"}));
+    let allow = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, true, None).unwrap();
+    };
+    let (result, ()) = tokio::join!(run, allow);
+    assert_eq!(result["status"], 200, "{result}");
+    assert_eq!(result["method"], "GET");
+    assert!(result["body"].as_str().unwrap().contains("ok"), "{result}");
+    assert_eq!(result["bodyTruncated"], false);
+    // Secrets must not appear as request headers/body in the tool payload.
+    assert!(result.get("headers").is_none(), "{result}");
+    assert!(result.get("request").is_none(), "{result}");
+}
