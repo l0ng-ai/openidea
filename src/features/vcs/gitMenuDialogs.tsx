@@ -149,7 +149,7 @@ export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: 
 }
 
 /** The repository's branch info: the store's for the selected repository, else read from git. */
-function useBranchInfo(repo: string | null) {
+export function useBranchInfo(repo: string | null) {
   const [initial] = useState(() => ({ repo: currentRepo(), info: useVcs.getState().branch }));
   const [loaded, setLoaded] = useState<{ repo: string | null; info: BranchInfo | null } | null>(null);
   useEffect(() => {
