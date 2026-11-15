@@ -111,10 +111,10 @@ export function SelectionToolbar({
     );
   }, [shown]);
 
-  // A side conversation works on any live task whose agent can be pushed to a mode that
-  // asks before changing things; without that it would edit the project and then vanish.
+  // Any live task but a side conversation itself (the read-only one); the host refuses an
+  // agent it can't push to a mode that asks before changing things.
   const side =
-    !!shown && !subagent && task.status !== "archived" && !isBusy(task.status) && !!task.capabilities?.readOnly;
+    !!shown && !subagent && task.status !== "archived" && !isBusy(task.status) && !task.capabilities?.readOnly;
 
   const startSide = () => {
     if (!shown) return;
