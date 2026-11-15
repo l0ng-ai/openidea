@@ -71,6 +71,7 @@ import {
   setCommitDiffPreview,
   setDiffPreview,
   setGroupByDir,
+  setGroupByRepo,
   setGroupByStaging,
   useCommit,
   type CommitTab,
@@ -567,6 +568,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
   const groupByStaging = useCommit((s) => s.groupByStaging);
+  const groupByRepo = useCommit((s) => s.groupByRepo);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
   const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
@@ -584,8 +586,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads),
-    [status, root, groupByDir, lists, repos, groupByStaging, heads],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -703,6 +705,10 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              // IDEA offers it once the project has several repositories.
+              ...(repos.length > 1
+                ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
+                : []),
               { label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) },
               ...(mode === "local"
                 ? [
