@@ -8182,5 +8182,6 @@
   "'{name}' keeps running without the debugger: {message}": "'{name}' 继续运行，但未附加调试器：{message}",
   "Show Changes": "显示更改",
   "Previous Failed Test": "上一个失败的测试",
-  "Next Failed Test": "下一个失败的测试"
+  "Next Failed Test": "下一个失败的测试",
+  "Run '{name}' with Fuzzing": "使用模糊测试运行 '{name}'"
 }
