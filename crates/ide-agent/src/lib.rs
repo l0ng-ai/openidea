@@ -224,6 +224,7 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
+        let acp = self.spec(provider).is_some_and(|spec| spec.driver == provider::Driver::Acp);
         let mut cache = self.known.lock();
         let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
@@ -245,6 +246,12 @@ impl Shared {
                 changed = true;
             }
         }
+        // Discovery reads one model's efforts; a session on another model reports that model's.
+        let learned = model.filter(|_| acp && known.authoritative).zip(config).map(|(model, config)| {
+            let levels: Vec<_> =
+                config.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+            (model, levels)
+        });
         if let Some(commands) = commands.filter(|c| !c.is_empty())
             && known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands)
         {
@@ -255,6 +262,9 @@ impl Shared {
             self.persist_known(&cache);
         }
         drop(cache);
+        if let Some((model, levels)) = learned.filter(|(_, levels)| !levels.is_empty()) {
+            self.paths.catalogs.learn_levels(self, provider, model, levels);
+        }
         if changed {
             self.emit(AgentEvent::Providers);
         }
