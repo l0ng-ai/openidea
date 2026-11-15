@@ -54,8 +54,27 @@ interface HierarchyState {
   /** Parent id → why its children may be missing callers. */
   notes: ReadonlyMap<string, string>;
   loading: boolean;
+  /** Ids of the expanded nodes, so a tab shown again keeps its tree open. */
+  expanded: readonly string[];
   /** Bumped per (re)query so stale responses are dropped and the tree resets. */
   generation: number;
+  /** Content tabs; the selected one's hierarchy is the state above. */
+  tabs: readonly HierarchyTab[];
+  active: number | null;
+}
+
+/** The hierarchy of a tab that isn't selected. */
+export type SavedHierarchy = Pick<
+  HierarchyState,
+  "mode" | "direction" | "root" | "children" | "failed" | "notes" | "loading" | "expanded"
+>;
+
+export interface HierarchyTab {
+  id: number;
+  /** Pinned: a new hierarchy opens beside it instead of taking its place. */
+  pinned: boolean;
+  /** Null for the selected tab. */
+  saved: SavedHierarchy | null;
 }
 
 export const ROOT_ID = "root";
@@ -68,8 +87,88 @@ export const useHierarchy = create<HierarchyState>(() => ({
   failed: new Set(),
   notes: new Map(),
   loading: false,
+  expanded: [ROOT_ID],
   generation: 0,
+  tabs: [],
+  active: null,
 }));
+
+let tabSeq = 0;
+
+function saved(s: HierarchyState): SavedHierarchy {
+  const { mode, direction, root, children, failed, notes, loading, expanded } = s;
+  return { mode, direction, root, children, failed, notes, loading, expanded };
+}
+
+/** A tab's mode, direction and root: the live state's for the selected one. */
+export function tabHierarchy(s: HierarchyState, tab: HierarchyTab): SavedHierarchy {
+  return tab.saved ?? saved(s);
+}
+
+/**
+ * As IDEA: a new hierarchy takes the place of the selected tab unless it is pinned,
+ * then it opens in a tab of its own.
+ */
+function openTab() {
+  const s = useHierarchy.getState();
+  const current = s.tabs.find((t) => t.id === s.active);
+  if (current && !current.pinned) return;
+  cancelInflight();
+  const id = ++tabSeq;
+  useHierarchy.setState({
+    tabs: [
+      ...s.tabs.map((t) => (t.id === s.active ? { ...t, saved: saved(s) } : t)),
+      { id, pinned: false, saved: null },
+    ],
+    active: id,
+    root: null,
+    children: new Map(),
+    failed: new Set(),
+    notes: new Map(),
+    loading: false,
+    expanded: [ROOT_ID],
+    generation: s.generation + 1,
+  });
+}
+
+export function selectHierarchyTab(id: number) {
+  const s = useHierarchy.getState();
+  const target = s.tabs.find((t) => t.id === id);
+  if (id === s.active || !target?.saved) return;
+  cancelInflight();
+  const next = target.saved;
+  useHierarchy.setState({
+    ...next,
+    loading: false,
+    generation: s.generation + 1,
+    active: id,
+    tabs: s.tabs.map((t) => (t.id === s.active ? { ...t, saved: saved(s) } : t.id === id ? { ...t, saved: null } : t)),
+  });
+  // Its requests were dropped when it was left: load it again.
+  if (next.loading) void loadRoot();
+}
+
+/** Closes a tab; the tool window goes with the last one. */
+export function closeHierarchyTab(id: number) {
+  const s = useHierarchy.getState();
+  const at = s.tabs.findIndex((t) => t.id === id);
+  if (at < 0) return;
+  const rest = s.tabs.filter((t) => t.id !== id);
+  if (!rest.length) {
+    closeHierarchy();
+    return;
+  }
+  if (id !== s.active) {
+    useHierarchy.setState({ tabs: rest });
+    return;
+  }
+  useHierarchy.setState({ tabs: rest, active: null });
+  selectHierarchyTab((s.tabs[at + 1] ?? s.tabs[at - 1])!.id);
+}
+
+export function pinHierarchyTab(id: number, pinned: boolean) {
+  useHierarchy.setState((s) => ({ tabs: s.tabs.map((t) => (t.id === id ? { ...t, pinned } : t)) }));
+}
 
 /** Call hierarchy requests the current tree still waits for. */
 const inflight = new Set<RequestId>();
@@ -88,7 +187,10 @@ export function resetHierarchy() {
     failed: new Set(),
     notes: new Map(),
     loading: false,
+    expanded: [ROOT_ID],
     generation: s.generation + 1,
+    tabs: [],
+    active: null,
   }));
 }
 
@@ -248,7 +350,14 @@ async function loadRoot(quiet = false): Promise<RootResult> {
   if (!root) return "stale";
   const generation = s.generation + 1;
   cancelInflight();
-  useHierarchy.setState({ generation, children: new Map(), failed: new Set(), notes: new Map(), loading: true });
+  useHierarchy.setState({
+    generation,
+    children: new Map(),
+    failed: new Set(),
+    notes: new Map(),
+    loading: true,
+    expanded: [ROOT_ID],
+  });
   try {
     const { items, incomplete } = await withDocument(root.path, (doc) =>
       request(s.mode, doc, root.path, root.line, root.col, s.direction),
@@ -365,6 +474,7 @@ export async function showHierarchy(mode: HierarchyMode) {
     hint("Open a file to show the hierarchy");
     return;
   }
+  openTab();
   const s = useHierarchy.getState();
   const direction = s.mode === mode ? s.direction : mode === "call" ? "incoming" : "outgoing";
   useHierarchy.setState({
