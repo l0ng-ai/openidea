@@ -218,16 +218,20 @@ where
     Ok(serde_json::from_value(serde_json::Value::deserialize(d)?).unwrap_or_default())
 }
 
+/// The built-in themes that were removed (#2981; the One Dark Pro plugin
+/// maintains their look) and the built-in that stands in for each: read by
+/// [`theme_id`], and the removal notice looks for them in settings files.
+pub const REMOVED_THEMES: [(&str, &str); 2] = [("one-light", "light"), ("one-dark", "dark")];
+
 /// A theme id, with the built-in themes that were removed read as the Islands theme of their kind.
 fn theme_id<'de, D>(d: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let id = String::deserialize(d)?;
-    Ok(match id.as_str() {
-        "one-light" => "light".into(),
-        "one-dark" => "dark".into(),
-        _ => id,
+    Ok(match REMOVED_THEMES.iter().find(|(removed, _)| *removed == id.as_str()) {
+        Some((_, stand_in)) => (*stand_in).to_owned(),
+        None => id,
     })
 }
 

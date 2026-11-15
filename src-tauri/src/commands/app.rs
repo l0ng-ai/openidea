@@ -209,6 +209,16 @@ pub fn settings_get_global(state: State<'_, AppState>) -> Settings {
     state.host.with_proxy_password(state.global_settings.effective())
 }
 
+/// The removed built-in theme id a settings file of this window still names, if any:
+/// `settings_get` reports the built-in that stands in for it, so the notice about
+/// a theme that moved to a plugin can address the installs it concerns.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_removed_theme(window: Window, state: State<'_, AppState>) -> Option<String> {
+    state.note_ipc();
+    ide_host::ops::project::settings_removed_theme(&state.host, window.label())
+}
+
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.

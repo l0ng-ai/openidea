@@ -165,6 +165,7 @@ impl Dispatcher {
         })
         .add("project_roots", |c| async move { ops::project::roots(&c.host, &c.window) })
         .add("settings_get", |c| async move { Ok(ops::project::settings(&c.host, &c.window)) })
+        .add("settings_removed_theme", |c| async move { Ok(ops::project::settings_removed_theme(&c.host, &c.window)) })
         .add("settings_set", |c| async move {
             let key: String = c.arg("key")?;
             let scope = c.arg("scope")?;

@@ -65,6 +65,15 @@ pub fn settings(host: &Host, window: &str) -> Settings {
     })
 }
 
+/// The removed built-in theme a settings file of this window still names, if any
+/// (`settings` reports its stand-in): the "provided by a plugin now" notice targets these.
+pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
+    match host.project(window) {
+        Ok(p) => p.settings.named_removed_theme().or_else(|| host.global_settings.named_removed_theme()),
+        Err(_) => host.global_settings.named_removed_theme(),
+    }
+}
+
 pub fn roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
     Ok(host.project(window)?.roots())
 }
