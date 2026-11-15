@@ -2155,5 +2155,19 @@
   "Extract Interface from '{name}'": "Extract Interface from '{name}'",
   "The interface could not be extracted": "The interface could not be extracted",
   "Extract Interface is not supported for {name}": "Extract Interface is not supported for {name}",
-  "Package for new interface": "Package for new interface"
+  "Package for new interface": "Package for new interface",
+  "Trace Stream Chain": "Trace Stream Chain",
+  "Trace Stream Chain failed": "Trace Stream Chain failed",
+  "No stream chain on this line": "No stream chain on this line",
+  "Choose Stream Chain": "Choose Stream Chain",
+  "Stream chains on the current line": "Stream chains on the current line",
+  "Select the top frame to trace a stream chain": "Select the top frame to trace a stream chain",
+  "Stop at the first line of the chain to trace its real run": "Stop at the first line of the chain to trace its real run",
+  "The chain is already running": "The chain is already running",
+  "The stream does not start in this statement": "The stream does not start in this statement",
+  "iterator() and spliterator() do not run the pipeline": "iterator() and spliterator() do not run the pipeline",
+  "The chain has no terminal operation": "The chain has no terminal operation",
+  "Unknown stream operation": "Unknown stream operation",
+  "The statement does not parse": "The statement does not parse",
+  "Stream tracing needs the Java debugger's inspector": "Stream tracing needs the Java debugger's inspector"
 }

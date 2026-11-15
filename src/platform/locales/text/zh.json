@@ -8538,5 +8538,19 @@
   "Extract Interface from '{name}'": "从 '{name}' 提取接口",
   "The interface could not be extracted": "无法提取接口",
   "Extract Interface is not supported for {name}": "{name} 不支持提取接口",
-  "Package for new interface": "新接口的软件包"
+  "Package for new interface": "新接口的软件包",
+  "Trace Stream Chain": "跟踪流链",
+  "Trace Stream Chain failed": "跟踪流链失败",
+  "No stream chain on this line": "此行没有流链",
+  "Choose Stream Chain": "选择流链",
+  "Stream chains on the current line": "当前行中的流链",
+  "Select the top frame to trace a stream chain": "选择顶层帧以跟踪流链",
+  "Stop at the first line of the chain to trace its real run": "在链的第一行停下，才能跟踪它的实际运行",
+  "The chain is already running": "该链已在运行",
+  "The stream does not start in this statement": "流不是在此语句中开始的",
+  "iterator() and spliterator() do not run the pipeline": "iterator() 和 spliterator() 不会运行流水线",
+  "The chain has no terminal operation": "该链没有终端操作",
+  "Unknown stream operation": "未知的流操作",
+  "The statement does not parse": "无法解析该语句",
+  "Stream tracing needs the Java debugger's inspector": "流跟踪需要 Java 调试器的检查器"
 }

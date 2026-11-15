@@ -55,6 +55,7 @@ import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
 import { JAVA_ADAPTER } from "./java";
+import { canTraceStream, isTracing } from "./streams/streamState";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
 
@@ -410,6 +411,8 @@ export function publishContext() {
   // Refresh Memory View acts on the selected session only.
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
   setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
+  setContext("debugStreamTracing", !!s && isTracing(s.id));
+  setContext("debugCanTraceStream", canTraceStream(s));
 }
 
 // --- console -----------------------------------------------------------------
@@ -987,6 +990,21 @@ export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | 
   return !!s?.caps?.[cap];
 }
 
+/** The thread a paused session's actions act on. */
+export function pausedThread(s: DebugSession): number | null {
+  return s.selectedThread ?? s.stoppedThread ?? s.threads[0]?.id ?? null;
+}
+
+/** The selected frame of the paused session (top frame when none is selected). */
+export function selectedFrame(s: DebugSession): StackFrame | null {
+  return s.frames.find((f) => f.id === s.selectedFrame) ?? s.frames[0] ?? null;
+}
+
+/** The frame a stop selects: the first with source. */
+export function topFrame(frames: StackFrame[]): StackFrame | null {
+  return frames.find((f) => f.path && f.presentationHint !== "label") ?? frames[0] ?? null;
+}
+
 function markTerminated(id: DebugSessionId) {
   stopTaskbarFlash();
   forgetImports(id);
@@ -1053,7 +1071,7 @@ async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean)
   const s = useDebug.getState().sessions[id];
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
   patch(id, { frames });
-  const top = frames.find((f) => f.path && f.presentationHint !== "label") ?? frames[0];
+  const top = topFrame(frames);
   if (top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
     consumeTemporary(top.path, top.line);

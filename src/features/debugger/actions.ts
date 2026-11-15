@@ -42,6 +42,7 @@ import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
+import { traceStreamChain } from "./streams/streamState";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
@@ -61,9 +62,11 @@ import {
   evaluate,
   isLive,
   justDetached,
+  pausedThread,
   rerunSession,
   revealFrame,
   rootOf,
+  selectedFrame,
   sessionSupports,
   showExecutionPoint,
   startBrowserSession,
@@ -114,7 +117,7 @@ async function report(title: string, p: Promise<unknown>) {
 function pausedTarget(): { s: DebugSession; thread: number } | null {
   const s = activeSession();
   if (!s || s.status !== "paused") return null;
-  const thread = s.selectedThread ?? s.stoppedThread ?? s.threads[0]?.id;
+  const thread = pausedThread(s);
   return thread == null ? null : { s, thread };
 }
 
@@ -142,11 +145,6 @@ function notSupported(what: string, s: DebugSession) {
     key: "debug.unsupported",
     title: `${what} is not supported by ${s.adapter || "this debugger"}`,
   });
-}
-
-/** The selected frame of the paused session (top frame when none is selected). */
-function selectedFrame(s: DebugSession) {
-  return s.frames.find((f) => f.id === s.selectedFrame) ?? s.frames[0] ?? null;
 }
 
 /**
@@ -407,7 +405,8 @@ async function warnWithoutXdebug(launch: LaunchConfig) {
 }
 
 export function registerDebugActions(): () => void {
-  const paused = "debugSessionPaused";
+  // A stream trace runs the program from the paused thread, so nothing may move it until the trace ends.
+  const paused = "debugSessionPaused && !debugStreamTracing";
   const step = (id: string, title: string, kind: "over" | "into" | "out", icon: string): Action => ({
     id,
     title,
@@ -1043,6 +1042,18 @@ export function registerDebugActions(): () => void {
       category: "Debug",
       when: "debugSessionActive",
       run: () => openEvaluateDialog(evaluateSeed()),
+    },
+    {
+      id: "debug.traceStreamChain",
+      title: "Trace Stream Chain",
+      category: "Debug",
+      icon: "stream-trace",
+      keywords: ["stream", "chain", "trace", "java"],
+      when: "debugCanTraceStream",
+      run: () => {
+        const t = pausedTarget();
+        if (t) void report(tx("Trace Stream Chain failed"), traceStreamChain(t.s.id));
+      },
     },
     {
       id: "debug.browseConsoleHistory",

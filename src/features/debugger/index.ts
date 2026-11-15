@@ -49,10 +49,13 @@ import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
 import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
+import { canTraceStream, forgetStreamTrace } from "./streams/streamState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
 const useAnyOverlay = () =>
-  useOverlays((s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep));
+  useOverlays(
+    (s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep || s.streamChooser),
+  );
 
 /** The Debug stripe button's badge, like Run's: how many debug sessions (child sessions aside) are live. */
 function useLiveSessionCount(): number | null {
@@ -99,7 +102,14 @@ export function activate(): () => void {
     registerMenuGroup({
       id: "debugger.evaluate",
       menus: ["editor"],
-      items: () => (activeSession()?.status === "paused" ? [{ kind: "action", action: "debug.evaluate" }] : []),
+      items: () => {
+        const s = activeSession();
+        if (s?.status !== "paused") return [];
+        return [
+          { kind: "action", action: "debug.evaluate" },
+          ...(canTraceStream(s) ? [{ kind: "action" as const, action: "debug.traceStreamChain" }] : []),
+        ];
+      },
     }),
     registerMenuGroup({
       id: "debugger.hotswap",
@@ -140,6 +150,7 @@ export function activate(): () => void {
         forgetMemory(Number(id));
         forgetInstances(Number(id));
         forgetHeapCapture(Number(id));
+        forgetStreamTrace(Number(id));
       }
     }),
     useProject.subscribe((s, prev) => {
