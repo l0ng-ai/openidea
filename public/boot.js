@@ -13,7 +13,7 @@
         details: "启动错误详情",
         timeout: "启动未在 60 秒内完成。",
         outdatedMac:
-          "这台 Mac 的系统网页引擎过旧：OpenIDEA 的界面运行在 macOS 自带的 WebKit 引擎上，需要 macOS 13 Ventura 或更高版本。在 macOS 11、12 上更新 Safari 不会更新其他应用使用的引擎，需要升级 macOS。",
+          "这台 Mac 的系统网页引擎过旧：OpenIDEA 的界面运行在 macOS 自带的 WebKit 引擎上，需要 macOS 12 Monterey 或更高版本（引擎为 Safari 15.4 或更新）。更旧的系统缺少应用所需的引擎，需要升级 macOS。",
         outdated:
           "系统的 WebKitGTK 版本过旧：OpenIDEA 需要较新的 WebKitGTK（webkit2gtk-4.1）。请通过系统的包管理器更新后重新打开 OpenIDEA。",
       }
@@ -27,20 +27,14 @@
         details: "Startup error details",
         timeout: "Startup did not finish within 60 seconds.",
         outdatedMac:
-          "The system web engine on this Mac is too old: OpenIDEA's interface runs on macOS's built-in WebKit and needs macOS 13 Ventura or later. On macOS 11 and 12 a Safari update doesn't update the engine other apps use, so macOS itself needs upgrading.",
+          "The system web engine on this Mac is too old: OpenIDEA's interface runs on macOS's built-in WebKit and needs macOS 12 Monterey or later (Safari 15.4 or newer). Older macOS releases lack the engine the app needs, so macOS itself needs upgrading.",
         outdated:
           "The system's WebKitGTK is too old: OpenIDEA needs a recent WebKitGTK (webkit2gtk-4.1). Update it with your package manager, then open OpenIDEA again.",
       };
-  // The bundle targets Safari 16 (vite.config.ts); an older system web engine can't even
-  // parse it. Container queries came with Safari 16, and WebKit's user agent doesn't name
-  // its version. Unknown (no CSS.supports) counts as current.
-  const outdated = () => {
-    try {
-      return typeof window.CSS?.supports === "function" && !window.CSS.supports("container-type", "inline-size");
-    } catch {
-      return false;
-    }
-  };
+  // The bundle targets Safari 15.4 (vite.config.ts), so an older system web engine can't
+  // even parse it. structuredClone came with Safari 15.4, and WebKit's user agent doesn't
+  // name its version.
+  const outdated = () => typeof structuredClone !== "function";
   let failed = false;
   let ready = false;
   const describe = (reason) => {
