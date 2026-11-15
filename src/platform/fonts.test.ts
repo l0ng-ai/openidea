@@ -207,6 +207,14 @@ describe("macOS user font resolver", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("loads only the first installed Nerd Font for UI icons, proportional faces first", async () => {
+    const { fonts, invoke } = await resolver(false);
+    const installed = ["Inter", "JetBrainsMono Nerd Font Mono", "jetbrainsmono nerd font propo"];
+    expect(fonts.uiIconFaces(installed)).toEqual(['"OpenIDEA User Font 0"', '"JetBrainsMono Nerd Font Propo"']);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "JetBrainsMono Nerd Font Propo" });
+    expect(fonts.uiIconFaces(["Inter", "Menlo"])).toEqual([]);
+  });
+
   it("never reads bundled webfonts even before their CSS faces load", async () => {
     const { fonts, invoke } = await resolver(false);
     fonts.monoFontFamily("Inter");
