@@ -695,3 +695,69 @@ test("draws a diagram without reaching the hosts its configuration names", async
   );
   expect(asked).toEqual(["/after"]);
 });
+
+test("Find in Conversation skips user-select:none summaries and closed <details> until stepped into", async ({
+  page,
+}) => {
+  await openReply(page, "Confirmed—PR is merged.");
+  await page.evaluate(async (task) => {
+    const path = "/src/features/agents/store.ts";
+    const store = await import(path);
+    store.useAgents.setState({
+      entries: new Map([
+        [
+          task.id,
+          [
+            {
+              type: "thought",
+              text: "**Confirming Active Watch Shell**\n\nCheck background shell before rebasing.",
+            },
+            {
+              type: "tool",
+              id: "t1",
+              title: "stop_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "<command with id: 60 had already stopped>",
+              diffs: [],
+            },
+            { type: "agent", text: "Confirmed—PR is merged." },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const runSummary = stream.locator("details[class*='_processRun_'] > summary");
+  await runSummary.click();
+  await expect(stream.getByText("stop_bash")).toBeVisible();
+
+  await stream.focus();
+  await page.keyboard.press("Meta+f");
+  const findBox = page.getByLabel("Find in Conversation");
+  await findBox.fill("confirm");
+
+  // 2 matches total (1 inside collapsed thought body, 1 in visible reply); unselectable <summary> is excluded.
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const initialHighlights = await page.evaluate(() => ({
+    find: [...(CSS.highlights.get("agent-find") ?? [])].map((r) => (r as Range).startContainer.textContent),
+    current: [...(CSS.highlights.get("agent-find-current") ?? [])].map((r) => (r as Range).startContainer.textContent),
+  }));
+  expect(initialHighlights.find).toEqual(["Confirmed—PR is merged."]);
+  expect(initialHighlights.current).toEqual([]);
+
+  // Stepping to match 2/2 opens the collapsed thought <details> and highlights it.
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("2/2");
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const expandedHighlights = await page.evaluate(() => ({
+    thoughtOpen: document.querySelector<HTMLDetailsElement>("details[class*='_thought_']")?.open,
+    findCount: CSS.highlights.get("agent-find")?.size ?? 0,
+    currentCount: CSS.highlights.get("agent-find-current")?.size ?? 0,
+  }));
+  expect(expandedHighlights).toEqual({ thoughtOpen: true, findCount: 2, currentCount: 1 });
+});

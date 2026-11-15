@@ -81,7 +81,7 @@ import {
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { useEffortFocus } from "./effortFocus";
-import { findRanges, formatDuration, formatSentAt } from "./conversation";
+import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
@@ -1142,14 +1142,9 @@ interface RangeSet {
   clear(): void;
   add(range: Range): void;
 }
-const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
-const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
-
-/**
- * Sets the ranges of highlight `name`. One registered highlight per name, changed in
- * place: WebKit doesn't repaint where a replaced highlight object was.
- */
 function setHighlight(name: string, ranges: Range[]) {
+  const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
+  const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
   if (!highlights || !HighlightCtor) return;
   let set = highlights.get(name);
   if (!set) {
@@ -1225,12 +1220,15 @@ function FindBar({
     return () => stream?.removeEventListener("toggle", toggled, true);
   }, [streamRef]);
   useEffect(() => {
-    // Only rendered matches: WebKit paints those in collapsed <details> over the text next to them.
-    const visible = (r: Range) => r.getClientRects().length > 0;
+    const stream = streamRef.current;
+    if (!stream) return;
+    // Only rendered selectable matches outside closed <details>: WebKit paints unrendered
+    // or user-select:none ranges in CSS.highlights over the next selectable row instead.
+    const visible = (r: Range) => isFindRangeShown(r, stream);
     const current = index >= 0 ? ranges[index]! : null;
     setHighlight("agent-find", ranges.filter(visible));
     setHighlight("agent-find-current", current && visible(current) ? [current] : []);
-  }, [ranges, index, shown]);
+  }, [ranges, index, shown, streamRef]);
   useEffect(
     () => () => {
       setHighlight("agent-find", []);
