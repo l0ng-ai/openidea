@@ -321,19 +321,6 @@
   min-height: 0;
   overflow: auto;
 }
-.treeRow {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-.treeName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.source {
-  color: var(--vcs-untracked);
-}
 .roots {
   display: flex;
   flex-direction: column;
@@ -531,13 +518,6 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
-}
-.subTabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 4px;
 }
 .entryList {
   display: flex;
