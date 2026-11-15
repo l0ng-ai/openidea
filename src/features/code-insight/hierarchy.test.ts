@@ -303,6 +303,6 @@ describe("closing the hierarchy tab", () => {
     useHierarchy.setState({ root: { name: "Number", path: "/p/Number.java", line: 0, col: 0 } as never });
     closeHierarchy();
     expect(useHierarchy.getState().root).toBeNull();
-    expect(hide).toHaveBeenCalledWith("hierarchy");
+    expect(hide).toHaveBeenCalledWith("hierarchy", { removeFromStripe: true });
   });
 });

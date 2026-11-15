@@ -431,6 +431,8 @@ export function registerVcsActions(): () => void {
           useChangelists.getState().state,
           state.roots,
           useCommit.getState().groupByStaging,
+          undefined,
+          useCommit.getState().groupByRepo,
         );
         // The modal interface has one front diff window (#1863): a file with its group
         // as the F7 chain, or several selected files as the chain.

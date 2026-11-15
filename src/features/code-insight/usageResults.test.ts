@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 const show = vi.fn();
+const hide = vi.fn();
 vi.mock("@/workbench/contributions", async (orig) => ({
   ...(await orig<typeof import("@/workbench/contributions")>()),
-  toolWindowService: () => ({ show }),
+  toolWindowService: () => ({ show, hide }),
 }));
 /** The editor at the caret (`null`: a search from outside an editor). */
 let caretView: import("@codemirror/view").EditorView | null = null;
@@ -35,8 +36,16 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 
 const { registerDocumentIndexSync } = await import("@/workbench/contributions");
 
-const { activeUsageSearch, findUsages, openUsageTab, pinUsageTab, resetUsages, showUsageResults, useUsages } =
-  await import("./usages");
+const {
+  activeUsageSearch,
+  closeUsageTab,
+  findUsages,
+  openUsageTab,
+  pinUsageTab,
+  resetUsages,
+  showUsageResults,
+  useUsages,
+} = await import("./usages");
 
 describe("showUsageResults", () => {
   it("shows given usages in the Find Usages tool window", async () => {
@@ -220,5 +229,17 @@ describe("usage tabs", () => {
     expect(activeUsageSearch(useUsages.getState())?.id).toBe(103);
     openUsageTab(search(104));
     expect(useUsages.getState().tabs.map((t) => t.id)).toEqual([102, 104]);
+  });
+
+  it("take the tool window and its stripe button away with the last one", () => {
+    resetUsages();
+    hide.mockClear();
+    openUsageTab(search(201));
+    pinUsageTab(201, true);
+    openUsageTab(search(202));
+    closeUsageTab(201);
+    expect(hide).not.toHaveBeenCalled();
+    closeUsageTab(202);
+    expect(hide).toHaveBeenCalledWith("usages", { removeFromStripe: true });
   });
 });
