@@ -301,9 +301,11 @@
 .widget {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 4px;
 }
 .widgetChooser {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -376,6 +378,7 @@
   flex: none;
 }
 .widgetButtons {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 2px;

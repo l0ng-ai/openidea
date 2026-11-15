@@ -472,13 +472,18 @@ const noSurround = EditorView.inputHandler.of((view, from, to, text) => {
   return true;
 });
 
-/** Gutter icon groups of Settings › Editor › General › Gutter Icons (stable gutter classes). */
+/**
+ * Gutter icon groups of Settings › Editor › General › Gutter Icons. A hidden group sets
+ * `cm-openidea-hideGutter-<id>` on the editor (the theme hides the bookmark, color and
+ * script/compose run columns by it); the icon area's run and inheritance icons read the
+ * setting themselves.
+ */
 export const GUTTER_ICON_GROUPS = [
-  { id: "run", gutterClass: "cm-openidea-gutter-run" },
-  { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
-  { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
-  { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
-  { id: "colors", gutterClass: "cm-openidea-gutter-colors" },
+  { id: "run" },
+  { id: "bookmarks" },
+  { id: "inheritors" },
+  { id: "supers" },
+  { id: "colors" },
 ] as const;
 
 /**

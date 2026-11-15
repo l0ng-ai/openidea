@@ -11,6 +11,37 @@
   font-size: var(--fs-ui);
 }
 
+/* Temporary side conversation: an accent bar divides it from what it forked from. */
+.sideBanner {
+  grid-column: 1 / -1;
+  /* The grid stretches auto rows; keep the bar at its content height. */
+  align-self: start;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.sideBanner :global(svg) {
+  color: var(--accent);
+  flex: none;
+}
+.sideName {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sideHint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+
 .conversation {
   container-type: inline-size;
   display: flex;
@@ -30,8 +61,10 @@
 .docked .conversation {
   border-right: 0;
 }
-.docked .changes {
-  width: auto;
+/* The pane takes its width while the conversation keeps 240px (half of a narrower session);
+   keep that minimum in step with ChangesResizer. */
+.withChanges {
+  grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
 
 .providerIcon {
@@ -427,6 +460,13 @@
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* Quoted context a reply carried with it: dimmer, with a marker line. */
+.quote {
+  margin: 0;
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--border);
+  color: var(--fg-muted);
 }
 
 .editMessage {
@@ -1133,11 +1173,30 @@
 }
 
 .changes {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  width: 280px;
+}
+/* On the conversation's border; the hit area reaches 3px either side of it. */
+.changesResizer {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: -1px;
+  width: 0;
+  outline: none;
+}
+.changesResizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+  cursor: ew-resize;
+}
+.changesResizer:focus-visible::after {
+  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
 }
 .changesHeader {
   min-width: 0;
@@ -1156,6 +1215,10 @@
   white-space: nowrap;
   font-weight: 600;
   color: var(--fg-strong);
+}
+.changesHeader > .muted {
+  flex: none;
+  white-space: nowrap;
 }
 .changesSummary {
   flex: none;

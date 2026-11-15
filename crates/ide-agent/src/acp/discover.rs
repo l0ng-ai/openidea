@@ -17,11 +17,30 @@ const DISCOVER_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(3) } else
 
 /// Opens `session/new`, reads `configOptions`, and records per-model `thought_level` choices.
 pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<Discovered, String> {
+    let prefer_stored = crate::provider::prefer_stored_copilot_auth();
+    match run_once(shared, spec, prefer_stored).await {
+        Err(err)
+            if !prefer_stored
+                && crate::provider::is_copilot_provider(&spec.id)
+                && crate::provider::has_unconfigured_copilot_ambient_token(&spec.env)
+                && super::auth_required(0, &err) =>
+        {
+            let retry = run_once(shared, spec, true).await;
+            if retry.is_ok() {
+                crate::provider::mark_prefer_stored_copilot_auth();
+            }
+            retry
+        }
+        other => other,
+    }
+}
+
+async fn run_once(shared: &Arc<Shared>, spec: &ProviderSpec, strip_ambient: bool) -> Result<Discovered, String> {
     let root = shared.paths.project_root.clone();
     let launch = spec.clone();
     let launch = tokio::task::spawn_blocking({
         let root = root.clone();
-        move || launch.resolve_for_launch(&root)
+        move || launch.resolve_for_launch_with_copilot_env(&root, strip_ambient)
     })
     .await
     .map_err(|e| e.to_string())?;

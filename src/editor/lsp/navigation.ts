@@ -86,6 +86,7 @@ import { requestHover, showPhpConstructDocumentation } from "./hover";
 import { declarationSummary, renderCode } from "./markdown";
 import { enclosingType } from "@/editor/navigation/lineMarkers";
 import { projectPythonHierarchy, pythonImplementationTargets } from "@/editor/navigation/pythonHierarchy";
+import { importBindings } from "@/editor/navigation/inheritanceGraph";
 import { editorPrefs } from "@/platform/editorSettings";
 import { isVirtualUri, virtualContainer } from "@/platform/virtualDocs";
 import { isAddCaretGesture } from "@/editor/core/cm/multiCaret";
@@ -387,6 +388,48 @@ async function pythonImplementations(doc: EditorDocContext, pos: Pos): Promise<D
   return pythonImplementationTargets(hierarchy, doc.path, pos, outline).catch(() => []);
 }
 
+/** Whether `line` (0-based) of `text` is an import statement. */
+function isImportLine(text: Text, line: number): boolean {
+  return line < text.lines && /^\s*(from|import)\s/.test(text.line(line + 1).text);
+}
+
+/**
+ * The declaration of a name this file imports, from the project index. A server that analyses
+ * only its own root answers the import statement instead, and an attached dependency project
+ * is outside that root — the import names the module the declaration lives in.
+ */
+async function importedDeclarationTargets(
+  view: EditorView,
+  doc: EditorDocContext,
+  name: string,
+): Promise<DeclarationTarget[]> {
+  const binding = importBindings(view.state.doc.toString().split("\n")).get(name);
+  if (!binding) return [];
+  const module = await moduleFile(doc, binding.module).catch(() => null);
+  if (!module) return [];
+  const found = await indexDefinitions(doc.path, binding.name).catch(() => []);
+  const inModule = found.filter((t) => t.path === module.path);
+  return inModule.length ? inModule : [module];
+}
+
+/** Replaces a server answer that is only this file's import line with the declaration it binds. */
+async function withImportedDeclaration(
+  view: EditorView,
+  doc: EditorDocContext,
+  offset: number,
+  locs: DeclarationTarget[],
+): Promise<DeclarationTarget[]> {
+  const only = locs[0];
+  if (locs.length !== 1 || !only || only.path !== doc.path || !isImportLine(view.state.doc, only.range.start.line))
+    return locs;
+  // A caret placed on the import itself already has an answer: the module (or the submodule)
+  // the statement names, handled below.
+  if (importedModulePath(view, offset)) return locs;
+  const name = nameAt(view, offset);
+  const resolved = name ? await importedDeclarationTargets(view, doc, name) : [];
+  return resolved.length ? resolved : locs;
+}
+
 /** `more` after `first`, without a target whose declaration line is already there. */
 function mergeTargets(first: readonly DeclarationTarget[], more: readonly DeclarationTarget[]): DeclarationTarget[] {
   return dedupeLocations([
@@ -488,6 +531,9 @@ async function gotoResolved(
       fromSyntax = true;
     }
   }
+  // A server that only sees its own root answers the import statement for a name it cannot
+  // resolve; the import names the module that declares it, also in an attached project.
+  if (declaration && doc.language === "python") locs = await withImportedDeclaration(view, doc, offset, locs);
   if (graphTargets) locs = mergeTargets(locs, await graphTargets);
   if (streamed && (await streamed.opened())) {
     await streamed.complete(locs);

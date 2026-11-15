@@ -226,6 +226,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 SEP,
                 act("file.new", "File…"),
                 act("file.newScratchFile", "Scratch File"),
+                act("file.newUntitled", "Untitled File"),
             ],
         ),
         act("file.openProject", "Open…"),
@@ -1998,7 +1999,7 @@ mod tests {
             };
             assert_eq!(
                 action_ids(new),
-                ["file.newProject", "workspace.create", "file.new", "file.newScratchFile"],
+                ["file.newProject", "workspace.create", "file.new", "file.newScratchFile", "file.newUntitled"],
                 "{os:?}"
             );
         }

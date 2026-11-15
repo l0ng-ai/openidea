@@ -15,7 +15,8 @@
  * implementation search walks the whole workspace, so asking again is costly.
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource } from "@/editor/core/cm/iconArea";
 import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
@@ -110,6 +111,9 @@ function watchChanges() {
     if (!affectsMarkers([...e.created, ...e.modified, ...e.removed])) return;
     changes++;
     forgetInheritanceGraph();
+    // A class added, moved or removed changes the targets and tooltips of the open
+    // documents: re-render them instead of waiting for an edit or a settling server.
+    for (const plugin of live) plugin.refreshSoon();
   });
   // Answers (outlines too) given while a server was starting or indexing may be incomplete.
   onServerSettled(() => {
@@ -769,21 +773,20 @@ export function implementationGutter(ctx: EditorDocContext): Extension {
   return [
     markersField,
     ViewPlugin.fromClass(MarkersPlugin),
-    gutter({
-      class: `${styles.gutter} cm-openidea-gutter-lineMarkers`,
+    // In the shared icon area, beside run icons and the rendered-doc toggle.
+    iconAreaSource.of({
+      order: 50,
       markers: (view) => markerSet(view.state.field(markersField)),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const e = event as MouseEvent;
-          if (e.button !== 0) return false;
-          const target = e.target instanceof Element ? e.target : null;
-          const marker = markerAt(view, block.from, target);
-          if (!marker) return false;
-          e.preventDefault();
-          const rect = (target?.closest(`.${styles.marker}`) ?? target)?.getBoundingClientRect();
-          void openMarkerTargets(marker, rect ? { x: rect.left, y: rect.bottom + 2 } : { x: e.clientX, y: e.clientY });
-          return true;
-        },
+      mousedown: (view, block, e) => {
+        if (e.button !== 0) return false;
+        const target = e.target instanceof Element ? e.target : null;
+        if (!target?.closest(`.${styles.marker}`)) return false;
+        const marker = markerAt(view, block.from, target);
+        if (!marker) return false;
+        e.preventDefault();
+        const rect = (target.closest(`.${styles.marker}`) ?? target).getBoundingClientRect();
+        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 });
+        return true;
       },
     }),
   ];
