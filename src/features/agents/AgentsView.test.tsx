@@ -342,6 +342,23 @@ describe("Agents task menu", () => {
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
     expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
   });
+
+  it("offers Terminal for worktree or off-root tasks and hides it for local-checkout tasks at the project root", () => {
+    const localMenu = taskMenu([{ ...task("one", "ready", "local"), projectRoot: "/project", cwd: "/project" }]);
+    expect(localMenu).not.toContainEqual(expect.objectContaining({ action: "terminal.openAt" }));
+
+    const worktree = { ...task("two", "ready", "worktree"), cwd: "/worktrees/two" };
+    const worktreeMenu = taskMenu([worktree]);
+    expect(worktreeMenu).toContainEqual(
+      expect.objectContaining({ action: "terminal.openAt", label: "Terminal", arg: "/worktrees/two" }),
+    );
+
+    const subfolder = { ...task("three", "ready", "local"), projectRoot: "/project", cwd: "/project/packages/api" };
+    const subfolderMenu = taskMenu([subfolder]);
+    expect(subfolderMenu).toContainEqual(
+      expect.objectContaining({ action: "terminal.openAt", label: "Terminal", arg: "/project/packages/api" }),
+    );
+  });
 });
 
 describe("Agents drag & drop", () => {
