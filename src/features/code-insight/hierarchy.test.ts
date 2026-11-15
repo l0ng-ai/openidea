@@ -306,3 +306,45 @@ describe("closing the hierarchy tab", () => {
     expect(hide).toHaveBeenCalledWith("hierarchy", { removeFromStripe: true });
   });
 });
+
+describe("hierarchy tabs", () => {
+  it("replace the selected tab unless it is pinned, and keep each tab's tree", async () => {
+    const { closeHierarchyTab, pinHierarchyTab, selectHierarchyTab, tabHierarchy } = await import("./hierarchy");
+    const names = () => {
+      const s = useHierarchy.getState();
+      return s.tabs.map((t) => `${tabHierarchy(s, t).mode}:${t.pinned ? "pinned" : ""}`);
+    };
+    resetHierarchy();
+    await showHierarchy("call");
+    await showHierarchy("type");
+    expect(names()).toEqual(["type:"]);
+    const first = useHierarchy.getState().active!;
+    pinHierarchyTab(first, true);
+    await showHierarchy("call");
+    expect(names()).toEqual(["type:pinned", "call:"]);
+    const second = useHierarchy.getState().active!;
+    expect(
+      useHierarchy
+        .getState()
+        .children.get(ROOT_ID)
+        ?.map((n) => n.item.name),
+    ).toEqual(["main"]);
+
+    selectHierarchyTab(first);
+    expect(useHierarchy.getState().mode).toBe("type");
+    selectHierarchyTab(second);
+    expect(useHierarchy.getState().mode).toBe("call");
+    expect(
+      useHierarchy
+        .getState()
+        .children.get(ROOT_ID)
+        ?.map((n) => n.item.name),
+    ).toEqual(["main"]);
+
+    closeHierarchyTab(second);
+    expect(useHierarchy.getState()).toMatchObject({ active: first, mode: "type" });
+    expect(names()).toEqual(["type:pinned"]);
+    closeHierarchyTab(first);
+    expect(useHierarchy.getState()).toMatchObject({ root: null, tabs: [], active: null });
+  });
+});
