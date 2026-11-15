@@ -129,14 +129,14 @@
   border: none;
   border-radius: 4px;
   color: var(--fg-secondary);
-  background: var(--bg-toolbar);
+  background: var(--bg-elev);
   opacity: 0.6;
 }
 
 .consoleFindOpen:hover,
 .consoleFindOpen:focus-visible {
   opacity: 1;
-  color: var(--fg-primary);
+  color: var(--fg-strong);
 }
 
 .consoleWrap {
@@ -871,7 +871,7 @@
 .envHeader {
   position: sticky;
   top: 0;
-  background: var(--bg-popup, var(--bg));
+  background: var(--bg-popup);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   border-bottom: 1px solid var(--border-popup);

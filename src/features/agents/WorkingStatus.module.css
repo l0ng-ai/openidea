@@ -48,7 +48,7 @@
   justify-content: space-between;
   gap: 6px;
   padding: 4px 8px;
-  background: var(--bg-subtle);
+  background: var(--bg-hover);
   border-radius: var(--radius-control);
 }
 
