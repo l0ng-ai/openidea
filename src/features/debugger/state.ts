@@ -670,6 +670,8 @@ export async function startPreparedSession(
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
   preparations.set(id, controller);
+  // The new tab takes the place of finished ones while its build runs, not once the adapter starts.
+  dropFinished();
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
