@@ -8179,5 +8179,7 @@
   "End Process {label}": "结束进程 {label}",
   "Diff too large: a side is over {max} MiB": "差异过大：有一侧超过 {max} MiB",
   "All Configurations": "所有配置",
-  "'{name}' keeps running without the debugger: {message}": "'{name}' 继续运行，但未附加调试器：{message}"
+  "'{name}' keeps running without the debugger: {message}": "'{name}' 继续运行，但未附加调试器：{message}",
+  "Set up Termux once: copy these commands, paste them into Termux, then press Open again.": "只需设置一次 Termux：复制这些命令，粘贴到 Termux 中，然后再次点击“打开”。",
+  "Termux setup commands": "Termux 设置命令"
 }

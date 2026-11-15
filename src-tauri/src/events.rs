@@ -1,3 +1,5 @@
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use ide_core::{EventSink, IdeEvent};
 use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 

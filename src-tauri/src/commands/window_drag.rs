@@ -1,5 +1,7 @@
 //! Native window drag started from the web title bar.
 
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use ide_core::{IdeError, IdeResult};
 use tauri::WebviewWindow;
 

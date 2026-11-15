@@ -72,3 +72,22 @@
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.script {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  resize: vertical;
+}
