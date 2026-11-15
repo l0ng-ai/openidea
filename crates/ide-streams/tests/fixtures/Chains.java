@@ -91,6 +91,8 @@ public class Chains {
 
     Stream<String> items;
 
+    static void foo(Object a, Object b) {}
+
     static boolean keep(int x) {
         return x > 0;
     }
@@ -109,6 +111,15 @@ public class Chains {
         boolean same = Objects.equals(names.stream().map(v -> v).toList(), list.stream().map(v -> v).toList()); // C_PLAN_SIBLING
         long ar = Arrays.stream(arr).boxed().collect(Collectors.toList()).stream().count(); // C_PLAN_ARRAYS_NESTED
         long so = Stream.of(1, 2, 3).map(v -> v).count(); // C_PLAN_STREAM_OF
+        foo(Optional.of(1), Stream.of(2).map(v -> v).count()); // C_PLAN_OTHER_FAMILY
+        if (names.stream().anyMatch(x -> x.isEmpty()) || list.stream().anyMatch(x -> x.isEmpty())) { // C_PLAN_IF_HEADER
+            base++;
+        }
+        if (names.stream().anyMatch(x -> x.isEmpty())) {
+            base++;
+        } else if (list.stream().anyMatch(x -> x.isEmpty())) { // C_PLAN_ELSE_IF
+            base--;
+        }
         List<String> out = nums.stream() // C_PLAN_FIRST_LINE
                 .filter(x -> x > 0)
                 .map(x -> x * 2)

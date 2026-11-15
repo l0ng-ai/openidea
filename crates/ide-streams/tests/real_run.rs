@@ -154,6 +154,31 @@ fn root_skip_needs_same_arg_count() {
 }
 
 #[test]
+fn root_skip_counts_sibling_chain_in_if_header() {
+    let chains = chains_at("C_PLAN_IF_HEADER");
+    let roots: Vec<_> = chains.iter().map(|c| real_run_plan(c).unwrap().root.unwrap()).collect();
+    assert_eq!(roots, [spec("stream", 0, 0), spec("stream", 0, 1)]);
+}
+
+#[test]
+fn root_skip_counts_earlier_condition_of_else_if() {
+    let root = plan_of("C_PLAN_ELSE_IF").root.unwrap();
+    assert_eq!(root, spec("stream", 0, 1));
+}
+
+#[test]
+fn root_skip_ignores_other_families() {
+    // `Optional.of` is not a stream source, so the debugger never sees it as a candidate.
+    assert_eq!(plan_of("C_PLAN_OTHER_FAMILY").root, Some(spec("of", 1, 0)));
+}
+
+#[test]
+fn header_chain_still_starts_at_its_own_line() {
+    let chain = only_chain("C_PLAN_ELSE_IF");
+    assert_eq!(chain.first_line, line_of("C_PLAN_ELSE_IF"));
+}
+
+#[test]
 fn varargs_of_counts_as_one_parameter() {
     assert_eq!(plan_of("C_PLAN_STREAM_OF").root, Some(spec("of", 1, 0)));
 }

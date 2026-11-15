@@ -294,7 +294,8 @@ impl<'t> Finder<'_, 't> {
         let (root_kind, call) = match family {
             Some(family) => {
                 let args = saturate(self.jvm_args(root));
-                let skip = saturate(self.earlier_exits(statement, root));
+                let region = self.skip_region(statement, scope);
+                let skip = saturate(self.earlier_exits(region, root, family));
                 (RootKind::Call, Some(RootCall { name: self.name(root).into(), args, skip, family }))
             }
             None => (self.value_root_kind(root, scope), None),
@@ -325,20 +326,43 @@ impl<'t> Finder<'_, 't> {
         jvm_arg_count(object_of(call).map(|r| self.text(r).trim()), self.name(call), written)
     }
 
-    /// Calls in `statement` with the name and parameter count of `root` that return
-    /// before `root` does: in its receiver, its arguments and earlier chains. Lambda
-    /// and class bodies do not count, as they run only once a terminal does.
-    fn earlier_exits(&self, statement: Node, root: Node) -> usize {
-        if matches!(statement.kind(), "lambda_expression" | "class_body") {
+    /// Where calls that exit before the root can be: the statement holding the
+    /// chain, or, for a chain in a compound statement's header, that statement
+    /// (the whole `if` / `else if` ladder, since earlier conditions ran too).
+    fn skip_region(&self, anchor: Node<'t>, scope: Node<'t>) -> Node<'t> {
+        let is_statement = |n: Node| n.kind().ends_with("_statement") || n.kind() == "switch_expression";
+        if anchor.kind() != "method_invocation" {
+            return anchor;
+        }
+        let mut region = std::iter::successors(anchor.parent(), |n| n.parent())
+            .take_while(|n| *n != scope)
+            .find(|n| is_statement(*n))
+            .unwrap_or(anchor);
+        while let Some(outer) = region
+            .parent()
+            .filter(|p| p.kind() == "if_statement" && p.child_by_field_name("alternative") == Some(region))
+        {
+            region = outer;
+        }
+        region
+    }
+
+    /// Calls in `region` that the debugger would take for `root`: same name, parameter
+    /// count and source family, returning before `root` does (in its receiver, its
+    /// arguments and earlier chains). Lambda and class bodies do not count, as they
+    /// run only once a terminal does.
+    fn earlier_exits(&self, region: Node, root: Node, family: SourceFamily) -> usize {
+        if matches!(region.kind(), "lambda_expression" | "class_body") {
             return 0;
         }
-        let mut cursor = statement.walk();
-        let inside: usize = statement.children(&mut cursor).map(|c| self.earlier_exits(c, root)).sum();
-        let same = statement.kind() == "method_invocation"
-            && statement.id() != root.id()
-            && statement.end_byte() <= root.end_byte()
-            && self.name(statement) == self.name(root)
-            && self.jvm_args(statement) == self.jvm_args(root);
+        let mut cursor = region.walk();
+        let inside: usize = region.children(&mut cursor).map(|c| self.earlier_exits(c, root, family)).sum();
+        let same = region.kind() == "method_invocation"
+            && region.id() != root.id()
+            && region.end_byte() <= root.end_byte()
+            && self.name(region) == self.name(root)
+            && self.jvm_args(region) == self.jvm_args(root)
+            && self.source_family(region) == Some(family);
         inside + usize::from(same)
     }
 
