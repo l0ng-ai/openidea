@@ -80,6 +80,7 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useEffortFocus } from "./effortFocus";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
@@ -284,6 +285,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <SessionComposer
               task={task}
               focusRequest={inputFocus}
+              focusRoot={sessionRoot}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -361,6 +363,7 @@ function SessionStatus({
   changes,
   commits,
   changesOpen,
+  effortAnnouncement,
   onToggleChanges,
 }: {
   task: AgentTask;
@@ -369,6 +372,7 @@ function SessionStatus({
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
   changesOpen: boolean;
+  effortAnnouncement: string | null;
   onToggleChanges: () => void;
 }) {
   const tx = useTx();
@@ -422,6 +426,9 @@ function SessionStatus({
       <span className={styles.state}>
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
+      </span>
+      <span className={styles.state} role="status" aria-live="polite" aria-atomic="true">
+        {effortAnnouncement ? tx("Effort: {level}").replace("{level}", effortAnnouncement) : ""}
       </span>
       {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
@@ -2718,6 +2725,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 function SessionComposer({
   task,
   focusRequest,
+  focusRoot,
   entries,
   head,
   changes,
@@ -2728,6 +2736,7 @@ function SessionComposer({
 }: {
   task: AgentTask;
   focusRequest: number;
+  focusRoot: RefObject<HTMLDivElement | null>;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2775,6 +2784,8 @@ function SessionComposer({
         body: String(e),
       }),
     );
+  const shown = useEditorShown();
+  const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
     <div className={styles.composerArea}>
       <SessionStatus
@@ -2785,6 +2796,7 @@ function SessionComposer({
         commits={commits}
         changesOpen={changesOpen}
         onToggleChanges={onToggleChanges}
+        effortAnnouncement={effortAnnouncement}
       />
       {task.status === "archived" && (
         <div className={styles.banner}>
