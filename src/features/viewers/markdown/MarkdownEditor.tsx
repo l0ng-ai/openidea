@@ -19,9 +19,9 @@ import {
 } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { useEditorPrefs } from "@/platform/editorSettings";
+import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
@@ -38,7 +38,7 @@ import {
   selectionMatchesInNode,
   setPreviewHighlight,
 } from "./highlight";
-import { publishPreviewSelection, publishPreviewTop, useLiveMarkdown } from "./live";
+import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
@@ -373,6 +373,24 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         invalidatePreviewIndex(root);
       }
       publishPreviewSelection(path, "");
+    };
+  }, [path]);
+
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const onWheel = (e: WheelEvent) => {
+      if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+      if ((e.target as Element | null)?.closest?.('.mermaid-output[data-zoomed="true"]')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      stepMarkdownPreviewFontZoom(path, root, e.deltaY < 0 ? 1 : -1);
+    };
+    root.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    const release = registerFontZoomSurface(root, (delta) => stepMarkdownPreviewFontZoom(path, root, delta));
+    return () => {
+      root.removeEventListener("wheel", onWheel, { capture: true });
+      release();
     };
   }, [path]);
 

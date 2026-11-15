@@ -85,6 +85,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
   boldFontWeight: 700,
   general: {
     wheelZoom: false,
+    wheelZoomScope: "active" as "active" | "all",
     markdownImageFolder: "assets",
     markdownImageNamePattern: "image-{timestamp}",
     dragAndDrop: true,
@@ -264,6 +265,7 @@ export function fontWeightVars(main: unknown, bold: unknown): Record<"--fw-code"
 
 export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
+  if (!["active", "all"].includes(out.general.wheelZoomScope)) out.general.wheelZoomScope = "active";
   if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
   for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)

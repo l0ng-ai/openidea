@@ -44,6 +44,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.gutterIconsDisabled",
   "editor.showGutterIcons",
   "editor.general.wheelZoom",
+  "editor.general.wheelZoomScope",
   "editor.general.dragAndDrop",
   "editor.general.caretScroll",
   "editor.general.softWrapFiles",

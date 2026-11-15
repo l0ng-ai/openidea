@@ -37,7 +37,7 @@ import { markdownImages } from "./markdownImages";
 import { selectionMarks } from "./selectionMarks";
 import { seamlessSelection } from "./selectionLayer";
 import { useEditorRegistry } from "@/editor/api";
-import type { EditorExtras } from "@/platform/editorSettings";
+import { editorPrefs, type EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
   cursorHumpLeft,
@@ -426,11 +426,27 @@ export function stepAllEditorsFontZoom(origin: EditorView, delta: number): void 
   }
 }
 
+/** Resets one editor's font zoom to 0. */
+export function resetEditorFontZoom(view: EditorView): void {
+  if (view.state.field(fontZoom, false)) view.dispatch({ effects: setFontZoom.of(0) });
+}
+
 /** Resets every open editor's font zoom, and the value new editors start from. */
 export function resetAllEditorsFontZoom(): void {
   sharedFontZoom = 0;
-  for (const ed of useEditorRegistry.getState().editors)
-    if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+  for (const ed of useEditorRegistry.getState().editors) resetEditorFontZoom(ed.view);
+}
+
+/** Steps font zoom according to `editor.general.wheelZoomScope` (`active` editor by default, or `all` editors). */
+export function stepConfiguredEditorsFontZoom(origin: EditorView, delta: number): void {
+  if (editorPrefs().general.wheelZoomScope === "all") stepAllEditorsFontZoom(origin, delta);
+  else stepFontZoom(origin, delta);
+}
+
+/** Resets font zoom according to `editor.general.wheelZoomScope` (`active` editor by default, or `all` editors). */
+export function resetConfiguredEditorsFontZoom(origin: EditorView): void {
+  if (editorPrefs().general.wheelZoomScope === "all") resetAllEditorsFontZoom();
+  else resetEditorFontZoom(origin);
 }
 
 /** Exported for tests: the ⌘/Ctrl+wheel handler of the prefs compartment. */
@@ -438,7 +454,7 @@ export const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
     if (!e.metaKey && !e.ctrlKey) return false;
     e.preventDefault();
-    stepAllEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    stepConfiguredEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
     return true;
   },
 });
