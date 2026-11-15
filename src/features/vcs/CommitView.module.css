@@ -180,12 +180,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.hint {
-  margin-left: auto;
-  color: var(--fg-faint);
-  font-family: var(--font-keys);
-  font-size: var(--fs-small);
-}
 .stashList {
   flex: 1;
   container: stash-list / inline-size;

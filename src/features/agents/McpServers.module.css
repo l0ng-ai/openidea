@@ -143,12 +143,6 @@
   padding: 2px 0 6px;
 }
 
-.emptySection {
-  padding: 6px 24px 8px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-}
-
 .sectionNote {
   margin: 0;
   padding: 2px 24px 6px;

@@ -245,11 +245,6 @@
   gap: var(--space-2);
   padding: 14px;
 }
-.formRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
 .fieldLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-small);

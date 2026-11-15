@@ -1559,7 +1559,7 @@ export function DiffEditor({
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          viewMode === "split" && (opts.alignChanges ? !opts.syncScroll && styles.unsynced : styles.unaligned),
+          viewMode === "split" && !opts.alignChanges && styles.unaligned,
         )}
         hidden={!!binary || !!error || !ready}
         aria-label={diffTitle(data)}

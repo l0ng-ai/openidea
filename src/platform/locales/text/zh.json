@@ -7966,6 +7966,9 @@
   "Open on Git Remote": "在 Git 远程上打开",
   "Opens the file or directory on the web page of its repository's remote.": "在仓库远程的网页上打开该文件或目录。",
   "This file has no page on a Git remote": "该文件在 Git 远程上没有对应页面",
+  "Copy Link to Git Remote": "复制 Git 远程链接",
+  "Copies the address of the file, its selected lines or the directory on its repository's remote.": "复制文件、所选行或目录在其仓库远程上的地址。",
+  "{name} Link": "{name} 链接",
   "Run Agent Command": "运行智能体命令",
   "Runs `{ name, command, cwd, env }` from the MCP server's `run_command` in the agent tab `name`; throws when it did not start.": "在智能体标签 `name` 中运行 MCP 服务器 `run_command` 传来的 `{ name, command, cwd, env }`；未能启动时抛出错误。",
   "Archived agent tabs: {count}": "已归档的智能体标签：{count}",
@@ -8281,5 +8284,6 @@
   "No playful words: the status stays factual": "没有趣味文字：状态只显示实际进展",
   "e.g. Reticulating splines…": "例如：正在网格化样条曲线…",
   "New playful word": "新的趣味文字",
-  "Restore Built-in Words": "恢复内置文字"
+  "Restore Built-in Words": "恢复内置文字",
+  "None — type the Engine API URL below": "无（在下方输入 Engine API URL）"
 }

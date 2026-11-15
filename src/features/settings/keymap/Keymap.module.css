@@ -95,10 +95,6 @@
 .catName {
   color: var(--fg-emphasis);
 }
-.count {
-  color: var(--fg-faint);
-  font-size: var(--fs-small);
-}
 .actionIcon {
   display: inline-flex;
   width: 14px;

@@ -32,6 +32,9 @@
   min-width: 0;
   position: relative;
   overflow: auto;
+  /* Positions are restored and synced by source line; Chromium's scroll anchoring
+     would keep a later block in view while images above it load. */
+  overflow-anchor: none;
   padding: 16px 28px 40vh;
   outline: none;
   /* The preview sits on the editor background, so its text comes from the

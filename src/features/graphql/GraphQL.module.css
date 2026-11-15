@@ -68,9 +68,6 @@
 .ok {
   color: var(--success);
 }
-.code {
-  font-weight: 600;
-}
 .result {
   height: 100%;
   display: flex;

@@ -1306,6 +1306,7 @@ fn custom_server(name: &str, ls: &LanguageServerSettings) -> LanguageServerConfi
         }),
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,

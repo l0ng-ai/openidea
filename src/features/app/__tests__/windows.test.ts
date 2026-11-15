@@ -499,6 +499,7 @@ describe("launch", () => {
         path: "/x/b.txt",
         left: { type: "file", path: "/x/a.txt", label: "/x/a.txt" },
         right: { type: "worktree", label: "/x/b.txt" },
+        swappable: true,
       },
     ]);
   });
@@ -514,6 +515,7 @@ describe("launch", () => {
         path: "/p/b.txt",
         left: { type: "file", path: "/p/a.txt", label: "a.txt" },
         right: { type: "worktree", label: "b.txt" },
+        swappable: true,
       },
     ]);
   });

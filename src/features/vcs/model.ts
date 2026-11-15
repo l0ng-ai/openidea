@@ -214,26 +214,28 @@ export function remoteHosting(url: string): { name: string; kind: HostingKind } 
 
 /**
  * Page of a file or directory at `revision` on the remote's web UI, with the 0-based `line`
- * selected. `relative` is the `/`-separated path inside the repository ("" for its root).
+ * (through `endLine`, when later) selected. `relative` is the `/`-separated path inside the
+ * repository ("" for its root).
  */
 export function fileWebUrl(
   remoteUrl: string,
   revision: string,
   relative: string,
-  opts: { dir?: boolean; line?: number } = {},
+  opts: { dir?: boolean; line?: number; endLine?: number } = {},
 ): string | null {
   const base = remoteWebUrl(remoteUrl);
   const hosting = remoteHosting(remoteUrl);
   if (!base || !hosting) return null;
   const path = [...revision.split("/"), ...relative.split("/")].filter(Boolean).map(encodeURIComponent).join("/");
   const line = opts.line !== undefined && !opts.dir ? opts.line + 1 : null;
+  const end = line && opts.endLine !== undefined && opts.endLine + 1 > line ? opts.endLine + 1 : null;
   switch (hosting.kind) {
     case "github":
-      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}` : ""}`;
+      return `${base}/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-L${end}` : ""}` : ""}`;
     case "gitlab":
-      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}` : ""}`;
+      return `${base}/-/${opts.dir ? "tree" : "blob"}/${path}${line ? `#L${line}${end ? `-${end}` : ""}` : ""}`;
     case "bitbucket":
-      return `${base}/src/${path}${line ? `#lines-${line}` : ""}`;
+      return `${base}/src/${path}${line ? `#lines-${line}${end ? `:${end}` : ""}` : ""}`;
   }
 }
 

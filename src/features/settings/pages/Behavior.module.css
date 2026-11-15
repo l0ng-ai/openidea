@@ -36,9 +36,6 @@
   margin: 0 -6px;
   border-radius: var(--radius-row);
 }
-.fontInput {
-  width: 220px;
-}
 /* Custom font block (IDEA Appearance): labels share one column, so the UI font,
    fallback and Size controls all start at the same x. */
 .customFontRow {
