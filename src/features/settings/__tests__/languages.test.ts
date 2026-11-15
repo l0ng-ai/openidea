@@ -104,6 +104,14 @@ describe("languages settings", () => {
     expect(validateSettings(settings).languages.ruby.interpreter).toBe("/opt/ruby/bin/ruby");
   });
 
+  it("keeps the Zig toolchain through settings normalization and defaults to Auto", () => {
+    expect(validateSettings({}).languages.zig.zig).toBe("");
+    expect(validateLanguages({ zig: { zig: 42 } }).zig.zig).toBe("");
+    const settings = validateSettings({ languages: { zig: { zig: " /opt/zig " } } });
+    expect(settings.languages.zig.zig).toBe("/opt/zig");
+    expect(validateSettings(settings).languages.zig.zig).toBe("/opt/zig");
+  });
+
   it("defaults the PHP language level to Auto and keeps only known levels", () => {
     expect(validateSettings({}).languages.php).toEqual({
       runTarget: "",
@@ -342,6 +350,7 @@ describe("language pages", () => {
       "Ruby",
       "Rust",
       "TypeScript",
+      "Zig",
     ]);
   });
 

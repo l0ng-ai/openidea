@@ -726,3 +726,26 @@ export function TypeScriptPage() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Zig
+
+export function ZigPage() {
+  return (
+    <div className={styles.page}>
+      <Section>
+        <SdkRow
+          k="languages.zig.zig"
+          label="Zig toolchain"
+          kind="zig"
+          emptyLabel="Auto"
+          emptyDetail="zig on PATH"
+          directory
+          browseTitle="Select Zig Directory"
+          aria-label="Zig toolchain"
+          hint="Zig whose standard library and build.zig.zon packages appear under External Libraries; the zig build run and test configurations use it too. ZLS must match this Zig version. PATH, Homebrew, zvm and mise / asdf installs are detected."
+        />
+      </Section>
+    </div>
+  );
+}
