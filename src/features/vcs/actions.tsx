@@ -65,7 +65,6 @@ import { tx } from "@/platform/i18n";
 
 import { addToIgnore } from "./ignore";
 import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
-import { compareWithFileRevision } from "./FileRevisionChooser";
 
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
@@ -496,7 +495,10 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       enabled: ({ arg }) => hasFileHistory(argPath(arg) ?? maybeEditorService()?.activePath()),
-      run: ({ arg }) => compareWithFileRevision(argPath(arg) ?? maybeEditorService()?.activePath()),
+      run: ({ arg }) => {
+        const path = argPath(arg) ?? maybeEditorService()?.activePath();
+        void import("./FileRevisionChooser").then((m) => m.compareWithFileRevision(path));
+      },
     },
     {
       id: "vcs.nextChange",
