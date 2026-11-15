@@ -180,6 +180,9 @@ struct State {
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
+    lsp_responses: BTreeMap<(String, String), String>,
+    lsp_requests: Vec<MockServerMessage>,
+    lsp_notifications: Vec<MockServerMessage>,
     mcp_stdio: Option<Vec<String>>,
     extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
@@ -189,6 +192,15 @@ struct State {
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     locale: Option<String>,
+}
+
+/// What the plugin sent a language server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockServerMessage {
+    pub server: String,
+    pub method: String,
+    /// JSON, as the plugin passed it.
+    pub params: Option<String>,
 }
 
 /// A terminal the plugin opened.
@@ -617,6 +629,19 @@ impl MockHost {
     /// Run launches recorded as (operation id, configuration id, appended args, debug).
     pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
         self.state.borrow().configuration_runs.clone()
+    }
+    /// Makes the language server `server` run and answer `method` with `result` (JSON).
+    /// A server with no answer set is not running: requests to it are not-found.
+    pub fn set_language_server_response(&self, server: &str, method: &str, result: &str) {
+        self.state.borrow_mut().lsp_responses.insert((server.into(), method.into()), result.into());
+    }
+    /// The requests the plugin sent to language servers, in order.
+    pub fn language_server_requests(&self) -> Vec<MockServerMessage> {
+        self.state.borrow().lsp_requests.clone()
+    }
+    /// The notifications the plugin sent to language servers, in order.
+    pub fn language_server_notifications(&self) -> Vec<MockServerMessage> {
+        self.state.borrow().lsp_notifications.clone()
     }
     /// Configures only argv discovery; the mock has no token or URL.
     pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
@@ -2261,6 +2286,63 @@ pub mod current {
                 return Err(Error::NotFound("no owned data source with this id".into()));
             }
             s.database_connections.push(key);
+            Ok(())
+        })
+    }
+    /// The host's rule: only a server's own methods, none of LSP's.
+    fn lsp_method_allowed(method: &str) -> bool {
+        const LSP: [&str; 14] = [
+            "textDocument",
+            "workspace",
+            "window",
+            "notebookDocument",
+            "callHierarchy",
+            "typeHierarchy",
+            "completionItem",
+            "codeAction",
+            "codeLens",
+            "documentLink",
+            "inlayHint",
+            "workspaceSymbol",
+            "client",
+            "telemetry",
+        ];
+        let namespace = method.split('/').next().unwrap_or_default();
+        !(method.is_empty()
+            || method.starts_with("$/")
+            || ["initialize", "initialized", "shutdown", "exit"].contains(&method)
+            || LSP.contains(&namespace))
+    }
+    fn lsp_message(s: &State, server: &str, method: &str, params: Option<&str>) -> Result<MockServerMessage, Error> {
+        require(s, &format!("lsp:{server}"))?;
+        if s.restricted {
+            return Err(Error::Denied("project is not trusted".into()));
+        }
+        if !lsp_method_allowed(method) {
+            return Err(Error::Invalid(format!("`{method}` is not one of the server's own methods")));
+        }
+        if !s.lsp_responses.keys().any(|(running, _)| running == server) {
+            return Err(Error::NotFound(format!("no language server `{server}` is running for this project")));
+        }
+        Ok(MockServerMessage { server: server.into(), method: method.into(), params: params.map(str::to_owned) })
+    }
+    pub fn lsp_request(
+        _project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        with(|s| {
+            let message = lsp_message(s, server, method, params)?;
+            let answer = s.lsp_responses.get(&(server.to_owned(), method.to_owned())).cloned();
+            s.lsp_requests.push(message);
+            answer.ok_or_else(|| Error::Failed(format!("{server}: method not found: {method}")))
+        })
+    }
+    pub fn lsp_notify(_project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            let message = lsp_message(s, server, method, params)?;
+            s.lsp_notifications.push(message);
             Ok(())
         })
     }

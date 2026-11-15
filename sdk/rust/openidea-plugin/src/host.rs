@@ -807,6 +807,17 @@ mod imp {
     pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
         wit::database::connect(project, id).map_err(error)
     }
+    pub fn lsp_request(
+        project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        wit::language_servers::request(project, server, method, params).map_err(error)
+    }
+    pub fn lsp_notify(project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        wit::language_servers::notify(project, server, method, params).map_err(error)
+    }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         wit::mcp::stdio_command()
     }
@@ -1041,6 +1052,21 @@ impl Project {
     /// Normal Database connection/introspection in this project's invoking command/event window.
     pub fn connect_data_source(&self, id: &str) -> Result<(), Error> {
         imp::database_connect(&self.inner, id)
+    }
+
+    /// Sends `method` to the language server named `server` (its name in the language
+    /// definition, e.g. `phoxite`) running for this project and returns the result as
+    /// JSON (API 1.9). `params` is JSON. Requires `lsp:<server>` and a trusted project.
+    ///
+    /// Only the server's own methods pass (`phoxite/laravel/routes`); LSP's own
+    /// (`textDocument/…`, `workspace/…`, `initialize`, `$/…`) are [`Error::Invalid`].
+    /// [`Error::NotFound`] when the server is not running: the call never starts one.
+    pub fn language_server_request(&self, server: &str, method: &str, params: Option<&str>) -> Result<String, Error> {
+        imp::lsp_request(&self.inner, server, method, params)
+    }
+    /// The same for a notification: no answer is awaited.
+    pub fn language_server_notify(&self, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        imp::lsp_notify(&self.inner, server, method, params)
     }
 
     /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.

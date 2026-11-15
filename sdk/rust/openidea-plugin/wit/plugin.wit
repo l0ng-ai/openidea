@@ -31,6 +31,7 @@ world plugin {
     import output;
     import auth;
     import command-runner;
+    import language-servers;
     import views;
     import run;
     import run-targets;

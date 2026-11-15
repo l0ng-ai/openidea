@@ -97,6 +97,21 @@ pub trait PluginWorkspace: Send + Sync {
     fn indexed_files(&self, _root: &Path, _matches: &dyn Fn(&Path) -> bool, _limit: usize) -> Option<Vec<PathBuf>> {
         None
     }
+    /// Sends `method` to the running language server named `server` of the project at
+    /// `root`: a request, or with `notify` a notification (the result is null).
+    #[allow(clippy::too_many_arguments)]
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        server: &str,
+        _method: &str,
+        _params: Option<serde_json::Value>,
+        _notify: bool,
+        _cancel: &CancellationToken,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
+    }
     /// Current index of the project rooted at `root`; never reads disk or calls LSP.
     fn symbols(
         &self,
@@ -2180,6 +2195,35 @@ impl HostApi for PluginApi {
         )
     }
 
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        self.require_api("`language-servers`", 9)?;
+        if !ide_lsp::plugin_method_allowed(method) {
+            return Err(HostError::Invalid(format!("`{method}` is not one of the server's own methods")));
+        }
+        let workspace = self
+            .shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound(format!("no language server `{server}` is running for this project")))?;
+        // The server reads and edits the project on the plugin's behalf, as a process would.
+        if !workspace.trusted(root) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        let params = params
+            .map(|p| serde_json::from_str(&p).map_err(|e| HostError::Invalid(format!("params are not JSON: {e}"))))
+            .transpose()?;
+        let result = workspace.lsp_request(root, server, method, params, notify, cancel, timeout)?;
+        Ok(result.to_string())
+    }
+
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError> {
         let matcher = globset::GlobBuilder::new(glob)
             .literal_separator(true)
@@ -3300,6 +3344,34 @@ impl PluginWorkspace for HostWorkspace {
             Err(e) if e.kind == ide_core::error::ErrorKind::InvalidInput => Err(HostError::Invalid(e.message)),
             Err(e) => Err(HostError::Failed(e.message)),
         }
+    }
+
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        use ide_core::error::ErrorKind;
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = HostWorkspace::project_covering(self, root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        let result = if notify {
+            project.lsp.server_notify(root, server, method, params).map(|()| serde_json::Value::Null)
+        } else {
+            host.runtime.block_on(project.lsp.server_request(root, server, method, params, cancel, timeout))
+        };
+        result.map_err(|e| match e.kind {
+            // A server that stopped while the request was on its way is as absent as one never started.
+            ErrorKind::NotFound | ErrorKind::Unavailable => HostError::NotFound(e.message),
+            ErrorKind::InvalidInput => HostError::Invalid(e.message),
+            ErrorKind::Cancelled => HostError::Cancelled,
+            _ => HostError::Failed(e.message),
+        })
     }
 
     fn trusted(&self, root: &Path) -> bool {

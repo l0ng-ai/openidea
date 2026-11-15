@@ -357,6 +357,9 @@ impl Manifest {
             if matches!(cap, Capability::NetAsk) {
                 self.needs_api(&format!("capability `{cap}`"), 5)?;
             }
+            if matches!(cap, Capability::Lsp(_)) {
+                self.needs_api(&format!("capability `{cap}`"), 9)?;
+            }
         }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {
@@ -710,6 +713,21 @@ mod tests {
             let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.3"))).unwrap();
             assert_eq!(m.capabilities.optional[0].to_string(), cap);
         }
+    }
+
+    #[test]
+    fn language_server_capabilities_need_api_1_9() {
+        let caps = "[capabilities]
+required = [\"lsp:phoxite\"]
+";
+        for engine in ["^1.2", "^1.8"] {
+            assert!(
+                err(&format!("{}{caps}", BASE.replace("^1.2", engine))).contains("new in plugin API 1.9"),
+                "{engine}"
+            );
+        }
+        let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.9"))).unwrap();
+        assert_eq!(m.capabilities.required, [Capability::Lsp("phoxite".into())]);
     }
 
     #[test]

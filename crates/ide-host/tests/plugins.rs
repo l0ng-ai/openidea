@@ -31,6 +31,8 @@ struct TestWorkspace {
     /// plugin → its settings as the user set them.
     settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
     global_settings: Mutex<std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>>>,
+    /// What plugins sent the language server `mock`: (method, params, whether a notification).
+    server_messages: Mutex<Vec<(String, Option<serde_json::Value>, bool)>>,
 }
 
 impl TestWorkspace {
@@ -49,6 +51,7 @@ impl TestWorkspace {
             diagnostics: Mutex::default(),
             settings: Mutex::default(),
             global_settings: Mutex::default(),
+            server_messages: Mutex::default(),
         })
     }
 
@@ -175,6 +178,23 @@ impl PluginWorkspace for TestWorkspace {
     }
     fn trusted(&self, _root: &Path) -> bool {
         self.trusted
+    }
+    /// One language server runs for the project, `mock`: it answers with what it was sent.
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<serde_json::Value>,
+        notify: bool,
+        _cancel: &ide_core::CancellationToken,
+        _timeout: Duration,
+    ) -> Result<serde_json::Value, HostError> {
+        if server != "mock" {
+            return Err(HostError::NotFound(format!("no language server `{server}` is running for this project")));
+        }
+        self.server_messages.lock().push((method.into(), params.clone(), notify));
+        Ok(if notify { serde_json::Value::Null } else { serde_json::json!({ "method": method, "params": params }) })
     }
     fn project_windows(&self, root: &Path) -> Vec<String> {
         // `main` shows the fixture project; other open roots have no window left.
@@ -2606,6 +2626,7 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
         diagnostics: Mutex::default(),
         settings: Mutex::default(),
         global_settings: Mutex::default(),
+        server_messages: Mutex::default(),
     });
     f.host.set_workspace(Some(untrusted));
     let err = f.run("openidea.git-toolbox", "fetch", None).unwrap_err();
@@ -6929,4 +6950,68 @@ fn project_write_judges_a_link_by_its_target() {
         assert!(err.contains("outside the project root"), "{rel}: {err}");
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "top secret", "{rel}");
     }
+}
+
+/// A plugin reaches a running language server only with `lsp:<server>`, in a trusted
+/// project, and only with the server's own methods (API 1.9).
+#[test]
+fn language_server_requests_need_the_servers_grant_and_its_own_methods() {
+    use serde_json::json;
+    let f = fixture(Limits::default());
+    let pkg = repo().join("crates/ide-plugin/tests/fixtures/lsp-requests");
+    let id = "test.lsp-requests";
+    let info = f.install(&pkg);
+    assert!(info.capabilities.iter().any(|c| c.id == "lsp:mock" && c.granted && c.risk == ide_extension::Risk::High));
+
+    // The request and its JSON params reach the server; its answer comes back as JSON.
+    let answer = f.run(id, "request", Some(r#"{"verb":"GET"}"#)).unwrap().unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&answer).unwrap(),
+        json!({ "method": "mock/routes", "params": { "verb": "GET" } })
+    );
+    assert_eq!(f.run(id, "notify", None).unwrap(), None);
+    assert_eq!(
+        *f.workspace.server_messages.lock(),
+        [("mock/routes".to_owned(), Some(json!({ "verb": "GET" })), false), ("mock/changed".to_owned(), None, true)]
+    );
+
+    // Params that are not JSON and LSP's own methods stop at the host.
+    assert!(f.run(id, "request", Some("{")).unwrap_err().contains("params are not JSON"));
+    assert!(f.run(id, "standard", None).unwrap_err().contains("not one of the server's own methods"));
+    assert_eq!(f.workspace.server_messages.lock().len(), 2);
+
+    // The grant names one server: another one is denied, not merely absent.
+    let err = f.host.run_command(id, "ungranted", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("lsp:other"), "{err:?}");
+
+    // Without the grant the call is denied and nothing is sent.
+    f.host.set_capability(id, "lsp:mock", false).unwrap();
+    let err = f.host.run_command(id, "request", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("lsp:mock"), "{err:?}");
+    f.host.set_capability(id, "lsp:mock", true).unwrap();
+    f.run(id, "request", None).unwrap();
+
+    // A server acts on the project's files: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted.clone()));
+    let err = f.host.run_command(id, "request", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(untrusted.server_messages.lock().is_empty());
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.9: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_language_server_grant_needs_api_1_9() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("lsp-requests");
+    copy_dir(&repo().join("crates/ide-plugin/tests/fixtures/lsp-requests"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.9\"", "\"^1.8\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
 }
