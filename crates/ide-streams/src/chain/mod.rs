@@ -1,8 +1,9 @@
 mod frame;
+mod locals;
 mod search;
 mod warnings;
 
-use crate::OpRole;
+use crate::{OpRole, SourceFamily};
 use ide_core::{CancellationToken, Range};
 use ide_syntax::{Snapshot, StructureResult, StructureService};
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,9 @@ pub struct StreamChain {
     pub range: Range,
     pub text: String,
     pub root: ChainRoot,
+    pub root_kind: RootKind,
+    /// 0-based line of the first token of the statement holding the chain.
+    pub first_line: u32,
     /// Intermediate operations in call order.
     pub ops: Vec<ChainOp>,
     pub terminal: ChainOp,
@@ -48,13 +52,38 @@ pub struct StreamChain {
     pub warnings: Vec<ChainWarning>,
 }
 
-/// The call that creates the stream.
+/// What the chain's first expression is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum RootKind {
+    /// A call that creates a new stream ([`ChainRoot::call`] is set).
+    Call,
+    /// A local variable or parameter holding a stream.
+    Local { name: String },
+    /// A field or the result of another method.
+    Other,
+}
+
+/// The expression the chain's operations are applied to.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ChainRoot {
     pub text: String,
     /// Byte range in [`StreamChain::text`].
     pub span: (usize, usize),
+    /// Set when [`StreamChain::root_kind`] is `Call`.
+    pub call: Option<RootCall>,
+}
+
+/// The call that creates the stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RootCall {
+    pub name: String,
+    pub args: u8,
+    /// Calls of the same name earlier in the receiver; see [`ChainOp::skip`].
+    pub skip: u8,
+    pub family: SourceFamily,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -64,6 +93,10 @@ pub struct ChainOp {
     pub role: OpRole,
     /// Byte range in [`StreamChain::text`], from the `.` to the call's `)`.
     pub span: (usize, usize),
+    pub args: u8,
+    /// Calls of the same name that run earlier in the receiver. Calls inside
+    /// lambda and class bodies do not count: they only run with the terminal.
+    pub skip: u8,
 }
 
 /// The class context the chain's frame runs in.
@@ -71,6 +104,7 @@ pub struct ChainOp {
 #[serde(rename_all = "camelCase")]
 pub struct FrameShape {
     /// Set when the frame is of a kind a lambda cannot be compiled into; the chain is still reported.
+    /// The other fields are unset then.
     pub kind: Option<FrameKind>,
     /// The innermost enclosing type is a record.
     pub record: bool,
@@ -104,9 +138,6 @@ pub enum ChainWarning {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Rejection {
-    RootNotNewStream {
-        root: String,
-    },
     LazyTerminal {
         op: String,
     },

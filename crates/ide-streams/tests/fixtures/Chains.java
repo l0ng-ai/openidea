@@ -89,6 +89,39 @@ public class Chains {
         }
     }
 
+    Stream<String> items;
+
+    static boolean keep(int x) {
+        return x > 0;
+    }
+
+    void plans(List<Integer> nums, List<String> names, List<String> list, int base) {
+        List<String> a = nums.stream().filter(Chains::keep).map(x -> x * 10 + base).sorted().map(String::valueOf).collect(Collectors.toList()); // C_PLAN_COLLECTION
+        int r = IntStream.range(0, 20).filter(i -> i % 3 == 0).map(i -> i * i).sum(); // C_PLAN_RANGE
+        Stream<String> s = names.stream();
+        long n = s.filter(v -> !v.isEmpty()).count(); // C_PLAN_LOCAL
+        long f = this.items.filter(v -> !v.isEmpty()).count(); // C_PLAN_FIELD
+        long g = items.filter(v -> !v.isEmpty()).count(); // C_PLAN_FIELD_BARE
+        List<String> par = list.parallelStream().map(v -> v + "!").toList(); // C_PLAN_PARALLEL
+        long deep = list.stream().collect(Collectors.toList()).stream().filter(x -> true).count(); // C_PLAN_SKIP
+        long twice = list.stream().map(v -> v).filter(v -> true).map(v -> v).count(); // C_PLAN_SAME_NAME
+        long lazy = list.stream().map(v -> list.stream().map(w -> w).count()).map(v -> v).count(); // C_PLAN_LAMBDA_CALLS
+        List<String> out = nums.stream() // C_PLAN_FIRST_LINE
+                .filter(x -> x > 0)
+                .map(x -> x * 2)
+                .sorted()
+                .map(String::valueOf)
+                .collect(Collectors.toList());
+    }
+
+    void sourceFamilies(int[] arr, String text, java.nio.file.Path dir, java.util.regex.Pattern pat, Random rnd) throws Exception {
+        long c1 = Arrays.stream(arr).count(); // C_SRC_ARRAYS
+        long c2 = text.chars().count(); // C_SRC_CHARS
+        long c3 = java.nio.file.Files.lines(dir).count(); // C_SRC_FILES
+        long c4 = pat.splitAsStream(text).count(); // C_SRC_PATTERN
+        long c5 = rnd.ints(5).count(); // C_SRC_RANDOM
+    }
+
     void broken(List<Integer> nums) {
         nums.stream().map(x -> x +).toList(); // C_BROKEN
         long ok = nums.stream().count(); // C_BROKEN_NEXT

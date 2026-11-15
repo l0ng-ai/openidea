@@ -1,7 +1,7 @@
 use ide_core::{CancellationToken, LanguageId};
 use ide_language::{Syntax, SyntaxCache};
 use ide_streams::{
-    ChainSearch, ChainWarning, FrameKind, OpRole, Rejection, StepKind, StopContext, StreamChain, find_chains,
+    ChainSearch, ChainWarning, FrameKind, OpRole, Rejection, RootKind, StepKind, StopContext, StreamChain, find_chains,
 };
 use ide_syntax::{Snapshot, StructureService};
 use std::sync::{Arc, OnceLock};
@@ -69,13 +69,27 @@ fn new_stream_chain_has_root_ops_and_terminal() {
 }
 
 #[test]
-fn stream_held_in_a_variable_is_rejected() {
-    assert_eq!(only_rejection("C_VARIABLE", false), Rejection::RootNotNewStream { root: "given".into() });
+fn stream_held_in_a_variable_is_a_local_root() {
+    let chain = only_chain("C_VARIABLE");
+    assert_eq!(chain.root.text, "given");
+    assert_eq!(chain.root_kind, RootKind::Local { name: "given".into() });
+    assert_eq!(chain.root.call, None);
 }
 
 #[test]
-fn stream_from_an_unknown_method_is_rejected() {
-    assert_eq!(only_rejection("C_FOREIGN_ROOT", false), Rejection::RootNotNewStream { root: "repo.findAll()".into() });
+fn stream_from_an_unknown_method_is_an_other_root() {
+    let chain = only_chain("C_FOREIGN_ROOT");
+    assert_eq!(chain.root.text, "repo.findAll()");
+    assert_eq!(chain.root_kind, RootKind::Other);
+    assert_eq!(op_names(&chain), ["filter"]);
+}
+
+#[test]
+fn new_stream_call_is_a_call_root() {
+    let chain = only_chain("C_NEW");
+    assert_eq!(chain.root_kind, RootKind::Call);
+    let call = chain.root.call.expect("call root");
+    assert_eq!((call.name.as_str(), call.args, call.skip), ("stream", 0, 0));
 }
 
 #[test]

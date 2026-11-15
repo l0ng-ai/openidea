@@ -1,0 +1,315 @@
+use ide_core::{CancellationToken, LanguageId};
+use ide_language::{Syntax, SyntaxCache};
+use ide_streams::{
+    BoxKind, Link, RealRunPlan, RealRunRefusal, Record, RootKind, StepKind, StepSpec, StopContext, StreamChain,
+    TerminalOutcome, TraceBanner, TraceRecording, TraceValue, find_chains, link_trace, real_run_plan,
+};
+use ide_syntax::{Snapshot, StructureService};
+use std::sync::{Arc, OnceLock};
+
+const FIXTURE: &str = include_str!("fixtures/Chains.java");
+
+fn service() -> &'static StructureService {
+    static S: OnceLock<StructureService> = OnceLock::new();
+    S.get_or_init(|| StructureService::new(Arc::new(SyntaxCache::new(Arc::new(Syntax::new())))))
+}
+
+fn line_of(marker: &str) -> u32 {
+    let tag = format!("// {marker}");
+    let found = FIXTURE.lines().position(|l| l.trim_end().ends_with(&tag));
+    found.unwrap_or_else(|| panic!("no line marked {marker}")) as u32
+}
+
+fn chains_at(marker: &str) -> Vec<StreamChain> {
+    let java = LanguageId::new("java");
+    let stop = StopContext { line: line_of(marker), in_lambda: false, file_stem: "Chains" };
+    let found =
+        find_chains(service(), &Snapshot::text(&java, FIXTURE), &stop, &CancellationToken::new()).expect("search");
+    assert!(found.rejected.is_empty(), "{marker}: unexpected rejections {:?}", found.rejected);
+    found.chains
+}
+
+#[track_caller]
+fn only_chain(marker: &str) -> StreamChain {
+    let mut chains = chains_at(marker);
+    assert_eq!(chains.len(), 1, "{marker}: {chains:?}");
+    chains.remove(0)
+}
+
+#[track_caller]
+fn plan_of(marker: &str) -> RealRunPlan {
+    real_run_plan(&only_chain(marker)).unwrap_or_else(|e| panic!("{marker}: {e:?}"))
+}
+
+fn spec(name: &str, args: u8, skip: u8) -> StepSpec {
+    StepSpec { name: name.into(), args, skip }
+}
+
+fn specs(steps: &[StepSpec]) -> Vec<(&str, u8, u8)> {
+    steps.iter().map(|s| (s.name.as_str(), s.args, s.skip)).collect()
+}
+
+#[test]
+fn plan_for_collection_chain() {
+    let plan = plan_of("C_PLAN_COLLECTION");
+    assert_eq!(plan.root, Some(spec("stream", 0, 0)));
+    assert_eq!(plan.local, None);
+    assert_eq!(specs(&plan.steps), [("filter", 1, 0), ("map", 1, 0), ("sorted", 0, 0), ("map", 1, 1)]);
+    assert_eq!(plan.terminal, spec("collect", 1, 0));
+    assert_eq!(plan.class_filters, ["java.util.stream.*", "java.util.*"]);
+    assert_eq!(plan.step_kinds, [StepKind::Sync, StepKind::Sync, StepKind::Reorder, StepKind::Sync]);
+    assert!(!plan.sequentialize);
+}
+
+#[test]
+fn plan_for_intstream_range() {
+    let plan = plan_of("C_PLAN_RANGE");
+    assert_eq!(plan.root, Some(spec("range", 2, 0)));
+    assert_eq!(plan.class_filters, ["java.util.stream.*"]);
+    assert_eq!(plan.terminal.name, "sum");
+}
+
+#[test]
+fn plan_for_local_root() {
+    let chain = only_chain("C_PLAN_LOCAL");
+    assert_eq!(chain.root_kind, RootKind::Local { name: "s".into() });
+    let plan = real_run_plan(&chain).unwrap();
+    assert_eq!(plan.root, None);
+    assert_eq!(plan.local.as_deref(), Some("s"));
+    assert_eq!(specs(&plan.steps), [("filter", 1, 0)]);
+    assert_eq!(plan.class_filters, ["java.util.stream.*"]);
+}
+
+#[test]
+fn parameter_roots_are_locals() {
+    assert_eq!(only_chain("C_VARIABLE").root_kind, RootKind::Local { name: "given".into() });
+}
+
+#[test]
+fn plan_refuses_roots_that_are_not_new_streams_or_locals() {
+    let field = only_chain("C_PLAN_FIELD");
+    assert_eq!(field.root_kind, RootKind::Other);
+    assert_eq!(real_run_plan(&field), Err(RealRunRefusal::NotJavaStreamRoot { root: "this.items".into() }));
+
+    let bare = only_chain("C_PLAN_FIELD_BARE");
+    assert_eq!(bare.root_kind, RootKind::Other);
+    assert_eq!(real_run_plan(&bare), Err(RealRunRefusal::NotJavaStreamRoot { root: "items".into() }));
+
+    let foreign = only_chain("C_FOREIGN_ROOT");
+    assert_eq!(real_run_plan(&foreign), Err(RealRunRefusal::NotJavaStreamRoot { root: "repo.findAll()".into() }));
+}
+
+#[test]
+fn plan_marks_parallel() {
+    assert!(plan_of("C_PLAN_PARALLEL").sequentialize);
+    let modifiers = plan_of("C_PARALLEL");
+    assert!(modifiers.sequentialize);
+    assert_eq!(specs(&modifiers.steps), [("sequential", 0, 0), ("map", 1, 0), ("parallel", 0, 0)]);
+    assert_eq!(modifiers.step_kinds, [StepKind::Sync]);
+}
+
+#[test]
+fn skip_counts_receiver_occurrences() {
+    let chains = chains_at("C_PLAN_SKIP");
+    let outer = chains.iter().find(|c| c.terminal.name == "count").expect("count chain");
+    let plan = real_run_plan(outer).unwrap();
+    assert_eq!(plan.root, Some(spec("stream", 0, 1)));
+    assert_eq!(specs(&plan.steps), [("filter", 1, 0)]);
+
+    let inner = chains.iter().find(|c| c.terminal.name == "collect").expect("collect chain");
+    assert_eq!(real_run_plan(inner).unwrap().root, Some(spec("stream", 0, 0)));
+}
+
+#[test]
+fn skip_counts_repeated_step_names_in_order() {
+    let plan = plan_of("C_PLAN_SAME_NAME");
+    assert_eq!(specs(&plan.steps), [("map", 1, 0), ("filter", 1, 0), ("map", 1, 1)]);
+}
+
+#[test]
+fn skip_ignores_calls_inside_lambda_bodies() {
+    // The lambda's own `stream`/`map` calls run only once the terminal does.
+    let plan = plan_of("C_PLAN_LAMBDA_CALLS");
+    assert_eq!(plan.root, Some(spec("stream", 0, 0)));
+    assert_eq!(specs(&plan.steps), [("map", 1, 0), ("map", 1, 1)]);
+}
+
+#[test]
+fn first_line_is_statement_start() {
+    let chain = only_chain("C_PLAN_FIRST_LINE");
+    let start = line_of("C_PLAN_FIRST_LINE");
+    assert_eq!(chain.first_line, start);
+    assert!(chain.range.end.line >= start + 5);
+    assert_eq!(real_run_plan(&chain).unwrap().first_line, start);
+
+    // A chain written on one line starts where its statement does.
+    assert_eq!(only_chain("C_PLAN_COLLECTION").first_line, line_of("C_PLAN_COLLECTION"));
+}
+
+#[test]
+fn class_filters_follow_the_source() {
+    let streams = "java.util.stream.*";
+    let cases: [(&str, Option<&str>); 11] = [
+        ("C_SRC_ARRAYS", Some("java.util.Arrays")),
+        ("C_SRC_CHARS", Some("java.lang.String")),
+        ("C_LINES_LITERAL", Some("java.lang.String")),
+        ("C_LINES", Some("java.io.BufferedReader")),
+        ("C_SRC_FILES", Some("java.nio.file.Files")),
+        ("C_SRC_PATTERN", Some("java.util.regex.Pattern")),
+        ("C_SRC_RANDOM", Some("java.util.*")),
+        ("C_GENERATE", None),
+        ("C_ITERATE_PURE", None),
+        ("C_PLAN_RANGE", None),
+        ("C_STATIC_INIT", Some("java.util.*")),
+    ];
+    for (marker, extra) in cases {
+        let expected: Vec<_> = std::iter::once(streams).chain(extra).collect();
+        assert_eq!(plan_of(marker).class_filters, expected, "{marker}");
+    }
+}
+
+#[test]
+fn nested_collect_then_stream_plans_each_chain() {
+    let chains = chains_at("C_REOPEN_READER");
+    let filters: Vec<_> = chains.iter().map(|c| real_run_plan(c).unwrap().class_filters).collect();
+    assert_eq!(
+        filters,
+        [vec!["java.util.stream.*", "java.io.BufferedReader"], vec!["java.util.stream.*", "java.util.*"]]
+    );
+}
+
+#[test]
+fn plan_refuses_what_the_pipeline_cannot_trace() {
+    let mut chain = only_chain("C_PLAN_RANGE");
+    chain.terminal.role = ide_streams::OpRole::LazyTerminal;
+    assert_eq!(real_run_plan(&chain), Err(RealRunRefusal::LazyTerminal { op: "sum".into() }));
+
+    let mut chain = only_chain("C_PLAN_RANGE");
+    chain.ops[0].role = ide_streams::OpRole::Terminal { void: false };
+    assert_eq!(real_run_plan(&chain), Err(RealRunRefusal::UnknownOperation { op: "filter".into() }));
+}
+
+#[test]
+fn plan_json_shape() {
+    let json = serde_json::to_value(plan_of("C_PLAN_COLLECTION")).unwrap();
+    assert_eq!(json["root"], serde_json::json!({"name": "stream", "args": 0, "skip": 0}));
+    assert_eq!(json["local"], serde_json::Value::Null);
+    assert_eq!(json["classFilters"], serde_json::json!(["java.util.stream.*", "java.util.*"]));
+    assert_eq!(json["stepKinds"], serde_json::json!(["sync", "sync", "reorder", "sync"]));
+    assert_eq!(json["firstLine"], line_of("C_PLAN_COLLECTION"));
+    assert_eq!(json["sequentialize"], false);
+    assert_eq!(json["terminal"]["name"], "collect");
+    assert_eq!(
+        serde_json::to_value(RootKind::Local { name: "s".into() }).unwrap(),
+        serde_json::json!({"kind": "local", "name": "s"})
+    );
+    assert_eq!(
+        serde_json::to_value(TraceBanner::BreakpointsSkipped { count: 2 }).unwrap(),
+        serde_json::json!({"kind": "breakpointsSkipped", "count": 2})
+    );
+}
+
+fn int(value: i32) -> TraceValue {
+    TraceValue::Boxed { id: value as u64 + 1000, class: BoxKind::Int, value: value.to_string() }
+}
+
+fn text(id: u64, value: &str) -> TraceValue {
+    TraceValue::Str { id, value: value.into(), truncated: false }
+}
+
+/// The log of the measured collection chain `source -> filter -> map -> sorted -> map`.
+fn spike_records() -> Vec<Record> {
+    let at = |step, v| Record { step, value: int(v) };
+    let str_at = |step, v: &str| Record { step, value: text(v.parse::<u64>().unwrap() + 5000, v) };
+    vec![
+        at(0, 5),
+        at(0, 3),
+        at(0, 8),
+        at(1, 8),
+        at(2, 81),
+        at(0, 1),
+        at(0, 4),
+        at(1, 4),
+        at(2, 41),
+        at(0, 2),
+        at(1, 2),
+        at(2, 21),
+        at(0, 9),
+        at(0, 6),
+        at(1, 6),
+        at(2, 61),
+        at(3, 21),
+        str_at(4, "21"),
+        at(3, 41),
+        str_at(4, "41"),
+        at(3, 61),
+        str_at(4, "61"),
+        at(3, 81),
+        str_at(4, "81"),
+    ]
+}
+
+fn terminal_value() -> TerminalOutcome {
+    TerminalOutcome::Value { value: TraceValue::Object { id: 7, class: "java.util.ArrayList".into() } }
+}
+
+fn recording(records: Vec<Record>, dropped: u64, terminal: TerminalOutcome) -> TraceRecording {
+    TraceRecording { records, dropped, terminal }
+}
+
+#[test]
+fn link_trace_reproduces_spike_log() {
+    let plan = plan_of("C_PLAN_COLLECTION");
+    let linked = link_trace(&plan, &recording(spike_records(), 0, terminal_value()), 0);
+    assert_eq!(linked.records, spike_records());
+    assert_eq!(linked.links.len(), linked.records.len());
+    // `1=8` comes from the `0=8` just before it.
+    assert_eq!(linked.links[3].parent, Some(2));
+    assert_eq!(linked.links[4].parent, Some(3));
+    // `sorted` emits `3=21` (record 16) after the whole upstream ran: it is the `2=21` of record 11.
+    assert_eq!(linked.links[16], Link { parent: Some(11), ambiguous: false });
+    assert_eq!(linked.links[17].parent, Some(16));
+    assert_eq!(linked.links[22].parent, Some(4));
+    assert_eq!(linked.banners, []);
+}
+
+#[test]
+fn link_trace_banners() {
+    let plan = plan_of("C_PLAN_COLLECTION");
+    let truncated = link_trace(&plan, &recording(spike_records(), 5, terminal_value()), 0);
+    assert_eq!(truncated.banners, [TraceBanner::Truncated { dropped: 5 }]);
+
+    let skipped = link_trace(&plan, &recording(spike_records(), 0, terminal_value()), 2);
+    assert_eq!(skipped.banners, [TraceBanner::BreakpointsSkipped { count: 2 }]);
+
+    let count_plan = plan_of("C_STATIC_INIT");
+    assert_eq!(count_plan.terminal.name, "count");
+    let source_only = vec![Record { step: 0, value: int(1) }, Record { step: 0, value: int(2) }];
+    let sized = link_trace(&count_plan, &recording(source_only, 0, terminal_value()), 0);
+    assert_eq!(sized.banners, [TraceBanner::CountFromSize]);
+    // A step past the source recorded something, so the pipeline did run.
+    let ran = vec![Record { step: 0, value: int(1) }, Record { step: 1, value: int(1) }];
+    let ran = link_trace(&plan_of("C_PLAN_SAME_NAME"), &recording(ran, 0, terminal_value()), 0);
+    assert_eq!(ran.banners, []);
+}
+
+#[test]
+fn link_trace_flags_pass_through_sort_sequentialize_and_throw() {
+    let plan = plan_of("C_PLAN_COLLECTION");
+    // `sorted` emitting `3=1` before `2=2` was recorded means it did not sort.
+    let records = vec![
+        Record { step: 2, value: int(1) },
+        Record { step: 3, value: int(1) },
+        Record { step: 2, value: int(2) },
+        Record { step: 3, value: int(2) },
+    ];
+    let threw = TerminalOutcome::Threw {
+        exception: TraceValue::Object { id: 9, class: "java.lang.IllegalStateException".into() },
+    };
+    let linked = link_trace(&plan, &recording(records, 0, threw), 0);
+    assert_eq!(linked.banners, [TraceBanner::SortedPassThrough { step: 3 }, TraceBanner::Threw]);
+
+    let parallel = plan_of("C_PLAN_PARALLEL");
+    let linked = link_trace(&parallel, &recording(Vec::new(), 0, TerminalOutcome::Void), 0);
+    assert_eq!(linked.banners, [TraceBanner::Sequentialized]);
+}

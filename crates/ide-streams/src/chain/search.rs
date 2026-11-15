@@ -1,6 +1,9 @@
-use super::{ChainOp, ChainRoot, ChainSearch, FrameShape, RejectedChain, Rejection, StopContext, StreamChain};
+use super::locals::is_visible_local;
+use super::{
+    ChainOp, ChainRoot, ChainSearch, FrameShape, RejectedChain, Rejection, RootCall, RootKind, StopContext, StreamChain,
+};
 use crate::OpRole;
-use crate::catalog::{SourceCheck, classify_source, op_role};
+use crate::catalog::{SourceFamily, classify_source, op_role};
 use ide_syntax::SyntaxTree;
 use tree_sitter::Node;
 
@@ -46,6 +49,10 @@ fn is_intermediate(name: &str) -> bool {
     matches!(op_role(name), Some(OpRole::Step { .. } | OpRole::Modifier))
 }
 
+fn saturate(n: usize) -> u8 {
+    u8::try_from(n).unwrap_or(u8::MAX)
+}
+
 pub(super) fn object_of<'t>(call: Node<'t>) -> Option<Node<'t>> {
     call.child_by_field_name("object")
 }
@@ -59,6 +66,8 @@ fn called_on<'t>(n: Node<'t>) -> Option<Node<'t>> {
 struct Parts<'t> {
     terminal: Node<'t>,
     root: Node<'t>,
+    /// Set when `root` is a call that creates a new stream.
+    family: Option<SourceFamily>,
     ops: Vec<Node<'t>>,
 }
 
@@ -66,7 +75,7 @@ struct Parts<'t> {
 struct Descent<'t> {
     /// Calls above the source, nearest to the start first.
     above: Vec<Node<'t>>,
-    source: Option<(Node<'t>, SourceCheck)>,
+    source: Option<(Node<'t>, SourceFamily)>,
 }
 
 pub(super) struct Finder<'a, 't> {
@@ -205,7 +214,8 @@ impl<'t> Finder<'_, 't> {
             Ok(parts) => {
                 let frame =
                     self.frame(scope).unwrap_or_else(|kind| FrameShape { kind: Some(kind), ..Default::default() });
-                search.chains.push(self.chain(parts, frame));
+                let first_line = self.anchor(call, scope).start_position().row as u32;
+                search.chains.push(self.chain(parts, frame, scope, first_line));
             }
         }
         true
@@ -217,8 +227,8 @@ impl<'t> Finder<'_, 't> {
         let mut above = Vec::new();
         let mut cur = from;
         while let Some(call) = cur.filter(|n| n.kind() == "method_invocation") {
-            if let Some(check) = self.source_check(call) {
-                return Some(Descent { above, source: Some((call, check)) });
+            if let Some(family) = self.source_family(call) {
+                return Some(Descent { above, source: Some((call, family)) });
             }
             if self.is_terminal(call) {
                 return None;
@@ -233,19 +243,23 @@ impl<'t> Finder<'_, 't> {
     /// or works on what an earlier terminal returned (`s.toList().forEach(..)`).
     fn shape(&self, terminal: Node<'t>) -> Option<Result<Parts<'t>, Rejection>> {
         let Descent { above, source } = self.descend(object_of(terminal))?;
-        let Some((root, _)) = source else {
-            let lowest = above.iter().rev().find(|c| object_of(**c).is_some() && is_intermediate(self.name(**c)))?;
-            let root = object_of(*lowest).map_or("", |o| self.text(o)).to_string();
-            return Some(Err(Rejection::RootNotNewStream { root }));
+        let mut ops: Vec<_> = above.into_iter().rev().collect();
+        let (root, family) = match source {
+            Some((root, family)) => (root, Some(family)),
+            // The stream was made elsewhere: the root is what the lowest operation is called on.
+            None => {
+                let lowest = ops.iter().position(|c| object_of(*c).is_some() && is_intermediate(self.name(*c)))?;
+                ops.drain(..lowest);
+                (object_of(ops[0])?, None)
+            }
         };
-        let ops: Vec<_> = above.into_iter().rev().collect();
         if let Some(op) = ops.iter().find(|c| !is_intermediate(self.name(**c))) {
             return Some(Err(Rejection::UnknownOperation { op: self.name(*op).into() }));
         }
         if op_role(self.name(terminal)) == Some(OpRole::LazyTerminal) {
             return Some(Err(Rejection::LazyTerminal { op: self.name(terminal).into() }));
         }
-        Some(Ok(Parts { terminal, root, ops }))
+        Some(Ok(Parts { terminal, root, family, ops }))
     }
 
     /// A new stream with intermediate operations but no terminal, standing
@@ -261,14 +275,14 @@ impl<'t> Finder<'_, 't> {
             .is_some_and(|d| d.source.is_some() && d.above.iter().all(|c| is_intermediate(self.name(*c))))
     }
 
-    fn source_check(&self, call: Node) -> Option<SourceCheck> {
+    fn source_family(&self, call: Node) -> Option<SourceFamily> {
         let receiver = object_of(call);
         let literal = receiver.is_some_and(|r| r.kind() == "string_literal");
         classify_source(receiver.map(|r| self.text(r).trim()), self.name(call), literal)
     }
 
-    fn chain(&self, parts: Parts<'t>, frame: FrameShape) -> StreamChain {
-        let Parts { terminal, root, ops } = parts;
+    fn chain(&self, parts: Parts<'t>, frame: FrameShape, scope: Node<'t>, first_line: u32) -> StreamChain {
+        let Parts { terminal, root, family, ops } = parts;
         let start = terminal.start_byte();
         let op = |call: Node| {
             let mut cursor = call.walk();
@@ -276,7 +290,15 @@ impl<'t> Finder<'_, 't> {
                 call.children(&mut cursor).find(|c| c.kind() == ".").map_or(call.start_byte(), |d| d.start_byte());
             let name = self.name(call);
             let role = op_role(name).expect("checked by shape");
-            ChainOp { name: name.into(), role, span: (dot - start, call.end_byte() - start) }
+            let (args, skip) = self.call_shape(call);
+            ChainOp { name: name.into(), role, span: (dot - start, call.end_byte() - start), args, skip }
+        };
+        let (root_kind, call) = match family {
+            Some(family) => {
+                let (args, skip) = self.call_shape(root);
+                (RootKind::Call, Some(RootCall { name: self.name(root).into(), args, skip, family }))
+            }
+            None => (self.value_root_kind(root, scope), None),
         };
         StreamChain {
             range: self.t.range(&terminal),
@@ -284,11 +306,46 @@ impl<'t> Finder<'_, 't> {
             root: ChainRoot {
                 text: self.text(root).into(),
                 span: (root.start_byte() - start, root.end_byte() - start),
+                call,
             },
+            root_kind,
+            first_line,
             ops: ops.iter().map(|c| op(*c)).collect(),
             terminal: op(terminal),
             warnings: self.warnings(root, &ops),
             frame,
+        }
+    }
+
+    /// Argument count and the number of same-named calls that run before `call`.
+    fn call_shape(&self, call: Node) -> (u8, u8) {
+        let args = call.child_by_field_name("arguments").map_or(0, |a| {
+            let mut cursor = a.walk();
+            a.named_children(&mut cursor).filter(|c| !c.kind().ends_with("comment")).count()
+        });
+        let skip = object_of(call).map_or(0, |receiver| self.eager_calls_named(receiver, self.name(call)));
+        (saturate(args), saturate(skip))
+    }
+
+    /// `node` and what it contains that runs when `node` is evaluated, so not lambda or class bodies.
+    fn eager_calls_named(&self, node: Node, name: &str) -> usize {
+        if matches!(node.kind(), "lambda_expression" | "class_body") {
+            return 0;
+        }
+        let mut cursor = node.walk();
+        let inside: usize = node.children(&mut cursor).map(|c| self.eager_calls_named(c, name)).sum();
+        inside + usize::from(node.kind() == "method_invocation" && self.name(node) == name)
+    }
+
+    /// `Local` for a variable or parameter the member declares; anything else
+    /// (a field, `this.items`, another method's result) is `Other`.
+    fn value_root_kind(&self, root: Node<'t>, scope: Node<'t>) -> RootKind {
+        let name = self.text(root);
+        let member = std::iter::successors(Some(scope), |n| n.parent()).find(|n| is_method_scope(*n)).unwrap_or(scope);
+        if root.kind() == "identifier" && is_visible_local(self.t, root, member, name) {
+            RootKind::Local { name: name.into() }
+        } else {
+            RootKind::Other
         }
     }
 

@@ -42,51 +42,52 @@ pub fn step_kind(op: &str) -> Option<StepKind> {
     }
 }
 
-/// Whether evaluating a stream-producing expression a second time is safe.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SourceCheck {
-    /// Same elements every time.
-    Fresh,
-    /// Each evaluation advances shared state (generators, random streams).
-    Stateful,
-    /// Reads an external resource that may have changed or been consumed.
-    Rereads,
+/// The class declaring a stream-producing method, which decides what the
+/// debugger must watch to catch the stream when it is created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceFamily {
+    /// Factories in `java.util.stream`, already covered by the stream filter.
+    StreamPackage,
+    /// `Collection.stream()`, `Random.ints()`, `Scanner.tokens()`.
+    Util,
+    Arrays,
+    String,
+    Reader,
+    Files,
+    Pattern,
 }
 
-use SourceCheck::{Fresh, Rereads, Stateful};
+impl SourceFamily {
+    /// Class filter beyond `java.util.stream.*` that sees the source call exit.
+    pub fn class_filter(self) -> Option<&'static str> {
+        match self {
+            Self::StreamPackage => None,
+            Self::Util => Some("java.util.*"),
+            Self::Arrays => Some("java.util.Arrays"),
+            Self::String => Some("java.lang.String"),
+            Self::Reader => Some("java.io.BufferedReader"),
+            Self::Files => Some("java.nio.file.Files"),
+            Self::Pattern => Some("java.util.regex.Pattern"),
+        }
+    }
+}
 
-const STREAM: &[(&str, SourceCheck)] = &[
-    ("of", Fresh),
-    ("ofNullable", Fresh),
-    ("iterate", Fresh),
-    ("concat", Fresh),
-    ("empty", Fresh),
-    ("generate", Stateful),
-];
-const PRIMITIVE_RANGE: &[(&str, SourceCheck)] = &[
-    ("range", Fresh),
-    ("rangeClosed", Fresh),
-    ("of", Fresh),
-    ("iterate", Fresh),
-    ("concat", Fresh),
-    ("empty", Fresh),
-    ("generate", Stateful),
-];
-const DOUBLE_STREAM: &[(&str, SourceCheck)] =
-    &[("of", Fresh), ("iterate", Fresh), ("concat", Fresh), ("empty", Fresh), ("generate", Stateful)];
-const ARRAYS: &[(&str, SourceCheck)] = &[("stream", Fresh)];
-const STREAM_SUPPORT: &[(&str, SourceCheck)] =
-    &[("stream", Fresh), ("intStream", Fresh), ("longStream", Fresh), ("doubleStream", Fresh)];
-const FILES: &[(&str, SourceCheck)] = &[("lines", Rereads), ("list", Rereads), ("walk", Rereads), ("find", Rereads)];
+const STREAM: &[&str] = &["of", "ofNullable", "iterate", "concat", "empty", "generate"];
+const PRIMITIVE_RANGE: &[&str] = &["range", "rangeClosed", "of", "iterate", "concat", "empty", "generate"];
+const DOUBLE_STREAM: &[&str] = &["of", "iterate", "concat", "empty", "generate"];
+const STREAM_SUPPORT: &[&str] = &["stream", "intStream", "longStream", "doubleStream"];
 
-const STATIC_SOURCES: &[(&str, &[(&str, SourceCheck)])] = &[
-    ("Stream", STREAM),
-    ("IntStream", PRIMITIVE_RANGE),
-    ("LongStream", PRIMITIVE_RANGE),
-    ("DoubleStream", DOUBLE_STREAM),
-    ("Arrays", ARRAYS),
-    ("StreamSupport", STREAM_SUPPORT),
-    ("Files", FILES),
+use SourceFamily::{Arrays, Files, StreamPackage};
+
+const STATIC_SOURCES: &[(&str, SourceFamily, &[&str])] = &[
+    ("Stream", StreamPackage, STREAM),
+    ("IntStream", StreamPackage, PRIMITIVE_RANGE),
+    ("LongStream", StreamPackage, PRIMITIVE_RANGE),
+    ("DoubleStream", StreamPackage, DOUBLE_STREAM),
+    ("Arrays", Arrays, &["stream"]),
+    ("StreamSupport", StreamPackage, STREAM_SUPPORT),
+    ("Files", Files, &["lines", "list", "walk", "find"]),
 ];
 
 fn names_class(receiver: &str, class: &str) -> bool {
@@ -99,16 +100,17 @@ pub(crate) fn classify_source(
     receiver: Option<&str>,
     method: &str,
     receiver_is_string_literal: bool,
-) -> Option<SourceCheck> {
+) -> Option<SourceFamily> {
     let receiver = receiver?;
-    if let Some((_, table)) = STATIC_SOURCES.iter().find(|(class, _)| names_class(receiver, class)) {
-        return table.iter().find(|(m, _)| *m == method).map(|&(_, c)| c);
+    if let Some((_, family, methods)) = STATIC_SOURCES.iter().find(|(class, ..)| names_class(receiver, class)) {
+        return methods.contains(&method).then_some(*family);
     }
     match method {
-        "stream" | "parallelStream" | "chars" | "codePoints" | "splitAsStream" => Some(Fresh),
-        "lines" if receiver_is_string_literal => Some(Fresh),
-        "lines" | "tokens" => Some(Rereads),
-        "ints" | "longs" | "doubles" => Some(Stateful),
+        "stream" | "parallelStream" | "tokens" | "ints" | "longs" | "doubles" => Some(SourceFamily::Util),
+        "chars" | "codePoints" => Some(SourceFamily::String),
+        "splitAsStream" => Some(SourceFamily::Pattern),
+        "lines" if receiver_is_string_literal => Some(SourceFamily::String),
+        "lines" => Some(SourceFamily::Reader),
         _ => None,
     }
 }
@@ -139,16 +141,29 @@ mod tests {
 
     #[test]
     fn sources() {
-        assert_eq!(classify_source(Some("nums"), "stream", false), Some(SourceCheck::Fresh));
-        assert_eq!(classify_source(Some("java.util.stream.Stream"), "generate", false), Some(SourceCheck::Stateful));
-        assert_eq!(classify_source(Some("Files"), "lines", false), Some(SourceCheck::Rereads));
-        assert_eq!(classify_source(Some("reader"), "lines", false), Some(SourceCheck::Rereads));
-        assert_eq!(classify_source(Some("\"a\\nb\""), "lines", true), Some(SourceCheck::Fresh));
-        assert_eq!(classify_source(Some("rnd"), "ints", false), Some(SourceCheck::Stateful));
+        use SourceFamily::*;
+        let family = |receiver, method| classify_source(Some(receiver), method, false);
+        assert_eq!(family("nums", "stream"), Some(Util));
+        assert_eq!(family("myStream", "stream"), Some(Util));
+        assert_eq!(family("rnd", "ints"), Some(Util));
+        assert_eq!(family("java.util.stream.Stream", "generate"), Some(StreamPackage));
+        assert_eq!(family("IntStream", "range"), Some(StreamPackage));
+        assert_eq!(family("Arrays", "stream"), Some(Arrays));
+        assert_eq!(family("Files", "walk"), Some(Files));
+        assert_eq!(family("reader", "lines"), Some(Reader));
+        assert_eq!(family("text", "chars"), Some(String));
+        assert_eq!(family("pattern", "splitAsStream"), Some(Pattern));
+        assert_eq!(classify_source(Some("\"a\\nb\""), "lines", true), Some(String));
         assert_eq!(classify_source(None, "stream", false), None);
-        assert_eq!(classify_source(Some("repo"), "findAll", false), None);
-        assert_eq!(classify_source(Some("Files"), "walk", false), Some(SourceCheck::Rereads));
-        assert_eq!(classify_source(Some("myStream"), "stream", false), Some(SourceCheck::Fresh));
-        assert_eq!(classify_source(Some("Stream"), "builder", false), None);
+        assert_eq!(family("repo", "findAll"), None);
+        assert_eq!(family("Stream", "builder"), None);
+        assert_eq!(family("Files", "readAllLines"), None);
+    }
+
+    #[test]
+    fn class_filters() {
+        assert_eq!(SourceFamily::StreamPackage.class_filter(), None);
+        assert_eq!(SourceFamily::Util.class_filter(), Some("java.util.*"));
+        assert_eq!(SourceFamily::Reader.class_filter(), Some("java.io.BufferedReader"));
     }
 }
