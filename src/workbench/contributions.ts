@@ -1102,6 +1102,20 @@ export interface SettingsForm {
   };
 }
 
+/** What the settings page being shown was opened to select (`page#focus`), and how it takes it. */
+export interface SettingsPageFocus {
+  focus: string | null;
+  /** Clears `focus`, so showing the page again does not select it again. */
+  consume(): void;
+}
+
+export const SettingsPageFocusContext = createContext<SettingsPageFocus>({ focus: null, consume: () => {} });
+
+/** The `page#focus` target of the settings page being shown (provided by the Settings dialog). */
+export function useSettingsPageFocus(): SettingsPageFocus {
+  return useContext(SettingsPageFocusContext);
+}
+
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
 
 /** The form of the settings page being shown (provided by the Settings dialog). */

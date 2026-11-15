@@ -60,10 +60,9 @@ import {
 } from "./store";
 import { useProject } from "@/platform/project";
 import { openExternalUrl } from "@/platform/openUrl";
-// The dialog state carries `page#focus` targets (Appearance opens `plugins#themes`).
-import { useSettingsDialog } from "@/features/settings/model/staging";
 import { importIntellijTheme, showInstalledIntellijThemes } from "./intellijImport";
 import { promptInput } from "@/workbench/inputDialogs";
+import { useSettingsPageFocus } from "@/workbench/contributions";
 import styles from "./PluginsPage.module.css";
 import { pluginsBackend } from "./backend";
 import { confirm } from "@/workbench/messages";
@@ -1294,13 +1293,13 @@ export function PluginsPage({ initialTab = "marketplace" }: { initialTab?: Tab }
   const [selectedMarketId, setSelectedMarketId] = useState<string | null>(null);
   const [category, setCategory] = useState<Category | "all">("all");
   // Opened as `plugins#themes` (Appearance › Get more themes): browse the marketplace's themes.
-  const focus = useSettingsDialog((s) => s.focus);
+  const { focus, consume } = useSettingsPageFocus();
   useEffect(() => {
     if (focus !== "themes") return;
     setTab("marketplace");
     setCategory("themes");
-    useSettingsDialog.setState({ focus: null });
-  }, [focus]);
+    consume();
+  }, [focus, consume]);
   const marketShown = useMemo(
     () =>
       (market ?? []).filter((m) => {

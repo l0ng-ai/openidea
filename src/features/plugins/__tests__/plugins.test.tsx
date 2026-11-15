@@ -34,7 +34,7 @@ import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
 import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
 import { evaluateWhen, getContext } from "@/platform/context";
-import { useSettingsDialog } from "@/features/settings/model/staging";
+import { SettingsPageFocusContext } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -895,17 +895,23 @@ describe("PluginsPage", () => {
       marketUrl: async () => "https://plugins.example/index.json",
       market: async () => [marketEntry("dark-pro", "One Dark Pro", ["themes"]), marketEntry("toy-mkt", "Toy Tool")],
     });
-    render(<PluginsPage />);
+    const consume = vi.fn();
+    const page = (focus: string | null) => (
+      <SettingsPageFocusContext.Provider value={{ focus, consume }}>
+        <PluginsPage />
+      </SettingsPageFocusContext.Provider>
+    );
+    const { rerender } = render(page(null));
     const list = await screen.findByRole("list", { name: "Available plugins" });
     await waitFor(() => expect(within(list).getByText("One Dark Pro")).toBeInTheDocument());
 
-    // What the Appearance link does: focus carries the themes filter.
-    act(() => useSettingsDialog.setState({ focus: "themes" }));
+    // What the Appearance link does: the page is shown as `plugins#themes`.
+    rerender(page("themes"));
     await waitFor(() => expect(screen.getByLabelText("Category")).toHaveTextContent("Themes"));
     expect(within(list).getByText("One Dark Pro")).toBeInTheDocument();
     expect(within(list).queryByText("Toy Tool")).not.toBeInTheDocument();
-    // The request is consumed, so reopening the page does not filter again.
-    expect(useSettingsDialog.getState().focus).toBeNull();
+    // The request is consumed, so showing the page again does not filter again.
+    expect(consume).toHaveBeenCalled();
   });
 
   it("offers the IntelliJ theme imports only in a trusted project's window", async () => {
