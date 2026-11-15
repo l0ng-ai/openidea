@@ -55,7 +55,7 @@ import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
 import { JAVA_ADAPTER } from "./java";
-import { canTraceStream, isTracing } from "./streams/streamState";
+import { isTracing } from "./streams/streamStore";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
 
@@ -988,6 +988,10 @@ async function loadCapabilities(id: DebugSessionId) {
 /** Whether the active session's adapter supports `cap` (false while unknown). */
 export function sessionSupports(cap: keyof DebugCapabilities, s: DebugSession | null = activeSession()): boolean {
   return !!s?.caps?.[cap];
+}
+
+export function canTraceStream(s: DebugSession | null): boolean {
+  return !!s && s.status === "paused" && sessionSupports("streamTrace", s) && !isTracing(s.id);
 }
 
 /** The thread a paused session's actions act on. */

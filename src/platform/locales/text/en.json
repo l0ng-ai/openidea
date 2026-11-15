@@ -2169,5 +2169,6 @@
   "The chain has no terminal operation": "The chain has no terminal operation",
   "Unknown stream operation": "Unknown stream operation",
   "The statement does not parse": "The statement does not parse",
-  "Stream tracing needs the Java debugger's inspector": "Stream tracing needs the Java debugger's inspector"
+  "Stream tracing needs the Java debugger's inspector": "Stream tracing needs the Java debugger's inspector",
+  "The stop or the selected frame changed; trace the stream chain again": "The stop or the selected frame changed; trace the stream chain again"
 }

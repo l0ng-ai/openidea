@@ -26,12 +26,20 @@ vi.mock("../streams/streamTraceInput", async (importOriginal) => ({
   ...tab,
 }));
 
-import type { DebugCapabilities, StackFrame, StreamChainInfo, StreamTraceResult } from "@/platform/ipc";
+import type { DebugCapabilities, StackFrame, StreamChainInfo, StreamTraceResult, TraceProgress } from "@/platform/ipc";
 import { getAction, isActionEnabled } from "@/platform/actions";
 import { activate } from "../index";
 import { publishContext, useDebug, type DebugSession } from "../state";
 import { useOverlays } from "../ui/popoverStore";
-import { abortTrace, isTracing, stopRecording, traceStreamChain, useStreamTrace } from "../streams/streamState";
+import { provideNotificationService } from "@/workbench/contributions";
+import {
+  abortTrace,
+  forgetStreamTrace,
+  pickStreamChain,
+  stopRecording,
+  traceStreamChain,
+} from "../streams/streamState";
+import { isTracing, useStreamTrace } from "../streams/streamStore";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 
 const frame: StackFrame = { id: 10, name: "main", path: "/p/Main.java", line: 5, column: 4, presentationHint: null };
@@ -78,10 +86,16 @@ function deferred<T>() {
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 const enabled = (id: string) => isActionEnabled(getAction(id)!);
+const setSession = (p: Partial<DebugSession>) => {
+  useDebug.setState((s) => ({ sessions: { 1: { ...s.sessions[1]!, ...p } } }));
+  publishContext();
+};
+const notify = vi.fn();
 
 let dispose: () => void;
 beforeEach(() => {
   vi.clearAllMocks();
+  provideNotificationService({ notify });
   useStreamTrace.setState({ bySession: {} });
   useOverlays.setState({ streamChooser: null });
   dispose = activate();
@@ -123,7 +137,7 @@ describe("Trace Stream Chain", () => {
     expect(ipc.debugStreamTrace).not.toHaveBeenCalled();
   });
 
-  it("tracing disables resume and steps", async () => {
+  it("tracing disables resume, steps and pause", async () => {
     const reply = deferred<{ status: "ok"; data: StreamTraceResult }>();
     ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
     ipc.debugStreamTrace.mockReturnValue(reply.promise);
@@ -135,11 +149,83 @@ describe("Trace Stream Chain", () => {
     expect(enabled("debug.resume")).toBe(false);
     expect(enabled("debug.stepOver")).toBe(false);
     expect(enabled("debug.traceStreamChain")).toBe(false);
+    // Moving neither the program nor the trace, these stay available.
+    expect(enabled("debug.showExecutionPoint")).toBe(true);
+    expect(enabled("debug.jumpToSource")).toBe(true);
+    // The trace resumes the program itself, so the session shows as running.
+    setSession({ status: "running" });
+    expect(enabled("debug.pause")).toBe(false);
     reply.resolve({ status: "ok", data: FAILED });
     await running;
     expect(isTracing(1)).toBe(false);
+    expect(enabled("debug.pause")).toBe(true);
+    setSession({ status: "paused" });
     expect(enabled("debug.resume")).toBe(true);
     expect(enabled("debug.stepOver")).toBe(true);
+  });
+
+  it("asks for the chains of a lower frame as not the top one", async () => {
+    setSession({ selectedFrame: 11 });
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0, false)]));
+    await traceStreamChain(1);
+    expect(ipc.debugStreamChains).toHaveBeenCalledWith(1, session.frames[1], false);
+  });
+
+  it("says so when the line has no stream chain", async () => {
+    ipc.debugStreamChains.mockReturnValue(ok([]));
+    await traceStreamChain(1);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "No stream chain on this line" }));
+    expect(ipc.debugStreamTrace).not.toHaveBeenCalled();
+    expect(useOverlays.getState().streamChooser).toBeNull();
+  });
+
+  it("a progress message patches the running trace", async () => {
+    const reply = deferred<{ status: "ok"; data: StreamTraceResult }>();
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
+    ipc.debugStreamTrace.mockReturnValue(reply.promise);
+    const running = traceStreamChain(1);
+    await settle();
+    const channel = ipc.debugStreamTrace.mock.calls[0]![6] as { onmessage: (p: TraceProgress) => void };
+    const progress: TraceProgress = { phase: "running", records: 12, dropped: 0, elapsedMs: 40 };
+    channel.onmessage(progress);
+    expect(useStreamTrace.getState().bySession[1]?.progress).toEqual(progress);
+    reply.resolve({ status: "ok", data: FAILED });
+    await running;
+  });
+
+  it("a trace forgotten while it runs ignores its late reply", async () => {
+    const reply = deferred<{ status: "ok"; data: StreamTraceResult }>();
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
+    ipc.debugStreamTrace.mockReturnValue(reply.promise);
+    const running = traceStreamChain(1);
+    await settle();
+    forgetStreamTrace(1);
+    expect(isTracing(1)).toBe(false);
+    reply.resolve({ status: "ok", data: FAILED });
+    await running;
+    expect(useStreamTrace.getState().bySession[1]).toBeUndefined();
+  });
+
+  it("the chooser closes when the stop or the selected frame changes", async () => {
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0), chain(1)]));
+    await traceStreamChain(1);
+    expect(useOverlays.getState().streamChooser?.frame).toBe(10);
+    setSession({ selectedFrame: 11 });
+    expect(useOverlays.getState().streamChooser).toBeNull();
+    setSession({ selectedFrame: 10 });
+    await traceStreamChain(1);
+    setSession({ status: "running" });
+    expect(useOverlays.getState().streamChooser).toBeNull();
+  });
+
+  it("a pick from a stale chooser says so instead of tracing", async () => {
+    useOverlays.setState({ streamChooser: { session: 1, frame: 11, chains: [chain(0)] } });
+    await pickStreamChain(chain(0));
+    expect(ipc.debugStreamTrace).not.toHaveBeenCalled();
+    expect(useOverlays.getState().streamChooser).toBeNull();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "The stop or the selected frame changed; trace the stream chain again" }),
+    );
   });
 
   it("stop recording cancels the request", async () => {

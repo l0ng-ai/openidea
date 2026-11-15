@@ -33,6 +33,7 @@ import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
 import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
 import {
   activeSession,
+  canTraceStream,
   handleDebugEvent,
   isLive,
   loadWatches,
@@ -49,7 +50,7 @@ import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
 import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
-import { canTraceStream, forgetStreamTrace } from "./streams/streamState";
+import { closeStaleStreamChooser, forgetStreamTrace } from "./streams/streamState";
 
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
 const useAnyOverlay = () =>
@@ -145,6 +146,7 @@ export function activate(): () => void {
     }),
     useDebug.subscribe((s, prev) => {
       if (s.sessions === prev.sessions) return;
+      closeStaleStreamChooser();
       for (const id of Object.keys(prev.sessions)) {
         if (id in s.sessions) continue;
         forgetMemory(Number(id));

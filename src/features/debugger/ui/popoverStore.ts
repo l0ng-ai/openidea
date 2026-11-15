@@ -33,8 +33,11 @@ interface OverlayState {
     targets: StepInTarget[];
     inline?: { path: string; line: number; ranges: InlineStepTarget[]; index: number };
   } | null;
-  /** Trace Stream Chain: the chains on the paused line, unavailable ones listed with their reason. */
-  streamChooser: { session: DebugSessionId; chains: StreamChainInfo[] } | null;
+  /**
+   * Trace Stream Chain: the chains on the paused line, unavailable ones listed with their reason.
+   * `frame` is the frame they were found in; chain indexes mean nothing for another one.
+   */
+  streamChooser: { session: DebugSessionId; frame: number; chains: StreamChainInfo[] } | null;
 }
 
 export const useOverlays = create<OverlayState>(() => ({
@@ -71,6 +74,6 @@ export function openSmartStepChooser(session: DebugSessionId, thread: number, ta
   useOverlays.setState({ smartStep: { session, thread, targets } });
 }
 
-export function openStreamChainChooser(session: DebugSessionId, chains: StreamChainInfo[]) {
-  useOverlays.setState({ streamChooser: { session, chains } });
+export function openStreamChainChooser(session: DebugSessionId, frame: number, chains: StreamChainInfo[]) {
+  useOverlays.setState({ streamChooser: { session, frame, chains } });
 }

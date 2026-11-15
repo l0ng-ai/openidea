@@ -721,7 +721,8 @@ export function registerDebugActions(): () => void {
       title: "Pause Program",
       category: "Debug",
       icon: "pause",
-      when: "debugSessionRunning",
+      // The trace resumes the program itself; a pause would suspend threads under the running trace.
+      when: "debugSessionRunning && !debugStreamTracing",
       run: async () => {
         const s = activeSession();
         if (!s || s.status !== "running") return;
@@ -807,7 +808,7 @@ export function registerDebugActions(): () => void {
       title: "Show Execution Point",
       category: "Debug",
       icon: "show-execution-point",
-      when: paused,
+      when: "debugSessionPaused",
       run: () => {
         const s = activeSession();
         if (s) void showExecutionPoint(s.id);
@@ -849,7 +850,7 @@ export function registerDebugActions(): () => void {
       title: "Jump to Source",
       category: "Debug",
       keyWhen: "debugFramesFocus || debugVariablesFocus",
-      when: paused,
+      when: "debugSessionPaused",
       run: () => {
         const view = focusedDebugView();
         if (view?.jumpToSource) {

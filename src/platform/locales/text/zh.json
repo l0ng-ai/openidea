@@ -8552,5 +8552,6 @@
   "The chain has no terminal operation": "该链没有终端操作",
   "Unknown stream operation": "未知的流操作",
   "The statement does not parse": "无法解析该语句",
-  "Stream tracing needs the Java debugger's inspector": "流跟踪需要 Java 调试器的检查器"
+  "Stream tracing needs the Java debugger's inspector": "流跟踪需要 Java 调试器的检查器",
+  "The stop or the selected frame changed; trace the stream chain again": "停止位置或所选帧已更改，请重新跟踪流链"
 }

@@ -1,9 +1,9 @@
 import clsx from "clsx";
-import type { ChainUnavailable, StreamChainInfo } from "@/platform/ipc";
+import type { ChainUnavailable } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Dialog, Icon, List } from "@/ui";
 import { useOverlays } from "../ui/popoverStore";
-import { startTrace } from "./streamState";
+import { pickStreamChain } from "./streamState";
 import styles from "./StreamChainChooser.module.css";
 
 function unavailableText(reason: ChainUnavailable): string {
@@ -33,11 +33,6 @@ function unavailableText(reason: ChainUnavailable): string {
 export function StreamChainChooser() {
   const state = useOverlays((s) => s.streamChooser);
   const close = () => useOverlays.setState({ streamChooser: null });
-  const pick = (chain: StreamChainInfo) => {
-    if (!state || chain.reason) return;
-    close();
-    void startTrace(state.session, chain);
-  };
   const chains = state?.chains ?? [];
   return (
     <Dialog
@@ -55,7 +50,7 @@ export function StreamChainChooser() {
           0,
           chains.findIndex((c) => !c.reason),
         )}
-        onActivate={pick}
+        onActivate={(chain) => void pickStreamChain(chain)}
         aria-label={tx("Stream chains on the current line")}
         className={styles.list}
         renderItem={(c) => (
