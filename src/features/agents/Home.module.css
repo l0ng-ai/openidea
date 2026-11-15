@@ -1,4 +1,7 @@
 .home {
+  --agent-fs-ui: calc(var(--fs-ui) + var(--agent-font-zoom, 0px));
+  --agent-fs-small: calc(var(--fs-small) + var(--agent-font-zoom, 0px));
+  --agent-fs-code: calc(var(--fs-code) + var(--agent-font-zoom, 0px));
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -22,7 +25,7 @@
 }
 .heading {
   margin: 0 0 10px;
-  font-size: 18px;
+  font-size: calc(18px + var(--agent-font-zoom, 0px));
   font-weight: 600;
   text-align: center;
   color: var(--fg-strong);

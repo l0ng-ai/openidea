@@ -143,6 +143,8 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
+  onTabClose?(tabId: string, input: EditorInput): void;
   /**
    * Whether the tab is busy (a process is running, like a terminal session's):
    * closing its last tab asks first, and tab-limit eviction skips it. May be
@@ -372,6 +374,11 @@ const EditorShown = createContext(true);
 export const EditorShownProvider = EditorShown.Provider;
 /** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
 export const useEditorShown = () => useContext(EditorShown);
+
+const EditorTabId = createContext<string | null>(null);
+export const EditorTabIdProvider = EditorTabId.Provider;
+/** Unique `Tab.id` of the enclosing custom editor tab, or `null` outside an editor pane. */
+export const useEditorTabId = () => useContext(EditorTabId);
 
 const ToolWindowShown = createContext(true);
 export const ToolWindowShownProvider = ToolWindowShown.Provider;

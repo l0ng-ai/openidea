@@ -81,6 +81,7 @@ import {
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { useEffortFocus } from "./effortFocus";
+import { useAgentFontZoomSurface } from "./fontZoom";
 import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
@@ -115,6 +116,7 @@ import {
   hasTaskTerminal,
   isBusy,
   providerIcon,
+  sessionKey,
   statusLabel,
   subagentStatusLabel,
   subagentTitle,
@@ -223,6 +225,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [inputFocus, setInputFocus] = useState(0);
   const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
+  const { fontZoom, zoomStyle } = useAgentFontZoomSurface(sessionRoot, sessionKey(id), docked, !!task);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
     () => ({
@@ -255,7 +258,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         changesOpen && !docked && styles.withChanges,
         fitWindowWidth && styles.fitWidth,
       )}
-      style={changesWidth}
+      style={{ ...changesWidth, ...zoomStyle }}
       onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -291,6 +294,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             onOpenSubagent={openSubagent}
             finding={finding && shown}
             findFocus={findFocus}
+            fontZoom={fontZoom}
             onCloseFind={() => setFinding(false)}
           />
         </FoldedContent.Provider>
@@ -611,9 +615,10 @@ function useOffscreenRows(
   visible: boolean,
   enabled: boolean,
   fitWindowWidth: boolean,
+  fontZoom: number,
 ) {
-  // The container width and column mode the marked rows were laid out at.
-  const measured = useRef<{ width: number; fitWindowWidth: boolean } | null>(null);
+  // The container width, column mode and font zoom the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean; fontZoom: number } | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -628,10 +633,15 @@ function useOffscreenRows(
       return;
     }
     if (!visible) return;
-    if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
-    measured.current = { width: el.clientWidth, fitWindowWidth };
+    if (
+      measured.current?.width === el.clientWidth &&
+      measured.current.fitWindowWidth === fitWindowWidth &&
+      measured.current.fontZoom === fontZoom
+    )
+      return;
+    measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
     unmark();
-  }, [ref, visible, enabled, fitWindowWidth]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled || !visible) return;
@@ -654,8 +664,13 @@ function useOffscreenRows(
       });
     };
     const remeasure = () => {
-      if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
-      measured.current = { width: el.clientWidth, fitWindowWidth };
+      if (
+        measured.current?.width === el.clientWidth &&
+        measured.current.fitWindowWidth === fitWindowWidth &&
+        measured.current.fontZoom === fontZoom
+      )
+        return;
+      measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
       unmark();
     };
     remeasure();
@@ -676,7 +691,7 @@ function useOffscreenRows(
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled, fitWindowWidth]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
 }
 
 interface StreamProps {
@@ -689,6 +704,7 @@ interface StreamProps {
   finding: boolean;
   /** Bumped by Find in Conversation: focus the find field again. */
   findFocus: number;
+  fontZoom: number;
   onCloseFind: () => void;
 }
 
@@ -704,7 +720,17 @@ function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
   return false;
 }
 
-function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({
+  loadError,
+  task,
+  entries,
+  subagent,
+  onOpenSubagent,
+  finding,
+  findFocus,
+  fontZoom,
+  onCloseFind,
+}: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
@@ -799,7 +825,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
-  useOffscreenRows(ref, visible, !finding, fitWindowWidth);
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -968,9 +994,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
             onWheel={(e) => {
+              if (e.defaultPrevented) return;
               markUserScroll();
-              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+              if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.metaKey) scrollingUp.current = false;
             }}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;

@@ -1,6 +1,9 @@
 .session {
   --session-content-width: var(--agent-conversation-width);
   --session-card-width: 80%;
+  --agent-fs-ui: calc(var(--fs-ui) + var(--agent-font-zoom, 0px));
+  --agent-fs-small: calc(var(--fs-small) + var(--agent-font-zoom, 0px));
+  --agent-fs-code: calc(var(--fs-code) + var(--agent-font-zoom, 0px));
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -252,6 +255,7 @@
   padding: var(--space-3);
   display: flex;
   flex-direction: column;
+  font-size: var(--agent-fs-ui, var(--fs-ui));
 }
 /* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
 .stream > * {
@@ -322,7 +326,7 @@
   -webkit-user-select: none;
   user-select: none;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: nowrap;
 }
 .messageHead > .role {
@@ -357,7 +361,7 @@
   gap: 5px;
   margin-bottom: 3px;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   -webkit-user-select: none;
   user-select: none;
 }
@@ -551,7 +555,7 @@
 }
 .markdown :global(code) {
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   padding: 0 2px;
   border-radius: 3px;
   background: var(--md-code-bg);
@@ -620,11 +624,18 @@
   display: none;
 }
 .markdown :global(.mermaid-output) {
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   text-align: center;
   /* Node labels are drawing, not text: selecting across a reply skips them. */
   -webkit-user-select: none;
   user-select: none;
+}
+.markdown :global(.mermaid-output svg[data-natural-width]) {
+  display: block;
+  margin: 0 auto;
+  width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .markdown :global([data-mermaid-state="error"] > .mermaid-output) {
   margin-top: 6px;
@@ -634,7 +645,7 @@
   background: var(--bg-elev);
   color: var(--danger);
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   text-align: left;
   white-space: pre-wrap;
 }
@@ -721,7 +732,11 @@
   border-top: 1px solid var(--border);
 }
 .markdown :global(img) {
-  max-width: 100%;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.markdown :global(img[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .loadImage {
   padding: 2px 8px;
@@ -762,9 +777,9 @@
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
-  height: var(--h-row);
+  min-height: var(--h-row);
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   -webkit-user-select: none;
   user-select: none;
 }
@@ -817,7 +832,7 @@
 }
 .toolTitle {
   min-width: 0;
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -830,7 +845,7 @@
 }
 .toolDiff {
   font: inherit;
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   border: 0;
   background: none;
   padding: 0 4px;
@@ -861,7 +876,7 @@
   padding: 0 calc(var(--space-2) / 2);
   border-radius: var(--radius-row);
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   -webkit-user-select: none;
   user-select: none;
 }
@@ -917,7 +932,7 @@
   border: 1px solid var(--border);
   background: var(--bg-elev);
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--fg-secondary);
@@ -974,7 +989,7 @@
 .permissionCommand {
   min-width: 0;
   max-width: 100%;
-  max-height: calc(var(--lh-code) * 6);
+  max-height: calc((var(--lh-code) + var(--agent-font-zoom, 0px) * 1.6) * 6);
   box-sizing: border-box;
   margin: 0;
   padding: var(--space-2);
@@ -984,8 +999,8 @@
   background: var(--bg-editor);
   color: var(--fg);
   font-family: var(--font-mono);
-  font-size: var(--fs-code);
-  line-height: var(--lh-code);
+  font-size: var(--agent-fs-code, var(--fs-code));
+  line-height: calc(var(--lh-code) + var(--agent-font-zoom, 0px) * 1.6);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   tab-size: 2;
@@ -1023,7 +1038,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .permissionDone {
   padding: calc(var(--space-2) / 2) 0;
@@ -1031,7 +1046,7 @@
   border-radius: var(--radius-small);
   background: none;
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .permissionRecord {
   display: block;
@@ -1120,6 +1135,7 @@
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
   background: var(--bg-elev);
+  font-size: var(--agent-fs-ui, var(--fs-ui));
 }
 .queuedText {
   flex: 1;
@@ -1212,7 +1228,7 @@
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-1-5);
   margin-top: 4px;
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .attachment {
   display: inline-flex;
@@ -1425,7 +1441,7 @@
   flex: none;
   margin-left: auto;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1433,7 +1449,7 @@
   padding-left: 22px;
   color: var(--fg-muted);
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1441,7 +1457,7 @@
 .subagentSection > summary {
   padding-left: 22px;
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   cursor: pointer;
   list-style: none;
 }
@@ -1510,7 +1526,7 @@
 .messageFrom {
   margin-bottom: 2px;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 
 .readOnly {
@@ -1567,6 +1583,7 @@
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
   background: var(--bg-elev);
+  font-size: var(--agent-fs-ui, var(--fs-ui));
   container: question-card / inline-size;
 }
 .questionTabCheck {
@@ -1617,7 +1634,7 @@
   border-radius: var(--radius-small);
   background: var(--bg-hover);
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .questionLabel .questionTag {
   margin: 0 0 0 8px;
@@ -1674,13 +1691,13 @@
 }
 .questionDescription {
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   overflow-wrap: anywhere;
 }
 .questionKey {
   flex: none;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .questionOther {
   margin: 2px 0 0 30px;
@@ -1725,7 +1742,7 @@
 }
 .questionPreviewCaption {
   color: var(--fg-muted);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .questionPreviewBody {
   margin: 0;
@@ -1735,14 +1752,14 @@
   border-radius: var(--radius-small);
   background: var(--bg-editor);
   font-family: var(--font-mono);
-  font-size: var(--fs-code);
+  font-size: var(--agent-fs-code, var(--fs-code));
 }
 .questionPreviewEmpty {
   padding: 8px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-small);
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .questionActions {
   display: flex;
@@ -1758,7 +1775,7 @@
 }
 .questionPage {
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--agent-fs-small, var(--fs-small));
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }

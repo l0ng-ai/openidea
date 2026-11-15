@@ -14,7 +14,8 @@ import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { useEffortFocus } from "./effortFocus";
-import { providerIcon } from "./model";
+import { useAgentFontZoomSurface } from "./fontZoom";
+import { HOME_KEY, providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import {
   HOME,
@@ -31,7 +32,7 @@ import {
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Home.module.css";
 
-export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
+export function HomeEditor({ docked = false, input }: { docked?: boolean; input?: EditorInput }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const draft = useAgents((s) => s.draft);
@@ -97,6 +98,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   const { defaults, fitWindowWidth } = useAgentSettings();
   const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
   const homeRoot = useRef<HTMLDivElement>(null);
+  const { zoomStyle } = useAgentFontZoomSurface(homeRoot, input?.key ?? HOME_KEY, docked);
   const unavailableModel = config.some(
     (o) =>
       o.category === "model" &&
@@ -127,7 +129,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   };
 
   return (
-    <div ref={homeRoot} className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}>
+    <div
+      ref={homeRoot}
+      className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}
+      style={zoomStyle}
+    >
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>

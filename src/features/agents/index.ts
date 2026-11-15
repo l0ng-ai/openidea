@@ -38,6 +38,7 @@ import {
 import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
+import { clearAgentTabFontZoom } from "./fontZoom";
 import {
   closeActiveTask,
   closeAndNewTask,
@@ -188,6 +189,7 @@ export function activate(): () => void {
         const s = useAgents.getState();
         if (s.ephemeral.has(task) && s.docked !== task) void discardEphemeral(task);
       },
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
@@ -199,6 +201,7 @@ export function activate(): () => void {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
         return task ? providerIcon(task.provider) : "toolwindow-agents";
       },
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       restorable: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.

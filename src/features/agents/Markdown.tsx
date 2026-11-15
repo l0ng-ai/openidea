@@ -277,6 +277,9 @@ export function Markdown({
   // Diagrams are drawn in the active theme's colours: a theme change redraws them.
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   useLayoutEffect(() => {
+    images.current.onLoaded = onDiagramDrawn;
+  }, [onDiagramDrawn]);
+  useLayoutEffect(() => {
     const root = ref.current;
     if (!root) return;
     if (paintedCwd.current !== cwd) {
