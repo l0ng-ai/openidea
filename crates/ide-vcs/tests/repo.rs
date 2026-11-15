@@ -1119,7 +1119,8 @@ fn checkout_of_a_branch_held_by_another_worktree_reports_it_and_changes_nothing(
     fx.git(&["worktree", "add", "-q", "-b", "topic", linked.to_str().unwrap()]);
     let repo = fx.repo();
     let none = CheckoutOptions::default();
-    let linked_path = std::fs::canonicalize(&linked).unwrap();
+    // As git names it: no `\\?\` prefix on Windows.
+    let linked_path = dunce::canonicalize(&linked).unwrap();
 
     // From the main worktree, the branch the linked worktree has checked out.
     let outcome = repo.checkout_with("topic", false, &none).unwrap();
@@ -1139,7 +1140,7 @@ fn checkout_of_a_branch_held_by_another_worktree_reports_it_and_changes_nothing(
     let linked_repo = Repo::discover(&linked).unwrap().unwrap();
     linked_repo.set_execution_allowed(true);
     let outcome = linked_repo.checkout_with("main", false, &none).unwrap();
-    let main_path = std::fs::canonicalize(&fx.dir).unwrap();
+    let main_path = dunce::canonicalize(&fx.dir).unwrap();
     assert_eq!(outcome, CheckoutOutcome::CheckedOutInWorktree { branch: "main".into(), path: main_path });
     assert_eq!(linked_repo.branch_info().unwrap().head.as_deref(), Some("topic"));
 

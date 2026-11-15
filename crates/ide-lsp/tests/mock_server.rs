@@ -2969,7 +2969,8 @@ async fn library_classes_without_sources_open_decompiled_by_a_running_jdtls() {
     zip.write_all(b"\0").unwrap();
     zip.finish().unwrap();
     let class = format!("jar://{}!/acme/Thing.class", uri_of(&jar).trim_start_matches("file://"));
-    let escaped = jar.to_string_lossy().replace('/', "%5C/");
+    // jdtls writes the portable path (forward slashes on Windows too), each `/` escaped.
+    let escaped = jar.to_string_lossy().replace('\\', "/").replace('/', "%5C/");
     let jdt = format!("jdt://contents/lib-1.0.jar/acme/Thing.class?=app/{escaped}%3Cacme%28Thing.class");
     let decompiled =
         "package acme;\n\npublic class Thing {\n   public void run() {\n      System.out.println();\n   }\n}\n";
