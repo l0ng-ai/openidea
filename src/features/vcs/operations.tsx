@@ -27,6 +27,7 @@ import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
 import { repositoryPath } from "./repositoryPaths";
+import { RepoPicker } from "./gitMenuDialogs";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -437,15 +438,27 @@ export function showTagDialog() {
 }
 
 function TagDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
+  const [repo, setRepo] = useState(currentRepo);
   const [name, setName] = useState("");
   const [commit, setCommit] = useState("HEAD");
   const [message, setMessage] = useState("");
   const [force, setForce] = useState(false);
   const [existing, setExisting] = useState<string[]>([]);
   useEffect(() => {
-    void call(commands.vcsTags(repo)).then(setExisting, () => undefined);
-  }, []);
+    let live = true;
+    void call(commands.vcsTags(repo)).then(
+      (tags) => live && setExisting(tags),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [repo]);
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setExisting([]);
+  };
   const error = validateTagName(name, force ? [] : existing);
   const run = async () => {
     if (error) return;
@@ -470,6 +483,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={chooseRepo} />
         <label className={styles.fieldLabel} htmlFor="openidea-tag-name">
           <T>Tag name:</T>
         </label>

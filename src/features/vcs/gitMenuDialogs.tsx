@@ -135,7 +135,7 @@ export function showPullDialog(repo?: string | null) {
 }
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
-function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
   const [roots] = useState(() => useVcs.getState().roots);
   if (roots.length < 2) return null;
   return (
