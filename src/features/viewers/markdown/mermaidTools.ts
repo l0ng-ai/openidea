@@ -11,7 +11,7 @@ import { openLayer, trapTab } from "@/ui/popupState";
 import { notifications } from "@/workbench/contributions";
 import { attachPanZoom } from "../panZoom";
 import { reid } from "./svgIds";
-import { svgElementSize } from "./svgSize";
+import { svgElementSize } from "@/ui/svgSize";
 import styles from "./MermaidTools.module.css";
 
 /** Marks the tool strip, so a redrawing block replaces it rather than stacking one. */

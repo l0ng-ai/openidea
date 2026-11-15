@@ -51,7 +51,7 @@ import {
   resolveLink,
   slugify,
 } from "./render";
-import { applyImageZoomWidth, svgDataUrlSize } from "./svgSize";
+import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 

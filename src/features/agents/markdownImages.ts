@@ -1,7 +1,7 @@
 import { call, commands } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
 import { tx } from "@/platform/i18n";
-import { applyImageZoomWidth, svgDataUrlSize } from "@/features/viewers/markdown/svgSize";
+import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Session.module.css";
 
 const hasControl = (text: string) => [...text].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
