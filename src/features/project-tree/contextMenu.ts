@@ -215,6 +215,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
         { id: "rel", label: "Path From Content Root", run: () => void copyPaths("relative", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     {
