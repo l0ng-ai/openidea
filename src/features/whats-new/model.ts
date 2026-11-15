@@ -5,22 +5,25 @@
  */
 import { call, commands, isTauri } from "@/platform/ipc";
 import { loadSettings, startupLaunchHandled, useProject } from "@/platform/project";
-import { releaseNotesOf } from "@/platform/releaseNotes";
+import { recordedNotes } from "@/platform/releaseNotes";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 
 export const WHATS_NEW_KIND = "whatsNew";
 
 export interface WhatsNewData {
   version: string;
-  /** Notes the install recorded; null when the page has to read the manifest. */
+  /** Notes the install recorded, English; null when the page has to read the manifest. */
   notes: string | null;
+  /** Their translations by locale, when the manifest carried them. */
+  texts: Record<string, string> | null;
 }
 
 export function whatsNewInput(version: string): EditorInput {
+  const recorded = recordedNotes(version);
   return {
     kind: WHATS_NEW_KIND,
     key: WHATS_NEW_KIND + ":" + version,
-    data: { version, notes: releaseNotesOf(version) } satisfies WhatsNewData,
+    data: { version, notes: recorded?.text ?? null, texts: recorded?.texts ?? null } satisfies WhatsNewData,
   };
 }
 
