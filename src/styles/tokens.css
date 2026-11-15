@@ -1501,6 +1501,62 @@ html {
   --db-connected: var(--success);
   --db-connected-ring: var(--success);
 }
+/*
+ * The bundled schemes' red-green variants (IDEA's deuteranopia / protanopia values): syntax
+ * without the green-red and purple-blue pairs, errors in orange, highlights in blue / olive.
+ * Other colour themes and plugin themes keep their own editor colours.
+ */
+:root[data-red-green]:not(
+    [data-theme="light"],
+    [data-theme="dark-hc"],
+    [data-contrast="high"],
+    [data-color-theme],
+    [data-plugin-theme]
+  ) {
+  --syn-keyword: #597cc2;
+  --syn-string: #94907f;
+  --syn-number: #66a6ff;
+  --syn-constant: #828eba;
+  --syn-property: #828eba;
+  --syn-function: #d9af6c;
+  --syn-annotation: #66a6ff;
+  --syn-decorator: #66a6ff;
+  --syn-escape: #597cc2;
+  --syn-todo: #bfa222;
+  --syn-invalid: #bd693c;
+  --syn-markup-heading: var(--syn-keyword);
+  --syn-markup-code: var(--syn-string);
+  --wave-error: #e57132;
+  --editor-error-decoration: underline wavy #e57132;
+  --editor-warning-background: #454122;
+  --wave-typo: #4b734f;
+  --bg-identifier-under-caret: #32394c;
+  --bg-identifier-under-caret-write: #253873;
+  --bg-search-result: #404861;
+  --bg-text-search-result: #363827;
+  --bg-text-search-result-current: #66731d;
+  --bg-breakpoint-line: #42372b;
+  --coverage-covered: #445956;
+  --coverage-partial: #807540;
+  --coverage-uncovered: #704b25;
+}
+:root[data-theme="light"][data-red-green]:not([data-color-theme], [data-plugin-theme]) {
+  --syn-keyword: #00428c;
+  --syn-string: #6a84db;
+  --syn-number: #3777e6;
+  --syn-constant: #004b9f;
+  --syn-property: #004b9f;
+  --syn-function: #121314;
+  --syn-annotation: #3381ff;
+  --syn-decorator: #3381ff;
+  --syn-todo: #3777e6;
+  --syn-invalid: #d95716;
+  --syn-markup-heading: var(--syn-keyword);
+  --syn-markup-code: var(--syn-string);
+  --editor-warning-background: #fff0a6;
+  --bg-identifier-under-caret: #d9e6ff;
+  --bg-identifier-under-caret-write: #e0e0cc;
+}
 /* PHP editors: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
 .cm-editor[data-language="PHP"] {
   --syn-variable: var(--syn-php-variable);
