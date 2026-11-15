@@ -148,6 +148,8 @@ interface RunState {
   pinned: string[];
   /** Ids of the configurations started last, newest first (at most `MAX_RECENT`). */
   recent: string[];
+  /** The chooser's "All Configurations" group is expanded (kept per project). */
+  allExpanded: boolean;
   sessions: RunSession[];
   activeSession: string | null;
   /** Output version per session (re-render trigger for the console). */
@@ -175,6 +177,7 @@ export const useRun = create<RunState>(() => ({
   temporary: [],
   pinned: [],
   recent: [],
+  allExpanded: false,
   sessions: [],
   activeSession: null,
   versions: {},
@@ -245,6 +248,7 @@ export async function loadConfigs(): Promise<void> {
       temporary: temps.map((t) => t.id),
       pinned: readIds(PINNED_KEY, root),
       recent: readIds(RECENT_KEY, root),
+      allExpanded: readAllExpanded(root),
       loaded: true,
       loadError: null,
       selectedId,
@@ -275,7 +279,30 @@ export function selectConfig(id: string | null) {
 
 const PINNED_KEY = "openidea.run.pinned:";
 const RECENT_KEY = "openidea.run.recent:";
+const ALL_EXPANDED_KEY = "openidea.run.allExpanded:";
 export const MAX_RECENT = 5;
+
+function readAllExpanded(root: string): boolean {
+  try {
+    return localStorage.getItem(ALL_EXPANDED_KEY + root) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Expands or collapses the chooser's "All Configurations" group. Kept per project. */
+export function toggleAllConfigurations() {
+  const allExpanded = !useRun.getState().allExpanded;
+  useRun.setState({ allExpanded });
+  const root = useProject.getState().project?.root;
+  if (!root) return;
+  try {
+    if (allExpanded) localStorage.setItem(ALL_EXPANDED_KEY + root, "1");
+    else localStorage.removeItem(ALL_EXPANDED_KEY + root);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 function readIds(key: string, root: string): string[] {
   try {
@@ -1534,6 +1561,7 @@ export function resetRuns() {
     temporary: [],
     pinned: [],
     recent: [],
+    allExpanded: false,
     sessions: [],
     activeSession: null,
     versions: {},

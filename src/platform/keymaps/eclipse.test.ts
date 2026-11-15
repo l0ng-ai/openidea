@@ -32,6 +32,7 @@ const owners = (km: Record<string, string[]>, key: string) =>
 // parent collisions are not introduced by this preset; new pairs must be reviewed here.
 const shared = [
   ["navigate.gotoClass", "terminal.new"],
+  ["navigate.gotoLine", "agents.focusInput"],
   ["navigate.recentLocations", "project.open", "debug.jumpToSource", "diff.jumpToSource", "find.popup.openResult"],
   [
     "navigate.declaration",
@@ -52,7 +53,8 @@ const shared = [
   ["code.optimizeImports", "project.optimizeImports"],
   ["code.deleteLine", "db.duplicateSource", "project.compareWith", "vcs.showDiff", "vcs.log.changes.showDiff"],
   ["code.moveStatementDown", "find.field.recentSearches", "find.popup.recentSearches"],
-  ["code.foldAll", "project.collapseAll"],
+  ["code.foldAll", "project.collapseAll", "run.collapseAllTests"],
+  ["project.expandAll", "run.expandAllTests"],
   ["refactor.rename", "project.rename", "db.rename", "vcs.changelist.edit", "vcs.log.editMessage", "vcs.shelf.rename"],
   ["refactor.changeSignature", "db.modifyTable"],
   ["refactor.move", "project.move"],

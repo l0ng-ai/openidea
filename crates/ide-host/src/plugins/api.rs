@@ -3047,7 +3047,16 @@ impl PluginWorkspace for HostWorkspace {
             &project.root,
             &project.settings.effective(),
         );
-        if config.debug_adapter.is_none() {
+        if config.debug_adapter.is_none()
+            && let Some(language) = config.extras.params.get(super::run_detectors::DEBUG_LANGUAGE)
+        {
+            config.debug_adapter = project
+                .languages
+                .get(&ide_core::LanguageId::new(language.as_str()))
+                .and_then(|l| l.debugger)
+                .map(|d| d.adapter);
+        }
+        if config.debug_adapter.is_none() && !config.extras.params.contains_key(super::run_detectors::DEBUG_ATTACH) {
             let cwd = config.cwd.as_ref().map(|p| p.as_ref()).unwrap_or(&project.root);
             config.debug_adapter =
                 config.args.iter().map(|arg| cwd.join(arg)).filter(|path| path.is_file()).find_map(|path| {

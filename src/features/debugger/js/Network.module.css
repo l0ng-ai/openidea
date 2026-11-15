@@ -48,7 +48,18 @@
 }
 
 .actions {
+  display: flex;
+  gap: 4px;
   padding-top: 6px;
+}
+
+.badge {
+  margin-left: 6px;
+  border-radius: 3px;
+  padding: 0 4px;
+  background: var(--bg-selected);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
 }
 
 .split {

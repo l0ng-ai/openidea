@@ -146,7 +146,7 @@ function RevisionBrowser({
         ) : !files ? (
           <Spinner />
         ) : (
-          <SplitGroup orientation="horizontal" id="git-revision-browser">
+          <SplitGroup orientation="horizontal" id="git-revision-browser" storageKey="openidea.vcs.revisionBrowserSplit">
             <SplitPanel id="files" defaultSize="30%" minSize="20%">
               <Tree
                 roots={tree}

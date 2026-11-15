@@ -6450,7 +6450,13 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
     let configs = f.host.run_detection().detect(&f.project);
     assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
         && c.is_test
-        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")
+        && c.env.get("OPENIDEA_EXECUTION_FIXTURE").map(String::as_str) == Some("1")
+        && c.extras.params.get("debugLanguage").map(String::as_str) == Some("python")));
+    let worker = configs.iter().find(|c| c.id == "plugin:execution:worker").unwrap();
+    assert_eq!(worker.extras.params.get("debugAttach").map(String::as_str), Some("dotnet"));
+    assert_eq!(worker.extras.params.get("debugAttachContains").map(String::as_str), Some("Worker.dll"));
+    assert!(worker.env.is_empty() && !worker.is_test);
     assert_eq!(
         f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
         3

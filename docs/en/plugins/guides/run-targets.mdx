@@ -11,6 +11,7 @@ every start. On top of that, a plugin can:
 | ---------------------------------------------------------------------- | ----------------------------------------------------------------- | --------- |
 | Offer a fixed command when the project has a marker file               | `[[contributes.runDetectors]]` (no code)                          | 1.0       |
 | Compute the project's configurations in code                           | `[[contributes.runConfigurations]]` + `run-configurations` export | 1.4       |
+| Give configurations an environment and a debugger                      | `launch-configurations` export                                    | 1.9       |
 | Turn test output into the IDE's test tree                              | `test-results` export, `framework = "plugin"`                     | 1.4       |
 | Start one of its configurations from a command                         | `host::start_run` (WIT `run.start`)                               | 1.4       |
 | Make every run of the project go through a wrapper (DDEV, a container) | `host::register_run_target` (WIT `run-targets`)                   | 1.4       |
@@ -77,6 +78,45 @@ project-contained `cwd`, `test` and an optional `framework`. Return the complete
 the project root; it is refreshed when configurations are listed. The host keeps at most
 1000 entries / 4 MiB, keeps the last valid list when the export fails, and doesn't offer
 entries whose program isn't approved. The export runs without a window and can't prompt.
+
+## Environment and debugger
+
+From API 1.9, export `launch-configurations` instead (`LaunchConfigurations`, registered as
+`launch_configurations`) to give each configuration an environment and a debugger. The IDE
+uses it when a component exports both.
+
+```rust
+use openidea_plugin::{Debugger, LaunchConfigurations, PluginLaunchConfiguration, PluginRunConfiguration};
+
+impl LaunchConfigurations for Functions {
+    fn launch_configurations(&mut self, _root: &str) -> Vec<PluginLaunchConfiguration> {
+        vec![PluginLaunchConfiguration {
+            config: PluginRunConfiguration {
+                id: "func".into(),
+                name: "Functions host".into(),
+                program: "func".into(),
+                args: vec!["start".into(), "--dotnet-isolated-debug".into()],
+                ..Default::default()
+            },
+            env: vec![("FUNCTIONS_WORKER_RUNTIME".into(), "dotnet-isolated".into())],
+            debugger: Some(Debugger::AttachChild { kind: "dotnet".into(), command_contains: None }),
+        }]
+    }
+}
+
+register_plugin!(Functions, launch_configurations);
+```
+
+- `env` adds at most 64 variables to the run's environment. Like `process` commands, it can
+  only add: a name the IDE's own environment already has (`PATH`, …) makes the list invalid.
+- `debugger: None` keeps the default: Debug infers the debugger from a source file in `args`.
+- `Debugger::Launch { language }` starts `program` under that language's debugger (its
+  `[debugger]`), for programs whose arguments name no source file.
+- `Debugger::AttachChild { kind, command_contains }` makes Debug run the configuration as Run
+  does, then attach to the first process of that kind (`dotnet`, `node`, `python`, `go` or
+  `native`, as in Attach to Process) the run starts, optionally only one whose command line
+  contains `command_contains`. Only the run's own processes are candidates. The IDE waits while
+  the run lasts, up to a minute; without a match the run goes on without the debugger.
 
 ## Test results
 

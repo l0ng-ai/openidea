@@ -715,33 +715,35 @@ mod tests {
         server.set_diagnostics(a.path.clone(), vec![diag(2, 5, "a"), diag(0, 1, "outside"), diag(4, 6, "crosses")]);
         let items = server.set_diagnostics(b.path.clone(), vec![diag(7, 10, "b")]);
         mgr.emit_diagnostics(&server, b.path, items, Encoding::Utf16);
-        let latest = || {
-            events
-                .lock()
-                .iter()
-                .rev()
-                .find_map(|e| match e {
+        // The SQL server's failed launch reports its status from a runtime thread; while that
+        // thread drains the server's event queue, events emitted here reach the sink from it.
+        let latest = |want: &dyn Fn(&[ide_core::Diagnostic]) -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                let items = events.lock().iter().rev().find_map(|e| match e {
                     ide_core::IdeEvent::Diagnostics { path: p, source, items }
                         if p.0 == path && source == &server.name =>
                     {
                         Some(items.clone())
                     }
                     _ => None,
-                })
-                .unwrap()
+                });
+                match items {
+                    Some(items) if want(&items) => return items,
+                    _ if std::time::Instant::now() > deadline => panic!("latest host diagnostics: {items:?}"),
+                    _ => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
         };
-        assert_eq!(latest().iter().map(|d| d.message.as_str()).collect::<Vec<_>>().len(), 3);
+        let messages = |items: &[ide_core::Diagnostic]| items.iter().map(|d| d.message.clone()).collect::<Vec<_>>();
+        let merged = latest(&|items| items.len() == 3);
         assert!(
-            latest()
-                .iter()
-                .filter(|d| d.message != "native")
-                .all(|d| d.source.as_deref() == Some(server.name.as_str()))
+            merged.iter().filter(|d| d.message != "native").all(|d| d.source.as_deref() == Some(server.name.as_str()))
         );
         mgr.set_injections(host, 1, vec![injection(7, 10)]);
-        assert_eq!(latest().iter().map(|d| d.message.clone()).collect::<Vec<_>>(), ["native", "b"]);
+        latest(&|items| messages(items) == ["native", "b"]);
         mgr.set_injections(host, 1, vec![]);
-        assert_eq!(latest()[0].message, "native");
-        assert_eq!(latest().len(), 1);
+        latest(&|items| messages(items) == ["native"]);
         assert!(
             events.lock().iter().all(|e| !matches!(e, ide_core::IdeEvent::Diagnostics { path, .. } if reserved(path)))
         );

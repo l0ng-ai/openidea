@@ -1,6 +1,6 @@
-/** Bounded, read-only detection for workspace members, collapsed ones included; a single project root keeps its own icon. */
+/** Bounded, read-only detection for project roots, including collapsed workspace members. */
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
-import { detectProjectType, isProjectMarker } from "./projectType";
+import { detectProjectType, isProjectMarker } from "@/platform/projectType";
 import { useProjectTree } from "./store";
 
 async function detect(root: string) {
@@ -16,8 +16,9 @@ export function initProjectTypes(): () => void {
   let reset: (() => void) | undefined;
   const load = () => {
     reset?.();
-    const { root, members: roots } = useProjectTree.getState();
-    if (!root || !roots || !isTauri()) return;
+    const { root, members } = useProjectTree.getState();
+    if (!root || !isTauri()) return;
+    const roots = members ?? [root];
     const pending = new Set(roots);
     const versions = new Map<string, number>();
     let active = 0;

@@ -98,6 +98,15 @@ describe("run config → launch config", () => {
     });
   });
 
+  it("cargo run under lldb-dap builds the same way and passes the environment as strings", () => {
+    const l = launchConfigFor(
+      rc({ kind: "cargo", command: "cargo", args: ["run"], env: { RUST_LOG: "debug" }, debugAdapter: "lldb-dap" }),
+      "/p",
+    )!;
+    expect(l.adapter).toBe("lldb-dap");
+    expect(extra(l)).toEqual({ cargo: { args: ["build"], filter: { kind: "bin" } }, env: ["RUST_LOG=debug"] });
+  });
+
   it("cargo test builds test binaries without running", () => {
     const l = launchConfigFor(
       rc({ kind: "cargo", command: "cargo", args: ["test", "--workspace"], debugAdapter: "codelldb" }),

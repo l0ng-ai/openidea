@@ -405,6 +405,24 @@ pub fn attachable_processes() -> IdeResult<Vec<AttachableProcess>> {
     Ok(out)
 }
 
+/// The Attach to Process candidates among the processes `root` started, parents first.
+/// Blocking, like [`attachable_processes`].
+pub fn attachable_descendants(root: u32) -> IdeResult<Vec<AttachableProcess>> {
+    let order = ide_core::process::descendants(root);
+    if order.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cwd = std::env::temp_dir();
+    let native = if adapter::resolve_binary("codelldb", &cwd).is_some() { "codelldb" } else { "lldb-dap" };
+    let mut out: Vec<AttachableProcess> = list_processes()?
+        .iter()
+        .filter(|p| order.contains(&p.pid))
+        .filter_map(|p| classify(p, is_dotnet, is_go_binary, native))
+        .collect();
+    out.sort_by_key(|p| order.iter().position(|&pid| pid == p.pid));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +434,28 @@ mod tests {
     fn kind(exe: &str, args: &str) -> Option<(AttachKind, Option<u16>)> {
         classify(&raw(exe, args), |e| e.ends_with("/Api"), |e| e.ends_with("/gosrv"), "codelldb")
             .map(|p| (p.kind, p.port))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_candidates_are_the_processes_it_started() {
+        let mut child = std::process::Command::new("sh").args(["-c", "sleep 30; true"]).spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let found = loop {
+            let found = attachable_descendants(child.id()).unwrap();
+            if !found.is_empty() || std::time::Instant::now() > deadline {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        for p in &found {
+            let _ = std::process::Command::new("kill").arg(p.pid.to_string()).status();
+        }
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(found.iter().all(|p| p.pid != child.id()), "{found:?}");
+        assert!(found.iter().any(|p| p.name == "sleep" && p.kind == AttachKind::Native), "{found:?}");
+        assert!(attachable_descendants(u32::MAX - 1).unwrap().is_empty());
     }
 
     #[test]

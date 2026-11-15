@@ -289,6 +289,7 @@ impl crate::Host {
                 }
             }
             project.lsp.reconfigure().await;
+            crate::ops::sdk::container_python::ensure(self, &project);
             project.sink.emit(ide_core::IdeEvent::ProjectTrustChanged { root: project.root.clone().into(), trusted });
         }
         Ok(())
@@ -357,6 +358,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "docker_set_registry_password"
             | "docker_run_env"
             | "db_console_path"
+            | "db_consoles"
             | "db_export_file"
             | "vcs_write_patch"
             | "app_metrics"
@@ -399,6 +401,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "web_unresolved_references"
             | "project_rename"
             | "light_edit_open"
+            | "light_edit_open_untitled"
             | "workspace_create"
             | "workspace_discover_projects"
             | "workspace_update"

@@ -41,20 +41,44 @@ pub struct ClientHandler {
     generation: u64,
 }
 
+/// The diagnostics in `items` (a JSON array) that deserialize. A server's malformed one is
+/// skipped with a warning, so the rest of the file's problems still show.
+pub(crate) fn lenient_diagnostics(server: &str, items: Value) -> Vec<lsp::Diagnostic> {
+    let Value::Array(items) = items else { return Vec::new() };
+    let mut skipped = 0usize;
+    let parsed: Vec<lsp::Diagnostic> = items
+        .into_iter()
+        .filter_map(|mut item| {
+            crate::virtual_doc::normalize_uris(&mut item);
+            match serde_json::from_value(item) {
+                Ok(diagnostic) => Some(diagnostic),
+                Err(_) => {
+                    skipped += 1;
+                    None
+                }
+            }
+        })
+        .collect();
+    if skipped > 0 {
+        tracing::warn!("{server}: skipped {skipped} malformed diagnostic(s)");
+    }
+    parsed
+}
+
 impl ClientHandler {
     pub fn new(mgr: Weak<LspManager>, server: Arc<Server>, generation: u64) -> Self {
         Self { mgr, server, generation }
     }
 
     fn encoding(&self) -> Encoding {
-        self.server.running_gen(self.generation).map(|r| r.caps.read().encoding).unwrap_or_default()
+        self.server.initialized_gen(self.generation).map(|r| r.caps.read().encoding).unwrap_or_default()
     }
 
     /// Cancelling task `task` asks this server instance to stop the work of progress `token`.
     fn cancel_handle(&self, task: TaskId, token: &Value) -> ide_core::task::CancelHandle {
         let (server, generation, token) = (self.server.clone(), self.generation, token.clone());
         ide_core::task::on_cancel(task, move || {
-            if let Some(run) = server.running_gen(generation)
+            if let Some(run) = server.initialized_gen(generation)
                 && let Err(e) = run.peer.notify("window/workDoneProgress/cancel", json!({ "token": token }))
             {
                 tracing::debug!("{}: cannot cancel progress: {e}", server.name);
@@ -176,7 +200,7 @@ impl ClientHandler {
             loop {
                 tokio::time::sleep(PROGRESS_SWEEP).await;
                 let Some(mgr) = weak.upgrade() else { return };
-                if server.running_gen(generation).is_none() || !server.has_progress(&token) {
+                if !server.is_live(generation) || !server.has_progress(&token) {
                     return; // the instance is gone, or the task ended normally
                 }
                 if server.progress_silent(&token, PROGRESS_STALE) {
@@ -251,18 +275,24 @@ impl ClientHandler {
 
     fn publish_diagnostics(&self, mgr: &LspManager, params: Value) {
         // Problems come only from servers used for `diagnostics`.
-        if self.server.running_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
+        if self.server.initialized_gen(self.generation).is_some_and(|run| !run.caps.read().restriction.diagnostics()) {
             return;
         }
         let mut params = params;
         crate::virtual_doc::normalize_uris(&mut params);
-        let params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
+        // One malformed diagnostic must not take the others of the file with it.
+        let raw = params.get_mut("diagnostics").map(Value::take);
+        if let Some(fields) = params.as_object_mut() {
+            fields.insert("diagnostics".into(), json!([]));
+        }
+        let mut params: lsp::PublishDiagnosticsParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
                 tracing::debug!("{}: bad publishDiagnostics: {e}", self.server.name);
                 return;
             }
         };
+        params.diagnostics = lenient_diagnostics(&self.server.name, raw.unwrap_or(Value::Null));
         let Some(path) = uri_to_path(params.uri.as_str())
             .or_else(|| crate::notebook::is_cell_uri(params.uri.as_str()).then(|| PathBuf::from(params.uri.as_str())))
         else {
@@ -480,7 +510,7 @@ impl Handler for ClientHandler {
                 crate::kotlin_lsp::record_import_state(&self.server, self.generation, &params)
             }
             "language/status" if self.server.name == "jdtls" && params["type"] == "ServiceReady" => {
-                if self.server.running_gen(self.generation).is_some() {
+                if self.server.initialized_gen(self.generation).is_some() {
                     self.server.set_java_ready();
                 }
                 mgr.java_import_ready(self.server.clone(), self.generation);

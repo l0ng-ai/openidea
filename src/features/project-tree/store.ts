@@ -36,7 +36,7 @@ import {
   type TreeOptions,
 } from "./model";
 import { projectFs } from "./fs";
-import { PROJECT_TYPES, type ProjectType } from "./projectType";
+import { PROJECT_TYPES, type ProjectType } from "@/platform/projectType";
 import {
   projectViewRoots,
   useProjectViewRoots,

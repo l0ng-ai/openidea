@@ -4,7 +4,7 @@
  * list and an effort slider; with a mode and an on/off permissions option (Allow All),
  * the mode menu carries the switch. Names and descriptions are the agent's own.
  */
-import { useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import clsx from "clsx";
 import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
@@ -48,25 +48,45 @@ function switchValues(option: AgentConfigOption): { on: string; off: string } | 
 const selected = (option: AgentConfigOption, value: string | null) =>
   option.values.find((v) => v.value === value) ?? null;
 
+interface ModelRefresh {
+  refreshing: boolean;
+  retryAtMs: number | null;
+  error: string | null;
+  onRefresh: () => void;
+}
+
 export function ConfigPickers({
   config,
   values,
   onChange,
+  modelRefresh,
 }: {
   config: readonly AgentConfigOption[];
   /** Chosen values that override `current`, by option id. */
   values?: Record<string, string>;
   onChange: (option: string, value: string) => void;
+  /** Only New Task supplies catalog discovery; session pickers retain their own settings. */
+  modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const options = mainOptions(config);
+  if (modelRefresh && !options.some((o) => o.category === "model"))
+    options.unshift({
+      id: "model",
+      name: "Model",
+      category: "model",
+      description: null,
+      current: null,
+      values: [],
+      via: "option",
+    });
   const valueOf = (o: AgentConfigOption) => values?.[o.id] ?? o.current ?? null;
   const model = options.find((o) => o.category === "model");
   const effort = config.find((o) => o.category === "thought_level" && o.values.length > 0);
   const modelConfigs = modelConfigOptions(config);
-  const combinedModel = model && (effort || modelConfigs.length > 0);
+  const combinedModel = model && (modelRefresh || effort || modelConfigs.length > 0);
   const tuckedModelConfig = new Set(modelConfigs.map((o) => o.id));
   const mode = options.find((o) => o.category === "mode");
   const allowAll = mode && options.find((o) => switchValues(o));
@@ -92,6 +112,7 @@ export function ConfigPickers({
               modelConfigs={modelConfigs}
               valueOf={valueOf}
               onChange={onChange}
+              modelRefresh={modelRefresh}
             />
           ) : o === mode && allowAll ? (
             <ModePicker
@@ -206,6 +227,7 @@ function ModelEffortPicker({
   modelConfigs,
   valueOf,
   onChange,
+  modelRefresh,
 }: {
   model: AgentConfigOption;
   modelValue: string | null;
@@ -214,11 +236,15 @@ function ModelEffortPicker({
   modelConfigs: AgentConfigOption[];
   valueOf: (o: AgentConfigOption) => string | null;
   onChange: (option: string, value: string) => void;
+  modelRefresh?: ModelRefresh;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
-  const modelName = selected(model, modelValue)?.name ?? tx("Default");
+  const unavailable = modelRefresh && modelValue !== null && !selected(model, modelValue);
+  const modelName = unavailable
+    ? tx`${modelValue} (unavailable)`
+    : (selected(model, modelValue)?.name ?? tx("Default"));
   const effortName = effort ? (selected(effort, effortValue)?.name ?? tx("Default")) : null;
   const modelConfigSummary = modelConfigs
     .map((o) => {
@@ -266,6 +292,11 @@ function ModelEffortPicker({
         aria-label={tx("Model & effort settings")}
         className={styles.modelEffortPopup}
       >
+        {unavailable && (
+          <p className={styles.catalogError} role="alert">
+            <T>Choose another model before starting.</T>
+          </p>
+        )}
         {effort && (
           <div className={styles.effortBlock}>
             <div className={styles.effortHeader}>
@@ -281,16 +312,47 @@ function ModelEffortPicker({
             <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} framed />
           </div>
         ))}
-        <SelectListbox
-          aria-label={tx(model.name)}
-          value={modelValue}
-          options={configPickerOptions(model)}
-          searchable
-          listClassName={styles.modelList}
-          onChoose={(v) => onChange(model.id, v)}
-        />
+        {model.values.length > 0 || !modelRefresh ? (
+          <SelectListbox
+            aria-label={tx(model.name)}
+            value={modelValue}
+            options={configPickerOptions(model)}
+            searchable
+            listClassName={styles.modelList}
+            onChoose={(v) => onChange(model.id, v)}
+          />
+        ) : (
+          <p className={styles.catalogNote} role="status">
+            {modelRefresh?.refreshing ? <T>Loading models…</T> : <T>No models reported by this agent.</T>}
+          </p>
+        )}
+        {modelRefresh && <ModelRefreshFooter key={modelRefresh.retryAtMs} {...modelRefresh} />}
       </Popup>
     </>
+  );
+}
+
+function ModelRefreshFooter({ refreshing, retryAtMs, error, onRefresh }: ModelRefresh) {
+  const tx = useTx();
+  const [now, setNow] = useState(Date.now);
+  const remaining = retryAtMs == null ? 0 : Math.max(0, Math.ceil((retryAtMs - now) / 1000));
+  const coolingDown = remaining > 0;
+  useEffect(() => {
+    if (!coolingDown) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAtMs, coolingDown]);
+  return (
+    <div className={styles.catalogFooter}>
+      {error && (
+        <p className={styles.catalogError} role="alert">
+          {tx`Could not refresh models: ${error}`}
+        </p>
+      )}
+      <button type="button" className={styles.refreshModels} disabled={refreshing || coolingDown} onClick={onRefresh}>
+        {refreshing ? tx("Refreshing…") : coolingDown ? tx`Refresh in ${remaining}s` : tx("Refresh models")}
+      </button>
+    </div>
   );
 }
 

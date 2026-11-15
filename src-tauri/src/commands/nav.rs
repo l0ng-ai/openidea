@@ -115,6 +115,14 @@ pub async fn nav_index_definitions(
     ide_host::ops::nav::nav_index_definitions(&state.host, window.label(), name, from).await
 }
 
+/// Every Python class in the project (attached dependency roots included) and its base names,
+/// for native inheritance gutter markers.
+#[tauri::command]
+#[specta::specta]
+pub async fn nav_inheritance(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<ClassInheritance>> {
+    ide_host::ops::nav::nav_inheritance(&state.host, window.label()).await
+}
+
 /// The existing file or directory a path written in `from` names (`href`, `url()`, a string literal).
 #[tauri::command]
 #[specta::specta]

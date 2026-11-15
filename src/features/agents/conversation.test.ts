@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { fileHref, findAll, findRanges, formatDuration, pathLink, quoteText, withQuote } from "./conversation";
+import {
+  fileHref,
+  findAll,
+  findRanges,
+  formatDuration,
+  isFindRangeShown,
+  pathLink,
+  quoteText,
+  withQuote,
+} from "./conversation";
 
 describe("quoting", () => {
   it("quotes each line and leaves a line to type on", () => {
@@ -83,5 +92,29 @@ describe("finding", () => {
     root.innerHTML = "<p>one <code>two</code> one</p>";
     expect(findRanges(root, "one").map((r) => r.toString())).toEqual(["one", "one"]);
     expect(findRanges(root, "TWO")).toHaveLength(1);
+  });
+  it("skips user-select:none chrome, buttons, svgs and mermaid source, and hides ranges in closed <details>", () => {
+    const root = document.createElement("div");
+    root.innerHTML = [
+      '<details><summary style="user-select: none">Confirming summary</summary><div>hidden confirm body</div></details>',
+      "<details><summary>stop_bash confirm</summary><pre>tool confirm output</pre></details>",
+      "<button>confirm button</button>",
+      "<svg><text>confirm svg</text></svg>",
+      '<div data-mermaid-state="ok"><pre><code>graph TD; confirm</code></pre></div>',
+      "<p>Visible confirm</p>",
+    ].join("");
+    const ranges = findRanges(root, "confirm");
+    expect(ranges.map((r) => r.startContainer.parentElement?.tagName)).toEqual(["DIV", "SUMMARY", "PRE", "P"]);
+
+    // Simulate WebKit's content-visibility: hidden on closed <details>, where getClientRects() stays non-empty.
+    for (const r of ranges) r.getClientRects = () => [new DOMRect(0, 0, 10, 10)] as unknown as DOMRectList;
+    expect(ranges.filter((r) => isFindRangeShown(r, root)).map((r) => r.startContainer.parentElement?.tagName)).toEqual(
+      ["SUMMARY", "P"],
+    );
+
+    for (const d of root.querySelectorAll("details")) d.open = true;
+    expect(ranges.filter((r) => isFindRangeShown(r, root)).map((r) => r.startContainer.parentElement?.tagName)).toEqual(
+      ["DIV", "SUMMARY", "PRE", "P"],
+    );
   });
 });

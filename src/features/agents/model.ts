@@ -107,6 +107,10 @@ export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
 
 export const isBusy = (s: AgentStatus) => s === "running" || s === "starting" || s === "needsInput";
 
+/** Whether `task` runs outside the project root (its own worktree, or an imported subfolder). */
+export const hasTaskTerminal = (task: AgentTask, projectRoot?: string | null) =>
+  task.isolation === "worktree" || (!!projectRoot && task.cwd !== projectRoot);
+
 /** `entries` with `entry` at `index` (appended when `index` is the length; gaps wait for a reload). */
 export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEntry): AgentEntry[] | null {
   if (index > entries.length) return null;

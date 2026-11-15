@@ -17,7 +17,7 @@ name = "kotlin-lsp"
 command = "kotlin-lsp"
 args = ["--stdio"]
 root-markers = ["settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle", "pom.xml"]
-install-hint = "Install JetBrains Kotlin LSP: brew install JetBrains/utils/kotlin-lsp (https://github.com/Kotlin/kotlin-lsp)"
+install-hint = "Install JetBrains Kotlin LSP in Settings › Languages & Frameworks › Language Servers (https://github.com/Kotlin/kotlin-lsp), or with Homebrew: brew install JetBrains/utils/kotlin-lsp"
 
 [[language-servers]]
 name = "kotlin-language-server"

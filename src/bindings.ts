@@ -75,6 +75,11 @@ export const commands = {
 	 *  a window already in LightEdit keeps its files. Returns the effective (global) settings.
 	 */
 	lightEditOpen: (path: string) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open", { path })),
+	/**
+	 *  LightEdit without a file (File › New File from a welcome window); returns
+	 *  the effective (global) settings.
+	 */
+	lightEditOpenUntitled: () => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("light_edit_open_untitled")),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
 	trusted: boolean,
@@ -136,6 +141,8 @@ export const commands = {
 	/**  Streams the project's agent events to this window; returns every task. */
 	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
+	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -199,6 +206,11 @@ export const commands = {
 	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	/**
+	 *  Creates a temporary side conversation of `source`: lives in memory only, never
+	 *  persisted, not listed, and its session starts with the first message sent to it.
+	 */
+	agentCreateEphemeral: (request: NewAgentTask, source: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create_ephemeral", { request, source })),
 	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
 	agentRollback: (task: string, turns: number) => typedError<{
 	text: string,
@@ -323,6 +335,11 @@ export const commands = {
 	 *  editor buffer, so syntax features and language-server requests work in it.
 	 */
 	docOpenVirtual: (uri: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_virtual", { uri })),
+	/**
+	 *  Opens an editable untitled buffer (a new-file tab); it reaches the disk
+	 *  through `doc_save_as`, which turns it into a regular file document.
+	 */
+	docOpenUntitled: (name: string | null) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_open_untitled", { name })),
 	docClose: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_close", { doc })),
 	/**
 	 *  Applies a CodeMirror change set; returns the new version. Rejects with
@@ -330,6 +347,11 @@ export const commands = {
 	 */
 	docEdit: (doc: DocId, baseVersion: number, changes: ChangeSet) => typedError<number, IdeError>(__TAURI_INVOKE("doc_edit", { doc, baseVersion, changes })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
+	/**
+	 *  Save As for an untitled buffer: writes it to `path` and re-keys the buffer
+	 *  (undo history and version are kept; the language is re-detected).
+	 */
+	docSaveAs: (doc: DocId, path: string) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_save_as", { doc, path })),
 	docSaveAll: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_save_all")),
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
@@ -349,6 +371,8 @@ export const commands = {
 	 *  re-parse); large documents get no syntax structure.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
+	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
+	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
 	docFolding: (doc: DocId) => typedError<FoldRange[], IdeError>(__TAURI_INVOKE("doc_folding", { doc })),
 	/**
 	 *  Tree-sitter highlighting for languages the UI has no CodeMirror mode for;
@@ -475,6 +499,11 @@ export const commands = {
 	 *  plus its configured dependencies).
 	 */
 	navIndexDefinitions: (name: string, from: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("nav_index_definitions", { name, from })),
+	/**
+	 *  Every Python class in the project (attached dependency roots included) and its base names,
+	 *  for native inheritance gutter markers.
+	 */
+	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
@@ -598,6 +627,19 @@ export const commands = {
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
 	lspCallHierarchy: (request: RequestId, doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<CallHierarchy, IdeError>(__TAURI_INVOKE("lsp_call_hierarchy", { request, doc, pos, direction })),
+	lspPrepareTypeHierarchy: (doc: DocId, pos: Pos) => typedError<{
+	name: string,
+	kind: SymbolKind,
+	detail: string | null,
+	/**  File path, or the URI of a virtual document (see `uri`). */
+	path: IpcPath,
+	/**  Set for non-`file:` items (library classes). */
+	uri?: string | null,
+	range: Range,
+	selectionRange: Range,
+	/**  Call sites, for call hierarchy. */
+	fromRanges: Range[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_prepare_type_hierarchy", { doc, pos })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	lspServers: () => typedError<ServerInfo[], IdeError>(__TAURI_INVOKE("lsp_servers")),
 	/**  Re-emits the language servers' current diagnostics (the UI loaded after they arrived). */
@@ -666,6 +708,8 @@ export const commands = {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
 } | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options })),
 	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
 	/**  "Restore" of the branch-deleted notification. */
@@ -1031,6 +1075,40 @@ export const commands = {
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
 	/**  The PHP interpreter chosen in Settings › Languages & Frameworks › PHP; `None`: the `php` on `PATH`. */
 	sdkPhpEffective: () => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_php_effective")),
+	/**  The project interpreter when it is a Docker or Compose run target's, with its snapshot. */
+	sdkContainerPython: () => typedError<{
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+} | null, IdeError>(__TAURI_INVOKE("sdk_container_python")),
+	/**  Copies the container's Python libraries again (after the image changed). */
+	sdkContainerPythonRefresh: () => typedError<{
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+} | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**
 	 *  The version of the PHP interpreter `php` and of the Xdebug it loads, run in `cwd` (default: the
 	 *  project root).
@@ -1218,6 +1296,15 @@ export const commands = {
 	debugJsCustomBreakpoints: (session: DebugSessionId, ids: string[], xhr: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_custom_breakpoints", { session, ids, xhr })),
 	/**  The body of a response a debugged page received. */
 	debugJsResponseBody: (session: DebugSessionId, requestId: string) => typedError<JsResponseBody, IdeError>(__TAURI_INVOKE("debug_js_response_body", { session, requestId })),
+	/**
+	 *  The responses a debugged page gets in place of the server's, by a part of the URL; none
+	 *  switches the replacing off.
+	 */
+	debugJsResponseOverrides: (session: DebugSessionId, rules: JsResponseRule[]) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_response_overrides", { session, rules })),
+	/**  Starts recording a debugged page's CPU profile. */
+	debugJsStartProfile: (session: DebugSessionId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_js_start_profile", { session })),
+	/**  Ends the recording: a directory holding the profile as `page.cpuprofile`. */
+	debugJsStopProfile: (session: DebugSessionId) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("debug_js_stop_profile", { session })),
 	/**  Method breakpoints (all files); states aligned with `breakpoints`. */
 	debugSetFunctionBreakpoints: (breakpoints: FunctionBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_function_breakpoints", { breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
@@ -1367,6 +1454,8 @@ export const commands = {
 	pluginFinishOperation: (id: string, status: number | null, stopped: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_finish_operation", { id, status, stopped })),
 	/**  Revalidates a plugin run's executable before debugging, including reruns. */
 	pluginPrepareDebugRun: (config: RunConfig_Deserialize) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("plugin_prepare_debug_run", { config })),
+	/**  Waits for the process an `attach-child` plugin configuration's debugger attaches to. */
+	pluginDebugAttachTarget: (config: string, run: RunId) => typedError<AttachableProcess, IdeError>(__TAURI_INVOKE("plugin_debug_attach_target", { config, run })),
 	/**  Starts only the pinned command recorded for this window's terminal operation. */
 	pluginTerminalSessionSpawn: (operation: string, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("plugin_terminal_session_spawn", { operation, cols, rows, onOutput })),
 	/**  Marks a keyed tab closed before ending its process. */
@@ -1480,11 +1569,15 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
+	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
+	 *  Ends a process OpenIDEA started (a row of the memory breakdown) and its
+	 *  children; its owner (language server, run, terminal) sees it exit. Returns
+	 *  false for a process that isn't ours.
 	 */
-	clearCaches: () => typedError<ClearCachesResult, IdeError>(__TAURI_INVOKE("clear_caches")),
+	endProcess: (pid: number) => typedError<boolean, IdeError>(__TAURI_INVOKE("end_process", { pid })),
 	/**
 	 *  Inspect Code: diagnostics of every file in `scope` that a language server
 	 *  serves. Files stream through `on_event` as they finish; ends with `Done`.
@@ -1726,6 +1819,8 @@ export const commands = {
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
+	/**  The query consoles of data source `id`; `create` adds the next one first. */
+	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
 };
 
 /* Types */
@@ -1801,6 +1896,11 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
+	/**
+	 *  The task runs read-only: it asks before anything, and requests that would change
+	 *  the project are denied (a temporary side conversation).
+	 */
+	readOnly?: boolean,
 };
 
 /**
@@ -1963,6 +2063,8 @@ export type AgentEvent =
 { type: "append"; task: string; subagent: string | null; index: number; from: number; text: string } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 { type: "limits"; provider: string; limits: AgentLimit[] } | 
+/**  A model lookup started or completed, including unsuccessful lookups. */
+{ type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
 { type: "providers" };
 
@@ -2016,6 +2118,17 @@ export type AgentMcpServer_Serialize = {
 	 *  empty means enabled for all agents.
 	 */
 	agents?: string[],
+};
+
+/**  Authoritative choices for new tasks, independent of any running session's settings. */
+export type AgentModelCatalog = {
+	provider: string,
+	config: AgentConfigOption[],
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
+	refreshing: boolean,
+	refreshedAtMs: number | null,
+	retryAtMs: number | null,
+	error: string | null,
 };
 
 export type AgentPermissionOption = {
@@ -2144,6 +2257,8 @@ export type AgentSettings_Deserialize = {
 	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
+	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
+	fitWindowWidth?: boolean,
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2182,6 +2297,8 @@ export type AgentSettings_Serialize = {
 	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
+	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
+	fitWindowWidth: boolean,
 	thinking: ThinkingDisplay,
 	toolCalls: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -2736,7 +2853,7 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
-export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake";
+export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet";
 
 export type BuildTool = "maven" | "gradle";
 
@@ -2865,6 +2982,8 @@ export type CheckoutOptions = {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
 };
 
 /**
@@ -2882,11 +3001,35 @@ export type CheckoutOutcome = { kind: "done" } |
  *  Switched, but restoring the local changes (Smart Checkout) or the rebase stopped
  *  on conflicts in these files.
  */
-{ kind: "conflicts"; files: string[] };
+{ kind: "conflicts"; files: string[] } | 
+/**
+ *  Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+ *  changed; the branch can be worked on there.
+ */
+{ kind: "checkedOutInWorktree"; branch: string; path: string };
 
 export type ChoiceOption = {
 	value: string,
 	label: string,
+};
+
+/**
+ *  A Python class definition and the base names written in its source. The UI builds a
+ *  name → locations index from every class in the project (attached dependency roots
+ *  included) to compute ↑ overrides / ↓ overridden gutter markers without a language
+ *  server's type-hierarchy provider.
+ */
+export type ClassInheritance = {
+	/**  Start of the class definition's selection range (0-based line, UTF-16 column). */
+	path: IpcPath,
+	line: number,
+	col: number,
+	name: string,
+	/**
+	 *  Base names as written in source (bare name, e.g. `AllToAllTokenDispatcher`; a
+	 *  qualified name keeps only its last segment).
+	 */
+	bases: string[],
 };
 
 export type ClassifiedReference = {
@@ -3338,6 +3481,24 @@ export type ConsoleSettings = {
 };
 
 export type ContainerOp = "start" | "stop" | "restart" | "pause" | "unpause" | "kill";
+
+/**  The project interpreter when it is a run target's. */
+export type ContainerPython = {
+	/**  The run target's id. */
+	target: string,
+	/**  Its name; empty when no run target has the id. */
+	name: string,
+	/**  The Python version of the snapshot in use; `None`: no snapshot yet. */
+	version: string | null,
+	/**  The image the snapshot was copied from. */
+	image: string | null,
+	/**  The copied library folders on this machine. */
+	folders: IpcPath[],
+	/**  Packages of the snapshot (read-only). */
+	packages: PythonPackage[],
+	/**  A snapshot is being taken. */
+	updating: boolean,
+};
 
 /**  ContentAction data exchanged with the IDE. */
 export type ContentAction = {
@@ -4018,6 +4179,8 @@ export type DebuggerSettings = {
 	showOnBreakpoint?: boolean,
 	focusAppOnBreakpoint?: boolean,
 	hideOnTermination?: boolean,
+	/**  A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front. */
+	variablesOnBreakpoint?: boolean,
 	breakpointsAnyFile?: boolean,
 	/**  While suspended, hovering the start of a line shows a Run to Cursor button. */
 	runToCursorInlay?: boolean,
@@ -5951,7 +6114,9 @@ cancellable: boolean } |
 /**  Project indexing state changed (dumb mode on/off). */
 { type: "indexState"; indexing: boolean; files: number; symbols: number } | 
 /**  Git status / branch information should be refreshed. */
-{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; status: ServerStatus; message: string | null } | 
+{ type: "vcsChanged"; root: IpcPath } | { type: "languageServer"; server: ServerId; name: string; 
+/**  What the user sees as the server when another program serves in its place. */
+label?: string | null; status: ServerStatus; message: string | null } | 
 /**  A running server lacks a capability; the UI offers the managed tool as a replacement. */
 { type: "languageServerWarning"; name: string; message: string; installTool: string } | 
 /**
@@ -6470,6 +6635,14 @@ export type JsResponseBody = {
 	base64Encoded: boolean,
 	/**  The body was longer than [`RESPONSE_BODY_LIMIT`] and is cut there. */
 	truncated: boolean,
+};
+
+/**  A response given in place of the server's to every request whose URL contains `url_contains`. */
+export type JsResponseRule = {
+	urlContains: string,
+	status: number,
+	contentType: string,
+	body: string,
 };
 
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
@@ -7453,6 +7626,15 @@ export type MergeVersions = {
 	merged: string | null,
 };
 
+/**  What a method body does, for the shapes a check can decide without guessing. */
+export type MethodBody = 
+/**  `pass`, `...`, a docstring, or nothing at all. */
+{ kind: "empty" } | 
+/**  Exactly one `super().name(args)` call, optionally `return`ed. */
+{ kind: "superCall"; returns: boolean; target: string; args: string[] } | 
+/**  Anything else. */
+{ kind: "other" };
+
 /**  Per-function totals (a recursive function's samples count once in `total`). */
 export type MethodStat = {
 	frame: number,
@@ -8396,9 +8578,16 @@ export type ProcessMemory = {
 	label: string,
 	/**  Project, run kind or similar. */
 	detail: string | null,
+	/**  The row's top process (the language server, run or terminal shell). */
+	pid: number,
 	/**  Number of processes counted in this row. */
 	processes: number,
 	bytes: number | null,
+	/**
+	 *  CPU use since the previous measurement, in percent of one core (Activity
+	 *  Monitor's "% CPU"); `None` on the first measurement of every process.
+	 */
+	cpuPercent: number | null,
 };
 
 export type Profile = {
@@ -8662,10 +8851,42 @@ export type PullRequestSummary = {
 /**  Push dialog › Push tags: every tag, or only annotated tags on the pushed commits. */
 export type PushTags = "all" | "currentBranch";
 
+/**  A class definition and the methods it declares. */
+export type PythonClassFacts = {
+	name: string,
+	/**  The class name identifier (selection range). */
+	selection: Range,
+	/**  Base names as written, a qualified name reduced to its last segment. */
+	bases: string[],
+	methods: PythonMethodFacts[],
+};
+
 /**  Python Debugger (debugpy launch options). */
 export type PythonDebuggerSettings = {
 	attachSubprocess?: boolean,
 	gevent?: boolean,
+};
+
+/**  One Python module's classes, in source order. */
+export type PythonFacts = {
+	classes: PythonClassFacts[],
+};
+
+/**  A method definition the inspections can reason about. */
+export type PythonMethodFacts = {
+	name: string,
+	/**  The method name identifier (selection range). */
+	selection: Range,
+	/**
+	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
+	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
+	 */
+	params: string[] | null,
+	/**  Decorated with `abstractmethod` (`abc.abstractmethod` included). */
+	abstractMethod: boolean,
+	/**  Decorated with `override` from `typing` / `typing_extensions`. */
+	overrideDecorated: boolean,
+	body: MethodBody,
 };
 
 export type PythonPackage = {
@@ -8674,7 +8895,10 @@ export type PythonPackage = {
 };
 
 export type PythonSettings = {
-	/**  Project interpreter executable; empty = auto-detect (project venv, else `python3`). */
+	/**
+	 *  Project interpreter executable; empty = auto-detect (project venv, else `python3`);
+	 *  `target:<run-target-id>` = the Python of a Docker or Compose run target.
+	 */
 	interpreter?: string,
 	/**  Activate the interpreter's virtualenv in new terminal sessions. */
 	activateVirtualenv?: boolean,
@@ -9415,6 +9639,8 @@ export type ServerInfo = {
 	status: ServerStatus,
 	/**  OS process of the running instance (for memory attribution). */
 	pid: number | null,
+	/**  What the user sees as the server when another program serves in its place. */
+	label?: string | null,
 };
 
 export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped" | "missing" | 
@@ -9996,7 +10222,9 @@ export type SyntaxErrors = {
 };
 
 /**  Highlight classes sent to the UI, which maps each onto a Lezer tag. */
-export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation" | "parameter";
+export type SyntaxHighlightKind = "keyword" | "string" | "stringSpecial" | "escape" | "regexp" | "atom" | "number" | "constant" | "comment" | "docComment" | "function" | "functionCall" | "builtin" | "type" | "namespace" | "variable" | "selfVariable" | "property" | "attribute" | "macro" | "label" | "tag" | "operator" | "punctuation" | "parameter" | 
+/**  A shell command name (`pgrep`, a script's own function). */
+"command";
 
 /**  Highlighted ranges of a whole document, packed like LSP semantic tokens. */
 export type SyntaxHighlights = {

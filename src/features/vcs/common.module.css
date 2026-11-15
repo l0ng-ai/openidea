@@ -138,21 +138,55 @@
   flex-direction: column;
   padding: 0 14px 14px;
 }
-/* Push dialog: commits above their changed files, split by a draggable divider; the pair fills the body. */
 .pushSplit {
-  flex: 1;
-  min-height: min(540px, 60vh);
+  flex: 1 1 min(540px, 60vh);
+  min-height: 0;
 }
 /* The panel's own `height: 100%` doesn't resolve against a flex-basis height in WebKit: stretch instead. */
 .pushSplit .pushSplitPanel {
   height: auto;
   align-self: stretch;
 }
-.pushSplitPanel > .pushListWrap {
+.pushSides {
+  flex: 1;
   min-height: 0;
-  padding-bottom: 8px;
 }
-/* Push dialogs: the outgoing commits' changed files below the commits, the diff beside them. */
+.pushDiff {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 14px;
+}
+.pushDiffHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding-bottom: 6px;
+  color: var(--fg-subtle);
+}
+.pushDiffPath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pushDiffBody {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.pushSplitPanel > .pushListWrap,
+.pushSplitPanel > .pushTreeWrap {
+  min-height: 0;
+}
+.pushTreeWrap .commitRow[data-idle],
+.pushTreeWrap .commitRow[data-idle] label {
+  color: var(--fg-subtle);
+}
 .pushChanges {
   flex: 1;
   display: flex;
@@ -177,11 +211,19 @@
 .pushGrouping {
   margin-left: auto;
 }
+.pushDetailsSplit {
+  flex: 1;
+  min-height: 0;
+}
+.pushDetailsSplit .pushDetailsPanel {
+  height: auto;
+}
 .pushCommitDetails {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 96px;
   margin: 0 14px 8px;
   padding: 6px 8px;
   overflow: auto;

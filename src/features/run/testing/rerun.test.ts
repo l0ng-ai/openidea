@@ -180,6 +180,23 @@ describe("rerunFailedConfig", () => {
     ).toEqual(["test", "-Dtest=com.a.FooTest#bar+baz,com.a.BarTest"]);
   });
 
+  it("zig: --test-filter per failed test for `zig test`, null for build-based runs", async () => {
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig"]), [
+        ["calc", "adds"],
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "adds", "--test-filter", "subs"]);
+    // Existing filters are replaced, not stacked.
+    expect(
+      (await rerunFailedConfig(cfg("zig", "zig", ["test", "src/calc.zig", "--test-filter", "adds"]), [
+        ["calc", "subs"],
+      ]))!.args,
+    ).toEqual(["test", "src/calc.zig", "--test-filter", "subs"]);
+    // `zig build` forwards no args to the test binary, so a build-based run can't narrow.
+    expect(await rerunFailedConfig(cfg("zig", "zig", ["build", "test"]), [["tally", "subs"]])).toBeNull();
+  });
+
   it("returns null when nothing failed or the framework is unknown", async () => {
     expect(await rerunFailedConfig(cfg("cargo", "cargo", ["test"]), [])).toBeNull();
     expect(await rerunFailedConfig(cfg("make", "make", ["test"]), [["x"]])).toBeNull();

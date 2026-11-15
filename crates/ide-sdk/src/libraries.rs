@@ -254,6 +254,10 @@ fn module_settings(root: &Path, settings: &Settings) -> Settings {
         &mut l.go.gopath,
         &mut l.java.jdk,
     ] {
+        // `target:<id>` names a run target, not a path.
+        if value.trim().starts_with(ide_core::settings::PythonSettings::TARGET_PREFIX) {
+            continue;
+        }
         if let Some(path) = crate::apply::setting_path(root, value) {
             *value = path.to_string_lossy().into_owned();
         }

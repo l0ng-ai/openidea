@@ -87,6 +87,7 @@ import { registerDebugActions } from "../actions";
 import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
 import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
+import { useJsProfile, watchProfiledSessions } from "../js/profile";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
 import { useOverlays } from "../ui/popoverStore";
 import { forgetMemory, selectMemoryClass } from "../memory/memoryState";
@@ -406,6 +407,22 @@ describe("debugger actions (IDEA parity)", () => {
     expect(isActionEnabled(refresh)).toBe(true);
     paused({ status: "terminated", caps: caps({ jvmMemory: true }) });
     expect(isActionEnabled(refresh)).toBe(false);
+  });
+
+  it("offers Start CPU Profile for a live page, and Stop only while the page is recorded", () => {
+    const unwatch = watchProfiledSessions();
+    const start = getAction("debug.startPageProfile")!;
+    const stop = getAction("debug.stopPageProfile")!;
+    const enabled = () => [isActionEnabled(start), isActionEnabled(stop)];
+    paused({ caps: caps({ jsPage: false }) });
+    expect(enabled()).toEqual([false, false]);
+    paused({ status: "running", caps: caps({ jsPage: true }) });
+    expect(enabled()).toEqual([true, false]);
+    useJsProfile.setState({ recording: { 3: true } });
+    expect(enabled()).toEqual([false, true]);
+    paused({ status: "terminated", caps: caps({ jsPage: true }) });
+    expect(enabled()).toEqual([false, false]);
+    unwatch();
   });
 
   it("Show Execution Point reveals the top frame with focus", async () => {

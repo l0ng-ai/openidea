@@ -178,6 +178,47 @@ pub fn container_config(config: &RunConfig, run: &ContainerRun) -> IdeResult<Run
     Ok(out)
 }
 
+/// The docker CLI arguments that run `python -c code` in a new container of the target's
+/// image or service, named `name`. The container is kept when it exits, so `docker cp` can
+/// copy from it while nothing runs; the caller removes it. The image's entrypoint is
+/// skipped (it may wait for other services), as are the service's dependencies.
+pub fn python_probe_args(target: &RunTarget, root: &Path, name: &str, code: &str) -> IdeResult<Vec<String>> {
+    let python = match target.python.trim() {
+        "" => "python3",
+        python => python,
+    };
+    let mut args: Vec<String> = Vec::new();
+    match target.kind {
+        RunTargetKind::Docker => {
+            if target.image.trim().is_empty() {
+                return Err(IdeError::invalid(format!("Run target '{}' has no image", target.name)));
+            }
+            args.push("run".into());
+        }
+        RunTargetKind::Compose => {
+            if target.service.trim().is_empty() {
+                return Err(IdeError::invalid(format!("Run target '{}' has no service", target.name)));
+            }
+            args.push("compose".into());
+            for file in target.compose_files.iter().map(|f| f.trim()).filter(|f| !f.is_empty()) {
+                args.extend(["--file".into(), root.join(file).to_string_lossy().into_owned()]);
+            }
+            args.extend(["run", "--no-deps", "--no-TTY"].map(String::from));
+        }
+        RunTargetKind::Ssh => {
+            return Err(IdeError::invalid(format!("Run target '{}' is not a container", target.name)));
+        }
+    }
+    args.extend(["--name".into(), name.to_owned(), "--label".into(), "openidea.python-probe=true".into()]);
+    args.extend(["--entrypoint".into(), python.to_owned()]);
+    args.push(match target.kind {
+        RunTargetKind::Compose => target.service.trim().to_owned(),
+        _ => target.image.trim().to_owned(),
+    });
+    args.extend(["-c".into(), code.to_owned()]);
+    Ok(args)
+}
+
 /// Project managers whose `run` executes in the project's environment (`uv run python …`).
 const PYTHON_RUNNERS: [&str; 6] = ["uv", "poetry", "pdm", "pipenv", "hatch", "rye"];
 
@@ -427,6 +468,34 @@ mod tests {
 
         let target = RunTarget { kind: RunTargetKind::Compose, name: "c".into(), ..Default::default() };
         assert!(container_config(&c, &run(&target, &none, &none)).unwrap_err().message.contains("no service"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn python_probe_runs_the_interpreter_in_a_kept_container() {
+        let root = Path::new("/work/proj");
+        let target = RunTarget {
+            kind: RunTargetKind::Compose,
+            compose_files: vec!["compose.yaml".into()],
+            service: "web".into(),
+            python: "/venv/bin/python".into(),
+            run_options: "--rm".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            python_probe_args(&target, root, "openidea-python-1", "print(1)").unwrap().join(" "),
+            "compose --file /work/proj/compose.yaml run --no-deps --no-TTY --name openidea-python-1 \
+             --label openidea.python-probe=true --entrypoint /venv/bin/python web -c print(1)"
+        );
+        let target = RunTarget { kind: RunTargetKind::Docker, image: "python:3.12".into(), ..Default::default() };
+        assert_eq!(
+            python_probe_args(&target, root, "p", "x").unwrap().join(" "),
+            "run --name p --label openidea.python-probe=true --entrypoint python3 python:3.12 -c x"
+        );
+        let ssh = RunTarget { name: "box".into(), ..Default::default() };
+        assert!(python_probe_args(&ssh, root, "p", "x").unwrap_err().message.contains("not a container"));
+        let empty = RunTarget { kind: RunTargetKind::Compose, name: "c".into(), ..Default::default() };
+        assert!(python_probe_args(&empty, root, "p", "x").unwrap_err().message.contains("no service"));
     }
 
     /// The container's command line of `c` debugged on `target` (after the image).

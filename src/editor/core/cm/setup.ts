@@ -42,6 +42,7 @@ import { rainbowBrackets } from "./rainbowBrackets";
 import { stickyMaxLines, stickyScroll } from "./stickyScroll";
 import { findExtension } from "./find";
 import { codeLensExtension } from "./codeLens";
+import { iconAreaExtension } from "./iconArea";
 import { renderedDocsExtension } from "./renderedDocs";
 import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapActive } from "./prefs";
 import { commentTokens } from "./languages";
@@ -396,6 +397,7 @@ export function baseExtensions(o: SetupOptions): Extension {
     overviewLane,
     cornerInset,
     codeLensExtension,
+    iconAreaExtension,
     renderedDocsExtension,
     EditorView.contentAttributes.of({
       spellcheck: "false",

@@ -62,9 +62,11 @@ import { isImeKey } from "@/platform/ime";
 import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { setChangesOptions, useChangesOptions } from "./changesOptions";
+import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
 import { selectionIn } from "./selection";
+import { SelectionToolbar } from "./SelectionToolbar";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -78,7 +80,8 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
-import { findRanges, formatDuration, formatSentAt } from "./conversation";
+import { useEffortFocus } from "./effortFocus";
+import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
@@ -97,6 +100,7 @@ import {
   branchLabel,
   entriesKey,
   findSubagent,
+  hasTaskTerminal,
   isBusy,
   providerIcon,
   statusLabel,
@@ -119,6 +123,7 @@ import {
   refreshChanges,
   rollbackChanges,
   scheduleChanges,
+  discardEphemeral,
   editQueued,
   forkTask,
   rerunFrom,
@@ -145,6 +150,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const entries = useAgents((s) => s.entries.get(id));
   // Grouping needs commits of the task's own: local checkouts keep the flat list.
   const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
+  const ephemeral = useAgents((s) => s.ephemeral.has(id));
   const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
   const sinceStart = useAgents((s) => s.changes.get(id));
   const review = useAgents((s) => s.groupedChanges.get(id));
@@ -156,6 +162,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     project?.workspace ? (task?.projectRoot ?? project.root) : null,
   );
   const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null, docked);
+  const changesWidth = useChangesWidthStyle();
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -201,29 +208,65 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
-  const [session] = useState<FocusedSession>(() => ({
-    openFind: () => {
-      setFinding(true);
-      setFindFocus((n) => n + 1);
-    },
-  }));
-  useEffect(
-    () => () => {
-      if (focusedSession() === session) setFocusedSession(null);
-    },
-    [session],
+  const [inputFocus, setInputFocus] = useState(0);
+  const { fitWindowWidth } = useAgentSettings();
+  const sessionRoot = useRef<HTMLDivElement>(null);
+  const canFocusInput = shown && !!task && task.status !== "archived" && !view;
+  const session = useMemo<FocusedSession>(
+    () => ({
+      openFind: () => {
+        setFinding(true);
+        setFindFocus((n) => n + 1);
+      },
+      focusInput: canFocusInput
+        ? () => {
+            if (docked) setChangesOpen(false);
+            setInputFocus((n) => n + 1);
+          }
+        : undefined,
+    }),
+    [canFocusInput, docked, setChangesOpen],
   );
+  useLayoutEffect(() => {
+    if (shown && sessionRoot.current?.contains(document.activeElement)) setFocusedSession(session);
+    return () => {
+      if (focusedSession() === session) setFocusedSession(null);
+    };
+  }, [session, shown]);
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div
-      className={clsx(styles.session, docked && styles.docked)}
-      onFocusCapture={() => setFocusedSession(session)}
+      ref={sessionRoot}
+      className={clsx(
+        styles.session,
+        docked && styles.docked,
+        changesOpen && !docked && styles.withChanges,
+        fitWindowWidth && styles.fitWidth,
+      )}
+      style={changesWidth}
+      onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
           setFocusedSession(null);
         }
       }}
     >
+      {ephemeral && (
+        <div className={styles.sideBanner}>
+          <Icon name="branch" size={13} />
+          <span className={styles.sideName}>
+            <T>Side conversation</T>
+          </span>
+          <span className={styles.sideHint}>
+            <T>Temporary and read-only: closing it discards the conversation and its context.</T>
+          </span>
+          <IconButton
+            icon="close"
+            title="Discard Side Conversation"
+            onClick={() => void discardEphemeral(id).catch(() => undefined)}
+          />
+        </div>
+      )}
       <div className={styles.conversation} hidden={docked && changesOpen}>
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <FoldedContent.Provider value={finding && shown}>
@@ -248,6 +291,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <QuestionCard task={task} entries={entries ?? null} />
             <SessionComposer
               task={task}
+              focusRequest={inputFocus}
+              focusRoot={sessionRoot}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -325,6 +370,7 @@ function SessionStatus({
   changes,
   commits,
   changesOpen,
+  effortAnnouncement,
   onToggleChanges,
 }: {
   task: AgentTask;
@@ -333,6 +379,7 @@ function SessionStatus({
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
   changesOpen: boolean;
+  effortAnnouncement: string | null;
   onToggleChanges: () => void;
 }) {
   const tx = useTx();
@@ -387,6 +434,9 @@ function SessionStatus({
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
+      <span className={styles.state} role="status" aria-live="polite" aria-atomic="true">
+        {effortAnnouncement ? tx("Effort: {level}").replace("{level}", effortAnnouncement) : ""}
+      </span>
       {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
         {(!!changes?.length || !!commits.length) && (
@@ -417,7 +467,7 @@ function SessionStatus({
         )}
         <span className={styles.statusMeters}>
           <Meters task={task} entries={entries} />
-          <StatusActions task={task} />
+          {hasTaskTerminal(task, projectRoot) && <StatusActions task={task} />}
         </span>
       </span>
     </div>
@@ -544,10 +594,15 @@ function SubagentBar({
  * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
  * settles; Find in Conversation (`enabled` false) needs every row laid out.
  */
-function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
-  // The width the marked rows were laid out at.
-  const width = useRef(0);
-  useEffect(() => {
+function useOffscreenRows(
+  ref: RefObject<HTMLElement | null>,
+  visible: boolean,
+  enabled: boolean,
+  fitWindowWidth: boolean,
+) {
+  // The container width and column mode the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean } | null>(null);
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const unmark = () => {
@@ -555,10 +610,26 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
         row.removeAttribute("data-measured");
       }
     };
-    if (!enabled) return unmark();
+    if (!enabled) {
+      measured.current = null;
+      unmark();
+      return;
+    }
     if (!visible) return;
+    if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
+    measured.current = { width: el.clientWidth, fitWindowWidth };
+    unmark();
+  }, [ref, visible, enabled, fitWindowWidth]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled || !visible) return;
     let frame = 0;
     let timer: number | undefined;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
     const mark = () => {
       cancelAnimationFrame(frame);
       // The next frame lays the new rows out (and remembers their size); mark them after it.
@@ -571,8 +642,8 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       });
     };
     const remeasure = () => {
-      if (el.clientWidth === width.current) return;
-      width.current = el.clientWidth;
+      if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
+      measured.current = { width: el.clientWidth, fitWindowWidth };
       unmark();
     };
     remeasure();
@@ -593,7 +664,7 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled]);
+  }, [ref, visible, enabled, fitWindowWidth]);
 }
 
 interface StreamProps {
@@ -715,7 +786,8 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
-  useOffscreenRows(ref, visible, !finding);
+  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -824,7 +896,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
-  const { foldTurns, toolCalls } = useAgentSettings();
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");
@@ -1005,6 +1076,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
+          <SelectionToolbar streamRef={ref} task={task} subagent={!!subagent} />
         </div>
       </RevealFold.Provider>
     </OpenFolds.Provider>
@@ -1070,14 +1142,9 @@ interface RangeSet {
   clear(): void;
   add(range: Range): void;
 }
-const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
-const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
-
-/**
- * Sets the ranges of highlight `name`. One registered highlight per name, changed in
- * place: WebKit doesn't repaint where a replaced highlight object was.
- */
 function setHighlight(name: string, ranges: Range[]) {
+  const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
+  const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
   if (!highlights || !HighlightCtor) return;
   let set = highlights.get(name);
   if (!set) {
@@ -1153,12 +1220,15 @@ function FindBar({
     return () => stream?.removeEventListener("toggle", toggled, true);
   }, [streamRef]);
   useEffect(() => {
-    // Only rendered matches: WebKit paints those in collapsed <details> over the text next to them.
-    const visible = (r: Range) => r.getClientRects().length > 0;
+    const stream = streamRef.current;
+    if (!stream) return;
+    // Only rendered selectable matches outside closed <details>: WebKit paints unrendered
+    // or user-select:none ranges in CSS.highlights over the next selectable row instead.
+    const visible = (r: Range) => isFindRangeShown(r, stream);
     const current = index >= 0 ? ranges[index]! : null;
     setHighlight("agent-find", ranges.filter(visible));
     setHighlight("agent-find-current", current && visible(current) ? [current] : []);
-  }, [ranges, index, shown]);
+  }, [ranges, index, shown, streamRef]);
   useEffect(
     () => () => {
       setHighlight("agent-find", []);
@@ -2680,6 +2750,8 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 
 function SessionComposer({
   task,
+  focusRequest,
+  focusRoot,
   entries,
   head,
   changes,
@@ -2689,6 +2761,8 @@ function SessionComposer({
   onOpenSubagent,
 }: {
   task: AgentTask;
+  focusRequest: number;
+  focusRoot: RefObject<HTMLDivElement | null>;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2736,6 +2810,8 @@ function SessionComposer({
         body: String(e),
       }),
     );
+  const shown = useEditorShown();
+  const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
     <div className={styles.composerArea}>
       <SessionStatus
@@ -2746,6 +2822,7 @@ function SessionComposer({
         commits={commits}
         changesOpen={changesOpen}
         onToggleChanges={onToggleChanges}
+        effortAnnouncement={effortAnnouncement}
       />
       {task.status === "archived" && (
         <div className={styles.banner}>
@@ -2766,6 +2843,7 @@ function SessionComposer({
       </Tray>
       <Composer
         id={task.id}
+        focusRequest={focusRequest}
         placeholder={
           !busy
             ? "Reply to the agent"
@@ -2906,15 +2984,18 @@ function useChangesOpen(
     open: docked ? false : loadChangesOpen()[task],
   }));
   const chosen = state.task === task ? state.open : docked ? false : loadChangesOpen()[task];
-  const set = (open: boolean) => {
-    setState({ task, open });
-    if (docked) return;
-    try {
-      globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
-    } catch {
-      /* storage unavailable */
-    }
-  };
+  const set = useCallback(
+    (open: boolean) => {
+      setState({ task, open });
+      if (docked) return;
+      try {
+        globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [task, docked],
+  );
   return [chosen ?? (changes?.length ?? 0) > 0, set];
 }
 
@@ -3131,6 +3212,7 @@ function ChangesPane({
   };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
+      {!docked && <ChangesResizer />}
       <div className={styles.changesHeader}>
         {docked && <IconButton icon="arrow-left" title="Back to conversation" onClick={onHide} />}
         <span className={styles.changesTitle}>

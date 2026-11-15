@@ -249,6 +249,21 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
     case "go":
       args = goArgs(config.args, paths, config.params?.scope === "file" ? config.params.target : undefined);
       break;
+    case "zig": {
+      // Only a standalone `zig test <file>` can filter: `zig build` forwards no args to the test binary.
+      const file = config.args[0] === "test" ? config.args[1] : undefined;
+      const names = unique(paths.map((p) => p[p.length - 1]!).filter(Boolean));
+      args =
+        file && names.length
+          ? [
+              config.args[0]!,
+              file,
+              ...dropFlag(config.args.slice(2), ["--test-filter"]),
+              ...names.flatMap((n) => ["--test-filter", n]),
+            ]
+          : null;
+      break;
+    }
     case "jvm":
       args = jvmArgs(config, paths);
       break;

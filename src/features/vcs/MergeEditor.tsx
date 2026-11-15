@@ -15,6 +15,7 @@ import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
 import { languageFor, viewerBase } from "./cm";
+import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { syncMergeScroll } from "./mergeScroll";
@@ -91,6 +92,10 @@ const writeAutoApply = (on: boolean) => {
     // The choice then lasts only until the editor closes.
   }
 };
+
+// Each side against the base is compared line by line, as in the diff viewer. The default diff
+// gives up on long files and marks the whole file as one changed block.
+const SIDE_DIFF = ideaDiffConfig("none", "words");
 
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
@@ -176,7 +181,9 @@ export function MergeEditor({ input }: { input: EditorInput }) {
       EditorView.updateListener.of((u) => {
         if (u.selectionSet) refreshMergeActions(actionHost);
       }),
-      state.base !== null ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true }) : [],
+      state.base !== null
+        ? unifiedMergeView({ original: state.base, mergeControls: false, gutter: true, diffConfig: SIDE_DIFF })
+        : [],
       sideControls(which, controls),
       mergeStripe(which),
       mergeTheme,

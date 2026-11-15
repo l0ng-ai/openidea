@@ -146,6 +146,9 @@ impl Handler for MockHandler {
                 if let Some(gate) = gate {
                     gate.hold();
                 }
+                if let Some(error) = s.errors.lock().get("initialize").cloned() {
+                    return Err(error);
+                }
                 Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
             }
             "shutdown" => Ok(Value::Null),
@@ -268,6 +271,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }
@@ -292,37 +296,48 @@ fn harness_configured(
     servers: &[(&str, Value)],
     adjust: impl Fn(&mut LanguageServerConfig),
 ) -> Harness {
+    harness_languages(&[(lang_id, ext, servers)], adjust)
+}
+
+/// A language as `(id, extension, servers)`.
+type MockLanguage<'a> = (&'a str, &'a str, &'a [(&'a str, Value)]);
+
+/// Several languages; documents open as the first.
+fn harness_languages(languages: &[MockLanguage<'_>], adjust: impl Fn(&mut LanguageServerConfig)) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     // Edits and references report canonical paths.
     let root = dunce::canonicalize(dir.path()).unwrap();
-    let lang = LanguageConfig {
-        id: LanguageId::new(lang_id),
-        name: "Mock".into(),
-        extensions: vec![ext.into()],
-        filenames: vec![],
-        first_line: None,
-        line_comment: None,
-        block_comment: None,
-        indent: None,
-        ui_mode: None,
-        framework_ui_modes: Vec::new(),
-        framework_files: Vec::new(),
-        formatter: None,
-        scratch_template: None,
-        tree_sitter: None,
-        language_servers: servers
-            .iter()
-            .map(|(n, _)| {
-                let mut cfg = server_cfg(n);
-                adjust(&mut cfg);
-                cfg
-            })
-            .collect(),
-        debugger: None,
-    };
-    let registry = Arc::new(LanguageRegistry::from_configs(vec![lang]));
+    let configs = languages
+        .iter()
+        .map(|(lang_id, ext, servers)| LanguageConfig {
+            id: LanguageId::new(*lang_id),
+            name: "Mock".into(),
+            extensions: vec![ext.to_string()],
+            filenames: vec![],
+            first_line: None,
+            line_comment: None,
+            block_comment: None,
+            indent: None,
+            ui_mode: None,
+            framework_ui_modes: Vec::new(),
+            framework_files: Vec::new(),
+            formatter: None,
+            scratch_template: None,
+            tree_sitter: None,
+            language_servers: servers
+                .iter()
+                .map(|(n, _)| {
+                    let mut cfg = server_cfg(n);
+                    adjust(&mut cfg);
+                    cfg
+                })
+                .collect(),
+            debugger: None,
+        })
+        .collect();
+    let registry = Arc::new(LanguageRegistry::from_configs(configs));
     let launcher = Arc::new(MockLauncher::default());
-    for (name, caps) in servers {
+    for (name, caps) in languages.iter().flat_map(|(_, _, servers)| servers.iter()) {
         *launcher.state(name).caps.lock() = caps.clone();
     }
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -331,7 +346,7 @@ fn harness_configured(
         Arc::new(move |e: IdeEvent| events.lock().push(e))
     };
     let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
-    Harness { _dir: dir, root, mgr, launcher, events, lang: LanguageId::new(lang_id) }
+    Harness { _dir: dir, root, mgr, launcher, events, lang: LanguageId::new(languages[0].0) }
 }
 
 impl Harness {
@@ -2072,6 +2087,29 @@ async fn crash_restarts_and_reopens_documents() {
     assert_eq!(hover.contents.value, "hi");
 }
 
+/// A restart during a long start (a project import) returns when the instance is up and
+/// running, and does not hold up `reconfigure` and `shutdown_all` meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_does_not_hold_the_reconfigure_lock_while_the_server_starts() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let gate = Arc::new(Gate::default());
+    *s.initialize_gate.lock() = Some(gate.clone());
+    let id = h.mgr.servers()[0].id;
+    let restart = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.restart(id).await }
+    });
+    eventually(|| gate.entered()).await;
+    let reconfigured = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
+    gate.open();
+    reconfigured.expect("a restart still waiting for the server to start must not block reconfigure");
+    restart.await.unwrap().unwrap();
+    assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -2097,6 +2135,118 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     h.mgr.restart(id).await.unwrap();
     assert_eq!(s.launches.load(Ordering::SeqCst), 5);
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
+}
+
+/// One malformed diagnostic costs only itself, not the file's other problems.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_diagnostic_does_not_drop_the_others() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (_, path) = h.open("a.mk", "one");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+    h.launcher
+        .state("mock")
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri, "diagnostics": [
+                { "range": range, "message": "first" },
+                { "message": "no range" },
+                { "range": range, "message": 7 },
+                { "range": range, "message": "last" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| match e {
+            IdeEvent::Diagnostics { items, .. } => {
+                items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>() == ["first", "last"]
+            }
+            _ => false,
+        })
+    })
+    .await;
+}
+
+/// The `initialize` error is the crash report's reason, not "terminated unexpectedly", and
+/// a server that never gets past `initialize` gives up like any other crash loop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_initialize_is_reported_with_its_reason_and_gives_up() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    s.errors.lock().insert("initialize".into(), (-32603, "no workspace".into()));
+    h.open("a.mk", "x");
+    let count = |status| h.statuses("mock").iter().filter(|s| **s == status).count();
+    eventually(|| count(ServerStatus::Crashed) == 4).await;
+    let messages: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::LanguageServer { status: ServerStatus::Crashed, message, .. } => message.clone(),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        messages[0].contains("failed to start: initialize failed (server error -32603: no workspace)"),
+        "{messages:?}"
+    );
+    assert!(messages[0].ends_with("Restarting…"));
+    assert!(messages[3].ends_with("restart it manually."), "{messages:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 4, "initial start + 3 restarts");
+}
+
+/// The client tells servers it retries semantic tokens, inlay hints and code lens that they
+/// withdrew with `ContentModified` (`staleRequestSupport`), so it must.
+#[tokio::test(flavor = "multi_thread")]
+async fn withdrawn_editor_decoration_requests_are_asked_again() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "let x = 1");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+    let cases = [
+        ("textDocument/semanticTokens/full", json!({ "data": [0, 0, 1, 0, 0] })),
+        ("textDocument/inlayHint", json!([{ "position": {"line":0,"character":0}, "label": "x" }])),
+        ("textDocument/codeLens", json!([{ "range": range, "command": { "title": "t", "command": "c" } }])),
+    ];
+    for (method, answer) in cases {
+        s.errors.lock().insert(method.into(), (-32801, "content modified".into()));
+        let mgr = h.mgr.clone();
+        let request = tokio::spawn(async move {
+            match method {
+                "textDocument/semanticTokens/full" => mgr.semantic_tokens(doc).await.map(|r| r.is_some()),
+                "textDocument/inlayHint" => {
+                    mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 9))).await.map(|v| v.len() == 1)
+                }
+                _ => mgr.code_lens(doc).await.map(|v| v.len() == 1),
+            }
+        });
+        eventually(|| !s.requested(method).is_empty()).await;
+        s.errors.lock().remove(method);
+        s.respond(method, answer);
+        let answered = tokio::time::timeout(Duration::from_secs(5), request).await.unwrap().unwrap();
+        assert!(answered.unwrap_or(false), "{method} was not asked again");
+        assert_eq!(s.requested(method).len(), 2, "{method}");
+    }
+}
+
+/// A server disabled in settings while its crash backoff is still sleeping stays gone: the
+/// pending restart must not bring it back as a process nothing lists or stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_disabled_during_its_crash_backoff_does_not_restart() {
+    let h = harness(&[("mock", incremental_caps()), ("other", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "other").cloned().collect()));
+    h.mgr.reconfigure().await;
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart after the server was dropped");
 }
 
 /// The whole workspace root deleted: the server can never start again
@@ -2808,6 +2958,63 @@ async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn library_classes_without_sources_open_decompiled_by_a_running_jdtls() {
+    use std::io::Write;
+    let repo = tempfile::tempdir().unwrap();
+    let jar = dunce::canonicalize(repo.path()).unwrap().join("acme/lib/1.0/lib-1.0.jar");
+    std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+    zip.start_file("acme/Thing.class", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"\0").unwrap();
+    zip.finish().unwrap();
+    let class = format!("jar://{}!/acme/Thing.class", uri_of(&jar).trim_start_matches("file://"));
+    let escaped = jar.to_string_lossy().replace('/', "%5C/");
+    let jdt = format!("jdt://contents/lib-1.0.jar/acme/Thing.class?=app/{escaped}%3Cacme%28Thing.class");
+    let decompiled =
+        "package acme;\n\npublic class Thing {\n   public void run() {\n      System.out.println();\n   }\n}\n";
+
+    let mut kotlin = incremental_caps();
+    kotlin["executeCommandProvider"] = json!({ "commands": ["decompile"] });
+    let mut java = incremental_caps();
+    java["workspaceSymbolProvider"] = json!(true);
+    let h =
+        harness_languages(&[("kotlin", "kt", &[("kotlin-lsp", kotlin)]), ("java", "java", &[("jdtls", java)])], |_| {});
+    let (doc, _) = h.open("Main.kt", "val thing = Thing()\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let k = h.launcher.state("kotlin-lsp");
+    k.respond(
+        "textDocument/definition",
+        json!({ "uri": class, "range": {"start":{"line":0,"character":6},"end":{"line":0,"character":11}} }),
+    );
+    let r = json!({"start":{"line":2,"character":13},"end":{"line":2,"character":18}});
+
+    // jdtls not running: the Kotlin server's own target and decompiler.
+    let defs = h.mgr.goto(doc, Pos::new(0, 14), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(class.as_str()));
+
+    let path = h.root.join("Sample.java");
+    std::fs::write(&path, "class Sample {}").unwrap();
+    h.mgr.did_open(DocId::next(), &path, &LanguageId::new("java"), 1, "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let j = h.launcher.state("jdtls");
+    j.respond(
+        "workspace/symbol",
+        json!([{ "name": "Thing", "kind": 5, "containerName": "acme", "location": { "uri": jdt, "range": r } }]),
+    );
+    j.respond("java/classFileContents", json!(decompiled));
+
+    let defs = h.mgr.goto(doc, Pos::new(0, 14), GotoKind::Definition).await.unwrap();
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: jdt.clone().into(), range: rng(2, 13, 2, 18), uri: Some(jdt.clone()) }]
+    );
+    assert_eq!(j.requested("workspace/symbol")[0]["query"], "acme.Thing");
+    let vd = h.mgr.virtual_document(&jdt).await.unwrap();
+    assert_eq!(vd.text, decompiled);
+    assert!(k.requested("workspace/executeCommand").is_empty(), "the Kotlin stub is not asked for");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn alternative_java_server_uses_lsp_without_jdt_commands() {
     let h = harness_for("java", "java", &[("kmp-lsp", incremental_caps())], &[]);
     let (doc, path) = h.open("Sample.java", "class Sample {}");
@@ -2994,6 +3201,49 @@ async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     let (_, other) = h.open("b.mk", "y");
     let other = uri_of(&other);
     eventually(|| h.launcher.state("alt").docs.lock().contains_key(&other)).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+}
+
+/// A server that is installed but cannot run (crashed for good, or its configuration
+/// can't launch it) hides its fallbacks no longer than one that is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn fallback_servers_take_over_from_a_preferred_one_that_crashed_for_good() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    let (doc, path) = h.open("a.mk", "x");
+    let main = h.launcher.state("main");
+    let count = |status| h.statuses("main").iter().filter(|s| **s == status).count();
+    for n in 1..=4 {
+        eventually(|| count(ServerStatus::Ready) == n).await;
+        // Restarting after a crash is not giving up: the fallback stays away.
+        assert!(h.statuses("alt").is_empty(), "alt started after crash {}", n - 1);
+        main.peer().kill();
+        eventually(|| count(ServerStatus::Crashed) == n).await;
+    }
+    h.wait_status("alt", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+
+    // Restarting the preferred one by hand gives the documents back to it.
+    let id = h.mgr.servers().into_iter().find(|s| s.name == "main").unwrap().id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| h.removed("alt")).await;
+    assert_eq!(h.mgr.servers().iter().filter(|s| s.name == "alt").count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fallback_servers_take_over_from_a_preferred_one_that_cannot_be_launched() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    h.mgr.set_config_hook(Box::new(|cfg, _| {
+        if cfg.name == "main" {
+            cfg.launch_error = Some("needs JDK 21".into());
+        }
+    }));
+    let (doc, path) = h.open("a.mk", "x");
+    h.wait_status("main", ServerStatus::Misconfigured).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
     assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
 }
 

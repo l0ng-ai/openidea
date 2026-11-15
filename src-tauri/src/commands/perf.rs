@@ -5,9 +5,10 @@ use crate::state::AppState;
 use ide_core::IdeResult;
 use ide_core::event::ServerStatus;
 use ide_language::SyntaxCacheStats;
-use ide_workspace::memory::{self, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
+use ide_workspace::memory::{self, CpuSampler, MemoryCategory, MemoryRoot, ProcessMemory, ProcessTable};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, State, Window};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
@@ -54,6 +55,9 @@ pub struct AppMetrics {
 fn ms(d: std::time::Duration) -> f64 {
     d.as_secs_f64() * 1000.0
 }
+
+/// CPU time of every measured process at the previous `app_metrics` call, shared by all windows.
+static CPU: LazyLock<Mutex<CpuSampler>> = LazyLock::new(Default::default);
 
 /// Snapshot of process memory and subsystem sizes, summed over all projects.
 /// Async: the process walk runs on the blocking pool, not the main thread.
@@ -129,7 +133,9 @@ pub async fn app_metrics(app: AppHandle, state: State<'_, AppState>) -> IdeResul
                     .map(|(pid, label)| openidea_root(pid, label.into(), None)),
             );
         }
-        Ok(memory::attribute(&table, me, &roots, memory::footprint_bytes))
+        let mut cpu = CPU.lock().unwrap_or_else(|e| e.into_inner());
+        cpu.retain(&table);
+        Ok(memory::attribute(&table, me, &roots, memory::footprint_bytes, |pid| cpu.percent(pid)))
     })
     .await?;
     Ok(m)
@@ -219,6 +225,15 @@ pub struct ClearCachesResult {
 
 /// "Clear caches": drops syntax trees and EditorConfig files of the window's
 /// project, shrinks the in-memory index and compacts its on-disk cache.
+/// Ends a process OpenIDEA started (a row of the memory breakdown) and its
+/// children; its owner (language server, run, terminal) sees it exit. Returns
+/// false for a process that isn't ours.
+#[tauri::command]
+#[specta::specta]
+pub async fn end_process(pid: u32) -> IdeResult<bool> {
+    blocking(move || Ok(memory::end_process_tree(std::process::id(), pid, std::time::Duration::from_secs(3)))).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn clear_caches(window: Window, state: State<'_, AppState>) -> IdeResult<ClearCachesResult> {

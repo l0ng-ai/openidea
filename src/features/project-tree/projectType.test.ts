@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { hasIcon } from "@/ui/icons";
-import { detectProjectType, isProjectMarker, PROJECT_TYPES } from "./projectType";
+import { detectProjectType, isProjectMarker, PROJECT_TYPES } from "@/platform/projectType";
 
 describe("project types", () => {
   it.each([
