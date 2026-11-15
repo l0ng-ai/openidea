@@ -52,6 +52,8 @@ pub enum SdkKind {
     /// Maven homes.
     Maven,
     Ruby,
+    /// Zig toolchain directories.
+    Zig,
 }
 
 /// One installed interpreter / toolchain.

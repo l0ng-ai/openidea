@@ -100,6 +100,7 @@ const UNTRANSLATED = new Set<string>([
   "GitHub",
   "PHPStan",
   "Xdebug",
+  "Zig",
   // Resource kinds of a browser's network panel
   "Fetch/XHR",
   "JS",

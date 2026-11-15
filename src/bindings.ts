@@ -9627,7 +9627,9 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven" | "ruby";
+"maven" | "ruby" | 
+/**  Zig toolchain directories. */
+"zig";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
