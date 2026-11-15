@@ -44,7 +44,7 @@
 .commits {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .commit {
   display: flex;
@@ -65,7 +65,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: calc(42em + 32px);
   padding: 16px 10px;
   text-align: center;
@@ -84,7 +84,7 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .composer {
   padding: 10px 16px;

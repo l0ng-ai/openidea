@@ -47,7 +47,7 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding-right: 8px;
   border-radius: var(--radius-selection, 5px);
   color: var(--fg-strong);
@@ -144,7 +144,7 @@
   z-index: var(--z-panel);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 26px;
   max-width: calc(100% - 16px);
   padding: 0 10px 0 8px;
@@ -161,7 +161,7 @@
   top: auto;
   bottom: calc(100% + 2px);
   left: 6px;
-  gap: 4px;
+  gap: var(--space-1);
   height: 28px;
   min-width: 160px;
   padding: 0 2px 0 8px;

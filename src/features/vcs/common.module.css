@@ -1,7 +1,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 14px;
 }
 .fieldLabel {
@@ -25,7 +25,7 @@
 .radioRow {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 4px 0;
   color: var(--fg);
   cursor: default;
@@ -37,7 +37,7 @@
 .radioText {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .fileList {
   max-height: 260px;
@@ -50,7 +50,7 @@
   height: var(--h-row);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 8px;
   white-space: nowrap;
   overflow: hidden;
@@ -80,7 +80,7 @@
   height: var(--h-row);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 8px;
   white-space: nowrap;
 }
@@ -161,7 +161,7 @@
 .pushDiffHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 24px;
   padding-bottom: 6px;
   color: var(--fg-subtle);
@@ -203,7 +203,7 @@
 .pushChangesTitle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 24px;
   padding: 0 14px 6px;
   color: var(--fg-subtle);
@@ -223,7 +223,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 0 14px 8px;
   padding: 6px 8px;
   overflow: auto;
@@ -259,7 +259,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px 10px;
+  gap: var(--space-0-5) 10px;
   min-height: 28px;
   padding: 4px 10px;
   border-bottom: 1px solid var(--border);
@@ -305,7 +305,7 @@
   min-height: var(--h-row);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 2px 6px;
   white-space: nowrap;
 }
@@ -370,7 +370,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .targetIcon {
   flex: none;
@@ -389,7 +389,7 @@
   --h-control: var(--h-control-small);
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   font-size: var(--fs-small);
 }
@@ -416,19 +416,19 @@
 .fieldRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .optionGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
 }
 /* Manage Remotes / Worktrees lists. */
 .manageBar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .manageRow {
   width: 100%;
@@ -511,7 +511,7 @@
   flex: 1;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-muted);
 }
 .comparisonWindowBody {
@@ -534,7 +534,7 @@
   display: flex;
   justify-content: flex-end;
   flex: none;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 12px 16px;
 }
 .comparison {
@@ -568,7 +568,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 6px 14px;
 }
 .compareToolbar > input {

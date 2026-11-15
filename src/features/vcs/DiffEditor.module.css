@@ -13,7 +13,7 @@
   height: var(--h-header);
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
   border-bottom: 1px solid var(--border);
 }
@@ -61,7 +61,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -332,7 +332,7 @@
 .notes {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 4px 8px 6px 8px;
   padding: 6px 10px;
   border: 1px solid var(--border-strong);
@@ -349,7 +349,7 @@
 }
 .noteHead {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: var(--fs-small);
   color: var(--fg-subtle);
 }

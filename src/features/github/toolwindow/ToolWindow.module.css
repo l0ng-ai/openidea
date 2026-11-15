@@ -36,7 +36,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 100%;
   color: var(--fg-secondary);
 }
@@ -61,13 +61,13 @@
 .selector {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px;
 }
 .selectorRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .error {
   color: var(--danger);
@@ -79,7 +79,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 26px;
   padding: 0 6px 0 10px;
   border-bottom: 1px solid var(--border);
@@ -121,12 +121,12 @@
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .timelineStub {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   max-width: 720px;
   text-align: left;

@@ -10,7 +10,7 @@
 .sectionTitle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 22px;
   margin-bottom: 6px;
   color: var(--fg-strong);
@@ -50,7 +50,7 @@
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
-  column-gap: 8px;
+  column-gap: var(--space-2);
   min-height: 28px;
   padding: 2px 6px;
   margin: 0 -6px;
@@ -61,7 +61,7 @@
 }
 .stacked {
   grid-template-columns: minmax(0, 1fr);
-  row-gap: 6px;
+  row-gap: var(--space-1-5);
   align-items: start;
   padding-top: 4px;
   padding-bottom: 4px;
@@ -84,7 +84,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   min-height: var(--h-field);
 }
@@ -113,7 +113,7 @@
 .number {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .numberInput {
   width: 64px;
@@ -139,7 +139,7 @@
 .swatches {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .swatch {
   position: relative;
@@ -198,7 +198,7 @@
 }
 .listToolbar {
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: 28px;
   align-items: center;
   padding: 0 4px;

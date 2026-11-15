@@ -2,7 +2,7 @@
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 100%;
   height: 20px;
   padding: 0 6px 0 4px;
@@ -126,7 +126,7 @@
 .cardHead {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 10px;
 }
 .cardPath {
@@ -201,7 +201,7 @@
 .codeHead {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 26px;
   padding: 0 4px 0 8px;
   border-bottom: 1px solid var(--border);
