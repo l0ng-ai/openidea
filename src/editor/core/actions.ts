@@ -75,7 +75,7 @@ import { resetAllEditorsFontZoom, stepAllEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
-import { notifications } from "@/workbench/contributions";
+import { menuGroupItems, notifications } from "@/workbench/contributions";
 import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
@@ -529,7 +529,29 @@ function copyReference(reference: Promise<string>) {
 
 function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
   const path = slot.model.path;
-  const line = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const { doc, selection } = view.state;
+  const line = doc.lineAt(selection.main.head).number;
+  const { from, to } = selection.main;
+  // The selected lines, leaving out the one a selection ends at the start of.
+  const first = doc.lineAt(from).number;
+  const last = Math.max(first, doc.lineAt(to).number - (to > from && doc.lineAt(to).from === to ? 1 : 0));
+  const contributed = menuGroupItems("copyPath", {
+    paths: [path],
+    line: first - 1,
+    endLine: last > first ? last - 1 : undefined,
+  }).flatMap((item) =>
+    (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
+      ? [
+          {
+            id: item.id,
+            label: item.verbatim ? item.label : tx(item.label),
+            preview: item.preview,
+            shortcut: shortcutLabel(item.id),
+            run: item.run,
+          },
+        ]
+      : [],
+  );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
     { id: "project.copyFileName", label: "File Name", value: pathToCopy("name", path) },
@@ -557,6 +579,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
             void executeAction(f.id, f.id === "editor.copyPathWithLineNumber" ? f.value : path);
           },
         })),
+      ...contributed,
       {
         id: "editor.copyReference",
         label: tx("Reference"),
