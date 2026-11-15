@@ -1206,6 +1206,8 @@ export function projectViewRoots(map: ReadonlyMap<string, ProjectViewRootContrib
 // `selectIn` is the Select In chooser (⌥F1): targets for a file besides the project view.
 // `new` is the New popup / New › submenu (IDEA's NewGroup): file kinds a feature creates
 // in `paths[0]`, the target directory (features/templates: file templates, http-client: HTTP Request).
+// `copyPath` is the Copy Path/Reference… chooser: more things to copy for a file (features/vcs: its
+// link on the Git remote), each item's `preview` the copied text.
 
 export type ContextMenuId =
   | "editor"
@@ -1217,7 +1219,8 @@ export type ContextMenuId =
   | "openIn"
   | "stopProcess"
   | "selectIn"
-  | "new";
+  | "new"
+  | "copyPath";
 
 /**
  * Entries of open menu slots: the native main menu's (src-tauri/src/menu.rs
@@ -1257,6 +1260,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** Copy Path/Reference… in the editor: the selection's last line, when it spans several. */
+  endLine?: number;
   /** Zero-based UTF-16 column for problem/search result commands. */
   column?: number;
   /** The tab's input, when the menu is for an editor tab without a path. */

@@ -100,6 +100,25 @@ describe("project view context menu", () => {
     }
   });
 
+  it("lists contributed links in Copy Path/Reference…", () => {
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => [
+          { label: `Link ${ctx.paths.join()} ${ctx.dirs?.join()}`, verbatim: true, run: () => undefined },
+        ],
+      }),
+    );
+    expect(sub(contextMenuItems([node("/p/src", true)]), "Copy Path/Reference…")).toEqual([
+      "Absolute Path",
+      "File Name",
+      "Path From Content Root",
+      "-",
+      "Link /p/src true",
+    ]);
+  });
+
   it("follows IDEA's order for a file", () => {
     const items = contextMenuItems([node(`${ROOT}/src/a.py`)]);
     expect(labels(items)).toEqual([
