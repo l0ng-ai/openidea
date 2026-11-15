@@ -743,7 +743,7 @@ export function ZigPage() {
           directory
           browseTitle="Select Zig Directory"
           aria-label="Zig toolchain"
-          hint="Zig whose standard library and build.zig.zon packages appear under External Libraries; the zig build run and test configurations use it too. ZLS must match this Zig version. PATH, Homebrew, zvm and mise / asdf installs are detected."
+          hint="Zig whose standard library and build.zig.zon packages appear under External Libraries. ZLS must match this Zig version. PATH, Homebrew, zvm and mise / asdf installs are detected."
         />
       </Section>
     </div>
