@@ -4899,6 +4899,8 @@ export type EditorConfigProps = {
 export type EditorGeneralSettings = {
 	/**  Change font size with ⌘ + mouse wheel. */
 	wheelZoom?: boolean,
+	/**  Scope of ⌘ + mouse wheel font zoom: `active` editor | `all` editors. */
+	wheelZoomScope?: string,
 	markdownImageFolder?: string,
 	markdownImageNamePattern?: string,
 	/**  Drag-and-drop of selected text inside the editor. */

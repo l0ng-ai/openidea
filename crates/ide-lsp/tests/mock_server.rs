@@ -7429,3 +7429,84 @@ async fn a_plugin_request_reaches_only_a_running_servers_own_methods() {
     let e = h.mgr.server_request(&h.root, "main", "mock/routes", None, &cancel, timeout).await.unwrap_err();
     assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled);
 }
+
+/// A server that advertises `experimental.phoxite.refactor` gets Pull Members Up / Push
+/// Members Down as its own `phoxite/refactor/*` requests, whatever its name.
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_refactorings_use_phoxites_requests_when_the_server_advertises_them() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({ "phoxite": { "laravel": true, "refactor": true } });
+    let h = harness_for("php", "php", &[("any-name", caps)], &[]);
+    let s = h.launcher.state("any-name");
+    *s.responder.lock() = Some(Arc::new(|_, method, params| {
+        let uri = params["uri"].clone();
+        match (method, params["position"]["line"].as_u64()) {
+            ("phoxite/refactor/hierarchyMembers", Some(0)) => Some(json!({
+                "className": "Dog",
+                "targets": [{ "id": "App\\Animal", "name": "Animal", "qualifiedName": "App\\Animal", "interface": false }],
+                "members": [
+                    { "id": "method:bark", "label": "bark(): string", "kind": "method", "selected": true, "abstractable": true },
+                    { "id": "constant:LEGS", "label": "LEGS", "kind": "field", "selected": false, "abstractable": false },
+                ],
+            })),
+            ("phoxite/refactor/hierarchy", _) => Some(json!({
+                "problems": [{ "severity": "warning", "message": "bark() uses $tail, which stays in Dog" }],
+                "edit": { "changes": { uri.as_str().unwrap(): [
+                    { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } }, "newText": "<?php" }
+                ] } },
+            })),
+            _ => None,
+        }
+    }));
+    let text =
+        format!("<?php class Dog extends Animal {{ function bark(): string {{ return ''; }} }}{}", "\n".repeat(9));
+    let (doc, path) = h.open("Dog.php", &text);
+    h.wait_status("any-name", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let info =
+        h.mgr.hierarchy_members(doc, Pos::new(0, 40), HierarchyRefactoring::PullUp, Default::default()).await.unwrap();
+    assert_eq!((info.class_name.as_str(), info.targets[0].qualified_name.as_str()), ("Dog", "App\\Animal"));
+    assert!(info.members[0].selected && info.members[0].abstractable);
+    assert_eq!(
+        info.members.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [HierarchyMemberKind::Method, HierarchyMemberKind::Field]
+    );
+    assert_eq!(
+        s.requested("phoxite/refactor/hierarchyMembers"),
+        [json!({ "uri": uri_of(&path), "position": { "line": 0, "character": 40 }, "kind": "pullUp" })]
+    );
+
+    let choices = vec![HierarchyChoice { id: "method:bark".into(), make_abstract: true }];
+    let done = h
+        .mgr
+        .hierarchy_refactor(
+            doc,
+            Pos::new(0, 40),
+            HierarchyRefactoring::PullUp,
+            Some("App\\Animal".into()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.problems[0].severity, ProblemSeverity::Warning);
+    let edit = done.edit.unwrap();
+    assert!(matches!(&edit.files[..], [FileEdit::Edit { path: p, edits, .. }] if p == &path && edits.len() == 1));
+    assert_eq!(
+        s.requested("phoxite/refactor/hierarchy"),
+        [json!({
+            "uri": uri_of(&path), "position": { "line": 0, "character": 40 }, "kind": "pullUp",
+            "target": "App\\Animal", "choices": [{ "id": "method:bark", "makeAbstract": true }],
+        })]
+    );
+    assert!(s.requested("workspace/executeCommand").is_empty(), "not the JDT extension's commands");
+
+    // The server refuses a position with an error whose message is for the user.
+    let refusal = (-32603, "'Dog' has no parent class or interface in the project".to_owned());
+    s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), refusal);
+    let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = refused.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(e.message, "'Dog' has no parent class or interface in the project");
+}

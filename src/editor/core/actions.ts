@@ -71,7 +71,7 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
 import { useDocMeta, useOutline } from "./model/document";
-import { resetAllEditorsFontZoom, stepAllEditorsFontZoom } from "./cm/prefs";
+import { resetAllEditorsFontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -131,7 +131,7 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
     if (cmEl) {
       const cmView = EditorView.findFromDOM(cmEl);
       if (cmView) {
-        stepAllEditorsFontZoom(cmView, delta);
+        stepConfiguredEditorsFontZoom(cmView, delta);
         return;
       }
     }
@@ -142,20 +142,38 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
     stepSurfaceFontZoomIn(activePaneEditorFocus(), delta);
     return;
   }
-  stepAllEditorsFontZoom(slot.view, delta);
+  stepConfiguredEditorsFontZoom(slot.view, delta);
   if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
 }
 
 function resetFontSize(): void {
+  const allScope = editorPrefs().general.wheelZoomScope === "all";
+  const surfaceOpts = allScope ? { isolatedOnly: true } : undefined;
   const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
   if (activeEl) {
-    if (stepFocusedSurfaceFontZoom(0, { isolatedOnly: true })) return;
-    if (!activeEl.closest?.(".cm-editor") && !activeSlot()?.view) {
-      if (stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, { isolatedOnly: true })) return;
+    if (stepFocusedSurfaceFontZoom(0, surfaceOpts)) return;
+    if (!allScope) {
+      const cmEl = activeEl.closest?.(".cm-editor") as HTMLElement | null;
+      if (cmEl) {
+        const cmView = EditorView.findFromDOM(cmEl);
+        if (cmView) {
+          resetConfiguredEditorsFontZoom(cmView);
+          return;
+        }
+      }
     }
-  } else if (!activeSlot()?.view) {
-    if (stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, { isolatedOnly: true })) return;
   }
+
+  const slot = activeSlot();
+  if (!allScope && slot?.view) {
+    resetConfiguredEditorsFontZoom(slot.view);
+    return;
+  }
+  if (!slot?.view && stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, surfaceOpts)) return;
+  if (allScope) resetAllFontSize();
+}
+
+function resetAllFontSize(): void {
   resetAllEditorsFontZoom();
   if (typeof document !== "undefined") {
     resetSurfaceFontZoom();
@@ -958,11 +976,19 @@ export function registerEditorActions(): () => void {
     },
     {
       id: "editor.resetFontSize",
-      title: "Reset Font Size in All Editors",
+      title: "Reset Font Size",
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
       run: resetFontSize,
+    },
+    {
+      id: "editor.resetFontSizeAll",
+      title: "Reset Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size", "mouse wheel"],
+      when: "projectOpen",
+      run: resetAllFontSize,
     },
     {
       id: "editor.increaseFontSize",

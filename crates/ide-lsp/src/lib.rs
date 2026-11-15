@@ -26,6 +26,7 @@ mod launch;
 mod library_source;
 mod loading;
 mod notebook;
+mod phoxite;
 mod plugin_requests;
 mod pull;
 mod scope;
