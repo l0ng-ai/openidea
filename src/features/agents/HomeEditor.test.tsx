@@ -6,7 +6,7 @@ import { HomeEditor } from "./HomeEditor";
 import homeStyles from "./Home.module.css";
 import { HOME, disconnect, savedDraft, updateComposer, useAgents } from "./store";
 
-const backend = vi.hoisted(() => ({ providers: [] as AgentProvider[], create: vi.fn() }));
+const backend = vi.hoisted(() => ({ providers: [] as AgentProvider[], create: vi.fn(), probe: vi.fn() }));
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok", data });
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
@@ -22,7 +22,7 @@ vi.mock("@/platform/ipc", async (original) => ({
         retryAtMs: null,
         error: null,
       }),
-    agentProbe: () => ok(null),
+    agentProbe: (provider: string, refresh: boolean) => backend.probe(provider, refresh),
     vcsBranchInfo: () => ok({ head: "main" }),
     vcsBranches: () => ok([]),
     agentCreate: (req: NewAgentTask) => backend.create(req),
@@ -47,6 +47,7 @@ const option = (id: string, category: string, values: string[], current: string)
 beforeEach(() => {
   disconnect();
   backend.create.mockReset().mockImplementation((req: NewAgentTask) => ok({ id: "new", config: req.config }));
+  backend.probe.mockReset().mockImplementation(() => ok(null));
   backend.providers = [
     {
       id: "fake",
@@ -165,4 +166,26 @@ it("applies fitWidth on the New Task page only when fitWindowWidth is enabled", 
   } finally {
     useProject.setState({ settings });
   }
+});
+
+it("refreshes the displayed agent version after a CLI upgrade when the window regains focus", async () => {
+  let installed = "18.20.0";
+  let cached = installed;
+  backend.probe.mockImplementation((provider: string, refresh: boolean) => {
+    if (refresh) cached = installed;
+    return ok({ provider, name: "omp", version: cached, protocol: "ACP v1", error: null });
+  });
+  render(<HomeEditor />);
+  await screen.findByText("omp · 18.20.0 · ACP v1");
+  installed = "18.20.2";
+  fireEvent(window, new Event("focus"));
+  await screen.findByText("omp · 18.20.2 · ACP v1");
+});
+
+it("does not reuse a previous page's cached agent version when opened again", async () => {
+  backend.probe.mockImplementation((provider: string, refresh: boolean) =>
+    ok({ provider, name: "omp", version: refresh ? "18.20.2" : "18.20.0", protocol: "ACP v1", error: null }),
+  );
+  render(<HomeEditor />);
+  await screen.findByText("omp · 18.20.2 · ACP v1");
 });
