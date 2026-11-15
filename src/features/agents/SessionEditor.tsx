@@ -594,10 +594,15 @@ function SubagentBar({
  * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
  * settles; Find in Conversation (`enabled` false) needs every row laid out.
  */
-function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
-  // The width the marked rows were laid out at.
-  const width = useRef(0);
-  useEffect(() => {
+function useOffscreenRows(
+  ref: RefObject<HTMLElement | null>,
+  visible: boolean,
+  enabled: boolean,
+  fitWindowWidth: boolean,
+) {
+  // The container width and column mode the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean } | null>(null);
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const unmark = () => {
@@ -605,10 +610,26 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
         row.removeAttribute("data-measured");
       }
     };
-    if (!enabled) return unmark();
+    if (!enabled) {
+      measured.current = null;
+      unmark();
+      return;
+    }
     if (!visible) return;
+    if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
+    measured.current = { width: el.clientWidth, fitWindowWidth };
+    unmark();
+  }, [ref, visible, enabled, fitWindowWidth]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled || !visible) return;
     let frame = 0;
     let timer: number | undefined;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
     const mark = () => {
       cancelAnimationFrame(frame);
       // The next frame lays the new rows out (and remembers their size); mark them after it.
@@ -621,8 +642,8 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       });
     };
     const remeasure = () => {
-      if (el.clientWidth === width.current) return;
-      width.current = el.clientWidth;
+      if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
+      measured.current = { width: el.clientWidth, fitWindowWidth };
       unmark();
     };
     remeasure();
@@ -643,7 +664,7 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled]);
+  }, [ref, visible, enabled, fitWindowWidth]);
 }
 
 interface StreamProps {
@@ -765,7 +786,8 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
-  useOffscreenRows(ref, visible, !finding);
+  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -874,7 +896,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
-  const { foldTurns, toolCalls } = useAgentSettings();
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");

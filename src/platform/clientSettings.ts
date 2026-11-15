@@ -94,6 +94,18 @@ export const CLIENT_SETTINGS_KEYS = [
   "vcs.commit.nonModal",
   "vcs.commit.doubleClickOpensDiff",
   "vcs.commit.showRightMargin",
+  "agents.showContextUsage",
+  "agents.showWorkTime",
+  "agents.showUsageLimits",
+  "agents.showCost",
+  "agents.foldTurns",
+  "agents.smoothText",
+  "agents.fitWindowWidth",
+  "agents.thinking",
+  "agents.toolCalls",
+  "agents.expandToolOutput",
+  "agents.sendWith",
+  "agents.whileRunning",
 ] as const;
 
 export function isClientSetting(key: string): boolean {
