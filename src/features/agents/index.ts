@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { call, commands } from "@/platform/ipc";
@@ -40,10 +41,12 @@ import {
   closeAndNewTask,
   connect,
   disconnect,
+  discardEphemeral,
   openHome,
   refreshModels,
   refreshProviders,
   useAgents,
+  watchEphemeralTasks,
 } from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
@@ -122,6 +125,7 @@ export function activate(): () => void {
       else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
         void refreshProviders();
     }),
+    watchEphemeralTasks(),
     registerToolWindow({
       id: TOOL_WINDOW,
       title: "Agents",
@@ -133,9 +137,12 @@ export function activate(): () => void {
       plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
-        const n = useAgents(
-          (s) => [...s.tasks.values()].filter((t) => t.status === "needsInput" || s.unread.has(t.id)).length,
-        );
+        const n = useAgents((s) => {
+          const ephemeral = s.ephemeral;
+          return [...s.tasks.values()].filter(
+            (t) => !ephemeral.has(t.id) && (t.status === "needsInput" || s.unread.has(t.id)),
+          ).length;
+        });
         return n || null;
       },
     }),
@@ -151,7 +158,8 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
       title: (input) => {
         const data = input.data as { task: string; title?: string };
-        return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
+        const title = useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
+        return useAgents.getState().ephemeral.has(data.task) ? tx`Side conversation: ${title}` : title;
       },
       icon: (input) => {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
@@ -160,7 +168,15 @@ export function activate(): () => void {
       // Busy / done marker in the tab's trailing slot (#2233).
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
+      // A side conversation restored after a page reload is valid again; after an app
+      // restart its task is gone and this same mechanism closes the tab.
       restorable: true,
+      // Closing a side conversation's last tab discards it (the task, context included).
+      onClose: (input) => {
+        const task = (input.data as { task: string }).task;
+        const s = useAgents.getState();
+        if (s.ephemeral.has(task) && s.docked !== task) void discardEphemeral(task);
+      },
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
