@@ -55,6 +55,8 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.expandToLevel5": [],
   "refactor.extractMethod": ["Meta+Alt+M"],
   "navigate.fileStructure": ["Meta+O"],
+  // ⌘R runs to the cursor: no Reload Page default on it.
+  "db.reloadPage": [],
   "db.goToColumn": ["Meta+O"],
   "find.inFile": [],
   "find.inPath": ["Ctrl+H"],

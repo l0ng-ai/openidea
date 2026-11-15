@@ -1,5 +1,8 @@
 {
   "Symbolic link": "符号链接",
+  "Copy as TSV": "复制为 TSV",
+  "Copy as CSV": "复制为 CSV",
+  "Copy as One-Row": "复制为单行",
   "Show Diff in External Tool": "在外部工具中显示差异",
   "Show Diff for Lines": "显示行差异",
   "External Diff Tools": "外部差异工具",

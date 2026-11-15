@@ -22,6 +22,7 @@ import {
   explicitCompletion,
   makeCompletion,
   matchRanges,
+  positionCompletionInfo,
   sortAlphabetically,
 } from "./completion";
 import {
@@ -656,6 +657,58 @@ describe("explicit completion", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(view.state.doc.toString()).toBe("pri");
     view.destroy();
+  });
+});
+
+describe("documentation beside the lookup", () => {
+  const view = {} as EditorView;
+  const space = { left: 0, top: 0, right: 1200, bottom: 800 };
+  const option = { left: 100, right: 300, top: 120, bottom: 144 };
+  const info = { left: 0, right: 400, top: 0, bottom: 300 };
+  const beside = { left: 100, right: 520, top: 100, bottom: 400 };
+
+  const originalWidth = document.documentElement.clientWidth;
+  afterEach(() => {
+    Object.defineProperty(document.documentElement, "clientWidth", { value: originalWidth, configurable: true });
+  });
+
+  /** `windowWidth` is the room the pane may use; the editor's own box does not limit it. */
+  function place(list: typeof beside, windowWidth = 1200, bounds = space) {
+    Object.defineProperty(document.documentElement, "clientWidth", { value: windowWidth, configurable: true });
+    return positionCompletionInfo(view, list, option, info, bounds);
+  }
+
+  it("sits right of the list when there is room, top edges aligned", () => {
+    const pos = place(beside);
+    expect(pos.class).toBe("cm-completionInfo-right");
+    expect(pos.style).toContain("top: 0");
+    expect(pos.style).toContain("left: calc(100% + 6px)");
+    expect(pos.style).toContain("max-width: 440px");
+    expect(pos.style).toContain("max-height: 320px");
+  });
+
+  it("moves to the left of the list when the right side is narrower", () => {
+    const pos = place({ ...beside, left: 700, right: 1120 });
+    expect(pos.class).toBe("cm-completionInfo-left");
+    expect(pos.style).toContain("right: calc(100% + 6px)");
+  });
+
+  it("narrows the pane to the room the window has, not the editor's", () => {
+    // A 620px-wide editor would leave 94px; the window leaves 274px.
+    const pos = place(beside, 800, { ...space, right: 620 });
+    expect(pos.class).toBe("cm-completionInfo-right");
+    expect(pos.style).toContain("max-width: 274px");
+  });
+
+  it("keeps a readable width in a narrow window rather than covering the list", () => {
+    const pos = place(beside, 620);
+    expect(pos.class).toBe("cm-completionInfo-right");
+    expect(pos.style).toContain("max-width: 220px");
+  });
+
+  it("caps the height to the room below the list and to 320px", () => {
+    expect(place({ ...beside, top: 700, bottom: 780 }).style).toContain("max-height: 100px");
+    expect(place(beside, 1200, { ...space, bottom: 600 }).style).toContain("max-height: 320px");
   });
 });
 

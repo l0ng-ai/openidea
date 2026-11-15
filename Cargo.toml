@@ -90,6 +90,8 @@ dunce = "1"
 dirs = "6"
 memmap2 = "0.9"
 zip = { version = "9.2.3", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
 
 # search, index, language
 grep-searcher = "0.1"

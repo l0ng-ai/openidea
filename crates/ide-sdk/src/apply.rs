@@ -141,6 +141,12 @@ pub(crate) fn goroot(root: &Path, s: &Settings) -> Option<PathBuf> {
         .or_else(|| pinned::pinned_install(root, Tool::Go).and_then(|(dir, _)| pinned::goroot_in_install(&dir)))
 }
 
+/// The directory of the configured Zig install (holding `zig`), else `None` for `PATH`.
+pub(crate) fn zig_bin(root: &Path, s: &Settings) -> Option<PathBuf> {
+    setting_path(root, &s.languages.zig.zig)
+        .map(|p| if p.is_file() { p.parent().map(Path::to_path_buf).unwrap_or(p) } else { p })
+}
+
 /// Runtime choices for package-manager based IDE tool installs.
 #[derive(Default)]
 pub struct ToolInstallEnvironment {

@@ -18,17 +18,18 @@ import { projectFolder, useProject } from "@/platform/project";
 import { installDiffWindowSave } from "./diffWindowSave";
 import { restoreRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
-import { Spinner, T, isPopupOpen } from "@/ui";
+import { Spinner, T, isPopupOpen, lazyComponent } from "@/ui";
 import { ask, showError } from "@/workbench/messages";
 import { editorService, notifications, provideEditorService, type OpenOptions } from "@/workbench/contributions";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
-import { DiffEditor } from "./DiffEditor";
 import { DIFF_KIND, diffInput, diffTitle, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
+
+const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 
 /** Opens `path` in the project window's editor (DiffEditor's "Jump to Source"). */
 const OPEN_SOURCE = "openidea://diff/open-source";
