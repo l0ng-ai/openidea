@@ -220,7 +220,8 @@ const zig = set(
   "zig",
   ["zig"],
   [
-    { key: "if", description: "if expr", body: "if $EXPR$ {\n\t$END$\n}", statement: true },
+    { key: "if", description: "if (expr)", body: "if ($EXPR$) {\n\t$END$\n}", statement: true },
+    { key: "not", description: "!expr", body: "!$EXPR$$END$", wrapCompound: true },
     {
       key: "const",
       description: "const name = expr;",

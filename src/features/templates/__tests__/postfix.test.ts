@@ -112,9 +112,7 @@ describe("postfix target", () => {
   it("every language has the core keys", () => {
     for (const lang of ["typescript", "rust", "python", "go", "zig", "java", "kotlin"]) {
       const keys = postfixTemplatesFor(lang).map((t) => t.key);
-      for (const k of ["if", "not", "return", "par", "nn"].filter(
-        (k) => !(lang === "rust" && k === "nn") && !(lang === "zig" && k === "not"),
-      ))
+      for (const k of ["if", "not", "return", "par", "nn"].filter((k) => !(lang === "rust" && k === "nn")))
         expect(keys).toContain(k);
     }
     expect(postfixTemplatesFor("typescript", new Set(["ts.if"])).some((t) => t.key === "if")).toBe(false);

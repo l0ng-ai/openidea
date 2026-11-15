@@ -42,15 +42,14 @@ describe("surround with entries", () => {
     ]);
   });
 
-  it("wraps Zig in its brace syntax without a negation", () => {
+  it("wraps Zig in its parenthesised brace syntax", () => {
     const descriptions = (lines: boolean, inline: boolean) =>
       surroundersFor("zig", { lines, inline }).map((s) => s.description);
     expect(descriptions(true, false)).toEqual(
       expect.arrayContaining(["if", "if / else", "while", "for", "defer", "test"]),
     );
-    // Zig has no `!` operator.
-    expect(descriptions(true, true)).not.toContain("!(expr)");
-    expect(descriptions(false, true)).toEqual(["(expr)"]);
+    expect(surroundersFor("zig", { lines: true, inline: false })[0]!.body).toContain("if ($COND$)");
+    expect(descriptions(false, true)).toEqual(["(expr)", "!(expr)"]);
   });
 
   it("filters statement and expression surrounders by the selection", () => {

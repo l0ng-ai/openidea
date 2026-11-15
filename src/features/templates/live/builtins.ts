@@ -213,15 +213,15 @@ const zig = group(
     { abbrev: "st", description: "Struct type", body: "pub const $NAME$ = struct {\n\t$END$\n};" },
     { abbrev: "en", description: "Enum type", body: "pub const $NAME$ = enum {\n\t$END$\n};" },
     { abbrev: "un", description: "Tagged union type", body: "pub const $NAME$ = union(enum) {\n\t$END$\n};" },
-    { abbrev: "if", description: "if statement", body: "if $COND$ {\n\t$END$\n}" },
-    { abbrev: "ife", description: "if / else", body: "if $COND$ {\n\t$END$\n} else {\n\t\n}" },
+    { abbrev: "if", description: "if statement", body: "if ($COND$) {\n\t$END$\n}" },
+    { abbrev: "ife", description: "if / else", body: "if ($COND$) {\n\t$END$\n} else {\n\t\n}" },
     {
       abbrev: "iferr",
       description: "if result / error",
       body: "if ($EXPR$) |$VAL$| {\n\t$END$\n} else |$ERR$| {\n\t\n}",
       variables: [v("VAL", undefined, '"value"'), v("ERR", undefined, '"err"')],
     },
-    { abbrev: "while", description: "while loop", body: "while $COND$ {\n\t$END$\n}" },
+    { abbrev: "while", description: "while loop", body: "while ($COND$) {\n\t$END$\n}" },
     {
       abbrev: "for",
       description: "for loop",

@@ -143,17 +143,17 @@ const go = set("go", [
   notParens,
 ]);
 
-// No `!(...)`: Zig has no boolean-negation operator.
 const zig = set("zig", [
-  { description: "if", body: braceBlock("if $COND$") },
-  { description: "if / else", body: "if $COND$ {\n\t$SELECTION$\n} else {\n\t$END$\n}" },
-  { description: "while", body: braceBlock("while $COND$") },
+  { description: "if", body: braceBlock("if ($COND$)") },
+  { description: "if / else", body: "if ($COND$) {\n\t$SELECTION$\n} else {\n\t$END$\n}" },
+  { description: "while", body: braceBlock("while ($COND$)") },
   { description: "for", body: braceBlock("for ($ITER$) |$ITEM$|"), variables: [v("ITEM", '"item"')] },
   { description: "defer", body: braceBlock("defer") },
   { description: "test", body: braceBlock('test "$NAME$"'), variables: [v("NAME", '"name"')] },
   { description: "{ }", body: "{\n\t$SELECTION$\n}$END$" },
   region("//"),
   parens,
+  notParens,
 ]);
 
 const rust = set("rust", [
