@@ -751,6 +751,12 @@ export const commands = {
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
 	/**
+	 *  Show Diff in External Tool: starts the tool set in the global settings (never a
+	 *  project's, which a cloned repository could carry) on the two sides, on this machine
+	 *  (a remote window passes the sides as text).
+	 */
+	diffExternalTool: (left: ExternalDiffSide, right: ExternalDiffSide, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("diff_external_tool", { left, right, title })),
+	/**
 	 *  Stages only the selected hunks of a file's working-tree changes.
 	 *  Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 	 */
@@ -5092,6 +5098,26 @@ export type ExtensionPointInfo = {
 	description: string,
 	/**  Plugin ids contributing to it now. */
 	contributors: string[],
+};
+
+/**  Tools › Diff & Merge › External Diff Tools: a program that shows two files' differences. */
+export type ExternalDiffSettings = {
+	/**  Offer Show Diff in External Tool in diff viewers. */
+	enabled?: boolean,
+	/**  The program to start. */
+	path?: string,
+	/**  Its arguments: `%1` the left file, `%2` the right file, `%3` the diff's title. */
+	parameters?: string,
+};
+
+/**  One side of the diff: a file on disk, or text written to a temporary file. */
+export type ExternalDiffSide = {
+	/**  A saved file, passed to the tool as it is. */
+	path: string | null,
+	/**  Content without a file of its own (a revision, a text), written to a temporary file. */
+	text: string | null,
+	/**  The temporary file's name; its extension lets the tool pick a syntax. */
+	name: string,
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
@@ -9776,6 +9802,8 @@ export type Settings_Deserialize = {
 	terminal?: TerminalSettings,
 	actionsOnSave?: ActionsOnSaveSettings,
 	externalTools?: ExternalTool[],
+	/**  Tools › Diff & Merge › External Diff Tools. */
+	externalDiff?: ExternalDiffSettings,
 	/**
 	 *  Language servers / debug adapters at a user-chosen location, by the
 	 *  command the language definition launches (`elixir-ls`, `codelldb`).
@@ -9840,6 +9868,8 @@ export type Settings_Serialize = {
 	terminal: TerminalSettings,
 	actionsOnSave: ActionsOnSaveSettings,
 	externalTools: ExternalTool[],
+	/**  Tools › Diff & Merge › External Diff Tools. */
+	externalDiff: ExternalDiffSettings,
 	/**
 	 *  Language servers / debug adapters at a user-chosen location, by the
 	 *  command the language definition launches (`elixir-ls`, `codelldb`).

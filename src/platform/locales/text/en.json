@@ -1,4 +1,12 @@
 {
+  "Show Diff in External Tool": "Show Diff in External Tool",
+  "Show Diff for Lines": "Show Diff for Lines",
+  "External Diff Tools": "External Diff Tools",
+  "Use external diff tool": "Use external diff tool",
+  "Diff viewers offer Show Diff in External Tool.": "Diff viewers offer Show Diff in External Tool.",
+  "Path to executable": "Path to executable",
+  "%1 – the left file, %2 – the right file, %3 – the diff's title.": "%1 – the left file, %2 – the right file, %3 – the diff's title.",
+  "Cannot show diff in external tool": "Cannot show diff in external tool",
   "Open Blank Diff Window": "Open Blank Diff Window",
   "Blank Diff": "Blank Diff",
   "Search In Changes": "Search In Changes",

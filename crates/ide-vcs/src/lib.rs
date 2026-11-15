@@ -627,6 +627,7 @@ pub mod changelists;
 mod cli;
 mod compare;
 mod diff;
+mod external_diff;
 mod history;
 mod ignore;
 mod index_writes;
@@ -653,6 +654,7 @@ pub use cli::{
     set_git_command_observer, set_git_executable,
 };
 pub use diff::build_partial_patch;
+pub use external_diff::{ExternalDiffSide, launch_external_diff};
 pub use ignore::{IgnoreDestination, add_to_ignore};
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;

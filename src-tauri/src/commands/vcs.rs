@@ -518,6 +518,21 @@ pub async fn vcs_diff_hunks(app: AppHandle, old_text: String, new_text: String) 
         .expect("line diff panicked")
 }
 
+/// Show Diff in External Tool: starts the tool set in the global settings (never a
+/// project's, which a cloned repository could carry) on the two sides, on this machine
+/// (a remote window passes the sides as text).
+#[tauri::command]
+#[specta::specta]
+pub async fn diff_external_tool(
+    state: State<'_, AppState>,
+    left: ExternalDiffSide,
+    right: ExternalDiffSide,
+    title: String,
+) -> IdeResult<()> {
+    let settings = state.global_settings.effective().external_diff;
+    state.host.blocking(move || launch_external_diff(&settings, &left, &right, &title)).await
+}
+
 /// Stages only the selected hunks of a file's working-tree changes.
 /// Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 #[tauri::command]

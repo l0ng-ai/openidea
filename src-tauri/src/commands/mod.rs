@@ -358,6 +358,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         vcs::vcs_conflict_versions,
         vcs::vcs_diff_text,
         vcs::vcs_diff_hunks,
+        vcs::diff_external_tool,
         vcs::vcs_stage_hunks,
         vcs::vcs_clone,
         vcs::vcs_init,

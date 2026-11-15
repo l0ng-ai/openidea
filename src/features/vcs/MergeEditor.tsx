@@ -359,6 +359,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     focusOpposite: () => false,
     close: () => false,
     swapSides: () => false,
+    showInExternalTool: () => false,
   }));
   useEffect(
     () => () => {

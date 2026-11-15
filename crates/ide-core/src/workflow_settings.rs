@@ -175,6 +175,24 @@ impl Default for VcsConfirmationSettings {
     }
 }
 
+/// Tools › Diff & Merge › External Diff Tools: a program that shows two files' differences.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalDiffSettings {
+    /// Offer Show Diff in External Tool in diff viewers.
+    pub enabled: bool,
+    /// The program to start.
+    pub path: String,
+    /// Its arguments: `%1` the left file, `%2` the right file, `%3` the diff's title.
+    pub parameters: String,
+}
+
+impl Default for ExternalDiffSettings {
+    fn default() -> Self {
+        Self { enabled: false, path: String::new(), parameters: "%1 %2 %3".into() }
+    }
+}
+
 /// Version Control › Shelf.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]

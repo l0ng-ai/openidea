@@ -1,4 +1,12 @@
 {
+  "Show Diff in External Tool": "在外部工具中显示差异",
+  "Show Diff for Lines": "显示行差异",
+  "External Diff Tools": "外部差异工具",
+  "Use external diff tool": "使用外部差异工具",
+  "Diff viewers offer Show Diff in External Tool.": "差异查看器中提供“在外部工具中显示差异”。",
+  "Path to executable": "可执行文件路径",
+  "%1 – the left file, %2 – the right file, %3 – the diff's title.": "%1 – 左侧文件，%2 – 右侧文件，%3 – 差异标题。",
+  "Cannot show diff in external tool": "无法在外部工具中显示差异",
   "Open Blank Diff Window": "打开空白差异窗口",
   "Blank Diff": "空白差异",
   "Search In Changes": "在更改中搜索",

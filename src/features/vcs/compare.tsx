@@ -15,6 +15,7 @@ import { openDiff, openVcsDiff, type DiffData } from "./diffInput";
 import { baseName } from "./model";
 import { tx } from "@/platform/i18n";
 import { readClipboardPlainText } from "@/platform/clipboard";
+import { workflowSettings } from "@/platform/workflowSettings";
 
 function argPath(arg: unknown): string | undefined {
   if (typeof arg === "string") return arg;
@@ -216,6 +217,18 @@ export function registerCompareActions(): () => void {
       icon: "swap-panels",
       when: "diffEditorFocus",
       run: () => void focusedDiffNavigator()?.swapSides(),
+    },
+    {
+      id: "diff.showInExternalTool",
+      title: "Show Diff in External Tool",
+      category: "Diff",
+      icon: "external-tools",
+      when: "diffEditorFocus",
+      enabled: () => {
+        const { enabled, path } = workflowSettings().externalDiff;
+        return enabled && !!path;
+      },
+      run: () => void focusedDiffNavigator()?.showInExternalTool(),
     },
     {
       id: "diff.openBlankDiff",

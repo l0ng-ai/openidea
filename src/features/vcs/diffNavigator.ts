@@ -17,6 +17,8 @@ export interface DiffNavigator {
   close(): boolean;
   /** Swap Sides of a diff whose sides the user picked; false when it has none to swap. */
   swapSides(): boolean;
+  /** Show Diff in External Tool; false when none is set up. */
+  showInExternalTool(): boolean;
   /** The built panes, for diff viewer contributions' actions (null while loading). */
   viewer?(): DiffViewerHost | null;
 }

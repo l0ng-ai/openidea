@@ -5,7 +5,9 @@ import { EditorView } from "@codemirror/view";
 import type { EditorInput } from "@/workbench/contributions";
 import { useKeymap } from "@/platform/keymap";
 import { useFindOptions, useFindSessions } from "@/editor/core/view/FindBar";
+import { useProject } from "@/platform/project";
 
+const externalCalls: unknown[][] = [];
 const texts: Record<string, string> = { HEAD: "foo\nbar\nfoo\n", abc123: "foo\nbaz\nfoo\n" };
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -17,6 +19,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       fsProbe: () => Promise.resolve({ status: "ok", data: { size: 3, binary: false, tooLarge: false } }),
       vcsFileAt: (_path: string, rev: string) => Promise.resolve({ status: "ok", data: texts[rev] }),
       fsReadText: () => Promise.resolve({ status: "ok", data: "foo\nqux\nfoo\n" }),
+      diffExternalTool: (...args: unknown[]) => {
+        externalCalls.push(args);
+        return Promise.resolve({ status: "ok", data: null });
+      },
     },
   };
 });
@@ -339,5 +345,26 @@ describe("Blank diff and Swap Sides", () => {
     expect(screen.queryByRole("button", { name: "Swap Sides" })).toBeNull();
     const right = await pane(1);
     expect(right.state.readOnly).toBe(true);
+  });
+});
+
+describe("Show Diff in External Tool", () => {
+  afterEach(() => {
+    useProject.setState({ settings: null });
+    externalCalls.length = 0;
+  });
+
+  it("is offered once a tool is set, and passes the working file and the revision's text", async () => {
+    render(<DiffEditor input={working} />);
+    await pane(1);
+    expect(screen.queryByRole("button", { name: "Show Diff in External Tool" })).toBeNull();
+    useProject.setState({ settings: { externalDiff: { enabled: true, path: "/usr/bin/opendiff" } } as never });
+    fireEvent.click(await screen.findByRole("button", { name: "Show Diff in External Tool" }));
+    await waitFor(() => expect(externalCalls).toHaveLength(1));
+    expect(externalCalls[0]).toEqual([
+      { path: null, text: "foo\nbar\nfoo\n", name: "a.ts" },
+      { path: "/p/a.ts", text: null, name: "a.ts" },
+      "a.ts (HEAD ↔ Your version)",
+    ]);
   });
 });

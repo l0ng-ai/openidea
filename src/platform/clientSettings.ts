@@ -86,6 +86,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "run.confirmTerminate",
   "run.showOnStart",
   "run.pinTabs",
+  "externalDiff",
   "vcs.showDirtyDirectories",
   "vcs.git.inlineBlame",
   "vcs.git.showBranchInProjectView",

@@ -39,9 +39,11 @@ import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { isRemoteWindow } from "@/platform/remote";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { IconButton, Select, Spinner, T, isPopupOpen, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
-import { editorService, type EditorInput } from "@/workbench/contributions";
+import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
 import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
@@ -90,7 +92,7 @@ import { UnalignedPanes } from "./diffScroll";
 import { groupOf } from "./changes";
 import { inclusionGutter } from "./hunkInclusion";
 import { hunksOverlapping } from "./hunks";
-import { effectiveKind, stripSlash } from "./model";
+import { baseName, effectiveKind, stripSlash } from "./model";
 import { errorMessage, logConsole, readWorkingText, runOp, saveAll } from "./ops";
 import { refreshNow, repoOf, useVcs } from "./store";
 import styles from "./DiffEditor.module.css";
@@ -1045,6 +1047,37 @@ export function DiffEditor({
     onClose();
     return true;
   };
+  /** Show Diff in External Tool: the panes' text, or a saved file where a side is one. */
+  const externalDiff = useWorkflowSettings((s) => s.externalDiff);
+  const canExternal = externalDiff.enabled && !!externalDiff.path && !binary;
+  const showInExternalTool = () => {
+    const views = viewsRef.current;
+    if (!views || !canExternal) return false;
+    const remote = isRemoteWindow();
+    const sideOf = async (s: Side) => {
+      const side = s === "a" ? left : right;
+      const att = s === "a" ? attached?.a : attached?.b;
+      const file = sideFile(side, path);
+      const name = baseName((side.type === "rev" && side.path) || file || path) || "content";
+      if (file && att && !remote) {
+        await att.save();
+        return { path: file, text: null, name };
+      }
+      const doc = s === "b" ? views.b.state.doc : (views.a?.state.doc ?? getOriginalDoc(views.b.state));
+      return { path: null, text: doc.toString(), name };
+    };
+    void Promise.all([sideOf("a"), sideOf("b")])
+      .then(([a, b]) => call(commands.diffExternalTool(a, b, diffTitle(data))))
+      .catch((e) =>
+        notifications().notify({
+          group: "vcs",
+          level: "error",
+          title: "Cannot show diff in external tool",
+          body: errorMessage(e),
+        }),
+      );
+    return true;
+  };
   /** Swap Sides: for diffs whose two sides the user picked (Compare Files, Clipboard, blank diff). */
   const canSwap = !!input_.swappable && !single;
   const swapSides = () => {
@@ -1202,6 +1235,7 @@ export function DiffEditor({
     focusOpposite,
     close,
     swapSides,
+    showInExternalTool,
     viewer: viewerOf,
   });
   useLayoutEffect(() => {
@@ -1218,6 +1252,7 @@ export function DiffEditor({
       focusOpposite,
       close,
       swapSides,
+      showInExternalTool,
       viewer: viewerOf,
     });
   });
@@ -1427,6 +1462,14 @@ export function DiffEditor({
         </span>
         {contribs.map((c, i) => c.Toolbar && <c.Toolbar key={i} host={viewer} />)}
         {toolbarActions}
+        {canExternal && (
+          <IconButton
+            icon="external-tools"
+            title="Show Diff in External Tool"
+            size="small"
+            onClick={() => void showInExternalTool()}
+          />
+        )}
         {getAction("vcs.showDiffInNewWindow") && auxiliaryWindow()?.kind !== "diff" && (
           <IconButton
             icon="external-link"
