@@ -6,7 +6,8 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { call, commands, isCancelled, isTauri, nextRequestId, type JdkReleases, type Sdk } from "@/platform/ipc";
 import { downloadJdk, TEMURIN, type JdkDownload } from "@/platform/jdk";
 import { Dialog, IconButton, Input, ProgressBar, Select, type SelectOption, T } from "@/ui";
-import { choosePath, rememberSdk } from "./api";
+import { rememberSdk } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import styles from "./Sdk.module.css";
 import { tx } from "@/platform/i18n";
 

@@ -26,7 +26,7 @@ import { currentRepoRoot, useVcs } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 import { languageFor, viewerBase } from "./cm";
 import styles from "./GitLog.module.css";
-import { choosePath } from "@/features/settings/languages/api";
+import { choosePath } from "@/platform/choosePath";
 import { openLogTab } from "./logStore";
 
 interface RevisionData {

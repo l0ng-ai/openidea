@@ -61,7 +61,8 @@ import {
 } from "@/platform/languageSettings";
 import { initProjectRoots, useDetectedRoots } from "@/platform/projectRoots";
 import { Row, Section } from "../components/Form";
-import { choosePath, detectSdks, useSdks, type SdkKind } from "./api";
+import { detectSdks, useSdks, type SdkKind } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import { SdkField, tildify, useDetected, useJdtlsJdk, useProjectSetting } from "./components";
 import styles from "./Sdk.module.css";
