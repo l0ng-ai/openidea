@@ -742,7 +742,7 @@ function isFocusWithinToolWindow(id: string): boolean {
 
 export const toolWindowServiceImpl: ToolWindowService = {
   show: (id, focus) => showToolWindow(id, focus),
-  hide: hideToolWindow,
+  hide: (id, options) => (options?.removeFromStripe ? removeFromStripe(id) : hideToolWindow(id)),
   toggle: toggleToolWindow,
   isVisible: isToolWindowVisible,
 };
