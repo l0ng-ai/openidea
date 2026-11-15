@@ -203,7 +203,7 @@
   "menu.workspace.create": "工作区…",
   "menu.workspace.open": "打开工作区…",
   "menu.workspace.manage": "管理工作区…",
-  "menu.file.newUntitled": "新建无标题文件",
+  "menu.file.newUntitled": "无标题文件",
   "menu.file.openInNewWindow": "在新窗口中打开…",
   "menu.file.openFile": "打开文件…",
   "menu.remote.connect": "远程开发…",
