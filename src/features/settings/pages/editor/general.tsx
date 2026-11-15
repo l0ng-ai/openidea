@@ -115,7 +115,19 @@ const GENERAL = editorPage({
     {
       title: "Mouse Control",
       items: [
-        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Ctrl/Command+Mouse Wheel" },
+        {
+          t: "check",
+          key: `${P}.general.wheelZoom`,
+          label: "Change font size with Ctrl/Command+Mouse Wheel",
+          inline: {
+            kind: "select",
+            key: `${P}.general.wheelZoomScope`,
+            options: [
+              { value: "active", label: "Active editor" },
+              { value: "all", label: "All editors" },
+            ],
+          },
+        },
         { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
