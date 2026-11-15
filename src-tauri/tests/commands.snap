@@ -7,6 +7,7 @@ agent_cancel                                 always             project_host bin
 agent_changes                                trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_create                                 trusted            project_host bindings async
+agent_create_ephemeral                       trusted            desktop      bindings async
 agent_custom_import                          trusted            desktop      bindings sync
 agent_custom_remove                          trusted            desktop      bindings sync
 agent_custom_save                            trusted            desktop      bindings sync
@@ -24,6 +25,7 @@ agent_mcp_set_enabled                        always             project_host bin
 agent_probe                                  trusted            project_host bindings async
 agent_prompt                                 trusted            project_host bindings async
 agent_providers                              trusted            project_host bindings sync
+agent_refresh_models                         trusted            project_host bindings sync
 agent_registry_install                       always             project_host bindings async
 agent_registry_list                          always             project_host bindings async
 agent_registry_remove                        always             project_host bindings async
@@ -134,6 +136,9 @@ debug_hot_reload                             trusted            desktop      bin
 debug_hot_restart                            trusted            desktop      bindings async
 debug_js_custom_breakpoints                  trusted            project_host bindings async
 debug_js_response_body                       trusted            project_host bindings async
+debug_js_response_overrides                  trusted            project_host bindings async
+debug_js_start_profile                       trusted            project_host bindings async
+debug_js_stop_profile                        trusted            project_host bindings async
 debug_jvm_memory_classes                     trusted            project_host bindings async
 debug_jvm_memory_fields                      trusted            project_host bindings async
 debug_jvm_memory_instances                   trusted            project_host bindings async
@@ -175,10 +180,13 @@ doc_edit                                     always             project_host bin
 doc_folding                                  always             project_host bindings async
 doc_highlights                               always             project_host bindings async
 doc_open                                     always             project_host bindings async
+doc_open_untitled                            always             project_host bindings async
 doc_open_virtual                             always             project_host bindings async
 doc_outline                                  always             project_host bindings async
+doc_python_facts                             always             project_host bindings async
 doc_save                                     always             project_host bindings async
 doc_save_all                                 always             project_host bindings async
+doc_save_as                                  always             project_host bindings async
 doc_selection_ranges                         always             project_host bindings async
 doc_set_bom                                  always             project_host bindings async
 doc_set_encoding                             always             project_host bindings async
@@ -203,6 +211,7 @@ docker_save_settings                         always             desktop      bin
 docker_set_registry_password                 always             desktop      bindings async
 docker_settings                              always             desktop      bindings async
 docker_snapshot                              trusted            desktop      bindings async
+end_process                                  trusted            desktop      bindings async
 env_reload                                   always             project_host bindings async
 file_dialog_needs_gtk                        trusted            desktop      bindings async
 find_dirs                                    always             project_host bindings sync
@@ -273,6 +282,7 @@ jdtls_required_java                          always             project_host bin
 jvm_file_presentations                       always             project_host bindings async
 languages                                    always             desktop      bindings sync
 light_edit_open                              always             desktop      bindings async
+light_edit_open_untitled                     always             desktop      bindings async
 log_frontend                                 always             desktop      bindings sync
 lsp_apply_code_action                        trusted            project_host bindings async
 lsp_call_hierarchy                           trusted            project_host bindings async
@@ -296,6 +306,7 @@ lsp_inlay_hints                              trusted            project_host bin
 lsp_inline_completion                        trusted            project_host bindings async
 lsp_library_sources                          trusted            project_host bindings async
 lsp_prepare_rename                           trusted            project_host bindings async
+lsp_prepare_type_hierarchy                   trusted            project_host bindings async
 lsp_references                               trusted            project_host bindings async
 lsp_rename                                   trusted            project_host bindings async
 lsp_resend_diagnostics                       always             project_host bindings sync
@@ -358,6 +369,7 @@ plugin_color_presentations                   trusted            project_host bin
 plugin_commit_checks                         trusted            project_host bindings async
 plugin_content_tab_action                    trusted            project_host bindings sync
 plugin_context_keys                          trusted            project_host bindings sync
+plugin_debug_attach_target                   trusted            project_host bindings async
 plugin_decoration_sets                       trusted            project_host bindings sync
 plugin_endpoints                             trusted            project_host bindings async
 plugin_event_kinds                           trusted            project_host bindings async
@@ -494,6 +506,8 @@ scaffold_catalog                             always             project_host bin
 scaffold_create                              always             project_host bindings async
 scaffold_options                             always             project_host bindings async
 scaffold_requirements                        always             project_host bindings async
+sdk_container_python                         trusted            project_host bindings sync
+sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async
