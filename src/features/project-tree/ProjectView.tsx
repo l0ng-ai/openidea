@@ -322,10 +322,8 @@ const Row = memo(function Row({
           size={16}
           className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
         />
-        {/* IDEA's symlink arrow, on directory symlinks (the entry kind comes with the listing). */}
-        {node.dir && node.symlink && (
-          <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />
-        )}
+        {/* IDEA's symlink arrow, on file and folder links (the entry kind comes with the listing). */}
+        {node.symlink && <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />}
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
           <Icon name="runnable-mark" size={16} className={styles.overlay} />
         )}

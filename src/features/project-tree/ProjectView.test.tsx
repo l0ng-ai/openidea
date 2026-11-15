@@ -838,7 +838,7 @@ it("shows a decoration's suffix after the root name, with icons and struck-out s
   await waitFor(() => expect(row("acme").textContent).not.toContain("main/"));
 });
 
-it("marks directory symlinks with the link arrow, leaving real folders alone", async () => {
+it("marks file and folder symlinks with the link arrow, leaving real folders and files alone", async () => {
   fs = new MemoryFs(
     {
       "/w/acme/dir1/keep.txt": "x",
@@ -858,9 +858,10 @@ it("marks directory symlinks with the link arrow, leaving real folders alone", a
   expect(within(row("link1")).getByLabelText("Symbolic link").tagName).toBe("svg");
   expect(iconAt("link1")).toBe("folder");
   expect(iconAt("dir1")).toBe("folder");
-  // …real folders and file symlinks do not.
+  // …so does a link to a file, as in IDEA; real folders and files do not.
+  expect(within(row("note-link.txt")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("note-link.txt")).toBe("file-text");
   expect(within(row("dir1")).queryByLabelText("Symbolic link")).toBeNull();
   expect(within(row("dir2")).queryByLabelText("Symbolic link")).toBeNull();
-  expect(within(row("note-link.txt")).queryByLabelText("Symbolic link")).toBeNull();
-  expect(iconAt("note-link.txt")).toBe("file-text");
+  expect(within(row("note.txt")).queryByLabelText("Symbolic link")).toBeNull();
 });
