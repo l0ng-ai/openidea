@@ -1275,7 +1275,9 @@ impl Project {
         }
         let defaults = self.documents.file_defaults();
         let fallback = defaults.fallback_for(path);
-        if path.exists() {
+        // The working file only when it is a regular file: a path that is a directory there
+        // (a committed symlink to a folder, a file replaced by a folder) has only its blob.
+        if path.is_file() {
             let loaded = ide_vfs::load_text_with_fallback(path, fallback)?;
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
