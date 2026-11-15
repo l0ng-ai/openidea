@@ -49,6 +49,8 @@ export interface Action {
   verbatim?: boolean;
   /** Hidden from Search Everywhere (internal / parameterised actions). */
   hidden?: boolean;
+  /** Listed in Settings › Keymap although `hidden`, so it can get a shortcut (Cut / Copy / Paste). */
+  keymap?: boolean;
   /**
    * Marks a toggle action (IDEA's ToggleAction): returns the current state.
    * Search Everywhere shows an ON/OFF switch and keeps the popup open.
