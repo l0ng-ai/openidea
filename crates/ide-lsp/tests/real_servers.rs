@@ -1094,5 +1094,10 @@ async fn phoxite_pulls_a_member_up_end_to_end() {
         .collect();
     edited.sort();
     assert_eq!(edited, ["Animal.php", "Dog.php"], "the method leaves Dog and arrives in Animal");
+    // Outside any class the server refuses with `RequestFailed`: the reason reaches the user.
+    let refused = mgr.hierarchy_members(doc, Pos::new(0, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let refused = refused.unwrap_err();
+    assert_eq!(refused.kind, ide_core::error::ErrorKind::InvalidInput, "{refused:?}");
+    assert!(!refused.message.is_empty() && !refused.message.starts_with("phoxite:"), "{refused:?}");
     mgr.shutdown_all().await;
 }
