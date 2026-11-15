@@ -12,7 +12,7 @@ import {
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import type { NotebookCellDoc } from "@/bindings";
-import { cellEditorExtensions } from "@/editor/api";
+import { cellEditorExtensions, embeddedEditorExtensions } from "@/editor/api";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
@@ -97,6 +97,7 @@ export function CellEditor({
         ]),
       ),
       keymap.of([indentWithTab, ...defaultKeymap]),
+      embeddedEditorExtensions(session.path),
       language.of([]),
       services.current.of(languageServices(type, initialDoc.current)),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
