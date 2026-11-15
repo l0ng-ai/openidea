@@ -270,7 +270,7 @@ describe("language modes", () => {
     }
   });
 
-  it("colours `this` and `super` as keywords in Java, JavaScript, TypeScript and C++", async () => {
+  it("colours `this`, `super` and Rust's `self` as keywords", async () => {
     const highlighter = tagHighlighter([
       { tag: t.keyword, class: "keyword" },
       { tag: t.self, class: "self" },
@@ -281,6 +281,7 @@ describe("language modes", () => {
       ["JavaScript", "/p/a.js", "class A extends B { m() { super.m(); this.a = 1; } }", ["super", "this"]],
       ["TypeScript", "/p/a.ts", "class A extends B { m() { super.m(); this.a = 1; } }", ["super", "this"]],
       ["C++", "/p/a.cpp", "void A::m() { this->a = 1; }", ["this"]],
+      ["Rust", "/p/a.rs", "impl A { fn m(&self) { self.a = 1; } }", ["self", "self"]],
     ] as const) {
       const support = await loadSupport(findLanguageDescription(mode, path)!);
       const found: Array<[string, string]> = [];
