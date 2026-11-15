@@ -46,6 +46,11 @@
 //! id = "conventional"
 //! title = "Conventional Commits"   # Commit Options › Before Commit; `commit-checker.check` runs it
 //!
+//! [[contributes.serverCommands]]
+//! server = "phoxite"               # the language server whose results carry the command
+//! command = "laravel.modelView"    # a command the server leaves to the client
+//! run = "model-view"               # this plugin's command; needs `lsp:phoxite`
+//!
 //! [[contributes.fileTemplates]]
 //! id = "drawing"
 //! name = "Excalidraw Drawing"
@@ -72,6 +77,7 @@ pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 pub const COMMIT_CHECKS: &str = "commitChecks";
+pub const SERVER_COMMANDS: &str = "serverCommands";
 
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
@@ -962,6 +968,37 @@ pub(super) fn commit_check(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
         return Err(format!("contributes.{COMMIT_CHECKS}: needs the `vcs.read` capability (checks read the commit)"));
     }
     Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
+}
+
+/// A command a language server's code lens, code action or inlay hint carries and
+/// leaves to the client, and the plugin command that runs it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ServerCommandDecl {
+    /// The server's name in its language definition.
+    pub(super) server: String,
+    pub(super) command: String,
+    /// The plugin's command (`[[contributes.commands]]`); it gets the arguments as JSON.
+    pub(super) run: String,
+}
+
+/// `[[contributes.serverCommands]]` (API 1.9): routes a command no server executes
+/// itself to the plugin's own command.
+pub(super) fn server_command(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: ServerCommandDecl = decode(SERVER_COMMANDS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{SERVER_COMMANDS}"), 9)?;
+    if d.command.is_empty() || d.command.len() > 256 {
+        return Err(format!("contributes.{SERVER_COMMANDS}: command names are 1–256 bytes"));
+    }
+    declared_command(pkg, SERVER_COMMANDS, &d.run)?;
+    let grant: ide_extension::Capability =
+        format!("lsp:{}", d.server).parse().map_err(|e| format!("contributes.{SERVER_COMMANDS}: {e}"))?;
+    if !pkg.manifest.capabilities.all().any(|c| *c == grant) {
+        return Err(format!(
+            "contributes.{SERVER_COMMANDS}: needs the `{grant}` capability (the command comes from that server)"
+        ));
+    }
+    Ok(UiDecl::new(format!("{}:{}", d.server, d.command), d.command.clone(), json(&d)?))
 }
 
 const MAX_CATALOG_ENTRIES: usize = 20_000;

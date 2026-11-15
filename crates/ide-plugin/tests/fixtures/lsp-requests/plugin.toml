@@ -22,3 +22,13 @@ title = "Send a method of LSP itself"
 [[contributes.commands]]
 id = "ungranted"
 title = "Ask a server the manifest does not name"
+
+[[contributes.commands]]
+id = "ran"
+title = "Run a command the mock server left to the client"
+
+# The mock server's code lenses carry `mock.modelView` without executing it.
+[[contributes.serverCommands]]
+server = "mock"
+command = "mock.modelView"
+run = "ran"
