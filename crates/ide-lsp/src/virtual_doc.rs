@@ -110,6 +110,17 @@ pub fn is_decompiled(text: &str) -> bool {
         })
 }
 
+/// Whether a `.class` stub is written in Java: its first `package` or `import` line ends with `;`.
+/// The Kotlin language server shows Java classes from jars as Java and Kotlin ones as Kotlin, under
+/// the same `.class` name.
+pub fn is_java_class_stub(text: &str) -> bool {
+    text.lines()
+        .take(200)
+        .map(str::trim)
+        .find(|line| line.starts_with("package ") || line.starts_with("import "))
+        .is_some_and(|line| line.ends_with(';'))
+}
+
 /// `scheme` of a URI (`jdt` for `jdt://…`).
 pub fn scheme(uri: &str) -> &str {
     uri.split_once(':').map(|(s, _)| s).unwrap_or("")
@@ -204,6 +215,17 @@ mod tests {
     use super::*;
 
     const JDT: &str = "jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=spring-demo/%5C/Users%5C/me%5C/.m2%5C/repository%5C/spring-boot-4.1.1.jar%3Corg.springframework.boot%28SpringApplication.class";
+
+    #[test]
+    fn class_stubs_in_java_or_kotlin() {
+        let java = "// IntelliJ API Decompiler stub source generated from a class file\n\npackage com.boydti.fawe.util;\n\npublic class EditSessionBuilder {\n}\n";
+        let kotlin = "// IntelliJ API Decompiler stub source generated from a class file\n// Implementation of methods is not available\n\npackage kotlin.collections\n\npublic fun <T> listOf(): List<T> { /* compiled code */ }\n";
+        let imports_only = "import java.util.List;\n\npublic class A {}\n";
+        assert!(is_java_class_stub(java));
+        assert!(is_java_class_stub(imports_only));
+        assert!(!is_java_class_stub(kotlin));
+        assert!(!is_java_class_stub("public class A {}"));
+    }
 
     #[test]
     fn csharp_metadata_titles_and_kinds() {
