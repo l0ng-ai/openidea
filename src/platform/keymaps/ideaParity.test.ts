@@ -35,6 +35,8 @@ describe("IDEA keymap parity", () => {
     ["project.reloadFromDisk", ["Meta+Alt+Y"], ["Ctrl+Alt+Y"]],
     ["project.expandAll", ["Meta+="], ["Ctrl+="]],
     ["project.collapseAll", ["Meta+-"], ["Ctrl+-"]],
+    ["run.expandAllTests", ["Meta+="], ["Ctrl+="]],
+    ["run.collapseAllTests", ["Meta+-"], ["Ctrl+-"]],
     ["navigate.searchText", ["Meta+Alt+Shift+E"], ["Ctrl+Alt+Shift+E"]],
     ["window.next", ["Meta+Alt+`"], ["Ctrl+Alt+]"]],
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],
@@ -101,6 +103,8 @@ describe("IDEA keymap parity", () => {
     order(km, "file.reloadFromDisk", "project.reloadFromDisk");
     order(km, "code.unfold", "project.expandAll");
     order(km, "code.fold", "project.collapseAll");
+    order(km, "code.unfold", "run.expandAllTests");
+    order(km, "code.fold", "run.collapseAllTests");
     order(km, "navigate.nextError", "vcs.changelist.edit");
     order(km, "debug.setValue", "vcs.changelist.edit");
     order(km, "find.replaceInFile", "find.rerun");

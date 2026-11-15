@@ -99,6 +99,7 @@ import {
   isLive,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
+import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
@@ -637,6 +638,24 @@ export function activate(): () => void {
               key: "run-rerun-failed",
             });
         },
+      },
+      {
+        id: "run.expandAllTests",
+        title: "Expand All",
+        category: "Run",
+        icon: "expand-all",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keyWhen: TEST_TREE_FOCUS,
+        run: () => testTree.expandAll?.(),
+      },
+      {
+        id: "run.collapseAllTests",
+        title: "Collapse All",
+        category: "Run",
+        icon: "collapse-all",
+        when: "projectOpen && activeToolWindow == 'run'",
+        keyWhen: TEST_TREE_FOCUS,
+        run: () => testTree.collapseAll?.(),
       },
       {
         id: "run.reloadConfigs",

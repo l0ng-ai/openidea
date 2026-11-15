@@ -92,10 +92,10 @@ export function resetHierarchy() {
   }));
 }
 
-/** Closes the hierarchy's content tab; with no content left the tool window hides. */
+/** Closes the hierarchy's content tab; with no content left the tool window and its stripe button go. */
 export function closeHierarchy() {
   resetHierarchy();
-  toolWindowService().hide("hierarchy");
+  toolWindowService().hide("hierarchy", { removeFromStripe: true });
 }
 
 /** The empty-result line of the hierarchy tree. */

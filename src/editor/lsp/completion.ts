@@ -24,7 +24,7 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { EditorSelection, Prec, type Text } from "@codemirror/state";
+import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
 import {
   call,
@@ -58,6 +58,7 @@ import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
 import { languageSemantics } from "./semantic";
+import { remoteChange } from "@/editor/api";
 
 interface RequestContext {
   doc: number;
@@ -297,7 +298,9 @@ export function callParens(
   start: number,
   end: number,
 ): "inside" | "after" | null {
-  if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || /[(<[{]/.test(item.insertText)) return null;
+  // An empty text is inserted by the item's server command (kotlin-lsp), parentheses included.
+  if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || !item.insertText || /[(<[{]/.test(item.insertText))
+    return null;
   const next = line.text.charAt(end - line.from);
   if (next && /[(\p{L}\p{N}_$'"`]/u.test(next)) return null;
   if (IMPORT_LINE.test(line.text.slice(0, start - line.from))) return null;
@@ -322,6 +325,33 @@ async function applyLateEdits(view: EditorView, c: LspCompletion, insertedAt: nu
   view.dispatch({ changes: edits, userEvent: "input.complete" });
 }
 
+/** Where the caret was when an item its server inserts was picked, until that edit lands (`null`: none). */
+const awaitServerInsert = StateEffect.define<number | null>();
+const serverInsertAt = StateField.define<number | null>({
+  create: () => null,
+  update(at, tr) {
+    for (const e of tr.effects) if (e.is(awaitServerInsert)) return e.value;
+    // The edit landed, or the caret moved on before it did.
+    if (at === null || tr.annotation(remoteChange) || tr.selection) return null;
+    return tr.changes.mapPos(at, -1);
+  },
+});
+
+/**
+ * The server's edit inserts the item at the caret: the caret goes after it, as after any other
+ * completion (a remote insertion at the caret would otherwise leave it in front).
+ */
+const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
+  const at = tr.startState.field(serverInsertAt, false);
+  const caret = tr.startState.selection.main;
+  if (at == null || !tr.docChanged || !tr.annotation(remoteChange) || !caret.empty || caret.head !== at) return tr;
+  let inserted = false;
+  tr.changes.iterChangedRanges((fromA, toA) => {
+    if (fromA <= at && toA >= at) inserted = true;
+  });
+  return inserted ? [tr, { selection: EditorSelection.cursor(tr.changes.mapPos(at, 1)), sequential: true }] : tr;
+});
+
 /** Client-side commands handled by the editor itself (VS Code ids servers commonly send). */
 const CLIENT_COMMANDS = new Set(["editor.action.triggerParameterHints", "editor.action.triggerSuggest"]);
 
@@ -329,17 +359,29 @@ function runCommand(view: EditorView, item: CompletionItem) {
   const command = item.command;
   if (!command?.command) return;
   const cmd = command.command;
+  // kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing went in here.
+  const serverInserted = !item.insertText && !CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.");
+  if (serverInserted) view.dispatch({ effects: awaitServerInsert.of(view.state.selection.main.head) });
   if (cmd === "editor.action.triggerParameterHints") setTimeout(() => triggerSignatureHelp(view), 0);
   else if (cmd === "editor.action.triggerSuggest") setTimeout(() => startCompletion(view), 0);
   else if (!CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.")) {
     const doc = docOf(view);
     // Server commands (auto-import, postfix…); resulting edits come back as workspace/applyEdit.
     if (doc)
-      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command)).catch((e: unknown) =>
-        reportLspError(view, e, false),
-      );
+      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command))
+        .catch((e: unknown) => reportLspError(view, e, false))
+        .finally(() => {
+          // The edit arrives before the command's answer; allow for the document update.
+          if (serverInserted)
+            setTimeout(() => {
+              if (view.dom.isConnected && view.state.field(serverInsertAt, false) != null)
+                view.dispatch({ effects: awaitServerInsert.of(null) });
+            }, SERVER_INSERT_WAIT_MS);
+        });
   }
 }
+
+const SERVER_INSERT_WAIT_MS = 1000;
 
 // ---------------------------------------------------------------------------
 // Source
@@ -828,6 +870,8 @@ export function completionExtension() {
     }),
     completionFooter,
     lookupTracker,
+    serverInsertAt,
+    caretAfterServerInsert,
     Prec.highest(
       keymap.of([
         // macOS: ⌃N / ⌃P are line down / up in text, so they move through the lookup as ↓ / ↑ do.

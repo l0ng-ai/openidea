@@ -219,6 +219,9 @@ export const intellijWindows: Record<string, string[]> = {
   "project.reloadFromDisk": ["Ctrl+Alt+Y"],
   "project.expandAll": ["Ctrl+="],
   "project.collapseAll": ["Ctrl+-"],
+  // In the test results tree (keyWhen).
+  "run.expandAllTests": ["Ctrl+="],
+  "run.collapseAllTests": ["Ctrl+-"],
 
   // Tool windows
   "toolwindow.project": ["Alt+1"],

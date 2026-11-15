@@ -135,7 +135,7 @@ export function showPullDialog(repo?: string | null) {
 }
 
 /** IDEA's Git Root choice: shown only when the project holds several repositories. */
-function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
+export function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: string) => void }) {
   const [roots] = useState(() => useVcs.getState().roots);
   if (roots.length < 2) return null;
   return (
@@ -149,7 +149,7 @@ function RepoPicker({ repo, onChange }: { repo: string | null; onChange: (root: 
 }
 
 /** The repository's branch info: the store's for the selected repository, else read from git. */
-function useBranchInfo(repo: string | null) {
+export function useBranchInfo(repo: string | null) {
   const [initial] = useState(() => ({ repo: currentRepo(), info: useVcs.getState().branch }));
   const [loaded, setLoaded] = useState<{ repo: string | null; info: BranchInfo | null } | null>(null);
   useEffect(() => {

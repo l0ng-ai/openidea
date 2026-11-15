@@ -476,6 +476,19 @@ describe("stripe buttons", () => {
     resetToolWindowPlacements();
     expect(buttons()).toEqual({});
   });
+
+  it("drops the button of a window that lost its last tab until new content opens it", () => {
+    disposers.push(registerToolWindow(find));
+    showToolWindow("find");
+    toolWindowServiceImpl.hide("find");
+    expect(hasStripeButton(find, buttons())).toBe(true);
+    showToolWindow("find");
+    toolWindowServiceImpl.hide("find", { removeFromStripe: true });
+    expect(isToolWindowVisible("find")).toBe(false);
+    expect(hasStripeButton(find, buttons())).toBe(false);
+    showToolWindow("find");
+    expect(hasStripeButton(find, buttons())).toBe(true);
+  });
 });
 
 describe("view modes", () => {
