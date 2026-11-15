@@ -164,6 +164,17 @@ const CASES: Record<string, Case> = {
     variable: "line",
     evaluate: ["print line", / = /],
   },
+  // Zig ships no debugger of its own: CodeLLDB debugs the binary `zig build` produces.
+  // The breakpoint lands on the last use of `sum`: zig's debuginfo gives a const local a
+  // location only within its live range, so `prices` (used earlier) is not in the frame.
+  zig: {
+    fixture: "zig-app",
+    tools: ["codelldb"],
+    adapter: "codelldb",
+    file: "src/main.zig",
+    variable: "sum",
+    evaluate: ["sum", /13497/],
+  },
   php: {
     fixture: "php-app",
     setup: (root) =>
