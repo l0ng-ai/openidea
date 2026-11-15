@@ -111,6 +111,9 @@ function watchChanges() {
     if (!affectsMarkers([...e.created, ...e.modified, ...e.removed])) return;
     changes++;
     forgetInheritanceGraph();
+    // A class added, moved or removed changes the targets and tooltips of the open
+    // documents: re-render them instead of waiting for an edit or a settling server.
+    for (const plugin of live) plugin.refreshSoon();
   });
   // Answers (outlines too) given while a server was starting or indexing may be incomplete.
   onServerSettled(() => {
