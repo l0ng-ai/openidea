@@ -97,10 +97,13 @@ fn the_negotiating_request_carries_both_versions() {
         p["clientCapabilities"]["_meta"]["parameterizedModelPicker"], true,
         "Cursor and similar agents need parameterized model options (e.g. fast on/off)"
     );
+    // Forms only: URL mode would open pages the agent names.
+    assert_eq!(p["clientCapabilities"]["elicitation"], json!({ "form": {} }));
     // What we sent in the capture is what claude-agent-acp negotiated v2 and v1 from.
     let sent = frames(TURN, "out")[0]["params"]["clientCapabilities"].clone();
     let mut expected = sent;
     expected["_meta"] = p["clientCapabilities"]["_meta"].clone();
+    expected["elicitation"] = p["clientCapabilities"]["elicitation"].clone();
     assert_eq!(expected, p["clientCapabilities"]);
 }
 

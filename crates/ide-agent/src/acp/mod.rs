@@ -58,6 +58,8 @@ fn client_capabilities() -> Value {
         "terminal": false,
         // Subagents as sessions of their own (ACP subagents RFD; v2 baseline).
         "subagents": {},
+        // Forms the agent asks the user to fill in (`elicitation/create`); not URL mode.
+        "elicitation": { "form": {} },
         // Cursor exposes model parameters (e.g. Composer `fast`) as separate config options
         // only when the client advertises this flag (undocumented Cursor ACP extension).
         "_meta": { "parameterizedModelPicker": true },
