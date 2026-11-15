@@ -207,6 +207,31 @@
   color: var(--fg-subtle);
 }
 
+/* The archived-task notice: an editor notification banner above the conversation. */
+.banner {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px 8px;
+  min-height: 36px;
+  padding: 9px 12px;
+  background: var(--bg-feedback-warning);
+  border-bottom: 1px solid var(--border-feedback-warning);
+  color: var(--fg-strong);
+}
+.bannerText {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-height: 33vh;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bannerSpacer {
+  flex: 1;
+}
+
 /* The conversation with its find bar. */
 .streamArea {
   min-width: 0;
