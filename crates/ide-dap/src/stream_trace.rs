@@ -196,8 +196,14 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
         loop {
             if cancel.is_cancelled() && !stopped {
                 stopped = true;
-                self.last.records = self.inspect(tracer.stop(target, id)).await?;
-                self.report(TracePhase::RecordingStopped);
+                // Refused when the trace parked or failed just before: `wait` reports that.
+                match self.until_ended(tracer.stop(target, id)).await? {
+                    Ok(records) => {
+                        self.last.records = records;
+                        self.report(TracePhase::RecordingStopped);
+                    }
+                    Err(e) => tracing::debug!(session = s.id.0, trace = id, "stream trace stop: {e}"),
+                }
             }
             match self.inspect(tracer.wait(target, id, WAIT_MS)).await? {
                 TraceState::Running { records, dropped, elapsed_ms } => {
@@ -222,23 +228,23 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
         self.report(TracePhase::Collecting);
         let before = s.suspended.ticket();
         self.dap(self.mgr.step(s.id, self.thread_id, StepKind::Out)).await?;
+        // Another thread's stop meanwhile is not this one: the traced thread would still be
+        // inside the terminal operation.
         let stop = async {
-            while s.suspended.ticket() <= before {
+            loop {
+                if let Some(ticket) = s.suspended.stopped_since(self.thread_id, before) {
+                    return ticket;
+                }
                 tokio::time::sleep(STOP_POLL).await;
             }
         };
-        if self.until_ended(tokio::time::timeout(STOP_WAIT, stop)).await?.is_err() {
+        let Ok(generation) = self.until_ended(tokio::time::timeout(STOP_WAIT, stop)).await? else {
             // Collecting in the old stop would only be refused as stale.
-            return Err(TraceRun::Failed {
-                detail: format!(
-                    "java-debug reported no stop within {} s of stepping out of the stream's terminal operation",
-                    STOP_WAIT.as_secs()
-                ),
-            });
-        }
-        let stopped_in = vm_target(s);
+            return Err(TraceRun::Failed { detail: step_out_timeout() });
+        };
+        let stopped_in = VmTarget { generation, ..vm_target(s) };
         let collected = self.inspect(tracer.collect(&stopped_in, id)).await?;
-        Ok(TraceRun::Done { collected, generation: stopped_in.generation })
+        Ok(TraceRun::Done { collected, generation })
     }
 
     fn report(&self, phase: TracePhase) {
@@ -267,6 +273,13 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
     fn failed(&self, detail: String) -> TraceRun {
         if self.s.ended.is_cancelled() { ended() } else { TraceRun::Failed { detail } }
     }
+}
+
+fn step_out_timeout() -> String {
+    format!(
+        "java-debug reported no stop within {} s of stepping out of the stream's terminal operation",
+        STOP_WAIT.as_secs()
+    )
 }
 
 fn ended() -> TraceRun {

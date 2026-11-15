@@ -197,6 +197,13 @@ impl Suspension {
         self.0.lock().ticket
     }
 
+    /// The ticket of a stop of `thread` (its own or every thread's) taken after ticket `after`.
+    pub fn stopped_since(&self, thread: i64, after: u64) -> Option<u64> {
+        let stops = self.0.lock();
+        let own = stops.threads.iter().find(|&&(id, _)| id == thread).map(|&(_, ticket)| ticket);
+        own.max(stops.all).filter(|&ticket| ticket > after)
+    }
+
     /// After a successful resume-like request for `thread`; `all`: every thread ran.
     pub fn resumed(&self, ticket: u64, thread: i64, all: bool) {
         self.0.lock().release(Some(thread), all, ticket);

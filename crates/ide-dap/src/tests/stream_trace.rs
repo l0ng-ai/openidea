@@ -13,11 +13,14 @@ const TRACE: TraceId = 7;
 
 #[derive(Default)]
 struct FakeTracer {
-    /// Answers to `wait`, in order. Once they run out, `wait` signals `waiting` and never answers.
+    /// Answers to `wait`, in order. Once they run out, `wait` signals `waiting` and answers only
+    /// after more are pushed and `more` is notified.
     waits: Mutex<VecDeque<TraceState>>,
     arm_error: Mutex<Option<InspectError>>,
+    stop_error: Mutex<Option<InspectError>>,
     calls: Mutex<Vec<(&'static str, VmTarget)>>,
     waiting: Notify,
+    more: Notify,
 }
 
 impl FakeTracer {
@@ -53,21 +56,21 @@ impl StreamTracer for FakeTracer {
 
     fn wait<'a>(&'a self, target: &'a VmTarget, _trace: TraceId, _ms: u32) -> InspectFuture<'a, TraceState> {
         self.record("wait", target);
-        let next = self.waits.lock().pop_front();
         Box::pin(async move {
-            match next {
-                Some(state) => Ok(state),
-                None => {
-                    self.waiting.notify_one();
-                    std::future::pending().await
+            loop {
+                if let Some(state) = self.waits.lock().pop_front() {
+                    return Ok(state);
                 }
+                self.waiting.notify_one();
+                self.more.notified().await;
             }
         })
     }
 
     fn stop<'a>(&'a self, target: &'a VmTarget, _trace: TraceId) -> InspectFuture<'a, u64> {
         self.record("stop", target);
-        Box::pin(async { Ok(3) })
+        let error = self.stop_error.lock().clone();
+        Box::pin(async move { error.map_or(Ok(3), Err) })
     }
 
     fn abort<'a>(&'a self, target: &'a VmTarget, _trace: TraceId) -> InspectFuture<'a, AbortState> {
@@ -106,11 +109,7 @@ fn parked() -> TraceState {
 
 /// java-debug keeps the program running after `continue` and stops right after a `stepOut`.
 fn java_debug() -> Script {
-    Script {
-        continue_reply: Some(json!({"allThreadsContinued": true})),
-        stop_after_step_out: true,
-        ..Script::default()
-    }
+    Script { continue_reply: Some(json!({"allThreadsContinued": true})), step_out_stops: &[1], ..Script::default() }
 }
 
 async fn stopped_java(h: &Harness, tracer: &Arc<FakeTracer>) -> DebugSessionId {
@@ -125,18 +124,31 @@ async fn trace(h: &Harness, id: DebugSessionId) -> IdeResult<TraceRun> {
     tokio::time::timeout(Duration::from_secs(10), run).await.expect("the trace did not end")
 }
 
-/// A trace whose `wait` never answers, running in its own task.
+/// A trace in its own task, returned once it waits for the answers its tracer has not got.
 async fn hanging_trace(
     h: &Harness,
     id: DebugSessionId,
     tracer: &FakeTracer,
 ) -> tokio::task::JoinHandle<IdeResult<TraceRun>> {
+    hanging_trace_with(h, id, tracer, |_| {}).await
+}
+
+async fn hanging_trace_with(
+    h: &Harness,
+    id: DebugSessionId,
+    tracer: &FakeTracer,
+    progress: impl Fn(TraceProgress) + Send + Sync + 'static,
+) -> tokio::task::JoinHandle<IdeResult<TraceRun>> {
     let manager = h.manager.clone();
     let task = tokio::spawn(async move {
-        manager.stream_trace(id, 1, json!({"steps": []}), CancellationToken::new(), |_| {}).await
+        manager.stream_trace(id, 1, json!({"steps": []}), CancellationToken::new(), progress).await
     });
     tokio::time::timeout(Duration::from_secs(5), tracer.waiting.notified()).await.expect("the trace did not wait");
     task
+}
+
+fn phases(seen: &Mutex<Vec<TraceProgress>>) -> Vec<TracePhase> {
+    seen.lock().iter().map(|p| p.phase).collect()
 }
 
 fn progress(phase: TracePhase, records: u64, elapsed_ms: u64) -> TraceProgress {
@@ -293,12 +305,91 @@ async fn abort_reaches_the_running_trace() {
     let tracer = FakeTracer::scripted([]);
     let id = stopped_java(&h, &tracer).await;
     assert_eq!(h.manager.stream_trace_abort(id).await.unwrap(), None);
-    let task = hanging_trace(&h, id, &tracer).await;
+    let seen: Arc<Mutex<Vec<TraceProgress>>> = Arc::default();
+    let sink = seen.clone();
+    let task = hanging_trace_with(&h, id, &tracer, move |p| sink.lock().push(p)).await;
 
     assert_eq!(h.manager.stream_trace_abort(id).await.unwrap(), Some(AbortState::Interrupted));
-
     assert_eq!(tracer.target_of("abort"), tracer.target_of("arm"));
-    task.abort();
+
+    let thrown = "java.lang.RuntimeException: oi-cancel:1";
+    tracer.waits.lock().extend([running(4), TraceState::Failed { detail: thrown.into() }]);
+    tracer.more.notify_one();
+    let run = tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+    assert_eq!(run, TraceRun::Failed { detail: thrown.into() });
+    assert_eq!(phases(&seen), [TracePhase::Arming, TracePhase::Aborting]);
+}
+
+#[tokio::test]
+async fn failed_wait_passes_its_detail_through() {
+    let h = harness(java_debug());
+    let detail = "the program began to exit while the stream ran: stop the debug session";
+    let tracer = FakeTracer::scripted([running(1), TraceState::Failed { detail: detail.into() }]);
+    let id = stopped_java(&h, &tracer).await;
+
+    assert_eq!(trace(&h, id).await.unwrap(), TraceRun::Failed { detail: detail.into() });
+    assert_eq!(tracer.names(), ["arm", "wait", "wait"]);
+    assert!(!h.commands().iter().any(|c| c == "stepOut"));
+}
+
+#[tokio::test]
+async fn refused_stop_leaves_the_outcome_to_wait() {
+    let h = harness(java_debug());
+    let tracer = FakeTracer::scripted([running(10), parked()]);
+    *tracer.stop_error.lock() = Some(InspectError::NoTrace);
+    let id = stopped_java(&h, &tracer).await;
+    let cancel = CancellationToken::new();
+    let on_running = cancel.clone();
+    let seen: Arc<Mutex<Vec<TraceProgress>>> = Arc::default();
+    let sink = seen.clone();
+
+    let run = h
+        .manager
+        .stream_trace(id, 1, json!({}), cancel, move |p| {
+            if p.phase == TracePhase::Running {
+                on_running.cancel();
+            }
+            sink.lock().push(p);
+        })
+        .await;
+
+    assert!(matches!(run, Ok(TraceRun::Done { .. })), "{run:?}");
+    assert_eq!(tracer.names(), ["arm", "wait", "stop", "wait", "collect"]);
+    assert_eq!(phases(&seen), [TracePhase::Arming, TracePhase::Running, TracePhase::Collecting]);
+}
+
+#[tokio::test]
+async fn another_threads_stop_is_not_the_step_out() {
+    // Thread 2 stops at a breakpoint 100 ms before the traced thread's step out ends.
+    let h = harness(Script { step_out_stops: &[2, 1], ..java_debug() });
+    let tracer = FakeTracer::scripted([parked()]);
+    let id = stopped_java(&h, &tracer).await;
+    let start = h.manager.session(id).unwrap().suspended.ticket();
+
+    let run = trace(&h, id).await.unwrap();
+
+    let TraceRun::Done { generation, .. } = run else { panic!("not done: {run:?}") };
+    assert_eq!(generation, start + 2, "collected in thread 2's stop");
+    assert_eq!(tracer.target_of("collect").generation, generation);
+}
+
+#[tokio::test]
+async fn step_out_without_a_stop_times_out() {
+    let h = harness(Script { step_out_stops: &[], ..java_debug() });
+    let tracer = FakeTracer::scripted([parked()]);
+    let id = stopped_java(&h, &tracer).await;
+    tokio::time::pause();
+
+    let run = h.manager.stream_trace(id, 1, json!({}), CancellationToken::new(), |_| {}).await.unwrap();
+
+    assert_eq!(
+        run,
+        TraceRun::Failed {
+            detail: "java-debug reported no stop within 30 s of stepping out of the stream's terminal operation".into()
+        }
+    );
+    assert!(h.commands().iter().any(|c| c == "stepOut"));
+    assert_eq!(tracer.names(), ["arm", "wait"]);
 }
 
 #[tokio::test]
