@@ -5,9 +5,8 @@
   min-width: 0;
 }
 .find {
+  composes: row from "./layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 4px 8px;
   background: var(--bg-elev);

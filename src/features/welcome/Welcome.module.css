@@ -7,17 +7,15 @@
 /* ---- Sidebar ---------------------------------------------------------- */
 
 .sidebar {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
   width: 240px;
-  display: flex;
-  flex-direction: column;
   padding: 28px 12px 14px;
   background: var(--bg-elev);
   box-shadow: inset -1px 0 0 var(--border);
 }
 .brand {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
   padding: 0 6px 8px;
 }
@@ -35,8 +33,7 @@
   -webkit-user-drag: none;
 }
 .brandText {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   min-width: 0;
   line-height: 18px;
 }
@@ -47,13 +44,11 @@
   color: var(--fg-muted);
 }
 .nav {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
 }
 .navItem {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   height: 34px;
   padding: 0 24px;
@@ -102,21 +97,17 @@
 /* ---- Content ---------------------------------------------------------- */
 
 .content {
+  composes: column grow from "../../ui/layout.module.css";
   position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
   background: var(--bg-island);
 }
 .contentPlugins {
   padding: 16px 20px 12px;
 }
 .dropOverlay {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   inset: 8px;
-  display: flex;
-  align-items: center;
   justify-content: center;
   gap: 8px;
   border: 2px dashed var(--accent);
@@ -129,15 +120,12 @@
 /* ---- Projects page ---------------------------------------------------- */
 
 .projects {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .header {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   flex-wrap: wrap;
   gap: 12px;
   min-height: 76px;
@@ -196,12 +184,8 @@
   --icon-color: var(--fg-muted);
 }
 .groupName {
-  flex: 1;
-  min-width: 0;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .groupCount {
   color: var(--fg-faint);
@@ -210,36 +194,26 @@
   padding-left: 32px;
 }
 .projectText {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   line-height: 20px;
 }
 .projectName {
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .projectPath {
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .projectBranch {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
   color: var(--fg-muted);
   --icon-color: var(--fg-muted);
 }
 .projectBranchName {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../ui/layout.module.css";
 }
 .projectMore {
   flex: none;
@@ -259,11 +233,10 @@
 
 /* Shared project avatar (welcome rows and the Recent Projects popup). */
 .tile {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
   width: 20px;
   height: 20px;
-  display: flex;
-  align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
   background: linear-gradient(135deg, var(--project-color), var(--project-color-end));
@@ -276,18 +249,15 @@
 /* ---- Customize page --------------------------------------------------- */
 
 .customize {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
   align-items: flex-start;
   gap: 24px;
   padding: 28px 32px;
 }
 .section {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
 }
 .sectionTitle {
@@ -297,8 +267,7 @@
   color: var(--fg-strong);
 }
 .field {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
   min-height: var(--h-field);
 }
@@ -307,8 +276,7 @@
   color: var(--fg);
 }
 .fieldControl {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 14px;
 }
 .swatches {
@@ -353,9 +321,8 @@
 /* ---- Empty landing ---------------------------------------------------- */
 
 .landing {
+  composes: column from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 12px;
   padding: 0 16px 40px;
@@ -389,10 +356,9 @@
   margin-top: 16px;
 }
 .landingAction {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
   width: 104px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 8px;
   padding: 0;
@@ -403,10 +369,9 @@
   cursor: default;
 }
 .landingIcon {
+  composes: row from "../../ui/layout.module.css";
   width: 48px;
   height: 48px;
-  display: flex;
-  align-items: center;
   justify-content: center;
   border-radius: var(--radius-popup-large);
   background: var(--bg-elev);
@@ -426,17 +391,15 @@
   color: var(--fg-faint);
 }
 .landingHint {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   margin-top: 8px;
   color: var(--fg-faint);
 }
 
 .reopening {
+  composes: column from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 14px;
@@ -445,15 +408,13 @@
 }
 
 .reopeningTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 10px;
 }
 
 .reopeningStage {
+  composes: column from "../../ui/layout.module.css";
   width: 320px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 8px;
   font-size: 0.92em;
@@ -466,9 +427,8 @@
 /* ---- Recent projects popup -------------------------------------------- */
 
 .popup {
+  composes: column from "../../ui/layout.module.css";
   height: min(460px, 70vh);
-  display: flex;
-  flex-direction: column;
 }
 .popup > div {
   flex: 1;
@@ -487,15 +447,12 @@
 }
 
 .recentList {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
 }
 .searchRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 10px;
 }
 .list {
@@ -503,17 +460,11 @@
   min-height: 0;
 }
 .recent {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 10px;
 }
 .recentText {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
 }
 .recentTop {
   display: flex;

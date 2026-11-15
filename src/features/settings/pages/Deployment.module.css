@@ -10,8 +10,7 @@
   overflow: auto;
 }
 .serverRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-list-row);
   padding: 0 8px;
@@ -25,11 +24,7 @@
   background: var(--bg-tree-selected);
 }
 .serverName {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
 }
 .default {
   font-weight: 600;
@@ -39,14 +34,12 @@
   color: var(--fg-subtle);
 }
 .detail {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 10px;
   min-width: 0;
 }
 .panel {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding-top: 4px;
 }
 .panel > div {
@@ -57,10 +50,7 @@
   max-width: 100%;
 }
 .field {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   gap: 6px;
 }
 .field > input {
@@ -75,8 +65,7 @@
 }
 /* A checkbox in the controls column of the rows above (label column + gap). */
 .option {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   min-height: 28px;
   padding: 2px 0 2px 148px;
 }
@@ -94,20 +83,17 @@
   word-break: break-word;
 }
 .problem {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 6px;
   margin-top: 4px;
 }
 .secretRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   flex-wrap: wrap;
 }
 .testRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 10px;
   min-height: 28px;
 }
@@ -134,26 +120,22 @@
   background: var(--bg-tree-selected);
 }
 .cellField {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
 }
 .cellInput {
+  composes: grow from "../../../ui/layout.module.css";
   width: 100%;
-  min-width: 0;
-  flex: 1;
 }
 
 /* Remote folder chooser. */
 .chooser {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   min-height: 320px;
 }
 .chooserPath {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
 }
 .chooserPath > input {
@@ -172,8 +154,7 @@
   outline: none;
 }
 .folderRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-list-row);
   padding: 0 8px;
@@ -187,16 +168,14 @@
   background: var(--bg-tree-selected);
 }
 .center {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   justify-content: center;
   gap: 8px;
   padding: 16px;
   color: var(--fg-subtle);
 }
 .groupMembers {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
   padding: 8px 0;
 }

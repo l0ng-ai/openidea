@@ -1,9 +1,7 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
   gap: 10px;
   height: 100%;
-  min-height: 0;
   color: var(--fg);
   font-size: var(--fs-ui);
 }
@@ -22,16 +20,13 @@
   overflow: hidden;
 }
 .side {
+  composes: columnFill from "../../../ui/layout.module.css";
   width: 240px;
   flex: none;
-  display: flex;
-  flex-direction: column;
   border-right: 1px solid var(--border-strong);
-  min-height: 0;
 }
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   height: var(--h-header);
   padding: 0 4px;
@@ -48,8 +43,7 @@
   padding: 2px 0;
 }
 .groupHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-row);
   padding: 0 8px;
@@ -59,8 +53,7 @@
   text-transform: none;
 }
 .item {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-row);
   padding: 0 8px 0 18px;
@@ -81,11 +74,9 @@
   color: var(--fg-emphasis);
 }
 .itemDetail {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  white-space: nowrap;
   color: var(--fg-subtle);
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .disabledItem .itemLabel {
   color: var(--fg-faint);
@@ -94,17 +85,13 @@
   color: var(--link);
 }
 .editor {
-  flex: 1;
-  min-width: 0;
+  composes: column grow from "../../../ui/layout.module.css";
   overflow: auto;
   padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
   gap: 8px;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
 }
 .label {
@@ -113,8 +100,7 @@
   color: var(--fg-muted);
 }
 .grow {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
 }
 .body {
   width: 100%;
@@ -174,17 +160,14 @@
   justify-content: flex-end;
 }
 .list {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   overflow: auto;
   flex: 1;
-  min-height: 0;
 }
 .listRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 10px;
   min-height: var(--h-row);
   padding: 0 8px;
@@ -222,13 +205,9 @@
 }
 
 .readonly {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  flex-direction: column;
+  composes: columnFill grow from "../../../ui/layout.module.css";
   gap: 8px;
   border: 0;
   padding: 0;
   margin: 0;
-  min-width: 0;
 }

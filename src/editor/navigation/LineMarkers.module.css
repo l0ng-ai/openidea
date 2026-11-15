@@ -1,9 +1,8 @@
 /* Editor gutter inheritance icons (implemented / overridden / implementing / overriding). */
 .marker {
+  composes: row from "../../ui/layout.module.css";
   width: 14px;
   height: 14px;
-  display: flex;
-  align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;

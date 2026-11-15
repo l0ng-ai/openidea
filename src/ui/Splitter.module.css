@@ -3,10 +3,8 @@
   min-height: 0;
 }
 .panel {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "./layout.module.css";
   min-width: 0;
-  min-height: 0;
   height: 100%;
 }
 .handle {

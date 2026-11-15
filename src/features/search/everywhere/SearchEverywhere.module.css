@@ -14,9 +14,8 @@
   overflow: hidden;
 }
 .header {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   height: 44px;
   padding: 0 8px 0 8px;
@@ -24,13 +23,10 @@
   border-bottom: 1px solid var(--border-popup);
 }
 .tabs {
+  composes: row grow from "../../../ui/layout.module.css";
   position: relative;
   overflow-x: auto;
   scrollbar-width: none;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 2px;
 }
 .tab {
@@ -58,9 +54,8 @@
   color: var(--fg-strong);
 }
 .tools {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 .include {
@@ -78,8 +73,7 @@
   padding: 6px 8px;
 }
 .field {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: 32px;
   padding: 0 10px 0 8px;
@@ -110,8 +104,7 @@
   outline: 2px solid var(--focus-ring, var(--accent));
 }
 .query {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   height: 100%;
   background: none;
   border: 0;
@@ -131,20 +124,16 @@
   white-space: nowrap;
 }
 .content {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
 }
 .withPreview {
   height: 532px;
 }
 .results {
+  composes: columnFill from "../../../ui/layout.module.css";
   /* `auto`, not `1`: without the preview `.content` has no definite height, and a 0% basis there
      collapses the list in the system WebKit of macOS 15 instead of using its inline height. */
   flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   padding: 0 0 8px;
 }
 .list {
@@ -158,8 +147,7 @@
   font-family: var(--font-ui);
 }
 .empty {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   justify-content: center;
   height: 64px;
   color: var(--fg-faint);
@@ -174,8 +162,7 @@
   color: var(--fg-subtle);
 }
 .main {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -201,11 +188,9 @@
   color: var(--fg-muted);
 }
 .location {
+  composes: truncate from "../../../ui/layout.module.css";
   flex: 0 1000 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-subtle);
 }
 .shortcut {
@@ -214,11 +199,9 @@
   font-family: var(--font-keys);
 }
 .right {
+  composes: truncate from "../../../ui/layout.module.css";
   flex: none;
   max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-subtle);
   text-align: right;
 }
@@ -226,10 +209,7 @@
   color: var(--fg-muted);
 }
 .actionRow {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   gap: 6px;
 }
 .disabled .name,
@@ -243,9 +223,8 @@
   color: var(--fg-subtle);
 }
 .footer {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 14px;
   height: 30px;
   padding: 0 12px;
@@ -256,8 +235,7 @@
   overflow: hidden;
 }
 .footerInfo {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -279,9 +257,8 @@
 }
 
 .toggle {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
 }
 .filterPopup {
   min-width: 220px;
@@ -290,8 +267,7 @@
   padding: 6px 0;
 }
 .filterGroup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
   padding: 4px 12px 8px;
 }
@@ -307,8 +283,7 @@
   font-weight: 600;
 }
 .filterItems {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 2px;
   padding-left: 4px;
 }

@@ -3,14 +3,12 @@
   overflow: hidden;
 }
 .body {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   outline: none;
   padding-bottom: 4px;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   height: var(--h-row);
   padding: 0 10px;
   font-size: var(--fs-small);
@@ -28,17 +26,12 @@
   height: auto;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 8px;
-  min-width: 0;
-  flex: 1;
 }
 .label {
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-emphasis);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .active .label {
   color: var(--fg-strong);

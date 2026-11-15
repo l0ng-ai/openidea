@@ -28,9 +28,8 @@
   border-bottom: 1px solid var(--border);
 }
 .headerCell {
+  composes: row from "../../ui/layout.module.css";
   position: relative;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 0 6px;
   border-right: 1px solid var(--border);
@@ -70,8 +69,7 @@
   cursor: ew-resize;
 }
 .rowNumber {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: flex-end;
   padding: 0 6px;
   color: var(--fg-line-number);
@@ -80,8 +78,7 @@
   user-select: none;
 }
 .cell {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   padding: 0 6px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
@@ -128,17 +125,14 @@
 
 /* ---- Tool windows ------------------------------------------------------------ */
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .resultTabs {
   padding-inline: var(--space-2);
 }
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 2px;
   height: var(--h-header);
   padding: 0 6px;
@@ -154,13 +148,11 @@
 }
 /* Gives way before the name does. */
 .treeDetail {
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-muted);
   margin-left: 6px;
   min-width: 0;
   flex-shrink: 100;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* IDEA: counts after folders, column types in a smaller grey face, key rows in grey. */
 .treeCount {
@@ -227,16 +219,13 @@
   cursor: default;
 }
 .dbView {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .dbToolbar {
+  composes: row from "../../ui/layout.module.css";
   height: 32px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 6px;
 }
@@ -247,18 +236,15 @@
   background: var(--border);
 }
 .treeHost {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .treeHost > * {
   flex: 1;
   min-height: 0;
 }
 .nodeRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -286,9 +272,7 @@
   --db-tint: var(--db-color-violet);
 }
 .nodeLabel {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../ui/layout.module.css";
 }
 
 /* Results. */
@@ -305,8 +289,7 @@
 
 /* Console toolbar panel above SQL editors. */
 .consoleBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   height: var(--h-header);
   padding: 0 8px;
@@ -334,10 +317,7 @@
   border-bottom: 1px solid var(--border);
 }
 .filterField {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
   padding: 0 8px;
   color: var(--fg-muted);
@@ -350,8 +330,7 @@
   min-width: 0;
 }
 .pager {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 2px;
   color: var(--fg-secondary);
   font-size: var(--fs-small);
@@ -396,9 +375,8 @@
   font-weight: var(--fw-code);
 }
 .formRow {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
-  align-items: center;
 }
 .formRow[hidden],
 .formLabel[hidden] {
@@ -406,9 +384,8 @@
 }
 /* Data source dialog. */
 .formSection {
+  composes: row from "../../ui/layout.module.css";
   grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
   gap: 8px;
   color: var(--fg-strong);
 }
@@ -419,9 +396,8 @@
   background: var(--border);
 }
 .formWide {
+  composes: column from "../../ui/layout.module.css";
   grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
   min-width: 0;
 }
@@ -498,21 +474,18 @@
   border-radius: 3px;
 }
 .namePicker {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
 }
 .nameList {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
   max-height: 180px;
   overflow: auto;
   padding-left: 22px;
 }
 .propertyTable {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
 }
 .propertyHead,
@@ -667,8 +640,7 @@
 
 /* Object dialogs (Rename, Confirm Drop, Modify Table) and Quick Documentation. */
 .dialogBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   padding: 14px;
   min-width: 440px;
@@ -680,8 +652,7 @@
   color: var(--fg-secondary);
 }
 .previewBlock {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
   min-width: 0;
 }
@@ -713,8 +684,7 @@
   user-select: text;
 }
 .modifyBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   padding: 14px;
 }
@@ -727,9 +697,7 @@
   overflow: hidden;
 }
 .modifyColumns {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill from "../../ui/layout.module.css";
   border-right: 1px solid var(--border);
 }
 .modifyToolbar {
@@ -744,8 +712,7 @@
   padding: 2px 0;
 }
 .modifyItem {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   height: 24px;
   padding: 0 8px;
@@ -772,17 +739,15 @@
   overflow: auto;
 }
 .quickDoc {
+  composes: column from "../../ui/layout.module.css";
   width: 460px;
   max-width: calc(100vw - 32px);
   padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
   gap: 8px;
 }
 .quickDocRows {
+  composes: column from "../../ui/layout.module.css";
   margin: 0;
-  display: flex;
-  flex-direction: column;
   gap: 2px;
 }
 .quickDocRows > div {
@@ -833,12 +798,11 @@
   color: var(--accent);
 }
 .filterPill {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   right: 12px;
   bottom: 12px;
-  display: flex;
   gap: 8px;
-  align-items: center;
   padding: 3px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
@@ -857,8 +821,7 @@
 }
 /* Go to Column (ColumnsPopup.tsx). */
 .columnsPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   width: 320px;
   padding: 8px;
@@ -867,16 +830,12 @@
   height: min(320px, 50vh);
 }
 .columnsRow {
-  display: flex;
-  flex: 1;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
   white-space: nowrap;
 }
 .filterPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   width: 280px;
   padding: 8px;
@@ -886,8 +845,7 @@
   overflow: auto;
 }
 .filterValue {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-height: var(--h-row);
 }
@@ -913,16 +871,13 @@
   gap: 6px;
 }
 .sidePanel {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   width: 320px;
-  min-height: 0;
   border-left: 1px solid var(--border);
 }
 .sidePanelHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   padding-right: 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -932,25 +887,21 @@
   overflow: auto;
 }
 .recordFields {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   padding: 8px;
 }
 .recordField {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
 }
 .recordLabel {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   color: var(--fg-secondary);
 }
 .valueView {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   height: 100%;
   padding: 8px;
@@ -993,11 +944,9 @@
   overflow-wrap: anywhere;
 }
 .valueWindowBody {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
   flex: 1;
-  min-height: 0;
   gap: 6px;
   overflow: hidden;
 }
@@ -1038,8 +987,7 @@
 
 /* Chart. */
 .chartBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-header);
   padding: 0 8px;
@@ -1093,10 +1041,7 @@
   min-height: 0;
 }
 .planTree {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
 }
 .planHeader,
 .planRow {
@@ -1111,8 +1056,7 @@
   color: var(--fg-secondary);
 }
 .planOperation {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1149,8 +1093,7 @@
   padding: 14px;
 }
 .exportOptions {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   width: 300px;
   flex: none;
@@ -1160,10 +1103,7 @@
   text-align: left;
 }
 .exportPreview {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 8px;
 }
 .exportPreviewText,
@@ -1211,12 +1151,10 @@
   padding: 14px;
 }
 .historyList {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   gap: 6px;
   width: 300px;
   flex: none;
-  min-height: 0;
 }
 .historyItem {
   display: flex;
@@ -1226,11 +1164,7 @@
   min-width: 0;
 }
 .historyText {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
   font-family: var(--openidea-editor-font, var(--font-mono));
 }
 .importPreview {
@@ -1262,9 +1196,8 @@
   padding: 4px;
 }
 .sqlCompletionOption {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
-  align-items: center;
   width: 100%;
   padding: 4px 8px;
   text-align: left;
@@ -1281,9 +1214,8 @@
 }
 
 .sqlInputWrap {
+  composes: grow from "../../ui/layout.module.css";
   position: relative;
-  flex: 1;
-  min-width: 0;
   overflow: hidden;
 }
 .sqlInputWrap > input {
@@ -1301,13 +1233,12 @@
   color: var(--fg-strong);
 }
 .sqlHighlight {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   inset: 0;
   overflow: hidden;
   white-space: pre;
   pointer-events: none;
-  display: flex;
-  align-items: center;
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
   color: var(--fg-strong);
@@ -1336,16 +1267,12 @@
 
 /* The grid beside the Record / Value / Aggregates panel, under its search bar. */
 .dataMain {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
 }
 /* IDEA's search bar above a result grid. */
 .gridSearch {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 4px 8px;
   background: var(--bg-elev);
@@ -1376,12 +1303,11 @@
 
 /* IDEA's floating pager at the bottom of a result: |< < 1-500 of 501+ > >| and the page size. */
 .resultPager {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   left: 50%;
   bottom: 12px;
   transform: translateX(-50%);
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 2px 4px;
   border: 1px solid var(--border-popup, var(--border));

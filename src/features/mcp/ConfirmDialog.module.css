@@ -1,6 +1,5 @@
 .content {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: var(--space-3);
   overflow-wrap: anywhere;
 }

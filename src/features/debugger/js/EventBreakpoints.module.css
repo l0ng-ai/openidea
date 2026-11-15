@@ -1,11 +1,10 @@
 .section {
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
   max-height: 40%;
   overflow: auto;
   border-top: 1px solid var(--border-popup);
   padding: 6px 12px 8px;
-  display: flex;
-  flex-direction: column;
   gap: 2px;
 }
 
@@ -35,8 +34,7 @@
 }
 
 .group {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 2px;
 }
 
@@ -47,8 +45,7 @@
 }
 
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   min-height: 22px;
 }

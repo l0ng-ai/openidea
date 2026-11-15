@@ -5,14 +5,12 @@
   max-width: 420px;
 }
 .menu {
-  display: flex;
-  flex-direction: column;
+  composes: column from "./layout.module.css";
   outline: none;
 }
 .item {
+  composes: row from "./layout.module.css";
   position: relative;
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: var(--h-list-row);
   margin: 0 6px;
@@ -53,8 +51,7 @@
   text-align: right;
 }
 .label {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "./layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -75,9 +72,8 @@
   background: var(--border-popup);
 }
 .header {
+  composes: row from "./layout.module.css";
   height: var(--h-list-row);
-  display: flex;
-  align-items: center;
   padding: 0 14px;
   color: var(--fg-muted);
   font-size: var(--fs-small);

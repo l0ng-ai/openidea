@@ -50,8 +50,7 @@
 }
 
 .searchField {
-  display: flex;
-  align-items: center;
+  composes: row from "./layout.module.css";
   gap: 2px;
   height: var(--h-field, 28px);
   min-width: 0;
@@ -62,8 +61,7 @@
   margin-right: 4px;
 }
 .searchInput {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "./layout.module.css";
   height: 100%;
   appearance: none;
   border: 0;

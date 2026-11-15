@@ -1,13 +1,10 @@
 .pane {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
 }
 .login {
@@ -15,8 +12,7 @@
   font-weight: 600;
 }
 .search {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   margin-left: 8px;
 }
 .list {
@@ -32,8 +28,7 @@
   min-width: 0;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -43,11 +38,9 @@
   color: var(--fg-subtle);
 }
 .name {
+  composes: truncate from "../../../ui/layout.module.css";
   flex: none;
   max-width: 60%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .tag {
   flex: none;
@@ -55,18 +48,13 @@
   font-size: var(--fs-small);
 }
 .description {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
 .center {
+  composes: row from "../../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  align-items: center;
   justify-content: center;
   gap: 8px;
 }

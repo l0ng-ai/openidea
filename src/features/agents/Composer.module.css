@@ -1,10 +1,9 @@
 /* A framed text area (IDEA text field frame), with the pickers in its bottom row. */
 .composer {
+  composes: column from "../../ui/layout.module.css";
   container: agent-composer / inline-size;
   min-width: 0;
   position: relative;
-  display: flex;
-  flex-direction: column;
   border-radius: var(--radius-popup);
   background: var(--bg-field, var(--bg-button));
   box-shadow: inset 0 0 0 1px var(--border-button);
@@ -69,11 +68,10 @@
 }
 /* A dragged file over the box: what dropping does. */
 .dropOverlay {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   z-index: 2;
   inset: 0;
-  display: flex;
-  align-items: center;
   justify-content: center;
   gap: 8px;
   border-radius: inherit;
@@ -82,25 +80,20 @@
   pointer-events: none;
 }
 .bar {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 2px;
   padding: 4px 6px 6px;
   cursor: default;
 }
 .toolbar {
-  display: flex;
-  flex: 1;
+  composes: row grow from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
-  min-width: 0;
   gap: 2px;
 }
 .actions {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 4px;
   margin-left: auto;
 }
@@ -289,12 +282,10 @@
   padding: 6px 0;
 }
 .modeList {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
 }
 .modeOption {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   height: 24px;
   margin: 0 6px;
@@ -315,8 +306,7 @@
   color: var(--fg-muted);
 }
 .modeFooter {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: 12px;
   margin-top: 6px;
@@ -389,9 +379,8 @@
 
 /* Above the text: the current file to reference, attached files and images. */
 .context {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 6px;
   padding: 8px 10px 0;
   cursor: default;
@@ -497,16 +486,13 @@
   color: var(--fg-strong);
 }
 .attachmentName {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* `@` / `/` completion; Popup keeps the list within the viewport. */
 .popup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   width: min(560px, calc(100vw - 12px));
   border-radius: var(--radius-popup);
   cursor: default;

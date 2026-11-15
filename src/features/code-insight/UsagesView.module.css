@@ -9,10 +9,9 @@
   background: none;
 }
 .toolbar {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
   width: 32px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 2px;
   padding: 4px 0;
@@ -25,10 +24,9 @@
   background: var(--border);
 }
 .summary {
+  composes: row from "../../ui/layout.module.css";
   height: 26px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 10px;
   font-size: var(--fs-ui);
@@ -55,11 +53,7 @@
   text-decoration: underline;
 }
 .body {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  composes: columnFill grow from "../../ui/layout.module.css";
 }
 .body > * {
   flex: 1;
@@ -70,11 +64,8 @@
   flex: 0 0 auto;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
-  flex: 1;
   white-space: nowrap;
 }
 .icon {
@@ -111,10 +102,8 @@
 }
 
 .note {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-size: var(--fs-small);
   font-style: italic;
   color: var(--fg-subtle);
@@ -126,10 +115,8 @@
   text-decoration: line-through;
 }
 .panel {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   min-width: 0;
-  min-height: 0;
 }
 .panel > * {
   flex: 1;

@@ -1,8 +1,6 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .tabs {
   min-width: 0;
@@ -54,14 +52,12 @@
   min-height: 0;
 }
 .row {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   padding-right: 10px;
   white-space: nowrap;
 }
 .name {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -73,8 +69,7 @@
   text-overflow: ellipsis;
 }
 .cell {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -109,31 +104,25 @@
   color: var(--link-hover);
 }
 .links {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   align-items: center;
   gap: 6px;
 }
 
 /* Manage Coverage Reports */
 .reports {
+  composes: column from "../../ui/layout.module.css";
   height: 260px;
   margin: 12px;
   border: 1px solid var(--border);
-  display: flex;
-  flex-direction: column;
 }
 .reportRow {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
-  flex: 1;
   white-space: nowrap;
 }
 .reportDetail {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg-subtle);

@@ -9,9 +9,7 @@
   min-height: 0;
 }
 .sidebar {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill from "../../ui/layout.module.css";
   border-right: 1px solid var(--border);
 }
 .search {
@@ -29,8 +27,7 @@
   font-size: var(--fs-small);
 }
 .entry {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   width: 100%;
   height: 26px;
@@ -54,10 +51,8 @@
   outline-offset: -2px;
 }
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   gap: 10px;
-  min-height: 0;
   overflow-y: auto;
   padding: 16px;
 }
@@ -134,8 +129,7 @@
   outline-offset: -2px;
 }
 .dependencies {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
 }
 .chips {
@@ -170,8 +164,7 @@
   padding: 2px 8px;
 }
 .progress {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   height: 420px;
   padding: 16px;

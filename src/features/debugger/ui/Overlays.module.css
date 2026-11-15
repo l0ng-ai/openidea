@@ -10,8 +10,7 @@
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
 }
 
@@ -22,28 +21,24 @@
 
 /* breakpoint popover */
 .bpEditor {
+  composes: column from "../../../ui/layout.module.css";
   width: 340px;
   padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
   gap: 8px;
 }
 
 .bpTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   color: var(--fg-emphasis);
   font-weight: 500;
 }
 
 .bpFile {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
   font-family: var(--font-mono);
   font-size: var(--fs-ui);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Long file names truncate; the actions keep their width. */
@@ -69,8 +64,7 @@
 }
 
 .bpFooter {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   margin-top: 2px;
 }
@@ -95,19 +89,16 @@
 }
 
 .bpListPane {
+  composes: columnFill from "../../../ui/layout.module.css";
   width: 360px;
   flex: none;
-  display: flex;
-  flex-direction: column;
   border-right: 1px solid var(--border-popup);
-  min-height: 0;
 }
 
 .bpListHeader {
+  composes: row from "../../../ui/layout.module.css";
   height: var(--h-header);
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border-popup);
@@ -136,13 +127,9 @@
 }
 
 .bpDir {
-  flex: 1;
-  min-width: 0;
+  composes: truncate grow from "../../../ui/layout.module.css";
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-align: right;
 }
 
@@ -154,15 +141,13 @@
 }
 
 .bpDetail {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   overflow: auto;
 }
 
 .detail {
+  composes: column from "../../../ui/layout.module.css";
   padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
 }
 
@@ -173,27 +158,24 @@
 
 /* evaluate dialog */
 .evalBody {
+  composes: column from "../../../ui/layout.module.css";
   height: 100%;
   box-sizing: border-box;
   padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
 }
 
 .evalImport {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 4px 8px;
 }
 
 /* Grows with the dialog when it is resized. */
 .evalResult {
+  composes: column from "../../../ui/layout.module.css";
   flex: 1;
   min-height: 220px;
-  display: flex;
-  flex-direction: column;
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-small);
   padding: 4px 6px;
@@ -204,13 +186,12 @@
 }
 
 .exceptions {
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
   max-height: 40%;
   overflow: auto;
   border-top: 1px solid var(--border-popup);
   padding: 6px 12px 8px;
-  display: flex;
-  flex-direction: column;
   gap: 2px;
 }
 .exceptionsTitle {
@@ -224,8 +205,7 @@
   color: var(--fg-subtle);
 }
 .exceptionGroup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 2px;
 }
 .exceptionAdapter {
@@ -234,8 +214,7 @@
   padding-top: 4px;
 }
 .exceptionRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   min-height: 22px;
 }
 .exceptionHint {
@@ -263,8 +242,7 @@
   gap: 4px;
 }
 .evalInput {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   min-height: var(--h-field, 28px);
   padding: 5px 8px;
   resize: none;

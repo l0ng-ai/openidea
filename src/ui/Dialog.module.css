@@ -1,10 +1,9 @@
 /* Modal layer: blocks the workbench but never dims it (IDEA dialogs are separate windows). */
 .backdrop {
+  composes: row from "./layout.module.css";
   position: fixed;
   inset: 0;
   z-index: var(--z-dialog);
-  display: flex;
-  align-items: center;
   justify-content: center;
   padding: 24px;
   background: transparent;
@@ -21,8 +20,7 @@
   padding-top: max(10vh, var(--h-titlebar));
 }
 .dialog {
-  display: flex;
-  flex-direction: column;
+  composes: column from "./layout.module.css";
   position: relative;
   max-width: 100%;
   max-height: 100%;
@@ -72,10 +70,9 @@
 
 /* Title bar (drag handle). macOS: traffic lights then the title; else title + close. */
 .titleBar {
+  composes: row from "./layout.module.css";
   height: var(--h-dialog-titlebar, 32px);
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 6px 0 14px;
   cursor: default;
@@ -88,21 +85,16 @@
   gap: 12px;
 }
 .popupHeader {
+  composes: row from "./layout.module.css";
   height: 32px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 14px;
 }
 .title {
-  flex: 1;
-  min-width: 0;
+  composes: truncate grow from "./layout.module.css";
   color: var(--fg-strong);
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .macTitleBar .title {
   font-size: var(--fs-ui);
@@ -179,28 +171,25 @@
 
 /* [?] [footerStart …]            [buttons, platform order]; buttons wrap below a footerStart that does not fit. */
 .footer {
+  composes: row from "./layout.module.css";
   flex: none;
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   justify-content: flex-end;
   gap: 12px;
   padding: 12px 16px;
 }
 .footerStart {
+  composes: row from "./layout.module.css";
   flex: 1 1 0;
   min-width: fit-content;
   max-width: 100%;
-  display: flex;
-  align-items: center;
   gap: 12px;
 }
 .buttons {
+  composes: row from "./layout.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   justify-content: flex-end;
   gap: 12px;
   margin-left: auto;
@@ -263,10 +252,9 @@
   --message-icon-color: var(--danger);
 }
 .messageText {
+  composes: column from "./layout.module.css";
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   gap: 8px;
   padding-top: 4px;
 }
@@ -281,8 +269,7 @@
   white-space: pre-line;
 }
 .messageExtra {
-  display: flex;
-  flex-direction: column;
+  composes: column from "./layout.module.css";
   align-items: flex-start;
   gap: 8px;
   margin-top: 8px;

@@ -1,8 +1,6 @@
 .root {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .headerTabs {
   min-width: 0;
@@ -14,10 +12,8 @@
   min-height: 0;
 }
 .log {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
 }
 .grow {
@@ -31,19 +27,15 @@
   min-width: 0;
 }
 .branchesTools {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 2px;
   padding: 4px 2px;
   border-right: 1px solid var(--border);
 }
 .branchesMain {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
 }
 .branchesBar,
 .filters,
@@ -85,11 +77,10 @@
   min-width: 100px;
 }
 .filterGroup {
+  composes: row from "../../ui/layout.module.css";
   position: relative;
   flex: 0 1 auto;
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 4px;
   overflow: hidden;
 }
@@ -112,16 +103,14 @@
   background: var(--bg-toolbar-selected);
 }
 .filterMain {
+  composes: truncate from "../../ui/layout.module.css";
   height: 100%;
   display: inline-flex;
   align-items: center;
   gap: 3px;
   padding: 0 6px 0 8px;
   font-size: var(--fs-ui);
-  white-space: nowrap;
   max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .filterValue {
   color: var(--fg-strong);
@@ -148,12 +137,8 @@
 
 /* commit table */
 .listWrap {
+  composes: columnFill grow from "../../ui/layout.module.css";
   position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
 }
 .speedSearch {
   position: absolute;
@@ -174,13 +159,12 @@
   contain: strict;
 }
 .row {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 26px;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 8px;
   white-space: nowrap;
@@ -251,10 +235,9 @@
   --log-row-bg: var(--bg-tree-selected);
 }
 .colSubject {
+  composes: row from "../../ui/layout.module.css";
   flex: 1;
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 6px;
   /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
   overflow-x: clip;
@@ -320,15 +303,13 @@
   margin-left: 0;
 }
 .ref {
+  composes: truncate from "../../ui/layout.module.css";
   --tag-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.5 1.5h4.2l4.8 4.8-4.2 4.2-4.8-4.8z' fill='none' stroke='black' stroke-width='1.1' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='4' r='.9'/%3E%3C/svg%3E");
   display: inline-flex;
   align-items: center;
   gap: 4px;
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
   /* Sizes to content (#2447): truncates with ellipsis only when .refs runs
      out of room; the full name stays available via the title tooltip. */
@@ -363,16 +344,13 @@
 
 /* details */
 .details {
+  composes: column from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
 }
 .filesPane {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .detailsCount {
   padding-left: 4px;
@@ -384,8 +362,7 @@
   min-height: 0;
 }
 .fileRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
   white-space: nowrap;
@@ -438,19 +415,15 @@
   user-select: text;
 }
 .revisionSource {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
   height: 100%;
-  display: flex;
-  flex-direction: column;
 }
 /* Go to a merge commit's file: parent 1 | merge result | parent 2, each pane scrolling itself. */
 .mergeDiff {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .mergeDiffLabels {
   flex: none;
@@ -547,17 +520,15 @@
   display: flex;
 }
 .consoleBar {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
   width: 28px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   padding-top: 4px;
   border-right: 1px solid var(--border);
 }
 .console {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   overflow: auto;
   padding: 6px 10px;
   font-family: var(--font-mono);
@@ -598,9 +569,8 @@
 }
 
 .branchFilterPopup {
+  composes: column from "../../ui/layout.module.css";
   width: 360px;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 .branchFilterSearch {
@@ -609,9 +579,7 @@
   border-bottom: 1px solid var(--border-popup);
 }
 .branchFilterList {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill from "../../ui/layout.module.css";
   padding: 4px 0;
   box-sizing: content-box;
 }
@@ -624,10 +592,7 @@
   font-size: var(--fs-small);
 }
 .branchFilterRow {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 8px;
 }
 /* A branch inside an opened Local / Remote group. */
@@ -643,8 +608,7 @@
   color: var(--accent);
 }
 .branchFilterLabel {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -657,9 +621,8 @@
   color: var(--fg-faint);
 }
 .branchFilterMore {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   padding: 6px 12px;
   border-top: 1px solid var(--border-popup);
   text-align: left;
@@ -669,10 +632,8 @@
 }
 /* Worktrees tab. */
 .worktrees {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   gap: 4px;
   padding: 4px 6px;
 }

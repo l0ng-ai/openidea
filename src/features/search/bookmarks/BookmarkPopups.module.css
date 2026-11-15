@@ -1,6 +1,5 @@
 .chooser {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 10px;
   padding: 10px 14px 12px;
   outline: none;
@@ -56,8 +55,7 @@
   width: 100%;
 }
 .legend {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
@@ -81,19 +79,16 @@
   border-top: 1px solid var(--border-popup);
 }
 .listPane {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 0 0 300px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   border-right: 1px solid var(--border-popup);
 }
 .listPane > * {
   flex: 1;
 }
 .previewPane {
-  flex: 1;
+  composes: grow from "../../../ui/layout.module.css";
   display: flex;
-  min-width: 0;
 }
 .fileRow,
 .markRow {

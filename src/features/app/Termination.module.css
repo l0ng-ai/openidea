@@ -1,6 +1,5 @@
 .body {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   min-width: 360px;
   padding: 2px 16px 12px;

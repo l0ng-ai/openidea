@@ -124,16 +124,13 @@
   overflow: hidden;
 }
 .cardHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   padding: 6px 10px;
 }
 .cardPath {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-strong);
 }
 .cardMeta {
@@ -199,8 +196,7 @@
   cursor: default;
 }
 .codeHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   height: 26px;
   padding: 0 4px 0 8px;
@@ -209,10 +205,8 @@
   font-size: var(--fs-small);
 }
 .codeTitle {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .codeMeta {
   flex: none;

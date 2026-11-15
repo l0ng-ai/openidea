@@ -223,10 +223,9 @@
 
 /* Inlay Run to Cursor button, left of a hovered line's text. */
 .runToCursor {
+  composes: row from "../../../ui/layout.module.css";
   position: absolute;
   z-index: 5;
-  display: flex;
-  align-items: center;
   justify-content: center;
   width: 20px;
   height: 20px;

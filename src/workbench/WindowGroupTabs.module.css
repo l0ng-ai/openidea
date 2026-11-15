@@ -1,23 +1,20 @@
 .bar {
-  display: flex;
+  composes: row from "../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: var(--island-gap);
   padding: 0 var(--island-gap) var(--island-gap);
   min-width: 0;
 }
 .tabs {
+  composes: grow from "../ui/layout.module.css";
   display: flex;
-  flex: 1;
   gap: 4px;
   overflow-x: auto;
-  min-width: 0;
 }
 /* Tabs share the row equally with the title centred, the close button on the left on hover. */
 .item {
+  composes: row from "../ui/layout.module.css";
   position: relative;
-  display: flex;
-  align-items: center;
   flex: 1 1 0;
   min-width: 120px;
   border-radius: var(--radius-small);
@@ -48,11 +45,8 @@
   color: var(--fg);
 }
 .tab {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../ui/layout.module.css";
   justify-content: center;
-  flex: 1;
-  min-width: 0;
   height: 30px;
   padding: 0 28px;
   border: 0;

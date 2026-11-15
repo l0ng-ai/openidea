@@ -3,9 +3,8 @@
   border-bottom: 1px solid var(--border-popup);
 }
 .body {
+  composes: column from "../../ui/layout.module.css";
   height: 280px;
-  display: flex;
-  flex-direction: column;
   padding: 4px 0;
 }
 .list {
@@ -17,8 +16,7 @@
   color: var(--danger);
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
   min-width: 0;
   width: 100%;

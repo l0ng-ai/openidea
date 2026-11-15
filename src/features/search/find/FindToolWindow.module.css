@@ -1,8 +1,6 @@
 .root {
+  composes: columnFill from "../../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .tabs {
   min-width: 0;
@@ -10,15 +8,12 @@
   background: none;
 }
 .body {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .summary {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   height: 26px;
   padding: 0 10px;
@@ -26,10 +21,8 @@
   font-size: var(--fs-small);
 }
 .title {
+  composes: truncate from "../../../ui/layout.module.css";
   color: var(--fg-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .count {
   flex: none;
@@ -46,8 +39,7 @@
   color: var(--fg-faint);
 }
 .node {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -56,9 +48,7 @@
   color: var(--fg-muted);
 }
 .label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../../ui/layout.module.css";
 }
 .meta {
   flex: none;
@@ -93,8 +83,6 @@
   min-height: 0;
 }
 .splitPanel {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
   min-width: 0;
-  min-height: 0;
 }

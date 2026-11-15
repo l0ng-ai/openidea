@@ -3,13 +3,11 @@
   padding: 0;
 }
 .root {
+  composes: column from "../../../ui/layout.module.css";
   outline: none;
-  display: flex;
-  flex-direction: column;
 }
 .bar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 0;
   padding: 3px 4px;
   overflow-x: auto;
@@ -56,8 +54,7 @@
   border-top: 1px solid var(--border-popup);
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-list-row);
   padding: 0 6px;
@@ -85,8 +82,7 @@
   outline: none;
 }
 .childHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-list-row);
   padding: 0 6px;

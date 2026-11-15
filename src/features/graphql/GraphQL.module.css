@@ -9,10 +9,9 @@
   background: none;
 }
 .toolbar {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
   width: 32px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 2px;
   padding: 4px 0;
@@ -25,21 +24,16 @@
   background: var(--border);
 }
 .body {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+  composes: columnFill grow from "../../ui/layout.module.css";
 }
 .tree {
   flex: 1;
   min-height: 0;
 }
 .status {
+  composes: row from "../../ui/layout.module.css";
   height: 26px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 10px;
   font-size: var(--fs-ui);
@@ -47,10 +41,7 @@
   white-space: nowrap;
 }
 .row {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
   padding-right: 10px;
   white-space: nowrap;
@@ -72,16 +63,13 @@
   font-weight: 600;
 }
 .result {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .resultHeader {
+  composes: row from "../../ui/layout.module.css";
   height: 28px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 10px;
   white-space: nowrap;
@@ -133,8 +121,7 @@
 
 /* Editor header. */
 .editorToolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   height: var(--h-header);
   padding: 0 8px;
@@ -212,10 +199,9 @@
   justify-content: flex-start;
 }
 .runMarker {
+  composes: row from "../../ui/layout.module.css";
   width: 14px;
   height: 14px;
-  display: flex;
-  align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;
@@ -264,8 +250,7 @@
 
 /* GraphQL Environment Variables dialog: a Name / Value table (IDEA). */
 .envBox {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   height: 300px;
   border: 1px solid var(--border);
 }

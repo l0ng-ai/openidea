@@ -1,6 +1,5 @@
 .indented {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding-left: 20px;
 }
 .matched {
@@ -17,22 +16,19 @@
   column-gap: 24px;
 }
 .column {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   min-width: 0;
 }
 
 /* "[x] Limit history to: [1000] rows" */
 .fontFamily {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
 }
 .inlineRow {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
   min-height: 28px;
   padding: 2px 6px;
@@ -48,8 +44,7 @@
 }
 
 .radios {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
   gap: 4px 16px;
 }
@@ -99,15 +94,13 @@
 
 /* Editable tables / lists. */
 .tableBox {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   border: 1px solid var(--border);
   border-radius: var(--radius-control, 4px);
   overflow: hidden;
 }
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   padding: 2px 4px;
   border-bottom: 1px solid var(--border);
@@ -151,8 +144,7 @@
 
 /* External Tools: list + editor. */
 .toolsLayout {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 14px;
 }
 .toolList {
@@ -161,8 +153,7 @@
   overflow: auto;
 }
 .toolRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   height: var(--h-list-row);
   padding: 0 8px;
@@ -196,13 +187,11 @@
   margin-left: auto;
 }
 .macroField {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
 }
 .macroList {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding: 4px 0;
   max-height: 320px;
   overflow: auto;

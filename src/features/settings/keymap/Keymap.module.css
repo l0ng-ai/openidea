@@ -1,12 +1,10 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   height: 100%;
   min-height: 420px;
 }
 .presetRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 10px;
   min-height: 30px;
   margin-bottom: 6px;
@@ -28,8 +26,7 @@
 }
 
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   margin-bottom: 6px;
 }
@@ -39,10 +36,9 @@
   margin-right: 4px;
 }
 .shortcutFilter {
+  composes: row from "../../../ui/layout.module.css";
   flex: 1;
   max-width: 360px;
-  display: flex;
-  align-items: center;
   gap: 2px;
   height: var(--h-control);
   margin-right: 4px;
@@ -69,10 +65,8 @@
 }
 
 .treeWrap {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
   padding: 2px 0;
@@ -105,11 +99,7 @@
   color: var(--fg-subtle);
 }
 .actionTitle {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
 }
 .modified {
   color: var(--accent);
@@ -125,8 +115,7 @@
 
 /* recorder */
 .mousePad {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   justify-content: center;
   height: 72px;
   padding: 0 12px;
@@ -138,10 +127,7 @@
   user-select: none;
 }
 .recorder {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
+  composes: row grow from "../../../ui/layout.module.css";
   height: var(--h-control);
   padding: 0 8px;
   border-radius: var(--radius-small);
@@ -167,8 +153,7 @@
 
 /* record dialog */
 .recordBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   padding: 14px;
 }
@@ -195,8 +180,7 @@
   color: var(--fg-subtle);
 }
 .conflictTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   color: var(--fg-emphasis);
 }

@@ -41,11 +41,10 @@
 }
 
 .sampleRow {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   left: 0;
   bottom: 0;
-  display: flex;
-  align-items: center;
   gap: 8px;
   width: 104px;
   height: 54px;
@@ -76,9 +75,8 @@
 }
 
 .field {
+  composes: column from "../../ui/layout.module.css";
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   gap: 4px;
   color: var(--fg-muted);
   font-size: var(--fs-small);

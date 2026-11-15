@@ -11,24 +11,18 @@
 }
 
 .sidebar {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill from "../../../ui/layout.module.css";
 }
 .search {
   margin: 7px 5px 6px;
 }
 .tree {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   padding-bottom: 6px;
 }
 .node {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../../ui/layout.module.css";
 }
 .topLevel {
   font-weight: 600;
@@ -54,26 +48,22 @@
 }
 
 .main {
+  composes: columnFill from "../../../ui/layout.module.css";
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   container: settings-content / inline-size;
 }
 .loading {
+  composes: row from "../../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  align-items: center;
   justify-content: center;
   min-height: 0;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
 .pageHeader {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: 12px;
   min-height: 40px;
   padding: 0 12px 0 20px;
@@ -83,10 +73,7 @@
   gap: 2px;
 }
 .crumbs {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   overflow: hidden;
   white-space: nowrap;
   color: var(--fg-strong);
@@ -146,8 +133,7 @@
   color: var(--fg-strong);
 }
 .scopeNote {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   margin: 0 16px 6px;
   color: var(--fg-subtle);
@@ -172,8 +158,7 @@
   line-height: 1.45;
 }
 .groupLinks {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   align-items: flex-start;
   gap: 2px;
   padding-left: 32px;
@@ -197,11 +182,7 @@
 }
 
 .footerStatus {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
 }
 .error {
   display: inline-flex;
@@ -212,9 +193,8 @@
 
 /* Native Settings window (desktop): the same layout filling the window. */
 .window {
+  composes: column from "../../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
   background: var(--bg-dialog, var(--bg-elev));
   color: var(--fg);
@@ -237,9 +217,8 @@
   min-height: 0;
 }
 .windowFooter {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   justify-content: flex-end;
   gap: 12px;
   padding: 12px 16px;

@@ -1,23 +1,18 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .body {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .body > * {
   flex: 1;
   min-height: 0;
 }
 .status {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   height: var(--h-row);
   padding: 0 10px;
@@ -37,11 +32,8 @@
   margin-left: auto;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
-  flex: 1;
   white-space: nowrap;
 }
 .strong {
@@ -85,10 +77,9 @@
   display: flex;
 }
 .groups {
+  composes: column from "../../ui/layout.module.css";
   width: 40%;
   min-width: 200px;
-  display: flex;
-  flex-direction: column;
   border-right: 1px solid var(--border);
 }
 .groups > * {
@@ -96,25 +87,22 @@
   min-height: 0;
 }
 .fragments {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   display: flex;
   overflow-x: auto;
 }
 .fragment {
+  composes: column from "../../ui/layout.module.css";
   flex: 1 0 280px;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   border-right: 1px solid var(--border);
 }
 .fragment:last-child {
   border-right: 0;
 }
 .fragmentHeader {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   width: 100%;
   height: var(--h-row);
@@ -155,14 +143,12 @@
 
 /* Dialogs */
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   padding: 14px;
 }
 .scope {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
   margin: 0;
   padding: 0;
@@ -174,8 +160,7 @@
   font-size: var(--fs-small);
 }
 .radioRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   padding: 3px 0;
   color: var(--fg);
@@ -191,12 +176,10 @@
   padding: 4px 0 0 22px;
 }
 .grow {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
 }
 .fieldRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
 }
 .languageSelect {
@@ -253,10 +236,7 @@
   border-bottom: 0;
 }
 .previewBody {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 2px;
 }
 .previewWhere {
@@ -281,10 +261,8 @@
 
 /* Inspection Results: tree on the left, problem details on the right. */
 .panel {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   min-width: 0;
-  min-height: 0;
 }
 .panel > * {
   flex: 1;
@@ -296,8 +274,7 @@
   text-decoration: line-through;
 }
 .details {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   padding: 10px 12px;
   overflow: auto;
@@ -310,8 +287,7 @@
   color: var(--fg-faint);
 }
 .detailsTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   color: var(--fg-strong);
 }

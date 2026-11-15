@@ -10,10 +10,7 @@
   height: 64px;
 }
 .aboutBody {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 2px;
   line-height: 1.55;
 }
@@ -87,13 +84,11 @@
 
 /* Keymap reference */
 .keymap {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   max-height: 70vh;
 }
 .keymapBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-popup);
@@ -137,8 +132,7 @@
   list-style: none;
 }
 .keymapRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
   min-height: var(--h-row);
   padding: 0 4px;
@@ -148,11 +142,7 @@
   background: var(--bg-hover);
 }
 .keymapTitle {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 .keymapKeys {
   flex: none;
@@ -161,8 +151,7 @@
 }
 
 .invalidateBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   padding: 14px;
   color: var(--fg);
@@ -183,8 +172,7 @@
 
 /* Import Settings… › JetBrains settings.zip confirmation */
 .importSummary {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
 }
 .importList {

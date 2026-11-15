@@ -20,16 +20,14 @@
   overflow-wrap: anywhere;
 }
 .popupBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding: 8px 14px;
 }
 
 /* Inline option groups, with custom font controls wrapping together. */
 .fontRow {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
   min-height: 28px;
   padding: 2px 6px;
@@ -60,8 +58,7 @@
   white-space: nowrap;
 }
 .fontControl {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   min-width: 0;
 }
 .sizeInput {
@@ -95,8 +92,7 @@
   column-gap: 24px;
 }
 .column {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   min-width: 0;
 }
 
@@ -107,9 +103,8 @@
 }
 
 .radios {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 16px;
 }
 .radio {

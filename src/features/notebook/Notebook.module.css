@@ -1,17 +1,12 @@
 .root {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
+  composes: columnFill grow from "../../ui/layout.module.css";
   background: var(--bg-editor, var(--bg-app));
   color: var(--fg);
   outline: none;
 }
 .toolbar {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   flex-wrap: wrap;
   gap: 3px;
   min-height: 36px;
@@ -50,8 +45,7 @@
   user-select: text;
 }
 .errorMessage {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   white-space: pre-wrap;
 }
 .errorMessage pre {
@@ -63,9 +57,8 @@
   margin-top: 6px;
 }
 .scroll {
-  flex: 1;
+  composes: grow from "../../ui/layout.module.css";
   min-height: 0;
-  min-width: 0;
   overflow: auto;
   overflow-anchor: none;
 }
@@ -91,8 +84,7 @@
   border-color: var(--accent);
 }
 .cellToolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 2px;
   min-height: 28px;
   padding: 2px 6px;

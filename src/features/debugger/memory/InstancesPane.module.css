@@ -1,7 +1,6 @@
 .pane {
+  composes: column from "../../../ui/layout.module.css";
   flex: 0 1 auto;
-  display: flex;
-  flex-direction: column;
   /* A short Debug tool window keeps room for the class table above: the pane shrinks down to its header and a row. */
   height: min(calc(var(--h-row) + 10 * var(--h-list-row)), 60%);
   min-height: calc(var(--h-row) + var(--h-list-row));
@@ -9,9 +8,8 @@
 }
 
 .header {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   height: var(--h-row);
   padding: 0 4px 0 12px;
@@ -19,11 +17,7 @@
 }
 
 .title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
   color: var(--fg-strong);
   font-size: var(--fs-ui);
   font-family: var(--font-mono);
@@ -82,10 +76,8 @@
 }
 
 .value {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg);
   font-family: var(--font-mono);
 }

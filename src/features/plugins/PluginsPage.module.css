@@ -1,22 +1,18 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
   height: 100%;
   min-height: 420px;
 }
 .topBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
 }
 .side {
-  display: flex;
+  composes: columnFill from "../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   width: 340px;
-  min-height: 0;
   border-right: 1px solid var(--border);
 }
 .searchField {
@@ -59,8 +55,7 @@
   overflow: auto;
 }
 .groupHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-row);
   padding: 0 12px;
@@ -71,8 +66,7 @@
   font-variant-numeric: tabular-nums;
 }
 .groupToggle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
   height: 100%;
@@ -129,9 +123,7 @@
   min-width: 0;
 }
 .rowVendor {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../ui/layout.module.css";
 }
 .rowDisabled .rowName {
   color: var(--fg-muted);
@@ -179,10 +171,8 @@
   background: var(--bg-hover);
 }
 .rowName {
-  overflow: hidden;
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .rowMeta {
   display: flex;
@@ -344,12 +334,10 @@
   border-top: 1px solid var(--border);
 }
 .itemMain {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1;
   min-width: 0;
-  overflow: hidden;
   color: var(--fg);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Permission dialog and notices */
@@ -439,11 +427,9 @@
   min-width: 0;
 }
 .rowDescription {
-  overflow: hidden;
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-secondary);
   font-size: var(--fs-small);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .downloads {
   display: inline-flex;
@@ -551,11 +537,9 @@
   min-width: 0;
 }
 .intellijPluginThemes {
-  overflow: hidden;
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-muted);
   font-size: var(--fs-small);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .intellijPluginIde {
   flex-shrink: 0;

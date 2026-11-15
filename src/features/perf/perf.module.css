@@ -19,29 +19,24 @@
   border-top: 1px solid var(--border-popup);
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   min-height: var(--h-list-row);
   padding: 0 12px;
   gap: 8px;
 }
 .label {
+  composes: grow from "../../ui/layout.module.css";
   color: var(--fg-secondary);
-  flex: 1;
-  min-width: 0;
 }
 .detail {
   margin-left: 6px;
   color: var(--fg-subtle);
 }
 .label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../ui/layout.module.css";
 }
 .groupRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   min-height: var(--h-list-row);
   padding: 0 12px;
   gap: 8px;
@@ -62,8 +57,7 @@
   white-space: nowrap;
 }
 .columns {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
 }
 .columns .groupTitle {
@@ -130,8 +124,7 @@
   color: var(--fg);
 }
 .overlayHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   padding: 0 4px 4px 12px;
   gap: 6px;
 }

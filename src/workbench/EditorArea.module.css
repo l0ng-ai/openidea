@@ -1,17 +1,12 @@
 .area {
-  flex: 1;
+  composes: columnFill grow from "../ui/layout.module.css";
   background: var(--bg-island);
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
   outline: none;
   position: relative;
 }
 .empty {
+  composes: row from "../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  align-items: center;
   justify-content: center;
   padding: 24px;
   overflow: hidden;

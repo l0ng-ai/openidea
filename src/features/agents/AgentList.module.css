@@ -1,19 +1,16 @@
 /* The agent list beside the selected agent, as in Settings › Plugins. */
 .split {
+  composes: grow from "../../ui/layout.module.css";
   display: flex;
-  flex: 1;
-  min-width: 0;
   min-height: 420px;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
   overflow: hidden;
 }
 .master {
-  display: flex;
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 0 1 240px;
-  flex-direction: column;
   min-width: 150px;
-  min-height: 0;
   border-right: 1px solid var(--border);
 }
 .search {
@@ -33,19 +30,14 @@
   font-size: var(--fs-small);
 }
 .agentRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   width: 100%;
   min-width: 0;
   padding: 0 8px;
 }
 .agentName {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 .agentMissing .agentName {
   color: var(--fg-muted);
@@ -67,8 +59,7 @@
   text-align: center;
 }
 .registryState {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   padding: 6px 12px;
   border-top: 1px solid var(--border);
@@ -98,14 +89,12 @@
   overflow: auto;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 10px;
   min-width: 0;
 }
 .heading {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
 }
 .heading h3 {
   margin: 0;
@@ -114,8 +103,7 @@
   font-weight: 600;
 }
 .facts {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
   margin-top: 2px;
@@ -146,8 +134,7 @@
   gap: 6px;
 }
 .progress {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
   max-width: 360px;
   margin: 10px 0 0 34px;
@@ -207,8 +194,7 @@
   margin-top: 18px;
 }
 .sectionTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   height: 22px;
   margin-bottom: 4px;
@@ -255,8 +241,7 @@
   content: ":";
 }
 .control {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   min-width: 0;
   min-height: 28px;
 }
@@ -275,11 +260,8 @@
   margin-bottom: 0;
 }
 .field {
-  display: flex;
-  flex: 1;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 4px;
-  min-width: 0;
   max-width: 480px;
 }
 .field > :first-child {
@@ -298,9 +280,7 @@
   min-width: 0;
 }
 .launch {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
   color: var(--fg-muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

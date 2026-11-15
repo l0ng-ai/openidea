@@ -8,8 +8,7 @@
   margin-top: 22px;
 }
 .sectionTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   height: 22px;
   margin-bottom: 6px;
@@ -81,8 +80,7 @@
   content: "\00a0:";
 }
 .control {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
@@ -137,8 +135,7 @@
 }
 
 .swatches {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
 }
 .swatch {
@@ -188,8 +185,7 @@
 }
 
 .globEditor {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   flex: 1;
   max-width: 480px;
   border-radius: var(--radius-small);
@@ -197,10 +193,9 @@
   overflow: hidden;
 }
 .listToolbar {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   height: 28px;
-  align-items: center;
   padding: 0 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -214,8 +209,7 @@
   outline: none;
 }
 .globRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   height: var(--h-row);
   padding: 0 8px;
   font-family: var(--font-mono);
@@ -229,9 +223,7 @@
   background: var(--bg-selected-strong);
 }
 .globText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../../ui/layout.module.css";
 }
 .globInput {
   flex: 1;

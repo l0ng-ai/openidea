@@ -1,8 +1,6 @@
 .root {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .count {
   color: var(--fg-subtle);
@@ -13,16 +11,13 @@
   min-height: 0;
 }
 .changes {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
   height: 32px;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 6px;
 }
@@ -33,10 +28,8 @@
   background: var(--border);
 }
 .treeWrap {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .empty {
   color: var(--fg-subtle);
@@ -93,10 +86,8 @@
   line-height: 14px;
 }
 .commit {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   border-top: 1px solid var(--border);
 }
 .tabs {
@@ -105,10 +96,9 @@
   background: none;
 }
 .commitBar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
   height: 32px;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 0 6px 0 12px;
   white-space: nowrap;
@@ -160,9 +150,8 @@
 }
 /* IDEA: Commit and Commit and Push… on one row under the message, the gear at its end. */
 .commitActions {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   /* A narrow panel moves Commit and Push… to its own row rather than cutting its label. */
   flex-wrap: wrap;
@@ -191,10 +180,7 @@
   container: stash-list / inline-size;
 }
 .stashRow {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 8px;
 }
 /* The message identifies a stash: the branch gives way first, the time stays whole. */
@@ -205,11 +191,9 @@
   flex: none;
 }
 .stashMessage {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1 1 auto;
   min-width: 4em;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 @container stash-list (max-width: 320px) {
   .stashBranch {
@@ -229,11 +213,8 @@
 }
 /* A change list group or file row (drag source / drop target between lists). */
 .nodeRow {
-  flex: 1;
-  min-width: 0;
+  composes: row grow from "../../ui/layout.module.css";
   align-self: stretch;
-  display: flex;
-  align-items: center;
   gap: 4px;
   border-radius: var(--radius-small);
 }
@@ -269,8 +250,7 @@
   margin-top: 6px;
 }
 .optTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   margin: 10px 0 6px;
   color: var(--fg-strong);
@@ -284,19 +264,16 @@
   background: var(--border);
 }
 .optBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   padding-left: 16px;
 }
 .optRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 10px;
 }
 .optField {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   color: var(--fg);
 }

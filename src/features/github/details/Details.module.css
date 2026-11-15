@@ -4,20 +4,16 @@
  * statuses 6/16/10/14 (149px at most), actions 0/14/16/14.
  */
 .panel {
-  display: flex;
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
-  min-height: 0;
   overflow: hidden;
 }
 .centered {
-  display: flex;
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 0;
   padding: 12px;
   color: var(--fg-secondary);
   text-align: center;
@@ -35,10 +31,8 @@
   flex: 1;
 }
 .ellipsis {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* ActionLink */
@@ -71,9 +65,8 @@
 
 /* Title */
 .titlePanel {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   gap: 8px;
   padding: 16px 14px 16px 16px;
 }
@@ -83,8 +76,7 @@
   gap: 8px;
 }
 .title {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   margin: 0;
   color: var(--fg);
   font-size: calc(var(--fs-ui) + 5px);
@@ -106,24 +98,21 @@
 
 /* Commits and branch */
 .commitsAndBranches {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
   padding: 0 14px 4px 16px;
 }
 .commits {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 4px;
   padding: 6px 0 5px;
 }
 .branch {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   min-width: 0;
   padding: 6px 0 5px;
@@ -141,14 +130,12 @@
   min-width: 0;
 }
 .branchPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   min-width: 200px;
   padding-top: 4px;
 }
 .popupRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   height: 100%;
   margin: 0 6px;
   padding: 0 8px;
@@ -160,8 +147,7 @@
 }
 /* JBUI.CurrentTheme.Advertiser */
 .advertiser {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 4px;
   margin-top: 4px;
   padding: 5px 10px;
@@ -174,8 +160,7 @@
 
 /* Commits popup (CommitRenderer) */
 .commitsPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   width: 360px;
   height: 340px;
   overflow: hidden;
@@ -196,8 +181,7 @@
   background: var(--border);
 }
 .commitRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: 100%;
   margin: 0 6px;
@@ -223,18 +207,14 @@
   margin-top: 0;
 }
 .commitText {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  composes: column grow from "../../../ui/layout.module.css";
   gap: 4px;
-  min-width: 0;
 }
 
 /* Commit info */
 .commitInfo {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   gap: 8px;
   padding: 0 14px 12px 16px;
 }
@@ -244,8 +224,7 @@
   gap: 8px;
 }
 .commitInfoTitle {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   overflow-wrap: anywhere;
   user-select: text;
 }
@@ -259,9 +238,8 @@
 
 /* Changes tree (CodeReviewProgressRenderer: 4px text gap, 10px between counter and dot, 16px right) */
 .changes {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: 1 1 0;
-  flex-direction: column;
   min-height: 60px;
 }
 .tree {
@@ -269,18 +247,14 @@
   min-height: 0;
 }
 .treeEmpty {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: 1;
-  align-items: center;
   justify-content: center;
   color: var(--fg-faint);
 }
 .fileRow {
-  display: flex;
-  flex: 1;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
   white-space: nowrap;
 }
 .fileIcon {
@@ -299,9 +273,8 @@
   text-overflow: ellipsis;
 }
 .progress {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 10px;
   margin-left: auto;
   padding: 0 8px 0 4px;
@@ -354,17 +327,15 @@
 
 /* Status section */
 .status {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   max-height: 149px;
   margin: 6px 14px 10px 16px;
   overflow-x: hidden;
   overflow-y: auto;
 }
 .statusRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
   padding: 5px 0;
@@ -379,10 +350,8 @@
   flex: none;
 }
 .statusText {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* The status label's icon-text gap is 4px. */
 .statusRow > .statusIcon + .statusText {
@@ -391,10 +360,9 @@
 
 /* Actions (buttons 10px apart) */
 .actions {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
   flex-wrap: wrap;
-  align-items: center;
   gap: 10px;
   padding: 0 14px 16px 14px;
 }
@@ -437,8 +405,7 @@
 
 /* Submit Review popup (insets 12) */
 .submitPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   width: var(--submit-width);
   min-width: 320px;
@@ -449,9 +416,8 @@
   resize: both;
 }
 .submitHeader {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 5px;
 }
 .submitEditor {
@@ -474,8 +440,7 @@
   color: var(--danger);
 }
 .submitButtons {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 6px;
 }

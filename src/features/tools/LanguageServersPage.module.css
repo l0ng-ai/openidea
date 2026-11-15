@@ -1,6 +1,5 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
   height: 100%;
@@ -23,16 +22,13 @@
 
 /* list */
 .side {
-  display: flex;
+  composes: columnFill from "../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   width: 220px;
-  min-height: 0;
   border-right: 1px solid var(--border);
 }
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   margin: 8px 8px 6px;
 }
@@ -62,8 +58,7 @@
   background: var(--bg-selected);
 }
 .rowMain {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   width: 100%;
   height: var(--h-row);
@@ -79,12 +74,8 @@
   background: var(--bg-hover);
 }
 .rowName {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .rowHint {
   flex: none;
@@ -98,11 +89,8 @@
 
 /* language */
 .language {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 12px;
-  min-width: 0;
   padding: 12px 16px 16px;
   overflow: auto;
 }
@@ -110,8 +98,7 @@
   flex: 1;
 }
 .languageHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
 }
 .languageTitle {
@@ -138,8 +125,7 @@
   box-shadow: inset 0 0 0 1px var(--border);
 }
 .tableRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   padding-right: 10px;
 }
@@ -151,11 +137,8 @@
   background: var(--bg-selected);
 }
 .tableMain {
-  display: flex;
-  flex: 1;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 8px;
-  min-width: 0;
   height: var(--h-row);
   padding: 0 10px;
   border: 0;
@@ -169,25 +152,19 @@
   background: var(--bg-hover);
 }
 .toolName {
+  composes: truncate from "../../ui/layout.module.css";
   flex: none;
   max-width: 60%;
-  overflow: hidden;
   color: var(--fg-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .toolOff {
   color: var(--fg-muted);
 }
 .toolStatus {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-muted);
   font-size: var(--fs-small);
   text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .tag {
   flex: none;
@@ -203,23 +180,20 @@
   color: var(--accent);
 }
 .details {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   min-width: 0;
   padding: 4px 0 0 4px;
 }
 .detailsHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
 }
 .detailsText {
+  composes: grow from "../../ui/layout.module.css";
   display: flex;
-  flex: 1;
   align-items: baseline;
   gap: 8px;
-  min-width: 0;
 }
 .detailsTitle {
   color: var(--fg-strong);
@@ -264,24 +238,18 @@
   user-select: text;
 }
 .job {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
 }
 .jobBar {
   width: 100%;
 }
 .jobLine {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
 }
 .jobMessage {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-small);

@@ -1,21 +1,18 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   font-size: var(--fs-ui);
   color: var(--fg-strong);
 }
 
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: 12px;
 }
 
 .headerActions {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
 }
 
@@ -50,8 +47,7 @@
 }
 
 .error {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   padding: 6px 8px;
   border-radius: var(--radius-control);
@@ -61,8 +57,7 @@
 }
 
 .notice {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   padding: 6px 8px;
   border-radius: var(--radius-control);
@@ -72,20 +67,17 @@
 }
 
 .sections {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   border-top: 1px solid var(--border);
 }
 
 .section {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   border-bottom: 1px solid var(--border);
 }
 
 .sectionBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   min-height: 32px;
   padding: 2px 4px;
@@ -93,11 +85,8 @@
 }
 
 .sectionToggle {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  flex: 1;
-  min-width: 0;
   padding: 4px 2px;
   border: none;
   background: none;
@@ -138,8 +127,7 @@
 }
 
 .sectionBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   padding: 2px 0 6px;
 }
 
@@ -158,8 +146,7 @@
 }
 
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: 12px;
   padding: 6px 8px 6px 22px;
@@ -171,32 +158,24 @@
 }
 
 .rowMain {
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 2px;
-  min-width: 0;
-  flex: 1;
 }
 
 .serverName {
+  composes: truncate from "../../ui/layout.module.css";
   font-weight: 600;
   color: var(--fg-strong);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .subtitle {
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-muted);
   font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .rowActions {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   flex-shrink: 0;
 }
@@ -221,8 +200,7 @@
 }
 
 .formControl {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
   min-width: 0;
 }

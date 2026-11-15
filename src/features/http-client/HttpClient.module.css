@@ -6,10 +6,9 @@
   justify-content: flex-end;
 }
 .runMarker {
+  composes: row from "../../ui/layout.module.css";
   width: 14px;
   height: 14px;
-  display: flex;
-  align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
   cursor: pointer;
@@ -17,8 +16,7 @@
 
 /* Toolbar panel above `.http` files. */
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   height: var(--h-header);
   padding: 0 8px;
@@ -37,14 +35,12 @@
   height: 100%;
 }
 .list {
+  composes: column from "../../ui/layout.module.css";
   height: 100%;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
 }
 .entry {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   height: var(--h-list-row);
   padding: 0 8px;
@@ -64,8 +60,7 @@
   background: var(--bg-tree-selected);
 }
 .runningRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   height: var(--h-list-row);
   padding: 0 8px;
@@ -92,11 +87,7 @@
   flex: none;
 }
 .url {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 .when {
   color: var(--fg-muted);
@@ -104,14 +95,12 @@
   flex: none;
 }
 .exchange {
+  composes: column from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
 }
 .statusLine {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 12px;
   height: var(--h-header);
   padding: 0 8px;
@@ -122,11 +111,7 @@
   font-size: var(--fs-small);
 }
 .requestLine {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
@@ -179,22 +164,19 @@
   word-break: break-all;
 }
 .center {
+  composes: row from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  align-items: center;
   justify-content: center;
 }
 
 /* The request being sent, in place of a response. */
 .pending {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   padding: 12px;
 }
 .pendingLine {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   color: var(--fg-secondary);
 }

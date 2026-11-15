@@ -1,14 +1,11 @@
 .root {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
   font-size: var(--fs-ui);
 }
 
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);

@@ -1,9 +1,8 @@
 .session {
+  composes: grow from "../../ui/layout.module.css";
   --session-content-width: var(--agent-conversation-width);
   --session-card-width: 80%;
-  flex: 1;
   min-height: 0;
-  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   background: var(--bg-app);
@@ -13,11 +12,10 @@
 
 /* Temporary side conversation: an accent bar divides it from what it forked from. */
 .sideBanner {
+  composes: row from "../../ui/layout.module.css";
   grid-column: 1 / -1;
   /* The grid stretches auto rows; keep the bar at its content height. */
   align-self: start;
-  display: flex;
-  align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
@@ -33,21 +31,15 @@
   white-space: nowrap;
 }
 .sideHint {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
 
 .conversation {
+  composes: columnFill from "../../ui/layout.module.css";
   container-type: inline-size;
-  display: flex;
-  flex-direction: column;
   min-width: 0;
-  min-height: 0;
   border-right: 1px solid var(--border);
 }
 
@@ -110,10 +102,8 @@
   color: var(--fg-secondary);
 }
 .agentName {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* Where the task works, as the new-task composer shows it. */
 .where {
@@ -160,9 +150,8 @@
   overflow: hidden;
 }
 .statusActions {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 2px;
 }
 /* What changed (files, commits) above the meters; both open the Changes pane. */
@@ -197,11 +186,9 @@
 }
 /* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */
 .statusChipLabel {
+  composes: truncate from "../../ui/layout.module.css";
   display: inline-block;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .muted {
   color: var(--fg-subtle);
@@ -209,24 +196,16 @@
 
 /* The conversation with its find bar. */
 .streamArea {
-  min-width: 0;
+  composes: columnFill grow from "../../ui/layout.module.css";
   position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 
 .stream {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
+  composes: columnFill grow from "../../ui/layout.module.css";
   overflow-y: auto;
   overflow-x: hidden;
   overflow-anchor: none;
   padding: var(--space-3);
-  display: flex;
-  flex-direction: column;
 }
 /* Actual row heights keep WebKit's scrollbar and cross-message selections anchored. */
 .stream > * {
@@ -279,15 +258,13 @@
 }
 /* Your message with its actions, shown on hover. */
 .message {
+  composes: column from "../../ui/layout.module.css";
   position: relative;
-  display: flex;
-  flex-direction: column;
   align-items: stretch;
 }
 /* Keep the author attached to the message. */
 .messageHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: flex-start;
   gap: var(--space-2);
   min-height: var(--h-control-small);
@@ -305,8 +282,7 @@
 }
 /* User cards and their footers share a right edge. */
 .userMessage {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   align-items: flex-end;
 }
 .userMessage > .user {
@@ -327,8 +303,7 @@
 }
 /* Who wrote the message. */
 .role {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 5px;
   margin-bottom: 3px;
   color: var(--fg-subtle);
@@ -337,13 +312,11 @@
   user-select: none;
 }
 .agentMessage {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   align-items: flex-start;
 }
 .agentAuthor {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   min-height: var(--h-control-small);
 }
 .agentAuthor > .role {
@@ -439,16 +412,14 @@
 }
 
 .findBar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
 .findField {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
 }
 .findCount {
   color: var(--fg-subtle);
@@ -496,8 +467,7 @@
 }
 
 .editBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   margin-top: 6px;
   font-size: var(--fs-small);
@@ -750,10 +720,8 @@
   flex: none;
 }
 .thoughtPreview {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .thought[open] .thoughtChevron {
   transform: rotate(90deg);
@@ -771,8 +739,7 @@
 }
 
 .tool {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
   box-sizing: border-box;
@@ -791,11 +758,9 @@
   flex: none;
 }
 .toolTitle {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
   font-size: var(--fs-small);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .toolChevron {
   flex: none;
@@ -826,8 +791,7 @@
   display: none;
 }
 .processSummary {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   width: 100%;
   max-width: 100%;
@@ -857,25 +821,20 @@
 }
 /* The counts keep their line; what runs now gives way and ellipsizes. */
 .processParts {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* What the run is doing now, after its counts. */
 .processCurrent {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1 1 0;
   min-width: 0;
-  overflow: hidden;
   color: var(--fg-subtle);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* An open run stays bounded and scrolls on its own, so a long one doesn't push the reply away. */
 .processBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
   max-height: calc(var(--h-row) * 16);
   overflow-y: auto;
@@ -907,8 +866,7 @@
   color: var(--fg-strong);
 }
 .planItem {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
 }
 .planDone {
@@ -936,10 +894,7 @@
   color: var(--warning);
 }
 .permissionBody {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: var(--space-2);
 }
 .permissionTitle {
@@ -993,10 +948,8 @@
   text-overflow: ellipsis;
 }
 .permissionPrefix {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-family: var(--font-mono);
   font-size: var(--fs-small);
 }
@@ -1009,10 +962,8 @@
   font-size: var(--fs-small);
 }
 .permissionRecord {
+  composes: truncate from "../../ui/layout.module.css";
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .error {
@@ -1025,8 +976,7 @@
 }
 
 .working {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   color: var(--fg-muted);
 }
@@ -1046,9 +996,8 @@
 }
 
 .composerArea {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   gap: 6px;
   align-self: center;
   width: 100%;
@@ -1058,13 +1007,11 @@
 }
 
 .background {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
 }
 .backgroundTask {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-height: 24px;
   padding: 0 4px 0 8px;
@@ -1075,21 +1022,15 @@
   font-variant-numeric: tabular-nums;
 }
 .backgroundText {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 
 .queue {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
 }
 .queued {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-height: 28px;
   padding: 0 4px 0 8px;
@@ -1097,11 +1038,7 @@
   background: var(--bg-elev);
 }
 .queuedText {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 
 /* Meters that don't fit wrap onto a hidden second row instead of being cut in half. */
@@ -1196,10 +1133,8 @@
 }
 
 .changes {
+  composes: columnFill from "../../ui/layout.module.css";
   position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   min-width: 0;
 }
 /* On the conversation's border; the hit area reaches 3px either side of it. */
@@ -1222,9 +1157,8 @@
   background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
 }
 .changesHeader {
+  composes: row from "../../ui/layout.module.css";
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: 32px;
   flex: none;
@@ -1232,10 +1166,8 @@
   border-bottom: 1px solid var(--border);
 }
 .changesTitle {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 600;
   color: var(--fg-strong);
 }
@@ -1252,10 +1184,8 @@
   white-space: pre;
 }
 .changesList {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .changesList > * {
   flex: 1;
@@ -1266,27 +1196,20 @@
   color: var(--fg-muted);
 }
 .change {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 4px;
 }
 .changeName {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .changeDir {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1 1 0;
   min-width: 0;
   padding-left: 4px;
   color: var(--fg-subtle);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .changeStat {
   flex: none;
@@ -1298,25 +1221,17 @@
 
 /* Group and commit rows of the grouped Changes pane. */
 .changeGroup {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
 }
 .changeGroupName {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-weight: 600;
   color: var(--fg-strong);
 }
 .changeCommit {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
 }
 .changeCommitHash {
@@ -1325,11 +1240,9 @@
   font-family: var(--font-mono);
 }
 .changeCommitSummary {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1 1 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .changeCommitTime {
   flex: none;
@@ -1346,8 +1259,7 @@
 
 /* Subagents: a card per subagent in its parent's conversation, and the way into its own. */
 .subagent {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
   padding: 6px 8px;
   border: 1px solid var(--border);
@@ -1355,16 +1267,12 @@
   background: var(--bg-elev);
 }
 .subagentHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   min-width: 0;
 }
 .subagentOpen {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
   padding: 2px 4px;
   margin: -2px -4px;
@@ -1380,21 +1288,17 @@
   background: var(--bg-hover);
 }
 .subagentTitle {
+  composes: truncate from "../../ui/layout.module.css";
   flex: none;
   max-width: 50%;
   font-weight: 600;
   color: var(--fg-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .subagentDescription {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1 1 0;
   min-width: 0;
   color: var(--fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .subagentMeta {
   flex: none;
@@ -1405,13 +1309,11 @@
   white-space: nowrap;
 }
 .subagentActivity {
+  composes: truncate from "../../ui/layout.module.css";
   padding-left: 22px;
   color: var(--fg-muted);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .subagentSection > summary {
   padding-left: 22px;
@@ -1438,9 +1340,8 @@
 }
 
 .subagentBar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: 30px;
   padding: 0 8px 0 6px;
@@ -1448,14 +1349,12 @@
   min-width: 0;
 }
 .crumbs {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 4px;
   overflow: hidden;
 }
 .crumb {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 0 1 auto;
   min-width: 0;
   padding: 0;
@@ -1463,9 +1362,6 @@
   background: none;
   color: var(--link);
   font: inherit;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 .crumb:hover {
@@ -1473,13 +1369,11 @@
   text-decoration: underline;
 }
 .crumbCurrent {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 0 1 auto;
   min-width: 0;
   font-weight: 600;
   color: var(--fg-strong);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .messageFrom {
@@ -1520,17 +1414,14 @@
   color: var(--fg);
 }
 .subagentChipTitle {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* An open AskUserQuestion: every question with its options, answered at once above the composer. */
 .questionCard {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   gap: 12px;
   max-height: 50vh;
   overflow-y: auto;
@@ -1571,8 +1462,7 @@
   visibility: hidden;
 }
 .question {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
   min-width: 0;
   margin: 0;
@@ -1605,8 +1495,7 @@
 }
 /* Each option is a card of its own: separate targets, not one list with hairlines. */
 .questionChoices {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
 }
 .question .questionChoices > * {
@@ -1636,14 +1525,10 @@
   gap: 8px;
 }
 .questionOptionText {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-width: 0;
+  composes: column grow from "../../ui/layout.module.css";
 }
 .questionLabel {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   overflow-wrap: anywhere;
   color: var(--fg);
 }
@@ -1661,13 +1546,11 @@
   margin: 2px 0 0 30px;
 }
 .questionBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
 }
 .questionChoices {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
   min-width: 0;
 }
@@ -1688,8 +1571,7 @@
   margin: 0 0 0 30px;
 }
 .questionPreviewItem {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   grid-area: 1 / 1;
   gap: 4px;
   min-width: 0;
@@ -1720,15 +1602,13 @@
   font-size: var(--fs-small);
 }
 .questionActions {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }
 .questionPager {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
 }
 .questionPage {
@@ -1759,8 +1639,7 @@
   transform: rotate(90deg);
 }
 .turnBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: var(--space-2);
   margin-top: 2px;
   padding-left: 10px;
@@ -1769,8 +1648,7 @@
 
 /* Above the composer: what waits for the user, the plan and changes, what runs now. */
 .tray {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
 }
 .tray:empty {
@@ -1780,9 +1658,8 @@
   min-width: 0;
 }
 .trayStrip {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 4px;
 }
 .trayChip {
@@ -1805,8 +1682,7 @@
   color: var(--fg);
 }
 .trayPlan {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
   padding: 2px var(--space-2) 4px calc(var(--space-2) * 2);
   font-size: var(--fs-small);

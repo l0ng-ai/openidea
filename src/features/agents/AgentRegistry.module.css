@@ -1,7 +1,5 @@
 .body {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   gap: 12px;
   height: 100%;
-  min-height: 0;
 }

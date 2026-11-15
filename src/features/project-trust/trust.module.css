@@ -1,6 +1,5 @@
 .content {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: var(--space-3);
 }
 .content p {
@@ -37,8 +36,7 @@
   flex: none;
 }
 .banner {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-4);
@@ -47,14 +45,12 @@
   border-bottom: 1px solid var(--border);
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: var(--space-3);
 }
 .sectionHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: var(--space-3);
 }

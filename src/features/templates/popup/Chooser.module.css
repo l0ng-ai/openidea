@@ -4,14 +4,12 @@
   overflow: hidden;
 }
 .body {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   outline: none;
   padding-bottom: 4px;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   height: var(--h-row);
   padding: 0 10px;
@@ -35,11 +33,8 @@
   height: auto;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   gap: 14px;
-  min-width: 0;
-  flex: 1;
 }
 .label {
   font-family: var(--font-mono);
@@ -56,12 +51,10 @@
   color: var(--fg-strong);
 }
 .detail {
+  composes: truncate from "../../../ui/layout.module.css";
   margin-left: auto;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .empty {
   padding: 6px 10px;
@@ -69,8 +62,7 @@
   font-size: var(--fs-small);
 }
 .section {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   height: 100%;
   padding: 0 10px;

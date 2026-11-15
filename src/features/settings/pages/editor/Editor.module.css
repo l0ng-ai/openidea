@@ -1,12 +1,10 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   max-width: 760px;
 }
 
 .check {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
   column-gap: 6px;
   min-height: 26px;
@@ -24,8 +22,7 @@
   line-height: 1.4;
 }
 .children {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   padding-left: 20px;
 }
 .inline {
@@ -67,14 +64,12 @@
   column-gap: 24px;
 }
 .column {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   min-width: 0;
 }
 
 .radioBlock {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
   gap: 4px 12px;
   min-height: 28px;
@@ -86,8 +81,7 @@
   white-space: nowrap;
 }
 .radios {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
   gap: 4px 16px;
 }
@@ -121,8 +115,7 @@
 
 /* Font page */
 .fontFamily {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
@@ -153,16 +146,14 @@
 
 /* Color Scheme page */
 .schemeRow {
-  display: flex;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
   margin-bottom: 10px;
 }
 /* Landing links of the Color Scheme root page (JetBrains-style sub-page list). */
 .schemeLinks {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   align-items: flex-start;
   gap: 2px;
   margin-top: 4px;
@@ -194,9 +185,7 @@
   padding: 2px 0;
 }
 .treeLabel {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  composes: truncate from "../../../../ui/layout.module.css";
 }
 /* Overridden attributes and their ancestor groups show in accent, up to the root. */
 .attrModified {
@@ -211,13 +200,11 @@
   max-height: 360px;
 }
 .attrEditor {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   gap: 2px;
 }
 .attrRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 8px;
   min-height: 28px;
 }
@@ -324,12 +311,10 @@
   line-height: var(--lh-code);
 }
 .gitBlame {
+  composes: truncate from "../../../../ui/layout.module.css";
   display: inline-block;
   max-width: min(60ch, 50vw);
   margin-left: 3ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   vertical-align: bottom;
 }
 .gitTree {
@@ -339,8 +324,7 @@
   color: var(--fg-strong);
 }
 .gitRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 4px;
   height: 24px;
   padding-left: 4px;
@@ -349,20 +333,16 @@
   white-space: nowrap;
 }
 .gitChevron {
+  composes: row from "../../../../ui/layout.module.css";
   flex: none;
   width: 16px;
   height: 100%;
-  display: flex;
-  align-items: center;
   justify-content: center;
   color: var(--fg-muted);
 }
 .gitContent {
-  flex: 1;
-  min-width: 0;
+  composes: row grow from "../../../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  align-items: center;
   gap: 5px;
   border-radius: var(--radius-row);
 }

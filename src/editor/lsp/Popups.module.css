@@ -1,16 +1,14 @@
 .listPopup {
+  composes: column from "../../ui/layout.module.css";
   min-width: 360px;
   max-width: min(720px, 90vw);
   padding: 0;
   overflow: hidden;
-  display: flex;
-  flex-direction: column;
 }
 .listHeader {
+  composes: row from "../../ui/layout.module.css";
   height: 28px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 12px;
   font-size: var(--fs-ui);
@@ -18,11 +16,7 @@
   color: var(--fg-strong);
 }
 .listTitle {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 .query {
   font-family: var(--font-mono);
@@ -34,8 +28,7 @@
   max-width: min(1160px, 94vw);
 }
 .listMain {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   min-width: 0;
   flex: none;
 }
@@ -84,8 +77,7 @@
   color: var(--fg-faint);
 }
 .listBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   min-height: 24px;
   padding: 0 0 4px;
   box-sizing: content-box;
@@ -94,8 +86,7 @@
   flex: 1;
 }
 .item {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
   width: 100%;
@@ -244,9 +235,8 @@
   outline: none;
 }
 .docWindowFrame {
+  composes: column from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
   overflow: auto;
   outline: none;
 }
@@ -259,10 +249,9 @@
   color: var(--fg-faint);
 }
 .docToolbar {
+  composes: row from "../../ui/layout.module.css";
   position: sticky;
   bottom: 0;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 2px 6px;
   border-top: 1px solid var(--border-popup);
@@ -272,17 +261,15 @@
   padding: 10px 14px;
 }
 .defPopup {
+  composes: column from "../../ui/layout.module.css";
   width: min(640px, 90vw);
   max-height: 460px;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 .defHeader {
+  composes: row from "../../ui/layout.module.css";
   height: 28px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 6px 0 12px;
   background: var(--bg-popup-inline, var(--bg-elev));
@@ -301,8 +288,7 @@
   color: var(--fg-subtle);
 }
 .defFrame {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   min-height: 0;
   outline: none;
 }
@@ -339,9 +325,8 @@
   overflow: auto;
 }
 .previewRow {
+  composes: row from "../../ui/layout.module.css";
   height: var(--h-row);
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 14px;
   font-size: var(--fs-ui);
@@ -410,17 +395,15 @@
 
 /* Dialog bodies get no padding of their own; wrap the groups like Analysis dialogs' .form. */
 .reformatBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   padding: 14px;
 }
 .reformatGroup {
+  composes: column from "../../ui/layout.module.css";
   margin: 0;
   padding: 0;
   border: 0;
-  display: flex;
-  flex-direction: column;
   gap: 6px;
 }
 .reformatLegend {
@@ -430,22 +413,19 @@
   color: var(--fg-subtle);
 }
 .reformatOption {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   font-size: var(--fs-ui);
 }
 
 .pasteImports {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 12px;
   padding: 14px;
   font-size: var(--fs-ui);
 }
 .pasteImportList {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   max-height: 280px;
   overflow: auto;

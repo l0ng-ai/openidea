@@ -8,7 +8,6 @@
   width: 100%;
 }
 .buttons {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: var(--space-2);
 }

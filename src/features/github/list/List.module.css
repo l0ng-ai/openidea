@@ -3,10 +3,8 @@
  * `ReviewListSearchPanelFactory`). Sizes are IntelliJ's at 100% scale.
  */
 .panel {
-  display: flex;
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
-  min-height: 0;
 }
 
 /* Search panel: 0 / 10px (the tab adds 8px above). */
@@ -15,8 +13,7 @@
   padding: 0 10px;
 }
 .filterRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   margin-top: 10px;
   min-width: 0;
 }
@@ -39,11 +36,8 @@
 }
 /* Chips: a horizontally scrolling row, 4px apart, faded 10px at the clipped edges, thin overlay scrollbar. */
 .chips {
-  display: flex;
-  flex: 1;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   gap: 4px;
-  min-width: 0;
   padding: 2px 10px 4px;
   margin-bottom: -2px;
   overflow-x: auto;
@@ -130,11 +124,9 @@
 
 /* List area with the progress stripe over its top edge. */
 .body {
+  composes: columnFill from "../../../ui/layout.module.css";
   position: relative;
-  display: flex;
   flex: 1;
-  flex-direction: column;
-  min-height: 0;
   margin-top: 4px;
 }
 .stripe {
@@ -151,18 +143,14 @@
   min-height: 0;
 }
 .row {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  composes: column grow from "../../../ui/layout.module.css";
   justify-content: center;
-  min-width: 0;
   height: 100%;
   margin: 0 -2px;
   padding: 4px 0 5px;
 }
 .line {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   height: 24px;
   min-width: 0;
 }
@@ -190,12 +178,10 @@
   background: var(--gh-unread);
 }
 .title {
+  composes: truncate from "../../../ui/layout.module.css";
   flex: 0 1 auto;
   min-width: 30px;
-  overflow: hidden;
   color: var(--fg-strong);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .icon {
   display: inline-flex;
@@ -217,12 +203,10 @@
   font-variant-numeric: tabular-nums;
 }
 .info {
-  overflow: hidden;
+  composes: truncate from "../../../ui/layout.module.css";
   color: var(--fg-secondary);
   font-size: var(--fs-small);
   line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .emptyLink {
@@ -233,9 +217,8 @@
   text-decoration: underline;
 }
 .error {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: 1;
-  align-items: center;
   justify-content: center;
   min-height: 0;
   padding: 0 16px;
@@ -257,8 +240,7 @@
   font-size: var(--fs-small);
 }
 .balloonRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 4px;
   height: 24px;
   white-space: nowrap;

@@ -36,18 +36,16 @@
   letter-spacing: 0.04em;
 }
 .popup {
+  composes: column from "../../ui/layout.module.css";
   width: 380px;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 .popup.wide {
   width: 440px;
 }
 .search {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 6px 6px 6px 4px;
   border-bottom: 1px solid var(--border-popup);
@@ -57,10 +55,8 @@
 }
 /* Its height fits the rows; in a resized popup it takes the rest of the height. */
 .listWrap {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   padding: 4px 0;
   box-sizing: content-box;
 }
@@ -76,10 +72,7 @@
   color: var(--fg-faint);
 }
 .row {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 8px;
 }
 .rowIcon {

@@ -1,6 +1,5 @@
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   padding: 14px;
 }
@@ -17,11 +16,9 @@
 }
 
 .hint {
+  composes: truncate from "../../ui/layout.module.css";
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .error {
@@ -30,15 +27,13 @@
 }
 
 .options {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   margin-top: 4px;
 }
 
 .busy {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   color: var(--fg-muted);
   font-size: var(--fs-ui);
@@ -64,9 +59,8 @@
 }
 
 .previewFileRow {
+  composes: row from "../../ui/layout.module.css";
   height: var(--h-row);
-  display: flex;
-  align-items: center;
   gap: 6px;
   font-size: var(--fs-ui);
 }
@@ -76,10 +70,8 @@
 }
 
 .previewPath {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
@@ -101,8 +93,7 @@
 }
 
 .previewLineRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   height: var(--h-row);
 }

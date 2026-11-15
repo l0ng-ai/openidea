@@ -1,8 +1,6 @@
 .wrap {
+  composes: columnFill from "./layout.module.css";
   position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   height: 100%;
 }
 /* Tree.border 4,12,4,12 minus the island padding; rows are inset so the rounded selection floats. */
@@ -31,8 +29,7 @@
   background: transparent;
 }
 .emptyWrap {
-  display: flex;
-  align-items: center;
+  composes: row from "./layout.module.css";
   justify-content: center;
   color: var(--fg-faint);
 }
@@ -41,12 +38,11 @@
   width: 100%;
 }
 .row {
+  composes: row from "./layout.module.css";
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding-right: 8px;
   border-radius: var(--radius-selection, 5px);
@@ -110,11 +106,10 @@
   bottom: 0;
 }
 .chevron {
+  composes: row from "./layout.module.css";
   flex: none;
   width: 16px;
   height: 100%;
-  display: flex;
-  align-items: center;
   justify-content: center;
   color: var(--fg-muted);
 }
@@ -138,12 +133,11 @@
 }
 /* SpeedSearch popup above the tree. */
 .speedSearch {
+  composes: row from "./layout.module.css";
   position: absolute;
   top: 0;
   left: 8px;
   z-index: var(--z-panel);
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: 26px;
   max-width: calc(100% - 16px);

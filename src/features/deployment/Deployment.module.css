@@ -1,15 +1,12 @@
 /* Remote Host tool window */
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   height: 32px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 6px;
 }
@@ -19,35 +16,29 @@
   margin-right: 4px;
 }
 .rootPath {
+  composes: truncate from "../../ui/layout.module.css";
   flex: none;
   padding: 0 10px 4px;
   color: var(--fg-subtle);
   font-family: var(--font-mono);
   font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .treeHost {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .treeHost > * {
   flex: 1;
   min-height: 0;
 }
 .viewError {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   align-items: flex-start;
   gap: 8px;
   padding: 10px;
 }
 .center {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: center;
   gap: 8px;
   padding: 16px;
@@ -70,8 +61,7 @@
 
 /* Notifications */
 .report {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 4px;
 }
 .reportErrors {
@@ -81,8 +71,7 @@
 
 /* Sync dialog */
 .nativeWindow {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   height: 100%;
   min-width: 0;
   overflow: hidden;
@@ -95,8 +84,7 @@
   overflow: hidden;
 }
 .nativeFooter {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   gap: 12px;
   padding: 10px 16px;
@@ -109,17 +97,14 @@
   overflow: hidden;
 }
 .sync {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   gap: 8px;
   height: 100%;
-  min-height: 0;
   padding: 8px 10px 0;
 }
 .comparisonToolbar {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   flex: none;
   gap: 4px;
 }
@@ -195,10 +180,8 @@
   min-height: 0;
 }
 .fileList {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
 }
 .syncTableHost {
   flex: 1;
@@ -242,8 +225,7 @@
   background: var(--bg-tree-selected, var(--accent-soft));
 }
 .fileName {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -303,24 +285,20 @@
   text-align: right;
 }
 .preview {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
 }
 .previewMessage {
+  composes: column from "../../ui/layout.module.css";
   padding: 18px;
-  display: flex;
   align-items: flex-start;
-  flex-direction: column;
   gap: 12px;
 }
 
 /* SSH password prompt */
 .secret {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
 }

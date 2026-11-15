@@ -5,10 +5,8 @@
 }
 
 .body {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
   padding: 14px;
   font-size: var(--fs-ui);
@@ -16,9 +14,8 @@
 }
 
 .field {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   gap: 6px;
 }
 
@@ -28,12 +25,10 @@
 }
 
 .table {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   border: 1px solid var(--border);
   border-radius: 4px;
   flex: 1 1 auto;
-  min-height: 0;
 }
 
 .head,
@@ -66,10 +61,8 @@
 }
 
 .label {
+  composes: truncate from "../../ui/layout.module.css";
   font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .hint {
@@ -86,8 +79,7 @@
 }
 
 .busy {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   color: var(--fg-muted);
 }

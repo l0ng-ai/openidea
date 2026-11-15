@@ -1,8 +1,7 @@
 .bar {
+  composes: row from "../ui/layout.module.css";
   height: var(--h-titlebar);
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 0 8px 0 10px;
   white-space: nowrap;
@@ -41,8 +40,7 @@
   padding-right: 10px;
 }
 .compactTitle {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: center;
@@ -60,8 +58,7 @@
   cursor: default;
 }
 .item {
-  display: flex;
-  align-items: center;
+  composes: row from "../ui/layout.module.css";
   gap: 4px;
   min-width: 0;
 }
@@ -112,8 +109,7 @@
   min-width: 24px;
 }
 .tools {
-  display: flex;
-  align-items: center;
+  composes: row from "../ui/layout.module.css";
   gap: 4px;
   margin-left: 12px;
 }
@@ -175,18 +171,16 @@
   pointer-events: none;
 }
 .menuPresentation {
+  composes: row from "../ui/layout.module.css";
   position: absolute;
   top: 0;
   left: 0;
   height: 100%;
-  display: flex;
-  align-items: center;
 }
 /* Main menu › Separate toolbar: the titles in their own row below the title bar. */
 .menuRow {
+  composes: row from "../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   height: 30px;
   padding: 0 8px 0 10px;
   -webkit-user-select: none;
@@ -194,9 +188,8 @@
 }
 /* The main menu titles. */
 .menuBar {
+  composes: row from "../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   min-width: 0;
 }

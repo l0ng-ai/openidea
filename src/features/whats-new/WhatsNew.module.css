@@ -1,9 +1,7 @@
 /* What's New: one reading column on the page, like a document tab. */
 .page {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   background: var(--bg-editor);
   color: var(--fg);
 }
@@ -46,9 +44,8 @@
 
 /* Fills the body so an empty or loading state can sit in its middle. */
 .bodyColumn {
+  composes: column from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  flex-direction: column;
 }
 
 .notes {
@@ -153,9 +150,8 @@
 }
 
 .empty {
+  composes: column from "../../ui/layout.module.css";
   margin: auto;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 12px;
   max-width: 480px;
@@ -184,6 +180,5 @@
 }
 
 .footerRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
 }

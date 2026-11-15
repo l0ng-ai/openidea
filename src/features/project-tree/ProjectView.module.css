@@ -1,9 +1,7 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   position: relative;
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 
 .unityNotice {
@@ -16,11 +14,8 @@
 }
 
 .content {
-  flex: 1;
-  min-width: 0;
+  composes: row grow from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  align-items: center;
   gap: 5px;
   border-radius: var(--radius-row);
 }
@@ -83,11 +78,9 @@
   gap: 1px;
 }
 .detail {
+  composes: truncate from "../../ui/layout.module.css";
   min-width: 0;
   margin-left: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-subtle);
 }
 .badge {
@@ -134,10 +127,9 @@
 }
 
 .dragGhost {
+  composes: row from "../../ui/layout.module.css";
   position: fixed;
   z-index: var(--z-tooltip);
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: 22px;
   padding: 0 8px;

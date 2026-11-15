@@ -1,8 +1,6 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .tabs,
 .viewTabs {
@@ -11,9 +9,8 @@
   background: none;
 }
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding-right: 10px;
   border-bottom: 1px solid var(--border);
@@ -38,10 +35,8 @@
   color: var(--warning);
 }
 .body {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .muted {
   color: var(--fg-subtle);
@@ -51,15 +46,12 @@
 
 /* flame graph */
 .flamePane {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .flameBar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 2px 8px;
   border-bottom: 1px solid var(--border);
@@ -114,11 +106,9 @@
   opacity: 0.35;
 }
 .frameText {
+  composes: truncate from "../../ui/layout.module.css";
   display: block;
   padding: 1px 4px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   line-height: 15px;
 }
 
@@ -134,11 +124,8 @@
   min-height: 0;
 }
 .treeRow {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 8px;
-  min-width: 0;
-  flex: 1;
   white-space: nowrap;
 }
 .share {

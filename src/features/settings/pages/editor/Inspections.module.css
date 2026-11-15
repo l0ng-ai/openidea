@@ -1,12 +1,10 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   height: 100%;
   min-height: 420px;
 }
 .profileRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 10px;
   min-height: 30px;
   margin-bottom: 8px;
@@ -19,8 +17,7 @@
   white-space: nowrap;
 }
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 2px;
   margin-bottom: 6px;
 }
@@ -37,10 +34,9 @@
   gap: 12px;
 }
 .treeWrap {
+  composes: column from "../../../../ui/layout.module.css";
   flex: 3;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   border-radius: var(--radius-small);
   box-shadow: inset 0 0 0 1px var(--border);
   padding: 2px 0;
@@ -50,19 +46,12 @@
   color: var(--fg-subtle);
 }
 .row {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../../../ui/layout.module.css";
   gap: 8px;
   padding-right: 8px;
 }
 .name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../../ui/layout.module.css";
 }
 .groupName {
   font-weight: 600;
@@ -80,10 +69,9 @@
   flex: none;
 }
 .details {
+  composes: column from "../../../../ui/layout.module.css";
   flex: 2;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   gap: 10px;
   padding: 2px 4px;
   overflow: auto;
@@ -96,15 +84,13 @@
   overflow-wrap: anywhere;
 }
 .severityRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 8px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
 .options {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   gap: 6px;
   margin: 0;
   padding: 10px 0 0;
@@ -126,8 +112,7 @@
   font-size: var(--fs-small);
 }
 .nameBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   gap: 8px;
   padding: 14px;
 }

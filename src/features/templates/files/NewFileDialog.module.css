@@ -1,22 +1,18 @@
 .chooser {
+  composes: column from "../../../ui/layout.module.css";
   outline: none;
-  display: flex;
-  flex-direction: column;
 }
 .target {
+  composes: truncate from "../../../ui/layout.module.css";
   padding: 0 10px 6px;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .templateList {
   max-height: 360px;
 }
 .templateRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
 }
 .icon {
@@ -24,8 +20,7 @@
   color: var(--fg-muted);
 }
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 6px;
 }
 .variableDialog {
@@ -39,18 +34,15 @@
   padding-inline: var(--form-inset);
 }
 .field {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: var(--space-2);
 }
 .kinds {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding: 2px 0;
 }
 .kind {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   height: var(--h-row);
   padding: 0 8px;
@@ -67,12 +59,10 @@
   color: var(--fg-strong);
 }
 .hint {
+  composes: truncate from "../../../ui/layout.module.css";
   min-height: 16px;
   font-size: var(--fs-small);
   color: var(--fg-subtle);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .error {
   color: var(--danger);

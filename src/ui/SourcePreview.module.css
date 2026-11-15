@@ -17,8 +17,7 @@
   cursor: default;
 }
 .empty {
-  display: flex;
-  align-items: center;
+  composes: row from "./layout.module.css";
   justify-content: center;
   color: var(--fg-faint);
   font-family: var(--font-ui);

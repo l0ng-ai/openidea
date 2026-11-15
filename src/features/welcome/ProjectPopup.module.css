@@ -5,16 +5,14 @@
   max-width: min(640px, calc(100vw - 24px));
 }
 .inner {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   outline: none;
 }
 .inner:focus-visible {
   outline: none;
 }
 .search {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-list-row);
   margin: 0 6px 4px;
@@ -29,8 +27,7 @@
   display: contents;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-height: var(--h-list-row);
   margin: 0 6px;
@@ -52,8 +49,7 @@
   color: var(--fg-muted);
 }
 .label {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -73,10 +69,7 @@
   margin-top: 1px;
 }
 .text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 2px;
 }
 .top {

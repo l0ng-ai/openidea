@@ -1,12 +1,11 @@
 .stack {
+  composes: column from "../ui/layout.module.css";
   position: fixed;
   /* Inside the editor island's bottom-right corner, clear of the right stripe. */
   right: 78px;
   bottom: calc(var(--h-statusbar) + 16px);
   /* Balloons belong to the main window: modal dialogs cover them, like IDEA. */
   z-index: calc(var(--z-dialog) - 1);
-  display: flex;
-  flex-direction: column;
   align-items: flex-end;
   gap: 8px;
   pointer-events: none;
@@ -27,10 +26,8 @@
   }
 }
 .list {
+  composes: columnFill from "../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   overflow: auto;
   outline: none;
 }

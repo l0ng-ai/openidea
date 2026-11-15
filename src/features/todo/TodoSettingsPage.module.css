@@ -1,6 +1,5 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 10px;
   color: var(--fg);
   font-size: var(--fs-ui);
@@ -10,21 +9,18 @@
   gap: 18px;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   color: var(--fg-muted);
 }
 .list {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-small);
   padding: 2px 0;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-height: 28px;
   padding: 0 8px;

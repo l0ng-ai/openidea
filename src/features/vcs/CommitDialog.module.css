@@ -1,8 +1,6 @@
 .body {
+  composes: columnFill from "../../ui/layout.module.css";
   height: min(620px, 70vh);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   margin: -4px 0 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);

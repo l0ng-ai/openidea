@@ -1,7 +1,6 @@
 .popup {
+  composes: column from "../../ui/layout.module.css";
   width: 560px;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 
@@ -20,15 +19,13 @@
 }
 
 .row {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   padding: 0;
 }
 
 .section {
+  composes: row from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  align-items: center;
   gap: 6px;
 }
 

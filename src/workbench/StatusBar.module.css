@@ -1,9 +1,8 @@
 /* Islands: the status bar sits on the frame background, no divider. */
 .bar {
+  composes: row from "../ui/layout.module.css";
   height: calc(var(--h-statusbar) + 4px);
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 0 10px 0 12px;
   font-family: var(--font-ui);
@@ -22,9 +21,8 @@
   color: inherit;
 }
 .item {
+  composes: row from "../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   min-width: 0;
   padding: 0 4px;
 }
@@ -72,23 +70,17 @@
   font-size: var(--fs-small);
 }
 .taskRow {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../ui/layout.module.css";
   gap: 5px;
   padding: 6px 12px;
 }
 .taskRowHead {
-  display: flex;
-  align-items: center;
+  composes: row from "../ui/layout.module.css";
   gap: 8px;
 }
 .taskRowTitle {
-  flex: 1;
-  min-width: 0;
+  composes: truncate grow from "../ui/layout.module.css";
   color: var(--fg-emphasis);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .taskCancelOff {
   display: inline-flex;
@@ -102,16 +94,12 @@
   color: var(--fg-subtle);
 }
 .taskMessage {
+  composes: truncate from "../ui/layout.module.css";
   color: var(--fg-subtle);
   font-size: var(--fs-small);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .info {
+  composes: truncate from "../ui/layout.module.css";
   color: var(--fg-secondary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }

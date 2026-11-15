@@ -1,9 +1,7 @@
 .start {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 10px;
@@ -11,8 +9,7 @@
 }
 
 .startInner {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   align-items: center;
   gap: 10px;
   max-width: 560px;

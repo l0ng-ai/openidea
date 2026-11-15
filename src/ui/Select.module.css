@@ -55,12 +55,8 @@
     0 0 0 1px var(--focus-ring);
 }
 .value {
-  flex: 1;
-  min-width: 0;
+  composes: truncate grow from "./layout.module.css";
   text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .placeholder {
   color: var(--fg-faint);
@@ -107,11 +103,9 @@
   overflow: hidden;
 }
 .optionLabel {
+  composes: truncate from "./layout.module.css";
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 /* The label keeps its width (up to most of the row); a long detail (a path) is cut instead. */
 .withDetail {
@@ -119,11 +113,9 @@
   max-width: 70%;
 }
 .detail {
+  composes: truncate from "./layout.module.css";
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-muted);
 }
 .disabled {

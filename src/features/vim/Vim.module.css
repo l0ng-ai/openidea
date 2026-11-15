@@ -18,20 +18,17 @@
 }
 
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 16px;
   color: var(--fg);
   font-size: var(--fs-ui);
 }
 .section {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: space-between;
   color: var(--fg-muted);
 }

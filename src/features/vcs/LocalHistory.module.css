@@ -6,17 +6,15 @@
   background: var(--bg-app);
 }
 .sidebar {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
   width: 260px;
-  display: flex;
-  flex-direction: column;
   border-right: 1px solid var(--border);
 }
 .header {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
   height: var(--h-header);
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 8px 0 12px;
   border-bottom: 1px solid var(--border);
@@ -30,8 +28,7 @@
   flex: 1;
 }
 .entry {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   min-width: 0;
   gap: 2px;
 }
@@ -45,10 +42,7 @@
   text-overflow: ellipsis;
 }
 .diff {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
 }
 .message {
   padding: 16px;
@@ -68,16 +62,13 @@
   text-decoration: line-through;
 }
 .labelRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 4px;
   min-width: 0;
   color: var(--fg-muted);
 }
 .labelName {
+  composes: truncate from "../../ui/layout.module.css";
   font-size: var(--fs-small);
   font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

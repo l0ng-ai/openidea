@@ -1,13 +1,10 @@
 .view {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
 }
 
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   padding: 2px 6px;
   border-bottom: 1px solid var(--border);
@@ -53,9 +50,8 @@
 }
 
 .empty {
+  composes: row from "../../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  align-items: center;
   justify-content: center;
 }
 
@@ -66,8 +62,7 @@
 }
 
 .listItem {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: 24px;
   padding: 0 8px;
@@ -94,16 +89,14 @@
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 10px;
   padding: 10px 12px;
   max-width: 520px;
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
 }
 
@@ -162,12 +155,10 @@
 }
 
 .cell {
+  composes: truncate from "../../../ui/layout.module.css";
   flex: 0 0 160px;
   padding: 0 6px;
   line-height: 24px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   border-right: 1px solid var(--border);
 }
 
@@ -222,16 +213,14 @@
   position: relative;
 }
 .splitEditor {
+  composes: column from "../../../ui/layout.module.css";
   flex: 1 1 50%;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
 }
 .splitPreview {
+  composes: column from "../../../ui/layout.module.css";
   flex: 1 1 50%;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
   background: var(--bg-editor, var(--bg-app));
 }
 .layout-preview .splitEditor {
@@ -241,8 +230,7 @@
   border-right: 1px solid var(--border-editor-tabs, var(--border));
 }
 .layoutActions {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
 }
 .layoutActions > button {
   width: var(--h-floating-toolbar-button);

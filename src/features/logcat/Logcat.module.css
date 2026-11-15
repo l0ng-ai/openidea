@@ -1,15 +1,12 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   background: var(--bg-editor);
 }
 
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
@@ -82,8 +79,7 @@
   color: var(--fg-muted);
 }
 .message {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
 }
 
 /* Level colours follow Android Studio: errors red, warnings amber, info default,
@@ -108,10 +104,9 @@
 }
 
 .empty {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
   justify-content: center;
   color: var(--fg-subtle);
   font-family: var(--font-ui);
@@ -120,9 +115,8 @@
 }
 
 .status {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 2px 8px;
   border-top: 1px solid var(--border);

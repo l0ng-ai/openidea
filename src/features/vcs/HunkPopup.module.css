@@ -1,14 +1,12 @@
 .popup {
+  composes: column from "../../ui/layout.module.css";
   min-width: 320px;
   max-width: min(720px, 80vw);
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   height: 28px;
   padding: 0 4px;

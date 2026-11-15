@@ -1,6 +1,5 @@
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   padding: 14px;
 }
@@ -14,13 +13,11 @@
   margin-top: 4px;
 }
 .row {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
-  align-items: center;
 }
 .grow {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
 }
 .folders {
   list-style: none;
@@ -32,8 +29,7 @@
   border-radius: 4px;
 }
 .folder {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   width: 100%;
   padding: 3px 8px;
@@ -55,15 +51,13 @@
 }
 
 .progress {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   margin-top: 4px;
 }
 
 .progressLine {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   color: var(--fg-muted);
 }

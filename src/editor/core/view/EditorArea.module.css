@@ -1,18 +1,13 @@
 .area {
-  flex: 1;
+  composes: grow from "../../../ui/layout.module.css";
   display: flex;
-  min-width: 0;
   min-height: 0;
 }
 .group {
   flex: 1;
 }
 .pane {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
+  composes: columnFill grow from "../../../ui/layout.module.css";
   height: 100%;
   position: relative;
 }
@@ -24,11 +19,7 @@
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
 .content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
+  composes: columnFill grow from "../../../ui/layout.module.css";
   position: relative;
   isolation: isolate;
 }
@@ -45,9 +36,8 @@
   z-index: -1;
 }
 .host {
-  flex: 1;
+  composes: grow from "../../../ui/layout.module.css";
   min-height: 0;
-  min-width: 0;
   position: relative;
   overflow: hidden;
 }
@@ -59,10 +49,8 @@
   flex: 1;
 }
 .kind {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   outline: none;
 }
 /* Keep the actions at the pane edge without changing how wrapped tabs use space. */
@@ -71,9 +59,8 @@
   margin-left: auto;
 }
 .tabActions {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 6px 0 8px;
 }
@@ -86,9 +73,8 @@
   margin-left: 4px;
 }
 .banner {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   min-height: 36px;
   padding: 0 12px;
@@ -116,11 +102,7 @@
   white-space: nowrap;
 }
 .bannerDetail {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
   color: var(--fg-muted);
 }
 .bannerSpacer {
@@ -153,8 +135,7 @@
   min-width: 0;
 }
 .findButtons {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
 }
 .findCount {
@@ -171,15 +152,13 @@
   justify-self: end;
 }
 .replaceButtons {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
 }
 
 /* Go to line */
 .gotoBody {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   padding: 8px 16px 0;
 }
@@ -190,8 +169,7 @@
 
 /* Status bar */
 .status {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   min-width: 0;
   overflow: hidden;
 }
@@ -209,10 +187,8 @@
   flex: none;
 }
 .crumbLabel {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .statusSep {
   flex: none;
@@ -313,9 +289,8 @@
 
 /* Breadcrumbs inside the editor (top or bottom of the text) */
 .codeCrumbs {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   height: 26px;
   padding: 0 8px;

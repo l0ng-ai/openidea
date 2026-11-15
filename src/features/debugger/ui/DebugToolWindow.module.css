@@ -1,13 +1,10 @@
 .root {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
 }
 
 .emptyWrap {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   justify-content: center;
   height: 100%;
 }
@@ -19,10 +16,9 @@
 }
 
 .toolbar {
+  composes: row from "../../../ui/layout.module.css";
   height: 32px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 8px 0 4px;
   border-bottom: 1px solid var(--border);
@@ -45,8 +41,7 @@
 }
 
 .tabs {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
   flex: none;
 }
@@ -79,17 +74,14 @@
 }
 
 .split {
-  flex: 1;
+  composes: grow from "../../../ui/layout.module.css";
   min-height: 0;
-  min-width: 0;
 }
 
 /* frames */
 .frames {
+  composes: columnFill from "../../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   padding: 4px 0;
 }
 
@@ -98,20 +90,17 @@
 }
 
 .frameList {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
   outline: none;
   padding: 0 4px;
 }
 
 .frame {
+  composes: row from "../../../ui/layout.module.css";
   height: var(--h-row);
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 8px;
   border-radius: var(--radius-small);
@@ -146,8 +135,7 @@
 }
 
 .frameFile {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   /* ", File.java:12" hugs the name, cancelling the row gap. */
   margin-left: -6px;
   color: var(--fg-subtle);
@@ -168,28 +156,24 @@
 
 /* variables */
 .variables {
+  composes: columnFill from "../../../ui/layout.module.css";
   height: 100%;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 
 .evalField {
+  composes: row from "../../../ui/layout.module.css";
   height: 30px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 4px;
   padding: 0 4px 0 12px;
   border-bottom: 1px solid var(--border);
 }
 
 .repl {
+  composes: row from "../../../ui/layout.module.css";
   height: 28px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
@@ -199,8 +183,7 @@
 }
 
 .evalInput {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   background: none;
   border: 0;
   outline: none;
@@ -220,27 +203,21 @@
 /* console */
 /* The Console tab: actions in a vertical strip on the left, as in the Run window. */
 .consoleArea {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   min-height: 0;
   display: flex;
 }
 .consoleToolbar {
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
   width: 32px;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 2px;
   padding: 4px 0;
   border-right: 1px solid var(--border);
 }
 .console {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill grow from "../../../ui/layout.module.css";
 }
 
 .consoleOutput {

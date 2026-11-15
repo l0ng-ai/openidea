@@ -28,29 +28,22 @@
   width: var(--icon);
 }
 .main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  composes: column grow from "../../../../ui/layout.module.css";
   gap: 4px;
-  min-width: 0;
   max-width: var(--gh-content-width, 42em);
 }
 .main[data-wide] {
   max-width: none;
 }
 .header {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 8px;
   min-height: 20px;
 }
 .title {
-  display: flex;
-  flex: 1;
+  composes: row grow from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
-  min-width: 0;
 }
 .author {
   color: var(--fg);
@@ -65,9 +58,8 @@
   color: var(--fg);
 }
 .actions {
-  display: flex;
+  composes: row from "../../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 2px;
   margin-left: auto;
 }
@@ -146,11 +138,8 @@
   min-width: 0;
 }
 .editor {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
+  composes: column grow from "../../../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
   max-width: var(--gh-content-width, 42em);
 }
 .field {
@@ -178,9 +167,8 @@
   resize: none;
 }
 .editorFooter {
-  display: flex;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   justify-content: flex-end;
   gap: 12px;
 }
@@ -203,8 +191,7 @@
   overflow-y: auto;
 }
 .mention {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 6px;
   padding: 2px 8px;
   white-space: nowrap;
@@ -273,12 +260,10 @@
 /* --- Threads ------------------------------------------------------------ */
 
 .thread {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
 }
 .threadContent {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   gap: 8px;
 }
 .preview {
@@ -298,17 +283,14 @@
   background: var(--bg-editor);
 }
 .fileHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 6px;
   min-height: 28px;
   padding: 2px 6px 2px 10px;
 }
 .fileName {
-  overflow: hidden;
+  composes: truncate from "../../../../ui/layout.module.css";
   color: var(--link);
-  text-overflow: ellipsis;
-  white-space: nowrap;
   cursor: pointer;
 }
 .fileName:hover {
@@ -355,15 +337,13 @@
   color: var(--fg-secondary);
 }
 .folded {
-  display: flex;
+  composes: row from "../../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 14px;
   padding: 8px 0;
 }
 .foldedReplies {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   gap: 8px;
 }
 .compactFooter {
@@ -390,8 +370,7 @@
   border-radius: 8px;
 }
 .suggestionTop {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../../ui/layout.module.css";
   justify-content: space-between;
   gap: 8px;
   padding: 4px 8px;
@@ -416,8 +395,7 @@
   border-bottom-left-radius: 0;
 }
 .commitPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../../ui/layout.module.css";
   gap: 8px;
   width: 450px;
   padding: 10px;

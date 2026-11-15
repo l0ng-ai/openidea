@@ -1,18 +1,13 @@
 .root {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: columnFill grow from "../../ui/layout.module.css";
   background: var(--bg-editor, var(--bg-app));
   color: var(--fg);
   outline: none;
 }
 
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   height: 36px;
   padding: 0 8px;
@@ -30,9 +25,7 @@
   flex: 1;
 }
 .info {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  composes: truncate from "../../ui/layout.module.css";
   padding: 0 6px;
   font-variant-numeric: tabular-nums;
 }
@@ -50,9 +43,8 @@
   background: var(--bg-hover);
 }
 .message {
+  composes: row from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  align-items: center;
   justify-content: center;
   padding: 24px;
   color: var(--fg-muted);
@@ -113,19 +105,17 @@
   overflow: hidden;
 }
 .hexRow {
+  composes: row from "../../ui/layout.module.css";
   position: absolute;
   left: 0;
-  display: flex;
   white-space: pre;
   padding: 0 12px;
-  align-items: center;
 }
 .hexHeader {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
   white-space: pre;
   padding: 0 12px;
-  align-items: center;
   font-family: var(--font-mono);
   font-size: var(--fs-code);
   color: var(--fg-faint);

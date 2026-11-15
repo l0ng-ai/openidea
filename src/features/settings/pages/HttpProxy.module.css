@@ -1,11 +1,9 @@
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
 }
 .modes {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
 }
 .radio {
   display: inline-flex;
@@ -27,13 +25,11 @@
 
 /* Manual configuration, indented under its radio button. */
 .manual {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding-left: 20px;
 }
 .kinds {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 16px;
 }
 .hostRow {
@@ -51,13 +47,11 @@
   width: 360px;
 }
 .toggle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   min-height: 28px;
 }
 .auth {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding-left: 20px;
 }
 .error {
@@ -71,15 +65,13 @@
   margin-top: 12px;
 }
 .popup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   padding: 10px 14px;
   max-width: 480px;
 }
 .urlRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
 }
 .result {

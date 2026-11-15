@@ -1,6 +1,5 @@
 .options {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   max-width: 680px;
 }
 .fontInput {

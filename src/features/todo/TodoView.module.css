@@ -1,14 +1,10 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .body {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .body > * {
   flex: 1;
@@ -33,9 +29,8 @@
   border-bottom: 1px solid var(--border);
 }
 .scopeBar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   height: 32px;
   padding: 0 8px;
@@ -46,11 +41,8 @@
   max-width: 360px;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
-  flex: 1;
   white-space: nowrap;
 }
 .fileIcon {
@@ -90,18 +82,15 @@
   font-style: normal;
 }
 .loading {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: center;
   gap: 8px;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
 .panel {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   min-width: 0;
-  min-height: 0;
 }
 .panel > * {
   flex: 1;
@@ -113,8 +102,7 @@
   min-height: 0;
 }
 .previewError {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   justify-content: center;
   color: var(--fg-faint);
   font-family: var(--font-ui);

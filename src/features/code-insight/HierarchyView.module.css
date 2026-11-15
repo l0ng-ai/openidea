@@ -1,8 +1,6 @@
 .view {
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .tabs {
   min-width: 0;
@@ -10,10 +8,9 @@
   background: none;
 }
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   height: 32px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 6px;
 }
@@ -31,21 +28,16 @@
   color: var(--fg-subtle);
 }
 .body {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .body > * {
   flex: 1;
   min-height: 0;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
-  min-width: 0;
-  flex: 1;
   white-space: nowrap;
 }
 .name {

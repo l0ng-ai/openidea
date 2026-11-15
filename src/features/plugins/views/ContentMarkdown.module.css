@@ -102,8 +102,7 @@
   max-width: 100%;
 }
 .layout {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 2px;
 }
 .body {

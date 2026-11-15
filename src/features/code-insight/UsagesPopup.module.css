@@ -1,14 +1,12 @@
 .popup {
+  composes: column from "../../ui/layout.module.css";
   width: min(680px, 90vw);
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 .header {
+  composes: row from "../../ui/layout.module.css";
   height: 26px;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 10px;
   border-bottom: 1px solid var(--border-popup);
@@ -20,17 +18,12 @@
 }
 
 .searching {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
 }
 
 .title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
   color: var(--fg-emphasis);
 }
 .count {
@@ -50,8 +43,7 @@
   text-decoration: underline;
 }
 .body {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   min-height: 24px;
   padding: 2px 0;
   box-sizing: content-box;
@@ -60,8 +52,7 @@
   flex: 1;
 }
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
   width: 100%;
@@ -89,9 +80,7 @@
 }
 
 .focus {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill from "../../ui/layout.module.css";
   outline: none;
 }
 .filter {

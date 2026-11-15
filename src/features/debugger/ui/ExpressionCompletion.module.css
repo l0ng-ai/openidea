@@ -9,8 +9,7 @@
   overflow-y: auto;
 }
 .item {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-list-row);
   margin: 0 6px;
@@ -25,8 +24,7 @@
   background: var(--bg-tree-selected);
 }
 .label {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
 }

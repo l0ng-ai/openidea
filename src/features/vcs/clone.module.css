@@ -19,8 +19,7 @@
   height: 20px;
 }
 .layout {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   min-height: 0;
   display: flex;
 }
@@ -47,10 +46,7 @@
   line-height: 22px;
 }
 .form {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+  composes: column grow from "../../ui/layout.module.css";
   gap: 16px;
   padding: 28px 24px;
 }
@@ -73,10 +69,9 @@
   width: 138px;
 }
 .comboField {
+  composes: row from "../../ui/layout.module.css";
   min-width: 0;
   height: var(--h-field, 28px);
-  display: flex;
-  align-items: center;
   border-radius: var(--radius-control, 4px);
   background: var(--bg-field, var(--bg-button));
   box-shadow: inset 0 0 0 1px var(--border-button);
@@ -99,9 +94,8 @@
   border-left: 1px solid var(--border);
 }
 .shallowRow {
+  composes: row from "../../ui/layout.module.css";
   min-width: 0;
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding-left: 124px;
 }
@@ -113,8 +107,7 @@
   padding-left: 124px;
 }
 .progress {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -171,8 +164,6 @@
   outline-offset: -2px;
 }
 .sourcePane {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }

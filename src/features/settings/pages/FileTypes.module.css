@@ -6,8 +6,7 @@
 }
 
 .types {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -17,8 +16,7 @@
 }
 
 .typeList {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   max-height: 420px;
   overflow: auto;
   padding: 2px 0;
@@ -27,8 +25,7 @@
 }
 
 .type {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: var(--h-row);
   padding: 0 8px;
@@ -48,11 +45,7 @@
 }
 
 .typeName {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../../ui/layout.module.css";
 }
 
 .modified {
@@ -61,8 +54,7 @@
 }
 
 .patterns {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
   min-width: 0;
 }

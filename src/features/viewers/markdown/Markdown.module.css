@@ -1,15 +1,13 @@
 .split {
-  flex: 1;
+  composes: grow from "../../../ui/layout.module.css";
   min-height: 0;
-  min-width: 0;
   display: flex;
   position: relative;
 }
 .editor {
+  composes: column from "../../../ui/layout.module.css";
   flex: 1 1 50%;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
 }
 .mode-preview .editor {
   display: none;
@@ -19,8 +17,7 @@
 }
 
 .layoutActions {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
 }
 .layoutActions > button {
   width: var(--h-floating-toolbar-button);

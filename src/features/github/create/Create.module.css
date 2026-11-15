@@ -16,13 +16,11 @@
 }
 
 .centered {
-  display: flex;
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 0;
   padding: 12px;
   text-align: center;
 }
@@ -63,16 +61,13 @@
   cursor: default;
 }
 .linkText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../../ui/layout.module.css";
 }
 
 /* Direction */
 .direction {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 6px;
   min-width: 0;
   padding: 8px 12px;
@@ -87,16 +82,14 @@
   color: var(--fg-muted);
 }
 .headPopup {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   width: 300px;
   height: 340px;
   overflow: hidden;
 }
 .headRepo {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  align-items: center;
   gap: 6px;
   padding: 8px 8px 0;
 }
@@ -118,16 +111,14 @@
   padding-bottom: 4px;
 }
 .headSection {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   height: 100%;
   padding: 0 10px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
 .headRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 6px;
   height: 100%;
   padding: 0 8px;
@@ -141,30 +132,24 @@
 
 /* Commits and changes */
 .changesBox {
-  display: flex;
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
-  min-height: 0;
   border-top: 1px solid var(--border);
 }
 .changes {
-  display: flex;
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
-  min-height: 0;
 }
 .commits {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   gap: 8px;
   max-height: 50%;
   padding: 2px 12px 8px;
   overflow: auto;
 }
 .commitsHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 4px;
   min-height: 28px;
 }
@@ -175,8 +160,7 @@
   font-family: var(--font-mono);
 }
 .commitInfo {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
 }
 .commitTop {
@@ -189,10 +173,8 @@
   margin-left: auto;
 }
 .commitSubject {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .commitSubjectFull {
   min-width: 0;
@@ -228,9 +210,8 @@
 
 /* Title and description */
 .text {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: 1;
-  flex-direction: column;
   min-height: 60px;
 }
 .titleInput {
@@ -283,9 +264,8 @@
   color: var(--fg-muted);
 }
 .metaList {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   min-width: 0;
   min-height: 28px;
 }
@@ -302,22 +282,19 @@
 
 /* Status and the option button */
 .footer {
-  display: flex;
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
-  flex-direction: column;
   align-items: flex-start;
   gap: 10px;
   padding: 10px;
 }
 .status {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   max-width: 100%;
 }
 .statusRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 8px;
   min-width: 0;
 }
@@ -328,9 +305,7 @@
   min-width: 0;
 }
 .ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate from "../../../ui/layout.module.css";
 }
 .errorPopup {
   width: 300px;
@@ -373,8 +348,7 @@
 
 /* New Remote Branch for Pull Request */
 .dialogForm {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 6px;
 }
 .dialogLabel {

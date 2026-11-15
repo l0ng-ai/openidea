@@ -27,8 +27,7 @@
 }
 
 .page {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 8px;
   padding: 4px 0;
 }

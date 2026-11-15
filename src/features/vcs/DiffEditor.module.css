@@ -1,18 +1,15 @@
 .root {
+  composes: columnFill from "../../ui/layout.module.css";
   position: relative;
   container: diff-editor / inline-size;
   flex: 1;
   height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   background: var(--bg-app);
 }
 .toolbar {
+  composes: row from "../../ui/layout.module.css";
   flex: none;
   height: var(--h-header);
-  display: flex;
-  align-items: center;
   gap: 2px;
   padding: 0 6px;
   border-bottom: 1px solid var(--border);
@@ -57,15 +54,9 @@
   font-size: var(--fs-small);
 }
 .label {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: truncate row grow from "../../ui/layout.module.css";
   gap: 8px;
   padding: 0 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-family: var(--font-mono);
 }
 .label + .label {
@@ -116,18 +107,15 @@
   border-left: 1px solid var(--border);
 }
 .message {
+  composes: row from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  align-items: center;
   justify-content: center;
   padding: 24px;
   color: var(--fg-subtle);
 }
 .host {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 .host:not([hidden]) {
@@ -330,8 +318,7 @@
 
 /* Review comments under diff lines (pull requests). */
 .notes {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 6px;
   margin: 4px 8px 6px 8px;
   padding: 6px 10px;

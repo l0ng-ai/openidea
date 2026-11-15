@@ -1,9 +1,8 @@
 /* HelpTooltip / ToolTip.*: feedback-bg surface with feedback-border; shortcut in secondary text. */
 .tooltip {
+  composes: row from "./layout.module.css";
   position: fixed;
   z-index: var(--z-tooltip);
-  display: flex;
-  align-items: center;
   gap: 8px;
   max-width: min(720px, calc(100vw - 32px));
   padding: 6px 10px;

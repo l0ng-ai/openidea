@@ -10,15 +10,12 @@
   overflow: hidden;
 }
 .root {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 .header {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 10px;
   height: 42px;
   padding: 0 14px 0 20px;
@@ -41,8 +38,7 @@
   flex: 1;
 }
 .mask {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   height: var(--h-control);
   background: var(--bg-field);
   border: 1px solid var(--border-strong);
@@ -60,9 +56,8 @@
   color: var(--fg);
 }
 .fields {
+  composes: column from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   gap: 8px;
   padding: 8px 8px 0;
 }
@@ -82,19 +77,15 @@
 }
 /* Scope tabs line up with the title; the selected one is a neutral pressed pill, as in IDEA. */
 .scopeRow {
+  composes: row from "../../../ui/layout.module.css";
   --bg-tab-selected: var(--bg-toolbar-pressed);
   --border-tab-selected: transparent;
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 12px;
   padding: 8px 14px 4px 20px;
 }
 .scopeDetail {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../../ui/layout.module.css";
   justify-content: flex-end;
   gap: 4px;
 }
@@ -116,21 +107,17 @@
 }
 /* Results alone (empty state) or results over the preview; grows with the popup. */
 .split {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1 1 auto;
   height: 500px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .split > * {
   flex: 1;
   min-height: 0;
 }
 .results {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   padding: 2px 0;
 }
 .results > * {
@@ -143,8 +130,7 @@
   color: var(--fg-faint);
 }
 .rowText {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
   font-family: var(--font-mono);
@@ -165,9 +151,8 @@
   font-variant-numeric: tabular-nums;
 }
 .previewHeader {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  align-items: center;
   justify-content: space-between;
   gap: 10px;
   height: 36px;
@@ -176,26 +161,21 @@
   color: var(--fg-subtle);
 }
 .previewPath {
+  composes: truncate from "../../../ui/layout.module.css";
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .previewName {
   color: var(--fg-strong);
   margin-right: 8px;
 }
 .previewBox {
+  composes: columnFill from "../../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .footer {
+  composes: row from "../../../ui/layout.module.css";
   flex: none;
-  display: flex;
   flex-wrap: wrap;
-  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   min-height: 46px;
@@ -207,11 +187,9 @@
   white-space: nowrap;
 }
 .hint {
+  composes: truncate from "../../../ui/layout.module.css";
   flex: 1 1 0;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
@@ -223,8 +201,7 @@
   text-decoration: line-through;
 }
 .empty {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   align-items: center;
   gap: 2px;
   padding: 0 20px;
@@ -232,8 +209,7 @@
   line-height: 1.6;
 }
 .emptyOptions {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   align-items: center;
   margin-top: 1.2em;
 }

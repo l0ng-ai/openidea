@@ -1,15 +1,10 @@
 .root {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
+  composes: columnFill grow from "../../../ui/layout.module.css";
   width: 100%;
-  flex: 1;
 }
 
 .row {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 5px;
   min-width: 0;
   width: 100%;
@@ -150,8 +145,7 @@
 
 /* Expanded value hint in the editor. */
 .hint {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   min-width: 0;
   width: 460px;
   height: 260px;

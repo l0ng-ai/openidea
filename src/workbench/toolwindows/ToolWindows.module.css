@@ -1,8 +1,7 @@
 .frame {
-  flex: 1;
+  composes: grow from "../../ui/layout.module.css";
   display: flex;
   min-height: 0;
-  min-width: 0;
 }
 /* No right stripe: keep the window-edge gap the stripe would have provided. */
 .frameNoRight {
@@ -41,11 +40,10 @@
 }
 
 .grid {
+  composes: grow from "../../ui/layout.module.css";
   /* Undocked tool windows are positioned against the grid. */
   position: relative;
-  flex: 1;
   display: grid;
-  min-width: 0;
   min-height: 0;
   /* Track sizes come from ToolWindowLayout; the editor keeps 200 × 60 px and side tracks give way first. */
   grid-template-columns:
@@ -86,10 +84,8 @@
 
 /* A side: primary and split areas, each an island; stacked on the left and right, side by side at the bottom. */
 .side {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   min-width: 0;
-  min-height: 0;
 }
 .sideRow {
   flex-direction: row;
@@ -109,12 +105,8 @@
 
 /* Islands: rounded surfaces on the frame background, separated by gaps. */
 .island {
+  composes: columnFill grow from "../../ui/layout.module.css";
   position: relative;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
   overflow: hidden;
   background: var(--bg-island);
   border-radius: var(--island-radius);
@@ -243,6 +235,7 @@
 
 /* Stripes */
 .stripe {
+  composes: column from "../../ui/layout.module.css";
   /* --stripe-drag: the width under the pointer while the stripe edge is dragged. */
   --stripe-button: var(--stripe-drag, var(--stripe-icon-button));
   /* Outer padding: narrower than the island gap so the side frame stays close to the status bar's height, as in IDEA. */
@@ -250,8 +243,6 @@
   width: calc(var(--stripe-button) + var(--stripe-pad) + var(--island-gap));
   container-type: inline-size;
   flex: none;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   /* Icon buttons repeat at the title bar's height, so the title bar's Settings button reads as the right stripe's first one, as in IDEA. */
   --stripe-gap: calc(var(--h-titlebar) - var(--stripe-icon-button));
@@ -307,9 +298,8 @@
   flex: 1;
 }
 .stripeGroup {
+  composes: column from "../../ui/layout.module.css";
   flex: none;
-  display: flex;
-  flex-direction: column;
   align-items: center;
   gap: inherit;
 }
@@ -322,12 +312,11 @@
   background: var(--border);
 }
 .stripeButton {
+  composes: column from "../../ui/layout.module.css";
   position: relative;
   flex: none;
   width: var(--stripe-icon-button);
   height: var(--stripe-icon-button);
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 3px;
@@ -422,21 +411,16 @@
 
 /* Anchored panels */
 .window {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
+  composes: columnFill grow from "../../ui/layout.module.css";
   outline: none;
 }
 .window[hidden] {
   display: none;
 }
 .header {
+  composes: row from "../../ui/layout.module.css";
   height: var(--h-header);
   flex: none;
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 6px 0 8px;
   color: var(--fg-emphasis);
@@ -445,10 +429,8 @@
   border-bottom: 1px solid var(--border);
 }
 .title {
+  composes: truncate from "../../ui/layout.module.css";
   flex: none;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   color: var(--fg-strong);
 }
 .titlePlain {
@@ -473,9 +455,8 @@
   color: var(--fg-muted);
 }
 .headerContent {
+  composes: row from "../../ui/layout.module.css";
   min-width: 0;
-  display: flex;
-  align-items: center;
   margin-left: 6px;
   overflow: hidden;
 }
@@ -486,8 +467,7 @@
   flex: 1;
 }
 .headerActions {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 2px;
   opacity: 0;
   transition: opacity var(--dur) var(--ease);
@@ -498,19 +478,14 @@
   opacity: 1;
 }
 .body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
+  composes: columnFill grow from "../../ui/layout.module.css";
 }
 
 /* stripe drag & drop */
 .stripeSlot {
+  composes: column from "../../ui/layout.module.css";
   position: relative;
   flex: none;
-  display: flex;
-  flex-direction: column;
 }
 /* The drop target after a group's last button is empty: don't let it add a gap between groups. */
 .stripeSlotEnd {

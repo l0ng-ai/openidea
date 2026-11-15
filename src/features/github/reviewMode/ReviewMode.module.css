@@ -1,7 +1,6 @@
 /* The review group in the editor's top-right row, styled like the inspection widget. */
 .toolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../../ui/layout.module.css";
   gap: 1px;
   padding: 1px;
   border-radius: var(--radius-small);

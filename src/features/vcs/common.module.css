@@ -1,6 +1,5 @@
 .form {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 8px;
   padding: 14px;
 }
@@ -35,8 +34,7 @@
   accent-color: var(--accent);
 }
 .radioText {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../ui/layout.module.css";
   gap: 2px;
 }
 .fileList {
@@ -47,9 +45,8 @@
   border-radius: var(--radius-small);
 }
 .fileRow {
+  composes: row from "../../ui/layout.module.css";
   height: var(--h-row);
-  display: flex;
-  align-items: center;
   gap: 6px;
   padding: 0 8px;
   white-space: nowrap;
@@ -77,9 +74,8 @@
   font-size: var(--fs-small);
 }
 .commitRow {
+  composes: row from "../../ui/layout.module.css";
   height: var(--h-row);
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 0 8px;
   white-space: nowrap;
@@ -91,8 +87,7 @@
   font-size: var(--fs-small);
 }
 .commitSubject {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--fg);
@@ -108,10 +103,9 @@
   text-align: center;
 }
 .commitListBody {
+  composes: column from "../../ui/layout.module.css";
   flex: 1;
   min-height: 320px;
-  display: flex;
-  flex-direction: column;
 }
 .boxList {
   flex: 1;
@@ -125,17 +119,15 @@
   flex-direction: column;
 }
 .pushTreeWrap {
+  composes: column from "../../ui/layout.module.css";
   flex: 1;
   min-height: 220px;
-  display: flex;
-  flex-direction: column;
   padding: 14px;
 }
 .pushListWrap {
+  composes: column from "../../ui/layout.module.css";
   flex: 1;
   min-height: 180px;
-  display: flex;
-  flex-direction: column;
   padding: 0 14px 14px;
 }
 .pushSplit {
@@ -152,26 +144,19 @@
   min-height: 0;
 }
 .pushDiff {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   padding: 8px 14px 14px;
 }
 .pushDiffHeader {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-height: 24px;
   padding-bottom: 6px;
   color: var(--fg-subtle);
 }
 .pushDiffPath {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 .pushDiffBody {
   flex: 1;
@@ -188,10 +173,8 @@
   color: var(--fg-subtle);
 }
 .pushChanges {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
   padding-top: 8px;
 }
 .pushChanges .comparison {
@@ -201,8 +184,7 @@
   padding: 0 14px 14px;
 }
 .pushChangesTitle {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 8px;
   min-height: 24px;
   padding: 0 14px 6px;
@@ -219,10 +201,8 @@
   height: auto;
 }
 .pushCommitDetails {
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
   gap: 4px;
   margin: 0 14px 8px;
   padding: 6px 8px;
@@ -256,9 +236,8 @@
 }
 /* Operation in progress (rebase, merge…) above the Commit tool window's changes. */
 .banner {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
-  align-items: center;
   gap: 2px 10px;
   min-height: 28px;
   padding: 4px 10px;
@@ -268,11 +247,9 @@
   font-size: var(--fs-small);
 }
 .bannerText {
+  composes: truncate from "../../ui/layout.module.css";
   flex: 1 0 auto;
   max-width: calc(100% - 24px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .linkButton:disabled {
   color: var(--fg-faint);
@@ -302,9 +279,8 @@
   border-radius: var(--radius-small);
 }
 .rebaseRow {
+  composes: row from "../../ui/layout.module.css";
   min-height: var(--h-row);
-  display: flex;
-  align-items: center;
   gap: 8px;
   padding: 2px 6px;
   white-space: nowrap;
@@ -317,8 +293,7 @@
   flex: none;
 }
 .rebaseMessage {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   min-height: 0;
 }
 /* Push dialog: the editable target branch. */
@@ -327,17 +302,17 @@
   margin-left: 6px;
 }
 .targetPopup {
+  composes: column from "../../ui/layout.module.css";
   /* What a list row (ui/List.module.css) adds around its name: the inset from the popup edge
      plus row padding, then the icon and the gap after it. */
   --target-row-inset: calc(6px + 8px);
   --target-row-leading: calc(14px + 6px);
   min-width: 260px;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
 }
 /* Rows are out of flow inside the virtual list: this hidden column gives the popup their width. */
 .targetSizer {
+  composes: column from "../../ui/layout.module.css";
   width: max-content;
   /* As wide as the longest branch name, up to a cap (Popup limits it to the window). */
   max-width: min(640px, 70vw);
@@ -347,8 +322,6 @@
   overflow: hidden;
   visibility: hidden;
   pointer-events: none;
-  display: flex;
-  flex-direction: column;
 }
 /* Stands in for the row's branch icon, so a name is measured with the row around it. */
 .targetSizer > span {
@@ -356,9 +329,7 @@
   white-space: nowrap;
 }
 .targetListWrap {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  composes: columnFill from "../../ui/layout.module.css";
   padding: 4px 0;
   box-sizing: content-box;
 }
@@ -366,10 +337,7 @@
   flex: 1;
 }
 .targetRow {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
+  composes: row grow from "../../ui/layout.module.css";
   gap: 6px;
 }
 .targetIcon {
@@ -377,11 +345,7 @@
   color: var(--fg-subtle);
 }
 .targetName {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  composes: truncate grow from "../../ui/layout.module.css";
 }
 /* Fits the remote and target fields into a 22px tree row. */
 .pushRowTarget {
@@ -414,8 +378,7 @@
 }
 /* Pull / Merge / Rebase dialogs. */
 .fieldRow {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 6px;
   min-width: 0;
 }
@@ -426,15 +389,13 @@
 }
 /* Manage Remotes / Worktrees lists. */
 .manageBar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   gap: 2px;
 }
 .manageRow {
+  composes: row from "../../ui/layout.module.css";
   width: 100%;
   height: var(--h-row);
-  display: flex;
-  align-items: center;
   gap: 10px;
   padding: 0 8px;
   border: none;
@@ -465,11 +426,9 @@
   color: var(--fg-muted);
 }
 .worktreeLabel {
+  composes: truncate from "../../ui/layout.module.css";
   flex: none;
   max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .worktreeDetail {
   min-width: 0;
@@ -487,10 +446,8 @@
   flex: 1 1 auto;
 }
 .comparisonWindow {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   height: 100%;
-  min-height: 0;
   background: var(--bg-dialog, var(--bg-elev));
   color: var(--fg);
 }
@@ -507,18 +464,15 @@
   box-shadow: inset 0 0 0 1px var(--border-window);
 }
 .comparisonWindowLoading {
-  display: flex;
+  composes: row from "../../ui/layout.module.css";
   flex: 1;
-  align-items: center;
   justify-content: center;
   gap: 8px;
   color: var(--fg-muted);
 }
 .comparisonWindowBody {
-  display: flex;
-  flex-direction: column;
+  composes: columnFill from "../../ui/layout.module.css";
   flex: 1;
-  min-height: 0;
   overflow: hidden;
 }
 .comparisonWindowBody[hidden] {
@@ -545,16 +499,14 @@
   gap: 10px;
 }
 .comparisonTree {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   border: 1px solid var(--border);
 }
 .comparisonWithDiff .comparisonTree {
   flex: 0 0 30%;
 }
 .comparisonDiff {
-  flex: 1;
-  min-width: 0;
+  composes: grow from "../../ui/layout.module.css";
   min-height: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -565,8 +517,7 @@
   overflow-wrap: anywhere;
 }
 .compareToolbar {
-  display: flex;
-  align-items: center;
+  composes: row from "../../ui/layout.module.css";
   flex-wrap: wrap;
   gap: 8px;
   padding: 6px 14px;

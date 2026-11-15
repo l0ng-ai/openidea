@@ -8,8 +8,7 @@
   font-size: var(--fs-ui);
 }
 .column {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   padding: 6px 0;
 }
 .title {
@@ -42,13 +41,11 @@
   margin-top: 4px;
 }
 .commits {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   gap: 4px;
 }
 .commit {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
 }
 .branch {
   display: inline-flex;
@@ -62,8 +59,7 @@
   color: var(--fg-secondary);
 }
 .status {
-  display: flex;
-  flex-direction: column;
+  composes: column from "../../../ui/layout.module.css";
   align-items: center;
   gap: 4px;
   max-width: calc(42em + 32px);
@@ -90,8 +86,7 @@
   padding: 10px 16px;
 }
 .placeholder {
-  display: flex;
+  composes: row from "../../../ui/layout.module.css";
   height: 100%;
-  align-items: center;
   justify-content: center;
 }
