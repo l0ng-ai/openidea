@@ -290,6 +290,20 @@ export const documentSynced = Facet.define<() => Promise<void>, (() => Promise<v
   combine: (values) => values[0] ?? null,
 });
 
+/**
+ * Undo / Redo of an editor whose history is kept outside CodeMirror (notebook cells share
+ * the notebook's backend history). Commands that would call CodeMirror's history (Vim's
+ * `u` / `Ctrl-R`) go through it instead.
+ */
+export interface ExternalHistory {
+  undo(): void;
+  redo(): void;
+}
+
+export const externalHistory = Facet.define<ExternalHistory, ExternalHistory | null>({
+  combine: (values) => values[0] ?? null,
+});
+
 export function whenSynced(view: EditorView): Promise<void> {
   return view.state.facet(documentSynced)?.() ?? Promise.resolve();
 }

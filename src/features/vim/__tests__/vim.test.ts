@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { getCM, Vim } from "@replit/codemirror-vim";
-import { embeddedEditorExtensions, transientChange, useEditorRegistry, onEditorEvent } from "@/editor/api";
+import {
+  embeddedEditorExtensions,
+  externalHistory,
+  transientChange,
+  useEditorRegistry,
+  onEditorEvent,
+} from "@/editor/api";
 import { executeAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { _handleEx, applyRcCommands, vimExtension } from "../engine";
@@ -112,6 +118,19 @@ describe("Vim engine", () => {
     Vim.handleKey(cm as never, "d", "user");
     await tick();
     expect(ran).toEqual(["navigate.declaration"]);
+    view.destroy();
+  });
+
+  it("sends u and Ctrl-R to an editor's own history (notebook cells)", () => {
+    const history = { undo: vi.fn(), redo: vi.fn() };
+    const view = makeView([vimExtension(), externalHistory.of(history)]);
+    const cm = getCM(view)!;
+    Vim.handleKey(cm as never, "u", "user");
+    Vim.handleKey(cm as never, "<C-r>", "user");
+    Vim.handleKey(cm as never, "2", "user");
+    Vim.handleKey(cm as never, "u", "user");
+    expect(history.undo).toHaveBeenCalledTimes(3);
+    expect(history.redo).toHaveBeenCalledTimes(1);
     view.destroy();
   });
 
