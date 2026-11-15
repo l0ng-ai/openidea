@@ -672,6 +672,7 @@ export const TOOLS_PAGES: PageSpec[] = [
       "approval",
       "permission",
       "bypass",
+      "width",
     ],
     sections: [
       {
@@ -726,6 +727,11 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.smoothText",
             label: "Reveal streaming text smoothly",
             hint: "Text appears at a steady pace instead of in bursts",
+          },
+          {
+            kind: "toggle",
+            key: "agents.fitWindowWidth",
+            label: "Fit conversation to the window width",
           },
         ],
       },

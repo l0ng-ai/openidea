@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState, StateEffect, type Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import type { CompletionItem } from "@/bindings";
-import type { EditorDocContext } from "@/editor/api";
+import { remoteChange, type EditorDocContext } from "@/editor/api";
 import { lspDoc } from "./lsp";
 import { insertTab, tabOut, tabOutOfScope } from "@/editor/core/cm/smartKeys";
 import {
@@ -294,6 +294,32 @@ describe("applying completions", () => {
     await vi.waitFor(() => expect(view.state.selection.main.head).toBe(17));
   });
 
+  it("leaves an item its server inserts to the server, and puts the caret after what it inserted", async () => {
+    const executed: string[] = [];
+    setInvokeRoute((cmd) => {
+      executed.push(cmd);
+      return Promise.resolve(null);
+    });
+    try {
+      const { view, req } = setup("p.ref|\n", "", [completionExtension()]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      // kotlin-lsp: an empty text, inserted by `jetbrains.kotlin.completion.apply` as a workspace edit.
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "refreshName", labelDetail: "()", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
+      expect(view.state.doc.toString()).toBe("p.ref\n");
+      await vi.waitFor(() => expect(executed).toContain("lsp_execute_command"));
+      view.dispatch({ changes: { from: 5, insert: "reshName()" }, annotations: remoteChange.of(true) });
+      expect(view.state.doc.toString()).toBe("p.refreshName()\n");
+      expect(view.state.selection.main.head).toBe(15);
+      // Later edits from elsewhere leave the caret alone.
+      view.dispatch({ changes: { from: 15, insert: " " }, annotations: remoteChange.of(true) });
+      expect(view.state.selection.main.head).toBe(15);
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
   it("does not register a scope when jumping outside closing brackets is off", () => {
     const { view, req } = setup("service.cr|");
     applyLspCompletion(view, makeCompletion(item(), req), 8, 10, "insert");
@@ -532,6 +558,7 @@ describe("insert parentheses", () => {
     expect(callParens(item({ kind: "field" }), line("a.cr"), 2, 4)).toBeNull();
     expect(callParens(item({ isSnippet: true }), line("a.cr"), 2, 4)).toBeNull();
     expect(callParens(item({ insertText: "create()" }), line("a.cr"), 2, 4)).toBeNull();
+    expect(callParens(item({ insertText: "" }), line("a.cr"), 4, 4)).toBeNull();
   });
 
   it("skips calls that already have parentheses and imports", () => {

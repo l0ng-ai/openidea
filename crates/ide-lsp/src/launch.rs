@@ -103,7 +103,7 @@ impl Launcher for ProcessLauncher {
             // A plugin's server: the approved program, unchanged since.
             Some(pin) => Some(pin.verify().map_err(LaunchError::Failed)?.to_path_buf()),
             None => ide_core::tool_path::find_command(&config.command, &search, root)
-                .and_then(|b| resolve_rustup_proxy(&config.command, b))
+                .and_then(|b| resolve_rustup_proxy(&config.command, b, root))
                 .and_then(|b| reject_dead_shim(b, &search, root)),
         };
         let mut env: Vec<(String, String)> = vec![("PATH".into(), search.to_string_lossy().into_owned())];
@@ -208,34 +208,16 @@ fn reject_dead_shim(binary: PathBuf, search: &OsStr, root: &Path) -> Option<Path
 /// toolchain lacks the component (common for rust-analyzer). In that case use
 /// the newest installed toolchain that ships the binary; with none, the tool is
 /// missing (an install hint, not a server that crashes on every restart).
-fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
+/// The probe runs in the project's root, where a `rust-toolchain.toml` picks the toolchain.
+fn resolve_rustup_proxy(command: &str, binary: PathBuf, root: &Path) -> Option<PathBuf> {
     let is_proxy = binary.parent().is_some_and(|d| d.ends_with(".cargo/bin"));
     if !is_proxy || command.contains('/') {
         return Some(binary);
     }
-    let works = ide_core::process::prepare(&mut std::process::Command::new(&binary))
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if works {
+    if proxy_works(&binary, root) {
         return Some(binary);
     }
-    let toolchains = std::env::var_os("RUSTUP_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".rustup")))
-        .map(|h| h.join("toolchains"));
-    let mut candidates: Vec<(std::time::SystemTime, PathBuf)> = toolchains
-        .and_then(|dir| std::fs::read_dir(dir).ok())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join("bin").join(command))
-        .filter(|p| p.is_file())
-        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
-        .collect();
+    let mut candidates = rustup_home().map(|h| toolchain_binaries(&h.join("toolchains"), command)).unwrap_or_default();
     // Prefer stable-looking toolchains, then the most recently installed.
     candidates.sort_by_key(|(mtime, p)| (!p.to_string_lossy().contains("nightly"), *mtime));
     match candidates.pop() {
@@ -248,6 +230,57 @@ fn resolve_rustup_proxy(command: &str, binary: PathBuf) -> Option<PathBuf> {
             None
         }
     }
+}
+
+/// Whether the proxy runs for the toolchain active in `root`. A probe that hangs or can't
+/// be waited for counts as working: the real start decides.
+fn proxy_works(binary: &Path, root: &Path) -> bool {
+    let Ok(mut child) = ide_core::process::prepare(&mut std::process::Command::new(binary))
+        .arg("--version")
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return true;
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                return true;
+            }
+        }
+    }
+}
+
+/// Where rustup keeps its toolchains: `RUSTUP_HOME`, else `.rustup` in the user's home
+/// (`HOME`, which a GUI app on Windows doesn't have, or `USERPROFILE`).
+fn rustup_home() -> Option<PathBuf> {
+    std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+        Some(PathBuf::from(home).join(".rustup"))
+    })
+}
+
+/// The `command` binary (with the platform's executable suffix) of every toolchain in
+/// `toolchains`, with its modification time.
+fn toolchain_binaries(toolchains: &Path, command: &str) -> Vec<(std::time::SystemTime, PathBuf)> {
+    let file = format!("{command}{}", std::env::consts::EXE_SUFFIX);
+    std::fs::read_dir(toolchains)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path().join("bin").join(&file))
+        .filter(|p| p.is_file())
+        .filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p)))
+        .collect()
 }
 
 /// Workspace root for `file`: the outermost ancestor within `project_root`
@@ -363,7 +396,24 @@ mod proxy_tests {
     #[test]
     fn non_proxy_binaries_are_kept() {
         let p = PathBuf::from("/usr/bin/true");
-        assert_eq!(resolve_rustup_proxy("true", p.clone()), Some(p));
+        assert_eq!(resolve_rustup_proxy("true", p.clone(), Path::new(".")), Some(p));
+    }
+
+    /// The binary is `rust-analyzer.exe` on Windows: a lookup of the bare name found nothing there.
+    #[test]
+    fn toolchain_binaries_carry_the_platform_executable_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = format!("rust-analyzer{}", std::env::consts::EXE_SUFFIX);
+        for toolchain in ["stable-x86_64", "nightly-x86_64"] {
+            std::fs::create_dir_all(tmp.path().join(toolchain).join("bin")).unwrap();
+        }
+        std::fs::write(tmp.path().join("stable-x86_64/bin").join(&file), "").unwrap();
+        // Another tool, and a bare name without the suffix where one is required.
+        std::fs::write(tmp.path().join("nightly-x86_64/bin").join("rustfmt"), "").unwrap();
+        let found = toolchain_binaries(tmp.path(), "rust-analyzer");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, tmp.path().join("stable-x86_64/bin").join(&file));
+        assert!(toolchain_binaries(&tmp.path().join("missing"), "rust-analyzer").is_empty());
     }
 
     /// Exercises the real machine setup when a broken rustup proxy is present.
@@ -372,7 +422,7 @@ mod proxy_tests {
     fn broken_rustup_proxy_falls_back_to_a_toolchain() {
         let home = PathBuf::from(std::env::var_os("HOME").unwrap());
         let proxy = home.join(".cargo/bin/rust-analyzer");
-        let resolved = resolve_rustup_proxy("rust-analyzer", proxy.clone()).unwrap();
+        let resolved = resolve_rustup_proxy("rust-analyzer", proxy.clone(), Path::new(".")).unwrap();
         eprintln!("resolved: {}", resolved.display());
         assert_ne!(resolved, proxy);
     }

@@ -6,6 +6,7 @@ import {
   isCancelled,
   isTauri,
   nextRequestId,
+  type AttachableProcess,
   type LaunchConfig,
   type RunConfig,
   type RunId,
@@ -41,9 +42,11 @@ import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
+import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
+import { attachConfig } from "./attach";
 import {
   isPythonAttachTarget,
   isRemoteConfig,
@@ -88,6 +91,14 @@ import { tx } from "@/platform/i18n";
 
 function isRunConfig(arg: unknown): arg is RunConfig {
   return !!arg && typeof arg === "object" && "command" in arg && "args" in arg && "debugAdapter" in arg;
+}
+
+/** `debug.attach`'s argument for a process listed by Attach to Process (a plugin run's child). */
+function isAttachableTarget(
+  arg: unknown,
+): arg is { attachable: AttachableProcess; process?: RunId | null; runConfig?: RunConfig; show?: boolean } {
+  const a = (arg && typeof arg === "object" ? arg : {}) as { attachable?: Partial<AttachableProcess> };
+  return typeof a.attachable?.pid === "number" && typeof a.attachable.kind === "string";
 }
 
 function errorText(e: unknown) {
@@ -489,6 +500,7 @@ export function registerDebugActions(): () => void {
       hidden: true,
       // Also debugpy to a Python program in a run target's container
       // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
+      // Also a process from Attach to Process (arg: { attachable, process, runConfig }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
@@ -498,7 +510,8 @@ export function registerDebugActions(): () => void {
             const root = useProject.getState().project?.root;
             if (!root) return;
             let launch: LaunchConfig;
-            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            if (isAttachableTarget(arg)) launch = await attachConfig(arg.attachable, root);
+            else if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
             else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
             else return;
             const process = (arg.process ?? null) as RunId | null;
@@ -583,6 +596,26 @@ export function registerDebugActions(): () => void {
         const s = activeSession();
         if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
       },
+    },
+    {
+      id: "debug.startPageProfile",
+      title: "Start CPU Profile",
+      description: "Record where the debugged page spends its time",
+      category: "Debug",
+      icon: "profile",
+      keywords: ["profiler", "performance", "flame graph", "browser"],
+      when: "debugHasJsPage && !debugPageProfiled",
+      run: () => startPageProfile(),
+    },
+    {
+      id: "debug.stopPageProfile",
+      title: "Stop CPU Profile",
+      description: "Stop recording the page and open the profile",
+      category: "Debug",
+      icon: "profile",
+      keywords: ["profiler", "performance", "flame graph", "browser"],
+      when: "debugPageProfiled",
+      run: () => stopPageProfile(),
     },
     {
       // The host opens dumps for a trusted project only (F21).

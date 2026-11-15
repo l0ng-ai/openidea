@@ -10,6 +10,7 @@ describe("agent chat settings", () => {
       showCost: false,
       foldTurns: true,
       smoothText: true,
+      fitWindowWidth: false,
       thinking: "auto",
       toolCalls: "grouped",
       expandToolOutput: false,
@@ -19,13 +20,17 @@ describe("agent chat settings", () => {
       defaults: {},
       mcpServers: {},
     });
-    const stored = validateSettings({ agents: { showUsageLimits: false, showCost: true, showWorkTime: "no" } }).agents;
+    const stored = validateSettings({
+      agents: { showUsageLimits: false, showCost: true, showWorkTime: "no", fitWindowWidth: true },
+    }).agents;
     expect(stored).toMatchObject({
       showContextUsage: true,
       showWorkTime: true,
       showUsageLimits: false,
       showCost: true,
+      fitWindowWidth: true,
     });
+    expect(validateSettings({ agents: { fitWindowWidth: "yes" } }).agents.fitWindowWidth).toBe(false);
   });
 
   it("keeps valid chat choices and per-agent defaults", () => {

@@ -53,6 +53,8 @@ pub enum BuildSystem {
     TypeScript,
     #[serde(rename = "cmake")]
     CMake,
+    #[serde(rename = "dotnet")]
+    Dotnet,
 }
 
 /// One command of a build.
@@ -165,6 +167,8 @@ fn detect_dir(dir: &Path, model: &BuildModel, root: &Path) -> Option<BuildSystem
         || has(dir, &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"])
     {
         Some(BuildSystem::Gradle)
+    } else if dotnet_target(dir).is_some() {
+        Some(BuildSystem::Dotnet)
     } else if has(dir, &["Cargo.toml"]) {
         Some(BuildSystem::Cargo)
     } else if has(dir, &["go.mod", "go.work"]) {
@@ -225,7 +229,7 @@ pub fn plan(
         .or((!model.gradle.is_empty()).then_some(BuildSystem::Gradle))
         .or_else(|| model.maven.as_ref().filter(|m| !m.projects.is_empty()).map(|_| BuildSystem::Maven))
         .ok_or_else(|| {
-            IdeError::not_found("no supported build system (Maven, Gradle, Cargo, Go, TypeScript, CMake) found")
+            IdeError::not_found("no supported build system (Maven, Gradle, .NET, Cargo, Go, TypeScript, CMake) found")
         })?;
     let module = module_dir.as_deref().filter(|d| *d != root);
     let title = match module {
@@ -244,6 +248,7 @@ pub fn plan(
         BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind)?,
         BuildSystem::TypeScript => ts_steps(&dir, kind),
         BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
+        BuildSystem::Dotnet => dotnet_steps(&dir, kind)?,
     };
     Ok(BuildPlan { system, title, steps })
 }
@@ -449,6 +454,33 @@ fn has_build_script(dir: &Path) -> bool {
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         .is_some_and(|v| v.pointer("/scripts/build").is_some_and(serde_json::Value::is_string))
+}
+
+/// The solution (`.sln` / `.slnx`) or project (`.csproj` / `.fsproj` / `.vbproj`) file `dir`
+/// builds: a solution first, then a project; the first by name when there are several.
+fn dotnet_target(dir: &Path) -> Option<PathBuf> {
+    let mut files: Vec<PathBuf> =
+        std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    files.sort();
+    let ext = |p: &Path| p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let solution = files.iter().find(|p| matches!(ext(p).as_str(), "sln" | "slnx"));
+    solution.or_else(|| files.iter().find(|p| matches!(ext(p).as_str(), "csproj" | "fsproj" | "vbproj"))).cloned()
+}
+
+/// `dotnet build` of the directory's solution or project; Rebuild skips incremental builds,
+/// Build Artifacts publishes. The summary that repeats every message is left out.
+fn dotnet_steps(dir: &Path, kind: BuildKind) -> IdeResult<Vec<BuildStep>> {
+    let target = dotnet_target(dir).ok_or_else(|| IdeError::not_found("no .NET solution or project found"))?;
+    let target = target.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let verb = if kind == BuildKind::Artifacts { "publish" } else { "build" };
+    let mut step = BuildStep::new("dotnet", &[verb, &target, "-nologo", "-clp:NoSummary"], dir, Format::Msbuild);
+    if kind == BuildKind::Rebuild {
+        step.args.push("--no-incremental".into());
+    }
+    // The classic console logger prints the canonical `file(line,col): error` lines; the
+    // terminal logger (.NET 8+) only appears on a terminal, but rules it out for older SDKs too.
+    step.env.insert("MSBUILDTERMINALLOGGER".into(), "off".into());
+    Ok(vec![step])
 }
 
 fn ts_steps(dir: &Path, kind: BuildKind) -> Vec<BuildStep> {
@@ -1140,6 +1172,24 @@ mod tests {
             (p.steps[0].program.as_str(), p.steps[0].args.as_slice()),
             ("pnpm", &["run".to_owned(), "build".to_owned()][..])
         );
+
+        // .NET: the solution, else the project; a module build is the file's project. An ASP.NET
+        // project's package.json (its front end) doesn't make it a TypeScript build.
+        let net = tmp.path().join("net");
+        write(&net, "App.sln", "");
+        write(&net, "src/Api/Api.csproj", "<Project/>");
+        write(&net, "src/Api/package.json", "{}");
+        write(&net, "src/Api/Program.cs", "");
+        let p = plan(&net, &BuildModel::default(), BuildKind::Build, None, None).unwrap();
+        assert_eq!(p.system, BuildSystem::Dotnet);
+        assert_eq!(p.steps[0].args, ["build", "App.sln", "-nologo", "-clp:NoSummary"]);
+        assert_eq!(p.steps[0].env["MSBUILDTERMINALLOGGER"], "off");
+        let p = plan(&net, &BuildModel::default(), BuildKind::Rebuild, Some(&net.join("src/Api/Program.cs")), None)
+            .unwrap();
+        assert_eq!(p.steps[0].args, ["build", "Api.csproj", "-nologo", "-clp:NoSummary", "--no-incremental"]);
+        assert_eq!(p.steps[0].cwd, net.join("src/Api"));
+        let p = plan(&net, &BuildModel::default(), BuildKind::Artifacts, None, None).unwrap();
+        assert_eq!(p.steps[0].args[0], "publish");
 
         let cm = tmp.path().join("cm");
         write(&cm, "CMakeLists.txt", "project(app)");

@@ -65,6 +65,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "toolwindow.resizeRight": [],
   "toolwindow.resizeUp": [],
   "toolwindow.resizeDown": [],
+  "layout.restoreCurrent": [],
   "layout.restoreDefault": [],
   "workbench.stopBackgroundProcesses": [],
   "navigate.typeHierarchy": [],
@@ -181,7 +182,8 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // File / editor tabs
   "file.save": ["Meta+S"],
-  "file.new": ["Meta+N"],
+  "file.newUntitled": ["Meta+N"],
+  "file.new": [],
   "file.settings": ["Meta+,"],
   "file.projectStructure": [],
   "file.openProject": ["Meta+O"],
@@ -226,6 +228,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.reloadFromDisk": [],
   "project.expandAll": [],
   "project.collapseAll": [],
+  "run.expandAllTests": [],
+  "run.collapseAllTests": [],
   "project.findUsages": ["Alt+Shift+F12"],
   "project.reformatCode": ["Alt+Shift+F"],
   "project.optimizeImports": ["Alt+Shift+O"],
@@ -402,6 +406,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "find.popup.recentSearches": ["Alt+Down"],
   // Agents (VS Code's chat: ⇧⌘I)
   "agents.newTask": ["Meta+Shift+I"],
+  "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.

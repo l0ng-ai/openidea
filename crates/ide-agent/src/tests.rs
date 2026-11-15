@@ -405,6 +405,7 @@ fn manager_at(dir: &Path, models_file: &Path, agent: Arc<FakeAgent>) -> AgentMan
             // user's profile, when temp lives under it) leaks into the test.
             home_dir: Some(dir.to_path_buf()),
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -442,7 +443,7 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
-async fn claude_commands_before_session_are_fetched_once_and_saved() {
+async fn claude_commands_share_catalog_discovery_and_persist_results() {
     use std::os::unix::fs::PermissionsExt;
 
     for outcome in ["success", "session_report", "empty", "settings_timeout", "error", "exit", "timeout", "missing"] {
@@ -502,14 +503,18 @@ for line in sys.stdin:
         std::fs::write(root.join(".claude/skills/triage/SKILL.md"), "---\nname: triage\ndescription: Triage\n---\n")
             .unwrap();
         let mgr = manager(root, Arc::new(FakeAgent::default()));
-        {
-            let mut providers = mgr.shared.providers.write();
-            let spec = providers.iter_mut().find(|p| p.id == "claude").unwrap();
-            if outcome != "missing" {
-                spec.command = script.to_string_lossy().into_owned();
-            }
-            spec.env = vec![("OUTCOME".into(), outcome.into())];
+        if outcome != "missing" {
+            provider::set_builtin_command(&root.join("agents"), None, "claude", Some(&script.to_string_lossy()))
+                .unwrap();
         }
+        provider::set_builtin_env(
+            &root.join("agents"),
+            None,
+            "claude",
+            BTreeMap::from([("OUTCOME".into(), outcome.into())]),
+        )
+        .unwrap();
+        mgr.reload_providers();
         let concurrent = async {
             if outcome == "session_report" {
                 tokio::time::timeout(Duration::from_secs(10), async {
@@ -553,7 +558,6 @@ for line in sys.stdin:
                     effort.unwrap().current.as_deref(),
                     Some(match outcome {
                         "settings_timeout" => "default",
-                        "session_report" => "low",
                         _ => "high",
                     })
                 );
@@ -571,6 +575,8 @@ for line in sys.stdin:
             assert_eq!(launches.lines().count(), 1, "{outcome}");
             let args: Vec<String> = serde_json::from_str(launches.trim()).unwrap();
             assert!(args.windows(2).any(|a| a == ["--input-format", "stream-json"]));
+            assert!(args.iter().any(|a| a == "--strict-mcp-config"));
+            assert!(args.windows(2).any(|a| a == ["--mcp-config", "{\"mcpServers\":{}}"]));
             let requests = std::fs::read_to_string(root.join("requests")).unwrap();
             let subtypes: Vec<String> = requests
                 .lines()
@@ -1431,6 +1437,7 @@ async fn real_claude_task_in_a_worktree() {
             custom_agents_dir: None,
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
     );
@@ -2204,6 +2211,7 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
             .unwrap();
         mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
         wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        count_every_change(&mgr, &task.id);
         assert_eq!(task.project_root, Some(IpcPath(member.clone())));
         assert_eq!(task.base.as_deref(), Some("member-main"));
         if isolation == Isolation::Local {
@@ -2265,6 +2273,7 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
             custom_agents_dir: Some(agents_dir.clone()),
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2597,6 +2606,7 @@ async fn delete_running_agent(no_load: bool) {
             custom_agents_dir: None,
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -2657,34 +2667,6 @@ fn mcp_servers_follow_server_state_and_agent_capabilities() {
         vec![json!({"name":"OpenIDEA","command":"/app/openidea",
         "args":["--mcp-stdio","--project","/project"],"env":[]})]
     );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn session_settings_win_over_discovery_in_memory_and_on_disk() {
-    for discovery_first in [false, true] {
-        let tmp = tempfile::tempdir().unwrap();
-        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
-        let options = |model: &str, effort: &str| {
-            config::options_of(&json!({ "configOptions": [
-                { "id": "model", "category": "model", "type": "select", "currentValue": model,
-                  "options": [{ "value": "saved" }, { "value": "discovered" }] },
-                { "id": "effort", "category": "thought_level", "type": "select", "currentValue": effort,
-                  "options": [{ "value": "low" }, { "value": "high" }] }
-            ] }))
-        };
-        let saved = options("saved", "low");
-        let discovered = options("discovered", "high");
-        if discovery_first {
-            mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
-        }
-        mgr.shared.remember("claude", Some(&saved), None, Some("saved"));
-        mgr.shared.remember_discovered("claude", &discovered, &[], &[]);
-        let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
-        for mgr in [&mgr, &restored] {
-            assert_eq!(model_of(&mgr.shared.known_config("claude")).as_deref(), Some("saved"));
-            assert_eq!(mgr.shared.known.lock()["claude"].thought_levels["saved"], saved[1..]);
-        }
-    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2771,31 +2753,6 @@ async fn discovery_times_out_when_session_new_hangs() {
     assert!(started.elapsed() < Duration::from_secs(10), "discovery should time out quickly in tests");
     let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
     assert!(!cursor.config.iter().any(|o| o.category.as_deref() == Some("model")));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn discovered_effort_levels_fill_models_no_session_has_reported() {
-    let tmp = tempfile::tempdir().unwrap();
-    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
-    let effort = |values: &[&str], current: &str| {
-        config::options_of(&json!({ "configOptions": [
-            { "id": "effort", "category": "thought_level", "type": "select", "currentValue": current,
-              "options": values.iter().map(|v| json!({ "value": v })).collect::<Vec<_>>() }
-        ] }))
-    };
-    let model = config::options_of(&json!({ "configOptions": [
-        { "id": "model", "category": "model", "type": "select", "currentValue": "sonnet",
-          "options": [{ "value": "sonnet" }, { "value": "opus" }] }
-    ] }));
-    // A session already reported sonnet's levels; discovery adds opus's.
-    let reported = [model.clone(), effort(&["low", "high"], "high")].concat();
-    mgr.shared.remember("claude", Some(&reported), None, Some("sonnet"));
-    let levels =
-        [("sonnet".to_owned(), effort(&["low"], "low")), ("opus".to_owned(), effort(&["low", "max"], "default"))];
-    mgr.shared.remember_discovered("claude", &model, &[], &levels);
-    let known = mgr.shared.known.lock();
-    assert_eq!(known["claude"].thought_levels["sonnet"], effort(&["low", "high"], "high"), "the session's report wins");
-    assert_eq!(known["claude"].thought_levels["opus"], effort(&["low", "max"], "default"));
 }
 
 #[test]
@@ -2886,12 +2843,14 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
-    mgr.cancel(&task.id, None).unwrap();
-    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    // What the agent did.
+    // What the agent did, while its turn ran.
     write("mine.txt", "my edit\nand the agent's\n");
     write("other.txt", "agent\n");
     write("new.txt", "agent\n");
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // The user's (or another task's) work between turns is not the task's.
+    write("later.txt", "mine\n");
     async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
         mgr.changes(id).await.unwrap().into_iter().map(|c| c.rel_path).collect()
     }
@@ -2907,6 +2866,7 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
     assert!(!dir.join("new.txt").exists());
+    assert_eq!(read("later.txt"), "mine\n", "not the task's to roll back");
     assert!(changed(&mgr, &task.id).await.is_empty());
 
     mgr.delete(&task.id, false).await.unwrap();
@@ -2991,8 +2951,15 @@ impl Checkout {
         wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
         mgr.cancel(&task.id, None).unwrap();
         wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        count_every_change(&mgr, &task.id);
         (mgr, task)
     }
+}
+
+/// Counts every change in the checkout as the task's, as for a task saved before tasks
+/// recorded what their turns changed: for tests that change files outside a turn.
+fn count_every_change(mgr: &AgentManager, id: &str) {
+    mgr.task(id).unwrap().state.lock().touched = None;
 }
 
 async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
@@ -3270,4 +3237,193 @@ async fn security_policy_never_auto_approves_a_request_that_only_reads_like_a_co
         entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "escalation chose no")),
         "{entries:?}"
     );
+}
+
+/// A temporary side conversation is created ready, without starting its session and
+/// without writing anything to the store; a fresh subscriber (a reloaded page) sweeps
+/// it, and deleting it just drops it from memory.
+#[tokio::test(flavor = "multi_thread")]
+async fn ephemeral_tasks_stay_in_memory_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let source = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("hello"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &source.id, AgentStatus::NeedsInput).await;
+    let calls_before = agent.calls.lock().len();
+    let task = mgr
+        .create_ephemeral(
+            NewAgentTask {
+                project_root: None,
+                prompt: text("What changed in this file?"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            },
+            &source.id,
+        )
+        .await
+        .unwrap();
+    // Registering it starts nothing: the session waits for its first real message.
+    assert_eq!(agent.calls.lock().len(), calls_before);
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
+    assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
+
+    // Its first message starts the session like any task's, and still saves nothing: the
+    // conversation records the question, not the context that rode along to the agent.
+    // The fake agent's turn asks to change something, which a side conversation denies by
+    // itself, so the turn ends without waiting for the user.
+    mgr.prompt(&task.id, text("Why?"), false).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    let question = entries.iter().find_map(|e| match e {
+        AgentEntry::User { text, .. } => Some(text.clone()),
+        _ => None,
+    });
+    assert_eq!(question.as_deref(), Some("Why?"));
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c.contains("read-only"))),
+        "its `cargo test` request was denied: {entries:?}"
+    );
+    assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
+
+    // A fresh subscriber (a reloaded page) sweeps it: it never reaches the task list.
+    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = events.clone();
+    let tasks = mgr.subscribe(Arc::new(move |e| sink_events.lock().push(e)));
+    assert!(!tasks.iter().any(|t| t.id == task.id));
+    assert!(mgr.task(&task.id).is_err());
+    assert!(events.lock().iter().any(|e| matches!(e, AgentEvent::Removed { id } if *id == task.id)));
+    mgr.shutdown();
+}
+
+/// A side conversation's context stays within its budget: long tool outputs are cut to
+/// their head and tail, and entries that no longer fit are dropped oldest first.
+#[test]
+fn side_conversation_context_is_bounded() {
+    let long_output = (0..400).map(|i| format!("line {i}")).collect::<Vec<_>>().join(
+        "
+",
+    );
+    // Each reply alone is well inside the budget; together they are past it.
+    let reply = |n: usize| AgentEntry::Agent { text: format!("reply {n} {}", "x".repeat(30_000)) };
+    let entries = vec![
+        AgentEntry::User {
+            text: "oldest question".into(),
+            attachments: vec![],
+            images: vec![],
+            sent_ms: None,
+            done_ms: None,
+            steered: false,
+        },
+        reply(1),
+        reply(2),
+        reply(3),
+        reply(4),
+        AgentEntry::Tool {
+            id: "t1".into(),
+            title: "grep".into(),
+            kind: "search".into(),
+            status: AgentToolStatus::Completed,
+            locations: vec![],
+            output: Some(long_output),
+            diffs: vec![],
+        },
+        AgentEntry::User {
+            text: "newest question".into(),
+            attachments: vec![],
+            images: vec![],
+            sent_ms: None,
+            done_ms: None,
+            steered: false,
+        },
+    ];
+    let transcript = context_transcript(&entries);
+    assert!(transcript.contains("newest question"), "the newest entry is always kept");
+    assert!(transcript.contains("lines omitted"), "a long tool output is trimmed");
+    assert!(transcript.contains("line 0") && transcript.contains("line 399"), "its head and tail stay");
+    assert!(!transcript.contains("oldest question"), "entries past the budget are dropped oldest first");
+    assert!(transcript.contains("oldest entries are omitted"));
+}
+
+/// An ephemeral task denies a permission request that would change the project.
+#[tokio::test(flavor = "multi_thread")]
+async fn ephemeral_tasks_deny_write_permissions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let source = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Something with a conversation to reuse"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &source.id, AgentStatus::NeedsInput).await;
+    let pending = mgr
+        .entries(&source.id, None)
+        .unwrap()
+        .iter()
+        .find_map(|e| match e {
+            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no pending permission request"));
+    mgr.respond(&source.id, pending, Some("no".into())).unwrap();
+    wait_for(&mgr, &source.id, AgentStatus::Ready).await;
+
+    let task = mgr
+        .create_ephemeral(
+            NewAgentTask {
+                project_root: None,
+                prompt: text("What changed in this file?"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            },
+            &source.id,
+        )
+        .await
+        .unwrap();
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.capabilities.read_only);
+
+    let answer = mgr
+        .task(&task.id)
+        .unwrap()
+        .ask_permission(&json!({
+            "sessionId": "c1",
+            "toolCall": {"toolCallId": "c1-t2", "title": "Edit main.rs", "kind": "edit"},
+            "options": [
+                {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "no", "name": "Reject", "kind": "reject_once"}
+            ]
+        }))
+        .pointer("/outcome/optionId")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        .to_owned();
+    assert_eq!(answer, "no", "the write request is denied");
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(chosen), .. } if chosen.contains("read-only"))),
+        "{entries:?}"
+    );
+    mgr.shutdown();
 }

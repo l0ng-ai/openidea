@@ -34,6 +34,7 @@ import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
+export { iconAreaSource, type IconAreaSource } from "@/editor/core/cm/iconArea";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -531,6 +532,15 @@ export function _provideNavigationHistory(provider: () => NavigationHistorySnaps
   navigationHistoryProvider = provider;
 }
 
+/** A project↔file-editor switch is clearing and re-filling the tabs. @internal editor/core only. */
+let editorSwitchingFlag = false;
+export function _setEditorSwitching(value: boolean) {
+  editorSwitchingFlag = value;
+}
+export function editorSwitching(): boolean {
+  return editorSwitchingFlag;
+}
+
 // --- editor events ------------------------------------------------------------
 
 export type EditorEvent =
@@ -619,7 +629,7 @@ export function _saveParticipants(): SaveParticipant[] {
 export async function revealRange(
   path: string,
   range: { start: { line: number; col: number }; end?: { line: number; col: number } },
-  options: { preview?: boolean; focus?: boolean } = {},
+  options: { preview?: boolean; focus?: boolean; external?: boolean } = {},
 ): Promise<void> {
   const service = maybeEditorService();
   if (!service) return;

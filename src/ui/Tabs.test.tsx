@@ -135,6 +135,18 @@ describe("Tabs interactions", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  // Regression: "Close button position: None" hides the × but must not disable
+  // middle click (or the other close gestures). closable used to be bound to
+  // showCloseButton, so hiding the button made the tab unclosable.
+  it("a hidden close button keeps the middle-click gesture", () => {
+    const onClose = vi.fn();
+    const hidden = items.map((it) => ({ ...it, showCloseButton: false }));
+    render(<Tabs items={hidden} activeId="a" onSelect={() => {}} onClose={onClose} />);
+    expect(screen.queryByRole("button", { name: "Close Tab" })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    expect(onClose).toHaveBeenCalledWith("b");
+  });
+
   it("keeps Shift+click selection where the strip does not opt in", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();

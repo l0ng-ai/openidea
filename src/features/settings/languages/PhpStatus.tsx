@@ -9,6 +9,16 @@ import { tx } from "@/platform/i18n";
 import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { phpLanguageLevel } from "./api";
+import { trackStatusWidgetAvailability } from "./statusAvailability";
+
+const isPhpPath = (path: string) => /(^|[\\/])composer\.json$|\.(php|phtml)$/.test(path);
+
+async function hasPhpFiles(): Promise<boolean> {
+  const matches = await Promise.all(
+    [".php", ".phtml", "composer.json"].map((query) => call(commands.findFiles(query, 200))),
+  );
+  return matches.some((files) => files.some((file) => isPhpPath(file.path)));
+}
 
 /** What the widget last resolved for a file, so the popup action can read it without a render. */
 interface Status extends PhpLanguageLevels {
@@ -149,6 +159,7 @@ export function activatePhpStatus(): () => void {
       priority: 89,
       component: PhpStatus,
     }),
+    trackStatusWidgetAvailability("php.languageLevel", hasPhpFiles),
     registerActions([
       {
         id: "php.languageLevelPopup",

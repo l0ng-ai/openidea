@@ -24,5 +24,5 @@ it("hides the Run tool window once its last tab is closed", async () => {
   await closeRunTab("t", useStackTraces.getState().tabs);
   expect(hide).not.toHaveBeenCalled();
   await closeRunTab("b", useStackTraces.getState().tabs);
-  expect(hide).toHaveBeenCalledWith("run");
+  expect(hide).toHaveBeenCalledWith("run", { removeFromStripe: true });
 });

@@ -61,6 +61,24 @@ pub struct PluginRunConfiguration {
     pub cwd: Option<String>,
     pub test: bool,
     pub framework: Option<String>,
+    /// API 1.9: variables added to the run's environment.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// API 1.9: how Debug starts the configuration.
+    #[serde(default)]
+    pub debugger: Option<PluginDebugger>,
+}
+
+/// How Debug starts a plugin configuration (API 1.9 `launch-configurations.debugger`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum PluginDebugger {
+    /// `program` under the debugger of this language id.
+    #[serde(rename_all = "camelCase")]
+    Launch { language: String },
+    /// Run, then attach to the first matching process the run starts.
+    #[serde(rename_all = "camelCase")]
+    AttachChild { kind: String, command_contains: Option<String> },
 }
 
 /// RunExited data exchanged with the IDE.

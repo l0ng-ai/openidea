@@ -97,6 +97,7 @@ export interface DebuggerSettingsValid {
   showOnBreakpoint: boolean;
   focusAppOnBreakpoint: boolean;
   hideOnTermination: boolean;
+  variablesOnBreakpoint: boolean;
   breakpointsAnyFile: boolean;
   runToCursorInlay: boolean;
   inlineValues: boolean;
@@ -290,6 +291,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     showOnBreakpoint: true,
     focusAppOnBreakpoint: false,
     hideOnTermination: false,
+    variablesOnBreakpoint: true,
     breakpointsAnyFile: false,
     runToCursorInlay: true,
     inlineValues: true,
@@ -449,6 +451,7 @@ export function validateDebugger(raw: unknown): DebuggerSettingsValid {
     showOnBreakpoint: bool(v.showOnBreakpoint, d.showOnBreakpoint),
     focusAppOnBreakpoint: bool(v.focusAppOnBreakpoint, d.focusAppOnBreakpoint),
     hideOnTermination: bool(v.hideOnTermination, d.hideOnTermination),
+    variablesOnBreakpoint: bool(v.variablesOnBreakpoint, d.variablesOnBreakpoint),
     breakpointsAnyFile: bool(v.breakpointsAnyFile, d.breakpointsAnyFile),
     runToCursorInlay: bool(v.runToCursorInlay, d.runToCursorInlay),
     inlineValues: bool(v.inlineValues, d.inlineValues),

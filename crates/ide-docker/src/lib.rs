@@ -542,6 +542,24 @@ pub fn compose_config(ep: &DockerEndpoint, dir: &Path, files: &[String]) -> IdeR
     if out.success { Ok(out.stdout) } else { Err(failure(&args, &out.stderr, &out.stdout)) }
 }
 
+/// Runs the docker CLI with `args` in `dir` and returns its standard output; a non-zero
+/// exit is an error with docker's message.
+pub fn cli(
+    ep: &DockerEndpoint,
+    dir: Option<&Path>,
+    args: &[String],
+    timeout: Duration,
+    cancel: Option<&CancellationToken>,
+) -> IdeResult<String> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut cmd = command(ep, &args)?;
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    let out = process::run(cmd, timeout, cancel)?;
+    if out.success { Ok(out.stdout) } else { Err(failure(&args, &out.stderr, &out.stdout)) }
+}
+
 #[cfg(test)]
 mod local_tests {
     use super::*;

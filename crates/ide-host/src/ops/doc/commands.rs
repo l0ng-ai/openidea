@@ -50,7 +50,10 @@ pub async fn doc_set_encoding(
     reload: bool,
 ) -> IdeResult<DocumentEncoding> {
     let project = host.project(window)?;
-    if reload && let Some(uri) = project.documents.virtual_uri(doc)? {
+    if reload
+        && !project.documents.is_untitled(doc)?
+        && let Some(uri) = project.documents.virtual_uri(doc)?
+    {
         let vd = if uri.starts_with("git-revision:") {
             crate::ops::vcs::revision_virtual_document(host, window, &uri, Some(&encoding)).await?
         } else {
@@ -159,6 +162,15 @@ pub async fn doc_highlights(host: &Host, window: &str, doc: DocId) -> IdeResult<
     .await
 }
 
+/// Python class facts the inheritance inspections read: base names as written, a method's
+/// parameters, decorator semantics and its body shape. Tree-sitter answers; no LSP.
+pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResult<ide_language::PythonFacts> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let snap = project.documents.text_snapshot(doc)?;
+    blocking(move || Ok(syntax.python_facts(&snap.language, &snap.text))).await
+}
+
 /// Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 /// Large documents fall back to word / line / document ranges.
 pub async fn doc_selection_ranges(host: &Host, window: &str, doc: DocId, offset: u32) -> IdeResult<Vec<Range>> {
@@ -208,6 +220,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_outline", |c| async move { doc_outline(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_folding", |c| async move { doc_folding(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_highlights", |c| async move { doc_highlights(&c.host, &c.window, c.arg("doc")?).await });
+    d.add("doc_python_facts", |c| async move { doc_python_facts(&c.host, &c.window, c.arg("doc")?).await });
     d.add("doc_selection_ranges", |c| async move {
         doc_selection_ranges(&c.host, &c.window, c.arg("doc")?, c.arg("offset")?).await
     });

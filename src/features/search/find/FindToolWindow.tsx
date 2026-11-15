@@ -422,7 +422,12 @@ function FindTabView({ tab }: { tab: FindTab }) {
           </>
         )}
       </div>
-      <SplitGroup orientation="horizontal" className={styles.split} id="find-results-split">
+      <SplitGroup
+        orientation="horizontal"
+        className={styles.split}
+        id="find-results-split"
+        storageKey={showPreview ? "openidea.find.previewSplit" : undefined}
+      >
         <SplitPanel id="results" minSize={120} className={styles.splitPanel}>
           <Tree<Node>
             className={styles.tree}

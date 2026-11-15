@@ -38,6 +38,12 @@ export interface TabItem {
    * button's place, and the strip's close gestures leave the tab alone.
    */
   pinned?: boolean;
+  /**
+   * Visual only: hide this tab's close button without disabling its close
+   * gestures (middle click, Shift+click, Delete). IDEA's "Close button
+   * position: None" sets this to false; the tab stays closable.
+   */
+  showCloseButton?: boolean;
   /** Unsaved changes marker. */
   modified?: boolean;
   /** CSS colour for the label (VCS status etc.), e.g. `var(--vcs-modified)`. */
@@ -379,14 +385,17 @@ export function Tabs({
         {items.map((item, index) => {
           const selected = item.id === activeId;
           const pinned = !!onTogglePin && !!item.pinned;
+          // Whether a tab can be closed at all (gestures and the button). A hidden
+          // close button is visual only: middle click, Shift+click and Delete still work.
           const closable = !!onClose && item.closable !== false && !pinned;
+          const showClose = closable && item.showCloseButton !== false;
           return (
             <div
               key={item.id}
               className={clsx(
                 styles.tab,
                 selected && styles.selected,
-                (closable || pinned) && styles.closable,
+                (showClose || pinned) && styles.closable,
                 dragging === item.id && styles.dragging,
                 marker === index && styles.dropBefore,
                 marker === items.length && index === items.length - 1 && styles.dropAfter,
@@ -471,7 +480,7 @@ export function Tabs({
                   {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
-                {item.modified && !closable && <span className={styles.modified} aria-label={tx("Modified")} />}
+                {item.modified && !showClose && <span className={styles.modified} aria-label={tx("Modified")} />}
               </button>
               {pinned && (
                 <span className={styles.closeSlot} data-tab-close>
@@ -489,7 +498,7 @@ export function Tabs({
                   />
                 </span>
               )}
-              {closable && (
+              {showClose && (
                 <span className={styles.closeSlot} data-tab-close>
                   {item.modified && <span className={styles.modified} aria-label={tx("Modified")} />}
                   <IconButton

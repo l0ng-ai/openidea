@@ -71,6 +71,7 @@ describe("server status", () => {
       root: "/p",
       status: "ready",
       pid: null,
+      label: null,
     });
     pending.splice(0).forEach((resolve) => resolve([info(11, "basedpyright"), info(12, "pyright")]));
     await vi.waitFor(() => expect(useServers.getState().servers.size).toBe(2));
@@ -78,7 +79,7 @@ describe("server status", () => {
 
     // The fallback stops and leaves the list; a snapshot taken before that answers late.
     const status = (id: number, name: string, status: ServerInfo["status"]) =>
-      emitLocalIdeEvent({ type: "languageServer", server: id as ServerId, name, status, message: null });
+      emitLocalIdeEvent({ type: "languageServer", server: id as ServerId, name, label: null, status, message: null });
     status(13, "ty", "starting");
     status(12, "pyright", "stopped");
     emitLocalIdeEvent({ type: "languageServerRemoved", server: 12 as ServerId });
@@ -89,6 +90,30 @@ describe("server status", () => {
 
     emitLocalIdeEvent({ type: "languageServerRemoved", server: 13 as ServerId });
     expect(serversSummary([...useServers.getState().servers.values()])?.text).toBe("basedpyright");
+  });
+
+  it("names a server by the program that serves in its place", () => {
+    useServers.setState({ servers: new Map() });
+    dispose = installServerEvents();
+    const id = 21 as ServerId;
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: id,
+      name: "vtsls",
+      label: null,
+      status: "starting",
+      message: null,
+    });
+    emitLocalIdeEvent({
+      type: "languageServer",
+      server: id,
+      name: "vtsls",
+      label: "TypeScript 7",
+      status: "ready",
+      message: null,
+    });
+    expect(useServers.getState().servers.get(id)).toMatchObject({ name: "vtsls", label: "TypeScript 7" });
+    expect(serversSummary([...useServers.getState().servers.values()])?.text).toBe("TypeScript 7");
   });
 
   it("shows a running server busy only once it stays busy", async () => {

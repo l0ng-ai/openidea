@@ -262,3 +262,14 @@ it("shows the project › dirs › file path above the editor", async () => {
   hidden.unmount();
   useProject.setState({ project: null, settings: null });
 });
+
+it("shows only the name of a new-file buffer", () => {
+  useProject.setState({
+    project: { root: "/workspace", name: "Workspace", settings: {}, trusted: true, isGit: false },
+    settings: { appearance: { navigationBar: "top" } } as unknown as Settings,
+  });
+  useEditorStatus.setState({ status: { ...caret(0, 0), path: "untitled:Untitled-1" } });
+  const view = render(<Breadcrumbs className="nav" />);
+  expect(screen.getByRole("navigation", { name: "Breadcrumbs" }).textContent).toBe("Untitled-1");
+  view.unmount();
+});

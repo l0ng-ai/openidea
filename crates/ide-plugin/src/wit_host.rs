@@ -2254,6 +2254,11 @@ impl bindings::openidea::plugin::run::Host for StoreData {
 pub(crate) mod run_configurations_bindings {
     wasmtime::component::bindgen!({ world: "configurations-provider", path: "../../wit" });
 }
+pub(crate) mod launch_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "launch-configurations-provider", path: "../../wit",
+        with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
 pub(crate) mod test_results_bindings {
     wasmtime::component::bindgen!({ world: "test-results-provider", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },

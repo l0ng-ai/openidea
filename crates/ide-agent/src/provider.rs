@@ -120,9 +120,17 @@ impl ProviderSpec {
     }
 
     /// Resolve once before connecting, so authentication guidance names that same install.
-    pub(crate) fn resolve_for_launch(mut self, cwd: &Path) -> Self {
+    pub(crate) fn resolve_for_launch(self, cwd: &Path) -> Self {
+        let strip = prefer_stored_copilot_auth();
+        self.resolve_for_launch_with_copilot_env(cwd, strip)
+    }
+
+    pub(crate) fn resolve_for_launch_with_copilot_env(mut self, cwd: &Path, strip_ambient_tokens: bool) -> Self {
         if self.driver != Driver::Acp {
             self.command = crate::native::newest_install(&self.command);
+        }
+        if is_copilot_provider(&self.id) {
+            self.env = sanitized_copilot_env(&self.env, strip_ambient_tokens);
         }
         let program = ide_jsonrpc::resolve_spawn_program(&self.command, &self.env);
         self.command =
@@ -131,6 +139,69 @@ impl ProviderSpec {
                 .into_owned();
         self
     }
+}
+
+const AMBIENT_COPILOT_AUTH_VARS: [&str; 3] = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"];
+static PREFER_STORED_COPILOT_AUTH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn is_copilot_provider(id: &str) -> bool {
+    id == "copilot" || id.starts_with("copilot-")
+}
+
+pub(crate) fn prefer_stored_copilot_auth() -> bool {
+    PREFER_STORED_COPILOT_AUTH.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub(crate) fn mark_prefer_stored_copilot_auth() {
+    PREFER_STORED_COPILOT_AUTH.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn has_unconfigured_copilot_ambient_token(spec_env: &[(String, String)]) -> bool {
+    AMBIENT_COPILOT_AUTH_VARS.iter().any(|&key| {
+        !spec_env.iter().any(|(k, v)| k == key && !v.is_empty())
+            && ambient_copilot_env_value(key).is_some_and(|v| !v.is_empty())
+    })
+}
+
+fn ambient_copilot_env_value(key: &str) -> Option<String> {
+    ide_core::process::shell_env()
+        .find(|(k, _)| *k == key)
+        .map(|(_, v)| v.to_string_lossy().into_owned())
+        .or_else(|| ide_core::process::host_var_os(key).map(|v| v.to_string_lossy().into_owned()))
+}
+
+/// Builds child environment overrides for `copilot`:
+/// - Always clears ambient classic PATs (`ghp_…`), which Copilot CLI unconditionally rejects
+///   (`"Classic PATs are not supported"`) instead of falling back to Keychain / `gh` login.
+/// - When `strip_ambient_tokens` is true, clears unconfigured ambient `GITHUB_TOKEN` / `GH_TOKEN` /
+///   `COPILOT_GITHUB_TOKEN` so Copilot uses its stored login (`~/.copilot` or `gh auth` keyring),
+///   while preserving any token explicitly configured in OpenIDEA's agent `spec_env`.
+pub(crate) fn sanitized_copilot_env(
+    spec_env: &[(String, String)],
+    strip_ambient_tokens: bool,
+) -> Vec<(String, String)> {
+    sanitize_copilot_env_with(spec_env, strip_ambient_tokens, ambient_copilot_env_value)
+}
+
+pub(crate) fn sanitize_copilot_env_with(
+    spec_env: &[(String, String)],
+    strip_ambient_tokens: bool,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::with_capacity(spec_env.len() + AMBIENT_COPILOT_AUTH_VARS.len());
+    for key in AMBIENT_COPILOT_AUTH_VARS {
+        let explicit = spec_env.iter().any(|(k, v)| k == key && !v.is_empty());
+        if explicit {
+            continue;
+        }
+        if let Some(val) = lookup(key).filter(|v| !v.is_empty())
+            && (strip_ambient_tokens || val.trim().starts_with("ghp_"))
+        {
+            out.push((key.to_owned(), String::new()));
+        }
+    }
+    out.extend(spec_env.iter().cloned());
+    out
 }
 
 fn render_login_hint(spec: &ProviderSpec, program: &Path, on_path: Option<&Path>, windows: bool) -> String {
@@ -1100,5 +1171,24 @@ mod tests {
         assert_eq!(mine.source, AgentSource::Custom);
         import_acp(dir.path(), None, "not json").unwrap_err();
         assert!(import_acp(dir.path(), None, "{}").unwrap().is_empty());
+    }
+
+    #[test]
+    fn sanitizes_classic_pats_and_ambient_tokens_while_preserving_explicit_agent_env() {
+        let lookup = |k: &str| match k {
+            "GITHUB_TOKEN" => Some("ghp_classic_pat_123".into()),
+            "GH_TOKEN" => Some("gho_oauth_token_456".into()),
+            _ => None,
+        };
+        assert_eq!(sanitize_copilot_env_with(&[], false, lookup), vec![("GITHUB_TOKEN".into(), String::new())]);
+        assert_eq!(
+            sanitize_copilot_env_with(&[], true, lookup),
+            vec![("GH_TOKEN".into(), String::new()), ("GITHUB_TOKEN".into(), String::new())]
+        );
+        let explicit = vec![("GH_TOKEN".into(), "github_pat_custom".into())];
+        assert_eq!(
+            sanitize_copilot_env_with(&explicit, true, lookup),
+            vec![("GITHUB_TOKEN".into(), String::new()), ("GH_TOKEN".into(), "github_pat_custom".into())]
+        );
     }
 }

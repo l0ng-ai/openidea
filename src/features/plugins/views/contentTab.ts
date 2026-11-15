@@ -153,13 +153,21 @@ export function registerContentTabSender(pluginId: string, view: string, send: (
   };
 }
 
+/** Largest side of a plugin diff, as the host checks it (`MAX_DIFF_SIDE`). */
+const MAX_DIFF_SIDE = 8 << 20;
+
 function validDiff(v: unknown): ContentTabDiff | undefined {
   if (v === undefined) return undefined;
   if (!v || typeof v !== "object") throw new Error(tx("Invalid content editor configuration"));
   const d = v as Record<string, unknown>;
+  for (const side of [d.left, d.right]) {
+    if (typeof side === "string" && side.length > MAX_DIFF_SIDE) {
+      throw new Error(tx`Diff too large: a side is over ${MAX_DIFF_SIDE >> 20} MiB`);
+    }
+  }
   if (
-    !bodyText(d.left, 1 << 20) ||
-    !bodyText(d.right, 1 << 20) ||
+    !bodyText(d.left, MAX_DIFF_SIDE) ||
+    !bodyText(d.right, MAX_DIFF_SIDE) ||
     (d.leftLabel !== undefined && !text(d.leftLabel, 128)) ||
     (d.rightLabel !== undefined && !text(d.rightLabel, 128)) ||
     (d.title !== undefined && !text(d.title, 256))
@@ -201,7 +209,8 @@ export function openPluginDiff(diff: ContentTabDiff, name: string, title: string
 /** `open-diff` from a plugin web view, or the `views.open-diff` host call. */
 export function openPluginDiffRequest(value: object, length: number) {
   const m = value as Record<string, unknown>;
-  if (length > 3 << 20 || (m.fileName !== undefined && !text(m.fileName, 256))) {
+  // Both sides as JSON (escapes included), with room for the labels.
+  if (length > 4 * MAX_DIFF_SIDE + (1 << 20) || (m.fileName !== undefined && !text(m.fileName, 256))) {
     throw new Error(tx("Invalid content editor configuration"));
   }
   const fileName = m.fileName as string | undefined;

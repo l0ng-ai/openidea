@@ -5,6 +5,7 @@
 //! Coordinates are 1-based, end exclusive; columns count UTF-16 code units like
 //! the editor (one per character except emoji and other astral characters).
 
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use crate::mcp::util::{INDEXING_PARTIAL_RESULT_REASON, MEDIUM_TIMEOUT};
 use crate::ops::search::SearchEvent;
@@ -21,8 +22,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const MAX_RESULTS_UPPER_BOUND: usize = 5000;
-const DEFAULT_LIMIT: i64 = 1000;
-pub const SYMBOL_SEARCH_DEFAULT_LIMIT: i64 = 50;
+const DEFAULT_LIMIT: usize = 100;
+pub const SYMBOL_SEARCH_DEFAULT_LIMIT: usize = 50;
 pub const SEARCH_TIMEOUT_PARTIAL_RESULT_REASON: &str =
     "The search timed out after 10 s. Narrow the query or pass paths.";
 /// Symbols requested from the index per result when `paths` filters them afterwards.
@@ -37,7 +38,8 @@ const LINE_WINDOW: usize = 500;
 
 const PATHS_DESCRIPTION: &str = "Optional list of project-relative glob patterns to filter results. Supports '!' \
 excludes. Trailing '/' expands to '**'. Patterns without '/' are treated as '**/pattern'. Empty strings are ignored.";
-const LIMIT_DESCRIPTION: &str = "Maximum number of results to return";
+const LIMIT_DESCRIPTION: &str = "Results to return at most (default 100)";
+const SYMBOL_LIMIT_DESCRIPTION: &str = "Results to return at most (default 50)";
 const CONTEXT_DESCRIPTION: &str = "Lines around each match to return besides the matched line (`lineText`): \"+N\" the \
 N lines after it (`contextAfter`), \"-N\" the N lines before it (`contextBefore`), \"N\" (or the number N) N lines on \
 each side. At most 50. Default: the matched line only.";
@@ -67,6 +69,7 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
     .param(Param::required("q", ParamType::String, "Text to search for"))
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
     .output(result_schema())
 }
@@ -88,6 +91,7 @@ Examples: [\"src/**\", \"!**/test/**\"], [\"**/*.kt\"], [\"foo/\"].",
     .param(Param::required("q", ParamType::String, "Regex pattern to search for"))
     .param(Param::optional("paths", ParamType::StringList, PATHS_DESCRIPTION))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
     .output(result_schema())
 }
@@ -113,7 +117,8 @@ If you don't find a suitable result, try again with include_external=true to sea
         "Whether to include SDK and library symbols. Disabled by default; if nothing suitable is found, try again \
 with include_external=true.",
     ))
-    .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("limit", ParamType::Integer, SYMBOL_LIMIT_DESCRIPTION))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .param(Param::optional("context", ParamType::String, CONTEXT_DESCRIPTION))
     .output(result_schema())
 }
@@ -138,6 +143,7 @@ Paths are optional additional glob filters relative to the project root.",
         "Whether to include excluded/ignored files in results",
     ))
     .param(Param::optional("limit", ParamType::Integer, LIMIT_DESCRIPTION))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
     .output(result_schema())
 }
 
@@ -191,6 +197,9 @@ struct SearchResult {
     items: Vec<SearchItem>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     more: bool,
+    /// The `offset` of the next page, when `more`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     partial_result_reason: Option<&'static str>,
 }
@@ -212,16 +221,23 @@ fn result_schema() -> Value {
                 "required": ["filePath"],
             } },
             "more": { "type": "boolean" },
+            "nextOffset": int,
             "partialResultReason": string,
         },
     })
 }
 
-fn limit(call: &Call, default: i64) -> IdeResult<usize> {
-    match call.opt_i64("limit")?.unwrap_or(default) {
-        n if n <= 0 => Err(IdeError::invalid("limit must be > 0")),
-        n => Ok((n as usize).min(MAX_RESULTS_UPPER_BOUND)),
-    }
+/// The page of `call` and the results to find for it: up to its end.
+fn page(call: &Call, default: usize) -> IdeResult<(Page, usize)> {
+    let page = Page::of(call, default)?;
+    Ok((page, page.end().min(MAX_RESULTS_UPPER_BOUND)))
+}
+
+/// Drops the results before the page, and the `nextOffset` when more follow. A search finds
+/// [`MAX_RESULTS_UPPER_BOUND`] results at most, so no page starts past them.
+fn skip<T>(page: Page, items: &mut Vec<T>, more: bool) -> Option<usize> {
+    items.drain(..page.offset.min(items.len()));
+    (more && page.end() < MAX_RESULTS_UPPER_BOUND).then_some(page.end())
 }
 
 fn query(call: &Call, empty: &str) -> IdeResult<String> {
@@ -521,7 +537,7 @@ struct TextHit {
 
 async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
     let pattern = query(&call, if is_regex { "Regex pattern is empty" } else { "Search text is empty" })?;
-    let limit = limit(&call, DEFAULT_LIMIT)?;
+    let (page, limit) = page(&call, DEFAULT_LIMIT)?;
     let around = context(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     // Globs Find in Files cannot take are applied afterwards, so the engine must not
@@ -612,11 +628,12 @@ async fn text_search(call: Call, is_regex: bool) -> IdeResult<Output> {
             ..Default::default()
         })
         .collect();
+    let next_offset = skip(page, &mut items, more);
     let absolute: std::collections::HashMap<&str, &Path> =
         files.iter().map(|(path, file)| (path.as_str(), file.path.0.as_path())).collect();
     fill_lines(&call, &mut items, |item| absolute.get(item.file_path.as_str()).map(|p| p.to_path_buf()), around).await;
     let partial_result_reason = timed_out.then_some(SEARCH_TIMEOUT_PARTIAL_RESULT_REASON);
-    Output::json(SearchResult { items, more, partial_result_reason })
+    Output::json(SearchResult { items, more, next_offset, partial_result_reason })
 }
 
 /// The matches of `ranges` (byte ranges in `text`) that start on 0-based `line`, with their
@@ -721,7 +738,7 @@ async fn run_search(call: &Call, query: SearchQuery) -> IdeResult<(Vec<FileMatch
 
 async fn file_search(call: Call) -> IdeResult<Output> {
     let q = query(&call, "Glob pattern is empty")?;
-    let limit = limit(&call, DEFAULT_LIMIT)?;
+    let (page, limit) = page(&call, DEFAULT_LIMIT)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     let include_excluded = call.flag("includeExcluded", false)?;
     let glob = GlobSetBuilder::new()
@@ -759,9 +776,11 @@ async fn file_search(call: Call) -> IdeResult<Output> {
             Ok((found, more, walk.timed_out.get()))
         })
         .await?;
-    let items = paths.into_iter().map(|file_path| SearchItem { file_path, ..Default::default() }).collect();
+    let mut items: Vec<SearchItem> =
+        paths.into_iter().map(|file_path| SearchItem { file_path, ..Default::default() }).collect();
+    let next_offset = skip(page, &mut items, more);
     let partial_result_reason = timed_out.then_some(SEARCH_TIMEOUT_PARTIAL_RESULT_REASON);
-    Output::json(SearchResult { items, more, partial_result_reason })
+    Output::json(SearchResult { items, more, next_offset, partial_result_reason })
 }
 
 struct Walk {
@@ -835,7 +854,7 @@ impl Walk {
 async fn symbol_search(call: Call) -> IdeResult<Output> {
     let started = Instant::now();
     let q = query(&call, "Search query is empty")?;
-    let limit = limit(&call, SYMBOL_SEARCH_DEFAULT_LIMIT)?;
+    let (page, limit) = page(&call, SYMBOL_SEARCH_DEFAULT_LIMIT)?;
     let around = context(&call)?;
     let scope = PathScope::new(call.root(), &call.str_list("paths")?)?;
     let external = call.flag("include_external", false)?;
@@ -886,6 +905,7 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     }
     let more = items.len() > limit || timed_out;
     items.truncate(limit);
+    let next_offset = skip(page, &mut items, more);
     // Project files (relative paths, or absolute ones of content roots); library URIs are left out.
     let root = call.root().to_path_buf();
     let absolute = |item: &SearchItem| {
@@ -899,7 +919,7 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     } else {
         timed_out.then_some(SEARCH_TIMEOUT_PARTIAL_RESULT_REASON)
     };
-    Output::json(SearchResult { items, more, partial_result_reason })
+    Output::json(SearchResult { items, more, next_offset, partial_result_reason })
 }
 
 /// The language servers' workspace symbols, and whether `budget` ran out first; empty

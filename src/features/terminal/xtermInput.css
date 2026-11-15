@@ -6,3 +6,10 @@
 .xterm textarea.xterm-helper-textarea {
   white-space: pre;
 }
+
+/* An icon or fallback symbol wider than its cell stays over the next cell's background
+   (domRowCache), while selected spans keep xterm's `.xterm-decoration-top` z-index (2). */
+.xterm .xterm-rows .openidea-terminal-icon:not(.xterm-decoration-top) {
+  position: relative;
+  z-index: 1;
+}

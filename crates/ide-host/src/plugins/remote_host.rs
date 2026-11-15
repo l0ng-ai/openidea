@@ -57,6 +57,7 @@ pub const COMMANDS: &[&str] = &[
     "plugin_terminal_session_close",
     "plugin_terminal_session_spawn",
     "plugin_prepare_debug_run",
+    "plugin_debug_attach_target",
     "plugin_finish_operation",
     "plugin_content_tab_action",
     "plugin_post_events",
@@ -569,6 +570,15 @@ impl RemotePlugins {
                 let plugins = alive(&h)?;
                 let config = c.arg("config")?;
                 blocking(move || plugins.prepare_debug_run(&c.window, config)).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_debug_attach_target", move |c| {
+            let h = h.clone();
+            async move {
+                let plugins = alive(&h)?;
+                let (config, run) = (c.arg::<String>("config")?, c.arg("run")?);
+                blocking(move || plugins.debug_attach_target(&c.host, &c.window, &config, run)).await
             }
         });
         let h = host.clone();

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  effectiveBindings,
   formatBinding,
   installKeyboardDispatcher,
   isAltGrTyping,
@@ -18,6 +19,19 @@ describe("keymap", () => {
   it("normalizes modifier order and case", () => {
     expect(normalizeBinding("Shift+Meta+o")).toBe("Shift+Meta+O");
     expect(normalizeBinding("meta+K  meta+c")).toBe("Meta+K Meta+C");
+  });
+
+  it("serves the effective pairs from cache until the keymap changes", () => {
+    const initial = useKeymap.getState();
+    useKeymap.setState({ overrides: { "t.cached": ["Meta+K"] } });
+    const first = effectiveBindings();
+    expect(effectiveBindings()).toBe(first);
+    expect(first).toContainEqual(["Meta+K", "t.cached"]);
+    useKeymap.setState({ overrides: { "t.cached": ["Meta+L"] } });
+    const second = effectiveBindings();
+    expect(second).not.toBe(first);
+    expect(second).toContainEqual(["Meta+L", "t.cached"]);
+    useKeymap.setState({ overrides: initial.overrides, extensions: initial.extensions });
   });
 
   it("formats macOS style", () => {

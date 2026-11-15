@@ -41,6 +41,8 @@ export interface LogFilters {
   path: string | null;
   paths?: string[];
   range?: string | null;
+  /** Revision ranges per repository root, instead of `range` (Update Info: what an update brought in). */
+  repoRanges?: Record<string, string>;
   date: LogDateFilter | null;
 }
 
@@ -94,7 +96,7 @@ function parseFragments(value: unknown): LogFragments {
 /** A log tab of its own (IDEA's "History: file" / "Log: branch" tabs): its own filters and view. */
 export interface LogTab {
   id: string;
-  kind: "history" | "branch" | "log" | "external";
+  kind: "history" | "branch" | "log" | "external" | "update";
   /** What it shows (the file path or the branch); opening the same again selects the tab. */
   target: string;
   repo?: string | null;
@@ -405,6 +407,7 @@ export function openLogTab(
   target: string,
   location: LogTab["location"] = "toolWindow",
   repositories?: string[],
+  initialFilters?: Partial<LogFilters>,
 ): string {
   const active = useGitLog.getState().logTabs.find((t) => t.id === useGitLog.getState().shownLog);
   repositories ??=
@@ -421,6 +424,7 @@ export function openLogTab(
         : (active?.repo ?? (kind === "log" ? null : currentRepoRoot()));
   const existing =
     kind !== "log" &&
+    kind !== "update" &&
     useGitLog
       .getState()
       .logTabs.find(
@@ -442,6 +446,7 @@ export function openLogTab(
       : {
           ...emptyFilters(),
           ...(kind === "history" ? { path: target } : kind === "branch" ? { branches: [target] } : {}),
+          ...initialFilters,
         };
   parked.set(id, freshView(filters));
   useGitLog.setState((s) => ({
@@ -566,6 +571,13 @@ function parseFilters(value: unknown): LogFilters {
     text: typeof raw.text === "string" ? raw.text : "",
     path: typeof raw.path === "string" ? raw.path : null,
     range: typeof raw.range === "string" ? raw.range : null,
+    ...(raw.repoRanges && typeof raw.repoRanges === "object"
+      ? {
+          repoRanges: Object.fromEntries(
+            Object.entries(raw.repoRanges).filter((e): e is [string, string] => typeof e[1] === "string"),
+          ),
+        }
+      : {}),
     regex: raw.regex === true,
     matchCase: raw.matchCase === true,
   };
@@ -625,7 +637,7 @@ function restoreLogSession(root: string | null) {
             typeof tab === "object" &&
             typeof tab.id === "string" &&
             typeof tab.target === "string" &&
-            ["history", "branch", "log", "external"].includes(tab.kind) &&
+            ["history", "branch", "log", "external", "update"].includes(tab.kind) &&
             (tab.repo == null || typeof tab.repo === "string"),
         )
       : [];
@@ -907,6 +919,7 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
             !f.path &&
             !f.paths?.length &&
             !f.range &&
+            !f.repoRanges &&
             !f.date &&
             !o.noMerges &&
             !o.firstParent
@@ -932,7 +945,7 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
               textRegex: f.regex,
               textMatchCase: f.matchCase,
               range: null,
-              ranges: f.range?.split(/\s+/).filter(Boolean) ?? [],
+              ranges: ((repo && f.repoRanges?.[repo]) || f.range)?.split(/\s+/).filter(Boolean) ?? [],
               request,
               summaryOnly: true,
               stopAt,

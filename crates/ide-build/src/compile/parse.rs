@@ -25,6 +25,8 @@ pub(crate) enum Format {
     Go,
     /// GCC / Clang (through `cmake --build`): `src/a.cpp:12:5: error: msg`.
     Gcc,
+    /// MSBuild (`dotnet build`): `C:\p\A.cs(12,5): error CS1002: msg [C:\p\App.csproj]`.
+    Msbuild,
 }
 
 /// What a printed column counts.
@@ -268,6 +270,43 @@ fn tsc_line(line: &str) -> Option<RawMessage> {
     Some(m)
 }
 
+/// MSBuild's canonical form: `path(12,5): error CS1002: msg [project]`, `path(12,5,12,9): …`,
+/// or `path : error NU1101: msg [project]` for a project-level message (no position).
+/// The path may contain spaces (`C:\Users\Jane Doe\…`); "error" / "warning" are never localized.
+fn msbuild_line(line: &str) -> Option<RawMessage> {
+    let line = line.trim();
+    // The project the message came from, appended by the console logger.
+    let line = match line.rfind(" [") {
+        Some(i) if line.ends_with(']') => &line[..i],
+        _ => line,
+    };
+    let (head, severity, rest) =
+        [(" error ", Severity::Error), (" warning ", Severity::Warning)].into_iter().find_map(|(word, severity)| {
+            let i = line.find(&format!(":{word}"))?;
+            Some((&line[..i], severity, &line[i + word.len() + 1..]))
+        })?;
+    let (code, msg) = rest.split_once(':')?;
+    let code = code.trim();
+    if code.is_empty() || code.contains(' ') {
+        return None;
+    }
+    let head = head.trim_end();
+    let (path, pos) = match head.strip_suffix(')').and_then(|h| h.rsplit_once('(')) {
+        Some((path, pos)) => (path, pos.split(',').map(num).collect::<Vec<_>>()),
+        None => (head, Vec::new()),
+    };
+    let at = |i: usize| pos.get(i).copied().flatten();
+    // `MSBUILD : error MSB1009` and the like name no file.
+    let file = path.rsplit(['/', '\\']).next().is_some_and(|n| n.contains('.'));
+    let mut m = RawMessage::new(severity, msg.trim(), ColUnit::Utf16);
+    if file {
+        m.path = Some(path.trim().to_owned());
+        (m.line, m.col, m.end_line, m.end_col) = (at(0), at(1), at(2), at(3));
+    }
+    m.code = Some(code.to_owned());
+    Some(m)
+}
+
 /// go: `./a.go:12:5: msg` (errors only; `go vet` style `a.go:12: msg` too).
 fn go_line(line: &str) -> Option<RawMessage> {
     let (path, ln, col, rest) = path_line_col(line)?;
@@ -404,6 +443,7 @@ impl OutputParser {
             Format::Tsc => tsc_line(&line),
             Format::Go => go_line(&line),
             Format::Gcc => gcc_line(&line),
+            Format::Msbuild => msbuild_line(&line),
             Format::Cargo => None,
         };
         if let Some(msg) = parsed {
@@ -549,6 +589,27 @@ mod tests {
         assert!(a.messages.is_empty() && a.console.as_deref() == Some(""));
         let plain = p.feed("   Compiling p v0.1.0 (/w/crates/p)");
         assert!(plain.messages.is_empty() && plain.console.is_none());
+    }
+
+    #[test]
+    fn msbuild_canonical_messages() {
+        let out = parse(
+            Format::Msbuild,
+            "  Determining projects to restore...\n\
+             C:\\Users\\Jane Doe\\App\\Program.cs(12,5): error CS1002: ; expected [C:\\Users\\Jane Doe\\App\\App.csproj]\n\
+             /p/App/Models/User.cs(3,8,3,12): warning CS0168: The variable 'e' is declared but never used [/p/App/App.csproj]\n\
+             /p/App/App.csproj : error NU1101: Unable to find package Foo. [/p/App/App.csproj]\n\
+             MSBUILD : error MSB1009: Project file does not exist.\n\
+             Build FAILED.\n",
+        );
+        assert_eq!(out.len(), 4, "{out:?}");
+        assert_eq!(pos(&out[0]), (Severity::Error, "C:\\Users\\Jane Doe\\App\\Program.cs", 12, Some(5)));
+        assert_eq!((out[0].code.as_deref(), out[0].text.as_str()), (Some("CS1002"), "; expected"));
+        assert_eq!(pos(&out[1]), (Severity::Warning, "/p/App/Models/User.cs", 3, Some(8)));
+        assert_eq!((out[1].end_line, out[1].end_col), (Some(3), Some(12)));
+        assert_eq!((out[2].path.as_deref(), out[2].line), (Some("/p/App/App.csproj"), None));
+        assert_eq!(out[2].text, "Unable to find package Foo.");
+        assert_eq!((out[3].path.as_deref(), out[3].code.as_deref()), (None, Some("MSB1009")));
     }
 
     #[test]

@@ -168,6 +168,14 @@ export function closeUsageTab(id: number) {
     const active = s.active === id ? (tabs[Math.min(i, tabs.length - 1)]?.id ?? null) : s.active;
     return { tabs, active };
   });
+  // As in IDEA, the tool window and its stripe button go away with its last tab.
+  if (!useUsages.getState().tabs.length) {
+    try {
+      toolWindowService().hide("usages", { removeFromStripe: true });
+    } catch {
+      // Workbench not ready (tests).
+    }
+  }
 }
 
 /** Rerun of the selected tab (⌘R in the Find Usages tool window). */

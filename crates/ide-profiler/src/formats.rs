@@ -109,6 +109,17 @@ pub(crate) fn cpuprofile_runs_code_of(json: &str, root: &Path) -> bool {
     })
 }
 
+/// The file on disk of one `$vscode.locations` entry and its 0-based line. The entry lists a
+/// frame's places in order: the source it was mapped to, then the script that ran, which a
+/// page serves from a URL and has no file.
+fn source_location(entry: &Value) -> Option<(PathBuf, u32)> {
+    entry.get("locations")?.as_array()?.iter().find_map(|l| {
+        let path = Path::new(l.pointer("/source/path")?.as_str()?);
+        let line = l.get("lineNumber")?.as_u64()?;
+        path.is_absolute().then(|| (path.to_path_buf(), line.saturating_sub(1) as u32))
+    })
+}
+
 /// Adds a V8 CPU profile (`node --cpu-prof`), weighted by sampled time in milliseconds.
 pub(crate) fn add_cpuprofile(b: &mut TreeBuilder, json: &str) -> Result<(), String> {
     let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -146,6 +157,8 @@ pub(crate) fn add_cpuprofile(b: &mut TreeBuilder, json: &str) -> Result<(), Stri
             }
         }
     }
+    // A recording made through a debugger (js-debug) says where each frame is in the sources.
+    let mapped = v.pointer("/$vscode/locations").and_then(Value::as_array);
     let frame_of = |n: &Value| -> Option<FrameKey> {
         let cf = n.get("callFrame")?;
         let name = cf.get("functionName").and_then(Value::as_str).unwrap_or_default();
@@ -153,10 +166,22 @@ pub(crate) fn add_cpuprofile(b: &mut TreeBuilder, json: &str) -> Result<(), Stri
         if name == "(root)" {
             return None;
         }
-        let file = url_path(url);
         let name = if name.is_empty() { "(anonymous)".to_owned() } else { name.to_owned() };
-        let line =
-            file.as_ref().and(cf.get("lineNumber").and_then(Value::as_i64)).filter(|l| *l >= 0).map(|l| l as u32);
+        let (file, line) = n
+            .get("locationId")
+            .and_then(Value::as_u64)
+            .and_then(|id| mapped?.get(id as usize))
+            .and_then(source_location)
+            .map(|(file, line)| (Some(file), Some(line)))
+            .unwrap_or_else(|| {
+                let file = url_path(url);
+                let line = file
+                    .as_ref()
+                    .and(cf.get("lineNumber").and_then(Value::as_i64))
+                    .filter(|l| *l >= 0)
+                    .map(|l| l as u32);
+                (file, line)
+            });
         Some(FrameKey { name, file, line, kind: ProfileFrameKind::Code })
     };
     for (id, weight) in self_time {
@@ -299,6 +324,32 @@ mod tests {
         assert_eq!(main.line, Some(3));
         assert!(p.frames.iter().any(|f| f.name == "(anonymous)"));
         assert!(add_cpuprofile(&mut TreeBuilder::new(), "{}").is_err());
+    }
+
+    #[test]
+    fn cpuprofile_frames_take_the_source_a_debugger_mapped_them_to() {
+        // js-debug's recording of a page: scripts are URLs, and `$vscode.locations` holds where
+        // each frame is in the sources (1-based lines), first the mapped file, then the script.
+        let json = r#"{"nodes":[
+            {"id":1,"callFrame":{"functionName":"(root)","url":"","lineNumber":-1},"children":[2,3,4]},
+            {"id":2,"callFrame":{"functionName":"increment","url":"http://localhost:5173/src/App.vue","lineNumber":40},"hitCount":3,"locationId":0},
+            {"id":3,"callFrame":{"functionName":"inline","url":"http://localhost:5173/","lineNumber":9},"hitCount":1,"locationId":1},
+            {"id":4,"callFrame":{"functionName":"(idle)","url":"","lineNumber":-1},"hitCount":1,"locationId":2}],
+            "$vscode":{"rootPath":"/work/shop","locations":[
+              {"locations":[
+                {"lineNumber":13,"columnNumber":10,"source":{"path":"/work/shop/src/App.vue","sourceReference":0}},
+                {"lineNumber":41,"columnNumber":21,"source":{"path":"localhost꞉5173/src/App.vue","sourceReference":7}}]},
+              {"locations":[{"lineNumber":10,"columnNumber":1,"source":{"path":"localhost꞉5173/","sourceReference":9}}]},
+              {"locations":[]}]}}"#;
+        let mut b = TreeBuilder::new();
+        add_cpuprofile(&mut b, json).unwrap();
+        let p = b.finish("node", "samples", ProfileMode::Cpu);
+        let frame = |name: &str| p.frames.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(frame("increment").file.as_deref(), Some(Path::new("/work/shop/src/App.vue")));
+        assert_eq!(frame("increment").line, Some(12));
+        // No file on disk behind the frame: it stays without one.
+        assert_eq!((frame("inline").file.as_deref(), frame("inline").line), (None, None));
+        assert_eq!(frame("(idle)").file, None);
     }
 
     #[test]

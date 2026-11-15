@@ -496,6 +496,9 @@ pub struct CheckoutOptions {
     /// Required when checking out a remote branch whose local namesake is ahead of it.
     #[serde(default)]
     pub diverged: Option<DivergedLocal>,
+    /// Check the branch out even though another worktree has it checked out.
+    #[serde(default)]
+    pub ignore_other_worktrees: bool,
 }
 
 /// Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`
@@ -521,6 +524,12 @@ pub enum CheckoutOutcome {
     /// on conflicts in these files.
     Conflicts {
         files: Vec<String>,
+    },
+    /// Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+    /// changed; the branch can be worked on there.
+    CheckedOutInWorktree {
+        branch: String,
+        path: PathBuf,
     },
 }
 

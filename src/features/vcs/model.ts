@@ -139,6 +139,13 @@ export function stashLabel(message: string): { branch: string | null; text: stri
   return { branch: m[1]!, text: m[2]!.trim() || message };
 }
 
+/** SSH front hosts that serve the same service as the web host in the value. */
+const WEB_HOST_ALIASES: Record<string, string> = {
+  "ssh.bitbucket.org": "bitbucket.org",
+  "ssh.github.com": "github.com",
+  "altssh.gitlab.com": "gitlab.com",
+};
+
 /**
  * Web page of a git remote URL (`git@github.com:o/r.git`, `ssh://git@host:22/o/r`,
  * `https://user@host/o/r.git`), or null for local paths.
@@ -155,6 +162,7 @@ export function remoteWebUrl(url: string): string | null {
   if (full) [, host, path] = full as unknown as [string, string, string];
   else if (scp) [, host, path] = scp as unknown as [string, string, string];
   else return null;
+  host = WEB_HOST_ALIASES[host.toLowerCase()] ?? host;
   return `https://${host}/${path.replace(/^\/+/, "")}`;
 }
 

@@ -174,12 +174,36 @@ test("⌘R replaces every match in the file", async ({ workbench: page }) => {
   await expect(editor.locator(".cm-line", { hasText: "OrderDto" })).toHaveCount(2);
 });
 
-test("Markdown preview highlights ⌘F matches and selected word occurrences", async ({ workbench: page }) => {
+test("Markdown preview highlights ⌘F matches, selected words and scales diagrams with font zoom", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 96" width="320" height="96"><!-- svg-source:excalidraw --><rect width="320" height="96"/></svg>';
+    const url = `data:image/svg+xml;base64,${btoa(svg)}`;
+    const routeModule = "/src/platform/tauriCore.ts";
+    const { setInvokeRoute } = await import(/* @vite-ignore */ routeModule);
+    setInvokeRoute((cmd: string) => (cmd === "fs_read_image" ? Promise.resolve(url) : null));
+  });
+
   const editor = await openFromTree(page, "README.md");
   const content = editor.locator(".cm-content");
   await content.click();
   await page.keyboard.press("Meta+a");
-  await page.keyboard.insertText("# Order Service\n\nManage **Order** items and `Order` status.\n");
+  await page.keyboard.insertText(
+    [
+      "# Order Service",
+      "",
+      "Manage **Order** items and `Order` status.",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      "  A --> B",
+      "```",
+      "",
+      "![Diagram](./arch.excalidraw.svg)",
+    ].join("\n"),
+  );
 
   const preview = page.getByRole("document", { name: "Markdown preview" });
   await expect(preview).toContainText("Manage Order items");
@@ -209,6 +233,44 @@ test("Markdown preview highlights ⌘F matches and selected word occurrences", a
       })),
     )
     .toEqual({ current: ["Order"], other: ["Order", "Order"] });
+
+  const mermaidSvg = preview.locator(".mermaid-output svg");
+  const excalidrawImg = preview.locator('img[alt="Diagram"]');
+  await expect(mermaidSvg).toBeVisible();
+  await expect(excalidrawImg).toHaveAttribute("src", /^data:image\/svg\+xml/);
+
+  const widths = async () => ({
+    mermaid: (await mermaidSvg.boundingBox())!.width,
+    excalidraw: (await excalidrawImg.boundingBox())!.width,
+  });
+  const base = await widths();
+  expect(base.mermaid).toBeGreaterThan(50);
+  expect(base.excalidraw).toBeCloseTo(320, 0);
+
+  const runAction = (id: string, times = 1) =>
+    page.evaluate(
+      async ({ id, times }) => {
+        const actionsModule = "/src/platform/actions.ts";
+        const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+        for (let i = 0; i < times; i++) await executeAction(id);
+      },
+      { id, times },
+    );
+
+  await runAction("editor.increaseFontSize", 4);
+  const zoomedIn = await widths();
+  expect(zoomedIn.mermaid / base.mermaid).toBeCloseTo(17 / 13, 2);
+  expect(zoomedIn.excalidraw / base.excalidraw).toBeCloseTo(17 / 13, 2);
+
+  await runAction("editor.decreaseFontSize", 6);
+  const zoomedOut = await widths();
+  expect(zoomedOut.mermaid / base.mermaid).toBeCloseTo(11 / 13, 2);
+  expect(zoomedOut.excalidraw / base.excalidraw).toBeCloseTo(11 / 13, 2);
+
+  await runAction("editor.resetFontSize");
+  const reset = await widths();
+  expect(reset.mermaid).toBeCloseTo(base.mermaid, 1);
+  expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
 test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {

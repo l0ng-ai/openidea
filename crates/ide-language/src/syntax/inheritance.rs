@@ -43,7 +43,7 @@ fn extract(tree: &Tree, text: &str) -> Vec<ClassBases> {
         // Selection-range start of the class: its name identifier (`class Foo`
         // -> `Foo`), matching `outline.rs` and the gutter marker candidates.
         let range = idx.range(name_node.start_byte(), name_node.end_byte());
-        let bases = node.child_by_field_name("superclasses").map(|args| base_names(args, text)).unwrap_or_default();
+        let bases = class_base_names(node, text);
         out.push(ClassBases { name, line: range.start.line, col: range.start.col, bases });
     });
     out
@@ -65,6 +65,11 @@ fn visit(cursor: &mut tree_sitter::TreeCursor, f: &mut impl FnMut(Node)) {
             }
         }
     }
+}
+
+/// The bare base names a `class_definition` node writes (keyword arguments left out).
+pub(super) fn class_base_names(node: Node, text: &str) -> Vec<String> {
+    node.child_by_field_name("superclasses").map(|args| base_names(args, text)).unwrap_or_default()
 }
 
 fn base_names(args: Node, text: &str) -> Vec<String> {

@@ -260,6 +260,8 @@ pub struct DebuggerSettings {
     pub show_on_breakpoint: bool,
     pub focus_app_on_breakpoint: bool,
     pub hide_on_termination: bool,
+    /// A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front.
+    pub variables_on_breakpoint: bool,
     pub breakpoints_any_file: bool,
     /// While suspended, hovering the start of a line shows a Run to Cursor button.
     pub run_to_cursor_inlay: bool,
@@ -285,6 +287,7 @@ impl Default for DebuggerSettings {
             show_on_breakpoint: true,
             focus_app_on_breakpoint: false,
             hide_on_termination: false,
+            variables_on_breakpoint: true,
             breakpoints_any_file: false,
             run_to_cursor_inlay: true,
             inline_values: true,

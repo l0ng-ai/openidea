@@ -303,7 +303,8 @@ function currentTab(
 export async function closeRunTab(id: string, traces: readonly StackTraceTab[]) {
   if (traces.some((t) => t.id === id)) closeStackTrace(id);
   else if (!(await closeSessionTab(id))) return;
-  if (!useRun.getState().sessions.length && !useStackTraces.getState().tabs.length) toolWindowService().hide("run");
+  if (!useRun.getState().sessions.length && !useStackTraces.getState().tabs.length)
+    toolWindowService().hide("run", { removeFromStripe: true });
 }
 
 /** Session (and stack trace) tabs in the tool window header. */

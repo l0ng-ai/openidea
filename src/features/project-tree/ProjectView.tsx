@@ -566,9 +566,9 @@ export function ProjectView() {
       void revealRange(
         lead.path,
         { start: lead.member.selection_range.start },
-        { preview: o.previewTab, focus: false },
+        { preview: o.previewTab, focus: false, external: false },
       );
-    } else void openFile(lead.path, { preview: o.previewTab, focus: false });
+    } else void openFile(lead.path, { preview: o.previewTab, focus: false, external: false });
   }, []);
 
   const onActivate = useCallback((node: ProjectNode) => {

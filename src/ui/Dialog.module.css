@@ -196,9 +196,12 @@
   gap: 12px;
 }
 .buttons {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
   margin-left: auto;
 }
