@@ -10,7 +10,7 @@ import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";

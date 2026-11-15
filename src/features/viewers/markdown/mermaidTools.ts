@@ -3,7 +3,7 @@
  * the diagram's top-right. `./mermaid` attaches them after every drawing; they
  * are plain DOM, like the rest of the renderer, so both Markdown hosts get them.
  */
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { resolveTokenColor, toRgb } from "@/platform/cssColor";
 import { tx } from "@/platform/i18n";
 import { invokeLocal } from "@/platform/tauriCore";

@@ -7,7 +7,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import { highlightInto, languageForPath } from "@/editor/lsp/markdown";
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { executeAction } from "@/platform/actions";
 import { tx, useTx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
