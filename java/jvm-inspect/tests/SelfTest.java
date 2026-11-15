@@ -2,6 +2,8 @@ package ai.openidea.jvminspect;
 
 import ai.openidea.jvminspect.VmSelector.Target;
 import ai.openidea.jvminspect.VmSelector.VmInfo;
+import com.sun.jdi.ObjectCollectedException;
+import com.sun.jdi.ObjectReference;
 import com.sun.jdi.VMDisconnectedException;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
@@ -36,6 +38,7 @@ public final class SelfTest {
         silencer_skips_requests_java_debug_deleted();
         silencer_restore_fails_loudly_unless_disconnected();
         chain_start_by_javac_and_ecj_line_tables();
+        pin_retries_only_a_call_that_did_not_run();
         recorder_resource_is_a_java_8_class();
         recorder_counts_past_the_budget_and_never_throws();
         plan_parsed_from_gson_json();
@@ -188,6 +191,43 @@ public final class SelfTest {
         check(!deleted.isEnabled(), "a deleted request is not switched back on");
         check(kept.isEnabled(), "the request after the deleted one is still restored");
         pass("silencer_skips_requests_java_debug_deleted");
+    }
+
+    static void pin_retries_only_a_call_that_did_not_run() throws Exception {
+        int[] calls = {0};
+        ObjectReference pinned = object(false);
+        ObjectReference got = RecorderLoader.pin(() -> {
+            if (++calls[0] == 1) throw new ObjectCollectedException("an argument");
+            return pinned;
+        });
+        check(got == pinned && calls[0] == 2, "a call refused for a collected argument is made again");
+
+        calls[0] = 0;
+        try {
+            RecorderLoader.pin(() -> {
+                calls[0]++;
+                return object(true);
+            });
+            throw new AssertionError("an object collected after the call must not pass for pinned");
+        } catch (ObjectCollectedException expected) {
+            check(calls[0] == 1, "a call that ran is not made a second time");
+        }
+        pass("pin_retries_only_a_call_that_did_not_run");
+    }
+
+    /** An {@link ObjectReference} whose {@code disableCollection} throws when {@code collected}. */
+    private static ObjectReference object(boolean collected) {
+        return (ObjectReference) Proxy.newProxyInstance(SelfTest.class.getClassLoader(), new Class<?>[] {ObjectReference.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "disableCollection" -> {
+                        if (collected) throw new ObjectCollectedException();
+                        yield null;
+                    }
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "equals" -> proxy == args[0];
+                    case "toString" -> "object";
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
     }
 
     static void silencer_restore_fails_loudly_unless_disconnected() {

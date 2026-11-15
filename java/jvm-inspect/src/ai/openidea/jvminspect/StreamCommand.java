@@ -94,8 +94,10 @@ public final class StreamCommand implements IDelegateCommandHandler {
             return InspectCommand.error("timedOut", String.valueOf(e.getMessage()));
         } catch (VMDisconnectedException e) {
             return InspectCommand.error("vmNotFound", "the VM disconnected");
-        } catch (InvocationException | ClassNotLoadedException | InvalidTypeException | InvalidStackFrameException | InternalException e) {
-            // JDI failures the commands do not expect: still a reply the client can decode.
+        } catch (InvocationException | ClassNotLoadedException | InvalidTypeException | InvalidStackFrameException | InternalException
+                | IllegalStateException | ClassCastException e) {
+            // Failures the commands do not expect, from JDI or from a VM unlike the plan (a stream
+            // method missing, a value of another kind): still a reply the client can decode.
             return InspectCommand.error("failed", e.toString());
         }
     }

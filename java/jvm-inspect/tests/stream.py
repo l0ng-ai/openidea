@@ -94,6 +94,8 @@ public class Real {
             case "nested": nested(); break;
             case "hostile": hostile(); break;
             case "sr": stopRecording(Integer.parseInt(a[1])); break;
+            case "rel": releaseRunning(Integer.parseInt(a[1])); break;
+            case "inl": inLambda(); break;
             case "abort": abort(); break;
             case "exit": exit(); break;
             case "mid": mid(); break;
@@ -176,6 +178,9 @@ public class Real {
     /** Slow enough that "stop recording" lands while the terminal runs, with few records to collect. */
     static boolean evenSlowly(int i) {
         if (i % 10 == 0) LockSupport.parkNanos(1_000_000);
+        if (i == 25_000) {
+            sideEffects++; // @sr_late
+        }
         return i % 2 == 0;
     }
 
@@ -183,6 +188,20 @@ public class Real {
         long n = Stream.iterate(0, i -> i + 1).limit(size).filter(Real::evenSlowly).count(); // @sr
         System.out.println("SR " + n); // @sr_old
         System.out.println("SR next"); // @sr_new
+    }
+
+    static void releaseRunning(int size) {
+        long n = Stream.iterate(0, i -> i + 1).limit(size).filter(Real::evenSlowly).count(); // @rel
+        long m = nums.stream().filter(x -> x > 4).count(); // @rel_next
+        System.out.println("REL " + n + " " + m);
+    }
+
+    static void inLambda() {
+        Runnable r = () -> {
+            long k = nums.stream().filter(x -> x > 4).count(); // @in_lambda
+            System.out.println("INL " + k);
+        };
+        r.run();
     }
 
     static void abort() {
@@ -769,8 +788,9 @@ def real_run_stop_recording_and_edit_breakpoints():
         check('stop-recording: still running after 300 ms, records growing below the budget',
               first['state'] == 'running' and 0 < first['records'] < 50_000, first)
         kept = ok(stream('stop', dbg, traceId=trace))['records']
+        # sr_late runs inside the terminal's invoke about 2 s from now: hit there, it would hang the session.
         dbg.dap.request('setBreakpoints', {'source': {'path': source('Real')},
-                                           'breakpoints': [{'line': line('sr', 'Real')}, {'line': line('sr_new', 'Real')}]})
+                                           'breakpoints': [{'line': line(n, 'Real')} for n in ('sr', 'sr_new', 'sr_late')]})
         later = ok(stream('wait', dbg, traceId=trace, ms=300))
         check('stop-recording: records stop growing', later['records'] <= kept + 1 and later['dropped'] > first['dropped'], (kept, later))
         state = wait_until_done(dbg, trace, 120)
@@ -814,31 +834,103 @@ def real_run_abort():
         dbg.end()
 
 
+def next_breakpoint_stops(dbg, name, what):
+    """After a trace that ended without parking: the user's breakpoints are back on."""
+    try:
+        expect_stop(dbg, 20, what)
+        check(f'{name}: the next chain\'s breakpoint still stops', top(dbg)['line'] == line('H_next', 'Real'), top(dbg))
+    except TimeoutError:
+        check(f'{name}: the next chain\'s breakpoint still stops', False, 'no stop')
+    resume(dbg)
+
+
+PLAN_H = dict(steps=(spec('mapToInt', 1),), terminal=spec('sum'), step_kinds=('sync',))
+
+
 @case
 def real_run_cancel_before_terminal():
-    dbg = real('C')
+    dbg = real('H', 'H', 'H_next')
     try:
-        trace = ok(arm(dbg, at='C', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',)))['traceId']
+        trace = ok(arm(dbg, at='H', **PLAN_H))['traceId']
         check('cancel: stop while armed answers the records', ok(stream('stop', dbg, traceId=trace)) == {'records': 0})
         state = ok(stream('wait', dbg, traceId=trace, ms=0))
         check('cancel: stop before the terminal fails the trace', state['state'] == 'failed'
               and state.get('detail') == 'cancelled before the terminal ran', state)
-        trace = ok(arm(dbg, at='C', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',)))['traceId']
+        trace = ok(arm(dbg, at='H', **PLAN_H))['traceId']
         r = ok(stream('abort', dbg, traceId=trace))
         check('cancel: abort before the terminal is cancelled', r == {'state': 'cancelled'}, r)
         resume(dbg)
-        check('cancel: the program runs on untouched', output_line(dbg, 'C ') == 'C 0')
+        next_breakpoint_stops(dbg, 'cancel', 'H_next after cancel')
+        check('cancel: the program runs on untouched', output_line(dbg, 'H ') == 'H 76')
     finally:
         dbg.end()
 
 
 @case
 def real_run_missed_step():
-    dbg = real('C')
+    dbg = real('H', 'H', 'H_next')
     try:
-        trace, state, _ = run_until_parked(dbg, 'C', steps=(spec('map', 1),), terminal=spec('count'), step_kinds=('sync',), timeout=20)
+        trace, state, _ = run_until_parked(dbg, 'H', steps=(spec('map', 1),), terminal=spec('sum'), step_kinds=('sync',), timeout=20)
         check('missed: a chain unlike the plan fails', state['state'] == 'failed' and state.get('detail') == 'missed map', state)
-        check('missed: the program runs on untouched', output_line(dbg, 'C ') == 'C 0')
+        next_breakpoint_stops(dbg, 'missed', 'H_next after missed')
+        check('missed: the program runs on untouched', output_line(dbg, 'H ') == 'H 76')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_release_while_running():
+    dbg = real('rel', 'rel', 'rel_next', extra=(SR_SIZE,))
+    try:
+        trace = ok(arm(dbg, at='rel', root=spec('iterate', 2), steps=(spec('limit', 1), spec('filter', 1)),
+                       terminal=spec('count'), class_filters=('java.util.stream.*',)))['traceId']
+        resume(dbg)
+        first = ok(stream('wait', dbg, traceId=trace, ms=300))
+        check('release-running: the terminal runs', first['state'] == 'running' and first['records'] > 0, first)
+        ok(stream('release', dbg, traceId=trace))
+        state = wait_until_done(dbg, trace, 60)
+        check('release-running: wait after the terminal returned is no longer running',
+              state['state'] == 'failed' and state.get('detail') == 'released', state)
+        r = ok(stream('abort', dbg, traceId=trace))
+        check('release-running: abort leaves the thread alone', r == {'state': 'finished'}, r)
+        try:
+            expect_stop(dbg, 20, 'rel_next')
+            check('release-running: the next breakpoint stops', top(dbg)['line'] == line('rel_next', 'Real'), top(dbg))
+        except TimeoutError:
+            check('release-running: the next breakpoint stops', False, 'no stop')
+            return
+        trace, state, _ = run_until_parked(dbg, 'rel_next', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',))
+        check('release-running: a new arm on the VM parks', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('release-running', c, terminal='4')
+        resume(dbg)
+        check('release-running: program output', output_line(dbg, 'REL ') == f'REL {SR_SIZE // 2} 4')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_lambda_frame():
+    # Stopped inside the chain's own lambda, with the plan of that chain: its lines pass the line check.
+    dbg = real('H', 'H_in')
+    try:
+        frame = top(dbg)
+        check('lambda: stopped inside the chain\'s lambda', 'lambda$' in frame['name'], frame)
+        r = arm(dbg, at='H', **PLAN_H)
+        check('lambda: arm in a lambda of the chain is notAtChainStart', error(r) == 'notAtChainStart', r)
+        breakpoints(dbg)
+        resume(dbg)
+        check('lambda: program output', output_line(dbg, 'H ') == 'H 76')
+    finally:
+        dbg.end()
+    dbg = real('inl', 'in_lambda')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'in_lambda', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',))
+        check('lambda: a chain written inside a lambda body is traced', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('chain in a lambda', c, terminal='4')
+        resume(dbg)
+        check('chain in a lambda: program output', output_line(dbg, 'INL ') == 'INL 4')
     finally:
         dbg.end()
 

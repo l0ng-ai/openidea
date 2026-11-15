@@ -109,19 +109,25 @@ final class RecorderLoader {
     }
 
     /**
-     * {@code create} with collection disabled at once. JDI hands out a new object unprotected, and the
-     * strings it mirrors as arguments too, so either can be collected first; that is retried. JDWP
-     * checks the arguments before it invokes, so a retry never runs a call twice.
+     * {@code create} with collection disabled at once. A string JDI mirrors as an argument is
+     * unprotected and can be collected before the call; JDWP then refuses the call before it runs, so
+     * only that is retried. An object collected after {@code create} returned is not: the call ran, and
+     * a second {@code peek} on a linked stream throws in the program.
+     *
+     * @throws ObjectCollectedException when the object {@code create} returned was collected before it
+     *     could be pinned, or every attempt lost an argument
      */
     static ObjectReference pin(Create create) throws Exception {
         for (int attempt = 1; ; attempt++) {
+            ObjectReference object;
             try {
-                ObjectReference object = create.get();
-                object.disableCollection();
-                return object;
+                object = create.get();
             } catch (ObjectCollectedException e) {
                 if (attempt == PIN_ATTEMPTS) throw e;
+                continue;
             }
+            object.disableCollection();
+            return object;
         }
     }
 

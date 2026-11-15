@@ -66,7 +66,7 @@ Besides the codes above, a reply's `error` can be `noSession` (java-debug regist
 the VM), `notAtChainStart`, `busy` (the VM has a trace still running; `collect` before the trace
 parked), `noTrace` (the `traceId` is not the VM's current trace), `badArgument` (a `budget` out of
 range) or `failed` (`collect` on a failed trace, with its `detail`, or a JDI failure the commands do
-not expect). `collect` in the stop `arm` ran in is `stale`. Any other malformed argument is an
+not expect, or a VM unlike the plan). `collect` in the stop `arm` ran in is `stale`. Any other malformed argument is an
 ordinary `executeCommand` error.
 
 - `arm` needs the thread suspended by an event (a breakpoint or a step) and a VM that can force early
@@ -82,12 +82,16 @@ ordinary `executeCommand` error.
 - One trace per VM. A finished trace (parked or failed) is released by the next `arm` on that VM or
   when the VM disconnects; the client need not call `release`. Releasing a parked trace the client
   never stepped out of resumes the thread; releasing one whose terminal still runs takes effect when
-  the terminal returns, and until then the VM's next `arm` is `busy`. After the VM disconnected,
+  the terminal returns, and until then the VM's next `arm` is `busy`. The program then runs on with
+  the terminal's outcome and the trace is `failed` (`released`), so a later `abort` is `finished` and
+  the next `arm` replaces it. After the VM disconnected,
   `wait` still answers the trace's last state.
 - `arm` refuses a chain that has started (`notAtChainStart`): the stop must be on or after the
   statement's first line with no code of those lines before it. javac puts a statement's first
   instruction on its first line; ECJ, which JDT LS builds with, gives a head like
-  `List<String> out =` no code, and a head like `n =` only the store after the chain. A `local` root
+  `List<String> out =` no code, and a head like `n =` only the store after the chain. A stop inside a
+  lambda (a synthetic method, or one named `lambda$…`) is refused too: a line breakpoint on a one-line
+  chain stops in its lambdas as well. A `local` root
   must be declared as a `Stream`, `IntStream`, `LongStream` or `DoubleStream` (`unsupported`
   otherwise); `arm` replaces it by `local.peek(recorder)`.
 - After the client continues the thread, each build-phase `MethodExit` of the chain's next op is held
@@ -102,7 +106,11 @@ ordinary `executeCommand` error.
   interpreter), the bundle runs the terminal once by `invokeMethod`, with the JDI timeout raised, and
   forces its result as the entered frame's return, or throws its exception there. The thread stays
   suspended (`parked`) until the client's DAP `stepOut`. Breakpoints java-debug created since `arm`
-  are silenced too, right before the invoke; all are switched back on when it returns.
+  are silenced too, right before the invoke, and again at each 500 ms check of a `wait` while it
+  runs; all are switched back on when it returns. A breakpoint added between two checks can still be
+  hit inside the invoke.
+  The outcome is forced into the frame before it is pinned, so the pending return keeps it reachable;
+  should it be collected before that, the program gets the cancel exception and the trace fails.
 - `wait` returns as soon as the trace leaves `running`, or after `ms`, at most 30 000. While the
   terminal runs it also checks every 500 ms whether the VM began to shut down
   (`jdk.internal.misc.VM.initLevel`): `System.exit` in a lambda makes the VM wait forever to report
@@ -118,8 +126,8 @@ ordinary `executeCommand` error.
   is released. `skippedBreakpoints` counts the breakpoint requests silenced (exception breakpoints
   left out: JDI cannot tell whether a silenced request would have been hit).
 - Timing, the 1M-element chain of `tests/stream.py` (`real_run_d_million`, Apple M4 Pro, JDT LS
-  1.63): 64–96 ms from DAP `continue` to `parked` on JDK 11, 17, 21, 23 and 25; DAP `stepOut` plus
-  `collect` of its 50 000 records 4.6–4.9 s.
+  1.63): 69–119 ms from DAP `continue` to `parked` on JDK 11, 17, 21, 23 and 25; DAP `stepOut` plus
+  `collect` of its 50 000 records 4.3–4.7 s.
 
 `classes` and `referrers` can take seconds on a large heap. Eclipse JDI fails a request after
 `getRequestTimeout()` (3000 ms by default), and the timeout is per VM: java-debug's own requests
@@ -179,7 +187,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-bd0802e3704b99448ce41e776747625c151ad838956cad52aef1d3b7851fd49a  openidea-jvm-inspect.jar
+b33531c94516a4bf0373904c4b7a63b493e3308ad45080712c4e0b5b88b05e83  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.

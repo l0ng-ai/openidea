@@ -131,8 +131,13 @@ final class RealRunTrace {
     /** The log's counts last read, answered once the VM is gone. */
     private volatile int size;
     private volatile int dropped;
-    /** The worker is inside the terminal's invoke, which may never return. */
+    /** The worker is inside the terminal's invoke, which may never return. Cleared under {@link #silenceLock}. */
     private volatile boolean invoking;
+    /**
+     * Orders {@link #resilence} before the restore that follows the invoke: a silence that lands after
+     * it would leave the user's breakpoints off for good. Held across JDI calls, unlike {@code stateLock}.
+     */
+    private final Object silenceLock = new Object();
 
     // Worker.
     private final List<EventRequest> requests = new ArrayList<>();
@@ -188,6 +193,13 @@ final class RealRunTrace {
         Location at = frame.location();
         userMethod = at.method();
         depth = thread.frameCount();
+        // A stop inside one of the chain's own lambdas passes the line check (the lambda's code starts
+        // on a chain line), but the root call is made by the frame running the chain, never from here.
+        // A chain written inside a lambda body has its lines in the lambda alone, and stays traceable.
+        if (isLambda(userMethod) && chainRunsBelow(at.lineNumber())) {
+            throw new Failure("notAtChainStart", "line " + at.lineNumber() + " is inside " + userMethod.name()
+                    + ", a lambda of the chain on line " + (plan.firstLine() + 1) + ", which a caller runs");
+        }
         if (!atChainStart(new LineEntry(at.lineNumber(), at.codeIndex()), plan.firstLine(), lineTable(userMethod))) {
             throw new Failure("notAtChainStart", "line " + at.lineNumber() + ", code index " + at.codeIndex()
                     + ", is not where the statement on line " + (plan.firstLine() + 1) + " starts");
@@ -247,6 +259,28 @@ final class RealRunTrace {
             if (e.line() - 1 >= firstLine && e.codeIndex() < stop.codeIndex()) return false;
         }
         return true;
+    }
+
+    /** javac names a lambda's body {@code lambda$m$0}, ECJ {@code lambda$0}; both mark it synthetic. */
+    private static boolean isLambda(Method method) {
+        return method.isSynthetic() || method.name().startsWith("lambda$");
+    }
+
+    /**
+     * Whether a deeper frame of the stopped method's class has code on the chain's lines up to the
+     * stop's (1-based {@code stopLine}): that frame runs the chain, and the stop is in a lambda of it.
+     */
+    private boolean chainRunsBelow(int stopLine) throws Exception {
+        ReferenceType type = userMethod.declaringType();
+        List<StackFrame> frames = thread.frames();
+        for (StackFrame f : frames.subList(1, frames.size())) {
+            Method m = f.location().method();
+            if (!m.declaringType().equals(type) || m.isNative()) continue;
+            for (LineEntry e : lineTable(m)) {
+                if (e.line() - 1 >= plan.firstLine() && e.line() <= stopLine) return true;
+            }
+        }
+        return false;
     }
 
     private static List<LineEntry> lineTable(Method method) throws Failure {
@@ -419,10 +453,13 @@ final class RealRunTrace {
             outcome = e.exception();
             kind = "threw";
         } finally {
-            invoking = false;
+            synchronized (silenceLock) {
+                invoking = false;
+            }
         }
         try {
-            if (outcome instanceof ObjectReference object) keep(pinned(object));
+            // First: the pending return or exception holds the outcome from then on, so the pin below
+            // cannot lose it to a collection. Before it, nothing keeps the object the invoke returned.
             if (kind.equals("threw")) {
                 thread.stop((ObjectReference) outcome);
             } else {
@@ -436,16 +473,27 @@ final class RealRunTrace {
                 errors.add("cancelling the terminal: " + again);
             }
             restoreSilencers();
-            if (fail("the terminal ran but its outcome could not be returned: " + e)) teardown();
+            String why = e instanceof ObjectCollectedException
+                    ? "the terminal ran, but what it " + (kind.equals("threw") ? "threw" : "returned")
+                            + " was garbage collected before it could be handed back: the program got the cancel exception instead"
+                    : "the terminal ran but its outcome could not be returned: " + e;
+            if (fail(why)) teardown();
             return false;
         }
+        if (outcome instanceof ObjectReference object) keep(pinned(object));
         restoreSilencers();
         boolean hold;
         synchronized (stateLock) {
             terminalKind = kind;
             terminalValue = outcome;
             hold = !released && state == State.TERMINAL_RUNNING;
-            if (hold) state = State.PARKED;
+            if (hold) {
+                state = State.PARKED;
+            } else if (state == State.TERMINAL_RUNNING) {
+                // Released while it ran: no client collects it, and a new arm on the VM must not be busy.
+                state = State.FAILED;
+                detail = "released";
+            }
             stateLock.notifyAll();
         }
         closeSubscription();
@@ -561,11 +609,31 @@ final class RealRunTrace {
 
     /** A request the user removed meanwhile stays off: java-debug made a new one if needed. */
     private void restoreSilencers() {
-        for (Silencer s : silencers) {
+        synchronized (silenceLock) {
+            for (Silencer s : silencers) {
+                try {
+                    s.restore();
+                } catch (RuntimeException e) {
+                    errors.add("switching breakpoints back on: " + e);
+                }
+            }
+        }
+    }
+
+    /**
+     * While the terminal's invoke runs: switches off breakpoints the user added since the last silence,
+     * since one hit inside the invoke hangs the session.
+     */
+    private void resilence() {
+        synchronized (silenceLock) {
+            if (!invoking || state() != State.TERMINAL_RUNNING) return;
             try {
-                s.restore();
+                Silencer s = Silencer.silence(vm.eventRequestManager());
+                if (s.size() > 0) silencers.add(s);
+            } catch (VMDisconnectedException e) {
+                // nothing left to silence
             } catch (RuntimeException e) {
-                errors.add("switching breakpoints back on: " + e);
+                errors.add("switching new breakpoints off: " + e);
             }
         }
     }
@@ -651,14 +719,21 @@ final class RealRunTrace {
     /**
      * {@code {state, records, dropped, elapsedMs, detail?}} once the trace leaves the running states or
      * after {@code ms}. While the terminal runs it also checks, every {@value #LIVENESS_POLL_MS} ms,
-     * whether the VM began to exit.
+     * whether the VM began to exit, and switches off breakpoints added meanwhile: the client keeps a
+     * wait open while the terminal runs, so this is the only thread that can.
      */
     Map<String, Object> await(long ms) throws InterruptedException {
         State seen;
         String why;
         long end = System.nanoTime() + ms * 1_000_000;
         while (true) {
-            if (state() == State.TERMINAL_RUNNING && exiting() && fail(EXITED)) abandonTerminal();
+            if (state() == State.TERMINAL_RUNNING) {
+                if (exiting()) {
+                    if (fail(EXITED)) abandonTerminal();
+                } else {
+                    resilence();
+                }
+            }
             long left = (end - System.nanoTime()) / 1_000_000;
             synchronized (stateLock) {
                 if (state.wire.equals("running") && left > 0) stateLock.wait(Math.min(left, LIVENESS_POLL_MS));
