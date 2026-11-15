@@ -176,7 +176,7 @@ class RunMarker extends GutterMarker {
 }
 
 /** Settings › Editor › General › Gutter Icons › Run icons (on with the gutter icons). */
-function runIconsShown(): boolean {
+export function runIconsShown(): boolean {
   const prefs = editorPrefs();
   return prefs.showGutterIcons && !prefs.gutterIconsDisabled.includes("run");
 }

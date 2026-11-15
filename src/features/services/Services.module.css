@@ -143,14 +143,6 @@
   font-size: var(--fs-small);
 }
 /* Dockerfile / Compose gutter run icons */
-.gutter {
-  width: 14px;
-}
-.gutter :global(.cm-gutterElement) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 .marker {
   padding: 0;
   border: 0;

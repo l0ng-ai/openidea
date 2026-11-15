@@ -4,14 +4,15 @@
  * for the script, or a temporary one when it has none.
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
-import { emptyGutterSpacer, gutterSpacer, type EditorDocContext } from "@/editor/api";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { gutterIconMarkup, showContextMenu, type MenuItem } from "@/ui";
+import { runIconsShown } from "./runGutter";
 import { loadConfigs, useRun } from "./store";
 import styles from "./Run.module.css";
 
@@ -334,8 +335,6 @@ class ScriptMarker extends GutterMarker {
   }
 }
 
-const scriptSpacer = gutterSpacer(styles.runMarker ?? "");
-
 const DEBOUNCE = 300;
 
 export function npmGutter(ctx: EditorDocContext): Extension {
@@ -389,24 +388,22 @@ export function entryGutter(
   return [
     entriesField,
     detector,
-    gutter({
-      // Shares the run gutter's class so "Show run icons" hides these too.
-      class: `${styles.runGutter} cm-openidea-gutter-run`,
+    // In the shared icon area with the other run icons; hidden with them.
+    iconAreaSource.of({
+      order: 10,
       markers: (view) =>
-        RangeSet.of(
-          view.state.field(entriesField).map((e) => new ScriptMarker(e, path, menu).range(e.pos)),
-          true,
-        ),
-      // Reserve width only while the file has scripts, like the run gutter.
-      initialSpacer: () => emptyGutterSpacer,
-      updateSpacer: (_spacer, update) => (update.state.field(entriesField).length ? scriptSpacer : emptyGutterSpacer),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const entry = view.state.field(entriesField).find((e) => e.pos === block.from);
-          if (!entry || (event as MouseEvent).button !== 0) return false;
-          event.preventDefault();
-          return true;
-        },
+        runIconsShown()
+          ? RangeSet.of(
+              view.state.field(entriesField).map((e) => new ScriptMarker(e, path, menu).range(e.pos)),
+              true,
+            )
+          : RangeSet.empty,
+      reserve: (state) => runIconsShown() && state.field(entriesField).length > 0,
+      // The marker's own click opens the menu; keep the press from moving the caret.
+      mousedown: (_view, _block, event) => {
+        if (event.button !== 0 || !(event.target as HTMLElement).closest?.(`.${styles.runMarker}`)) return false;
+        event.preventDefault();
+        return true;
       },
     }),
   ];
