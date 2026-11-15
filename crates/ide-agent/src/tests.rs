@@ -281,6 +281,23 @@ impl Handler for FakeAgent {
                     self.say(&session, &format!("escalation chose {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
                 }
+                if text == "form" {
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "elicitation/create",
+                            json!({"sessionId": session, "mode": "form", "message": "How should I refactor?",
+                                "requestedSchema": {"type": "object", "required": ["strategy"], "properties": {
+                                    "strategy": {"type": "string", "title": "Strategy",
+                                        "oneOf": [{"const": "safe", "title": "Conservative"},
+                                                  {"const": "bold", "title": "Aggressive"}]},
+                                    "tests": {"type": "boolean", "title": "Run tests"}}}}),
+                            None,
+                        ))
+                        .unwrap();
+                    self.say(&session, &format!("form {answer}"));
+                    return Ok(json!({ "stopReason": "end_turn" }));
+                }
                 if text == "ask" {
                     let peer = self.latest();
                     let answer: Value = tokio::runtime::Handle::current()
@@ -1982,6 +1999,58 @@ async fn bypass_approvals_keeps_both_question_dialects_pending_but_allows_permis
             assert!(entries.iter().any(|entry| matches!(entry, AgentEntry::Agent { text } if text == "chose yes")));
             mgr.shutdown();
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_form_is_answered_declined_or_cancelled_even_when_approvals_are_bypassed() {
+    let accept = json!({"strategy": ["bold"], "tests": ["true"]}).to_string();
+    for (reply, said, chosen) in [
+        (
+            Some(accept.as_str()),
+            r#"form {"action":"accept","content":{"strategy":"bold","tests":true}}"#,
+            "Strategy: Aggressive; Run tests: yes",
+        ),
+        (Some("decline"), r#"form {"action":"decline"}"#, "Decline"),
+        (None, r#"form {"action":"cancel"}"#, "Cancelled"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("form"),
+                provider: "cursor".into(),
+                config: vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+        let (id, form) = mgr
+            .entries(&task.id, None)
+            .unwrap()
+            .into_iter()
+            .find_map(|entry| match entry {
+                AgentEntry::Permission { id, title, form: Some(form), chosen: None, .. }
+                    if title == "How should I refactor?" =>
+                {
+                    Some((id, form))
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(form.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["strategy", "tests"]);
+        mgr.respond(&task.id, id, reply.map(str::to_owned)).unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        let entries = mgr.entries(&task.id, None).unwrap();
+        assert!(entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == said)), "{entries:?}");
+        assert!(
+            entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == chosen)),
+            "{entries:?}"
+        );
+        mgr.shutdown();
     }
 }
 

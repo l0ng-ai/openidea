@@ -11,6 +11,7 @@ mod acp;
 mod catalogs;
 mod config;
 mod conversation;
+mod elicitation;
 mod external;
 pub mod mcp;
 mod model;
@@ -2366,12 +2367,7 @@ impl Task {
         // first question says what it wants, as the Claude Code adapter titles its own.
         let title =
             if by_index { questions.first().map(|question| question.question.clone()).unwrap_or(title) } else { title };
-        // A subagent's request is answered in the task's conversation, named after the subagent.
-        let session = params.get("sessionId").and_then(Value::as_str);
-        let title = match session.and_then(|s| self.state.lock().conversation.label(s)) {
-            Some(label) => format!("{label}: {title}"),
-            None => title,
-        };
+        let title = self.labelled(params, title);
         let options: Vec<AgentPermissionOption> = params
             .get("options")
             .and_then(Value::as_array)
@@ -2403,6 +2399,7 @@ impl Task {
                 command: None,
                 options,
                 questions: Vec::new(),
+                form: None,
                 chosen: Some("Denied: side conversations are read-only".to_owned()),
             });
             return match reject {
@@ -2429,6 +2426,7 @@ impl Task {
                         command: shown.clone(),
                         options,
                         questions: Vec::new(),
+                        form: None,
                         chosen: Some(format!("Blocked by policy ({pattern})")),
                     });
                     return match reject {
@@ -2449,6 +2447,7 @@ impl Task {
                             command: shown.clone(),
                             options,
                             questions: Vec::new(),
+                            form: None,
                             chosen: Some(format!("{} (whitelisted)", allow.name)),
                         });
                         return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
@@ -2464,6 +2463,7 @@ impl Task {
             command: shown,
             options: options.clone(),
             questions,
+            form: None,
             chosen: None,
         });
         self.permissions.lock().insert(id, tx);
@@ -2490,17 +2490,7 @@ impl Task {
                 .and_then(|reply| options.iter().find(|option| &option.id == reply))
                 .map_or_else(|| "Cancelled".to_owned(), |option| option.name.clone()),
         };
-        {
-            let mut s = self.state.lock();
-            if let Some(AgentEntry::Permission { chosen, .. }) = s.conversation.main.entries.get_mut(entry) {
-                *chosen = Some(name);
-            }
-        }
-        self.mark_dirty([(None, entry)]);
-        let still_asking = !self.permissions.lock().is_empty();
-        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
-            self.set_status(AgentStatus::Running, None);
-        }
+        self.settle(entry, name);
         // An agent that answers by index reads the answers beside the outcome, keyed by
         // question index, with its Submit option chosen; anything less cancels the request.
         if by_index {
@@ -2529,6 +2519,54 @@ impl Task {
         match answer {
             Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option } }),
             None => json!({ "outcome": { "outcome": "cancelled" } }),
+        }
+    }
+
+    /// A request from a subagent is answered in the task's conversation, named after the subagent.
+    fn labelled(&self, params: &Value, title: String) -> String {
+        let session = params.get("sessionId").and_then(Value::as_str);
+        match session.and_then(|s| self.state.lock().conversation.label(s)) {
+            Some(label) => format!("{label}: {title}"),
+            None => title,
+        }
+    }
+
+    /// An agent's form (`elicitation/create`): asked in the conversation like a permission
+    /// request, and answered with its values, declined or cancelled. Blocks like `ask_permission`.
+    fn elicit(self: &Arc<Self>, params: &Value) -> Result<Value, String> {
+        let form = elicitation::form_of(params)?;
+        let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
+        let message = params.get("message").and_then(Value::as_str).unwrap_or_default().trim().to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let entry = self.push_entry(AgentEntry::Permission {
+            id,
+            title: self.labelled(params, message),
+            command: None,
+            options: elicitation::options(),
+            questions: Vec::new(),
+            form: Some(form.clone()),
+            chosen: None,
+        });
+        self.permissions.lock().insert(id, tx);
+        self.set_status(AgentStatus::NeedsInput, None);
+        let reply = rx.recv().ok().flatten();
+        let (response, chosen) = elicitation::answer(&form, reply.as_deref());
+        self.settle(entry, chosen);
+        Ok(response)
+    }
+
+    /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
+    fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
+        {
+            let mut s = self.state.lock();
+            if let Some(AgentEntry::Permission { chosen: answer, .. }) = s.conversation.main.entries.get_mut(entry) {
+                *answer = Some(chosen);
+            }
+        }
+        self.mark_dirty([(None, entry)]);
+        let still_asking = !self.permissions.lock().is_empty();
+        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
+            self.set_status(AgentStatus::Running, None);
         }
     }
 
@@ -2596,6 +2634,7 @@ impl Handler for Client {
         let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned()))?;
         match method {
             "session/request_permission" => Ok(task.ask_permission(&params)),
+            "elicitation/create" => task.elicit(&params).map_err(|e| (codes::INVALID_PARAMS, e)),
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {method}"))),
         }
     }

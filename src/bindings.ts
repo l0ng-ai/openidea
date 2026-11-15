@@ -2056,6 +2056,11 @@ command?: string | null; options: AgentPermissionOption[];
  *  of question to answer instead of an option.
  */
 questions?: AgentQuestion[]; 
+/**
+ *  Set when the agent asks for a form (ACP elicitation); answered with a JSON object of
+ *  field name to its values, `decline`, or nothing to cancel.
+ */
+form?: AgentForm | null; 
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
@@ -2078,6 +2083,39 @@ export type AgentEvent =
 { type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
 { type: "providers" };
+
+/**  A form the agent asks the user to fill in (ACP `elicitation/create`, form mode). */
+export type AgentForm = {
+	fields: AgentFormField[],
+};
+
+export type AgentFormField = {
+	/**  The property name the answer is keyed by. */
+	name: string,
+	title: string,
+	description?: string,
+	required?: boolean,
+	kind: AgentFormFieldKind,
+	/**  The choices of a `choice` or `choices` field. */
+	options?: AgentFormOption[],
+	/**  The initial answer: option values, a text, a number, or `true` / `false`. */
+	default?: string[],
+	/**  Bounds: the number of a `number` / `integer`, the length of a `text`, the count of `choices`. */
+	min?: number | null,
+	max?: number | null,
+};
+
+export type AgentFormFieldKind = "text" | "number" | "integer" | "boolean" | 
+/**  One of `options`. */
+"choice" | 
+/**  Any of `options`. */
+"choices";
+
+export type AgentFormOption = {
+	value: string,
+	label: string,
+	description?: string,
+};
 
 export type AgentImage = {
 	mimeType: string,

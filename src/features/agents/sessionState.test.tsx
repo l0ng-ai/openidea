@@ -1460,6 +1460,68 @@ describe("a pending AskUserQuestion", () => {
   });
 });
 
+describe("a pending agent form", () => {
+  const form = {
+    type: "permission" as const,
+    id: 12,
+    title: "How should I refactor?",
+    chosen: null,
+    options: [{ id: "decline", name: "Decline", kind: "reject_once" }],
+    form: {
+      fields: [
+        {
+          name: "strategy",
+          title: "Strategy",
+          required: true,
+          kind: "choice" as const,
+          options: [
+            { value: "safe", label: "Conservative", description: "Small steps" },
+            { value: "bold", label: "Aggressive" },
+          ],
+        },
+        { name: "count", title: "Files", kind: "integer" as const, min: 1, max: 5 },
+        { name: "tests", title: "Run tests", kind: "boolean" as const },
+      ],
+    },
+  };
+
+  const open = async () => {
+    backend.entries.set("A", [form]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    return screen.findByRole("form", { name: "How should I refactor?" });
+  };
+
+  it("sends the values once every required field is valid", async () => {
+    const card = await open();
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("radio", { name: /^Aggressive/ }));
+    expect(submit).toHaveProperty("disabled", false);
+    const files = within(card).getByRole("spinbutton", { name: /^Files/ });
+    fireEvent.change(files, { target: { value: "9" } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(files, { target: { value: "3" } });
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Run tests/ }));
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 12, JSON.stringify({ strategy: ["bold"], count: ["3"], tests: ["true"] })],
+      ]),
+    );
+  });
+
+  it("declines with Decline and cancels with Escape", async () => {
+    const card = await open();
+    fireEvent.click(within(card).getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, "decline"]]));
+    backend.answers = [];
+    fireEvent.keyDown(within(card).getByRole("radio", { name: /^Conservative/ }), { key: "Escape" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, null]]));
+  });
+});
+
 describe("a pending permission request above the composer", () => {
   const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
   const options = [

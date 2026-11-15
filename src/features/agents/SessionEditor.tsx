@@ -97,7 +97,9 @@ import {
   type Activity,
 } from "./workingStatus";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
+import { FormCard } from "./FormCard";
 import {
+  asksInCard,
   commandPrefix,
   permissionDetails,
   permissionOption,
@@ -2305,9 +2307,7 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
             ) : (
               <span className={styles.permissionDetail}>{shortTitle(task, detail)}</span>
             )}
-            {!entry.questions?.length && (
-              <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
-            )}
+            {!asksInCard(entry) && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
           </>
         )}
       </div>
@@ -2332,12 +2332,13 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
+/** An open `AskUserQuestion` request or agent form, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
-      candidate.type === "permission" && !candidate.chosen && !!candidate.questions?.length,
+      candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
   );
+  if (entry?.form) return <FormCard key={entry.id} task={task} entry={entry} form={entry.form} />;
   return entry?.questions ? (
     <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} />
   ) : null;
@@ -2629,9 +2630,7 @@ function QuestionForm({
  */
 function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
-  const pending = entries?.find(
-    (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
-  );
+  const pending = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen && !asksInCard(e));
   const plan = entries?.findLast((e): e is Extract<AgentEntry, { type: "plan" }> => e.type === "plan");
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
@@ -2705,7 +2704,7 @@ function WorkingRow({
     );
   }
   if (task.status !== "running" && task.status !== "starting") return null;
-  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !asksInCard(e))) return null;
   const userAt = entries?.findLastIndex((e) => e.type === "user") ?? -1;
   const lastUser = userAt >= 0 ? (entries![userAt] as UserEntry) : undefined;
   return (
