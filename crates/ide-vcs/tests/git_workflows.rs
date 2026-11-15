@@ -777,12 +777,18 @@ fn fetch_prunes_deleted_remote_branches() {
     let (fx, bare) = Fixture::with_origin();
     fx.git(&["push", "-q", "origin", "main:gone"]);
     fx.git(&["fetch", "-q"]);
+    fx.git(&["checkout", "-q", "-b", "feature", "--track", "origin/gone"]);
     let repo = fx.repo();
+    let upstream = || repo.branches().unwrap().into_iter().find(|b| b.name == "feature").and_then(|b| b.upstream);
     assert!(repo.branches().unwrap().iter().any(|b| b.name == "origin/gone"));
+    assert_eq!(upstream().as_deref(), Some("origin/gone"));
     git_in(&bare, &["branch", "-D", "gone"]);
     let (cancel, out) = quiet();
     repo.fetch(&cancel, &out).unwrap();
     assert!(!repo.branches().unwrap().iter().any(|b| b.name == "origin/gone"));
+    // The branch that tracked it no longer counts as tracking, as in IDEA.
+    assert_eq!(upstream(), None);
+    assert_eq!(repo.branch_info().unwrap().upstream, None);
 }
 
 #[test]
