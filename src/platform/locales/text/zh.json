@@ -5201,6 +5201,7 @@
   "partial": "部分",
   "editable": "可编辑",
   "on {date}": "于 {date}",
+  "moved from {oldPath}": "已从 {oldPath} 移动",
   "renamed from {name}": "已从 {name} 重命名",
   "Label '{label}'": "标签“{label}”",
   "{n} file recorded before it": "在此之前记录了 {n} 个文件",

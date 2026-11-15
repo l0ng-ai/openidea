@@ -112,6 +112,26 @@ export function dirName(path: string): string {
   return i < 0 ? "" : p.slice(0, i);
 }
 
+/**
+ * Changed-file label for a rename, in IDEA's wording: `renamed from old.txt` when the
+ * file stays in its directory, `moved from ../old/old.txt` when it changed directories
+ * — the old path relative to the file's new directory, so the move is visible.
+ */
+export function renameFrom(newPath: string, oldPath: string): string {
+  const dir = dirName(newPath);
+  if (dirName(oldPath) === dir) return tx`renamed from ${baseName(oldPath)}`;
+  return tx`moved from ${relativePath(dir, oldPath)}`;
+}
+
+/** `path` seen from the directory `from`, with `../` segments to climb out of it. */
+function relativePath(from: string, path: string): string {
+  const source = from ? from.split("/") : [];
+  const target = path.split("/");
+  let common = 0;
+  while (common < source.length && common < target.length - 1 && source[common] === target[common]) common++;
+  return "../".repeat(source.length - common) + target.slice(common).join("/");
+}
+
 /** List timestamp per Settings › System Settings › Date Formats. */
 export function formatTime(ms: number | null | undefined, now = Date.now()): string {
   return ms ? formatTimestamp(ms, now) : "";
