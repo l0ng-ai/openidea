@@ -116,6 +116,8 @@ export interface RunSettingsValid {
   confirmRerun: boolean;
   confirmTerminate: boolean;
   showOnStart: boolean;
+  /** New Run/Debug tabs start pinned, so a later run doesn't take their place (IDEA's advanced setting). */
+  pinTabs: boolean;
   terminationTimeoutMs: number;
 }
 
@@ -304,7 +306,14 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
     debugServerPage: false,
     python: { attachSubprocess: true, gevent: false },
   },
-  run: { defaultTarget: "", confirmRerun: true, confirmTerminate: true, showOnStart: true, terminationTimeoutMs: 3000 },
+  run: {
+    defaultTarget: "",
+    confirmRerun: true,
+    confirmTerminate: true,
+    showOnStart: true,
+    pinTabs: false,
+    terminationTimeoutMs: 3000,
+  },
   terminal: {
     startDirectory: "",
     env: {},
@@ -477,6 +486,7 @@ export function validateRun(raw: unknown): RunSettingsValid {
     confirmRerun: bool(v.confirmRerun, d.confirmRerun),
     confirmTerminate: bool(v.confirmTerminate, d.confirmTerminate),
     showOnStart: bool(v.showOnStart, d.showOnStart),
+    pinTabs: bool(v.pinTabs, d.pinTabs),
     terminationTimeoutMs: num(
       v.terminationTimeoutMs,
       d.terminationTimeoutMs,

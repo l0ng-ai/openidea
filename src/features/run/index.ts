@@ -43,6 +43,7 @@ import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
 import { registerGoActions } from "./goActions";
+import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
@@ -403,6 +404,7 @@ export function activate(): () => void {
     registerBuiltinTypes(),
     registerRunConfigType(junitType),
     registerGoActions(),
+    registerRunTabActions(),
     registerComposerInstall(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({

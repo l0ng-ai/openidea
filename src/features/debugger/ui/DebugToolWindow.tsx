@@ -41,6 +41,7 @@ import {
 } from "../state";
 import { remoteWaitingNote } from "../remote";
 import { sessionTabs } from "./sessionTabs";
+import { debugTabMenu } from "../tabActions";
 import { stopNote } from "../js/eventBreakpoints";
 import { NetworkView } from "../js/NetworkView";
 import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
@@ -138,13 +139,15 @@ export function DebugTabs() {
   const list = Object.values(sessions);
   if (!list.length) return null;
   const tabs = sessionTabs(list);
-  const items: TabItem[] = tabs.map(({ session: s, child }) => ({
+  const ownerOf = (id: string) => tabs.find((t) => t.session.id === +id)?.owner ?? +id;
+  const items: TabItem[] = tabs.map(({ session: s, child, owner }) => ({
     id: String(s.id),
     label: child ? tx`${s.name} (child)` : s.name,
     text: s.name,
     icon: "debug",
     italic: s.status === "terminated",
     closable: true,
+    pinned: !child && !!sessions[owner]?.pinned,
     tooltip: statusText(s),
   }));
   // A browser launch's own session has no tab: its page's tab stands for it.
@@ -157,7 +160,12 @@ export function DebugTabs() {
       items={items}
       activeId={shown ? String(shown.session.id) : null}
       onSelect={(id) => selectSession(+id)}
-      onClose={(id) => void closeSessionTab(tabs.find((t) => t.session.id === +id)?.owner ?? +id)}
+      onClose={(id) => void closeSessionTab(ownerOf(id))}
+      onTogglePin={(id) => void executeAction("debug.pinTab", ownerOf(id))}
+      onContextMenu={(id, e) => {
+        e.preventDefault();
+        showContextMenu(e, debugTabMenu(ownerOf(id)), { owner: e.currentTarget });
+      }}
       panelIdPrefix="openidea-debug"
     />
   );

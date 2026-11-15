@@ -327,6 +327,8 @@ pub struct RunSettings {
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
     pub show_on_start: bool,
+    /// New Run/Debug tabs start pinned: a later run doesn't take their place once finished.
+    pub pin_tabs: bool,
     /// Grace period between interrupt and kill when stopping a process.
     pub termination_timeout_ms: u32,
 }
@@ -338,6 +340,7 @@ impl Default for RunSettings {
             confirm_rerun: true,
             confirm_terminate: true,
             show_on_start: true,
+            pin_tabs: false,
             termination_timeout_ms: 3000,
         }
     }

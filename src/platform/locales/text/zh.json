@@ -1,4 +1,6 @@
 {
+  "Make configurations pinned by default": "默认固定运行/调试标签页",
+  "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "固定的标签页结束后会保留：之后的运行会打开新标签页，而不是替换它。",
   "Cannot paste the image into {name}": "无法将图片粘贴为 {name}",
   "Worktree Conflict": "工作树冲突",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "分支 '{branch}' 已在以下位置的工作树中签出：\n{path}",

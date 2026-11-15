@@ -9463,6 +9463,8 @@ export type RunSettings = {
 	/**  Ask before closing a Run tab whose process is still running. */
 	confirmTerminate?: boolean,
 	showOnStart?: boolean,
+	/**  New Run/Debug tabs start pinned: a later run doesn't take their place once finished. */
+	pinTabs?: boolean,
 	/**  Grace period between interrupt and kill when stopping a process. */
 	terminationTimeoutMs?: number,
 };

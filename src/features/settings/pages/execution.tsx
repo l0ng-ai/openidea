@@ -385,6 +385,12 @@ export const EXECUTION_PAGES: PageSpec[] = [
             label: "Show Run/Debug window when a process is started",
           },
           {
+            kind: "toggle",
+            key: "run.pinTabs",
+            label: "Make configurations pinned by default",
+            hint: "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.",
+          },
+          {
             kind: "number",
             key: "run.terminationTimeoutMs",
             label: "Time limit for Run/Debug process termination",

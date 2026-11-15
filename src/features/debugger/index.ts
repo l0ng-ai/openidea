@@ -18,6 +18,7 @@ import {
   useDebugRunSessions,
 } from "@/workbench/contributions";
 import { registerDebugActions } from "./actions";
+import { registerDebugTabActions } from "./tabActions";
 import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
@@ -72,6 +73,7 @@ export function activate(): () => void {
   const disposers = [
     () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
     registerDebugActions(),
+    registerDebugTabActions(),
     // Remote JVM Debug, Go Remote, …: Run/Debug Configurations › Add New Configuration.
     ...REMOTE_TYPES.map(registerRunConfigType),
     registerRunConfigType(jsBrowserType),

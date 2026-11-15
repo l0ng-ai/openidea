@@ -1,4 +1,6 @@
 {
+  "Make configurations pinned by default": "Make configurations pinned by default",
+  "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.",
   "Cannot paste the image into {name}": "Cannot paste the image into {name}",
   "Worktree Conflict": "Worktree Conflict",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "Branch '{branch}' is already checked out in a worktree at:\n{path}",
