@@ -27,7 +27,7 @@ import {
   Chunk,
 } from "@codemirror/merge";
 import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
-import { setFindOpen } from "@/editor/core/cm/find";
+import { findChangedRanges, setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
 import { executeAction, getAction } from "@/platform/actions";
@@ -215,6 +215,24 @@ async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachm
 
 const editableExtensions = (): Extension => [history(), keymap.of(historyKeymap)];
 
+/** The request's side a pane shows: `a` is the left one unless the sides are swapped. */
+const originOf = (s: Side, swapped: boolean): "left" | "right" => ((s === "a") !== swapped ? "left" : "right");
+
+/** A side the user types into in the diff itself (Open Blank Diff Window). */
+const isEditableText = (s: DiffSide) => s.type === "text" && !!s.editable;
+
+/** The changed ranges of a diff pane, for the find bar's Search In Changes. */
+const changedRanges = findChangedRanges.of((state) => {
+  const got = getChunks(state);
+  if (!got) return [];
+  const len = state.doc.length;
+  return got.chunks.map((c) =>
+    got.side === "a"
+      ? { from: c.fromA, to: Math.min(Math.max(c.endA, c.fromA), len) }
+      : { from: c.fromB, to: Math.min(Math.max(c.endB, c.fromB), len) },
+  );
+});
+
 type Side = "a" | "b";
 type ViewUpdateFn = (u: { docChanged: boolean; selectionSet: boolean }) => void;
 
@@ -248,8 +266,19 @@ export function DiffEditor({
   /** Closes the diff's editor tab (Esc, IDEA's Close Diff Editor); hosts that aren't tabs leave it out. */
   onClose?: () => void;
 }) {
-  const data = input.data as DiffData;
+  const input_ = input.data as DiffData;
+  // Swap Sides shows the request's sides the other way round; another request starts unswapped.
+  const [swappedFor, setSwappedFor] = useState<DiffData | null>(null);
+  const swapped = swappedFor === input_;
+  const data = useMemo(
+    () => (swapped ? { ...input_, left: input_.right, right: input_.left } : input_),
+    [input_, swapped],
+  );
   const { path, left, right } = data;
+  /** The typed text of editable text sides (by the request's side), kept across rebuilt views. */
+  const edited = useRef<{ of: DiffData; left?: Text; right?: Text }>({ of: input_ });
+  if (edited.current.of !== input_) edited.current = { of: input_ };
+  const editedText = (s: Side) => edited.current[originOf(s, swapped)]?.toString();
   const [attached, setAttached] = useState<Attached | null>(null);
   const [binary, setBinary] = useState<boolean | null>(null);
   /** Text of the sides that are not live documents. */
@@ -389,8 +418,8 @@ export function DiffEditor({
     left.rev === "HEAD" &&
     !left.path &&
     isWorktree(right);
-  const editableA = !binary && !!attached?.a && !attached.a.readOnly;
-  const editableB = !binary && !!attached?.b && !attached.b.readOnly;
+  const editableA = !binary && (attached?.a ? !attached.a.readOnly : isEditableText(left));
+  const editableB = !binary && (attached?.b ? !attached.b.readOnly : isEditableText(right));
   const ready = !!attached && !!statics && lang !== null && binary !== null;
 
   // Soft wraps follow the editor's (Settings › Editor › General) unless toggled in the viewer settings.
@@ -419,8 +448,9 @@ export function DiffEditor({
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !attached || !statics || lang === null) return;
-    const textA = attached.a?.text() ?? statics.a ?? "";
-    const textB = attached.b?.text() ?? statics.b ?? "";
+    const typed = (s: Side) => edited.current[originOf(s, swapped)]?.toString();
+    const textA = typed("a") ?? attached.a?.text() ?? statics.a ?? "";
+    const textB = typed("b") ?? attached.b?.text() ?? statics.b ?? "";
     const prev = viewsRef.current;
     const scrollTop = prev
       ? prev.merge && !prev.panes
@@ -433,6 +463,13 @@ export function DiffEditor({
       if (u.selectionSet || u.docChanged) updateChunkInfo(u.docChanged);
     });
     const findWatch = (s: Side) => EditorView.updateListener.of((u) => findWatchers.current[s].forEach((fn) => fn(u)));
+    /** Keeps what the user typed into an editable text side for the next rebuild (options, Swap Sides). */
+    const keepEdits = (s: Side) =>
+      isEditableText(s === "a" ? left : right)
+        ? EditorView.updateListener.of((u) => {
+            if (u.docChanged) edited.current[originOf(s, swapped)] = u.state.doc;
+          })
+        : [];
     const focusTracker = (side: "a" | "b") =>
       EditorView.domEventHandlers({
         focus: () => {
@@ -467,6 +504,7 @@ export function DiffEditor({
     const side = (att: DocumentAttachment | null, editable: boolean, notes?: "left" | "right"): Extension[] => [
       // The left pane of a side-by-side diff has its line numbers next to the divider, as in IDEA.
       viewerBase({ readOnly: !editable, findBar: true, lineNumbers: notes === "left" ? "after" : true }),
+      changedRanges,
       wrapSlot.of(softWrapRef.current ? EditorView.lineWrapping : []),
       // Esc closes the find bar before it collapses the selection (a found match); open popups go first.
       Prec.high(keymap.of([{ key: "Escape", run: () => findEscape.current() }])),
@@ -513,6 +551,7 @@ export function DiffEditor({
             panes?.extension ?? [],
             focusTracker("a"),
             findWatch("a"),
+            keepEdits("a"),
             editableA ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "b")) : [],
           ],
         },
@@ -526,6 +565,7 @@ export function DiffEditor({
             listener,
             focusTracker("b"),
             findWatch("b"),
+            keepEdits("b"),
             inclusion,
             editableB ? hoverRevert((_v, i) => merge && applyChunk(merge, i, "a")) : [],
           ],
@@ -571,6 +611,7 @@ export function DiffEditor({
           listener,
           focusTracker("b"),
           findWatch("b"),
+          keepEdits("b"),
           inclusion,
           highlightChanges ? diffWords : [],
           unifiedMergeView({
@@ -653,6 +694,9 @@ export function DiffEditor({
     data.annotations,
     includable,
     path,
+    left,
+    right,
+    swapped,
   ]);
 
   useEffect(() => {
@@ -944,6 +988,8 @@ export function DiffEditor({
   /** The side the bar searches (the last one, once closed: closing clears its highlights). */
   const findSide = useRef<Side>("b");
   const findOpen = useRef(false);
+  /** The find bar's Search In Changes, for this diff (as IDEA keeps it in the diff's context). */
+  const searchInChanges = useRef(false);
   const findId = useId();
   const viewOf = (s: Side) => (s === "a" && viewsRef.current?.a) || viewsRef.current?.b || null;
   const findTarget = useMemo<FindTarget>(() => {
@@ -957,6 +1003,10 @@ export function DiffEditor({
         return () => void set.delete(fn);
       },
       isOpen: () => findOpen.current,
+      inChanges: {
+        get: () => searchInChanges.current,
+        set: (on) => void (searchInChanges.current = on),
+      },
     };
   }, [findId]);
   const editableSide = (s: Side) => (s === "a" ? editableA : editableB);
@@ -993,6 +1043,13 @@ export function DiffEditor({
   const close = () => {
     if (!onClose) return false;
     onClose();
+    return true;
+  };
+  /** Swap Sides: for diffs whose two sides the user picked (Compare Files, Clipboard, blank diff). */
+  const canSwap = !!input_.swappable && !single;
+  const swapSides = () => {
+    if (!canSwap) return false;
+    setSwappedFor(swapped ? null : input_);
     return true;
   };
   const onKeyDown = (e: KeyboardEvent) => {
@@ -1144,6 +1201,7 @@ export function DiffEditor({
     showSettings,
     focusOpposite,
     close,
+    swapSides,
     viewer: viewerOf,
   });
   useLayoutEffect(() => {
@@ -1159,6 +1217,7 @@ export function DiffEditor({
       showSettings,
       focusOpposite,
       close,
+      swapSides,
       viewer: viewerOf,
     });
   });
@@ -1173,8 +1232,8 @@ export function DiffEditor({
     [],
   );
 
-  const textA = attached?.a?.text() ?? statics?.a ?? "";
-  const textB = attached?.b?.text() ?? statics?.b ?? "";
+  const textA = editedText("a") ?? attached?.a?.text() ?? statics?.a ?? "";
+  const textB = editedText("b") ?? attached?.b?.text() ?? statics?.b ?? "";
   const eolA = attached?.a?.lineEnding() ?? detectLineEnding(textA);
   const eolB = attached?.b?.lineEnding() ?? detectLineEnding(textB);
   const rawA = attached?.a ? liveSideText(textA, eolA) : textA;
@@ -1184,7 +1243,8 @@ export function DiffEditor({
   const sameText = rawA.replace(/\r\n?/g, "\n") === rawB.replace(/\r\n?/g, "\n");
   const eolOnly = ready && !binary && rawA !== rawB && sameText;
   const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
-  const identical = ready && chunkInfo.count === 0 && rawA === rawB;
+  // Texts typed into a blank diff aren't files: no "identical" notice for them.
+  const identical = ready && chunkInfo.count === 0 && rawA === rawB && !isEditableText(left) && !isEditableText(right);
   // Equal texts with different git modes: the change git records (chmod).
   const modeChange =
     identical && modes !== null && modes.a !== null && modes.b !== null && modes.a !== modes.b
@@ -1269,6 +1329,7 @@ export function DiffEditor({
           />
         )}
         <span className={styles.sep} />
+        {canSwap && <IconButton icon="swap-panels" title="Swap Sides" size="small" onClick={() => void swapSides()} />}
         <IconButton
           icon="diff-side-by-side"
           title="Side-by-side Viewer"

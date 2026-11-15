@@ -15,6 +15,8 @@ export interface DiffNavigator {
   focusOpposite(): boolean;
   /** IDEA's Close Diff Editor (Esc): closes the diff's editor tab; false when the diff isn't one. */
   close(): boolean;
+  /** Swap Sides of a diff whose sides the user picked; false when it has none to swap. */
+  swapSides(): boolean;
   /** The built panes, for diff viewer contributions' actions (null while loading). */
   viewer?(): DiffViewerHost | null;
 }

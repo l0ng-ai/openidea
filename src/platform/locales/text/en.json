@@ -1,4 +1,9 @@
 {
+  "Open Blank Diff Window": "Open Blank Diff Window",
+  "Blank Diff": "Blank Diff",
+  "Search In Changes": "Search In Changes",
+  "Swaps the left and right sides of the diff": "Swaps the left and right sides of the diff",
+  "Opens two editors side by side to compare their content": "Opens two editors side by side to compare their content",
   "Select Opposite Diff Pane": "Select Opposite Diff Pane",
   "Close Diff Editor": "Close Diff Editor",
   "Show Diff in Editor Tab": "Show Diff in Editor Tab",

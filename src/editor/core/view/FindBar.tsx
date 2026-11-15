@@ -99,6 +99,8 @@ export interface FindTarget {
   /** Still open: an unmount that isn't a close (React's dev-mode remount) keeps the highlights. */
   isOpen(): boolean;
   results?(options: FindOptions): FindResultsSource | null;
+  /** A diff pane's "Search In Changes" filter, kept by the diff (not the last search). */
+  inChanges?: { get(): boolean; set(on: boolean): void };
 }
 
 const activeTab = (paneId: string) => useTabs.getState().panes[paneId]?.active ?? null;
@@ -373,6 +375,13 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
   const [historyMenu, setHistoryMenu] = useState<"find" | "replace" | null>(null);
   const [filterMenu, setFilterMenu] = useState(false);
   const setOpts = (patch: Partial<FindOptions>) => updateOptions(id, () => patch);
+  // Search In Changes applies to finding only, as in IDEA: the replace bar searches the whole side.
+  const [inChangesOn, setInChangesOn] = useState(() => !!target.inChanges?.get());
+  const inChanges = !!target.inChanges && !replace && inChangesOn;
+  const toggleInChanges = () => {
+    target.inChanges?.set(!inChangesOn);
+    setInChangesOn(!inChangesOn);
+  };
 
   useLayoutEffect(() => {
     panelTargets.set(id, target);
@@ -421,15 +430,16 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
 
   // Push the query into the editor. Like IDEA, only a change of the query (typing, options)
   // selects the nearest match: showing the bar again over its editor leaves the caret alone.
-  const shown = useRef<{ target: FindTarget; version: unknown; opts: FindOptions } | null>(null);
+  const shown = useRef<{ target: FindTarget; version: unknown; opts: FindOptions; inChanges: boolean } | null>(null);
   useEffect(() => {
     const view = target.view();
     if (!view) return;
     const prev = shown.current;
-    const changed = prev?.target === target && prev.version === version && prev.opts !== opts;
-    shown.current = { target, version, opts };
+    const changed =
+      prev?.target === target && prev.version === version && (prev.opts !== opts || prev.inChanges !== inChanges);
+    shown.current = { target, version, opts, inChanges };
     const valid = !opts.regexp || regexValid(opts.search);
-    setQuery(view, valid ? opts : { ...opts, search: "" });
+    setQuery(view, valid ? { ...opts, inChanges } : { ...opts, search: "" });
     view.dispatch({ effects: setFindOpen.of(true) });
     if (changed && valid && opts.search && useFindPreferences.getState().scrollToResults) {
       const from = view.state.selection.main.from;
@@ -437,7 +447,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
       findNext(view);
     }
     recount(target);
-  }, [opts, target, version]);
+  }, [opts, target, version, inChanges]);
 
   // Keep the counter current while the document / selection changes.
   useEffect(() => {
@@ -564,6 +574,9 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
       checked: scoped || undefined,
       run: () => toggleScope(target),
     },
+    ...(target.inChanges && !replace
+      ? [{ label: "Search In Changes", checked: inChangesOn || undefined, run: toggleInChanges }]
+      : []),
     { kind: "separator" },
     { kind: "header", label: "Search Scope" },
     ...SEARCH_CONTEXTS.map((c) => ({
@@ -688,7 +701,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
           icon="filter"
           title="Filter Search Results"
           size="small"
-          pressed={scoped || opts.context !== "any"}
+          pressed={scoped || inChanges || opts.context !== "any"}
           onClick={() => setFilterMenu(true)}
         />
         <IconButton ref={moreRef} icon="more" title="More" size="small" onClick={() => setMoreMenu(true)} />
