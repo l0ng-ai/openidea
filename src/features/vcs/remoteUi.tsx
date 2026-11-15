@@ -297,7 +297,22 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
       }
       const list = pushCandidates(loaded);
       setRepos(list);
-      setChecked(new Set(only === undefined ? [] : list.filter((r) => !hasNothingToPush(r)).map((r) => r.root)));
+      // Push all checks what has outgoing commits, plus a new branch of the current repository;
+      // Push… from one repository checks it unless it is up to date.
+      const current = currentRepo();
+      setChecked(
+        new Set(
+          list
+            .filter((r) =>
+              only === undefined
+                ? r.branch.upstream
+                  ? r.commits.length > 0
+                  : r.root === current
+                : !hasNothingToPush(r),
+            )
+            .map((r) => r.root),
+        ),
+      );
     });
     return () => {
       alive = false;

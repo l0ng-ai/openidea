@@ -104,7 +104,6 @@ it("pushes each repository to its own remote and target branch, reporting the on
   await act(() => showPushDialog());
 
   const targetOfA = await screen.findByRole("textbox", { name: "Target branch of a" });
-  check("a", "b", "c");
   expect(targetOfA).toHaveValue("feat-x");
   expect(screen.getByRole("checkbox", { name: "Push tags:" })).toBeInTheDocument();
   fireEvent.change(targetOfA, { target: { value: "release-2.1" } });
@@ -163,22 +162,21 @@ async function openPushDialog() {
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
   await screen.findByRole("textbox", { name: "Target branch of a" });
-  check("a", "b", "c");
 }
 
-it("lists every repository on Push all, none checked or expanded, with no files shown", async () => {
+it("lists every repository on Push all, checks those with commits, expands none and shows no files", async () => {
   mocks.upToDate.add("/p/c");
   render(<VcsDialogHost />);
   await act(() => showPushDialog());
 
   await screen.findByRole("textbox", { name: "Target branch of a" });
   expect(screen.getByRole("textbox", { name: "Target branch of c" })).toBeInTheDocument();
-  for (const name of ["a", "b", "c"]) expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
+  for (const name of ["a", "b"]) expect(screen.getByRole("checkbox", { name })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: "c" })).not.toBeChecked();
   expect(screen.queryByText("Work")).toBeNull();
-  expect(screen.getByRole("button", { name: "Push" })).toBeDisabled();
   expect(mocks.changes).not.toHaveBeenCalled();
 
-  check("a");
+  check("b");
   fireEvent.click(screen.getByRole("button", { name: "Push" }));
   await waitFor(() => expect(mocks.ops).toHaveLength(1));
   expect(mocks.ops[0]?.repo).toBe("/p/a");
