@@ -807,6 +807,22 @@ mod imp {
     pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
         wit::database::connect(project, id).map_err(error)
     }
+    pub fn language_server_request(
+        project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        wit::language_servers::request(project, server, method, params).map_err(error)
+    }
+    pub fn language_server_notify(
+        project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<(), Error> {
+        wit::language_servers::notify(project, server, method, params).map_err(error)
+    }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         wit::mcp::stdio_command()
     }
@@ -1041,6 +1057,21 @@ impl Project {
     /// Normal Database connection/introspection in this project's invoking command/event window.
     pub fn connect_data_source(&self, id: &str) -> Result<(), Error> {
         imp::database_connect(&self.inner, id)
+    }
+
+    /// Sends `method` with `params` (JSON text, `None` for none) to the running
+    /// language server `server` — its name in the language definition, e.g.
+    /// `phoxite` — of this project, and returns the result as JSON (API 1.9).
+    /// Requires `lsp:<server>`; the standard methods (and anything a plugin
+    /// must not send, like `initialize` or `textDocument/*`) are refused as
+    /// [`Error::Invalid`]; a server that is not running for the project is
+    /// [`Error::NotFound`]; the server's own error is [`Error::Failed`].
+    pub fn language_server_request(&self, server: &str, method: &str, params: Option<&str>) -> Result<String, Error> {
+        imp::language_server_request(&self.inner, server, method, params)
+    }
+    /// [`Project::language_server_request`] for a notification: no answer is awaited.
+    pub fn language_server_notify(&self, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        imp::language_server_notify(&self.inner, server, method, params)
     }
 
     /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.

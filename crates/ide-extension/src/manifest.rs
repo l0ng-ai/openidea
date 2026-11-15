@@ -357,6 +357,9 @@ impl Manifest {
             if matches!(cap, Capability::NetAsk) {
                 self.needs_api(&format!("capability `{cap}`"), 5)?;
             }
+            if matches!(cap, Capability::Lsp(_)) {
+                self.needs_api(&format!("capability `{cap}`"), 9)?;
+            }
         }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {

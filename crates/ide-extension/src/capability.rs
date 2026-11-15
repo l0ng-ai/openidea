@@ -48,6 +48,9 @@ pub enum Capability {
     Ipc(String),
     /// Run one external program. Full code execution: never fine-grained.
     Process(String),
+    /// Send requests to one running language server, by its name in the
+    /// language definition (API 1.9).
+    Lsp(String),
     /// Read files outside the project under one path.
     FsRead(String),
     /// Write files outside the project under one path.
@@ -80,11 +83,13 @@ impl Capability {
             | Self::InputEvents
             | Self::Clipboard => Risk::Medium,
             // A trusted project's own files name the programs the IDE starts (its settings, its
-            // build scripts), so writing them is running code.
+            // build scripts), so writing them is running code. A language server reads and
+            // changes project files on the plugin's behalf, like a program it runs.
             Self::ProjectWrite
             | Self::IdeCommands
             | Self::Ipc(_)
             | Self::Process(_)
+            | Self::Lsp(_)
             | Self::FsRead(_)
             | Self::FsWrite(_) => Risk::High,
         }
@@ -126,6 +131,9 @@ impl Capability {
                 format!("Connect to local socket {path} — equivalent to running arbitrary code on the project machine")
             }
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
+            Self::Lsp(server) => {
+                format!("Send requests to the {server} language server — it can read and change project files on the plugin's behalf")
+            }
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
         }
@@ -249,6 +257,7 @@ impl fmt::Display for Capability {
             Self::NetHttp(h) => write!(f, "net.http:{h}"),
             Self::Ipc(p) => write!(f, "ipc:{p}"),
             Self::Process(b) => write!(f, "process:{b}"),
+            Self::Lsp(s) => write!(f, "lsp:{s}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
         }
@@ -297,6 +306,15 @@ impl FromStr for Capability {
                         return Err(format!("{s:?}: use a program name or an absolute path"));
                     }
                     Ok(Self::Process(arg.to_owned()))
+                }
+                "lsp" => {
+                    if arg.is_empty()
+                        || arg.len() > 64
+                        || !arg.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+                    {
+                        return Err(format!("{s:?}: use a language server's name from the language definition"));
+                    }
+                    Ok(Self::Lsp(arg.to_owned()))
                 }
                 "fs.read" | "fs.write" => {
                     if !std::path::Path::new(arg).is_absolute() && !arg.starts_with('~') {
@@ -460,6 +478,43 @@ mod api14_tests {
             ["ipc:relative", "ipc:/tmp/*/socket", "ipc:/tmp/../socket", "ipc:/tmp/", "ipc:/tmp/socket?", "net.http:a b"]
         {
             assert!(invalid.parse::<Capability>().is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod lsp_tests {
+    use super::*;
+    #[test]
+    fn lsp_is_one_grant_per_server_name_at_process_risk() {
+        for name in ["phoxite", "rust-analyzer", "intelephense", "laravel_lsp"] {
+            let cap: Capability = format!("lsp:{name}").parse().unwrap();
+            assert_eq!(cap.to_string(), format!("lsp:{name}"));
+            assert_eq!(cap.risk(), Capability::Process("cargo".into()).risk());
+            assert!(cap.describe().contains(name));
+            assert!(cap.describe().contains("language server"));
+            // One grant per server name: no pattern, no cross-server coverage.
+            assert!(cap.covers(&cap.clone()));
+            assert!(!cap.covers(&"lsp:other".parse().unwrap()));
+            assert!(!Capability::Process("phoxite".into()).covers(&cap));
+        }
+        let long = format!("lsp:{}", "a".repeat(65));
+        for invalid in ["lsp:", "lsp:a b", "lsp:a/b", "lsp:\\\\server", "lsp:a:b", "lsp:*", &long] {
+            assert!(invalid.parse::<Capability>().is_err(), "{invalid}");
+        }
+        let edge: Capability = format!("lsp:{}", "a".repeat(64)).parse().unwrap();
+        assert_eq!(edge, Capability::Lsp("a".repeat(64)));
+    }
+
+    /// The capability is new in API 1.9: a manifest that still admits an older
+    /// 1.x refuses it, like `database.sources` in 1.4.
+    #[test]
+    fn lsp_needs_api_1_9() {
+        for (api, valid) in [("^1.8", false), ("^1.9", true)] {
+            let text = format!(
+                "id='lsp-test'\nname='LSP'\nversion='1.0.0'\nengines.openidea='{api}'\n[capabilities]\nrequired=['lsp:phoxite']"
+            );
+            assert_eq!(crate::Manifest::parse(&text).is_ok(), valid, "{api}");
         }
     }
 }

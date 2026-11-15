@@ -529,6 +529,27 @@ pub trait HostApi: Send + Sync {
     fn ipc_close(&self, id: u64) {
         let _ = id;
     }
+    /// Sends `method` with `params` (JSON text, `None` for none) to the running
+    /// language server `server` (its name in the language definition) of the
+    /// project at `root`; its answer as JSON text. `NotFound` when no such
+    /// server runs for the project; the server's own error is `Failed`.
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (root, server, method, params, cancel, timeout);
+        Err(HostError::Failed("language servers are unavailable on this host".into()))
+    }
+    /// [`HostApi::lsp_request`] without waiting for an answer.
+    fn lsp_notify(&self, root: &Path, server: &str, method: &str, params: Option<String>) -> Result<(), HostError> {
+        let _ = (root, server, method, params);
+        Err(HostError::Failed("language servers are unavailable on this host".into()))
+    }
     /// Runs the approved file of `process:<program>` with `cmd.env` added to
     /// the inherited environment, and waits.
     fn run_process(

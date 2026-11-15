@@ -340,28 +340,29 @@ installing (or when a new version asks for more). Low-risk capabilities are
 listed; high-risk ones are called out as equivalent to running code on the
 machine. Users can revoke optional capabilities in Settings › Plugins.
 
-| Capability          | Risk   | Unlocks today                                                                                                                                                           |
-| ------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.      |
-| `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                           |
-| `project.read`      | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations |
-| `project.write`     | high   | `Project::write_file` — creates and replaces text files inside the open projects, the settings and build scripts a trusted project runs included                        |
-| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                       |
-| `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                    |
-| `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                              |
-| `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                               |
-| `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                        |
-| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                |
-| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                            |
-| `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
-| `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
-| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
-| `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
-| `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
-| `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
-| `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                               |
-| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                            |
-| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                               |
+| Capability          | Risk   | Unlocks today                                                                                                                                                             |
+| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.        |
+| `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                             |
+| `project.read`      | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations   |
+| `project.write`     | high   | `Project::write_file` — creates and replaces text files inside the open projects, the settings and build scripts a trusted project runs included                          |
+| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                         |
+| `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                      |
+| `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                                |
+| `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                                 |
+| `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                          |
+| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                  |
+| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                              |
+| `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                              |
+| `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                        |
+| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                            |
+| `lsp:<server>`      | high   | `Project::language_server_request`/`language_server_notify` — the running server reads and edits project files on the plugin's behalf; one grant per server name; API 1.9 |
+| `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                         |
+| `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                            |
+| `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                     |
+| `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                                 |
+| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                              |
+| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                                 |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -430,6 +431,11 @@ matching SDK. Released 1.8 plugins keep working. New in 1.9:
   language's debugger) or `Debugger::AttachChild { kind, command_contains }`
   (Debug runs the configuration and attaches to a process the run starts). See
   _Environment and debugger_ under _Runs, terminal sessions and test results_.
+- The `language-servers` import (`Project::language_server_request(server,
+  method, params)` / `language_server_notify`): send a language server the IDE
+  already runs its own requests (`phoxite/laravel/modelView`) and get the
+  answer as JSON. Requires the new high-risk `lsp:<server>` grant, one per
+  server name. See _Language-server requests_.
 
 ### API 1.8
 
@@ -622,6 +628,7 @@ then run `openidea-plugin check`.
 | `Project::document`, `apply_document_edits`                                                                    | `editor.{document,apply-edits}-at`           | API 1.6: versioned access to an explicitly named open project document from background events. Requires `project.read` and `editor.read`/`editor.write`; stale edits change nothing.                                                                                                                                                                      |
 | `WebSocket::{connect,send,drain,close}`                                                                        | `net.websocket-*`                            | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, close state and event-driven wakeups.                                                                                                                                                                                                                                |
 | `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                   | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
+| `Project::{language_server_request,language_server_notify}`                                                    | `language-servers`                           | API 1.9: send a running language server its own requests; requires `lsp:<server>`. See _Language-server requests_.                                                                                                                                                                                                                                        |
 | `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                          | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
 | `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                   | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
 | `host::open_editors()`                                                                                         | `editor.open-editors`                        | API 1.4: invoking window's path/language/dirty/active snapshots; requires `editor.read`. Commands/events of a window only.                                                                                                                                                                                                                                |
@@ -798,6 +805,45 @@ a 180-second window-response timeout and cooperative cancellation.
 Source persistence and credential storage run where the Database subsystem
 runs: on the project server for remote projects. A host without that subsystem
 returns `invalid("Database subsystem is unavailable on this host")`.
+
+### Language-server requests (API 1.9)
+
+A plugin can talk to a language server the IDE already runs — the Laravel tools
+ask `phoxite-lsp` its own `phoxite/laravel/*` requests, for example. Declare
+`lsp:<server>` (high risk), where `server` is the `name` of a
+`[[language-servers]]` entry in the language definition; one grant per server
+name, no per-method grants (the refusal rule below covers what a plugin must
+not send).
+
+| `Project::language_server_request(server, method, params)` | `language-servers.request` | The server's answer as JSON text |
+| ---------------------------------------------------------- | -------------------------- | -------------------------------- |
+| `Project::language_server_notify(server, method, params)`  | `language-servers.notify`  | The same, without waiting        |
+
+`params` is JSON text, or `None` for no params. Only servers already running
+for the project answer: a server that is not running is `Error::NotFound`, and
+the call never starts one. The request honours the invoking command's
+cancellation and time budget. The server's own error is `Error::Failed` with
+its message.
+
+A plugin may send the server's own namespaced methods only
+(`phoxite/laravel/modelView` passes). The standard ones are refused as
+`Error::Invalid`: `initialize`, `initialized`, `shutdown`, `exit`, everything
+under `$/`, and every method whose first segment is a namespace of the LSP
+standard (`textDocument`, `workspace`, `window`, `notebookDocument`,
+`callHierarchy`, `typeHierarchy`, `completionItem`, `codeAction`, `codeLens`,
+`documentLink`, `inlayHint`, `workspaceSymbol`, `client`, `telemetry`) —
+document sync and the server's lifecycle stay with the IDE.
+
+Requests carry at most 1 MiB of `params`; an answer is capped at 4 MiB.
+Server-to-plugin notifications (a server telling the plugin its data changed)
+are not part of the API: refresh on the existing file and document events.
+
+```rust
+let project = ctx.project().ok_or("Open a project first")?;
+let view = project.language_server_request(
+    "phoxite", "phoxite/laravel/modelView", Some(r#"{"model":"User"}"#),
+)?;
+```
 
 ### Plugin MCP tools (API 1.4)
 

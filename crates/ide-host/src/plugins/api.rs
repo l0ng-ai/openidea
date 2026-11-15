@@ -69,6 +69,25 @@ pub trait PluginWorkspace: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Sends a plugin's request to the running language server `server` (its
+    /// name in the language definition) of the project at `root`; its answer
+    /// as JSON text. `NotFound` when no such server runs for the project.
+    fn lsp_request(
+        &self,
+        _root: &Path,
+        _server: &str,
+        _method: &str,
+        _params: Option<String>,
+        _cancel: &CancellationToken,
+        _timeout: Duration,
+    ) -> Result<String, HostError> {
+        Err(HostError::Failed("language servers are unavailable".into()))
+    }
+    /// [`PluginWorkspace::lsp_request`] without waiting for an answer.
+    fn lsp_notify(&self, _root: &Path, _server: &str, _method: &str, _params: Option<String>) -> Result<(), HostError> {
+        Err(HostError::Failed("language servers are unavailable".into()))
+    }
+
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
     /// Roots of the workspace members attached to the project at `root` (a
@@ -1303,6 +1322,20 @@ fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }
 
+/// Keeps the plugin-visible kind of a server call: a server that is not
+/// running is `not-found`, its refusal of a method is `invalid`, and only its
+/// own failure is `failed` (a plugin degrades on the rest).
+fn lsp_error(e: ide_core::IdeError) -> HostError {
+    match e.kind {
+        ide_core::error::ErrorKind::PermissionDenied => HostError::Denied(e.message),
+        ide_core::error::ErrorKind::OutOfSync => HostError::Stale,
+        ide_core::error::ErrorKind::NotFound => HostError::NotFound(e.message),
+        ide_core::error::ErrorKind::InvalidInput => HostError::Invalid(e.message),
+        ide_core::error::ErrorKind::Cancelled => HostError::Cancelled,
+        _ => HostError::Failed(e.to_string()),
+    }
+}
+
 impl HostApi for PluginApi {
     fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
         let (host, db) = self.database_host(root)?;
@@ -2340,6 +2373,27 @@ impl HostApi for PluginApi {
         let _ = self.shared.websockets.disconnect(self.id(), connection);
     }
 
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        self.shared
+            .workspace()
+            .ok_or_else(|| HostError::Failed("language servers are unavailable".into()))?
+            .lsp_request(root, server, method, params, cancel, timeout)
+    }
+    fn lsp_notify(&self, root: &Path, server: &str, method: &str, params: Option<String>) -> Result<(), HostError> {
+        self.shared
+            .workspace()
+            .ok_or_else(|| HostError::Failed("language servers are unavailable".into()))?
+            .lsp_notify(root, server, method, params)
+    }
+
     /// The `net:ask` answer: a host the user allowed with "always" is
     /// remembered in the ledger (no dialog again, background included); a new
     /// host is asked about in `client`'s window when there is one. Dismissal
@@ -3002,6 +3056,12 @@ impl HostWorkspace {
                     .find(|p| crate::project::workspace_member_roots(&p.root).iter().any(|m| m.as_path() == root))
             })
     }
+
+    /// The project a plugin's project handle names: a root `projects()` handed
+    /// out — a project root or a window group's member root.
+    fn project_at(&self, root: &Path) -> Result<Arc<crate::project::Project>, HostError> {
+        self.project_covering(root).ok_or_else(|| HostError::NotFound("project closed".into()))
+    }
     fn projects(&self) -> Vec<Arc<crate::project::Project>> {
         self.0.upgrade().map(|h| h.projects()).unwrap_or_default()
     }
@@ -3201,6 +3261,34 @@ impl PluginWorkspace for HostWorkspace {
             out.push(ide_plugin::FileProblems { path: to_ipc(&file), source, diagnostics });
         }
         Ok(out)
+    }
+
+    /// The open project at `root`, for the plugin's project-handle calls.
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let project = self.project_at(root)?;
+        let params =
+            params.map(|s| serde_json::from_str(&s)).transpose().map_err(|e| HostError::Invalid(e.to_string()))?;
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let value = host
+            .runtime
+            .block_on(project.lsp.request(server, method, params, Some(cancel), timeout))
+            .map_err(lsp_error)?;
+        serde_json::to_string(&value).map_err(failed)
+    }
+    fn lsp_notify(&self, root: &Path, server: &str, method: &str, params: Option<String>) -> Result<(), HostError> {
+        let project = self.project_at(root)?;
+        let params =
+            params.map(|s| serde_json::from_str(&s)).transpose().map_err(|e| HostError::Invalid(e.to_string()))?;
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        host.runtime.block_on(project.lsp.notify(server, method, params)).map_err(lsp_error)
     }
 
     fn projects(&self) -> Vec<PathBuf> {
@@ -4264,10 +4352,13 @@ impl Shared {
 #[cfg(test)]
 mod workbench_tests {
     use super::*;
+    /// `(root, server, method, params)` of the plugin's language-server calls.
+    type LspCall = (String, String, String, Option<String>);
     struct Workspace {
         root: PathBuf,
         trusted: bool,
         text: Option<String>,
+        lsp: Arc<Mutex<Vec<LspCall>>>,
     }
     impl PluginWorkspace for Workspace {
         fn projects(&self) -> Vec<PathBuf> {
@@ -4289,6 +4380,22 @@ mod workbench_tests {
             Some(self.root.clone())
         }
         fn publish_diagnostics(&self, _: &str, _: &Path, _: Vec<ide_core::Diagnostic>) -> Result<(), HostError> {
+            Ok(())
+        }
+        fn lsp_request(
+            &self,
+            root: &Path,
+            server: &str,
+            method: &str,
+            params: Option<String>,
+            _: &CancellationToken,
+            _: Duration,
+        ) -> Result<String, HostError> {
+            self.lsp.lock().push((root.display().to_string(), server.into(), method.into(), params));
+            Ok(r#"{"view":"users.index"}"#.into())
+        }
+        fn lsp_notify(&self, root: &Path, server: &str, method: &str, params: Option<String>) -> Result<(), HostError> {
+            self.lsp.lock().push((root.display().to_string(), server.into(), method.into(), params));
             Ok(())
         }
         fn open_editors(&self, client: &str) -> Result<Vec<ide_plugin::OpenEditor>, HostError> {
@@ -4317,8 +4424,12 @@ mod workbench_tests {
             Arc::default(),
             Arc::new(ide_extension::ExtensionRegistry::new()),
         );
-        *shared.workspace.write() =
-            Some(Arc::new(Workspace { root: root.into(), trusted, text: text.map(str::to_owned) }));
+        *shared.workspace.write() = Some(Arc::new(Workspace {
+            root: root.into(),
+            trusted,
+            text: text.map(str::to_owned),
+            lsp: Arc::default(),
+        }));
         PluginApi { pkg: Package::new(manifest, root.into()), shared }
     }
     #[test]
@@ -4354,6 +4465,55 @@ mod workbench_tests {
         assert!(api.editor_ranges("main", &path, vec![range(2)], false).is_ok());
         assert!(api.editor_ranges("main", &path, vec![range(1)], true).is_err());
         assert!(api.editor_ranges("other", &path, vec![range(2)], false).is_err());
+    }
+
+    /// The `lsp-toy` fixture asks the `phoxite` server through
+    /// `language-servers`. Without the `lsp:phoxite` grant (it is optional and
+    /// the user declined it) the command is denied; with it, the call is routed
+    /// to the workspace's servers for the invocation's project.
+    #[test]
+    fn language_server_requests_need_the_lsp_grant_and_route_to_the_project() {
+        use super::super::Consent;
+        use ide_plugin::Invocation;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let lsp = Arc::new(Mutex::new(Vec::new()));
+        let host = crate::plugins::PluginHost::new(
+            dir.path().join("plugins"),
+            Arc::new(|_: Option<&str>, _| {}),
+            Default::default(),
+        )
+        .unwrap();
+        host.set_workspace(Some(Arc::new(Workspace {
+            root: root.clone(),
+            trusted: true,
+            text: None,
+            lsp: lsp.clone(),
+        })));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/lsp-toy");
+        host.install_from_dir(&fixture, &Consent::default()).unwrap();
+        let invocation = Invocation { workspace_root: Some(root.clone()), ..Default::default() };
+        let e = host.run_command("lsp-toy", "model-view", None, invocation.clone()).unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::PermissionDenied, "{e}");
+        assert!(e.to_string().contains("lsp:phoxite"), "{e}");
+        assert!(lsp.lock().is_empty(), "a denied call must not reach the servers");
+
+        host.uninstall("lsp-toy").unwrap();
+        host.install_from_dir(&fixture, &Consent { optional: vec!["lsp:phoxite".into()], signer_change: true })
+            .unwrap();
+        let answer = host.run_command("lsp-toy", "model-view", None, invocation.clone()).unwrap().unwrap();
+        assert_eq!(answer, r#"{"view":"users.index"}"#);
+        assert_eq!(
+            lsp.lock().clone(),
+            [(
+                root.display().to_string(),
+                "phoxite".into(),
+                "phoxite/laravel/modelView".into(),
+                Some(r#"{"model":"User"}"#.into())
+            )]
+        );
+        host.run_command("lsp-toy", "touched", None, invocation).unwrap();
+        assert_eq!(lsp.lock().last().unwrap().2, "phoxite/laravel/touched");
     }
     #[test]
     fn decoration_sets_validate_paths_limits_and_cleanup() {

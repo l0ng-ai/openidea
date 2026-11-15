@@ -1,0 +1,16 @@
+id = "lsp-toy"
+name = "Language server requests test"
+version = "0.1.0"
+engines.openidea = "^1.9"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+optional = ["lsp:phoxite"]
+
+[[contributes.commands]]
+id = "model-view"
+title = "Ask the server for a model view"
+
+[[contributes.commands]]
+id = "touched"
+title = "Tell the server a file changed"

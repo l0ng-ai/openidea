@@ -315,6 +315,43 @@ fn unsupported(servers: &[Arc<Server>], feature: &str) -> IdeError {
     }
 }
 
+/// Method namespaces the LSP standard defines; their first segment owns every
+/// method under it (`textDocument/…`), whatever server it is.
+const PLUGIN_REFUSED_NAMESPACES: [&str; 14] = [
+    "textDocument",
+    "workspace",
+    "window",
+    "notebookDocument",
+    "callHierarchy",
+    "typeHierarchy",
+    "completionItem",
+    "codeAction",
+    "codeLens",
+    "documentLink",
+    "inlayHint",
+    "workspaceSymbol",
+    "client",
+    "telemetry",
+];
+
+/// A plugin's `language-servers` call carries the server's own namespaced
+/// methods only (`phoxite/laravel/modelView`): the standard methods — document
+/// sync, the server's lifecycle, `$/…` — stay with the IDE. Everything else
+/// passes, including namespaces that merely look close (`textDocumentX/foo`).
+fn plugin_method_allowed(method: &str) -> IdeResult<()> {
+    if method.is_empty()
+        || method.len() > 256
+        || method.starts_with("$/")
+        || matches!(method, "initialize" | "initialized" | "shutdown" | "exit")
+        || PLUGIN_REFUSED_NAMESPACES.iter().any(|ns| method.strip_prefix(ns).is_some_and(|rest| rest.starts_with('/')))
+    {
+        return Err(IdeError::invalid(format!(
+            "{method:?}: language-servers carries the server's own methods only, not the standard ones"
+        )));
+    }
+    Ok(())
+}
+
 /// Folds per-server results: any success wins over errors; errors surface only
 /// when every server failed (cancellation first).
 struct Outcome<T> {
@@ -2407,6 +2444,43 @@ impl LspManager {
         let params = json!({ "command": command.command, "arguments": command.arguments });
         let _: Value = self.call(t, "workspace/executeCommand", params, None, LONG_TIMEOUT).await?;
         Ok(())
+    }
+
+    /// The ready instance of the running server `name` — the name of a
+    /// `[[language-servers]]` entry in the language definition. `not-found`
+    /// when no such server is running for this project; a plugin call never
+    /// starts one.
+    async fn named_target(&self, name: &str) -> IdeResult<Target> {
+        let not_found = || IdeError::not_found(format!("no language server {name:?} is running for this project"));
+        let server = self.servers.lock().iter().find(|s| s.name == name).cloned();
+        let Some(server) = server else { return Err(not_found()) };
+        let Some(run) = server.wait_ready(START_WAIT).await else { return Err(not_found()) };
+        Ok(Target { server, run })
+    }
+
+    /// Sends a plugin's `language-servers.request` to the running server
+    /// `name` and returns its answer, honouring `cancel` and `timeout`. A
+    /// plugin may send the server's own namespaced methods only: the standard
+    /// ones (document sync, the lifecycle, `$/…`) are refused, so a plugin
+    /// cannot interfere with what the IDE drives.
+    pub async fn request(
+        &self,
+        name: &str,
+        method: &str,
+        params: Option<Value>,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+    ) -> IdeResult<Value> {
+        plugin_method_allowed(method)?;
+        let t = self.named_target(name).await?;
+        self.call(&t, method, params.unwrap_or(Value::Null), cancel, timeout).await
+    }
+
+    /// [`Self::request`] for a notification: no answer is awaited.
+    pub async fn notify(&self, name: &str, method: &str, params: Option<Value>) -> IdeResult<()> {
+        plugin_method_allowed(method)?;
+        let t = self.named_target(name).await?;
+        t.run.peer.notify(method, params.unwrap_or(Value::Null)).map_err(|e| rpc_err(name, method, e))
     }
 
     /// Whether a server of `doc` (`server`, when given) provides the command `name`. Code actions

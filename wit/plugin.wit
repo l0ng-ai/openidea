@@ -35,6 +35,7 @@ world plugin {
     import run;
     import run-targets;
     import database;
+    import language-servers;
     import mcp;
     import settings;
     import extensions;

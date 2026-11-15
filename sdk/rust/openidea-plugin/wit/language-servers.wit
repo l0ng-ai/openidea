@@ -1,0 +1,17 @@
+package openidea:plugin@1.9.0;
+
+/// Requests to the language servers the IDE runs (API 1.9).
+interface language-servers {
+    use types.{error};
+    use workspace.{project};
+
+    /// Sends `method` to the server named `server` (its name in the language
+    /// definition, e.g. `phoxite`) serving `project`, and returns the result as JSON.
+    /// `params` is JSON, or none for no params. `not-found` when no such server is
+    /// running for the project; the server's own error is `failed` with its message.
+    /// Requires `lsp:<server>`.
+    request: func(project: borrow<project>, server: string, method: string, params: option<string>) -> result<string, error>;
+
+    /// The same for a notification: no answer is awaited.
+    notify: func(project: borrow<project>, server: string, method: string, params: option<string>) -> result<_, error>;
+}

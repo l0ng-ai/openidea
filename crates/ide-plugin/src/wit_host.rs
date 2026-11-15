@@ -64,6 +64,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
             "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
@@ -102,6 +103,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
             "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
@@ -140,6 +142,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/views": super::bindings::openidea::plugin::views,
             "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
             "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
             "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
             "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
         },
@@ -147,8 +150,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets, settings,
-    storage, tasks, types as wit, ui, vcs, views, workspace,
+    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, language_servers, log, net, process,
+    secrets, settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -197,6 +200,9 @@ pub struct TaskRes {
 const MAX_EDITS: usize = 10_000;
 const MAX_DIAGNOSTICS: usize = 5_000;
 const MAX_REQUEST_BODY: usize = 8 << 20;
+/// Most JSON one `language-servers.request` sends (`params`) and receives (the answer).
+const MAX_LSP_PARAMS: usize = 1 << 20;
+const MAX_LSP_RESULT: usize = 4 << 20;
 /// Upper bound for a WebSocket handshake; the call's remaining time can make it shorter.
 const WEBSOCKET_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FIND: u32 = 10_000;
@@ -1584,6 +1590,89 @@ impl secrets::Host for StoreData {
     }
     fn is_set(&mut self, name: String) -> wasmtime::Result<bool> {
         Ok(self.granted.iter().any(|g| g.covers(&Capability::Secrets)) && self.host.secret_is_set(&name))
+    }
+}
+
+/// `params` of `language-servers.request`/`notify`: JSON of at most 1 MiB, or
+/// none. Kept as text; the host parses it again on its side of the boundary.
+/// The methods a plugin may send are decided at the servers themselves
+/// (`ide-lsp`), where every host's calls go.
+fn prepare_plugin_params(params: Option<String>) -> Result<Option<String>, wit::Error> {
+    match params {
+        None => Ok(None),
+        Some(params) if params.len() > MAX_LSP_PARAMS => {
+            Err(wit::Error::Invalid(format!("params are larger than {MAX_LSP_PARAMS} bytes")))
+        }
+        Some(params) if serde_json::from_str::<serde_json::Value>(&params).is_err() => {
+            Err(wit::Error::Invalid("params is not JSON".into()))
+        }
+        Some(params) => Ok(Some(params)),
+    }
+}
+
+impl language_servers::Host for StoreData {
+    fn request(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<String> {
+        let root = self.table.get(&project)?.root.clone();
+        if let Err(e) = self.require(Capability::Lsp(server.clone())) {
+            return Ok(Err(e));
+        }
+        let params = match prepare_plugin_params(params) {
+            Ok(params) => params,
+            Err(e) => return Ok(Err(e)),
+        };
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let answer = match self.host.lsp_request(&root, &server, &method, params, &token, timeout) {
+            Ok(answer) => answer,
+            Err(e) => {
+                self.grant_io_error_grace();
+                return Ok(Err(to_wit(e)));
+            }
+        };
+        if answer.len() > MAX_LSP_RESULT {
+            return Ok(Err(wit::Error::Failed(format!("the answer is larger than {MAX_LSP_RESULT} bytes"))));
+        }
+        Ok(Ok(answer))
+    }
+
+    fn notify(
+        &mut self,
+        project: Resource<ProjectRes>,
+        server: String,
+        method: String,
+        params: Option<String>,
+    ) -> Fallible<()> {
+        let root = self.table.get(&project)?.root.clone();
+        if let Err(e) = self.require(Capability::Lsp(server.clone())) {
+            return Ok(Err(e));
+        }
+        let params = match prepare_plugin_params(params) {
+            Ok(params) => params,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.lsp_notify(&root, &server, &method, params).map_err(to_wit))
+    }
+}
+
+#[cfg(test)]
+mod lsp_method_tests {
+    use super::*;
+
+    #[test]
+    fn params_must_be_json_within_the_cap() {
+        assert_eq!(prepare_plugin_params(None).unwrap(), None);
+        assert_eq!(
+            prepare_plugin_params(Some(r#"{"uri":"file:///a.php"}"#.into())).unwrap(),
+            Some(r#"{"uri":"file:///a.php"}"#.into())
+        );
+        assert!(prepare_plugin_params(Some("{not json".into())).is_err());
+        assert!(prepare_plugin_params(Some("x".repeat(MAX_LSP_PARAMS + 1))).is_err());
     }
 }
 

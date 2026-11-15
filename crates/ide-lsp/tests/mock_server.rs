@@ -7372,3 +7372,119 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
         .await;
     h.mgr.shutdown_all().await;
 }
+
+// ------------------------------------------------------------------ plugin language-server requests
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_requests_reach_the_named_server_and_notifications_do_not_wait() {
+    let h = harness(&[("phoxite", incremental_caps())]);
+    h.open("open.mk", "x");
+    h.wait_status("phoxite", ServerStatus::Ready).await;
+    let s = h.launcher.state("phoxite");
+    s.respond("phoxite/laravel/modelView", json!({ "view": "users.index", "lines": 42 }));
+
+    let cancel = CancellationToken::new();
+    let answer = h
+        .mgr
+        .request(
+            "phoxite",
+            "phoxite/laravel/modelView",
+            Some(json!({ "model": "User" })),
+            Some(&cancel),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(answer, json!({ "view": "users.index", "lines": 42 }));
+    let sent = s.requested("phoxite/laravel/modelView");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0], json!({ "model": "User" }));
+
+    // `params: none` sends no params at all, and the server's own error comes back as it is.
+    s.errors.lock().insert("phoxite/index".into(), (-32603, "model index is building".into()));
+    let e = h.mgr.request("phoxite", "phoxite/index", None, None, Duration::from_secs(5)).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Protocol, "{e}");
+    assert!(e.to_string().contains("model index is building"), "{e}");
+    assert!(s.requested("phoxite/index")[0].is_null());
+    s.errors.lock().clear();
+
+    // A notification records on the server and returns at once.
+    h.mgr.notify("phoxite", "phoxite/laravel/touched", Some(json!({ "file": "a.php" }))).await.unwrap();
+    eventually(|| !s.notified("phoxite/laravel/touched").is_empty()).await;
+    assert_eq!(s.notified("phoxite/laravel/touched")[0], json!({ "file": "a.php" }));
+
+    // The caller's cancellation wins over a slow answer.
+    let gate = Arc::new(Gate::default());
+    let held = gate.clone();
+    s.responder.lock().replace(Arc::new(move |_s, method, _params| {
+        if method == "phoxite/slow" {
+            held.hold();
+        }
+        None
+    }));
+    let cancel = CancellationToken::new();
+    let request = {
+        let mgr = h.mgr.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            mgr.request("phoxite", "phoxite/slow", None, Some(&cancel), Duration::from_secs(30)).await
+        })
+    };
+    eventually(|| gate.entered()).await;
+    cancel.cancel();
+    let e = request.await.unwrap().unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled, "{e}");
+    gate.open();
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_requests_refuse_standard_methods_and_never_start_a_server() {
+    let h = harness(&[("phoxite", incremental_caps()), ("down", incremental_caps())]);
+    h.launcher.state("down").missing.store(true, Ordering::SeqCst);
+    h.open("open.mk", "x");
+    h.wait_status("phoxite", ServerStatus::Ready).await;
+    let s = h.launcher.state("phoxite");
+    // The manager's own handshake also asks `initialize`: snapshot it, the
+    // plugin's refused calls must not add to what the server saw.
+    let initialize_handshakes = s.requested("initialize").len();
+
+    for method in [
+        "initialize",
+        "initialized",
+        "shutdown",
+        "exit",
+        "$/cancelRequest",
+        "$/setTrace",
+        "textDocument/hover",
+        "workspace/executeCommand",
+        "window/logMessage",
+        "notebookDocument/didOpen",
+        "client/registerCapability",
+        "telemetry/event",
+        "",
+    ] {
+        let e = h.mgr.request("phoxite", method, None, None, Duration::from_secs(1)).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput, "{method:?}: {e}");
+        let e = h.mgr.notify("phoxite", method, None).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput, "{method:?}: {e}");
+    }
+    assert_eq!(
+        s.requested("initialize").len(),
+        initialize_handshakes,
+        "the refusal happens before the server sees anything"
+    );
+
+    // A server the language does not list is not-found, and asking never starts one.
+    let launches = h.mgr.servers().len();
+    let e = h.mgr.request("laravel-lsp", "laravel/anything", None, None, Duration::from_secs(1)).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::NotFound, "{e}");
+    let e = h.mgr.notify("laravel-lsp", "laravel/anything", None).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::NotFound, "{e}");
+    assert_eq!(h.mgr.servers().len(), launches);
+
+    // A configured server that cannot launch is not-found too, without hanging the call.
+    let e = h.mgr.request("down", "phoxite/anything", None, None, Duration::from_secs(1)).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::NotFound, "{e}");
+    h.mgr.shutdown_all().await;
+}

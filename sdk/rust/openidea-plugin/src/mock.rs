@@ -42,6 +42,7 @@ type SearchHandler = Box<dyn Fn(&TextQuery, u32) -> Result<TextSearch, Error>>;
 
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
+type LanguageServerHandler = Box<dyn Fn(&str, &str, Option<&str>) -> Result<String, Error>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WebSocketState {
@@ -180,6 +181,9 @@ struct State {
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
+    language_servers: Option<LanguageServerHandler>,
+    /// (server, method, params) of `language-servers.request`/`notify`, in order.
+    language_server_calls: Vec<(String, String, Option<String>)>,
     mcp_stdio: Option<Vec<String>>,
     extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
@@ -282,6 +286,17 @@ impl MockHost {
     /// Supplies search responses without duplicating the IDE search engine.
     pub fn on_search(&self, handler: impl Fn(&TextQuery, u32) -> Result<TextSearch, Error> + 'static) {
         self.state.borrow_mut().search = Some(Box::new(handler));
+    }
+    /// Answers `Project::language_server_request` calls without a language
+    /// server: receives `(server, method, params)` and returns the result as
+    /// JSON text. Without it, every request to a server is `NotFound`.
+    pub fn on_language_server(&self, handler: impl Fn(&str, &str, Option<&str>) -> Result<String, Error> + 'static) {
+        self.state.borrow_mut().language_servers = Some(Box::new(handler));
+    }
+    /// The plugin's `language-servers.request`/`notify` calls:
+    /// `(server, method, params)`, in order.
+    pub fn language_server_calls(&self) -> Vec<(String, String, Option<String>)> {
+        self.state.borrow().language_server_calls.clone()
     }
     /// Supplies read-only repository data.
     pub fn set_vcs_reads(&self, commits: Vec<CommitInfo>, path: &str, blame: Vec<BlameLine>, patch: Option<String>) {
@@ -2262,6 +2277,86 @@ pub mod current {
             }
             s.database_connections.push(key);
             Ok(())
+        })
+    }
+
+    /// The host's rule for `language-servers` methods, mirrored so plugin
+    /// tests fail here: the server's own methods only, never the standard ones.
+    fn allowed_plugin_method(method: &str) -> Result<(), Error> {
+        const NAMESPACES: [&str; 14] = [
+            "textDocument",
+            "workspace",
+            "window",
+            "notebookDocument",
+            "callHierarchy",
+            "typeHierarchy",
+            "completionItem",
+            "codeAction",
+            "codeLens",
+            "documentLink",
+            "inlayHint",
+            "workspaceSymbol",
+            "client",
+            "telemetry",
+        ];
+        if method.is_empty()
+            || method.len() > 256
+            || method.starts_with("$/")
+            || matches!(method, "initialize" | "initialized" | "shutdown" | "exit")
+            || NAMESPACES.iter().any(|ns| method.strip_prefix(ns).is_some_and(|rest| rest.starts_with('/')))
+        {
+            return Err(Error::Invalid(format!(
+                "{method:?}: language-servers carries the server's own methods only, not the standard ones"
+            )));
+        }
+        Ok(())
+    }
+
+    fn prepare_plugin_params(method: &str, params: Option<&str>) -> Result<Option<String>, Error> {
+        allowed_plugin_method(method)?;
+        match params {
+            None => Ok(None),
+            Some(params) if params.len() > 1 << 20 => {
+                Err(Error::Invalid("params are larger than 1048576 bytes".into()))
+            }
+            Some(params) if serde_json::from_str::<serde_json::Value>(params).is_err() => {
+                Err(Error::Invalid("params is not JSON".into()))
+            }
+            Some(params) => Ok(Some(params.to_owned())),
+        }
+    }
+
+    pub fn language_server_request(
+        _project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        let params = prepare_plugin_params(method, params)?;
+        with(|s| {
+            require(s, &format!("lsp:{server}"))?;
+            s.language_server_calls.push((server.to_owned(), method.to_owned(), params.clone()));
+            match &s.language_servers {
+                Some(handler) => handler(server, method, params.as_deref()),
+                None => Err(Error::NotFound(format!("no language server {server:?} is running for this project"))),
+            }
+        })
+    }
+    pub fn language_server_notify(
+        _project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<(), Error> {
+        let params = prepare_plugin_params(method, params)?;
+        with(|s| {
+            require(s, &format!("lsp:{server}"))?;
+            s.language_server_calls.push((server.to_owned(), method.to_owned(), params.clone()));
+            match &s.language_servers {
+                // A notification records and moves on; the answer is dropped.
+                Some(handler) => handler(server, method, params.as_deref()).map(|_| ()),
+                None => Err(Error::NotFound(format!("no language server {server:?} is running for this project"))),
+            }
         })
     }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
