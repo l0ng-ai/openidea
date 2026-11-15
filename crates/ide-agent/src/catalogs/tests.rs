@@ -222,6 +222,42 @@ async fn successful_refresh_replaces_models_and_efforts_and_old_sessions_cannot_
 }
 
 #[tokio::test]
+async fn a_session_adds_the_efforts_of_a_model_discovery_did_not_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    configure(tmp.path(), "one");
+    let mut harness = Harness::new();
+    let catalogs = Arc::new(AgentCatalogs::default());
+    let manager = make_manager(tmp.path(), catalogs.clone(), &harness);
+    let mut events = events(&manager);
+    manager.refresh_models(PROVIDER, false).unwrap();
+    harness.next().await.reply.send(Ok(response(&["first", "second"], &["low", "high"]))).unwrap();
+    completed(&mut events).await;
+    // A session on "second" reports its own efforts; one on a model the catalog lacks, or on
+    // "first" with other efforts, changes nothing.
+    let second = config::options_of(&response(&["second"], &["off", "auto"]));
+    manager.shared.remember(PROVIDER, Some(&second), None, Some("second"));
+    manager.shared.remember(PROVIDER, Some(&config::options_of(&response(&["gone"], &["x"]))), None, Some("gone"));
+    manager.shared.remember(PROVIDER, Some(&config::options_of(&response(&["first"], &["max"]))), None, Some("first"));
+    let efforts = |catalog: &AgentModelCatalog, model: &str| -> Vec<String> {
+        catalog.thought_levels[model][0].values.iter().map(|v| v.value.clone()).collect()
+    };
+    let catalog = manager.refresh_models(PROVIDER, false).unwrap();
+    assert_eq!(catalog.thought_levels.keys().map(String::as_str).collect::<Vec<_>>(), ["first", "second"]);
+    assert_eq!(efforts(&catalog, "first"), ["low", "high"]);
+    assert_eq!(efforts(&catalog, "second"), ["off", "auto"]);
+    let restored = make_manager(tmp.path(), Arc::default(), &harness).refresh_models(PROVIDER, false).unwrap();
+    assert_eq!(efforts(&restored, "second"), ["off", "auto"], "persisted with the project's catalog");
+    // Discovery again reads "first" only; "second" keeps what its session reported.
+    advance(&catalogs, 60);
+    while events.try_recv().is_ok() {}
+    manager.refresh_models(PROVIDER, true).unwrap();
+    harness.next().await.reply.send(Ok(response(&["first", "second"], &["medium"]))).unwrap();
+    let fresh = completed(&mut events).await;
+    assert_eq!(efforts(&fresh, "first"), ["medium"]);
+    assert_eq!(efforts(&fresh, "second"), ["off", "auto"]);
+}
+
+#[tokio::test]
 async fn legacy_cache_loads_without_claiming_authoritative_freshness() {
     let tmp = tempfile::tempdir().unwrap();
     configure(tmp.path(), "one");
