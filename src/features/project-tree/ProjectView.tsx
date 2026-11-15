@@ -57,7 +57,7 @@ import {
 import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
+import { presentationIcon, useJvmPresentation } from "@/ui/filePresentation";
 import {
   isModuleFolder,
   moduleFolderIcon,
@@ -66,7 +66,7 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "@/platform/projectType";
+import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {

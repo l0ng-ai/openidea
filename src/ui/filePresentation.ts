@@ -1,12 +1,12 @@
 /** Visible-file JVM presentation: one bounded IPC batch, shared cache and watcher. */
 import { useEffect, useMemo } from "react";
 import { create } from "zustand";
-import { fileIconName, useFileIconRevision, type IconName } from "@/ui/icons";
-import { call, commands, isTauri, onIdeEvent, type JvmPresentation } from "./ipc";
-import { basename, relativePath, useProject } from "./project";
-import { rootFor, type RootFolder } from "./languageSettings";
-import { useEffectiveRoots } from "./projectRoots";
-import { useProjectPresentation } from "./projectPresentation";
+import { fileIconName, useFileIconRevision, type IconName } from "./icons";
+import { call, commands, isTauri, onIdeEvent, type JvmPresentation } from "@/platform/ipc";
+import { basename, relativePath, useProject } from "@/platform/project";
+import { rootFor, type RootFolder } from "@/platform/languageSettings";
+import { useEffectiveRoots } from "@/platform/projectRoots";
+import { useProjectPresentation } from "@/platform/projectPresentation";
 
 const JVM = /\.(java|kt)$/;
 const MAX_CACHE = 4096;

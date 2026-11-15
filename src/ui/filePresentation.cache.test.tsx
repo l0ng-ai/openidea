@@ -4,8 +4,8 @@ const backend = vi.hoisted(() => ({
   resolve: vi.fn(),
   event: undefined as undefined | ((e: { created: string[]; modified: string[]; removed: string[] }) => void),
 }));
-vi.mock("./ipc", async (original) => ({
-  ...(await original<typeof import("./ipc")>()),
+vi.mock("@/platform/ipc", async (original) => ({
+  ...(await original<typeof import("@/platform/ipc")>()),
   isTauri: () => true,
   commands: { jvmFilePresentations: backend.resolve },
   onIdeEvent: (name: string, handler: typeof backend.event) => {
@@ -13,7 +13,9 @@ vi.mock("./ipc", async (original) => ({
     return () => {};
   },
 }));
-vi.mock("./projectPresentation", () => ({ useProjectPresentation: () => ({ spring: false, modules: new Map() }) }));
+vi.mock("@/platform/projectPresentation", () => ({
+  useProjectPresentation: () => ({ spring: false, modules: new Map() }),
+}));
 import { useFilePresentation, useFilePresentationIcons } from "./filePresentation";
 const answer = (path: string, kind = "interface") => ({
   path,

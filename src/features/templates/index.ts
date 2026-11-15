@@ -25,7 +25,7 @@ import { tagAtCaret, updateTag } from "./emmet/editor";
 import { loadEmmet } from "./emmet/model";
 import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
 import { tx } from "@/platform/i18n";
-import type { ProjectType } from "@/platform/projectType";
+import type { ProjectType } from "@/ui/projectType";
 
 const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || !toolWindowFocus)";
 const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
