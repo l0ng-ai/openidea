@@ -37,6 +37,7 @@ import {
 } from "./contextRun";
 import { runWithExecutor } from "./executors";
 import { debugWithAgent, jdwpLaunch } from "./javaDebug";
+import { attachesToChild, debugAttachingToChild } from "./pluginAttach";
 import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
@@ -171,6 +172,11 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
+    return;
+  }
+  // A plugin configuration whose debugger attaches to a process the run starts.
+  if (attachesToChild(config) && getAction("debug.attach")) {
+    await debugAttachingToChild(config, { show, prepared: true });
     return;
   }
   // Remote JVM Debug, Go Remote…: the debugger attaches, nothing is launched here.
@@ -665,6 +671,13 @@ export function activate(): () => void {
             debug: boolean;
             onExit: (code: number | null, stopped: boolean) => void;
           };
+          if (a.debug && attachesToChild(a.config)) {
+            if (!getAction("debug.attach")) throw new Error("Debugger unavailable");
+            const session = await debugAttachingToChild(a.config, { onExit: a.onExit });
+            if (!session || session.status === "failed") throw new Error("Run did not start");
+            if (session.runId === null && session.status === "finished") a.onExit(session.exitCode, !!session.stopped);
+            return;
+          }
           if (a.debug) {
             if (!getAction("debug.pluginStart")) throw new Error("Debugger unavailable");
             await executeActionOrThrow("debug.pluginStart", a);

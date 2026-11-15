@@ -599,6 +599,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         plugin::plugin_answer_command,
         plugin::plugin_finish_operation,
         plugin::plugin_prepare_debug_run,
+        plugin::plugin_debug_attach_target,
         plugin::plugin_terminal_session_spawn,
         plugin::plugin_terminal_session_close,
         plugin::plugin_parse_test_results,

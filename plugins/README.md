@@ -418,9 +418,22 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.9
+
+API 1.9.0 is in development on `main`. Use `engines.openidea = "^1.9"` and the
+matching SDK. Released 1.8 plugins keep working. New in 1.9:
+
+- The `launch-configurations` export (`LaunchConfigurations`, registration
+  `launch_configurations`, world `plugin-launch-configurations`): run
+  configurations with an `env` added to the run's environment and a `debugger`,
+  either `Debugger::Launch { language }` (the program starts under that
+  language's debugger) or `Debugger::AttachChild { kind, command_contains }`
+  (Debug runs the configuration and attaches to a process the run starts). See
+  _Environment and debugger_ under _Runs, terminal sessions and test results_.
+
 ### API 1.8
 
-API 1.8.0 is in development on `main`. Use `engines.openidea = "^1.8"` and the
+API 1.8.0 shipped with OpenIDEA 0.1.45. Use `engines.openidea = "^1.8"` and the
 matching SDK. Released 1.7 plugins keep working. New in 1.8:
 
 - `problems-changed` (activation `on-event:problems-changed`, event
@@ -671,6 +684,7 @@ then run `openidea-plugin check`.
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                    | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
 | `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                            | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 8 MiB (earlier hosts: 1 MiB), a larger side fails with `Invalid("diff too large: …")`.                                                                                                      |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
+| `LaunchConfigurations::launch_configurations(root)`                                                            | export `launch-configurations`               | API 1.9: optional `plugin-launch-configurations` world; SDK registration `launch_configurations`. The same list with `env` and `debugger`; preferred over `run-configurations`.                                                                                                                                                                           |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`           | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
 | `host::open_location(path, line, column)`                                                                      | `views.open-location`                        | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
@@ -1836,6 +1850,49 @@ Implement `RunConfigurations` and register `run_configurations`. Each returned
 valid list after an export failure. Entries without an approved program are not
 offered. Configuration exports run without a window or prompt context.
 
+#### Environment and debugger (API 1.9)
+
+Implement `LaunchConfigurations` and register `launch_configurations` instead
+to give configurations an environment and a debugger. Each
+`PluginLaunchConfiguration` wraps a `PluginRunConfiguration` (`config`) with:
+
+- `env`: variables added to the run's environment, at most 64. As with
+  `process` commands, a configuration only adds variables: a name the IDE's
+  own environment already has (`PATH`, …) makes the whole list invalid.
+- `debugger`: `None` keeps the default (Debug infers the debugger from a source
+  file in `args`). `Debugger::Launch { language }` starts `program` under the
+  debugger of that language id (its `[debugger]`), for programs whose arguments
+  name no source file. `Debugger::AttachChild { kind, command_contains }` makes
+  Debug run the configuration as Run does, then attach to the first process of
+  that Attach to Process kind (`dotnet`, `node`, `python`, `go` or `native`) the
+  run starts, optionally only one whose command line contains
+  `command_contains`. Only the run's own descendants are candidates; the IDE
+  waits for one while the run lasts, up to a minute, and otherwise leaves the
+  run going without the debugger. A host that predates a later variant treats
+  the configuration as having no debugger.
+
+```rust
+impl LaunchConfigurations for Functions {
+    fn launch_configurations(&mut self, _root: &str) -> Vec<PluginLaunchConfiguration> {
+        vec![PluginLaunchConfiguration {
+            config: PluginRunConfiguration {
+                id: "func".into(),
+                name: "Functions host".into(),
+                program: "func".into(),
+                args: vec!["start".into(), "--dotnet-isolated-debug".into()],
+                ..Default::default()
+            },
+            env: vec![("FUNCTIONS_WORKER_RUNTIME".into(), "dotnet-isolated".into())],
+            debugger: Some(Debugger::AttachChild { kind: "dotnet".into(), command_contains: None }),
+        }]
+    }
+}
+register_plugin!(Functions, launch_configurations);
+```
+
+A component exporting both uses `launch-configurations`. Plugins that call
+`run.start(config, args, true)` on such a configuration get the same Debug.
+
 For a static detector, `framework = "plugin"` is an API 1.4 manifest field. For
 either kind of configuration, it enables the optional `TestResults` export
 (registration `test_results`). `parse(config, chunk)` receives the short config
@@ -2458,7 +2515,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41 and 1.6.0 with 0.1.43; API 1.7.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45; API 1.9.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
