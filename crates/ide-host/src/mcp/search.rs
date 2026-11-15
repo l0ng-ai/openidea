@@ -233,10 +233,11 @@ fn page(call: &Call, default: usize) -> IdeResult<(Page, usize)> {
     Ok((page, page.end().min(MAX_RESULTS_UPPER_BOUND)))
 }
 
-/// Drops the results before the page, and the `nextOffset` when more follow.
+/// Drops the results before the page, and the `nextOffset` when more follow. A search finds
+/// [`MAX_RESULTS_UPPER_BOUND`] results at most, so no page starts past them.
 fn skip<T>(page: Page, items: &mut Vec<T>, more: bool) -> Option<usize> {
     items.drain(..page.offset.min(items.len()));
-    more.then_some(page.end())
+    (more && page.end() < MAX_RESULTS_UPPER_BOUND).then_some(page.end())
 }
 
 fn query(call: &Call, empty: &str) -> IdeResult<String> {
