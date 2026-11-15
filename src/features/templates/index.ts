@@ -102,6 +102,7 @@ const templateProjectTypes: Partial<Record<string, readonly ProjectType[]>> = {
   jupyter: ["python"],
   go: ["go"],
   "go-mod": ["go"],
+  zig: ["zig"],
   php: ["php"],
   "php-class": ["php"],
   java: ["maven", "gradle"],
