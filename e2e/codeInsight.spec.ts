@@ -98,6 +98,101 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
 });
 
+test("documentation shows beside the lookup instead of being clipped by it", async ({ workbench: page }, info) => {
+  const editor = await openSample(page);
+  await page.evaluate(async () => {
+    // Long enough for the pane to reach its max-width: a short doc leaves it at
+    // `width: max-content`, so the placement assertions would never exercise the room calculation.
+    const longDocs =
+      "Computes the order total including tax, discounts and shipping, rounded to the currency's scale. " +
+      "The result is cached until the order changes, so callers should not hold on to it across edits; " +
+      "ask for a fresh value after every update.";
+    const item = (label: string, detail: string) => ({
+      label,
+      labelDetail: "()",
+      detail,
+      kind: "method",
+      documentation: { kind: "markdown", value: `Docs for **${label}**. ${longDocs}` },
+      sortText: null,
+      filterText: null,
+      preselect: false,
+      deprecated: false,
+      insertText: `${label}()`,
+      isSnippet: false,
+      replaceRange: null,
+      replaceRangeTab: null,
+      additionalEdits: [],
+      commitCharacters: [],
+      command: null,
+      data: null,
+      server: 1,
+    });
+    window.__ipc.handlers.lsp_completion = () => ({
+      isIncomplete: false,
+      items: [item("total", "BigDecimal"), item("toDto", "OrderDto")],
+    });
+    const projectPath = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ projectPath);
+    const settings = structuredClone(useProject.getState().settings ?? {});
+    const editor = settings.editor ?? {};
+    settings.editor = {
+      ...editor,
+      completion: { ...editor.completion, showDocumentation: true, documentationDelay: 0 },
+    };
+    useProject.setState({ settings });
+  });
+  const popup = page.locator(".cm-tooltip-autocomplete");
+
+  const openLookup = async () => {
+    await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("order.");
+    await page.keyboard.press("Control+Space");
+    await expect(popup.getByText("total", { exact: true })).toBeVisible();
+    await expect(page.locator(".cm-completionInfo")).toContainText("Docs for");
+  };
+
+  const geometry = () =>
+    page.evaluate(() => {
+      const info = document.querySelector(".cm-completionInfo") as HTMLElement;
+      const list = (document.querySelector(".cm-tooltip-autocomplete") as HTMLElement).getBoundingClientRect();
+      const rect = info.getBoundingClientRect();
+      const overlapX = Math.max(0, Math.min(rect.right, list.right) - Math.max(rect.left, list.left));
+      const overlapY = Math.max(0, Math.min(rect.bottom, list.bottom) - Math.max(rect.top, list.top));
+      const side = info.classList.contains("cm-completionInfo-left")
+        ? "left"
+        : info.classList.contains("cm-completionInfo-right")
+          ? "right"
+          : "none";
+      return {
+        overlap: overlapX * overlapY,
+        visible: !!document.elementFromPoint(rect.left + 4, rect.top + 4)?.closest(".cm-completionInfo"),
+        inside: rect.left >= 0 && rect.right <= document.documentElement.clientWidth,
+        side,
+      };
+    });
+
+  await page.setViewportSize({ width: 760, height: 900 });
+  await openLookup();
+  await page.screenshot({ path: info.outputPath("completion-documentation.png"), animations: "disabled" });
+  const narrow = await geometry();
+  expect(narrow.overlap).toBe(0);
+  expect(narrow.visible).toBe(true);
+  expect(narrow.inside).toBe(true);
+  expect(narrow.side).toBe("left");
+
+  await page.keyboard.press("Escape");
+  await expect(popup).toBeHidden();
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await openLookup();
+  const wide = await geometry();
+  expect(wide.overlap).toBe(0);
+  expect(wide.visible).toBe(true);
+  expect(wide.inside).toBe(true);
+  expect(wide.side).toBe("right");
+});
+
 test("typing closes an open documentation tooltip", async ({ workbench: page }) => {
   const editor = await openSample(page);
   await page.evaluate(() => {
