@@ -243,7 +243,7 @@ export function age(ms: number, now = Date.now()): string {
   return `${Math.round(h / 24)}d`;
 }
 
-/** The status change worth a notification, if any. */
+/** Status-transition classification (tests / legacy). Runtime notify uses `attention` events. */
 export function attentionChange(
   prev: AgentStatus | undefined,
   next: AgentStatus,

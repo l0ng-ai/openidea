@@ -16,6 +16,7 @@
     "core:webview:allow-set-webview-background-color",
     "opener:default",
     "opener:allow-reveal-item-in-dir",
+    "notification:default",
     "dialog:default",
     "core:window:allow-destroy",
     "core:window:allow-close",

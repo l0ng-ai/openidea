@@ -3619,3 +3619,162 @@ async fn ephemeral_tasks_deny_write_permissions() {
     );
     mgr.shutdown();
 }
+
+fn attention_reasons(events: &[AgentEvent]) -> Vec<AgentAttentionReason> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Attention { reason, .. } => Some(*reason),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attention_finished_not_cancelled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let sink = events.clone();
+    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+
+    let done = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &done.id, AgentStatus::Ready).await;
+    assert!(attention_reasons(&events.lock()).contains(&AgentAttentionReason::Finished), "{:?}", *events.lock());
+    events.lock().clear();
+
+    let cancelled = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("wait"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &cancelled.id, AgentStatus::Running).await;
+    mgr.cancel(&cancelled.id, None).unwrap();
+    wait_for(&mgr, &cancelled.id, AgentStatus::Ready).await;
+    assert!(
+        !attention_reasons(&events.lock()).contains(&AgentAttentionReason::Finished),
+        "cancelled must not notify finished: {:?}",
+        *events.lock()
+    );
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attention_failed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent {
+        request_error: Some((codes::INTERNAL_ERROR, "boom".into())),
+        auth_on_new: true,
+        ..Default::default()
+    });
+    let mgr = manager(tmp.path(), agent);
+    let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let sink = events.clone();
+    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Failed).await;
+    assert!(attention_reasons(&events.lock()).contains(&AgentAttentionReason::Failed), "{:?}", *events.lock());
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attention_input_not_auto_bypass() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let sink = events.clone();
+    mgr.subscribe(Arc::new(move |e| sink.lock().push(e)));
+
+    let asked = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &asked.id, AgentStatus::NeedsInput).await;
+    assert!(attention_reasons(&events.lock()).contains(&AgentAttentionReason::Input), "{:?}", *events.lock());
+    events.lock().clear();
+    mgr.cancel(&asked.id, None).unwrap();
+    wait_for(&mgr, &asked.id, AgentStatus::Ready).await;
+
+    let bypassed = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("Fix"),
+            provider: "cursor".into(),
+            config: vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &bypassed.id, AgentStatus::Ready).await;
+    assert!(
+        !attention_reasons(&events.lock()).contains(&AgentAttentionReason::Input),
+        "auto-bypass must not notify input: {:?}",
+        *events.lock()
+    );
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn attention_not_emitted_on_restore() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent);
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "claude".into(),
+            config: Vec::new(),
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+
+    let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let events = Arc::new(Mutex::new(Vec::<AgentEvent>::new()));
+    let sink = events.clone();
+    let tasks = restored.subscribe(Arc::new(move |e| sink.lock().push(e)));
+    assert!(tasks.iter().any(|t| t.id == task.id));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(attention_reasons(&events.lock()).is_empty(), "snapshot restore must not re-notify: {:?}", *events.lock());
+    restored.shutdown();
+}

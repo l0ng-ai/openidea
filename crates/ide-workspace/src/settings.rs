@@ -30,12 +30,14 @@ pub enum SettingsScope {
 /// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
 /// what agents may do without asking (commands run without asking, the modes new tasks start in,
 /// whether new tasks ask for approvals).
-const USER_ONLY: [&[&str]; 5] = [
+const USER_ONLY: [&[&str]; 6] = [
     &["mcpServer"],
     &["editor", "customSchemes"],
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
     &["agents", "newTaskApprovals"],
+    // Native agent OS notifications: machine-local opt-in; projects must not enable/disable.
+    &["notifications", "agentBackground"],
 ];
 
 /// The [`USER_ONLY`] setting that writing `value` at `key` would set, as a dotted key.
@@ -1218,5 +1220,21 @@ mod tests {
         assert_eq!(s.agents.new_task_approvals, NewTaskApprovals::Ask);
         std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"bypass\"\n").unwrap();
         assert_eq!(settings.reload().agents.new_task_approvals, NewTaskApprovals::Ask);
+    }
+
+    #[test]
+    fn agent_background_notifications_are_a_user_setting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nagentBackground = true\n").unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(!settings.effective().notifications.agent_background);
+        assert!(settings.set(SettingsScope::Project, "notifications.agentBackground", json!(true)).is_err());
+        let s = settings.set(SettingsScope::Global, "notifications.agentBackground", json!(true)).unwrap();
+        assert!(s.notifications.agent_background);
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nagentBackground = false\n").unwrap();
+        assert!(settings.reload().notifications.agent_background);
     }
 }

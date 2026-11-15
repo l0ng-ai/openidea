@@ -108,6 +108,8 @@ export interface NotificationGroupValid {
 export interface NotificationsValid {
   balloons: boolean;
   sound: boolean;
+  /** Native OS notifications for agent tasks while OpenIDEA is in the background. */
+  agentBackground: boolean;
   groups: Record<string, NotificationGroupValid>;
 }
 
@@ -160,7 +162,12 @@ export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
   dateFormat: { overrideSystem: false, pattern: "dd.MM.yyyy", use24Hour: true, pretty: true },
 };
 
-export const DEFAULT_NOTIFICATIONS: NotificationsValid = { balloons: true, sound: false, groups: {} };
+export const DEFAULT_NOTIFICATIONS: NotificationsValid = {
+  balloons: true,
+  sound: false,
+  agentBackground: false,
+  groups: {},
+};
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (v && typeof v === "object" && !Array.isArray(v) ? (v as Obj) : {});
@@ -263,6 +270,7 @@ export function validateNotifications(raw: unknown): NotificationsValid {
   return {
     balloons: bool(n.balloons, DEFAULT_NOTIFICATIONS.balloons),
     sound: bool(n.sound, DEFAULT_NOTIFICATIONS.sound),
+    agentBackground: bool(n.agentBackground, DEFAULT_NOTIFICATIONS.agentBackground),
     groups,
   };
 }

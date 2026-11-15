@@ -22,10 +22,13 @@ pub fn agent_subscribe(
     state: State<'_, AppState>,
     on_event: Channel<AgentEvent>,
 ) -> IdeResult<Vec<AgentTask>> {
+    let label = window.label().to_owned();
+    let app = state.app.clone();
     agent::subscribe(
         &state.host,
         window.label(),
         Arc::new(move |e| {
+            crate::agent_notifications::on_event(&app, &label, &e);
             let _ = on_event.send(e);
         }),
     )

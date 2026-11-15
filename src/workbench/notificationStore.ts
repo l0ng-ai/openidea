@@ -154,7 +154,7 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     const rest = n.key ? s.items.filter((x) => x.key !== n.key) : s.items;
     return { items: [item, ...rest].slice(0, MAX_HISTORY) };
   });
-  if (balloon && prefs.sound) playSound();
+  if (balloon && prefs.sound && !n.silent) playSound();
   return id;
 }
 

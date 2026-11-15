@@ -16,6 +16,7 @@ dunce.workspace = true
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-notification = "2.8.1"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-mcp-bridge = "0.13"
 tauri-plugin-window-state = "2"
