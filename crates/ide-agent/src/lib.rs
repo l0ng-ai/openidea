@@ -1009,8 +1009,11 @@ impl AgentManager {
         task.emit_task();
 
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
-        let mut model_options =
-            target.category.as_deref() != Some("model") || previous.as_deref() == Some(value.as_str());
+        // The task's copy holds its model's per-model options unless a model switch the agent
+        // never reported dropped them: caching that copy would erase the model's known levels.
+        let mut model_options = (target.category.as_deref() != Some("model")
+            || previous.as_deref() == Some(value.as_str()))
+            && task.state.lock().task.config.iter().any(config::is_per_model_option);
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
@@ -2222,8 +2225,11 @@ impl Task {
                             o.current = Some(value);
                         }
                         s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                        // As in `set_config`: a copy without per-model options can't vouch for them.
                         let model = s.task.model.clone().filter(|_| {
-                            reply.get("configOptions").is_some() || option.category.as_deref() != Some("model")
+                            reply.get("configOptions").is_some()
+                                || (option.category.as_deref() != Some("model")
+                                    && s.task.config.iter().any(config::is_per_model_option))
                         });
                         let (provider, options) = (s.task.provider.clone(), s.task.config.clone());
                         drop(s);

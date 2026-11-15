@@ -1796,6 +1796,45 @@ async fn thinking_levels_are_remembered_per_provider_and_model() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn changing_an_idle_tasks_settings_keeps_its_models_effort_levels() {
+    // After a model switch no session reported, picking that model again or changing
+    // another setting must not record the task's effort-less copy as the model's levels.
+    for (option, value) in [("mode", "code"), ("model", "big")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        *agent.model_options.lock() = HashMap::from([
+            ("big".into(), effort_options(&["low", "high"], "high")),
+            ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+        ]);
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("again"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        mgr.shutdown();
+        let restored = manager(tmp.path(), agent);
+        restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+        restored.set_config(&task.id, "model", "big".into()).await.unwrap();
+        restored.set_config(&task.id, option, value.into()).await.unwrap();
+        let p = restored.providers().into_iter().find(|p| p.id == "claude").unwrap();
+        let big = p.thought_levels.get("big").and_then(|levels| levels.first());
+        assert_eq!(big.map(|o| o.values.len()), Some(2), "{option}: {:?}", p.thought_levels);
+        let saved: HashMap<String, Known> =
+            serde_json::from_slice(&std::fs::read(&restored.shared.paths.models_file).unwrap()).unwrap();
+        assert_eq!(saved["claude"].thought_levels, p.thought_levels, "{option}");
+        restored.shutdown();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn upfront_effort_is_validated_after_changing_model_before_the_prompt() {
     for (effort, applied) in [("medium", true), ("high", false)] {
         let tmp = tempfile::tempdir().unwrap();
