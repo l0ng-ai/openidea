@@ -75,7 +75,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   border-radius: inherit;
   background: color-mix(in srgb, var(--bg-popup) 82%, transparent);
   color: var(--fg-strong);
@@ -85,7 +85,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px 6px;
   cursor: default;
 }
@@ -95,13 +95,13 @@
   flex-wrap: wrap;
   align-items: center;
   min-width: 0;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .actions {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: auto;
 }
 /* Attach/reference buttons share the send button's 24px footprint and chrome. */
@@ -135,7 +135,7 @@
   display: grid;
   grid-template-columns: minmax(0, 80px) minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   margin-top: 8px;
 }
 .settingsLabel {
@@ -147,7 +147,7 @@
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-control);
   min-width: 0;
   padding: 0 4px 0 6px;
@@ -229,7 +229,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .effortValue {
   color: var(--fg-strong);
@@ -295,7 +295,7 @@
 .modeOption {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 24px;
   margin: 0 6px;
   padding: 0 8px;
@@ -318,7 +318,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   margin-top: 6px;
   padding: 8px 14px 2px;
   border-top: 1px solid var(--border);
@@ -329,7 +329,7 @@
   .bar {
     flex-direction: row;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-1-5);
   }
   .toolbar {
     flex-wrap: nowrap;
@@ -392,7 +392,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 10px 0;
   cursor: default;
 }
@@ -539,7 +539,7 @@
 .popupFooter {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
+  gap: var(--space-1) 14px;
   padding: 5px 12px 6px;
   border-top: 1px solid var(--border);
   color: var(--fg-subtle);

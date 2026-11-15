@@ -17,7 +17,7 @@
 .templateRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .icon {
   flex: none;
@@ -26,7 +26,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .variableDialog {
   --form-inset: calc((var(--space-3) + var(--space-4)) / 2);
@@ -51,7 +51,7 @@
 .kind {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: var(--h-row);
   padding: 0 8px;
   border-radius: var(--radius-row);

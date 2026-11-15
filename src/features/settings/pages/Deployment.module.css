@@ -12,7 +12,7 @@
 .serverRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-list-row);
   padding: 0 8px;
   cursor: default;
@@ -61,7 +61,7 @@
   flex: 1;
   min-width: 0;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .field > input {
   min-width: 0;
@@ -96,13 +96,13 @@
 .problem {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: 4px;
 }
 .secretRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 .testRow {
@@ -136,7 +136,7 @@
 .cellField {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .cellInput {
   width: 100%;
@@ -148,13 +148,13 @@
 .chooser {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 320px;
 }
 .chooserPath {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .chooserPath > input {
   flex: 1;
@@ -174,7 +174,7 @@
 .folderRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-list-row);
   padding: 0 8px;
   cursor: default;
@@ -190,14 +190,14 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 16px;
   color: var(--fg-subtle);
 }
 .groupMembers {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 8px 0;
 }
 .groupTitle {

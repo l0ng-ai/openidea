@@ -91,7 +91,7 @@
   flex-wrap: wrap;
   /* The changes chip sits above the line; the facts stay on that line's baseline. */
   align-items: flex-end;
-  gap: 2px 6px;
+  gap: var(--space-0-5) var(--space-1-5);
   min-width: 0;
   padding: 0 2px;
   overflow: hidden;
@@ -104,7 +104,7 @@
   flex: 0 1 auto;
   max-width: 100%;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: 22px;
   min-width: 0;
   color: var(--fg-secondary);
@@ -122,7 +122,7 @@
   max-width: 100%;
   align-items: center;
   /* The chips' own padding spaces them. */
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   overflow: hidden;
 }
@@ -144,7 +144,7 @@
   flex: 1 1 auto;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px 8px;
+  gap: var(--space-0-5) var(--space-2);
   min-width: 0;
 }
 /* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
@@ -154,7 +154,7 @@
   margin-left: auto;
   align-items: center;
   height: 22px;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -163,13 +163,13 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 /* What changed (files, commits) above the meters; both open the Changes pane. */
 .statusChips {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 100%;
   min-width: 0;
 }
@@ -177,7 +177,7 @@
   composes: surface from "../../ui/Chip.module.css";
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   max-width: 100%;
   min-width: 0;
   padding: 0 8px;
@@ -213,7 +213,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 4px 8px;
+  gap: var(--space-1) var(--space-2);
   min-height: 36px;
   padding: 9px 12px;
   background: var(--bg-feedback-warning);
@@ -345,7 +345,7 @@
 .messageFooter {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: var(--h-control-small);
   max-width: 100%;
   flex-wrap: wrap;
@@ -403,7 +403,7 @@
 }
 .messageActions {
   display: inline-flex;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 100%;
   flex-wrap: wrap;
   opacity: 0;
@@ -467,7 +467,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -523,14 +523,14 @@
 .editBar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 6px;
   font-size: var(--fs-small);
 }
 
 .editButtons {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-left: auto;
 }
 
@@ -760,7 +760,7 @@
 .thought summary {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   height: var(--h-row);
   color: var(--fg-muted);
@@ -798,7 +798,7 @@
 .tool {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   box-sizing: border-box;
   min-height: var(--h-row);
@@ -853,7 +853,7 @@
 .processSummary {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -901,7 +901,7 @@
 .processBody {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   max-height: calc(var(--h-row) * 16);
   overflow-y: auto;
   margin-top: 2px;
@@ -925,7 +925,7 @@
 
 .plan {
   display: grid;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .planTitle {
   font-weight: 600;
@@ -934,7 +934,7 @@
 .planItem {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .planDone {
   color: var(--fg-muted);
@@ -1042,7 +1042,7 @@
 
 .error {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-items: flex-start;
   color: var(--danger);
   white-space: pre-wrap;
@@ -1052,7 +1052,7 @@
 .working {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-muted);
 }
 
@@ -1074,7 +1074,7 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   align-self: center;
   width: 100%;
   max-width: calc(var(--session-content-width) + var(--space-3) * 2);
@@ -1085,12 +1085,12 @@
 .background {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .backgroundTask {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 24px;
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
@@ -1110,12 +1110,12 @@
 .queue {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .queued {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 28px;
   padding: 0 4px 0 8px;
   border-radius: var(--radius-row);
@@ -1170,7 +1170,7 @@
 .images {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin-top: 4px;
 }
 .imageItem {
@@ -1210,14 +1210,14 @@
 .attachments {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 6px;
+  gap: var(--space-1) var(--space-1-5);
   margin-top: 4px;
   font-size: var(--fs-small);
 }
 .attachment {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .changes {
@@ -1250,7 +1250,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 32px;
   flex: none;
   padding: 0 6px 0 10px;
@@ -1295,7 +1295,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .changeName {
   flex: 0 1 auto;
@@ -1327,7 +1327,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .changeGroupName {
   min-width: 0;
@@ -1342,7 +1342,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .changeCommitHash {
   flex: none;
@@ -1373,7 +1373,7 @@
 .subagent {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius-small);
@@ -1382,7 +1382,7 @@
 .subagentHead {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .subagentOpen {
@@ -1390,7 +1390,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 4px;
   margin: -2px -4px;
   border: 0;
@@ -1466,7 +1466,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 30px;
   padding: 0 8px 0 6px;
   border-bottom: 1px solid var(--border);
@@ -1477,7 +1477,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: hidden;
 }
 .crumb {
@@ -1523,12 +1523,12 @@
 .subagentStrip {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .subagentChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   max-width: 240px;
   height: 22px;
   padding: 0 8px;
@@ -1556,7 +1556,7 @@
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   max-height: 50vh;
   overflow-y: auto;
   /* The composer's width, so the card sits exactly over the box it belongs to. */
@@ -1598,7 +1598,7 @@
 .question {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   margin: 0;
   padding: 0;
@@ -1632,7 +1632,7 @@
 .questionChoices {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .question .questionChoices > * {
   border: 1px solid var(--border);
@@ -1658,7 +1658,7 @@
 .questionChoice {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .questionOptionText {
   display: flex;
@@ -1688,19 +1688,19 @@
 .questionBody {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .questionChoices {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 @container question-card (min-width: 640px) {
   .questionBodyWithPreview {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 12px;
+    gap: var(--space-3);
     align-items: start;
   }
   .questionBodyWithPreview .questionPreview {
@@ -1716,7 +1716,7 @@
   display: flex;
   flex-direction: column;
   grid-area: 1 / 1;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   visibility: hidden;
 }
@@ -1749,12 +1749,12 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .questionPager {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .questionPage {
   color: var(--fg-subtle);
@@ -1796,7 +1796,7 @@
 .tray {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .tray:empty {
   display: none;
@@ -1808,12 +1808,12 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .trayChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-row);
   padding: 0 var(--space-2);
   border: none;
@@ -1832,7 +1832,7 @@
 .trayPlan {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px var(--space-2) 4px calc(var(--space-2) * 2);
   font-size: var(--fs-small);
 }
