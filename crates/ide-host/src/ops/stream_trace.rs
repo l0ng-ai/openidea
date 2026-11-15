@@ -10,8 +10,8 @@ pub use ide_dap::{TracePhase, TraceProgress, TraceUnavailable};
 pub use ide_jvm_inspect::{AbortState, JvmValue};
 use ide_jvm_inspect::{CollectedTerminal, TraceCollected};
 use ide_streams::{
-    BoxKind, OpRole, RealRunPlan, RealRunRefusal, Record, Rejection, RootKind, StopContext, StreamChain,
-    TerminalOutcome, TraceRecording, TraceValue, find_chains, link_trace, real_run_plan,
+    BoxKind, RealRunPlan, RealRunRefusal, Record, Rejection, StopContext, StreamChain, TerminalOutcome, TraceRecording,
+    TraceValue, find_chains, link_trace, real_run_plan, recorded_steps,
 };
 pub use ide_streams::{Link, TraceBanner};
 use ide_syntax::{Snapshot, StructureService};
@@ -114,7 +114,9 @@ pub async fn debug_stream_chains(
 
 /// Runs the program from `thread_id`, stopped in `frame`, through the chain `chain_index` of
 /// [`debug_stream_chains`], recording each element, and leaves it stopped after the chain's
-/// terminal operation. Cancelling `request` stops recording while the program runs on.
+/// terminal operation. `range` is that chain's [`StreamChainInfo::range`]: an edit in between
+/// can move another chain to the same index. Cancelling `request` stops recording while the
+/// program runs on.
 #[allow(clippy::too_many_arguments)]
 pub async fn debug_stream_trace(
     host: &Host,
@@ -124,37 +126,56 @@ pub async fn debug_stream_trace(
     thread_id: i64,
     frame: StackFrame,
     chain_index: u32,
+    range: Range,
     on_progress: Channel<TraceProgress>,
 ) -> IdeResult<StreamTraceResult> {
     host.require_trust(window)?;
     let cancel = host.begin_project_request(window, request);
-    let result = trace(host, window, session, thread_id, frame, chain_index, &cancel, &on_progress).await;
+    let chain = ChainRef { frame, index: chain_index, range };
+    let result = trace(host, window, session, thread_id, chain, &cancel, &on_progress).await;
     host.end_request(request);
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The chain the UI chose, as [`debug_stream_chains`] listed it.
+struct ChainRef {
+    frame: StackFrame,
+    index: u32,
+    range: Range,
+}
+
 async fn trace(
     host: &Host,
     window: &str,
     session: DebugSessionId,
     thread_id: i64,
-    frame: StackFrame,
-    chain_index: u32,
+    chosen: ChainRef,
     cancel: &CancellationToken,
     on_progress: &Channel<TraceProgress>,
 ) -> IdeResult<StreamTraceResult> {
+    let line = chosen.frame.line;
     // `stream_trace` decides whether the session can trace, so the backend is assumed here.
-    let candidate = candidates(host, window, frame, true, true)
+    let candidate = candidates(host, window, chosen.frame, true, true)
         .await?
         .into_iter()
-        .nth(chain_index as usize)
-        .ok_or_else(|| IdeError::not_found("the stream chain is no longer at this stop"))?;
-    let (Some(chain), true) = (candidate.chain, candidate.info.available) else {
-        return Err(IdeError::invalid("this stream chain cannot be traced from this stop"));
+        .nth(chosen.index as usize)
+        .filter(|c| c.info.range == chosen.range);
+    let Some(candidate) = candidate else {
+        return Ok(StreamTraceResult::Failed { detail: "the chain changed; trace it again".into() });
+    };
+    if let Some(reason) = candidate.info.reason.clone() {
+        let reason = trace_unavailable(reason, line, candidate.chain.as_ref());
+        return Ok(StreamTraceResult::Unavailable { reason });
+    }
+    let Some(chain) = candidate.chain else {
+        return Err(IdeError::internal("an available stream chain has no parsed chain"));
     };
     let plan = real_run_plan(&chain).map_err(|e| IdeError::internal(format!("stream chain plan: {e:?}")))?;
     let plan_json = serde_json::to_value(&plan).map_err(|e| IdeError::internal(e.to_string()))?;
+    // `stream_trace` resumes the program before it looks at `cancel`.
+    if cancel.is_cancelled() {
+        return Ok(StreamTraceResult::Failed { detail: "cancelled before the trace started".into() });
+    }
     let progress = |p| {
         let _ = on_progress.send(p);
     };
@@ -186,7 +207,8 @@ struct Candidate {
 }
 
 /// The file's current text (the open buffer, else the disk) searched off the command thread.
-/// Frames outside Java sources have no chains.
+/// Frames outside readable Java sources have no chains: java-debug gives library frames
+/// `jdt://contents/…` paths.
 async fn candidates(
     host: &Host,
     window: &str,
@@ -212,8 +234,11 @@ async fn candidates(
             }
             return search(&Snapshot::doc(doc, snap.version, &snap.language, &snap.text));
         }
-        let text = project.text_of(&path)?;
-        let language: LanguageId = project.languages.detect(&path, text.lines().next());
+        let language: LanguageId = project.languages.detect(&path, None);
+        if language.as_str() != "java" {
+            return Ok(Vec::new());
+        }
+        let Ok(text) = project.text_of(&path) else { return Ok(Vec::new()) };
         search(&Snapshot::text(&language, &text))
     })
     .await
@@ -309,13 +334,26 @@ fn rejection(rejected: Rejection) -> ChainUnavailable {
     }
 }
 
-fn recorded_steps(chain: &StreamChain) -> Vec<String> {
-    let source = match (&chain.root_kind, &chain.root.call) {
-        (RootKind::Call, Some(call)) => call.name.clone(),
-        _ => String::new(),
-    };
-    let recording = chain.ops.iter().filter(|op| matches!(op.role, OpRole::Step { .. }));
-    std::iter::once(source).chain(recording.map(|op| op.name.clone())).collect()
+/// The same reasons as the bundle's refusals, for a chain that stopped being traceable between
+/// [`debug_stream_chains`] and [`debug_stream_trace`].
+fn trace_unavailable(reason: ChainUnavailable, line: u32, chain: Option<&StreamChain>) -> TraceUnavailable {
+    let unsupported = |detail: String| TraceUnavailable::Unsupported { detail };
+    match reason {
+        ChainUnavailable::NotAtChainStart => {
+            let start = chain.map_or(String::new(), |c| format!(", the chain starts on line {}", c.first_line + 1));
+            TraceUnavailable::NotAtChainStart { detail: format!("the stop is on line {}{start}", line + 1) }
+        }
+        ChainUnavailable::NoBackend => TraceUnavailable::NoBackend,
+        ChainUnavailable::NotTopFrame => unsupported("only the top frame can be traced".into()),
+        ChainUnavailable::InsideChainLambda => unsupported("the chain is already running".into()),
+        ChainUnavailable::NotJavaStreamRoot { root } => {
+            unsupported(format!("the stream {root} does not start in this statement"))
+        }
+        ChainUnavailable::LazyTerminal { op } => unsupported(format!("{op}() does not run the pipeline")),
+        ChainUnavailable::NoTerminal => unsupported("the chain has no terminal operation".into()),
+        ChainUnavailable::UnknownOperation { op } => unsupported(format!("unknown stream operation {op}()")),
+        ChainUnavailable::SyntaxError => unsupported("the statement does not parse".into()),
+    }
 }
 
 fn ready(
@@ -401,6 +439,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("threadId")?,
             c.arg("frame")?,
             c.arg("chainIndex")?,
+            c.arg("range")?,
             c.sender("onProgress")?,
         )
         .await

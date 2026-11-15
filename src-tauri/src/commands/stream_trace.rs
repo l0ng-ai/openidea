@@ -1,7 +1,7 @@
 //! Java Stream Debugger: stream chains at a stop and real-run traces (`ide_host::ops::stream_trace`).
 
 use crate::state::AppState;
-use ide_core::{DebugSessionId, IdeResult, RequestId};
+use ide_core::{DebugSessionId, IdeResult, Range, RequestId};
 use ide_dap::StackFrame;
 use ide_host::ops::stream_trace::{AbortState, StreamChainInfo, StreamTraceResult, TraceProgress};
 use tauri::ipc::Channel;
@@ -20,8 +20,8 @@ pub async fn debug_stream_chains(
     ide_host::ops::stream_trace::debug_stream_chains(&state.host, window.label(), session, frame, top).await
 }
 
-/// Traces chain `chain_index` of [`debug_stream_chains`] while the program runs it; cancelling
-/// `request` stops recording.
+/// Traces chain `chain_index` of [`debug_stream_chains`], whose `range` the UI showed, while the
+/// program runs it; cancelling `request` stops recording.
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
@@ -33,6 +33,7 @@ pub async fn debug_stream_trace(
     thread_id: i64,
     frame: StackFrame,
     chain_index: u32,
+    range: Range,
     on_progress: Channel<TraceProgress>,
 ) -> IdeResult<StreamTraceResult> {
     ide_host::ops::stream_trace::debug_stream_trace(
@@ -43,6 +44,7 @@ pub async fn debug_stream_trace(
         thread_id,
         frame,
         chain_index,
+        range,
         crate::commands::sender(on_progress),
     )
     .await

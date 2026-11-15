@@ -2,7 +2,7 @@ use ide_core::{CancellationToken, LanguageId};
 use ide_language::{Syntax, SyntaxCache};
 use ide_streams::{
     BoxKind, Link, RealRunPlan, RealRunRefusal, Record, RootKind, StepKind, StepSpec, StopContext, StreamChain,
-    TerminalOutcome, TraceBanner, TraceRecording, TraceValue, find_chains, link_trace, real_run_plan,
+    TerminalOutcome, TraceBanner, TraceRecording, TraceValue, find_chains, link_trace, real_run_plan, recorded_steps,
 };
 use ide_syntax::{Snapshot, StructureService};
 use std::sync::{Arc, OnceLock};
@@ -106,6 +106,17 @@ fn plan_marks_parallel() {
     assert!(modifiers.sequentialize);
     assert_eq!(specs(&modifiers.steps), [("sequential", 0, 0), ("map", 1, 0), ("parallel", 0, 0)]);
     assert_eq!(modifiers.step_kinds, [StepKind::Sync]);
+}
+
+#[test]
+fn recorded_steps_follow_the_plan() {
+    let collection = only_chain("C_PLAN_COLLECTION");
+    assert_eq!(recorded_steps(&collection), ["stream", "filter", "map", "sorted", "map"]);
+    assert_eq!(recorded_steps(&collection).len(), real_run_plan(&collection).unwrap().step_kinds.len() + 1);
+    let modifiers = only_chain("C_PARALLEL");
+    assert_eq!(recorded_steps(&modifiers), ["parallelStream", "map"]);
+    assert_eq!(recorded_steps(&modifiers).len(), real_run_plan(&modifiers).unwrap().step_kinds.len() + 1);
+    assert_eq!(recorded_steps(&only_chain("C_PLAN_LOCAL")), ["", "filter"]);
 }
 
 #[test]

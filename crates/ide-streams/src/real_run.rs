@@ -91,6 +91,17 @@ pub fn real_run_plan(chain: &StreamChain) -> Result<RealRunPlan, RealRunRefusal>
     })
 }
 
+/// Names of the recorded steps, indexed like [`Record::step`]: the root call's name (empty for a
+/// stream held in a local), then each operation [`real_run_plan`] gives a step kind.
+pub fn recorded_steps(chain: &StreamChain) -> Vec<String> {
+    let source = match (&chain.root_kind, &chain.root.call) {
+        (RootKind::Call, Some(call)) => call.name.clone(),
+        _ => String::new(),
+    };
+    let recording = chain.ops.iter().filter(|op| matches!(op.role, OpRole::Step { .. }));
+    std::iter::once(source).chain(recording.map(|op| op.name.clone())).collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceRecording {
