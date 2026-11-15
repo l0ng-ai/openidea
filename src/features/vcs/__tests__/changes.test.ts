@@ -229,6 +229,97 @@ describe("several repositories", () => {
   });
 });
 
+describe("Group By › Repository off", () => {
+  const at = (path: string, unstaged: FileStatus["unstaged"] = "modified", staged: FileStatus["staged"] = null) => ({
+    path,
+    relPath: path.split("/").slice(3).join("/"),
+    staged,
+    unstaged,
+    renamedFrom: null,
+  });
+  // Two repositories holding the same repository-relative path.
+  const repos = ["/w/api", "/w/sdk"];
+  const twins = [at("/w/api/src/config.ts"), at("/w/sdk/src/config.ts"), at("/w/sdk/src/client.ts")];
+  const keys = (nodes: readonly ChangeNode[]): string[] => nodes.flatMap((n) => [n.key, ...keys(n.children ?? [])]);
+  const files = (nodes: readonly ChangeNode[]) =>
+    changeFileNodes(nodes).map((n) => `${n.label} ${n.path} ${n.detail || "-"}`);
+
+  it("lists the files of all repositories together, told apart by their directory", () => {
+    const tree = buildChangeTree(twins, "/w", false, undefined, repos, false, {}, false);
+    expect(shape(tree)).toEqual(["Changes", "  client.ts", "  config.ts", "  config.ts"]);
+    expect(files(tree)).toEqual([
+      "client.ts /w/sdk/src/client.ts sdk/src",
+      "config.ts /w/api/src/config.ts api/src",
+      "config.ts /w/sdk/src/config.ts sdk/src",
+    ]);
+    const all = keys(tree);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it("keeps directory grouping, with each repository's directories apart", () => {
+    const tree = buildChangeTree(twins, "/w", true, undefined, repos, false, {}, false);
+    expect(shape(tree)).toEqual([
+      "Changes",
+      "  api/src",
+      "    config.ts",
+      "  sdk/src",
+      "    client.ts",
+      "    config.ts",
+    ]);
+    expect(tree[0]!.children!.map((n) => [n.path, n.files.length])).toEqual([
+      ["/w/api/src", 1],
+      ["/w/sdk/src", 2],
+    ]);
+    const all = keys(tree);
+    expect(new Set(all).size).toBe(all.length);
+  });
+
+  it("shows a repository outside the project by its absolute directory", () => {
+    const outside = [at("/w/README.md"), at("/x/lib/src/Lib.kt")];
+    const flat = buildChangeTree(outside, "/w", false, undefined, ["/w", "/x/lib"], false, {}, false);
+    expect(files(flat)).toEqual(["Lib.kt /x/lib/src/Lib.kt /x/lib/src", "README.md /w/README.md -"]);
+    const dirs = buildChangeTree(outside, "/w", true, undefined, ["/w", "/x/lib"], false, {}, false);
+    expect(shape(dirs)).toEqual(["Changes", "  /x/lib/src", "    Lib.kt", "  README.md"]);
+    expect(dirs[0]!.children![0]!.path).toBe("/x/lib/src");
+  });
+
+  it("applies to every group, staging groups and change lists included", () => {
+    const mixed = [...twins, at("/w/api/new.txt", "untracked"), at("/w/sdk/src/both.ts", "modified", "modified")];
+    const noRepoNodes = (tree: ChangeNode[]) =>
+      tree.every((g) => g.children!.every((n) => n.type === "file" && !repos.includes(n.path!)));
+    expect(noRepoNodes(buildChangeTree(mixed, "/w", false, undefined, repos, false, {}, false))).toBe(true);
+    expect(noRepoNodes(buildChangeTree(mixed, "/w", false, undefined, repos, true, {}, false))).toBe(true);
+    const lists = { active: "default", lists: [{ id: "default", name: "Changes", comment: "" }], files: {} };
+    const listed = buildChangeTree(mixed, "/w", false, lists as never, repos, false, {}, false);
+    expect(noRepoNodes(listed)).toBe(true);
+    expect(changeFileNodes(listed).every((n) => n.changelist === "default" || n.group === "unversioned")).toBe(true);
+  });
+
+  it("checks and commits files of every repository from the one flat group", () => {
+    const [changes] = buildChangeTree(twins, "/w", false, undefined, repos, false, {}, false);
+    expect(aggregateCheck(changes!.files, new Map())).toMatchObject({ checked: true, on: 3 });
+    const checks = new Map<string, CheckState>([["/w/api/src/config.ts", "none"]]);
+    expect(aggregateCheck(changes!.files, checks)).toMatchObject({ checked: false, indeterminate: true, on: 2 });
+    const plan = planCommit(twins, checks);
+    expect(plan.included.map((f) => f.path)).toEqual(["/w/sdk/src/config.ts", "/w/sdk/src/client.ts"]);
+    expect(commitRepos(planCommit(twins, new Map()).included, repos, "/w/api")).toEqual(["/w/sdk", "/w/api"]);
+  });
+
+  it("is on by default: a repository level as before", () => {
+    expect(buildChangeTree(twins, "/w", true, undefined, repos, false, {})).toEqual(
+      buildChangeTree(twins, "/w", true, undefined, repos, false, {}, true),
+    );
+    expect(shape(buildChangeTree(twins, "/w", false, undefined, repos))).toEqual([
+      "Changes",
+      "  api",
+      "    config.ts",
+      "  sdk",
+      "    client.ts",
+      "    config.ts",
+    ]);
+  });
+});
+
 describe("ignore targets", () => {
   const group = (roots: ChangeNode[], id: string) => roots.find((n) => n.group === id)!;
 

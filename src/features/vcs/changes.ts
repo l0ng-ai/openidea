@@ -122,6 +122,8 @@ function fileNode(fs: FileStatus, root: string, group: GroupId, flat: boolean, s
 interface Trie {
   dirs: Map<string, Trie>;
   files: FileStatus[];
+  /** Absolute path of the directory. */
+  path?: string;
 }
 
 function dirNodes(trie: Trie, prefix: string, root: string, group: GroupId, scope: string = group): ChangeNode[] {
@@ -147,7 +149,7 @@ function dirNodes(trie: Trie, prefix: string, root: string, group: GroupId, scop
       group,
       children,
       files,
-      path: `${root}/${rel}`,
+      path: node.path!,
     });
   }
   const files = [...trie.files].sort((a, b) => baseName(a.path).localeCompare(baseName(b.path)));
@@ -165,13 +167,18 @@ function childNodes(files: readonly FileStatus[], root: string, group: GroupId, 
   if (groupByDir) {
     const trie: Trie = { dirs: new Map(), files: [] };
     for (const f of files) {
-      const rel = relTo(root, stripSlash(f.path));
+      const path = stripSlash(f.path);
+      const rel = relTo(root, path);
       const parts = rel.split("/");
       parts.pop();
+      // Outside the root (a repository elsewhere, not grouped by repository): from its absolute path.
+      if (rel === path && parts[0] === "" && parts.length > 1) parts.splice(0, 2, `/${parts[1]}`);
       let t = trie;
+      let at = rel === path ? "" : `${root}/`;
       for (const p of parts) {
+        at += t === trie ? p : `/${p}`;
         let next = t.dirs.get(p);
-        if (!next) t.dirs.set(p, (next = { dirs: new Map(), files: [] }));
+        if (!next) t.dirs.set(p, (next = { dirs: new Map(), files: [], path: at }));
         t = next;
       }
       t.files.push(f);
@@ -236,8 +243,8 @@ function tagList(nodes: ChangeNode[], id: string): ChangeNode[] {
  * children. With change lists, "Changes" is split into one group per list
  * (`ChangelistState.files` keys are project-relative paths). With several
  * repositories (`repos`), each group's files are grouped by repository first, with
- * each repository's branch (`heads`) beside its name. With `byStaging`, "Changes"
- * becomes "Staged Changes" and "Unstaged Changes" instead.
+ * each repository's branch (`heads`) beside its name, unless `byRepo` is off. With
+ * `byStaging`, "Changes" becomes "Staged Changes" and "Unstaged Changes" instead.
  */
 export function buildChangeTree(
   status: readonly FileStatus[],
@@ -247,7 +254,9 @@ export function buildChangeTree(
   repos: readonly string[] = [],
   byStaging = false,
   heads: Readonly<Record<string, RepoHead>> = {},
+  byRepo = true,
 ): ChangeNode[] {
+  const repoRoots = byRepo ? repos : [];
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
     const g = groupOf(fs);
@@ -267,7 +276,7 @@ export function buildChangeTree(
       ];
       for (const [side, own] of sides) {
         if (!own.length) continue;
-        const children = repoNodes(own, root, side, groupByDir, side, repos, heads);
+        const children = repoNodes(own, root, side, groupByDir, side, repoRoots, heads);
         roots.push({
           key: `group:${side}`,
           type: "group",
@@ -295,7 +304,7 @@ export function buildChangeTree(
           type: "group",
           label: l.name,
           group: g,
-          children: tagList(repoNodes(own, root, g, groupByDir, scope, repos, heads), l.id),
+          children: tagList(repoNodes(own, root, g, groupByDir, scope, repoRoots, heads), l.id),
           files: own,
           changelist: l.id,
           active: l.id === lists.active,
@@ -305,7 +314,7 @@ export function buildChangeTree(
       continue;
     }
     if (!files.length) continue;
-    const children = repoNodes(files, root, g, groupByDir, g, repos, heads);
+    const children = repoNodes(files, root, g, groupByDir, g, repoRoots, heads);
     roots.push({ key: `group:${g}`, type: "group", label: GROUP_LABEL[g], group: g, children, files });
   }
   return roots;
