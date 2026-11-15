@@ -114,6 +114,8 @@ pub(crate) struct Session {
     pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+    pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
+    pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
     pub(crate) quirks: kotlin_lsp::Quirks,
     pub(crate) unity_startup_activity: Mutex<Instant>,
@@ -270,6 +272,8 @@ impl Session {
             jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
+            stream_tracer: parking_lot::Mutex::new(None),
+            stream_trace: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),
             unity_startup_activity: Mutex::new(Instant::now()),
         }

@@ -1,6 +1,7 @@
 //! Protocol flow against an in-memory fake adapter.
 
 mod jvm_inspect;
+mod stream_trace;
 
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
@@ -132,6 +133,8 @@ struct Script {
     continue_reply: Option<Value>,
     /// Answer `continue` and stop at a breakpoint again, instead of letting the program exit.
     stop_after_continue: bool,
+    /// Answer `stepOut` and stop at once, as java-debug does after a call returns.
+    stop_after_step_out: bool,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
@@ -185,6 +188,7 @@ impl Default for Script {
             hang_up_after_stop: false,
             continue_reply: None,
             stop_after_continue: false,
+            stop_after_step_out: false,
             step_reason: None,
             refuse_next: false,
             invalidated_after_stop: false,
@@ -507,6 +511,10 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(json!({"type": "event", "event": "terminated"}));
             }
             "pause" if script.hang_up_on_pause => break,
+            "stepOut" if script.stop_after_step_out => {
+                ok!(msg, Value::Null);
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}));
+            }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "redefineClasses" => {
                 send!(
