@@ -86,7 +86,7 @@ import {
   PAGE,
 } from "./logStore";
 import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
-import { KIND_COLOR, baseName, dirName, fileCount, formatTime, relTo, type EffectiveKind } from "./model";
+import { KIND_COLOR, dirName, fileCount, formatTime, relTo, renameFrom, type EffectiveKind } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
 import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
@@ -3070,7 +3070,7 @@ function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile
         {node.name}
       </span>
       {flat && dirName(f.path) && <span className={styles.fileDir}>{dirName(f.path)}</span>}
-      {f.oldPath && <span className={styles.fileDir}>{tx`renamed from ${baseName(f.oldPath)}`}</span>}
+      {f.oldPath && <span className={styles.fileDir}>{renameFrom(f.path, f.oldPath)}</span>}
       {stats && <LineStats added={stats.added} removed={stats.removed} />}
     </span>
   );
