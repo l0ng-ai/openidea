@@ -39,7 +39,7 @@ import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platfo
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
-import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
+import { IconButton, Select, Spinner, T, isPopupOpen, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
@@ -218,6 +218,10 @@ const editableExtensions = (): Extension => [history(), keymap.of(historyKeymap)
 type Side = "a" | "b";
 type ViewUpdateFn = (u: { docChanged: boolean; selectionSet: boolean }) => void;
 
+/** Esc alone, not while composing text. */
+const plainEscape = (e: KeyboardEvent) =>
+  e.key === "Escape" && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey && !e.nativeEvent.isComposing;
+
 /** Whether `e` is one of the strokes bound to `actionId`. */
 function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   const stroke = strokeOf(e.nativeEvent);
@@ -229,6 +233,7 @@ export function DiffEditor({
   toolbarActions,
   onNeighbour,
   onJumpToSource,
+  onClose,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -240,6 +245,8 @@ export function DiffEditor({
   onNeighbour?: (data: DiffData) => void;
   /** Called as Jump to Source opens the file in an editor: a modal host closes, or the editor stays hidden behind it. */
   onJumpToSource?: () => void;
+  /** Closes the diff's editor tab (Esc, IDEA's Close Diff Editor); hosts that aren't tabs leave it out. */
+  onClose?: () => void;
 }) {
   const data = input.data as DiffData;
   const { path, left, right } = data;
@@ -976,6 +983,18 @@ export function DiffEditor({
     closeFind();
     return true;
   };
+  /** Select Opposite Diff Pane (⌃⇧⇥): the other side keeps its own caret, as in IDEA. */
+  const focusOpposite = () => {
+    const views = viewsRef.current;
+    if (!views?.a) return false;
+    (focusedSide.current === "a" ? views.b : views.a).focus();
+    return true;
+  };
+  const close = () => {
+    if (!onClose) return false;
+    onClose();
+    return true;
+  };
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.defaultPrevented) return;
     if (isStrokeOf(e, "find.inFile")) openFind(false);
@@ -984,7 +1003,8 @@ export function DiffEditor({
       if (!findOpen.current) findSide.current = focusedSide.current;
       if (!searchAgain(findTarget, isStrokeOf(e, "find.next"))) openFind(false);
     } else if (e.key === "Escape" && findOpen.current) closeFind();
-    else return;
+    // Esc that nothing in the diff took (find bar, selection, completion) closes its tab, as in IDEA.
+    else if (!plainEscape(e) || isPopupOpen() || !close()) return;
     e.preventDefault();
     e.stopPropagation();
   };
@@ -1122,6 +1142,8 @@ export function DiffEditor({
     applyChange,
     file,
     showSettings,
+    focusOpposite,
+    close,
     viewer: viewerOf,
   });
   useLayoutEffect(() => {
@@ -1135,6 +1157,8 @@ export function DiffEditor({
       applyChange,
       file,
       showSettings,
+      focusOpposite,
+      close,
       viewer: viewerOf,
     });
   });
@@ -1348,6 +1372,14 @@ export function DiffEditor({
             title="Show Diff in New Window"
             size="small"
             onClick={() => void executeAction("vcs.showDiffInNewWindow", data)}
+          />
+        )}
+        {auxiliaryWindow()?.kind === "diff" && getAction("vcs.showDiffInEditorTab") && (
+          <IconButton
+            icon="editor-only"
+            title="Show Diff in Editor Tab"
+            size="small"
+            onClick={() => void executeAction("vcs.showDiffInEditorTab")}
           />
         )}
         <IconButton

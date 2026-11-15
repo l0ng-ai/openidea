@@ -1,4 +1,8 @@
 {
+  "Select Opposite Diff Pane": "Select Opposite Diff Pane",
+  "Close Diff Editor": "Close Diff Editor",
+  "Show Diff in Editor Tab": "Show Diff in Editor Tab",
+  "Cannot show diff in an editor tab": "Cannot show diff in an editor tab",
   "Make configurations pinned by default": "Make configurations pinned by default",
   "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.": "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.",
   "Cannot paste the image into {name}": "Cannot paste the image into {name}",

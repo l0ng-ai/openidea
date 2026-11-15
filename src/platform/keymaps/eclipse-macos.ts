@@ -97,6 +97,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "diff.nextDifference": ["Ctrl+F7"],
   "diff.prevFile": [],
   "diff.nextFile": [],
+  "diff.focusOppositePane": [],
   "navigate.nextOccurrence": [],
   "editor.nextTab": ["Meta+F6", "Meta+Alt+Right"],
   "db.nextResultTab": ["Meta+F6", "Meta+Alt+Right"],
