@@ -112,6 +112,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         app::languages,
         app::settings_get,
         app::settings_get_global,
+        app::settings_removed_theme,
         app::settings_set,
         app::settings_export,
         app::settings_import,

@@ -408,6 +408,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "settings_export"
             | "settings_get"
             | "settings_get_global"
+            | "settings_removed_theme"
             | "settings_import"
             | "settings_list_jetbrains_ides"
             | "settings_read_jetbrains"

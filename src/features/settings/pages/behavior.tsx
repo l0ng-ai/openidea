@@ -41,6 +41,7 @@ import { LOCALES, SUPPORTED_LOCALES, tx, useT, useTx } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
 import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 import { themePreview } from "@/workbench/quickSwitch";
+import { selectPage } from "../model/staging";
 
 const BUILTIN_THEME_LABELS = BUILTIN_THEMES.map((t) => t.label);
 
@@ -103,6 +104,10 @@ function ThemeRow() {
         className={styles.themeSelect}
         disabled={sync}
       />
+      {/* As in IntelliJ IDEA: most themes are plugins, so point at the marketplace's. */}
+      <button type="button" className={styles.link} onClick={() => selectPage("plugins#themes")}>
+        <T>Get more themes</T>
+      </button>
       <span className={clsx(styles.inline, matched && styles.matched)}>
         <Checkbox
           checked={sync}
@@ -840,7 +845,14 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Theme",
-            keywords: ["Sync with OS", ...BUILTIN_THEME_LABELS, "preferred theme"],
+            keywords: [
+              "Sync with OS",
+              ...BUILTIN_THEME_LABELS,
+              "preferred theme",
+              "Get more themes",
+              "marketplace",
+              "plugins",
+            ],
             component: ThemeRow,
           },
           {
