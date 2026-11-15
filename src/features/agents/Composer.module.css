@@ -30,7 +30,7 @@
 .field :global(.cm-editor) {
   background: transparent;
   color: var(--fg-strong);
-  font-size: var(--fs-ui);
+  font-size: var(--agent-fs-ui, var(--fs-ui));
 }
 .field :global(.cm-editor.cm-focused) {
   outline: none;

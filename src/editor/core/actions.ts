@@ -8,7 +8,7 @@ import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { focusedSoftWrapSurface } from "@/workbench/softWrap";
-import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom } from "@/workbench/contributions";
+import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom, stepSurfaceFontZoomIn } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
 import {
   addCaretsToLineEnds,
@@ -117,7 +117,12 @@ function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
   };
 }
 
-/** Routes keyboard font zoom to focus, then the active editor slot. */
+function activePaneEditorFocus(): Element | null {
+  if (typeof document === "undefined") return null;
+  return document.querySelector(`[data-pane-id="${useTabs.getState().activePane}"] [data-editor-focus]`);
+}
+
+/** Routes keyboard font zoom to focus, then the active editor slot or pane surface. */
 function stepSurfaceFontSize(delta: 1 | -1): void {
   const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
   if (activeEl) {
@@ -133,9 +138,28 @@ function stepSurfaceFontSize(delta: 1 | -1): void {
   }
 
   const slot = activeSlot();
-  if (!slot?.view) return;
+  if (!slot?.view) {
+    stepSurfaceFontZoomIn(activePaneEditorFocus(), delta);
+    return;
+  }
   stepAllEditorsFontZoom(slot.view, delta);
   if (!slot.view.hasFocus && !getContext().popupOpen) slot.view.focus();
+}
+
+function resetFontSize(): void {
+  const activeEl = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+  if (activeEl) {
+    if (stepFocusedSurfaceFontZoom(0, { isolatedOnly: true })) return;
+    if (!activeEl.closest?.(".cm-editor") && !activeSlot()?.view) {
+      if (stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, { isolatedOnly: true })) return;
+    }
+  } else if (!activeSlot()?.view) {
+    if (stepSurfaceFontZoomIn(activePaneEditorFocus(), 0, { isolatedOnly: true })) return;
+  }
+  resetAllEditorsFontZoom();
+  if (typeof document !== "undefined") {
+    resetSurfaceFontZoom();
+  }
 }
 
 // --- extend / shrink selection ---------------------------------------------------
@@ -938,12 +962,7 @@ export function registerEditorActions(): () => void {
       category: "View",
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
-      run: () => {
-        resetAllEditorsFontZoom();
-        if (typeof document !== "undefined") {
-          resetSurfaceFontZoom();
-        }
-      },
+      run: resetFontSize,
     },
     {
       id: "editor.increaseFontSize",

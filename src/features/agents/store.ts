@@ -20,6 +20,7 @@ import type {
   Isolation,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
+import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -518,6 +519,7 @@ export function disconnect() {
   arrivedWhileLoading.clear();
   streamingReply.clear();
   modelFlights.clear();
+  resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
     error: null,
@@ -576,6 +578,7 @@ function onEvent(e: AgentEvent) {
         organize,
         ...(s.docked === e.id ? { docked: null } : {}),
       });
+      clearAgentTaskFontZoom(sessionKey(e.id));
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -1274,6 +1277,7 @@ export async function discardEphemeral(task: string): Promise<void> {
       lastComposer: state.lastComposer === task ? HOME : state.lastComposer,
     };
   });
+  clearAgentTaskFontZoom(sessionKey(task));
   void editorService().closeInput?.(sessionKey(task));
 }
 

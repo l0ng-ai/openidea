@@ -143,6 +143,8 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
+  onTabClose?(tabId: string, input: EditorInput): void;
   /**
    * Whether the tab is busy (a process is running, like a terminal session's):
    * closing its last tab asks first, and tab-limit eviction skips it. May be
@@ -372,6 +374,11 @@ const EditorShown = createContext(true);
 export const EditorShownProvider = EditorShown.Provider;
 /** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
 export const useEditorShown = () => useContext(EditorShown);
+
+const EditorTabId = createContext<string | null>(null);
+export const EditorTabIdProvider = EditorTabId.Provider;
+/** Unique `Tab.id` of the enclosing custom editor tab, or `null` outside an editor pane. */
+export const useEditorTabId = () => useContext(EditorTabId);
 
 const ToolWindowShown = createContext(true);
 export const ToolWindowShownProvider = ToolWindowShown.Provider;
@@ -1942,21 +1949,48 @@ export async function synchronizeDocumentIndexes(path: string, purpose: Document
   return complete.every((c) => c !== false);
 }
 
-/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
-const fontZoomSurfaces = new Map<Element, (delta: number) => void>();
+export interface FontZoomSurfaceOptions {
+  /** When true, `editor.resetFontSize` resets only this surface when focused, and leaves it untouched otherwise. */
+  isolated?: boolean;
+}
 
-export function registerFontZoomSurface(host: Element, step: (delta: number) => void): () => void {
-  fontZoomSurfaces.set(host, step);
+/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
+const fontZoomSurfaces = new Map<Element, { step: (delta: number) => void; isolated: boolean }>();
+
+export function registerFontZoomSurface(
+  host: Element,
+  step: (delta: number) => void,
+  options?: FontZoomSurfaceOptions,
+): () => void {
+  fontZoomSurfaces.set(host, { step, isolated: !!options?.isolated });
   return () => {
     fontZoomSurfaces.delete(host);
   };
 }
 
-export function stepFocusedSurfaceFontZoom(delta: number): boolean {
+export function stepFocusedSurfaceFontZoom(delta: number, options?: { isolatedOnly?: boolean }): boolean {
   const focused = document.activeElement;
-  for (const [host, step] of fontZoomSurfaces) {
-    if (focused && host.contains(focused)) {
-      step(delta);
+  if (!focused) return false;
+  for (const [host, entry] of fontZoomSurfaces) {
+    if (options?.isolatedOnly && !entry.isolated) continue;
+    if (host.contains(focused) || (focused.hasAttribute("data-editor-focus") && focused.contains(host))) {
+      entry.step(delta);
+      return true;
+    }
+  }
+  return false;
+}
+
+export function stepSurfaceFontZoomIn(
+  container: Element | null,
+  delta: number,
+  options?: { isolatedOnly?: boolean },
+): boolean {
+  if (!container) return false;
+  for (const [host, entry] of fontZoomSurfaces) {
+    if (options?.isolatedOnly && !entry.isolated) continue;
+    if (container.contains(host)) {
+      entry.step(delta);
       return true;
     }
   }
@@ -1964,7 +1998,9 @@ export function stepFocusedSurfaceFontZoom(delta: number): boolean {
 }
 
 export function resetSurfaceFontZoom(): void {
-  for (const step of fontZoomSurfaces.values()) step(0);
+  for (const entry of fontZoomSurfaces.values()) {
+    if (!entry.isolated) entry.step(0);
+  }
 }
 
 /** Optional plugin test parser; the Run feature keeps the existing test tree. */

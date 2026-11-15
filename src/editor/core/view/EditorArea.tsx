@@ -21,6 +21,7 @@ import {
   prepareMenuGroups,
   textEditorWrapperFor,
   EditorShownProvider,
+  EditorTabIdProvider,
   useContributions,
   useFileDecorations,
   useEditorDocumentRevision,
@@ -479,9 +480,11 @@ function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; ke
       tabIndex={-1}
       aria-hidden={shown ? undefined : true}
     >
-      <EditorShownProvider value={shown}>
-        <Component input={tab.input} />
-      </EditorShownProvider>
+      <EditorTabIdProvider value={tab.id}>
+        <EditorShownProvider value={shown}>
+          <Component input={tab.input} />
+        </EditorShownProvider>
+      </EditorTabIdProvider>
     </div>
   );
 }
