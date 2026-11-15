@@ -3,8 +3,15 @@ package ai.openidea.jvminspect;
 import ai.openidea.jvminspect.InspectCommand.Failure;
 import ai.openidea.jvminspect.VmSelector.Target;
 import ai.openidea.jvminspect.VmSelector.VmInfo;
+import com.sun.jdi.AbsentInformationException;
+import com.sun.jdi.ClassNotLoadedException;
 import com.sun.jdi.IncompatibleThreadStateException;
+import com.sun.jdi.InternalException;
+import com.sun.jdi.InvalidStackFrameException;
+import com.sun.jdi.InvalidTypeException;
+import com.sun.jdi.InvocationException;
 import com.sun.jdi.ObjectCollectedException;
+import com.sun.jdi.ObjectReference;
 import com.sun.jdi.ThreadReference;
 import com.sun.jdi.VMDisconnectedException;
 import com.sun.jdi.VirtualMachine;
@@ -12,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,8 +36,18 @@ public final class StreamCommand implements IDelegateCommandHandler {
     private static final String PREFIX = "openidea.jvm.stream.";
     /** {@code stream.wait} holds a JDT LS request thread at most this long. */
     private static final long MAX_WAIT_MS = 30_000;
+    /** Traces of VMs that disconnected, kept so that {@code wait} still answers their end. */
+    private static final int GONE_KEPT = 16;
     private static final AtomicLong IDS = new AtomicLong();
     private static final Map<VirtualMachine, RealRunTrace> TRACES = new IdentityHashMap<>();
+    private static final Map<Long, RealRunTrace> GONE = new LinkedHashMap<>() {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, RealRunTrace> eldest) {
+            return size() > GONE_KEPT;
+        }
+    };
 
     @Override
     public Object executeCommand(String command, List<Object> arguments, IProgressMonitor monitor) throws Exception {
@@ -37,13 +55,26 @@ public final class StreamCommand implements IDelegateCommandHandler {
             List<VmInfo> vms = InspectCommand.connected();
             forgetGone(vms);
             Target target = Target.of(arguments.get(0));
-            VirtualMachine vm = InspectCommand.select(vms, target);
             Map<?, ?> args = (Map<?, ?>) arguments.get(1);
-            return InspectCommand.ok(switch (command.substring(PREFIX.length())) {
-                case "arm" -> Values.json("traceId", arm(vm, args));
+            String name = command.substring(PREFIX.length());
+            VirtualMachine vm;
+            try {
+                vm = InspectCommand.select(vms, target);
+            } catch (Failure e) {
+                RealRunTrace gone = name.equals("arm") ? null : gone(args);
+                if (gone == null) throw e;
+                return InspectCommand.ok(switch (name) {
+                    case "wait" -> gone.await(0);
+                    case "release" -> Map.of();
+                    default -> throw e;
+                });
+            }
+            return InspectCommand.ok(switch (name) {
+                case "arm" -> Values.json("traceId", arm(vm, target, args));
                 case "wait" -> trace(vm, args).await(Math.min(Math.max(0, number(args, "ms").longValue()), MAX_WAIT_MS));
                 case "stop" -> Values.json("records", trace(vm, args).stopRecording());
-                case "abort", "collect" -> throw new Failure("unsupported", command + " is not available yet");
+                case "abort" -> trace(vm, args).abort();
+                case "collect" -> collect(vm, target, trace(vm, args));
                 case "release" -> release(vm, trace(vm, args));
                 default -> throw new IllegalArgumentException("unknown command " + command);
             });
@@ -51,14 +82,21 @@ public final class StreamCommand implements IDelegateCommandHandler {
             return InspectCommand.error(e.code, e.getMessage());
         } catch (ConnectedVms.Unsupported e) {
             return InspectCommand.error("unsupported", e.getMessage());
+        } catch (Handles.Stale e) {
+            return InspectCommand.error("stale", e.getMessage());
         } catch (IncompatibleThreadStateException e) {
             return InspectCommand.error("notSuspended", "the thread is not stopped at an event: " + e.getMessage());
+        } catch (AbsentInformationException e) {
+            return InspectCommand.error("unsupported", "compiled without debug information: " + e.getMessage());
         } catch (ObjectCollectedException e) {
             return InspectCommand.error("collected", String.valueOf(e.getMessage()));
         } catch (org.eclipse.jdi.TimeoutException e) {
             return InspectCommand.error("timedOut", String.valueOf(e.getMessage()));
         } catch (VMDisconnectedException e) {
             return InspectCommand.error("vmNotFound", "the VM disconnected");
+        } catch (InvocationException | ClassNotLoadedException | InvalidTypeException | InvalidStackFrameException | InternalException e) {
+            // JDI failures the commands do not expect: still a reply the client can decode.
+            return InspectCommand.error("failed", e.toString());
         }
     }
 
@@ -66,7 +104,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
      * A trace that is still running answers {@code busy}; one that finished (parked or failed) is
      * released first, since the client never releases a finished trace itself.
      */
-    private static long arm(VirtualMachine vm, Map<?, ?> args) throws Exception {
+    private static long arm(VirtualMachine vm, Target target, Map<?, ?> args) throws Exception {
         long threadId = number(args, "threadId").longValue();
         RealRunPlan plan = RealRunPlan.of(args.get("plan"));
         int budget = budget(args.get("budget"));
@@ -87,11 +125,19 @@ public final class StreamCommand implements IDelegateCommandHandler {
             }
             if (current != null && current.state().wire.equals("running")) throw new Failure("busy", "trace " + current.id + " is running");
             if (current != null) release(vm, current);
-            RealRunTrace trace = RealRunTrace.arm(IDS.incrementAndGet(), vm, thread, plan, budget, hub);
+            RealRunTrace trace = RealRunTrace.arm(IDS.incrementAndGet(), vm, thread, plan, budget, target.generation(), hub);
             synchronized (TRACES) {
                 TRACES.put(vm, trace);
             }
             return trace.id;
+        }
+    }
+
+    /** Under the inspect commands' lock: the previews go into their handle table, so the UI can expand them. */
+    private static Map<String, Object> collect(VirtualMachine vm, Target target, RealRunTrace trace) throws Failure {
+        Handles<ObjectReference> handles = InspectCommand.handlesFor(vm);
+        synchronized (handles) {
+            return trace.collect(handles, target.generation());
         }
     }
 
@@ -104,11 +150,21 @@ public final class StreamCommand implements IDelegateCommandHandler {
         }
     }
 
-    private static Map<String, Object> release(VirtualMachine vm, RealRunTrace trace) {
+    private static RealRunTrace gone(Map<?, ?> args) {
+        if (!(args.get("traceId") instanceof Number id)) return null;
         synchronized (TRACES) {
-            TRACES.remove(vm, trace);
+            return GONE.get(id.longValue());
         }
+    }
+
+    /** A trace whose terminal still runs stays the VM's trace, so no arm starts beside it. */
+    private static Map<String, Object> release(VirtualMachine vm, RealRunTrace trace) {
         trace.release();
+        if (!trace.state().wire.equals("running")) {
+            synchronized (TRACES) {
+                TRACES.remove(vm, trace);
+            }
+        }
         return Map.of();
     }
 
@@ -122,10 +178,14 @@ public final class StreamCommand implements IDelegateCommandHandler {
                 Map.Entry<VirtualMachine, RealRunTrace> e = i.next();
                 if (live.contains(e.getKey())) continue;
                 gone.add(e.getValue());
+                GONE.put(e.getValue().id, e.getValue());
                 i.remove();
             }
         }
-        gone.forEach(RealRunTrace::release);
+        for (RealRunTrace trace : gone) {
+            trace.vmGone();
+            trace.release();
+        }
         RecorderLoader.retain(live);
     }
 

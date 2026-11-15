@@ -16,6 +16,7 @@ line for `line('name')`.
 """
 import os
 import pathlib
+import signal
 import subprocess
 import sys
 import tempfile
@@ -47,7 +48,194 @@ public class Chains {
     }
 }
 '''
-PROGRAMS = {'Chains': CHAINS}
+# One chain per method; `main` runs the method named by its argument. The chains of A, B, C, D, G and H
+# are those of the spike behind the spec's Grounding (§2, G1).
+REAL = '''import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.locks.LockSupport;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
+
+public class Real {
+    static int sideEffects;
+    static final List<Integer> nums = new ArrayList<>(Arrays.asList(5, 3, 8, 1, 4, 2, 9, 6));
+
+    static boolean keep(int x) {
+        sideEffects++;
+        return x % 2 == 0;
+    }
+
+    static final class Hostile {
+        final int v;
+
+        Hostile(int v) {
+            this.v = v;
+        }
+
+        @Override
+        public String toString() {
+            throw new IllegalStateException("hostile toString");
+        }
+    }
+
+    public static void main(String[] a) throws Exception {
+        switch (a[0]) {
+            case "A": a(); break;
+            case "B": b(); break;
+            case "C": c(); break;
+            case "D": d(); break;
+            case "G": g(); break;
+            case "H": h(); break;
+            case "local": local(); break;
+            case "parallel": parallel(); break;
+            case "nested": nested(); break;
+            case "hostile": hostile(); break;
+            case "sr": stopRecording(Integer.parseInt(a[1])); break;
+            case "abort": abort(); break;
+            case "exit": exit(); break;
+            case "mid": mid(); break;
+            default: throw new IllegalArgumentException(a[0]);
+        }
+        System.out.println("END");
+    }
+
+    static void a() {
+        int base = 1;
+        List<String> out = nums.stream() // @A
+                .filter(Real::keep)
+                .map(x -> x * 10 + base)
+                .sorted()
+                .map(String::valueOf)
+                .collect(Collectors.toList());
+        System.out.println("A " + out + " side=" + sideEffects);
+    }
+
+    static void b() {
+        int sum = IntStream.range(0, 20).filter(i -> i % 3 == 0).map(i -> i * i).sum(); // @B
+        System.out.println("B " + sum);
+    }
+
+    static void c() {
+        long n = nums.stream().filter(x -> x > 100).count(); // @C
+        System.out.println("C " + n);
+    }
+
+    static void d() {
+        long t0 = System.nanoTime();
+        long d = IntStream.range(0, 1_000_000).filter(i -> i % 7 == 0).mapToObj(Integer::toString).filter(s -> s.endsWith("7")).count(); // @D
+        System.out.println("D " + d + " ms=" + (System.nanoTime() - t0) / 1_000_000);
+    }
+
+    static void g() {
+        try {
+            List<Integer> g = nums.stream().map(x -> 10 / (x - 4)).collect(Collectors.toList()); // @G
+            System.out.println("G " + g);
+        } catch (ArithmeticException ex) {
+            System.out.println("G caught " + ex.getMessage()); // @G_catch
+        }
+    }
+
+    static void h() {
+        int h = nums.stream().mapToInt(x -> { // @H
+            int y = x * 2; // @H_in
+            return y;
+        }).sum();
+        System.out.println("H " + h);
+        long next = nums.stream().count(); // @H_next
+        System.out.println("H next " + next);
+    }
+
+    static void local() {
+        List<Integer> list = nums;
+        Stream<Integer> s = nums.stream();
+        long k = s.filter(x -> x > 5).count(); // @local
+        System.out.println("LOCAL " + k + " " + list.size());
+    }
+
+    static void parallel() {
+        List<Integer> p = nums.parallelStream().map(x -> x + 1).collect(Collectors.toList()); // @parallel
+        List<Integer> q = nums.stream().parallel().map(x -> x * 2).collect(Collectors.toList()); // @parallel2
+        System.out.println("P " + p + " " + q);
+    }
+
+    static void nested() {
+        long n = nums.stream().flatMap(x -> Stream.of(x, x)).count(); // @nested
+        System.out.println("NESTED " + n);
+    }
+
+    static void hostile() {
+        List<Hostile> hs = new ArrayList<>();
+        for (int i = 1; i <= 3; i++) hs.add(new Hostile(i));
+        long n = hs.stream().filter(x -> x.v > 0).count(); // @hostile
+        System.out.println("HOSTILE " + n);
+    }
+
+    /** Slow enough that "stop recording" lands while the terminal runs, with few records to collect. */
+    static boolean evenSlowly(int i) {
+        if (i % 10 == 0) LockSupport.parkNanos(1_000_000);
+        return i % 2 == 0;
+    }
+
+    static void stopRecording(int size) {
+        long n = Stream.iterate(0, i -> i + 1).limit(size).filter(Real::evenSlowly).count(); // @sr
+        System.out.println("SR " + n); // @sr_old
+        System.out.println("SR next"); // @sr_new
+    }
+
+    static void abort() {
+        try {
+            Optional<Integer> f = Stream.generate(() -> 1).filter(x -> x > 1).findFirst(); // @abort
+            System.out.println("ABORT none " + f);
+        } catch (RuntimeException e) {
+            System.out.println("ABORT caught " + e.getMessage()); // @abort_catch
+        }
+    }
+
+    static void exit() {
+        List<Integer> e = nums.stream().filter(x -> { // @exit
+            if (x == 8) System.exit(3);
+            return true;
+        }).collect(Collectors.toList());
+        System.out.println("EXIT not reached " + e);
+    }
+
+    static void mid() {
+        List<String> m = nums.stream().map(String::valueOf).collect(Collectors.toList()); // @mid
+        List<String> head = // @head
+                nums.stream()
+                        .map(String::valueOf)
+                        .collect(Collectors.toList());
+        System.out.println("MID " + m + " " + head);
+    }
+}
+'''
+# Compiled with ECJ, as JDT LS builds a project: a declaration head like `List<String> out =` gets no
+# code of its own, and an assignment head's only code is the store after the chain.
+ECJ = '''import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.Collectors;
+
+public class Ecj {
+    static final List<Integer> nums = new ArrayList<>(Arrays.asList(5, 3, 8, 1, 4, 2, 9, 6));
+
+    public static void main(String[] a) {
+        List<String> out = // @ecj_head
+                nums.stream() // @ecj_first
+                        .map(String::valueOf)
+                        .collect(Collectors.toList());
+        long n;
+        n = // @ecj_assign
+                nums.stream().filter(x -> x > 4).count();
+        System.out.println("ECJ " + out + " " + n);
+    }
+}
+'''
+PROGRAMS = {'Chains': CHAINS, 'Real': REAL, 'Ecj': ECJ}
+ECJ_PROGRAMS = {'Ecj'}
 
 args = sys.argv[1:]
 
@@ -75,7 +263,9 @@ for name, text in PROGRAMS.items():
     (project / 'src' / f'{name}.java').write_text(text)
 classes = work / 'classes'
 subprocess.run(['javac', '-g', '--release', '8', '-Xlint:-options', '-d', str(classes),
-                *[str(project / 'src' / f'{n}.java') for n in PROGRAMS]], check=True)
+                *[str(project / 'src' / f'{n}.java') for n in PROGRAMS if n not in ECJ_PROGRAMS]], check=True)
+subprocess.run(['java', '-cp', str(home / 'plugins' / '*'), 'org.eclipse.jdt.internal.compiler.batch.Main', '-8', '-g', '-proc:none',
+                '-nowarn', '-d', str(classes), *[str(project / 'src' / f'{n}.java') for n in ECJ_PROGRAMS]], check=True)
 jdtls = lsp = None
 jvms = []  # debuggees started here
 launched = []  # pids of debuggees java-debug started
@@ -162,12 +352,13 @@ def start(dbg, command, arguments, stop_at):
     return dbg
 
 
-def launch(program='Chains', stop_at=('loop',)):
-    """A launch of `program` stopped at the first of the `stop_at` lines."""
+def launch(program='Chains', stop_at=('loop',), args=''):
+    """A launch of `program` with `args` stopped at the first of the `stop_at` lines."""
     d = session()
     dbg = Debuggee(d, program, {})
     start(dbg, 'launch', {'mainClass': program, 'projectName': project_name, 'modulePaths': [], 'classPaths': [str(classes)],
-                          'cwd': str(project), 'console': 'internalConsole', 'shortenCommandLine': 'none', 'javaExec': java},
+                          'cwd': str(project), 'console': 'internalConsole', 'shortenCommandLine': 'none', 'javaExec': java,
+                          'args': args},
           stop_at)
     pid = d.request('processId')['body']['processId']
     launched.append(pid)
@@ -241,7 +432,7 @@ def arm_busy_release():
         state = ok(stream('wait', dbg, traceId=trace, ms=0))
         check('wait on a fresh trace: running, no records',
               state.get('state') == 'running' and state.get('records') == 0 and state.get('dropped') == 0, state)
-        check('stop on a fresh trace keeps 0 records', ok(stream('stop', dbg, traceId=trace)) == {'records': 0})
+        # (stop on a fresh trace takes it down: real_run_cancel_before_terminal)
         r = arm(dbg)
         check('a second arm on the same VM is busy', error(r) == 'busy', r)
         r = stream('wait', dbg, traceId=trace + 1000, ms=0)
@@ -321,6 +512,406 @@ def budget_out_of_range():
         for budget in (0, -1, 2.5, 2 ** 31):
             r = arm(dbg, budget=budget)
             check(f'arm with budget {budget} is badArgument', error(r) == 'badArgument', r)
+    finally:
+        dbg.end()
+
+
+# The real run: arm → DAP continue → wait until parked → DAP stepOut → collect.
+
+def real(name, *stop_at, extra=()):
+    """A launch of `Real <name> <extra...>` stopped at the first of `stop_at` (default: the line named `name`)."""
+    return launch('Real', stop_at=stop_at or (name,), args=' '.join((name, *map(str, extra))))
+
+
+def wait_until_done(dbg, trace, timeout=60):
+    end = time.time() + timeout
+    while True:
+        state = ok(stream('wait', dbg, traceId=trace, ms=1000))
+        if state['state'] != 'running' or time.time() > end:
+            return state
+
+
+def run_until_parked(dbg, at, budget=50_000, timeout=60, **plan_args):
+    """Arms at line `at`, continues; returns (traceId, last wait reply, ms from continue to that reply)."""
+    trace = ok(arm(dbg, at=at, budget=budget, **plan_args))['traceId']
+    t = time.time()
+    resume(dbg)
+    state = wait_until_done(dbg, trace, timeout)
+    return trace, state, (time.time() - t) * 1000
+
+
+def step_out_and_collect(dbg, trace):
+    step_out(dbg)
+    return ok(stream('collect', dbg, traceId=trace))
+
+
+def show(value):
+    kind = value.get('kind')
+    if kind in ('boxed', 'primitive'):
+        return value.get('text')
+    if kind == 'string':
+        return '"' + str(value.get('text')) + '"'
+    if kind == 'null':
+        return 'null'
+    return value.get('typeName')
+
+
+def tokens(collected):
+    return [f"{r['step']}={show(r['value'])}" for r in collected['records']]
+
+
+def terminal_text(collected):
+    t = collected['terminal']
+    return show(t['value']) if t['kind'] == 'value' else t['kind']
+
+
+def output_line(dbg, prefix, timeout=30):
+    """The first program output line starting with `prefix`, waiting for it; None when none comes."""
+    end = time.time() + timeout
+    while time.time() < end:
+        for text in ''.join(dbg.dap.output).splitlines():
+            if text.startswith(prefix):
+                return text
+        time.sleep(0.1)
+    return None
+
+
+def collected_ok(name, collected, records=None, terminal=None, steps=None):
+    if records is not None:
+        check(f'{name}: records', tokens(collected) == records if isinstance(records, list) else len(collected['records']) == records,
+              ' '.join(tokens(collected)[:40]))
+    if terminal is not None:
+        check(f'{name}: terminal is {terminal}', terminal_text(collected) == terminal, collected['terminal'])
+    if steps is not None:
+        check(f'{name}: recorded steps', sorted({r['step'] for r in collected['records']}) == steps,
+              sorted({r['step'] for r in collected['records']}))
+
+
+PLAN_A = dict(root=spec('stream'), steps=(spec('filter', 1), spec('map', 1), spec('sorted'), spec('map', 1)), terminal=spec('collect', 1),
+              step_kinds=('sync', 'sync', 'reorder', 'sync'))
+GROUNDING_A = '0=5 0=3 0=8 1=8 2=81 0=1 0=4 1=4 2=41 0=2 1=2 2=21 0=9 0=6 1=6 2=61 3=21 4="21" 3=41 4="41" 3=61 4="61" 3=81 4="81"'
+
+
+@case
+def real_run_a():
+    dbg = real('A')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'A', **PLAN_A)
+        check('A: wait reaches parked', state['state'] == 'parked' and state['records'] == 24, state)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('A', c, records=GROUNDING_A.split())
+        t = c['terminal']
+        check('A: the terminal is the ArrayList collect returned, with an id',
+              t['kind'] == 'value' and t['value'].get('typeName') == 'java.util.ArrayList' and 'id' in t['value'], t)
+        check('A: nothing dropped, no breakpoint skipped but the chain\'s own, not sequentialized',
+              c['dropped'] == 0 and c['skippedBreakpoints'] == 1 and c['sequentialized'] is False, c)
+        resume(dbg)
+        out = output_line(dbg, 'A ')
+        check('A: the program ran each lambda once (side=8)', out == 'A [21, 41, 61, 81] side=8', out)
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_b_c():
+    dbg = real('B')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'B', root=spec('range', 2), steps=(spec('filter', 1), spec('map', 1)),
+                                           terminal=spec('sum'), class_filters=('java.util.stream.*',))
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('B', c, records=34, terminal='819')
+        resume(dbg)
+        check('B: program output', output_line(dbg, 'B ') == 'B 819')
+    finally:
+        dbg.end()
+    dbg = real('C')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'C', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',))
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('C', c, records=8, terminal='0')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_d_million():
+    dbg = real('D')
+    try:
+        trace, state, ms = run_until_parked(dbg, 'D', root=spec('range', 2),
+                                            steps=(spec('filter', 1), spec('mapToObj', 1), spec('filter', 1)), terminal=spec('count'),
+                                            class_filters=('java.util.stream.*',), step_kinds=('sync', 'sync', 'sync'))
+        report('NOTE', f'D: continue to parked {ms:.0f} ms')
+        check('D: continue to parked under 2000 ms', state['state'] == 'parked' and ms < 2000, f'{state} in {ms:.0f} ms')
+        t = time.time()
+        c = step_out_and_collect(dbg, trace)
+        report('NOTE', f'D: stepOut + collect {(time.time() - t) * 1000:.0f} ms')
+        collected_ok('D', c, records=50_000, terminal='14286')
+        check('D: dropped past the budget', c['dropped'] == 1_250_002, c['dropped'])
+        resume(dbg)
+        out = output_line(dbg, 'D ')
+        check('D: program output', out is not None and out.startswith('D 14286 '), out)
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_g_throws():
+    dbg = real('G')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'G', steps=(spec('map', 1),), step_kinds=('sync',))
+        check('G: parked after the lambda threw', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        t = c['terminal']
+        check('G: the terminal threw ArithmeticException',
+              t['kind'] == 'threw' and t['exception'].get('typeName') == 'java.lang.ArithmeticException', t)
+        check('G: stepOut lands in the catch', top(dbg)['line'] == line('G_catch', 'Real'), top(dbg))
+        resume(dbg)
+        check('G: program output', output_line(dbg, 'G ') == 'G caught / by zero')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_h_breakpoint_in_lambda():
+    dbg = real('H', 'H', 'H_in', 'H_next')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'H', steps=(spec('mapToInt', 1),), terminal=spec('sum'), step_kinds=('sync',))
+        check('H: parked though a breakpoint sits in the lambda', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('H', c, records=16, terminal='76')
+        check('H: the silenced breakpoints are reported', c['skippedBreakpoints'] >= 1, c['skippedBreakpoints'])
+        resume(dbg)
+        try:
+            expect_stop(dbg, 20, 'next chain')
+            check('H: the next chain\'s breakpoint still stops', top(dbg)['line'] == line('H_next', 'Real'), top(dbg))
+        except TimeoutError:
+            check('H: the next chain\'s breakpoint still stops', False, 'no stop')
+        check('H: program output', output_line(dbg, 'H ') == 'H 76')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_local_root():
+    dbg = real('local')
+    try:
+        r = arm(dbg, at='local', root=None, local='list', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',))
+        check('local: a local declared as a List is unsupported', error(r) == 'unsupported', r)
+        trace, state, _ = run_until_parked(dbg, 'local', root=None, local='s', steps=(spec('filter', 1),), terminal=spec('count'),
+                                           class_filters=('java.util.stream.*',), step_kinds=('sync',))
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('local', c, terminal='3')
+        check('local: step 0 recorded every element', sum(r['step'] == 0 for r in c['records']) == 8, tokens(c))
+        resume(dbg)
+        check('local: program output', output_line(dbg, 'LOCAL ') == 'LOCAL 3 8')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_parallel():
+    dbg = real('parallel', 'parallel', 'parallel2')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'parallel', root=spec('parallelStream'), steps=(spec('map', 1),), step_kinds=('sync',),
+                                           sequentialize=True)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('parallelStream', c, records='0=5 1=6 0=3 1=4 0=8 1=9 0=1 1=2 0=4 1=5 0=2 1=3 0=9 1=10 0=6 1=7'.split())
+        check('parallelStream: sequentialized', c['sequentialized'] is True, c['sequentialized'])
+        resume(dbg)
+        expect_stop(dbg, 20, 'parallel2')
+        trace, state, _ = run_until_parked(dbg, 'parallel2', steps=(spec('parallel'), spec('map', 1)), step_kinds=('sync',),
+                                           sequentialize=True)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('parallel()', c, records='0=5 1=10 0=3 1=6 0=8 1=16 0=1 1=2 0=4 1=8 0=2 1=4 0=9 1=18 0=6 1=12'.split())
+        resume(dbg)
+        check('parallel: program output', output_line(dbg, 'P ') == 'P [6, 4, 9, 2, 5, 3, 10, 7] [10, 6, 16, 2, 8, 4, 18, 12]')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_nested():
+    dbg = real('nested')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'nested', steps=(spec('flatMap', 1),), terminal=spec('count'), step_kinds=('sync',))
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('nested', c, records=24, terminal='16', steps=[0, 1])
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_hostile_to_string():
+    dbg = real('hostile')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'hostile', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',))
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('hostile', c, records=['0=Real$Hostile', '1=Real$Hostile'] * 3, terminal='3')
+        resume(dbg)
+        out = output_line(dbg, 'END')
+        text = ''.join(dbg.dap.output)
+        check('hostile: no toString ran', out == 'END' and 'hostile toString' not in text and 'Exception' not in text, text[-500:])
+    finally:
+        dbg.end()
+
+
+SR_SIZE = 30_000  # about 3 s: the filter parks 1 ms every 10 elements
+
+
+@case
+def real_run_stop_recording_and_edit_breakpoints():
+    dbg = real('sr', 'sr', 'sr_old', extra=(SR_SIZE,))
+    try:
+        trace = ok(arm(dbg, at='sr', root=spec('iterate', 2), steps=(spec('limit', 1), spec('filter', 1)),
+                       terminal=spec('count'), class_filters=('java.util.stream.*',)))['traceId']
+        resume(dbg)
+        first = ok(stream('wait', dbg, traceId=trace, ms=300))
+        check('stop-recording: still running after 300 ms, records growing below the budget',
+              first['state'] == 'running' and 0 < first['records'] < 50_000, first)
+        kept = ok(stream('stop', dbg, traceId=trace))['records']
+        dbg.dap.request('setBreakpoints', {'source': {'path': source('Real')},
+                                           'breakpoints': [{'line': line('sr', 'Real')}, {'line': line('sr_new', 'Real')}]})
+        later = ok(stream('wait', dbg, traceId=trace, ms=300))
+        check('stop-recording: records stop growing', later['records'] <= kept + 1 and later['dropped'] > first['dropped'], (kept, later))
+        state = wait_until_done(dbg, trace, 120)
+        check('stop-recording: the terminal still finishes', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('stop-recording', c, records=later['records'], terminal=str(SR_SIZE // 2))
+        resume(dbg)
+        try:
+            expect_stop(dbg, 20, 'edited breakpoint')
+            check('edit-breakpoints: stops at the breakpoint added mid-trace, not the removed one',
+                  top(dbg)['line'] == line('sr_new', 'Real'), top(dbg))
+        except TimeoutError:
+            check('edit-breakpoints: stops at the breakpoint added mid-trace, not the removed one', False, 'no stop')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_abort():
+    dbg = real('abort')
+    try:
+        trace = ok(arm(dbg, at='abort', root=spec('generate', 1), steps=(spec('filter', 1),), terminal=spec('findFirst'),
+                       class_filters=('java.util.stream.*',), step_kinds=('sync',)))['traceId']
+        resume(dbg)
+        first = ok(stream('wait', dbg, traceId=trace, ms=500))
+        check('abort: the endless terminal is running', first['state'] == 'running', first)
+        t = time.time()
+        r = ok(stream('abort', dbg, traceId=trace, timeout=30))
+        report('NOTE', f'abort: {r} in {(time.time() - t) * 1000:.0f} ms')
+        check('abort: interrupted or stopped', r.get('state') in ('interrupted', 'stopped'), r)
+        state = wait_until_done(dbg, trace, 20)
+        check('abort: parked after the cancel', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        t = c['terminal']
+        check('abort: the terminal threw the cancel exception',
+              t['kind'] == 'threw' and t['exception'].get('typeName') == 'java.lang.RuntimeException', t)
+        resume(dbg)
+        out = output_line(dbg, 'ABORT ')
+        check('abort: the program caught oi-cancel', out is not None and out.startswith('ABORT caught oi-cancel:'), out)
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_cancel_before_terminal():
+    dbg = real('C')
+    try:
+        trace = ok(arm(dbg, at='C', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',)))['traceId']
+        check('cancel: stop while armed answers the records', ok(stream('stop', dbg, traceId=trace)) == {'records': 0})
+        state = ok(stream('wait', dbg, traceId=trace, ms=0))
+        check('cancel: stop before the terminal fails the trace', state['state'] == 'failed'
+              and state.get('detail') == 'cancelled before the terminal ran', state)
+        trace = ok(arm(dbg, at='C', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',)))['traceId']
+        r = ok(stream('abort', dbg, traceId=trace))
+        check('cancel: abort before the terminal is cancelled', r == {'state': 'cancelled'}, r)
+        resume(dbg)
+        check('cancel: the program runs on untouched', output_line(dbg, 'C ') == 'C 0')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_missed_step():
+    dbg = real('C')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'C', steps=(spec('map', 1),), terminal=spec('count'), step_kinds=('sync',), timeout=20)
+        check('missed: a chain unlike the plan fails', state['state'] == 'failed' and state.get('detail') == 'missed map', state)
+        check('missed: the program runs on untouched', output_line(dbg, 'C ') == 'C 0')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_exit_in_lambda():
+    dbg = real('exit')
+    try:
+        trace = ok(arm(dbg, at='exit', steps=(spec('filter', 1),), step_kinds=('sync',)))['traceId']
+        t = time.time()
+        resume(dbg)
+        state = ok(stream('wait', dbg, traceId=trace, ms=5000))
+        ms = (time.time() - t) * 1000
+        report('NOTE', f'exit-in-lambda: continue to failed {ms:.0f} ms')
+        # HotSpot does not finish exiting while the exiting thread is inside a JDI invoke: no disconnect comes.
+        check('exit-in-lambda: wait answers failed within 5 s', state['state'] == 'failed' and ms < 5000
+              and 'began to exit' in state.get('detail', ''), f'{state} in {ms:.0f} ms')
+        again = stream('wait', dbg, traceId=trace, ms=0)
+        check('exit-in-lambda: a later wait still answers failed', again.get('ok', {}).get('state') == 'failed', again)
+        t = time.time()
+        r = stream('release', dbg, traceId=trace)
+        check('exit-in-lambda: release does not wait on the stuck invoke', 'ok' in r and time.time() - t < 2, r)
+    finally:
+        dbg.end()
+        # java-debug's terminate does not end the wedged VM either; while it lingers, new launches can stall.
+        time.sleep(2)
+        try:
+            os.kill(dbg.target['pid'], signal.SIGKILL)
+            report('NOTE', 'exit-in-lambda: the VM outlived the session\'s terminate; killed')
+        except (ProcessLookupError, PermissionError, TypeError):
+            pass
+
+
+@case
+def real_run_mid_line():
+    dbg = real('mid', 'mid', 'head')
+    try:
+        plan_mid = dict(steps=(spec('map', 1),), step_kinds=('sync',))
+        trace = ok(arm(dbg, at='mid', **plan_mid))['traceId']
+        check('mid-line: arm at the chain\'s breakpoint works', trace is not None)
+        ok(stream('release', dbg, traceId=trace))
+        dbg.dap.request('stepIn', {'threadId': dbg.thread})
+        expect_stop(dbg, 20, 'stepIn')
+        step_out(dbg)
+        check('mid-line: stepOut is back on the chain\'s line', top(dbg)['line'] == line('mid', 'Real'), top(dbg))
+        r = arm(dbg, at='mid', **plan_mid)
+        check('mid-line: arm after the first call is notAtChainStart', error(r) == 'notAtChainStart', r)
+        resume(dbg)
+        expect_stop(dbg, 20, 'head')
+        trace, state, _ = run_until_parked(dbg, 'head', **plan_mid)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('declaration head on its own line (javac)', c, records=16)
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_ecj_heads():
+    dbg = launch('Ecj', stop_at=('ecj_first', 'ecj_assign'))
+    try:
+        plan_out = dict(steps=(spec('map', 1),), step_kinds=('sync',), program='Ecj')
+        r = stream('arm', dbg, threadId=dbg.thread, plan=plan('ecj_head', **plan_out), budget=50_000)
+        check('ECJ: arm at the first code of a statement whose head line has none', 'ok' in r, r)
+        trace = ok(r)['traceId']
+        resume(dbg)
+        state = wait_until_done(dbg, trace, 20)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('ECJ head', c, records=16)
+        resume(dbg)
+        expect_stop(dbg, 20, 'ecj_assign')
+        r = stream('arm', dbg, threadId=dbg.thread, budget=50_000,
+                   plan=plan('ecj_assign', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',), program='Ecj'))
+        check('ECJ: an assignment head whose code runs after the chain is notAtChainStart', error(r) == 'notAtChainStart', r)
     finally:
         dbg.end()
 

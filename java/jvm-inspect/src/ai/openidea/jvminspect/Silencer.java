@@ -1,5 +1,6 @@
 package ai.openidea.jvminspect;
 
+import com.sun.jdi.VMDisconnectedException;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.EventRequestManager;
@@ -68,14 +69,16 @@ final class Silencer {
      *
      * @return silenced requests not switched back on. java-debug deletes a request when the user edits
      *     or removes its breakpoint; a new one is already in the right state.
+     * @throws RuntimeException when the VM's request lists cannot be read for another reason than a
+     *     disconnect; the requests stay silenced, so a later call can restore them
      */
     synchronized int restore() {
         int failures = 0;
         Set<EventRequest> present = Collections.newSetFromMap(new IdentityHashMap<>());
         try {
             present.addAll(current.get());
-        } catch (RuntimeException e) {
-            // VMDisconnectedException: nothing is left to restore.
+        } catch (VMDisconnectedException e) {
+            // nothing is left to restore
         }
         for (EventRequest r : silenced) {
             // Eclipse JDI enables a deleted request without complaint, re-installing a breakpoint that

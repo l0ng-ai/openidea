@@ -55,13 +55,19 @@ lambda runs twice. They take `target` first, like the commands above, then one o
 | `stream.release` | `{traceId}`                | `{}`                                                                                |
 
 `plan` is the JSON of `ide_streams::RealRunPlan`; `budget`, a whole number from 1 to 2³¹ − 1
-(default 50 000), caps the records kept, past which they are only counted in `dropped`. `wait`'s `state` is `running`, `parked` or `failed`;
-`abort`'s is `interrupted`, `stopped` or `stuck`. `collect` takes the new stop's `target.generation`,
-and its `terminal` is `{kind: "value", value}`, `{kind: "void"}` or `{kind: "threw", exception}`.
+(default 50 000), caps the records kept, past which they are only counted in `dropped`. `wait`'s
+`state` is `running`, `parked` or `failed` (with `detail`). `abort`'s is `interrupted`, `stopped` or
+`stuck` while the terminal runs, `cancelled` before it started and `finished` once the trace parked
+or failed. `collect` takes the new stop's `target.generation`; a record's `step` counts the wrapped
+ops from 0 (the source), modifiers left out, and `value`, like the `terminal`'s, is a `JvmValue`
+preview (a primitive result previews as `primitive`). `terminal` is `{kind: "value", value}`,
+`{kind: "void"}` or `{kind: "threw", exception}`.
 Besides the codes above, a reply's `error` can be `noSession` (java-debug registered no session for
-the VM), `notAtChainStart`, `busy` (the VM has a trace still running), `noTrace` (the `traceId` is
-not the VM's current trace) or `badArgument` (a `budget` out of range). Any other malformed argument
-is an ordinary `executeCommand` error.
+the VM), `notAtChainStart`, `busy` (the VM has a trace still running; `collect` before the trace
+parked), `noTrace` (the `traceId` is not the VM's current trace), `badArgument` (a `budget` out of
+range) or `failed` (`collect` on a failed trace, with its `detail`, or a JDI failure the commands do
+not expect). `collect` in the stop `arm` ran in is `stale`. Any other malformed argument is an
+ordinary `executeCommand` error.
 
 - `arm` needs the thread suspended by an event (a breakpoint or a step) and a VM that can force early
   returns and report return values (HotSpot 11 to 25 can). It defines the recorder
@@ -74,10 +80,46 @@ is an ordinary `executeCommand` error.
   breakpoint) stays off: Eclipse JDI would enable a deleted request again, so only requests the VM
   still lists are switched back on.
 - One trace per VM. A finished trace (parked or failed) is released by the next `arm` on that VM or
-  when the VM disconnects; the client need not call `release`.
-- `wait` returns as soon as the trace leaves `running`, or after `ms`, at most 30 000.
+  when the VM disconnects; the client need not call `release`. Releasing a parked trace the client
+  never stepped out of resumes the thread; releasing one whose terminal still runs takes effect when
+  the terminal returns, and until then the VM's next `arm` is `busy`. After the VM disconnected,
+  `wait` still answers the trace's last state.
+- `arm` refuses a chain that has started (`notAtChainStart`): the stop must be on or after the
+  statement's first line with no code of those lines before it. javac puts a statement's first
+  instruction on its first line; ECJ, which JDT LS builds with, gives a head like
+  `List<String> out =` no code, and a head like `n =` only the store after the chain. A `local` root
+  must be declared as a `Stream`, `IntStream`, `LongStream` or `DoubleStream` (`unsupported`
+  otherwise); `arm` replaces it by `local.peek(recorder)`.
+- After the client continues the thread, each build-phase `MethodExit` of the chain's next op is held
+  and its stream returned as `stream.peek(recorder)` through `forceEarlyReturn`. The root is matched
+  by name, JVM arity, stream return type and caller (the stopped method, one frame deeper), after the
+  plan's `skip` such exits; every later op by receiver: a call from that method on the last wrapped
+  stream is the chain's next op, and one that differs from the plan fails the trace
+  (`missed <op>`) and lets the program run on. Modifiers are matched but not wrapped. With
+  `sequentialize`, the source becomes `peek(…).sequential()` and each `parallel()` returns
+  `sequential()`.
+- At the terminal's `MethodEntry`, with no method request left on (any slows the thread to the
+  interpreter), the bundle runs the terminal once by `invokeMethod`, with the JDI timeout raised, and
+  forces its result as the entered frame's return, or throws its exception there. The thread stays
+  suspended (`parked`) until the client's DAP `stepOut`. Breakpoints java-debug created since `arm`
+  are silenced too, right before the invoke; all are switched back on when it returns.
+- `wait` returns as soon as the trace leaves `running`, or after `ms`, at most 30 000. While the
+  terminal runs it also checks every 500 ms whether the VM began to shut down
+  (`jdk.internal.misc.VM.initLevel`): `System.exit` in a lambda makes the VM wait forever to report
+  its death while the bundle's invoke runs, so no disconnect comes. The trace then fails, with the
+  breakpoints back on; the debug session has to be stopped.
 - `stop` lowers the log's budget to the records so far by a field write: the program keeps running
-  untouched.
+  untouched. `abort` interrupts the thread, waits 2 s for the terminal to return, then throws the
+  cancel exception into it, waits 2 s more, and else lists the suspended threads that own a monitor.
+  Before the terminal started, either takes the trace down (`failed`, `cancelled before the terminal
+  ran`) and the program runs on untouched.
+- `collect` reads the log 16 384 elements per JDWP request and previews every value into the handle
+  table of the inspect commands, so the UI can expand them; the log keeps them alive until the trace
+  is released. `skippedBreakpoints` counts the breakpoint requests silenced (exception breakpoints
+  left out: JDI cannot tell whether a silenced request would have been hit).
+- Timing, the 1M-element chain of `tests/stream.py` (`real_run_d_million`, Apple M4 Pro, JDT LS
+  1.63): 64–96 ms from DAP `continue` to `parked` on JDK 11, 17, 21, 23 and 25; DAP `stepOut` plus
+  `collect` of its 50 000 records 4.6–4.9 s.
 
 `classes` and `referrers` can take seconds on a large heap. Eclipse JDI fails a request after
 `getRequestTimeout()` (3000 ms by default), and the timeout is per VM: java-debug's own requests
@@ -109,6 +151,9 @@ The stream commands reach java-debug's debug session of a VM, and its events, th
 - `DebugEvent.event`, `.eventSet` and `.shouldResume`: set to `false` in the listener, it keeps the
   event's thread suspended, as java-debug does for conditional breakpoints
 
+and, in the debuggee, `jdk.internal.misc.VM.initLevel` and `.SYSTEM_SHUTDOWN` (JDK 9 to 25), read as
+static fields to see the VM shutting down while the terminal runs; without them that check is off
+
 and, as API of `org.eclipse.jdt.debug`, `org.eclipse.jdi.VirtualMachine#getRequestTimeout` /
 `#setRequestTimeout` and `org.eclipse.jdi.TimeoutException`. When any of these is missing or
 changes shape, every command answers `unsupported`; nothing throws into java-debug.
@@ -134,7 +179,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-ab53d0e6b9e492b5c3be1179c793c879db94ba44a421bdbd4f2f33319e03464a  openidea-jvm-inspect.jar
+bd0802e3704b99448ce41e776747625c151ad838956cad52aef1d3b7851fd49a  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.
@@ -156,7 +201,9 @@ DAP `evaluate` sent 0.5 s after `classes` starts must succeed, with the timeout 
 It stops every process it started.
 
 `tests/stream.py` does the same for the stream commands, once per JDK in `OPENIDEA_TEST_JAVA`, with
-a launch and an attach; both scripts share `tests/jdtls_harness.py`. `--bundle` takes a jar built with `--out` (default: the checked-in one) and
+a launch and an attach; both scripts share `tests/jdtls_harness.py`. The `real_run_*` cases trace
+chains end to end (arm, DAP `continue`, `wait`, DAP `stepOut`, `collect`); one debuggee is compiled
+with the distribution's ECJ, as JDT LS builds a project. `--bundle` takes a jar built with `--out` (default: the checked-in one) and
 `--case NAME` runs only the cases whose name contains `NAME`:
 
 ```sh

@@ -2,6 +2,7 @@ package ai.openidea.jvminspect;
 
 import ai.openidea.jvminspect.VmSelector.Target;
 import ai.openidea.jvminspect.VmSelector.VmInfo;
+import com.sun.jdi.VMDisconnectedException;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.ExceptionRequest;
@@ -33,6 +34,8 @@ public final class SelfTest {
         string_preview_rule();
         silencer_switches_off_only_enabled_foreign_requests();
         silencer_skips_requests_java_debug_deleted();
+        silencer_restore_fails_loudly_unless_disconnected();
+        chain_start_by_javac_and_ecj_line_tables();
         recorder_resource_is_a_java_8_class();
         recorder_counts_past_the_budget_and_never_throws();
         plan_parsed_from_gson_json();
@@ -185,6 +188,56 @@ public final class SelfTest {
         check(!deleted.isEnabled(), "a deleted request is not switched back on");
         check(kept.isEnabled(), "the request after the deleted one is still restored");
         pass("silencer_skips_requests_java_debug_deleted");
+    }
+
+    static void silencer_restore_fails_loudly_unless_disconnected() {
+        EventRequest breakpoint = request(BreakpointRequest.class, true, false);
+        RuntimeException[] listing = {null};
+        Silencer silencer = Silencer.silence(() -> {
+            if (listing[0] != null) throw listing[0];
+            return List.of(breakpoint);
+        });
+        listing[0] = new IllegalStateException("listing broke");
+        try {
+            silencer.restore();
+            throw new AssertionError("an unexpected listing failure must not pass for \"nothing left\"");
+        } catch (IllegalStateException expected) {
+            check(silencer.size() == 1, "the request stays silenced for a later restore");
+        }
+        listing[0] = null;
+        check(silencer.restore() == 0 && breakpoint.isEnabled(), "a later restore switches it back on");
+
+        EventRequest other = request(BreakpointRequest.class, true, false);
+        Silencer gone = Silencer.silence(() -> {
+            if (listing[0] != null) throw listing[0];
+            return List.of(other);
+        });
+        listing[0] = new VMDisconnectedException();
+        check(gone.restore() == 1 && gone.size() == 0, "a disconnected VM: every silenced request counts as not restored");
+        pass("silencer_restore_fails_loudly_unless_disconnected");
+    }
+
+    static void chain_start_by_javac_and_ecj_line_tables() {
+        // Measured line tables (1-based line, start pc) of one method holding
+        //   9  List<String> out =        10  nums.stream() ... 12  .collect(...);
+        //   14 n =                       15  nums.stream().count();
+        //   18 System.out.println(       19  nums.stream().count());
+        //   20 List<String> one = nums.stream().map(String::valueOf).collect(...);
+        List<RealRunTrace.LineEntry> javac = table(9, 0, 10, 3, 11, 13, 12, 18, 14, 30, 15, 33, 16, 44, 17, 47, 18, 60, 19, 66, 18, 76,
+                20, 79, 21, 109);
+        List<RealRunTrace.LineEntry> ecj = table(10, 0, 11, 8, 12, 18, 15, 30, 14, 43, 17, 44, 16, 57, 18, 60, 19, 63, 18, 76, 20, 79,
+                21, 109);
+        check(RealRunTrace.atChainStart(entry(9, 0), 8, javac), "javac: the declaration head holds the first instruction");
+        check(!RealRunTrace.atChainStart(entry(10, 3), 8, javac), "javac: the receiver was loaded on the head line already");
+        check(RealRunTrace.atChainStart(entry(10, 0), 8, ecj), "ECJ: no code on the head line, the first instruction is on the next");
+        check(RealRunTrace.atChainStart(entry(14, 30), 13, javac), "javac: an assignment head starts the statement");
+        check(!RealRunTrace.atChainStart(entry(14, 43), 13, ecj), "ECJ: the assignment head's only code runs after the chain");
+        check(RealRunTrace.atChainStart(entry(18, 60), 17, javac) && RealRunTrace.atChainStart(entry(18, 60), 17, ecj),
+                "a call head starts the statement for both");
+        check(!RealRunTrace.atChainStart(entry(20, 85), 19, javac), "mid-line, after the first call returned");
+        check(!RealRunTrace.atChainStart(entry(18, 60), 19, javac), "a stop before the statement's first line");
+        check(!RealRunTrace.atChainStart(entry(21, 109), 19, javac), "a stop after the statement ran");
+        pass("chain_start_by_javac_and_ecj_line_tables");
     }
 
     static void recorder_resource_is_a_java_8_class() throws Exception {
@@ -447,6 +500,17 @@ public final class SelfTest {
                     throw new UnsupportedOperationException(method.getName());
             }
         });
+    }
+
+    /** Pairs of (1-based line, start pc). */
+    private static List<RealRunTrace.LineEntry> table(int... linesAndPcs) {
+        List<RealRunTrace.LineEntry> out = new ArrayList<>();
+        for (int i = 0; i < linesAndPcs.length; i += 2) out.add(entry(linesAndPcs[i], linesAndPcs[i + 1]));
+        return out;
+    }
+
+    private static RealRunTrace.LineEntry entry(int line, long codeIndex) {
+        return new RealRunTrace.LineEntry(line, codeIndex);
     }
 
     private static Object field(Object object, String name) throws ReflectiveOperationException {
