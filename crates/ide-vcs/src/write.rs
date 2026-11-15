@@ -765,6 +765,18 @@ fn overwritten_untracked(stderr: &str) -> Option<Vec<String>> {
     listed_files(stderr, "untracked working tree files would be")
 }
 
+/// The branch git refused to check out or update because another worktree has it, from
+/// its error message: a switch says `'<branch>' is already used by worktree at '<path>'`,
+/// a forced update says `cannot force update the branch '<branch>' used by worktree at
+/// '<path>'`; git before 2.42 says `'<branch>' is already checked out at '<path>'`.
+fn branch_of_other_worktree(stderr: &str) -> Option<(String, String)> {
+    const MARKERS: [&str; 3] =
+        ["' is already used by worktree at '", "' used by worktree at '", "' is already checked out at '"];
+    let (before, path) = stderr.lines().find_map(|l| MARKERS.iter().find_map(|m| l.split_once(m)))?;
+    let branch = before.rsplit('\'').next()?.to_string();
+    Some((branch, path.strip_suffix('\'').unwrap_or(path).to_string()))
+}
+
 fn listed_files(stderr: &str, header: &str) -> Option<Vec<String>> {
     let mut lines = stderr.lines().skip_while(|l| !l.contains(header));
     lines.next()?;
@@ -805,12 +817,18 @@ pub(crate) fn checkout_with(
     if options.mode == CheckoutMode::Force {
         args.push("--discard-changes".into());
     }
+    if options.ignore_other_worktrees {
+        args.push("--ignore-other-worktrees".into());
+    }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = cli::run_raw(r.root(), &argv, None)?;
     if out.code == Some(0) {
         return Ok(CheckoutOutcome::Done);
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
+    if let Some((branch, path)) = branch_of_other_worktree(&stderr) {
+        return Ok(CheckoutOutcome::CheckedOutInWorktree { branch, path: path.into() });
+    }
     if let Some(files) = overwritten_untracked(&stderr) {
         return Ok(CheckoutOutcome::UntrackedFiles { files });
     }
@@ -893,7 +911,14 @@ pub(crate) fn create_branch(
         args.extend(["--", name]);
     }
     args.extend(start);
-    run(r.root(), &args, None).map(|_| ())
+    let out = cli::run_raw(r.root(), &args, None)?;
+    if out.code == Some(0) {
+        return Ok(());
+    }
+    if let Some((branch, path)) = branch_of_other_worktree(&String::from_utf8_lossy(&out.stderr)) {
+        return Err(IdeError::invalid(format!("branch '{branch}' is already checked out in worktree at '{path}'")));
+    }
+    Err(cli::failure(&args, &out.stderr, &out.stdout, out.code))
 }
 
 /// Whether `start` is a remote-tracking branch with another name than the new branch
@@ -1479,7 +1504,22 @@ fn decode_diff(bytes: &[u8], encoding: TextEncoding) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::append_revision;
+    use super::{append_revision, branch_of_other_worktree};
+
+    #[test]
+    fn the_worktree_holding_a_branch_is_read_from_each_git_wording() {
+        let held = |b: &str, p: &str| Some((b.to_string(), p.to_string()));
+        assert_eq!(
+            branch_of_other_worktree("fatal: 'topic' is already used by worktree at '/w/t'\n"),
+            held("topic", "/w/t")
+        );
+        assert_eq!(
+            branch_of_other_worktree("fatal: cannot force update the branch 'topic' used by worktree at '/w/t'"),
+            held("topic", "/w/t")
+        );
+        assert_eq!(branch_of_other_worktree("fatal: 'a/b' is already checked out at '/w/t'"), held("a/b", "/w/t"));
+        assert_eq!(branch_of_other_worktree("fatal: invalid reference: x"), None);
+    }
 
     #[test]
     fn a_revision_is_appended_once_keeping_the_list() {

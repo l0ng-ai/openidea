@@ -708,6 +708,8 @@ export const commands = {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
 } | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options })),
 	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
 	/**  "Restore" of the branch-deleted notification. */
@@ -2980,6 +2982,8 @@ export type CheckoutOptions = {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
 };
 
 /**
@@ -2997,7 +3001,12 @@ export type CheckoutOutcome = { kind: "done" } |
  *  Switched, but restoring the local changes (Smart Checkout) or the rebase stopped
  *  on conflicts in these files.
  */
-{ kind: "conflicts"; files: string[] };
+{ kind: "conflicts"; files: string[] } | 
+/**
+ *  Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+ *  changed; the branch can be worked on there.
+ */
+{ kind: "checkedOutInWorktree"; branch: string; path: string };
 
 export type ChoiceOption = {
 	value: string,

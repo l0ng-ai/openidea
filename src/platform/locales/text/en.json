@@ -1,4 +1,8 @@
 {
+  "Worktree Conflict": "Worktree Conflict",
+  "Branch '{branch}' is already checked out in a worktree at:\n{path}": "Branch '{branch}' is already checked out in a worktree at:\n{path}",
+  "Checkout Anyway": "Checkout Anyway",
+  "Open Existing Worktree": "Open Existing Worktree",
   "Favorites": "Favorites",
   "Add": "Add",
   "Cancel": "Cancel",
