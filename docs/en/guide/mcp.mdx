@@ -98,6 +98,7 @@ While the server runs, OpenIDEA writes its port and token to `mcp/server.json` i
 Notes on what they do:
 
 - `read_file` also reads sources of dependencies and files inside jar and zip archives.
+- The tools that list things return one page: `limit` items (100 by default; 50 for `search_symbol`, 10 for `list_runs`), from `offset`. `total` (where counting is cheap), `more` and `nextOffset` say what follows. `list_runs` filters by `state` (`running`, `idle`, `error` or one state), `get_run_configurations` by `query`, and `get_project_problems` lists errors only unless `errorsOnly` is false.
 - `search_symbol` and `find_references` use the IDE's index and the language servers; `get_symbol_info` returns what Quick Documentation shows.
 - `get_file_problems` and `get_project_problems` return what the Problems tool window shows, after your inspection profile is applied, rather than a fresh analysis.
 - `check_files` is the fresh analysis, for after an edit made by any tool: it syncs each file from disk, tells its language servers it was saved (so on-save checks such as `cargo check` run) and waits until they answered and finished. Each file gets a `status` that says whether the problems are complete, or why it could not be checked: no language server for it, or one that is not installed, misconfigured or crashed.

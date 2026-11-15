@@ -7,6 +7,7 @@ use super::output::OutputCollector;
 use super::process::{quote, split_words};
 use super::targets;
 use crate::Project;
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::run::timeout;
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_build::compile::BuildKind;
@@ -19,6 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: usize = 10_000;
+/// Configurations `get_run_configurations` lists by default.
+const CONFIGURATIONS_LIMIT: usize = 100;
 /// Output of a failed before-launch process kept for the error message.
 const MAX_PROCESS_OUTPUT_LENGTH: usize = 20_000;
 /// A before-launch build gets this long.
@@ -50,7 +53,8 @@ fn describe_config(call: &Call, c: &RunConfig) -> Value {
         if let Some(cwd) = c.cwd.as_deref() {
             v["workingDirectory"] = call.display(&call.root().join(cwd)).into();
         }
-        if !c.env.is_empty() {
+        // A detected configuration's environment is the IDE's own (its tools on `PATH`).
+        if !c.env.is_empty() && !c.detected {
             v["environment"] = json!(c.env);
         }
     }
@@ -133,8 +137,23 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
                 .await?;
                 return Output::json(json!({ "filePath": file, "runPoints": points }));
             }
-            let list: Vec<Value> = configs.iter().map(|c| describe_config(&call, c)).collect();
-            Output::json(json!({ "configurations": list }))
+            let page = Page::of(&call, CONFIGURATIONS_LIMIT)?;
+            let query = call.opt_str("query")?.map(|q| q.to_lowercase());
+            let list: Vec<Value> = configs
+                .iter()
+                .filter(|c| {
+                    query.as_ref().is_none_or(|q| {
+                        [c.name.as_str(), c.kind.as_str(), command_line(c).as_str()]
+                            .iter()
+                            .any(|s| s.to_lowercase().contains(q.as_str()))
+                    })
+                })
+                .map(|c| describe_config(&call, c))
+                .collect();
+            let mut out = Map::new();
+            let list = page.take(list, &mut out);
+            out.insert("configurations".into(), list.into());
+            Output::json(Value::Object(out))
         },
     )
     .write()
@@ -144,6 +163,9 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
         "Optional file path relative to the project root. When provided, returns run points (executable entry points) \
 in the file instead of project-wide run configurations.",
     ))
+    .param(Param::optional("query", ParamType::String, "Only configurations whose name, type or command contains it"))
+    .param(Param::optional("limit", ParamType::Integer, "Configurations to return at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
 
 /// What `execute_run_configuration` runs.

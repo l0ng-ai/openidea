@@ -3,6 +3,7 @@
 
 use super::agent::{AgentRun, INTERVENTION_ADVICE, TruncateMode, clean_output, tab_name, truncate_lines};
 use super::output::RUN_PREVIEW_MAX_LENGTH;
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::run::timeout;
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::{IdeError, IdeResult};
@@ -35,6 +36,14 @@ and `nextOffset` are positions in the tab's raw output log; pass `nextOffset` as
 const MAX_LINES: &str = "Lines of output to return at most (default 2000)";
 const TRUNCATE_MODE: &str = "Which lines to leave out beyond maxLinesCount: START (default, keeps the end), END \
 (keeps the start), MIDDLE (keeps both ends) or NONE";
+/// `list_runs`: tabs returned by default, and characters of each command, enough to tell them apart.
+const LIST_LIMIT: usize = 10;
+const LIST_COMMAND_CHARS: usize = 80;
+const LIST_STATES: [(&str, &[&str]); 3] = [
+    ("running", &["starting", "running", "stopping"]),
+    ("idle", &["succeeded", "failed", "crashed", "stoppedByAgent", "stoppedByUser", "startFailed"]),
+    ("error", &["failed", "crashed", "startFailed"]),
+];
 
 fn find(call: &Call) -> IdeResult<Arc<AgentRun>> {
     let name = tab_name(&call.str("name")?)?;
@@ -283,13 +292,64 @@ for input) and `tabClosedAt` when the user closed the tab.{INTERVENTIONS}"
 pub fn list_runs() -> Tool {
     Tool::new(
         "list_runs",
-        "Lists the agent tabs of the project (those started by `run_command`) with their status.",
+        "Lists the agent tabs of the project (those started by `run_command`), newest first: name, state, the \
+start of the command, exit code and times. `get_run_status` gives a tab's whole status.",
         |call| async move {
-            let runs: Vec<Value> =
-                call.host().mcp_agent_runs.list(call.root()).iter().map(|r| Value::Object(r.status())).collect();
-            Output::json(serde_json::json!({ "runs": runs }))
+            let page = Page::of(&call, LIST_LIMIT)?;
+            let wanted = call.opt_str("state")?.filter(|s| s != "all");
+            let states = match wanted.as_deref() {
+                None => None,
+                Some(s) => Some(match LIST_STATES.iter().find(|(group, _)| *group == s) {
+                    Some((_, states)) => states.to_vec(),
+                    None if LIST_STATES[1].1.contains(&s) || LIST_STATES[0].1.contains(&s) => vec![s],
+                    None => {
+                        return Err(IdeError::invalid(format!(
+                            "unknown state `{s}`: all, running, idle, error, or one of the states of get_run_status"
+                        )));
+                    }
+                }),
+            };
+            let runs: Vec<Value> = call
+                .host()
+                .mcp_agent_runs
+                .list(call.root())
+                .iter()
+                .rev()
+                .map(|r| r.status())
+                .filter(|s| {
+                    states.as_ref().is_none_or(|states| s["state"].as_str().is_some_and(|v| states.contains(&v)))
+                })
+                .map(|s| Value::Object(brief(s)))
+                .collect();
+            let mut out = Map::new();
+            let runs = page.take(runs, &mut out);
+            out.insert("runs".into(), runs.into());
+            Output::json(Value::Object(out))
         },
     )
+    .param(Param::optional(
+        "state",
+        ParamType::String,
+        "all (default), running, idle (not running), error (failed, crashed, startFailed), or one state",
+    ))
+    .param(Param::optional("limit", ParamType::Integer, "Tabs to return at most (default 10)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
+}
+
+/// A tab in `list_runs`: what tells it apart and how it went, the command cut short.
+fn brief(mut status: Map<String, Value>) -> Map<String, Value> {
+    let mut out = Map::new();
+    for key in ["name", "state", "command", "exitCode", "crash", "error", "startedAt", "endedAt", "tabClosedAt"] {
+        if let Some(v) = status.remove(key) {
+            out.insert(key.into(), v);
+        }
+    }
+    if let Some(Value::String(command)) = out.get_mut("command")
+        && command.chars().count() > LIST_COMMAND_CHARS
+    {
+        *command = format!("{}…", command.chars().take(LIST_COMMAND_CHARS).collect::<String>());
+    }
+    out
 }
 
 /// What a key does to a command on pipes.
@@ -406,6 +466,22 @@ pub fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listed_tabs_are_brief_and_their_commands_cut_short() {
+        let status = serde_json::json!({
+            "name": "_agent_build", "state": "failed", "command": "x".repeat(100), "exitCode": 1,
+            "workingDirectory": "", "outputLength": 9, "startedBy": "agent",
+        });
+        let Value::Object(status) = status else { unreachable!() };
+        let brief = Value::Object(brief(status));
+        assert_eq!(brief["command"].as_str().unwrap(), format!("{}…", "x".repeat(LIST_COMMAND_CHARS)));
+        assert_eq!(
+            (&brief["name"], &brief["state"], &brief["exitCode"]),
+            (&"_agent_build".into(), &"failed".into(), &1.into())
+        );
+        assert!(brief.get("outputLength").is_none() && brief.get("workingDirectory").is_none());
+    }
 
     #[test]
     fn keys_are_what_pipes_can_take() {
