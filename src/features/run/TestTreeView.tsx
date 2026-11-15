@@ -1,10 +1,11 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { Icon, IconButton, showContextMenu, useContextMenuStore, Spinner, Tree, type MenuItem } from "@/ui";
 import { openTarget } from "./navigate";
 import { nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
 import { parseComparison } from "./testing/comparison";
+import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -82,6 +83,15 @@ export function StatusIcon({ status }: { status: TestStatus | null }) {
     default:
       return <Icon name="test-pending" className={styles.testStatus} label="Pending" />;
   }
+}
+
+function suiteIds(nodes: readonly TestNode[], out: Set<string> = new Set()): Set<string> {
+  for (const n of nodes) {
+    if (n.children.length === 0) continue;
+    out.add(n.id);
+    suiteIds(n.children, out);
+  }
+  return out;
 }
 
 function filterTree(nodes: readonly TestNode[], keep: (n: TestNode) => boolean): TestNode[] {
@@ -209,6 +219,17 @@ export function TestTreeView({
     return set;
   }, [expanded, roots]);
 
+  // Collapse All leaves the top-level suites in view, as IDEA's test tree does.
+  useEffect(() => {
+    testTree.expandAll = () => setExpanded(suiteIds(results.roots));
+    testTree.collapseAll = () => setExpanded(new Set());
+    return () => {
+      testTree.expandAll = null;
+      testTree.collapseAll = null;
+    };
+  });
+  const hasSuites = roots.some((n) => n.children.length > 0);
+
   const status = running ? "running" : counts.failed > 0 ? "failed" : counts.total > 0 ? "passed" : null;
   const duration = results.summary.durationMs;
 
@@ -240,10 +261,19 @@ export function TestTreeView({
           pressed={showIgnored}
           onClick={() => toggle("showIgnored")}
         />
+        <IconButton icon="expand-all" action="run.expandAllTests" size="small" iconSize={16} disabled={!hasSuites} />
+        <IconButton
+          icon="collapse-all"
+          action="run.collapseAllTests"
+          size="small"
+          iconSize={16}
+          disabled={!hasSuites}
+        />
       </div>
       <Tree<TestNode>
         aria-label="Test results"
         className={styles.testTree}
+        focusContext={TEST_TREE_FOCUS}
         roots={roots}
         getKey={(n) => n.id}
         getLabel={(n) => n.name}

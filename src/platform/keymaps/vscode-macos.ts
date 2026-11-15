@@ -228,6 +228,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.reloadFromDisk": [],
   "project.expandAll": [],
   "project.collapseAll": [],
+  "run.expandAllTests": [],
+  "run.collapseAllTests": [],
   "project.findUsages": ["Alt+Shift+F12"],
   "project.reformatCode": ["Alt+Shift+F"],
   "project.optimizeImports": ["Alt+Shift+O"],
