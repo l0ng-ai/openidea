@@ -199,7 +199,8 @@ async fn successful_refresh_replaces_models_and_efforts_and_old_sessions_cannot_
     pending.reply.send(Ok(response(&["retained", "new"], &["medium"]))).unwrap();
     let fresh = completed(&mut events).await;
     assert_eq!(model_values(&fresh), ["retained", "new"]);
-    assert_eq!(fresh.thought_levels.keys().map(String::as_str).collect::<Vec<_>>(), ["new", "retained"]);
+    // The session's efforts describe its own model, not "new".
+    assert_eq!(fresh.thought_levels.keys().map(String::as_str).collect::<Vec<_>>(), ["retained"]);
     assert_eq!(fresh.thought_levels["retained"][0].values[0].value, "medium");
     assert!(fresh.refreshed_at_ms.is_some() && fresh.retry_at_ms.is_some());
     manager.shared.remember(PROVIDER, Some(&old), None, Some("old"));

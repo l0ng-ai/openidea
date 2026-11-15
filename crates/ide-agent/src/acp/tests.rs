@@ -168,7 +168,8 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
     let fast = cursor.config.iter().find(|o| o.id == "fast").expect("fast option");
     assert_eq!(fast.category.as_deref(), Some("model_config"));
     assert_eq!(fast.current.as_deref(), Some("false"));
-    assert!(cursor.thought_levels.contains_key("m1") && cursor.thought_levels.contains_key("m2"));
+    // The effort option belongs to the session's model; m2 may offer other levels.
+    assert_eq!(cursor.thought_levels.keys().collect::<Vec<_>>(), ["m1"]);
     assert!(cursor.thought_levels["m1"].iter().any(|o| o.category.as_deref() == Some("thought_level")));
 }
 
