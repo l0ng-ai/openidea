@@ -17,6 +17,15 @@
   font-size: var(--fs-small);
   line-height: 1.5;
 }
+.cloneDirRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cloneDirInput {
+  flex: 1;
+  min-width: 0;
+}
 .section {
   padding: 10px 14px 4px;
   color: var(--fg-subtle);

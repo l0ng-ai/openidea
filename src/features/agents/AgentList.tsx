@@ -575,7 +575,7 @@ function Details({
       {job && (
         <div className={styles.progress}>
           <ProgressBar value={job.fraction} aria-label={tx`Installing ${agent.name}`} />
-          <span className={styles.hint}>{job.message}</span>
+          <span>{job.message}</span>
         </div>
       )}
       {!job && installed && update && <p className={styles.notice}>{tx`${update} is available`}</p>}

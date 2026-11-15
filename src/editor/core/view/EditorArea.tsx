@@ -115,7 +115,7 @@ function EmptyEditorArea() {
   return (
     <div ref={ref} className={styles.area}>
       <EmptyEditor />
-      {over && <div className={clsx(styles.dropZone, styles["drop-center"])} aria-hidden="true" />}
+      {over && <div className={styles.dropZone} aria-hidden="true" />}
     </div>
   );
 }
