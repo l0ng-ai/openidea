@@ -54,13 +54,14 @@ lambda runs twice. They take `target` first, like the commands above, then one o
 | `stream.collect` | `{traceId}`                | `{records: [{step, value}], dropped, terminal, skippedBreakpoints, sequentialized}` |
 | `stream.release` | `{traceId}`                | `{}`                                                                                |
 
-`plan` is the JSON of `ide_streams::RealRunPlan`; `budget` (default 50 000) caps the records kept,
-past which they are only counted in `dropped`. `wait`'s `state` is `running`, `parked` or `failed`;
+`plan` is the JSON of `ide_streams::RealRunPlan`; `budget`, a whole number from 1 to 2³¹ − 1
+(default 50 000), caps the records kept, past which they are only counted in `dropped`. `wait`'s `state` is `running`, `parked` or `failed`;
 `abort`'s is `interrupted`, `stopped` or `stuck`. `collect` takes the new stop's `target.generation`,
 and its `terminal` is `{kind: "value", value}`, `{kind: "void"}` or `{kind: "threw", exception}`.
 Besides the codes above, a reply's `error` can be `noSession` (java-debug registered no session for
-the VM), `notAtChainStart`, `busy` (the VM has a trace still running) or `noTrace` (the `traceId` is
-not the VM's current trace).
+the VM), `notAtChainStart`, `busy` (the VM has a trace still running), `noTrace` (the `traceId` is
+not the VM's current trace) or `badArgument` (a `budget` out of range). Any other malformed argument
+is an ordinary `executeCommand` error.
 
 - `arm` needs the thread suspended by an event (a breakpoint or a step) and a VM that can force early
   returns and report return values (HotSpot 11 to 25 can). It defines the recorder
@@ -69,8 +70,9 @@ not the VM's current trace).
   the exception that cancels the terminal (`java.lang.RuntimeException: oi-cancel:<nonce>`).
 - From `arm` until the trace is released, every enabled breakpoint and exception breakpoint that is
   not the bundle's own is switched off, then back on. A breakpoint hit while the bundle invokes into
-  the thread hangs the session. A request java-debug deleted meanwhile (the user edited the
-  breakpoint) is skipped.
+  the thread hangs the session. A request java-debug deleted meanwhile (the user edited or removed the
+  breakpoint) stays off: Eclipse JDI would enable a deleted request again, so only requests the VM
+  still lists are switched back on.
 - One trace per VM. A finished trace (parked or failed) is released by the next `arm` on that VM or
   when the VM disconnects; the client need not call `release`.
 - `wait` returns as soon as the trace leaves `running`, or after `ms`, at most 30 000.
@@ -154,7 +156,7 @@ DAP `evaluate` sent 0.5 s after `classes` starts must succeed, with the timeout 
 It stops every process it started.
 
 `tests/stream.py` does the same for the stream commands, once per JDK in `OPENIDEA_TEST_JAVA`, with
-a launch and an attach. `--bundle` takes a jar built with `--out` (default: the checked-in one) and
+a launch and an attach; both scripts share `tests/jdtls_harness.py`. `--bundle` takes a jar built with `--out` (default: the checked-in one) and
 `--case NAME` runs only the cases whose name contains `NAME`:
 
 ```sh

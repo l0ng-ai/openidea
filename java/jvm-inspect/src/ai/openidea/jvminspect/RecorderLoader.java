@@ -31,7 +31,12 @@ final class RecorderLoader {
     private static final int INVOKE = ObjectReference.INVOKE_SINGLE_THREADED;
     private static final int PIN_ATTEMPTS = 3;
     /** Not a WeakHashMap: a ClassType refers to its VM, so the key would never be cleared. */
-    private static final Map<VirtualMachine, ClassType> DEFINED = new IdentityHashMap<>();
+    private static final Map<VirtualMachine, Slot> DEFINED = new IdentityHashMap<>();
+
+    /** The recorder class of one VM, null until defined; also that VM's lock. */
+    private static final class Slot {
+        ClassType type;
+    }
 
     interface Create {
         ObjectReference get() throws Exception;
@@ -51,9 +56,27 @@ final class RecorderLoader {
      * The recorder class in {@code vm}, defined on first use. {@code thread} must be suspended by an
      * event: defining invokes into it. The loader and the class stay pinned for the VM's life.
      */
-    static synchronized ClassType classFor(VirtualMachine vm, ThreadReference thread) throws Exception {
-        ClassType defined = DEFINED.get(vm);
-        if (defined != null) return defined;
+    static ClassType classFor(VirtualMachine vm, ThreadReference thread) throws Exception {
+        Slot slot;
+        synchronized (DEFINED) {
+            slot = DEFINED.computeIfAbsent(vm, k -> new Slot());
+        }
+        // Per VM: defining invokes into the debuggee, which must not hold up the other VMs.
+        synchronized (slot) {
+            if (slot.type == null) slot.type = define(vm, thread);
+            return slot.type;
+        }
+    }
+
+    /** Drops the classes of VMs not in {@code live}. */
+    static void retain(Set<VirtualMachine> live) {
+        synchronized (DEFINED) {
+            DEFINED.keySet().retainAll(live);
+        }
+    }
+
+    private static ClassType define(VirtualMachine vm, ThreadReference thread) throws Exception {
+        ClassType defined;
         ClassType secureLoader = classType(vm, "java.security.SecureClassLoader");
         ObjectReference loader = pin(() -> secureLoader.newInstance(thread,
                 method(secureLoader, "<init>", "(Ljava/lang/ClassLoader;)V"), Collections.singletonList(null), INVOKE));
@@ -82,13 +105,7 @@ final class RecorderLoader {
         } finally {
             if (array != null) array.enableCollection();
         }
-        DEFINED.put(vm, defined);
         return defined;
-    }
-
-    /** Drops the classes of VMs not in {@code live}. */
-    static synchronized void retain(Set<VirtualMachine> live) {
-        DEFINED.keySet().retainAll(live);
     }
 
     /**

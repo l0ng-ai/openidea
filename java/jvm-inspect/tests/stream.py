@@ -14,19 +14,20 @@ A case is a function decorated with `@case`. It gets a stopped `Debuggee` from `
 and `stream(...)`. Debuggee programs live in PROGRAMS; `// @name` at the end of a line names that
 line for `line('name')`.
 """
-import json
 import os
 import pathlib
-import platform
-import re
-import shutil
-import signal
-import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+
+# -I leaves the script's directory off sys.path; the shared harness lives there. Appended, not
+# prepended: tests/inspect.py would shadow the standard library's `inspect`.
+sys.path.append(str(pathlib.Path(__file__).resolve().parent))
+sys.dont_write_bytecode = True  # no __pycache__ in the source tree
+from jdtls_harness import (check, debug_session, finish, free_port, kill, report, start_jdtls, stop_jdtls,  # noqa: E402
+                           wait_ready)
 
 STREAM_COMMANDS = ['openidea.jvm.stream.' + c for c in ('arm', 'wait', 'stop', 'abort', 'collect', 'release')]
 
@@ -66,139 +67,6 @@ home, java_debug = (pathlib.Path(a).resolve() for a in args[:2])
 javas = [p for p in os.environ.get('OPENIDEA_TEST_JAVA', '').split(os.pathsep) if p]
 if not javas:
     sys.exit('set OPENIDEA_TEST_JAVA to one or more <jdk>/bin/java, separated by ' + os.pathsep)
-failures = []
-T0 = time.time()
-
-
-def report(status, name, detail=''):
-    print(f'[{time.time() - T0:6.1f}s] {status} {name}' + (f': {detail}' if detail else ''), flush=True)
-    if status == 'FAIL':
-        failures.append(name)
-
-
-def check(name, ok, detail=''):
-    report('OK' if ok else 'FAIL', name, '' if ok else detail)
-    return ok
-
-
-class Rpc:
-    """Content-Length framed JSON; responses are matched by id so two threads can wait at once."""
-
-    def __init__(self, read, write):
-        self.read, self.write = read, write
-        self.lock = threading.Lock()
-        self.cv = threading.Condition()
-        self.next_id = 0
-        self.responses = {}
-        self.events = []
-        threading.Thread(target=self.pump, daemon=True).start()
-
-    def pump(self):
-        while True:
-            header = b''
-            while not header.endswith(b'\r\n\r\n'):
-                c = self.read(1)
-                if not c:
-                    return
-                header += c
-            length = int(re.search(rb'Content-Length: (\d+)', header).group(1))
-            body = b''
-            while len(body) < length:
-                chunk = self.read(length - len(body))
-                if not chunk:
-                    return
-                body += chunk
-            self.receive(json.loads(body))
-
-    def send(self, message):
-        data = json.dumps(message).encode()
-        with self.lock:
-            self.write(b'Content-Length: %d\r\n\r\n' % len(data) + data)
-
-    def allocate(self):
-        with self.lock:
-            self.next_id += 1
-            return self.next_id
-
-    def store(self, key, message):
-        with self.cv:
-            self.responses[key] = message
-            self.cv.notify_all()
-
-    def wait_for(self, key, timeout, what):
-        end = time.time() + timeout
-        with self.cv:
-            while key not in self.responses:
-                if not self.cv.wait(max(0.01, end - time.time())) and time.time() > end:
-                    raise TimeoutError(what)
-            return self.responses.pop(key)
-
-    def wait_event(self, predicate, timeout, what):
-        end = time.time() + timeout
-        with self.cv:
-            while True:
-                for event in self.events:
-                    if predicate(event):
-                        self.events.remove(event)
-                        return event
-                if not self.cv.wait(max(0.01, end - time.time())) and time.time() > end:
-                    raise TimeoutError(what)
-
-
-class Lsp(Rpc):
-    def receive(self, m):
-        if 'method' in m and 'id' in m:
-            self.send({'jsonrpc': '2.0', 'id': m['id'], 'result': None})
-        elif 'method' in m:
-            with self.cv:
-                self.events.append(m)
-                self.cv.notify_all()
-        else:
-            self.store(m['id'], m)
-
-    def request(self, method, params, timeout=120):
-        rid = self.allocate()
-        self.send({'jsonrpc': '2.0', 'id': rid, 'method': method, 'params': params})
-        return self.wait_for(rid, timeout, method)
-
-    def notify(self, method, params):
-        self.send({'jsonrpc': '2.0', 'method': method, 'params': params})
-
-    def command(self, command, *arguments, timeout=120):
-        r = self.request('workspace/executeCommand', {'command': command, 'arguments': list(arguments)}, timeout)
-        if 'error' in r:
-            raise RuntimeError(f'{command}: {r["error"]}')
-        return r['result']
-
-
-class Dap(Rpc):
-    def __init__(self, read, write):
-        self.output = []
-        super().__init__(read, write)
-
-    def receive(self, m):
-        if m['type'] == 'response':
-            self.store(m['request_seq'], m)
-        elif m['type'] == 'event':
-            with self.cv:
-                if m['event'] == 'output':
-                    self.output.append(m['body'].get('output', ''))
-                else:
-                    self.events.append(m)
-                self.cv.notify_all()
-        elif m['type'] == 'request':  # runInTerminal and the like: refuse
-            self.send({'seq': 0, 'type': 'response', 'request_seq': m['seq'], 'command': m['command'], 'success': False})
-
-    def request(self, command, arguments=None, timeout=60):
-        rid = self.allocate()
-        self.send({'seq': rid, 'type': 'request', 'command': command, 'arguments': arguments or {}})
-        return self.wait_for(rid, timeout, command)
-
-    def start(self, command, arguments):
-        rid = self.allocate()
-        self.send({'seq': rid, 'type': 'request', 'command': command, 'arguments': arguments})
-
-
 # resolved: on macOS the temp dir is under the /var symlink, and JDT LS matches canonical URIs
 work = pathlib.Path(tempfile.mkdtemp(prefix='openidea-jvm-stream-')).resolve()
 project = work / 'project'
@@ -208,27 +76,7 @@ for name, text in PROGRAMS.items():
 classes = work / 'classes'
 subprocess.run(['javac', '-g', '--release', '8', '-Xlint:-options', '-d', str(classes),
                 *[str(project / 'src' / f'{n}.java') for n in PROGRAMS]], check=True)
-config = work / 'config'
-config.mkdir()
-system, machine = platform.system(), platform.machine().lower()
-config_name = {'Windows': 'config_win', 'Darwin': 'config_mac'}.get(system, 'config_linux')
-names = ([config_name + '_arm'] if machine in ('arm64', 'aarch64') else []) + [config_name]
-(config / 'config.ini').write_bytes(next(home / n / 'config.ini' for n in names if (home / n / 'config.ini').is_file()).read_bytes())
-
-jdtls = subprocess.Popen(['java', '-Declipse.application=org.eclipse.jdt.ls.core.id1', '-Dosgi.bundles.defaultStartLevel=4',
-                          '-Declipse.product=org.eclipse.jdt.ls.core.product', '-Xmx1G', '--add-modules=ALL-SYSTEM',
-                          '--add-opens', 'java.base/java.util=ALL-UNNAMED', '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
-                          '-jar', str(next((home / 'plugins').glob('org.eclipse.equinox.launcher_*.jar'))),
-                          '-configuration', str(config), '-data', str(work / 'data')],
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=(work / 'jdtls.err').open('w'))
-
-
-def write_jdtls(data):
-    jdtls.stdin.write(data)
-    jdtls.stdin.flush()
-
-
-lsp = Lsp(jdtls.stdout.read, write_jdtls)
+jdtls = lsp = None
 jvms = []  # debuggees started here
 launched = []  # pids of debuggees java-debug started
 project_name = None
@@ -247,14 +95,6 @@ def line(name, program='Chains'):
     raise KeyError(name)
 
 
-def free_port():
-    s = socket.socket()
-    s.bind(('127.0.0.1', 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 class Debuggee:
     """One DAP session stopped on `thread`; `target` selects its VM for the bundle commands."""
 
@@ -271,13 +111,7 @@ class Debuggee:
 
 
 def session():
-    port = lsp.command('vscode.java.startDebugSession', timeout=60)
-    sock = socket.create_connection(('127.0.0.1', port))
-    reader = sock.makefile('rb', buffering=0)
-    d = Dap(reader.read, sock.sendall)
-    d.request('initialize', {'clientID': 'openidea-jvm-stream', 'adapterID': 'java', 'linesStartAt1': True,
-                             'columnsStartAt1': True, 'pathFormat': 'path'})
-    return d
+    return debug_session(lsp, 'openidea-jvm-stream')
 
 
 def breakpoints(dbg, *names):
@@ -467,19 +301,39 @@ def arm_in_attach():
         dbg.end()
 
 
-try:
+@case
+def deleted_breakpoint_stays_deleted():
+    dbg = launch()
+    try:
+        trace = ok(arm(dbg))['traceId']
+        breakpoints(dbg)  # java-debug deletes the silenced request
+        ok(stream('release', dbg, traceId=trace))
+        resume(dbg)
+        check('a breakpoint removed while armed does not come back after release', no_stop(dbg, 1.5))
+    finally:
+        dbg.end()
+
+
+@case
+def budget_out_of_range():
+    dbg = launch()
+    try:
+        for budget in (0, -1, 2.5, 2 ** 31):
+            r = arm(dbg, budget=budget)
+            check(f'arm with budget {budget} is badArgument', error(r) == 'badArgument', r)
+    finally:
+        dbg.end()
+
+
+def run():
+    global jdtls, lsp, project_name, java
     uri = project.as_uri()
-    r = lsp.request('initialize', {'processId': os.getpid(), 'rootUri': uri, 'capabilities': {'workspace': {'executeCommand': {}}},
-                                   'initializationOptions': {'bundles': [str(java_debug), str(bundle)],
-                                                             'settings': {'java': {'project': {'sourcePaths': ['src']}}}},
-                                   'workspaceFolders': [{'uri': uri, 'name': 'project'}]}, timeout=180)
-    registered = r['result']['capabilities'].get('executeCommandProvider', {}).get('commands', [])
-    if not check('JDT LS registers the stream commands and java-debug',
-                 all(c in registered for c in STREAM_COMMANDS + ['vscode.java.startDebugSession']),
+    wanted = STREAM_COMMANDS + ['vscode.java.startDebugSession']
+    jdtls, lsp, registered = start_jdtls(home, work, project, [java_debug, bundle], wanted)
+    if not check('JDT LS registers the stream commands and java-debug', all(c in registered for c in wanted),
                  [c for c in registered if c.startswith(('openidea', 'vscode.java.start'))]):
-        sys.exit(1)
-    lsp.notify('initialized', {})
-    lsp.wait_event(lambda m: m.get('method') == 'language/status' and m['params'].get('type') in ('ServiceReady', 'Started'), 240, 'ServiceReady')
+        return
+    wait_ready(lsp)
     for name, text in PROGRAMS.items():
         lsp.notify('textDocument/didOpen', {'textDocument': {'uri': pathlib.Path(source(name)).as_uri(), 'languageId': 'java',
                                                              'version': 1, 'text': text}})
@@ -498,30 +352,14 @@ try:
                 fn()
             except Exception as e:
                 report('FAIL', fn.__name__, repr(e))
+
+
+try:
+    run()
 except Exception as e:
     report('FAIL', 'harness', repr(e))
 finally:
-    for p in jvms:
-        if p.poll() is None:
-            p.kill()
-            p.wait(10)
-    for pid in launched:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-    try:
-        lsp.request('shutdown', None, 10)
-        lsp.notify('exit', None)
-        jdtls.wait(10)
-    except Exception:
-        pass
-    if jdtls.poll() is None:
-        jdtls.kill()
-        jdtls.wait(10)
-    if failures:
-        print(f'kept {work} (JDT LS stderr in jdtls.err, log in data/.metadata/.log)', flush=True)
-    else:
-        shutil.rmtree(work, ignore_errors=True)
-print('FAILED: ' + ', '.join(failures) if failures else 'ALL OK', flush=True)
-sys.exit(1 if failures else 0)
+    kill(jvms, launched)
+    if lsp:
+        stop_jdtls(jdtls, lsp)
+sys.exit(finish(work))

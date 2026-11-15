@@ -69,7 +69,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
     private static long arm(VirtualMachine vm, Map<?, ?> args) throws Exception {
         long threadId = number(args, "threadId").longValue();
         RealRunPlan plan = RealRunPlan.of(args.get("plan"));
-        Number budget = (Number) args.get("budget");
+        int budget = budget(args.get("budget"));
         if (!vm.canForceEarlyReturn() || !vm.canGetMethodReturnValues()) {
             throw new Failure("unsupported", "the VM cannot force early returns or report method return values");
         }
@@ -87,8 +87,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
             }
             if (current != null && current.state().wire.equals("running")) throw new Failure("busy", "trace " + current.id + " is running");
             if (current != null) release(vm, current);
-            RealRunTrace trace = RealRunTrace.arm(IDS.incrementAndGet(), vm, thread, plan,
-                    budget == null ? RealRunTrace.DEFAULT_BUDGET : budget.intValue(), hub);
+            RealRunTrace trace = RealRunTrace.arm(IDS.incrementAndGet(), vm, thread, plan, budget, hub);
             synchronized (TRACES) {
                 TRACES.put(vm, trace);
             }
@@ -128,6 +127,16 @@ public final class StreamCommand implements IDelegateCommandHandler {
         }
         gone.forEach(RealRunTrace::release);
         RecorderLoader.retain(live);
+    }
+
+    /** {@link RealRunTrace#DEFAULT_BUDGET} when absent; otherwise a whole number from 1 to {@link Integer#MAX_VALUE}. */
+    private static int budget(Object json) throws Failure {
+        if (json == null) return RealRunTrace.DEFAULT_BUDGET;
+        if (json instanceof Number n) {
+            double v = n.doubleValue();
+            if (v >= 1 && v <= Integer.MAX_VALUE && v == Math.rint(v)) return n.intValue();
+        }
+        throw new Failure("badArgument", "budget must be a whole number from 1 to " + Integer.MAX_VALUE + ", not " + json);
     }
 
     private static Number number(Map<?, ?> args, String name) {

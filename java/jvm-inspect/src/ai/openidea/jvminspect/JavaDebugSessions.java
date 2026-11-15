@@ -103,8 +103,10 @@ final class JavaDebugSessions {
             Object onNext = consumer(consumer, value -> listener.onEvent(new HubEvent(this, value)), failed);
             Object onError = consumer(consumer, value -> failed.accept((Throwable) value), failed);
             try {
-                Object disposable = load(loader, OBSERVABLE).getMethod("subscribe", consumer, consumer).invoke(events, onNext, onError);
+                // Everything is looked up before subscribing: a lookup failing after it would leave a live subscription.
                 Method dispose = load(loader, DISPOSABLE).getMethod("dispose");
+                Method subscribe = load(loader, OBSERVABLE).getMethod("subscribe", consumer, consumer);
+                Object disposable = subscribe.invoke(events, onNext, onError);
                 return () -> {
                     try {
                         dispose.invoke(disposable);

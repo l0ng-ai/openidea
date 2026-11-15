@@ -20,6 +20,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * One stream trace of a real run, from {@code stream.arm} to {@code stream.release}. Everything it sets
  * up in the VM is undone by {@link #release}, in reverse order.
+ *
+ * <p>{@link #stateLock} guards the state and is never held across a JDI call, so java-debug's event
+ * thread, which takes it, never waits on JDWP traffic.
  */
 final class RealRunTrace {
     static final int DEFAULT_BUDGET = 50_000;
@@ -48,9 +51,11 @@ final class RealRunTrace {
     final RealRunPlan plan;
     final int budget;
     private final long armedNanos = System.nanoTime();
+    /** Also the lock of {@link #release}. */
     private final Deque<Runnable> undo = new ArrayDeque<>();
     /** Failures nobody could be told about when they happened: listener errors, cleanup that did not work. */
     private final List<String> errors = new CopyOnWriteArrayList<>();
+    private final Object stateLock = new Object();
     private State state = State.ARMED;
     private String detail;
     private Silencer silencer;
@@ -114,20 +119,28 @@ final class RealRunTrace {
         // TODO: match the events of this trace's requests to wrap the steps and run the terminal.
     }
 
-    synchronized State state() {
-        return state;
+    State state() {
+        synchronized (stateLock) {
+            return state;
+        }
     }
 
     /** {@code {state, records, dropped, elapsedMs, detail?}} once the trace leaves the running states or after {@code ms}. */
-    synchronized Map<String, Object> await(long ms) throws InterruptedException {
-        long end = System.nanoTime() + ms * 1_000_000;
-        for (long left = ms; state.wire.equals("running") && left > 0; left = (end - System.nanoTime()) / 1_000_000) {
-            wait(left);
+    Map<String, Object> await(long ms) throws InterruptedException {
+        State seen;
+        String why;
+        synchronized (stateLock) {
+            long end = System.nanoTime() + ms * 1_000_000;
+            for (long left = ms; state.wire.equals("running") && left > 0; left = (end - System.nanoTime()) / 1_000_000) {
+                stateLock.wait(left);
+            }
+            seen = state;
+            why = detail;
         }
+        if (why == null && !errors.isEmpty()) why = String.join("; ", errors);
         Map<Field, Value> counts = log.getValues(List.of(field("size"), field("dropped")));
-        Map<String, Object> out = Values.json("state", state.wire, "records", intOf(counts.get(field("size"))),
+        Map<String, Object> out = Values.json("state", seen.wire, "records", intOf(counts.get(field("size"))),
                 "dropped", intOf(counts.get(field("dropped"))), "elapsedMs", (System.nanoTime() - armedNanos) / 1_000_000);
-        String why = detail != null ? detail : errors.isEmpty() ? null : String.join("; ", errors);
         if (why != null) out.put("detail", why);
         return out;
     }
@@ -138,22 +151,26 @@ final class RealRunTrace {
      *
      * @return the records kept
      */
-    synchronized int stopRecording() throws Exception {
+    int stopRecording() throws Exception {
         log.setValue(field("budget"), vm.mirrorOf(intOf(log.getValue(field("size")))));
         // An append that passed the budget check before the write may still land.
         return intOf(log.getValue(field("size")));
     }
 
     /** Undoes everything {@link #arm} set up; later calls do nothing. Never throws. */
-    synchronized void release() {
-        while (!undo.isEmpty()) {
-            try {
-                undo.pop().run();
-            } catch (RuntimeException e) {
-                errors.add("release: " + e);
+    void release() {
+        synchronized (undo) {
+            while (!undo.isEmpty()) {
+                try {
+                    undo.pop().run();
+                } catch (RuntimeException e) {
+                    errors.add("release: " + e);
+                }
             }
         }
-        notifyAll();
+        synchronized (stateLock) {
+            stateLock.notifyAll();
+        }
     }
 
     private Field field(String name) {

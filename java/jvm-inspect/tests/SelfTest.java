@@ -5,7 +5,6 @@ import ai.openidea.jvminspect.VmSelector.VmInfo;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.ExceptionRequest;
-import com.sun.jdi.request.InvalidRequestStateException;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.lang.reflect.Proxy;
@@ -158,11 +157,12 @@ public final class SelfTest {
     }
 
     static void silencer_switches_off_only_enabled_foreign_requests() {
-        EventRequest breakpoint = request(BreakpointRequest.class, true, false, false);
-        EventRequest exception = request(ExceptionRequest.class, true, false, false);
-        EventRequest disabled = request(BreakpointRequest.class, false, false, false);
-        EventRequest own = request(BreakpointRequest.class, true, true, false);
-        Silencer silencer = Silencer.silence(List.of(breakpoint, exception, disabled, own));
+        EventRequest breakpoint = request(BreakpointRequest.class, true, false);
+        EventRequest exception = request(ExceptionRequest.class, true, false);
+        EventRequest disabled = request(BreakpointRequest.class, false, false);
+        EventRequest own = request(BreakpointRequest.class, true, true);
+        List<EventRequest> requests = List.of(breakpoint, exception, disabled, own);
+        Silencer silencer = Silencer.silence(() -> requests);
         check(!breakpoint.isEnabled() && !exception.isEnabled(), "enabled foreign requests are switched off");
         check(own.isEnabled(), "a request marked \"oi\" is left alone");
         check(silencer.size() == 2 && silencer.silencedBreakpoints() == 1, "2 silenced, 1 of them a breakpoint: " + silencer.size());
@@ -174,10 +174,15 @@ public final class SelfTest {
     }
 
     static void silencer_skips_requests_java_debug_deleted() {
-        EventRequest deleted = request(BreakpointRequest.class, true, false, true);
-        EventRequest kept = request(BreakpointRequest.class, true, false, false);
-        Silencer silencer = Silencer.silence(List.of(deleted, kept));
+        // As Eclipse JDI does it: a deleted request is only gone from the manager's lists, and enable() still works on it.
+        EventRequest deleted = request(BreakpointRequest.class, true, false);
+        EventRequest kept = request(BreakpointRequest.class, true, false);
+        List<EventRequest> requests = new ArrayList<>(List.of(deleted, kept));
+        Silencer silencer = Silencer.silence(() -> List.copyOf(requests));
+        requests.remove(deleted);
+        requests.add(request(BreakpointRequest.class, true, false)); // java-debug's replacement
         check(silencer.restore() == 1, "the deleted request counts as one restore failure");
+        check(!deleted.isEnabled(), "a deleted request is not switched back on");
         check(kept.isEnabled(), "the request after the deleted one is still restored");
         pass("silencer_skips_requests_java_debug_deleted");
     }
@@ -413,8 +418,8 @@ public final class SelfTest {
         };
     }
 
-    /** An {@link EventRequest} of {@code type} that only knows enabling and properties; a deleted one refuses {@code enable}. */
-    private static EventRequest request(Class<? extends EventRequest> type, boolean enabled, boolean own, boolean deleted) {
+    /** An {@link EventRequest} of {@code type} that only knows enabling and properties. */
+    private static EventRequest request(Class<? extends EventRequest> type, boolean enabled, boolean own) {
         boolean[] on = {enabled};
         Map<Object, Object> properties = new HashMap<>();
         if (own) properties.put(Silencer.OWN_PROPERTY, 1L);
@@ -425,9 +430,7 @@ public final class SelfTest {
                 case "enable":
                 case "disable":
                 case "setEnabled":
-                    boolean value = method.getName().equals("enable") || (method.getName().equals("setEnabled") && (Boolean) args[0]);
-                    if (value && deleted) throw new InvalidRequestStateException("deleted");
-                    on[0] = value;
+                    on[0] = method.getName().equals("enable") || (method.getName().equals("setEnabled") && (Boolean) args[0]);
                     return null;
                 case "getProperty":
                     return properties.get(args[0]);
