@@ -1776,5 +1776,6 @@
   "Circular inheritance: '{name}' inherits from itself": "Circular inheritance: '{name}' inherits from itself",
   "Method '{name}' is marked @override but no base class declares it": "Method '{name}' is marked @override but no base class declares it",
   "Class '{name}' does not implement abstract method '{method}'": "Class '{name}' does not implement abstract method '{method}'",
-  "Redundant override of '{name}'": "Redundant override of '{name}'"
+  "Redundant override of '{name}'": "Redundant override of '{name}'",
+  "All Configurations": "All Configurations"
 }

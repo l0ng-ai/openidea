@@ -479,6 +479,17 @@
   display: flex;
   margin-right: -4px;
 }
+.chooserSeparator {
+  flex: 1;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--border-popup);
+}
+/* IDEA: the number of configurations after "All Configurations". */
+.chooserCount {
+  margin-left: 6px;
+  color: var(--fg-faint);
+}
 .badge {
   flex: none;
   padding: 0 5px;
