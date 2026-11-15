@@ -8179,5 +8179,7 @@
   "End Process {label}": "结束进程 {label}",
   "Diff too large: a side is over {max} MiB": "差异过大：有一侧超过 {max} MiB",
   "All Configurations": "所有配置",
-  "'{name}' keeps running without the debugger: {message}": "'{name}' 继续运行，但未附加调试器：{message}"
+  "'{name}' keeps running without the debugger: {message}": "'{name}' 继续运行，但未附加调试器：{message}",
+  "Previous Failed Test": "上一个失败的测试",
+  "Next Failed Test": "下一个失败的测试"
 }
