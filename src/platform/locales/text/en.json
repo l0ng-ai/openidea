@@ -1,4 +1,5 @@
 {
+  "moved from {oldPath}": "moved from {oldPath}",
   "Copy as TSV": "Copy as TSV",
   "Copy as CSV": "Copy as CSV",
   "Copy as One-Row": "Copy as One-Row",
