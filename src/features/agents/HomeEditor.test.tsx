@@ -88,10 +88,11 @@ it("switches model-specific levels and restores each draft effort before startin
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
   await chooseModel("small");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
-  const slider = screen.getByRole("slider", { name: "Reasoning" });
-  expect(slider).toHaveAttribute("max", "2");
-  expect(slider).toHaveAttribute("aria-valuetext", "minimal");
-  fireEvent.change(slider, { target: { value: "1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
+  const group = screen.getByRole("radiogroup", { name: "Reasoning" });
+  expect(group).toBeVisible();
+  expect(screen.getByRole("radio", { name: "minimal" })).toHaveAttribute("aria-checked", "true");
+  fireEvent.click(screen.getByRole("radio", { name: "medium" }));
   fireEvent.keyDown(document, { key: "Escape" });
   await chooseModel("big");
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
