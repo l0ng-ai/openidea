@@ -12,7 +12,7 @@ import {
   type TreeOptions,
 } from "./model";
 
-const entry = (path: string, kind: "file" | "dir" = "file", extra: Partial<FileEntry> = {}): FileEntry => {
+const entry = (path: string, kind: FileEntry["kind"] = "file", extra: Partial<FileEntry> = {}): FileEntry => {
   const name = path.slice(path.lastIndexOf("/") + 1);
   return {
     name,
@@ -134,6 +134,47 @@ describe("buildModel", () => {
     const kids = m.children.get("/r")!;
     expect(kids[0]).toMatchObject({ placeholder: "file", path: "/r" });
     expect(kids).toHaveLength(5);
+  });
+
+  describe("symlinks", () => {
+    // The backend reports links as `kind: "symlink"`, sized by their target:
+    // a folder link has size 0 (see `isDirEntry`).
+    const withLinks = listings({
+      "/r": [
+        entry("/r/dir1", "dir"),
+        entry("/r/link1", "symlink", { size: 0, targetKind: "dir" }),
+        entry("/r/file.txt"),
+        entry("/r/link.txt", "symlink", { size: 12, targetKind: "file" }),
+      ],
+      "/r/dir1": [entry("/r/dir1/a.txt")],
+    });
+
+    it("marks directory symlinks (dir + symlink) so the tree can overlay the link arrow", () => {
+      const m = buildModel(ROOT, withLinks, DEFAULT_TREE_OPTIONS);
+      expect(m.byKey.get("/r/link1")).toMatchObject({ dir: true, symlink: true });
+      expect(m.byKey.get("/r/dir1")).toMatchObject({ dir: true, symlink: false });
+      expect(m.byKey.get("/r/file.txt")).toMatchObject({ dir: false, symlink: false });
+    });
+
+    it("marks file symlinks as files, not folders", () => {
+      const m = buildModel(ROOT, withLinks, DEFAULT_TREE_OPTIONS);
+      expect(m.byKey.get("/r/link.txt")).toMatchObject({ dir: false, symlink: true });
+    });
+
+    it("keeps the link marker when a link heads a compacted chain", () => {
+      const l = listings({
+        "/r": [entry("/r/link1", "symlink", { size: 0, targetKind: "dir" })],
+        "/r/link1": [entry("/r/link1/inner", "dir")],
+        "/r/link1/inner": [entry("/r/link1/inner/only.txt")],
+      });
+      const m = buildModel(ROOT, l, DEFAULT_TREE_OPTIONS);
+      expect(m.byKey.get("/r/link1")).toMatchObject({ dir: true, symlink: true, path: "/r/link1/inner" });
+    });
+
+    it("sorts folder links with the folders", () => {
+      const names = visibleEntries(withLinks.get("/r")!, DEFAULT_TREE_OPTIONS).map((e) => e.name);
+      expect(names).toEqual(["dir1", "link1", "file.txt", "link.txt"]);
+    });
   });
 });
 

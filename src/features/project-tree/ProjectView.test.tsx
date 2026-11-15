@@ -837,3 +837,31 @@ it("shows a decoration's suffix after the root name, with icons and struck-out s
   act(() => setFileDecorations("test-suffix", new Map()));
   await waitFor(() => expect(row("acme").textContent).not.toContain("main/"));
 });
+
+it("marks file and folder symlinks with the link arrow, leaving real folders and files alone", async () => {
+  fs = new MemoryFs(
+    {
+      "/w/acme/dir1/keep.txt": "x",
+      "/w/acme/dir2/keep.txt": "x",
+      "/w/acme/note.txt": "x",
+    },
+    ROOT,
+    // `ln -s dir1 link1` on macOS/Linux; the backend reports kind "symlink", size 0.
+    { "/w/acme/link1": "/w/acme/dir1", "/w/acme/note-link.txt": "/w/acme/note.txt" },
+  );
+  setProjectFsForTests(fs, ROOT);
+  initProjectTree(ROOT, "acme");
+  const { row } = setup();
+  const iconAt = (label: string) => row(label).querySelector("[data-project-path]")?.getAttribute("data-project-icon");
+  await waitFor(() => expect(row("link1")).toBeTruthy());
+  // The link to a folder carries the arrow (IDEA's symlink badge)…
+  expect(within(row("link1")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("link1")).toBe("folder");
+  expect(iconAt("dir1")).toBe("folder");
+  // …so does a link to a file, as in IDEA; real folders and files do not.
+  expect(within(row("note-link.txt")).getByLabelText("Symbolic link").tagName).toBe("svg");
+  expect(iconAt("note-link.txt")).toBe("file-text");
+  expect(within(row("dir1")).queryByLabelText("Symbolic link")).toBeNull();
+  expect(within(row("dir2")).queryByLabelText("Symbolic link")).toBeNull();
+  expect(within(row("note.txt")).queryByLabelText("Symbolic link")).toBeNull();
+});
