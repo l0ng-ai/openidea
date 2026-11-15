@@ -496,6 +496,9 @@ pub struct CheckoutOptions {
     /// Required when checking out a remote branch whose local namesake is ahead of it.
     #[serde(default)]
     pub diverged: Option<DivergedLocal>,
+    /// Check the branch out even though another worktree has it checked out.
+    #[serde(default)]
+    pub ignore_other_worktrees: bool,
 }
 
 /// Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`

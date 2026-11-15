@@ -1,4 +1,8 @@
 {
+  "Worktree Conflict": "Worktree Conflict",
+  "Branch '{branch}' is already checked out in a worktree at:\n{path}": "Branch '{branch}' is already checked out in a worktree at:\n{path}",
+  "Checkout Anyway": "Checkout Anyway",
+  "Open Existing Worktree": "Open Existing Worktree",
   "Favorites": "Favorites",
   "Add": "Add",
   "Cancel": "Cancel",
@@ -356,8 +360,6 @@
   "Attribute": "Attribute",
   "Contents differ only in line separators": "Contents differ only in line separators",
   "Cannot remove a worktree containing the open project.": "Cannot remove a worktree containing the open project.",
-  "Branch '{branch}' is already checked out in worktree '{path}'. Open that worktree to work on it?": "Branch '{branch}' is already checked out in worktree '{path}'. Open that worktree to work on it?",
-  "Open Worktree": "Open Worktree",
   "Delete Remote Branches": "Delete Remote Branches",
   "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.": "Delete the {length} branches '{names}' on the remote? The remote-tracking branches are removed as well.",
   "Identifiers › Package reference": "Identifiers › Package reference",

@@ -1070,7 +1070,7 @@ fn smart_and_force_checkout_with_local_changes_in_the_way() {
     fx.commit_all("other edit");
     fx.git(&["checkout", "-q", "main"]);
     let repo = fx.repo();
-    let opts = |mode| CheckoutOptions { mode, diverged: None };
+    let opts = |mode| CheckoutOptions { mode, ..Default::default() };
 
     // A non-conflicting local edit to a file the switch rewrites.
     fx.write("f.txt", "1\n2\n3\n4\nlocal\n");
@@ -1128,7 +1128,7 @@ fn checkout_of_a_branch_held_by_another_worktree_reports_it_and_changes_nothing(
 
     // With local changes in the way too: reported before any Smart Checkout stash.
     fx.write("f.txt", "changed\n");
-    let smart = CheckoutOptions { mode: CheckoutMode::Smart, diverged: None };
+    let smart = CheckoutOptions { mode: CheckoutMode::Smart, ..Default::default() };
     let outcome = repo.checkout_with("topic", false, &smart).unwrap();
     assert_eq!(outcome, CheckoutOutcome::CheckedOutInWorktree { branch: "topic".into(), path: linked_path.clone() });
     assert_eq!(fx.read("f.txt"), "changed\n", "local changes untouched");
@@ -1147,6 +1147,11 @@ fn checkout_of_a_branch_held_by_another_worktree_reports_it_and_changes_nothing(
     let error = repo.create_branch_with_overwrite("topic", Some("main"), true, true).unwrap_err();
     assert!(error.message.contains("branch 'topic' is already checked out in worktree"), "{error}");
     assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+
+    // Checkout Anyway: both worktrees then have the branch.
+    let anyway = CheckoutOptions { ignore_other_worktrees: true, ..Default::default() };
+    assert_eq!(repo.checkout_with("topic", false, &anyway).unwrap(), CheckoutOutcome::Done);
+    assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("topic"));
 }
 
 #[test]
@@ -1978,7 +1983,7 @@ fn smart_checkout_keeps_staged_changes_staged() {
     fx.write("f.txt", "1\n2\n3\n4\nlocal\n");
     fx.write("s.txt", "staged\n");
     fx.git(&["add", "s.txt"]);
-    let opts = CheckoutOptions { mode: CheckoutMode::Smart, diverged: None };
+    let opts = CheckoutOptions { mode: CheckoutMode::Smart, ..Default::default() };
     assert_eq!(repo.checkout_with("other", false, &opts).unwrap(), CheckoutOutcome::Done);
     assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("other"));
     assert_eq!(fx.read("f.txt"), "1\nother\n3\n4\nlocal\n");
@@ -1999,7 +2004,7 @@ fn checkout_reports_untracked_files_it_would_overwrite() {
     fx.write("dir/new.txt", "mine\n");
     let repo = fx.repo();
     for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
-        let opts = CheckoutOptions { mode, diverged: None };
+        let opts = CheckoutOptions { mode, ..Default::default() };
         let outcome = repo.checkout_with("other", false, &opts).unwrap();
         assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()] });
         assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
