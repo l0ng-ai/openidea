@@ -12,8 +12,9 @@ use specta::Type;
 #[serde(rename_all = "camelCase")]
 pub struct StepSpec {
     pub name: String,
+    /// Parameter count of the JVM method, not the arguments as written.
     pub args: u8,
-    /// Same-named calls that exit earlier in the statement and are not this one.
+    /// Only the root uses `skip`: later steps are matched by receiver identity.
     pub skip: u8,
 }
 
@@ -52,12 +53,12 @@ pub enum RealRunRefusal {
 const STREAM_PACKAGE: &str = "java.util.stream.*";
 
 pub fn real_run_plan(chain: &StreamChain) -> Result<RealRunPlan, RealRunRefusal> {
-    let spec = |op: &ChainOp| StepSpec { name: op.name.clone(), args: op.args, skip: op.skip };
+    let spec = |op: &ChainOp| StepSpec { name: op.name.clone(), args: op.args, skip: 0 };
 
     let mut class_filters = vec![STREAM_PACKAGE.to_string()];
     let (root, local) = match (&chain.root_kind, &chain.root.call) {
         (RootKind::Call, Some(call)) => {
-            class_filters.extend(call.family.class_filter().map(String::from));
+            class_filters.extend(call.family.class_filters().iter().map(|f| f.to_string()));
             (Some(StepSpec { name: call.name.clone(), args: call.args, skip: call.skip }), None)
         }
         (RootKind::Local { name }, _) => (None, Some(name.clone())),
@@ -114,7 +115,7 @@ pub enum TraceBanner {
     Truncated {
         dropped: u64,
     },
-    /// `count()` on a sized source skips the pipeline, so only the source recorded anything.
+    /// `count()` on a sized source skips the pipeline, so nothing was recorded.
     CountFromSize,
     SortedPassThrough {
         step: u16,
@@ -141,7 +142,7 @@ pub fn link_trace(plan: &RealRunPlan, recording: &TraceRecording, skipped_breakp
     if recording.dropped > 0 {
         banners.push(TraceBanner::Truncated { dropped: recording.dropped });
     }
-    if plan.terminal.name == "count" && records.iter().all(|r| r.step == 0) {
+    if plan.terminal.name == "count" && records.is_empty() {
         banners.push(TraceBanner::CountFromSize);
     }
     for (i, kind) in plan.step_kinds.iter().enumerate() {

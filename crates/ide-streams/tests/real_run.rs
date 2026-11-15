@@ -54,7 +54,7 @@ fn plan_for_collection_chain() {
     let plan = plan_of("C_PLAN_COLLECTION");
     assert_eq!(plan.root, Some(spec("stream", 0, 0)));
     assert_eq!(plan.local, None);
-    assert_eq!(specs(&plan.steps), [("filter", 1, 0), ("map", 1, 0), ("sorted", 0, 0), ("map", 1, 1)]);
+    assert_eq!(specs(&plan.steps), [("filter", 1, 0), ("map", 1, 0), ("sorted", 0, 0), ("map", 1, 0)]);
     assert_eq!(plan.terminal, spec("collect", 1, 0));
     assert_eq!(plan.class_filters, ["java.util.stream.*", "java.util.*"]);
     assert_eq!(plan.step_kinds, [StepKind::Sync, StepKind::Sync, StepKind::Reorder, StepKind::Sync]);
@@ -121,17 +121,41 @@ fn skip_counts_receiver_occurrences() {
 }
 
 #[test]
-fn skip_counts_repeated_step_names_in_order() {
+fn later_steps_and_terminal_never_skip() {
     let plan = plan_of("C_PLAN_SAME_NAME");
-    assert_eq!(specs(&plan.steps), [("map", 1, 0), ("filter", 1, 0), ("map", 1, 1)]);
+    assert_eq!(specs(&plan.steps), [("map", 1, 0), ("filter", 1, 0), ("map", 1, 0)]);
+    assert_eq!(plan.terminal, spec("count", 0, 0));
 }
 
 #[test]
-fn skip_ignores_calls_inside_lambda_bodies() {
-    // The lambda's own `stream`/`map` calls run only once the terminal does.
-    let plan = plan_of("C_PLAN_LAMBDA_CALLS");
-    assert_eq!(plan.root, Some(spec("stream", 0, 0)));
-    assert_eq!(specs(&plan.steps), [("map", 1, 0), ("map", 1, 1)]);
+fn root_skip_ignores_calls_inside_lambda_bodies() {
+    // The first chain's lambda calls `list.stream()`, but only once its terminal runs.
+    let chains = chains_at("C_PLAN_LAMBDA_CALLS");
+    assert_eq!(chains.len(), 2);
+    let second = chains.iter().find(|c| c.text.starts_with("list.stream()")).expect("second chain");
+    assert_eq!(real_run_plan(second).unwrap().root, Some(spec("stream", 0, 1)));
+}
+
+#[test]
+fn root_skip_counts_earlier_sibling_chain() {
+    let chains = chains_at("C_PLAN_SIBLING");
+    let roots: Vec<_> = chains.iter().map(|c| real_run_plan(c).unwrap().root.unwrap()).collect();
+    assert_eq!(roots, [spec("stream", 0, 0), spec("stream", 0, 1)]);
+}
+
+#[test]
+fn root_skip_needs_same_arg_count() {
+    let chains = chains_at("C_PLAN_ARRAYS_NESTED");
+    let counting = chains.iter().find(|c| c.terminal.name == "count").expect("count chain");
+    // `Arrays.stream(arr)` is a different overload from the root's `stream()`.
+    assert_eq!(real_run_plan(counting).unwrap().root, Some(spec("stream", 0, 0)));
+    let inner = chains.iter().find(|c| c.terminal.name == "collect").expect("collect chain");
+    assert_eq!(real_run_plan(inner).unwrap().root, Some(spec("stream", 1, 0)));
+}
+
+#[test]
+fn varargs_of_counts_as_one_parameter() {
+    assert_eq!(plan_of("C_PLAN_STREAM_OF").root, Some(spec("of", 1, 0)));
 }
 
 #[test]
@@ -149,21 +173,23 @@ fn first_line_is_statement_start() {
 #[test]
 fn class_filters_follow_the_source() {
     let streams = "java.util.stream.*";
-    let cases: [(&str, Option<&str>); 11] = [
-        ("C_SRC_ARRAYS", Some("java.util.Arrays")),
-        ("C_SRC_CHARS", Some("java.lang.String")),
-        ("C_LINES_LITERAL", Some("java.lang.String")),
-        ("C_LINES", Some("java.io.BufferedReader")),
-        ("C_SRC_FILES", Some("java.nio.file.Files")),
-        ("C_SRC_PATTERN", Some("java.util.regex.Pattern")),
-        ("C_SRC_RANDOM", Some("java.util.*")),
-        ("C_GENERATE", None),
-        ("C_ITERATE_PURE", None),
-        ("C_PLAN_RANGE", None),
-        ("C_STATIC_INIT", Some("java.util.*")),
+    let lines = &["java.lang.String", "java.io.BufferedReader"][..];
+    let cases: [(&str, &[&str]); 12] = [
+        ("C_SRC_ARRAYS", &["java.util.Arrays"]),
+        ("C_SRC_CHARS", &["java.lang.String", "java.lang.AbstractStringBuilder", "java.lang.CharSequence"]),
+        ("C_LINES_LITERAL", lines),
+        ("C_LINES", lines),
+        ("C_SRC_LINES", lines),
+        ("C_SRC_FILES", &["java.nio.file.Files"]),
+        ("C_SRC_PATTERN", &["java.util.regex.Pattern"]),
+        ("C_SRC_RANDOM", &["java.util.*"]),
+        ("C_GENERATE", &[]),
+        ("C_ITERATE_PURE", &[]),
+        ("C_PLAN_RANGE", &[]),
+        ("C_STATIC_INIT", &["java.util.*"]),
     ];
     for (marker, extra) in cases {
-        let expected: Vec<_> = std::iter::once(streams).chain(extra).collect();
+        let expected: Vec<_> = std::iter::once(streams).chain(extra.iter().copied()).collect();
         assert_eq!(plan_of(marker).class_filters, expected, "{marker}");
     }
 }
@@ -174,7 +200,10 @@ fn nested_collect_then_stream_plans_each_chain() {
     let filters: Vec<_> = chains.iter().map(|c| real_run_plan(c).unwrap().class_filters).collect();
     assert_eq!(
         filters,
-        [vec!["java.util.stream.*", "java.io.BufferedReader"], vec!["java.util.stream.*", "java.util.*"]]
+        [
+            vec!["java.util.stream.*", "java.lang.String", "java.io.BufferedReader"],
+            vec!["java.util.stream.*", "java.util.*"]
+        ]
     );
 }
 
@@ -284,13 +313,12 @@ fn link_trace_banners() {
 
     let count_plan = plan_of("C_STATIC_INIT");
     assert_eq!(count_plan.terminal.name, "count");
-    let source_only = vec![Record { step: 0, value: int(1) }, Record { step: 0, value: int(2) }];
-    let sized = link_trace(&count_plan, &recording(source_only, 0, terminal_value()), 0);
+    let sized = link_trace(&count_plan, &recording(Vec::new(), 0, terminal_value()), 0);
     assert_eq!(sized.banners, [TraceBanner::CountFromSize]);
-    // A step past the source recorded something, so the pipeline did run.
-    let ran = vec![Record { step: 0, value: int(1) }, Record { step: 1, value: int(1) }];
-    let ran = link_trace(&plan_of("C_PLAN_SAME_NAME"), &recording(ran, 0, terminal_value()), 0);
-    assert_eq!(ran.banners, []);
+    // Any record means elements flowed, so the count was not taken from the size.
+    let source_only = vec![Record { step: 0, value: int(1) }, Record { step: 0, value: int(2) }];
+    let flowed = link_trace(&count_plan, &recording(source_only, 0, terminal_value()), 0);
+    assert_eq!(flowed.banners, []);
 }
 
 #[test]

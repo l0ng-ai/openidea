@@ -3,7 +3,7 @@ use super::{
     ChainOp, ChainRoot, ChainSearch, FrameShape, RejectedChain, Rejection, RootCall, RootKind, StopContext, StreamChain,
 };
 use crate::OpRole;
-use crate::catalog::{SourceFamily, classify_source, op_role};
+use crate::catalog::{SourceFamily, classify_source, jvm_arg_count, op_role};
 use ide_syntax::SyntaxTree;
 use tree_sitter::Node;
 
@@ -214,8 +214,8 @@ impl<'t> Finder<'_, 't> {
             Ok(parts) => {
                 let frame =
                     self.frame(scope).unwrap_or_else(|kind| FrameShape { kind: Some(kind), ..Default::default() });
-                let first_line = self.anchor(call, scope).start_position().row as u32;
-                search.chains.push(self.chain(parts, frame, scope, first_line));
+                let statement = self.anchor(call, scope);
+                search.chains.push(self.chain(parts, frame, scope, statement));
             }
         }
         true
@@ -276,12 +276,10 @@ impl<'t> Finder<'_, 't> {
     }
 
     fn source_family(&self, call: Node) -> Option<SourceFamily> {
-        let receiver = object_of(call);
-        let literal = receiver.is_some_and(|r| r.kind() == "string_literal");
-        classify_source(receiver.map(|r| self.text(r).trim()), self.name(call), literal)
+        classify_source(object_of(call).map(|r| self.text(r).trim()), self.name(call))
     }
 
-    fn chain(&self, parts: Parts<'t>, frame: FrameShape, scope: Node<'t>, first_line: u32) -> StreamChain {
+    fn chain(&self, parts: Parts<'t>, frame: FrameShape, scope: Node<'t>, statement: Node<'t>) -> StreamChain {
         let Parts { terminal, root, family, ops } = parts;
         let start = terminal.start_byte();
         let op = |call: Node| {
@@ -290,12 +288,13 @@ impl<'t> Finder<'_, 't> {
                 call.children(&mut cursor).find(|c| c.kind() == ".").map_or(call.start_byte(), |d| d.start_byte());
             let name = self.name(call);
             let role = op_role(name).expect("checked by shape");
-            let (args, skip) = self.call_shape(call);
-            ChainOp { name: name.into(), role, span: (dot - start, call.end_byte() - start), args, skip }
+            let args = saturate(self.jvm_args(call));
+            ChainOp { name: name.into(), role, span: (dot - start, call.end_byte() - start), args }
         };
         let (root_kind, call) = match family {
             Some(family) => {
-                let (args, skip) = self.call_shape(root);
+                let args = saturate(self.jvm_args(root));
+                let skip = saturate(self.earlier_exits(statement, root));
                 (RootKind::Call, Some(RootCall { name: self.name(root).into(), args, skip, family }))
             }
             None => (self.value_root_kind(root, scope), None),
@@ -309,7 +308,7 @@ impl<'t> Finder<'_, 't> {
                 call,
             },
             root_kind,
-            first_line,
+            first_line: statement.start_position().row as u32,
             ops: ops.iter().map(|c| op(*c)).collect(),
             terminal: op(terminal),
             warnings: self.warnings(root, &ops),
@@ -317,24 +316,30 @@ impl<'t> Finder<'_, 't> {
         }
     }
 
-    /// Argument count and the number of same-named calls that run before `call`.
-    fn call_shape(&self, call: Node) -> (u8, u8) {
-        let args = call.child_by_field_name("arguments").map_or(0, |a| {
+    /// Parameter count of the method the JVM runs for `call`.
+    fn jvm_args(&self, call: Node) -> usize {
+        let written = call.child_by_field_name("arguments").map_or(0, |a| {
             let mut cursor = a.walk();
             a.named_children(&mut cursor).filter(|c| !c.kind().ends_with("comment")).count()
         });
-        let skip = object_of(call).map_or(0, |receiver| self.eager_calls_named(receiver, self.name(call)));
-        (saturate(args), saturate(skip))
+        jvm_arg_count(object_of(call).map(|r| self.text(r).trim()), self.name(call), written)
     }
 
-    /// `node` and what it contains that runs when `node` is evaluated, so not lambda or class bodies.
-    fn eager_calls_named(&self, node: Node, name: &str) -> usize {
-        if matches!(node.kind(), "lambda_expression" | "class_body") {
+    /// Calls in `statement` with the name and parameter count of `root` that return
+    /// before `root` does: in its receiver, its arguments and earlier chains. Lambda
+    /// and class bodies do not count, as they run only once a terminal does.
+    fn earlier_exits(&self, statement: Node, root: Node) -> usize {
+        if matches!(statement.kind(), "lambda_expression" | "class_body") {
             return 0;
         }
-        let mut cursor = node.walk();
-        let inside: usize = node.children(&mut cursor).map(|c| self.eager_calls_named(c, name)).sum();
-        inside + usize::from(node.kind() == "method_invocation" && self.name(node) == name)
+        let mut cursor = statement.walk();
+        let inside: usize = statement.children(&mut cursor).map(|c| self.earlier_exits(c, root)).sum();
+        let same = statement.kind() == "method_invocation"
+            && statement.id() != root.id()
+            && statement.end_byte() <= root.end_byte()
+            && self.name(statement) == self.name(root)
+            && self.jvm_args(statement) == self.jvm_args(root);
+        inside + usize::from(same)
     }
 
     /// `Local` for a variable or parameter the member declares; anything else

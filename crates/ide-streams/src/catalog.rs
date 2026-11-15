@@ -52,23 +52,26 @@ pub enum SourceFamily {
     /// `Collection.stream()`, `Random.ints()`, `Scanner.tokens()`.
     Util,
     Arrays,
-    String,
-    Reader,
+    /// `chars()` / `codePoints()`: `String`, `StringBuilder` and the `CharSequence` default methods.
+    Chars,
+    /// `lines()`: `String` and `BufferedReader`; the receiver's type is not known here.
+    Lines,
     Files,
     Pattern,
 }
 
 impl SourceFamily {
-    /// Class filter beyond `java.util.stream.*` that sees the source call exit.
-    pub fn class_filter(self) -> Option<&'static str> {
+    /// Class filters beyond `java.util.stream.*` that see the source call exit:
+    /// every class that can declare the method.
+    pub fn class_filters(self) -> &'static [&'static str] {
         match self {
-            Self::StreamPackage => None,
-            Self::Util => Some("java.util.*"),
-            Self::Arrays => Some("java.util.Arrays"),
-            Self::String => Some("java.lang.String"),
-            Self::Reader => Some("java.io.BufferedReader"),
-            Self::Files => Some("java.nio.file.Files"),
-            Self::Pattern => Some("java.util.regex.Pattern"),
+            Self::StreamPackage => &[],
+            Self::Util => &["java.util.*"],
+            Self::Arrays => &["java.util.Arrays"],
+            Self::Chars => &["java.lang.String", "java.lang.AbstractStringBuilder", "java.lang.CharSequence"],
+            Self::Lines => &["java.lang.String", "java.io.BufferedReader"],
+            Self::Files => &["java.nio.file.Files"],
+            Self::Pattern => &["java.util.regex.Pattern"],
         }
     }
 }
@@ -94,23 +97,26 @@ fn names_class(receiver: &str, class: &str) -> bool {
     receiver.strip_suffix(class).is_some_and(|rest| rest.is_empty() || rest.ends_with('.'))
 }
 
+/// The parameter count the JVM sees, which differs from the written arguments
+/// for the varargs `of` of the stream interfaces: it takes one array.
+pub(crate) fn jvm_arg_count(receiver: Option<&str>, method: &str, written: usize) -> usize {
+    let stream_interface =
+        |r: &str| ["Stream", "IntStream", "LongStream", "DoubleStream"].iter().any(|c| names_class(r, c));
+    if method == "of" && receiver.is_some_and(stream_interface) { 1 } else { written }
+}
+
 /// `None` means `method` does not start a stream here. A receiver naming one
 /// of the known factory classes only matches that class's own factories.
-pub(crate) fn classify_source(
-    receiver: Option<&str>,
-    method: &str,
-    receiver_is_string_literal: bool,
-) -> Option<SourceFamily> {
+pub(crate) fn classify_source(receiver: Option<&str>, method: &str) -> Option<SourceFamily> {
     let receiver = receiver?;
     if let Some((_, family, methods)) = STATIC_SOURCES.iter().find(|(class, ..)| names_class(receiver, class)) {
         return methods.contains(&method).then_some(*family);
     }
     match method {
         "stream" | "parallelStream" | "tokens" | "ints" | "longs" | "doubles" => Some(SourceFamily::Util),
-        "chars" | "codePoints" => Some(SourceFamily::String),
+        "chars" | "codePoints" => Some(SourceFamily::Chars),
         "splitAsStream" => Some(SourceFamily::Pattern),
-        "lines" if receiver_is_string_literal => Some(SourceFamily::String),
-        "lines" => Some(SourceFamily::Reader),
+        "lines" => Some(SourceFamily::Lines),
         _ => None,
     }
 }
@@ -142,7 +148,7 @@ mod tests {
     #[test]
     fn sources() {
         use SourceFamily::*;
-        let family = |receiver, method| classify_source(Some(receiver), method, false);
+        let family = |receiver, method| classify_source(Some(receiver), method);
         assert_eq!(family("nums", "stream"), Some(Util));
         assert_eq!(family("myStream", "stream"), Some(Util));
         assert_eq!(family("rnd", "ints"), Some(Util));
@@ -150,11 +156,11 @@ mod tests {
         assert_eq!(family("IntStream", "range"), Some(StreamPackage));
         assert_eq!(family("Arrays", "stream"), Some(Arrays));
         assert_eq!(family("Files", "walk"), Some(Files));
-        assert_eq!(family("reader", "lines"), Some(Reader));
-        assert_eq!(family("text", "chars"), Some(String));
+        assert_eq!(family("reader", "lines"), Some(Lines));
+        assert_eq!(family("\"a\\nb\"", "lines"), Some(Lines));
+        assert_eq!(family("text", "chars"), Some(Chars));
         assert_eq!(family("pattern", "splitAsStream"), Some(Pattern));
-        assert_eq!(classify_source(Some("\"a\\nb\""), "lines", true), Some(String));
-        assert_eq!(classify_source(None, "stream", false), None);
+        assert_eq!(classify_source(None, "stream"), None);
         assert_eq!(family("repo", "findAll"), None);
         assert_eq!(family("Stream", "builder"), None);
         assert_eq!(family("Files", "readAllLines"), None);
@@ -162,8 +168,21 @@ mod tests {
 
     #[test]
     fn class_filters() {
-        assert_eq!(SourceFamily::StreamPackage.class_filter(), None);
-        assert_eq!(SourceFamily::Util.class_filter(), Some("java.util.*"));
-        assert_eq!(SourceFamily::Reader.class_filter(), Some("java.io.BufferedReader"));
+        assert!(SourceFamily::StreamPackage.class_filters().is_empty());
+        assert_eq!(SourceFamily::Util.class_filters(), ["java.util.*"]);
+        assert_eq!(SourceFamily::Lines.class_filters(), ["java.lang.String", "java.io.BufferedReader"]);
+        assert_eq!(
+            SourceFamily::Chars.class_filters(),
+            ["java.lang.String", "java.lang.AbstractStringBuilder", "java.lang.CharSequence"]
+        );
+    }
+
+    #[test]
+    fn varargs_of_takes_one_parameter() {
+        assert_eq!(jvm_arg_count(Some("Stream"), "of", 3), 1);
+        assert_eq!(jvm_arg_count(Some("java.util.stream.IntStream"), "of", 2), 1);
+        assert_eq!(jvm_arg_count(Some("List"), "of", 3), 3);
+        assert_eq!(jvm_arg_count(Some("Stream"), "iterate", 2), 2);
+        assert_eq!(jvm_arg_count(None, "of", 2), 2);
     }
 }

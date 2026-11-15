@@ -80,8 +80,11 @@ pub struct ChainRoot {
 #[serde(rename_all = "camelCase")]
 pub struct RootCall {
     pub name: String,
+    /// Parameter count the JVM sees: always 1 for the stream interfaces' varargs `of`.
     pub args: u8,
-    /// Calls of the same name earlier in the receiver; see [`ChainOp::skip`].
+    /// Calls with the same name and parameter count that return earlier in the
+    /// statement, which the root must not be mistaken for. Calls inside lambda
+    /// and class bodies do not count: they only run with the terminal.
     pub skip: u8,
     pub family: SourceFamily,
 }
@@ -94,9 +97,6 @@ pub struct ChainOp {
     /// Byte range in [`StreamChain::text`], from the `.` to the call's `)`.
     pub span: (usize, usize),
     pub args: u8,
-    /// Calls of the same name that run earlier in the receiver. Calls inside
-    /// lambda and class bodies do not count: they only run with the terminal.
-    pub skip: u8,
 }
 
 /// The class context the chain's frame runs in.
