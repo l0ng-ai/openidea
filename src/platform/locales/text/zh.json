@@ -7530,6 +7530,7 @@
   "Show tool output without opening it": "默认展开工具输出",
   "Reveal streaming text smoothly": "平滑显示生成中的文字",
   "Text appears at a steady pace instead of in bursts": "文字匀速出现，而不是一段一段地跳出",
+  "Fit conversation to the window width": "对话适应窗口宽度",
   "⌘Enter": "⌘Enter",
   "No checksum provided: the download can't be verified.": "未提供校验和：无法校验下载的文件。",
   "Sign In": "登录",

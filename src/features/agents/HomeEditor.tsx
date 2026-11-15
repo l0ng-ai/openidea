@@ -93,7 +93,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [provider?.id, provider?.installed, launch, project?.root]);
-  const defaults = useAgentSettings().defaults;
+  const { defaults, fitWindowWidth } = useAgentSettings();
   const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
   const homeRoot = useRef<HTMLDivElement>(null);
   const shown = useEditorShown();
@@ -127,7 +127,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   };
 
   return (
-    <div ref={homeRoot} className={clsx(styles.home, docked && styles.docked)}>
+    <div ref={homeRoot} className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}>
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>

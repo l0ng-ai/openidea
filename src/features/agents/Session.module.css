@@ -66,6 +66,19 @@
 .withChanges {
   grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
 }
+.fitWidth .stream > * {
+  width: 100%;
+}
+.fitWidth .userMessage > .user {
+  max-width: var(--session-card-width);
+}
+.fitWidth .composerArea {
+  max-width: none;
+}
+.fitWidth .questionCard {
+  width: calc(100% - var(--space-3) * 2);
+  max-width: none;
+}
 
 .providerIcon {
   color: var(--fg-muted);
