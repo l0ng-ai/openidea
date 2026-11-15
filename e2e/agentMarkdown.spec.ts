@@ -761,3 +761,61 @@ test("Find in Conversation skips user-select:none summaries and closed <details>
   }));
   expect(expandedHighlights).toEqual({ thoughtOpen: true, findCount: 2, currentCount: 1 });
 });
+
+test("keeps ordered, bulleted and task list markers unclipped inside measured rows when zoomed in", async ({
+  page,
+}) => {
+  const numbered = Array.from({ length: 10 }, (_, i) => `${i + 1}. **Item ${i + 1}**\n   - Nested bullet`).join("\n");
+  await openReply(page, `## Feature Gaps\n\n${numbered}\n\n- [x] Checked task\n- [ ] Open task`);
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const actionsPath = "/src/platform/actions.ts";
+    const store = await import(storePath);
+    const { executeAction } = await import(actionsPath);
+    store.openTaskInEditorLocation(task.id);
+    await new Promise((r) => setTimeout(r, 150));
+    const stream = document.querySelector<HTMLElement>("[class*='_stream_']");
+    stream?.focus();
+    for (let i = 0; i < 12; i++) await executeAction("editor.increaseFontSize");
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const row = stream.locator("[class*='_conversationRow_'][data-measured]", { has: page.locator("ol") });
+  await expect(row).toBeVisible();
+
+  const bounds = await row.evaluate((rowEl) => {
+    const rowLeft = rowEl.getBoundingClientRect().left;
+    const items = [...rowEl.querySelectorAll<HTMLElement>("ol > li, ul > li")];
+    const markers = items
+      .filter((li) => getComputedStyle(li, "::before").content !== "none")
+      .map((li) => {
+        const rect = li.getBoundingClientRect();
+        const before = getComputedStyle(li, "::before");
+        const lineHeight = Number.parseFloat(getComputedStyle(li).lineHeight);
+        const markerRight = rect.right - Number.parseFloat(before.right);
+        const markerLeft = markerRight - Number.parseFloat(before.width);
+        return {
+          text: li.firstChild?.textContent?.trim() ?? "",
+          offsetFromRowLeft: Math.round((markerLeft - rowLeft) * 100) / 100,
+          singleLine: Number.parseFloat(before.height) <= lineHeight * 1.15,
+        };
+      });
+    const checkboxes = [...rowEl.querySelectorAll<HTMLInputElement>('li > input[type="checkbox"]')].map((input) => ({
+      offsetFromRowLeft: Math.round((input.getBoundingClientRect().left - rowLeft) * 100) / 100,
+    }));
+    return { fontSize: getComputedStyle(streamElement()!).fontSize, markers, checkboxes };
+    function streamElement() {
+      return rowEl.closest<HTMLElement>("[class*='_stream_']");
+    }
+  });
+
+  expect(bounds.fontSize).toBe("25px");
+  expect(bounds.markers.length).toBeGreaterThanOrEqual(10);
+  for (const m of bounds.markers) {
+    expect(m.singleLine, `single-line marker for ${m.text}`).toBe(true);
+    expect(m.offsetFromRowLeft, `marker for ${m.text}`).toBeGreaterThanOrEqual(0);
+  }
+  for (const cb of bounds.checkboxes) {
+    expect(cb.offsetFromRowLeft).toBeGreaterThanOrEqual(0);
+  }
+});
