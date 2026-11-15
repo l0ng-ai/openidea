@@ -3469,7 +3469,10 @@ impl LspManager {
             virtual_doc::is_decompiled(&text)
         };
         let title = title.unwrap_or_else(|| virtual_doc::title(uri, decompiled));
-        let detected = self.languages.detect(Path::new(&title), None);
+        let mut detected = self.languages.detect(Path::new(&title), None);
+        if let Some(stem) = title.strip_suffix(".class").filter(|_| virtual_doc::is_java_class_stub(&text)) {
+            detected = self.languages.detect(Path::new(&format!("{stem}.java")), None);
+        }
         let language_id = if detected == LanguageId::plain_text() {
             languages.first().cloned().unwrap_or(detected)
         } else {
