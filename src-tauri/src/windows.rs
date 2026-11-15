@@ -17,6 +17,8 @@ mod single_instance;
 pub use single_instance::allow_external_launches;
 
 use crate::remote_dev::RemoteTarget;
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use crate::state::AppState;
 use crate::theme_frame::builtin_frame;
 use ide_core::settings::AppearanceSettings;

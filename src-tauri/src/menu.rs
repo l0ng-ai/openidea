@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+#[cfg(desktop)]
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
@@ -1070,6 +1071,7 @@ pub fn item_enabled(id: &str, disabled: &HashSet<String>) -> bool {
 }
 
 /// Updates the enabled state of the installed menu's items in place (no rebuild).
+#[cfg(desktop)]
 pub fn apply_disabled<R: Runtime>(app: &AppHandle<R>, disabled: &HashSet<String>) {
     fn walk<R: Runtime>(items: Vec<MenuItemKind<R>>, disabled: &HashSet<String>) {
         for item in items {
@@ -1247,6 +1249,7 @@ fn same_toplevel(previous: &[RenderedMenu], next: &[RenderedMenu]) -> bool {
 }
 
 /// Renders the spec into a Tauri menu.
+#[cfg(desktop)]
 pub fn build<R: Runtime>(
     app: &AppHandle<R>,
     os: Os,
@@ -1257,6 +1260,7 @@ pub fn build<R: Runtime>(
     build_rendered(app, &render_bar(&prepared_spec(app, os), config, recent), disabled)
 }
 
+#[cfg(desktop)]
 fn build_rendered<R: Runtime>(
     app: &AppHandle<R>,
     menus: &[RenderedMenu],
@@ -1277,6 +1281,7 @@ fn build_rendered<R: Runtime>(
     Ok(menu)
 }
 
+#[cfg(desktop)]
 fn append_rendered<R: Runtime>(
     app: &AppHandle<R>,
     parent: &Submenu<R>,
@@ -1308,6 +1313,7 @@ fn append_rendered<R: Runtime>(
     Ok(())
 }
 
+#[cfg(desktop)]
 fn native_text<R: Runtime>(app: &AppHandle<R>, n: Native, text: &str) -> tauri::Result<Box<dyn IsMenuItem<R>>> {
     let t = Some(text);
     let item = match n {
@@ -1328,6 +1334,7 @@ fn native_text<R: Runtime>(app: &AppHandle<R>, n: Native, text: &str) -> tauri::
     Ok(Box::new(item))
 }
 
+#[cfg(desktop)]
 fn clear_submenu<R: Runtime>(submenu: &Submenu<R>) -> tauri::Result<()> {
     let len = submenu.items()?.len();
     for index in (0..len).rev() {
@@ -1336,6 +1343,7 @@ fn clear_submenu<R: Runtime>(submenu: &Submenu<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(desktop)]
 fn existing_matches<R: Runtime>(existing: &MenuItemKind<R>, desired: &RenderedItem) -> bool {
     match (existing, desired) {
         (MenuItemKind::Submenu(submenu), RenderedItem::Submenu { id, .. }) => {
@@ -1358,6 +1366,7 @@ fn existing_matches<R: Runtime>(existing: &MenuItemKind<R>, desired: &RenderedIt
 /// `allow_rebuild` is false for the macOS Window menu: AppKit appends the open-window
 /// list to it, and clearing that menu drops the list. A structural change there falls
 /// back to installing a new menu bar.
+#[cfg(desktop)]
 fn sync_children<R: Runtime>(
     app: &AppHandle<R>,
     submenu: &Submenu<R>,
@@ -1394,6 +1403,7 @@ fn sync_children<R: Runtime>(
     true
 }
 
+#[cfg(desktop)]
 fn sync_item<R: Runtime>(
     app: &AppHandle<R>,
     existing: &MenuItemKind<R>,
@@ -1443,6 +1453,7 @@ fn accelerator_patchable(previous: Option<&str>, next: Option<&str>) -> bool {
     previous == next || next.is_some()
 }
 
+#[cfg(desktop)]
 fn patch_menu<R: Runtime>(
     app: &AppHandle<R>,
     menu: &Menu<R>,
@@ -1564,6 +1575,7 @@ fn rendered_check(menus: &[RenderedMenu], id: &str) -> Option<bool> {
 /// event arrives, but the frontend owns the state: a click it ignores (a modal Settings
 /// window, a failed save) must not leave a stale mark, and one it accepts comes back as a new
 /// config that sets the mark through [`sync_item`].
+#[cfg(desktop)]
 pub fn restore_check<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, id: &str) {
     fn walk<R: Runtime>(items: Vec<MenuItemKind<R>>, id: &str, checked: bool) -> bool {
         items.into_iter().any(|item| match item {
@@ -1593,6 +1605,7 @@ pub fn restore_check<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, id:
 /// On macOS that removes the menu bar and draws it again. Later updates compare the
 /// visible items and edit only the submenus that changed, so switching project tabs
 /// does not flash the menu bar.
+#[cfg(desktop)]
 pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &[ide_workspace::RecentProject]) {
     if !native_menu_bar() {
         return;
@@ -1621,6 +1634,16 @@ pub fn install<R: Runtime>(app: &AppHandle<R>, menu_state: &MenuState, recent: &
         Err(e) => tracing::warn!("failed to build the app menu: {e}"),
     }
 }
+
+/// Tauri has no native menu on mobile: the menu stubs do nothing.
+#[cfg(not(desktop))]
+pub fn apply_disabled<R: Runtime>(_: &AppHandle<R>, _: &HashSet<String>) {}
+
+#[cfg(not(desktop))]
+pub fn install<R: Runtime>(_: &AppHandle<R>, _: &MenuState, _: &[ide_workspace::RecentProject]) {}
+
+#[cfg(not(desktop))]
+pub fn restore_check<R: Runtime>(_: &AppHandle<R>, _: &MenuState, _: &str) {}
 
 #[cfg(test)]
 mod tests {

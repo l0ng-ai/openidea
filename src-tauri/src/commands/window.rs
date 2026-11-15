@@ -1,6 +1,8 @@
 //! Desktop shell: project windows, native menu, quit flow, logs, updates.
 
 use crate::menu::{self, MenuConfig, MenuState};
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use crate::state::AppState;
 use crate::windows::{self, Launch, OpenOutcome, WindowsState};
 use ide_core::{IdeError, IdeResult, RequestId};
@@ -404,6 +406,7 @@ pub fn app_build_info(app: AppHandle) -> BuildInfo {
     }
 }
 
+#[cfg(desktop)]
 use ide_core::updates::UpdateInfo;
 pub use ide_core::updates::{UpdateCheck, UpdateSource, UpdateStatus};
 
@@ -450,6 +453,7 @@ fn is_nightly(version: &str) -> bool {
     version.contains("-nightly.")
 }
 
+#[cfg(desktop)]
 fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -487,6 +491,13 @@ pub async fn app_check_update(app: AppHandle, source: UpdateSource) -> IdeResult
     crate::updates::check(&app, Some(source)).await
 }
 
+/// The updater plugin is desktop-only: mobile builds report updates as not configured.
+#[cfg(not(desktop))]
+pub(crate) async fn check_update(_: &AppHandle, _: UpdateSource) -> IdeResult<UpdateCheck> {
+    Ok(UpdateCheck { enabled: false, update: None })
+}
+
+#[cfg(desktop)]
 pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeResult<UpdateCheck> {
     let Some(updater) = updater(app, source)? else {
         return Ok(UpdateCheck { enabled: false, update: None });
@@ -597,40 +608,7 @@ pub async fn app_install_update(
     let _guard =
         InstallingGuard::acquire().ok_or_else(|| IdeError::unavailable("an update is already being installed"))?;
     let token = state.host.begin_request(request);
-    let result = async {
-        let updater = updater(&app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
-        let update = tokio::select! {
-            r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        }
-        .ok_or_else(|| IdeError::not_found("no update available"))?;
-        let mut throttle = ProgressThrottle::default();
-        let progress = on_progress.clone();
-        let download = update.download(
-            move |len, total| {
-                if let Some(p) = throttle.chunk(len, total) {
-                    let _ = progress.send(p);
-                }
-            },
-            || {},
-        );
-        let bytes = tokio::select! {
-            r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
-            _ = token.cancelled() => return Err(IdeError::cancelled()),
-        };
-        let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || {
-            #[cfg(windows)]
-            if update.target.ends_with("-portable") {
-                let exe = tauri::utils::platform::current_exe()?;
-                return ide_tools::portable_update::install(&exe, &bytes);
-            }
-            update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
-        })
-        .await
-        .map_err(|e| IdeError::internal(e.to_string()))?
-    }
-    .await;
+    let result = install_update(&app, source, &token, &on_progress).await;
     state.host.end_request(request);
     result
 }
@@ -675,6 +653,56 @@ fn notes_for(manifest: &str, version: &str) -> Option<String> {
     }
     let notes = value.get("notes")?.as_str()?.trim();
     (!notes.is_empty()).then(|| notes.to_string())
+}
+
+#[cfg(not(desktop))]
+async fn install_update(
+    _: &AppHandle,
+    _: UpdateSource,
+    _: &ide_core::CancellationToken,
+    _: &Channel<UpdateProgress>,
+) -> IdeResult<()> {
+    Err(IdeError::unavailable("updates are not supported on this platform"))
+}
+
+#[cfg(desktop)]
+async fn install_update(
+    app: &AppHandle,
+    source: UpdateSource,
+    token: &ide_core::CancellationToken,
+    on_progress: &Channel<UpdateProgress>,
+) -> IdeResult<()> {
+    let updater = updater(app, source)?.ok_or_else(|| IdeError::unavailable("updates are not configured"))?;
+    let update = tokio::select! {
+        r = updater.check() => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+        _ = token.cancelled() => return Err(IdeError::cancelled()),
+    }
+    .ok_or_else(|| IdeError::not_found("no update available"))?;
+    let mut throttle = ProgressThrottle::default();
+    let progress = on_progress.clone();
+    let download = update.download(
+        move |len, total| {
+            if let Some(p) = throttle.chunk(len, total) {
+                let _ = progress.send(p);
+            }
+        },
+        || {},
+    );
+    let bytes = tokio::select! {
+        r = download => r.map_err(|e| IdeError::unavailable(e.to_string()))?,
+        _ = token.cancelled() => return Err(IdeError::cancelled()),
+    };
+    let _ = on_progress.send(UpdateProgress::Installing);
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(windows)]
+        if update.target.ends_with("-portable") {
+            let exe = tauri::utils::platform::current_exe()?;
+            return ide_tools::portable_update::install(&exe, &bytes);
+        }
+        update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
+    })
+    .await
+    .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 #[cfg(test)]
