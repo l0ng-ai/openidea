@@ -12,6 +12,7 @@ export const AGENT_SETTINGS_DEFAULTS: ResolvedAgentSettings = {
   showCost: false,
   foldTurns: true,
   smoothText: true,
+  fitWindowWidth: false,
   thinking: "auto",
   toolCalls: "grouped",
   expandToolOutput: false,

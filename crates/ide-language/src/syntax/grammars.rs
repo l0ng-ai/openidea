@@ -314,7 +314,7 @@ pub(crate) static SPECS: &[Spec] = &[
         name: "bash",
         language: tree_sitter_bash::LANGUAGE,
         outline: outline!("bash"),
-        highlights: None,
+        highlights: Some(Highlights { query: highlights!("bash"), first_wins: false }),
         fold_nodes: &["do_group", "if_statement", "case_statement", "heredoc_body"],
         fold_bodies: NONE,
         imports: NONE,

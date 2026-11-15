@@ -28,13 +28,13 @@ import {
   emptyCache,
   enabledGroups,
   fillMarkers,
-  importBindings,
   markerBatches,
   markersOf,
   noteOtherChanges,
   openMarkerTargets,
   type MarkerDeps,
 } from "./implementationGutter";
+import { importBindings } from "./inheritanceGraph";
 
 const ALL = enabledGroups({ showGutterIcons: true, gutterIconsDisabled: [] });
 

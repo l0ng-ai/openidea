@@ -1,6 +1,4 @@
 /* Editor gutter ▶ per request (same look as run configuration targets). */
-/* No fixed width: the endpoints gutter is conditional (updateSpacer), so files
-   without endpoint markers keep a narrow gutter. */
 .runGutter :global(.cm-gutterElement) {
   display: flex;
   align-items: center;

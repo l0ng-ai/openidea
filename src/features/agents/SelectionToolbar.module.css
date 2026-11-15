@@ -1,0 +1,37 @@
+/* Over a conversation selection: quote it into the composer or fork a side conversation from it. */
+.toolbar {
+  position: fixed;
+  z-index: 3;
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--bg-popup);
+  box-shadow: var(--shadow-popup);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.button {
+  height: var(--h-control-small);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-toolbar-button);
+  background: none;
+  color: var(--fg);
+  font-size: var(--fs-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.button:hover {
+  background: var(--bg-hover);
+}
+@media (prefers-reduced-motion: reduce) {
+  .toolbar {
+    transition: none;
+  }
+}

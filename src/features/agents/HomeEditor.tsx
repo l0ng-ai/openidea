@@ -1,6 +1,6 @@
 /** New Task page: one prompt box with the agent and its settings; where it works under it. */
 import clsx from "clsx";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -8,11 +8,12 @@ import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
 import { Chip, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useEffortFocus } from "./effortFocus";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import {
@@ -92,14 +93,17 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [provider?.id, provider?.installed, launch, project?.root]);
-  const defaults = useAgentSettings().defaults;
+  const { defaults, fitWindowWidth } = useAgentSettings();
   const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const homeRoot = useRef<HTMLDivElement>(null);
+  const shown = useEditorShown();
   const unavailableModel = config.some(
     (o) =>
       o.category === "model" &&
       draft.config[o.id] !== undefined &&
       !o.values.some((v) => v.value === draft.config[o.id]),
   );
+  const effortAnnouncement = useEffortFocus(homeRoot, shown && !starting && !unavailableModel, config, setDraftOption);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -123,7 +127,7 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   };
 
   return (
-    <div className={clsx(styles.home, docked && styles.docked)}>
+    <div ref={homeRoot} className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}>
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>
@@ -258,6 +262,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
         />
         {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
         <div className={styles.notes}>
+          {effortAnnouncement && (
+            <p className={styles.note} role="status" aria-live="polite" aria-atomic="true">
+              {tx("Effort: {level}").replace("{level}", effortAnnouncement)}
+            </p>
+          )}
           {unavailableModel && (
             <p className={styles.warning} role="alert">
               <T>Choose another model before starting.</T>

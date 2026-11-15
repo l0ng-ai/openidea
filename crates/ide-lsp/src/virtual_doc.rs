@@ -32,7 +32,7 @@ pub(crate) fn normalize_uris(value: &mut serde_json::Value) {
                 if matches!(key.as_str(), "data" | "arguments") {
                     continue;
                 }
-                if matches!(key.as_str(), "uri" | "targetUri" | "oldUri" | "newUri")
+                if matches!(key.as_str(), "uri" | "targetUri" | "oldUri" | "newUri" | "target")
                     && let Some(uri) = value.as_str().and_then(escaped_uri)
                 {
                     *value = uri.into();
@@ -245,6 +245,22 @@ mod tests {
         assert_eq!(response[1]["location"]["targetUri"], encoded);
         assert_eq!(response.as_array().unwrap()[2..], original.as_array().unwrap()[2..]);
         assert!(encoded.parse::<lsp_types::Uri>().is_ok());
+    }
+
+    /// `DocumentLink.target` is a URI too: one unescaped link fails the whole `documentLink` response.
+    #[test]
+    fn document_link_targets_are_escaped() {
+        let range = serde_json::json!({ "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } });
+        let mut links = serde_json::json!([
+            { "range": range, "target": "file:///D:/My Game/项目/a.xsd" },
+            { "range": range, "target": "https://example.com/a b" }
+        ]);
+        assert!(serde_json::from_value::<Vec<lsp_types::DocumentLink>>(links.clone()).is_err());
+        normalize_uris(&mut links);
+        assert_eq!(links[0]["target"], "file:///D:/My%20Game/%E9%A1%B9%E7%9B%AE/a.xsd");
+        assert_eq!(links[1]["target"], "https://example.com/a b", "other schemes are not touched");
+        links[1]["target"] = "https://example.com/ab".into();
+        assert_eq!(serde_json::from_value::<Vec<lsp_types::DocumentLink>>(links).unwrap().len(), 2);
     }
 
     /// #3089: jdtls's Introduce Variable edit for a project under a Chinese path names the file

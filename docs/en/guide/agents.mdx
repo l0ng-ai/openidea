@@ -76,6 +76,10 @@ On your own messages you can **Edit** (the messages after it are replaced; files
 
 The shortcut does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. Outside the task conversation, the keys keep their usual editor or terminal behavior. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
 
+**Cycle Agent Effort** defaults to `Option+T` on macOS and `Alt+T` on Windows / Linux in every built-in keymap. With focus inside New Task or your own writable task conversation, in an editor tab or the tool window, it cycles the current model's provider-advertised effort levels in order, wrapping from the last to the first. It preserves your message, selection, caret and focus, and sends nothing. Like the effort control, it changes the provider configuration; it does not promise to change a turn already running.
+
+The shortcut is unavailable when effort is unsupported or has only one level, for archived tasks or subagent conversations, and while a popup or dialog is open. It does not take focus from the code editor or terminal. Change or remove it under **Settings › Keymap › Agents › Cycle Agent Effort**.
+
 Right-click a link and choose **Copy Link Address** to copy its URL; **Copy** copies the selected text.
 
 ### Permissions
@@ -87,6 +91,8 @@ Once an agent has run a task, new tasks start in its mode that approves everythi
 ### Review the changes
 
 Click **Show changes** in the task header to list the files the task changed. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
+
+Drag the pane's left edge to resize it. The width applies to every task and is remembered across restarts.
 
 ### Context from the editor
 

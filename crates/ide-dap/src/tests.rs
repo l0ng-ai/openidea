@@ -1104,6 +1104,96 @@ async fn a_page_whose_requests_the_adapter_does_not_report_says_so() {
     h.wait_event(|e| matches!(e, DebugEvent::JsNetworkUnavailable)).await;
 }
 
+/// Where the fake adapter says its CDP proxy listens (`requestCDPProxy`).
+static CDP_PROXY_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+fn proxy_adapter(msg: &Value) -> Option<CustomReply> {
+    let port = CDP_PROXY_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    (msg["command"] == "requestCDPProxy")
+        .then(|| (json!({ "host": "127.0.0.1", "port": port, "path": "/session" }), Vec::new()))
+}
+
+#[tokio::test]
+async fn response_overrides_reach_the_page_through_the_adapters_proxy() {
+    use crate::js_cdp::tests::{next, proxy, rule};
+    let (url, mut received, _events) = proxy().await;
+    let port: u16 = url.trim_start_matches("ws://127.0.0.1:").trim_end_matches("/session").parse().unwrap();
+    CDP_PROXY_PORT.store(port, std::sync::atomic::Ordering::Relaxed);
+
+    let h = harness(Script {
+        start_debugging: true,
+        custom: Some(proxy_adapter),
+        child_launch_delay: Duration::from_millis(150),
+        ..Script::default()
+    });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+
+    // Rules that are there as the page starts wait until its session takes requests.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    h.manager.js_set_response_overrides(page, vec![rule("api/items", 200, "[]")]).await.unwrap();
+    let dropped = h.log.lock().iter().filter(|m| m["type"] == "dropped").count();
+    assert_eq!(dropped, 0, "the proxy was asked for before the page took requests");
+    assert_eq!(next(&mut received).await.0, "JsDebug.subscribe");
+    assert_eq!(
+        next(&mut received).await,
+        ("Fetch.enable".into(), json!({ "patterns": [{ "urlPattern": "*api/items*", "requestStage": "Request" }] }))
+    );
+    // Changed rules go over the connection that is open: the proxy is asked for once.
+    h.manager.js_set_response_overrides(page, vec![rule("api/users", 200, "[]")]).await.unwrap();
+    assert_eq!(next(&mut received).await.1["patterns"][0]["urlPattern"], "*api/users*");
+    assert_eq!(requests(&h, "requestCDPProxy").len(), 1);
+
+    h.manager.js_set_response_overrides(page, Vec::new()).await.unwrap();
+    assert_eq!(next(&mut received).await.0, "Fetch.disable");
+    // A rule switched back on.
+    h.manager.js_set_response_overrides(page, vec![rule("api/items", 200, "[]")]).await.unwrap();
+    assert_eq!(next(&mut received).await.0, "Fetch.enable");
+    assert_eq!(requests(&h, "requestCDPProxy").len(), 1);
+
+    let not_a_page = h.manager.js_set_response_overrides(browser, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(not_a_page.kind, ide_core::error::ErrorKind::Unavailable);
+}
+
+#[tokio::test]
+async fn response_overrides_are_unavailable_without_the_adapters_proxy() {
+    use crate::js_cdp::tests::rule;
+    let h = harness(Script { start_debugging: true, ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+    let refused = h.manager.js_set_response_overrides(page, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(refused.kind, ide_core::error::ErrorKind::Unavailable);
+    // Nothing to switch off is not an error.
+    h.manager.js_set_response_overrides(page, Vec::new()).await.unwrap();
+}
+
+/// A port nothing listens on, which the fake adapter gives as its CDP proxy.
+static DEAD_PROXY_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+fn dead_proxy_adapter(msg: &Value) -> Option<CustomReply> {
+    let port = DEAD_PROXY_PORT.load(std::sync::atomic::Ordering::Relaxed);
+    (msg["command"] == "requestCDPProxy")
+        .then(|| (json!({ "host": "127.0.0.1", "port": port, "path": "/session" }), Vec::new()))
+}
+
+#[tokio::test]
+async fn response_overrides_that_cannot_reach_the_browser_are_an_error() {
+    use crate::js_cdp::tests::rule;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    DEAD_PROXY_PORT.store(listener.local_addr().unwrap().port(), std::sync::atomic::Ordering::Relaxed);
+    drop(listener);
+
+    let h = harness(Script { start_debugging: true, custom: Some(dead_proxy_adapter), ..Script::default() });
+    let browser = h.start(js_config("pwa-chrome")).await.unwrap();
+    let page = child_of(&h, browser).await;
+    let unreachable = h.manager.js_set_response_overrides(page, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(unreachable.kind, ide_core::error::ErrorKind::Unavailable);
+    // The next rules try again instead of going to a connection that never was.
+    let again = h.manager.js_set_response_overrides(page, vec![rule("api", 200, "")]).await.unwrap_err();
+    assert_eq!(again.kind, ide_core::error::ErrorKind::Unavailable);
+    assert_eq!(requests(&h, "requestCDPProxy").len(), 2);
+}
+
 /// The file the fake adapter says it records a CPU profile into (`profileStarted`).
 static PROFILE_FILE: parking_lot::Mutex<String> = parking_lot::Mutex::new(String::new());
 

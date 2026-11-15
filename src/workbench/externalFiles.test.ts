@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openFileExternally, registerExternalFileOpenHandler, type ExternalFileOpenHandler } from "./contributions";
+import {
+  openFileExternally,
+  opensExternally,
+  registerExternalFileOpenHandler,
+  type ExternalFileOpenHandler,
+} from "./contributions";
 
 const disposers: Array<() => void> = [];
 
-function register(handler: ExternalFileOpenHandler) {
-  const dispose = registerExternalFileOpenHandler(handler);
+function register(handler: Omit<ExternalFileOpenHandler, "matches"> & Partial<ExternalFileOpenHandler>) {
+  const dispose = registerExternalFileOpenHandler({ matches: () => true, ...handler });
   disposers.push(dispose);
   return dispose;
 }
@@ -55,6 +60,15 @@ describe("external file openers", () => {
 
   it("leaves the file to the editors without a handler", async () => {
     expect(await openFileExternally("/p/a.ts")).toBe(false);
+  });
+
+  it("skips handlers that do not match and reports whether one would", async () => {
+    const open = vi.fn(() => true);
+    register({ id: "pdf", matches: (p) => p.endsWith(".pdf"), open });
+    expect(opensExternally("/p/a.pdf")).toBe(true);
+    expect(opensExternally("/p/a.ts")).toBe(false);
+    expect(await openFileExternally("/p/a.ts")).toBe(false);
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("disposal removes a handler", async () => {

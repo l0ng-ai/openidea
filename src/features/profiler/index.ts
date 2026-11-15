@@ -39,7 +39,8 @@ export function activate(): () => void {
       {
         id: "profiler.showCpuProfiles",
         title: "Show CPU Profile",
-        description: "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root }).",
+        description:
+          "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).",
         category: "Run",
         icon: "profile",
         hidden: true,

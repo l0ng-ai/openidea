@@ -62,9 +62,11 @@ import { isImeKey } from "@/platform/ime";
 import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { setChangesOptions, useChangesOptions } from "./changesOptions";
+import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
 import { selectionIn } from "./selection";
+import { SelectionToolbar } from "./SelectionToolbar";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -78,6 +80,7 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useEffortFocus } from "./effortFocus";
 import { findRanges, formatDuration, formatSentAt } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
@@ -97,6 +100,7 @@ import {
   branchLabel,
   entriesKey,
   findSubagent,
+  hasTaskTerminal,
   isBusy,
   providerIcon,
   statusLabel,
@@ -119,6 +123,7 @@ import {
   refreshChanges,
   rollbackChanges,
   scheduleChanges,
+  discardEphemeral,
   editQueued,
   forkTask,
   rerunFrom,
@@ -145,6 +150,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const entries = useAgents((s) => s.entries.get(id));
   // Grouping needs commits of the task's own: local checkouts keep the flat list.
   const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
+  const ephemeral = useAgents((s) => s.ephemeral.has(id));
   const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
   const sinceStart = useAgents((s) => s.changes.get(id));
   const review = useAgents((s) => s.groupedChanges.get(id));
@@ -156,6 +162,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     project?.workspace ? (task?.projectRoot ?? project.root) : null,
   );
   const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null, docked);
+  const changesWidth = useChangesWidthStyle();
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -202,6 +209,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
   const [inputFocus, setInputFocus] = useState(0);
+  const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
@@ -229,7 +237,13 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   return (
     <div
       ref={sessionRoot}
-      className={clsx(styles.session, docked && styles.docked)}
+      className={clsx(
+        styles.session,
+        docked && styles.docked,
+        changesOpen && !docked && styles.withChanges,
+        fitWindowWidth && styles.fitWidth,
+      )}
+      style={changesWidth}
       onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -237,6 +251,22 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         }
       }}
     >
+      {ephemeral && (
+        <div className={styles.sideBanner}>
+          <Icon name="branch" size={13} />
+          <span className={styles.sideName}>
+            <T>Side conversation</T>
+          </span>
+          <span className={styles.sideHint}>
+            <T>Temporary and read-only: closing it discards the conversation and its context.</T>
+          </span>
+          <IconButton
+            icon="close"
+            title="Discard Side Conversation"
+            onClick={() => void discardEphemeral(id).catch(() => undefined)}
+          />
+        </div>
+      )}
       <div className={styles.conversation} hidden={docked && changesOpen}>
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <FoldedContent.Provider value={finding && shown}>
@@ -262,6 +292,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <SessionComposer
               task={task}
               focusRequest={inputFocus}
+              focusRoot={sessionRoot}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -339,6 +370,7 @@ function SessionStatus({
   changes,
   commits,
   changesOpen,
+  effortAnnouncement,
   onToggleChanges,
 }: {
   task: AgentTask;
@@ -347,6 +379,7 @@ function SessionStatus({
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
   changesOpen: boolean;
+  effortAnnouncement: string | null;
   onToggleChanges: () => void;
 }) {
   const tx = useTx();
@@ -401,6 +434,9 @@ function SessionStatus({
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
+      <span className={styles.state} role="status" aria-live="polite" aria-atomic="true">
+        {effortAnnouncement ? tx("Effort: {level}").replace("{level}", effortAnnouncement) : ""}
+      </span>
       {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
         {(!!changes?.length || !!commits.length) && (
@@ -431,7 +467,7 @@ function SessionStatus({
         )}
         <span className={styles.statusMeters}>
           <Meters task={task} entries={entries} />
-          <StatusActions task={task} />
+          {hasTaskTerminal(task, projectRoot) && <StatusActions task={task} />}
         </span>
       </span>
     </div>
@@ -1019,6 +1055,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
+          <SelectionToolbar streamRef={ref} task={task} subagent={!!subagent} />
         </div>
       </RevealFold.Provider>
     </OpenFolds.Provider>
@@ -2695,6 +2732,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 function SessionComposer({
   task,
   focusRequest,
+  focusRoot,
   entries,
   head,
   changes,
@@ -2705,6 +2743,7 @@ function SessionComposer({
 }: {
   task: AgentTask;
   focusRequest: number;
+  focusRoot: RefObject<HTMLDivElement | null>;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2752,6 +2791,8 @@ function SessionComposer({
         body: String(e),
       }),
     );
+  const shown = useEditorShown();
+  const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
     <div className={styles.composerArea}>
       <SessionStatus
@@ -2762,6 +2803,7 @@ function SessionComposer({
         commits={commits}
         changesOpen={changesOpen}
         onToggleChanges={onToggleChanges}
+        effortAnnouncement={effortAnnouncement}
       />
       {task.status === "archived" && (
         <div className={styles.banner}>
@@ -3151,6 +3193,7 @@ function ChangesPane({
   };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
+      {!docked && <ChangesResizer />}
       <div className={styles.changesHeader}>
         {docked && <IconButton icon="arrow-left" title="Back to conversation" onClick={onHide} />}
         <span className={styles.changesTitle}>

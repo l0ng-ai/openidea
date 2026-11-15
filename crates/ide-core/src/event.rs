@@ -118,6 +118,10 @@ pub enum IdeEvent {
     LanguageServer {
         server: ServerId,
         name: String,
+        /// What the user sees as the server when another program serves in its place.
+        #[serde(default)]
+        #[specta(optional)]
+        label: Option<String>,
         status: ServerStatus,
         message: Option<String>,
     },

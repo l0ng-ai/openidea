@@ -94,6 +94,9 @@ pub(crate) struct Session {
     /// The `type` of the launch or attach request (js-debug's `pwa-node`, `pwa-chrome`); a child
     /// session's comes from the configuration the adapter started it with.
     pub launch_type: std::sync::OnceLock<String>,
+    /// The response rules of a page once a connection applies them (`js_cdp::serve`).
+    /// Dropped with the session, which switches the browser's interception off.
+    pub js_overrides: tokio::sync::Mutex<Option<tokio::sync::watch::Sender<Vec<crate::JsResponseRule>>>>,
     /// The file js-debug records the page's CPU profile into, while one is being recorded.
     pub js_profile: parking_lot::Mutex<Option<std::path::PathBuf>>,
     pub jvm_inspector: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::JvmInspector>>>,
@@ -257,6 +260,7 @@ impl Session {
             progress: Mutex::new(HashMap::new()),
             jdwp_link: parking_lot::Mutex::new(None),
             launch_type: std::sync::OnceLock::new(),
+            js_overrides: tokio::sync::Mutex::new(None),
             js_profile: parking_lot::Mutex::new(None),
             jvm_inspector: parking_lot::Mutex::new(None),
             inspect_lock: tokio::sync::Mutex::default(),
@@ -879,6 +883,7 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
 pub(crate) struct ProgramTerminal {
     writer: ide_core::input::InputWriter,
     killer: Box<dyn portable_pty::ChildKiller + Send + Sync>,
+    #[cfg_attr(not(unix), allow(dead_code))]
     pid: Option<u32>,
     /// Set once the program has exited and been reaped.
     exited: Arc<AtomicBool>,
@@ -891,6 +896,7 @@ impl ProgramTerminal {
     }
 
     /// The program's process id while it runs.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn process_id(&self) -> Option<u32> {
         if self.exited.load(Ordering::Acquire) { None } else { self.pid }
     }

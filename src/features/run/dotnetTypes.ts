@@ -61,24 +61,13 @@ function dotnetRunParams(c: RunConfig): Record<string, string> | null {
   return { project: "", ...p };
 }
 
-/** Build the current project/framework, independently of the run's profile working directory. */
-export function dotnetBuildConfig(config: RunConfig): RunConfig {
-  const p = config.params ?? {};
-  return {
-    ...config,
-    id: `dotnet-build:${config.id}`,
-    name: `dotnet build (${p.project || ""})`,
-    kind: "shell",
-    args: ["build", p.project || "", "--configuration", "Debug", ...(p.framework ? ["--framework", p.framework] : [])],
-    cwd: useProject.getState().project?.root ?? null,
-    env: {},
-    params: {},
-    isTest: false,
-    debugAdapter: null,
-    beforeLaunch: [],
-    emulateTerminal: false,
-    stdinFile: undefined,
-  };
+/** The configuration's project file as a path the Build tool window builds (its own project, not the profile's cwd). */
+export function dotnetProjectFile(config: RunConfig): string | null {
+  const project = config.params?.project?.trim();
+  if (!project) return null;
+  if (/^(?:[A-Za-z]:[\\/]|\/)/.test(project)) return project;
+  const root = useProject.getState().project?.root;
+  return root ? `${root}/${project}` : null;
 }
 
 export const dotnetProjectType: RunConfigTypeContribution = {

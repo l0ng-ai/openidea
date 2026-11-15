@@ -286,6 +286,19 @@ pub async fn agent_fork(
     agent::fork(&state.host, window.label(), task, turns).await
 }
 
+/// Creates a temporary side conversation of `source`: lives in memory only, never
+/// persisted, not listed, and its session starts with the first message sent to it.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_create_ephemeral(
+    window: Window,
+    state: State<'_, AppState>,
+    request: NewAgentTask,
+    source: String,
+) -> IdeResult<AgentTask> {
+    agent::create_ephemeral(&state.host, window.label(), request, source).await
+}
+
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
 #[tauri::command]
 #[specta::specta]

@@ -77,9 +77,22 @@ pub(super) fn validate_reply(reply: &ContentTabReply) -> Result<(), HostError> {
     Ok(())
 }
 
+/// Largest side of a plugin diff, in UTF-16 code units (earlier hosts allowed 1 MiB).
+pub(super) const MAX_DIFF_SIDE: usize = 8 << 20;
+
+fn diff_side(value: &str, side: &str) -> Result<(), HostError> {
+    if value.contains('\0') {
+        return Err(HostError::Invalid(format!("the {side} side of the diff contains NUL")));
+    }
+    if value.encode_utf16().count() > MAX_DIFF_SIDE {
+        return Err(HostError::Invalid(format!("diff too large: the {side} side is over {} MiB", MAX_DIFF_SIDE >> 20)));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_diff(diff: &ide_plugin::ContentDiff) -> Result<(), HostError> {
-    body(&diff.left)?;
-    body(&diff.right)?;
+    diff_side(&diff.left, "left")?;
+    diff_side(&diff.right, "right")?;
     for value in [&diff.left_label, &diff.right_label].into_iter().flatten() {
         label(value, 128)?;
     }
@@ -402,6 +415,67 @@ fn validate_configurations(
         if let Some(cwd) = &c.cwd {
             ide_plugin::resolve_new_in_root(root, cwd).map_err(HostError::Invalid)?;
         }
+        validate_env(&c.env)?;
+        validate_debugger(c.debugger.as_ref())?;
+    }
+    Ok(())
+}
+
+/// Like `process` commands, a configuration only adds variables: one the IDE's own
+/// environment has (`PATH`, …) would change what the approved program runs.
+fn validate_env(env: &[(String, String)]) -> Result<(), HostError> {
+    if env.len() > 64 {
+        return Err(HostError::Invalid("at most 64 environment variables".into()));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for (name, value) in env {
+        if name.is_empty() || name.len() > 256 || name.contains(['=', '\0']) {
+            return Err(HostError::Invalid(format!("{name:?} is not an environment variable name")));
+        }
+        if value.len() > 4096 || value.contains('\0') {
+            return Err(HostError::Invalid(format!("the value of {name:?} is too long or holds a NUL")));
+        }
+        let key = if cfg!(windows) { name.to_ascii_uppercase() } else { name.clone() };
+        if !names.insert(key) || inherited_env(name) {
+            return Err(HostError::Invalid(format!(
+                "environment variable {name:?} is repeated or already set; only new variables may be added"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn inherited_env(name: &str) -> bool {
+    std::env::vars_os().any(|(inherited, _)| {
+        if cfg!(windows) { inherited.to_string_lossy().eq_ignore_ascii_case(name) } else { inherited == name }
+    })
+}
+
+/// Attach to Process kinds a configuration may attach to.
+pub(super) const ATTACH_KINDS: [&str; 5] = ["dotnet", "node", "python", "go", "native"];
+
+fn validate_debugger(debugger: Option<&ide_plugin::PluginDebugger>) -> Result<(), HostError> {
+    match debugger {
+        Some(ide_plugin::PluginDebugger::Launch { language }) => {
+            if language.is_empty()
+                || language.len() > 64
+                || !language.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                return Err(HostError::Invalid(format!("{language:?} is not a language id")));
+            }
+        }
+        Some(ide_plugin::PluginDebugger::AttachChild { kind, command_contains }) => {
+            if !ATTACH_KINDS.contains(&kind.as_str()) {
+                return Err(HostError::Invalid(format!(
+                    "attach-child kind {kind:?} is not one of {}",
+                    ATTACH_KINDS.join(", ")
+                )));
+            }
+            if command_contains.as_ref().is_some_and(|t| t.is_empty() || t.len() > 256 || t.contains('\0')) {
+                return Err(HostError::Invalid("attach-child command-contains must be 1-256 bytes".into()));
+            }
+        }
+        None => {}
     }
     Ok(())
 }
@@ -518,6 +592,52 @@ impl PluginHost {
     }
 }
 
+impl PluginHost {
+    /// The process an `attach-child` configuration's debugger attaches to: the first Attach to
+    /// Process candidate of its kind that `run` (a run of this configuration) started, waited
+    /// for while the run lasts, up to a minute. Only the run's own descendants are candidates.
+    pub fn debug_attach_target(
+        &self,
+        host: &crate::Host,
+        client: &str,
+        config: &str,
+        run: ide_core::RunId,
+    ) -> IdeResult<ide_dap::attach::AttachableProcess> {
+        use super::run_detectors::{DEBUG_ATTACH, DEBUG_ATTACH_CONTAINS};
+        let Some((plugin, id)) = config.strip_prefix(ide_run::EXTERNAL_PREFIX).and_then(|s| s.split_once(':')) else {
+            return Err(IdeError::invalid("not a plugin configuration"));
+        };
+        let workspace = self.shared.workspace().ok_or_else(IdeError::cancelled)?;
+        let owned = workspace.run_configuration(client, plugin, id).map_err(|e| IdeError::invalid(e.to_string()))?;
+        let kind = owned
+            .extras
+            .params
+            .get(DEBUG_ATTACH)
+            .filter(|k| ATTACH_KINDS.contains(&k.as_str()))
+            .ok_or_else(|| IdeError::invalid("this configuration does not attach to a process"))?
+            .clone();
+        let contains = owned.extras.params.get(DEBUG_ATTACH_CONTAINS).cloned();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let info = crate::ops::run::list(host).into_iter().find(|r| r.id == run && r.config_id == owned.id);
+            let Some(pid) = info.as_ref().filter(|r| r.running).and_then(|r| r.pid) else {
+                return Err(IdeError::not_found("the run ended before a process to debug started"));
+            };
+            let found = ide_dap::attach::attachable_descendants(pid)?.into_iter().find(|p| {
+                serde_json::to_value(p.kind).ok().and_then(|v| v.as_str().map(|k| k == kind)) == Some(true)
+                    && contains.as_ref().is_none_or(|t| p.command_line.contains(t.as_str()))
+            });
+            if let Some(process) = found {
+                return Ok(process);
+            }
+            if Instant::now() >= deadline {
+                return Err(IdeError::not_found(format!("no {kind} process started by the run within a minute")));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+}
+
 /// Internal launch metadata; it is ignored after the original operation finishes.
 pub(super) const RUN_OPERATION: &str = "plugin.operation";
 impl PluginHost {
@@ -569,5 +689,75 @@ impl PluginHost {
         for op in self.shared.operations.lock().values_mut().filter(|op| op.run == Some(run)) {
             op.closed = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diff(left: String, right: String) -> ide_plugin::ContentDiff {
+        ide_plugin::ContentDiff { left, right, left_label: None, right_label: None, title: None }
+    }
+
+    #[test]
+    fn diff_sides_up_to_the_limit_open_and_larger_ones_say_why() {
+        assert!(validate_diff(&diff("x".repeat(5 << 20), "y".repeat(MAX_DIFF_SIDE))).is_ok());
+        let err = validate_diff(&diff(String::new(), "y".repeat(MAX_DIFF_SIDE + 1))).unwrap_err();
+        assert!(
+            matches!(&err, HostError::Invalid(m) if m == "diff too large: the right side is over 8 MiB"),
+            "{err:?}"
+        );
+        assert!(
+            matches!(validate_diff(&diff("a\0".into(), String::new())), Err(HostError::Invalid(m)) if m.contains("NUL"))
+        );
+    }
+
+    fn launch(
+        env: Vec<(&str, &str)>,
+        debugger: Option<ide_plugin::PluginDebugger>,
+    ) -> ide_plugin::PluginRunConfiguration {
+        ide_plugin::PluginRunConfiguration {
+            id: "app".into(),
+            name: "App".into(),
+            program: "tool".into(),
+            env: env.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+            debugger,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn configurations_only_add_environment_variables() {
+        let root = std::env::temp_dir();
+        let ok = |c| validate_configurations(&root, &[c]).is_ok();
+        assert!(ok(launch(vec![("OPENIDEA_TEST_NEW_VARIABLE", "1")], None)));
+        let (inherited, _) = std::env::vars().next().expect("the test runs with an environment");
+        assert!(!ok(launch(vec![(inherited.as_str(), "x")], None)));
+        assert!(!ok(launch(vec![("A_B", "1"), ("A_B", "2")], None)));
+        for name in ["", "A=B", "A\0"] {
+            assert!(!ok(launch(vec![(name, "1")], None)), "{name:?}");
+        }
+        assert!(!ok(launch(vec![("OPENIDEA_TEST_NUL", "a\0")], None)));
+        let many: Vec<_> = (0..65).map(|i| (format!("OPENIDEA_TEST_{i}"), String::new())).collect();
+        let mut config = launch(vec![], None);
+        config.env = many;
+        assert!(!ok(config));
+    }
+
+    #[test]
+    fn configurations_name_a_language_or_an_attach_to_process_kind() {
+        use ide_plugin::PluginDebugger::{AttachChild, Launch};
+        let root = std::env::temp_dir();
+        let ok = |d| validate_configurations(&root, &[launch(vec![], Some(d))]).is_ok();
+        assert!(ok(Launch { language: "csharp".into() }));
+        assert!(!ok(Launch { language: String::new() }));
+        assert!(!ok(Launch { language: "c sharp".into() }));
+        for kind in ATTACH_KINDS {
+            assert!(ok(AttachChild { kind: kind.into(), command_contains: None }), "{kind}");
+        }
+        assert!(!ok(AttachChild { kind: "java".into(), command_contains: None }));
+        assert!(ok(AttachChild { kind: "dotnet".into(), command_contains: Some("Worker.dll".into()) }));
+        assert!(!ok(AttachChild { kind: "dotnet".into(), command_contains: Some(String::new()) }));
     }
 }

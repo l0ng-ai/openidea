@@ -38,6 +38,12 @@ describe("CPU profiles recorded elsewhere", () => {
     expect(useProfiler.getState().snapshots.map((s) => [s.name, s.profile.total])).toEqual([["localhost:5173", 3]]);
   });
 
+  it("name what recorded them when the caller says", async () => {
+    await showCpuProfiles({ name: "page", dir: "/tmp/p", root: "/work/shop", profiler: "js-debug" });
+    await showCpuProfiles({ name: "script", dir: "/tmp/q", root: "/work/shop" });
+    expect(useProfiler.getState().snapshots.map((s) => s.profile.profiler)).toEqual(["v8", "js-debug"]);
+  });
+
   it("add nothing when the directory can't be read as a profile, or isn't named", async () => {
     fails = true;
     await expect(showCpuProfiles({ name: "page", dir: "/tmp/p", root: "/work/shop" })).resolves.toBeUndefined();

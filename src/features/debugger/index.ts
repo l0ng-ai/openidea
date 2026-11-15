@@ -22,6 +22,7 @@ import { loadBreakpoints } from "./breakpoints/store";
 import { loadExceptionBreakpoints } from "./breakpoints/exceptions";
 import { loadJsBreakpoints, watchPageSessions } from "./js/eventBreakpoints";
 import { watchNetworkSessions } from "./js/networkSessions";
+import { loadResponseOverrides, watchOverrideSessions } from "./js/responseOverrides";
 import { watchProfiledSessions } from "./js/profile";
 import { loadSpecialBreakpoints } from "./breakpoints/special";
 import { breakpointGutter } from "./editor/breakpointGutter";
@@ -67,6 +68,7 @@ export function activate(): () => void {
   loadExceptionBreakpoints(useProject.getState().project?.root ?? null);
   loadSpecialBreakpoints(useProject.getState().project?.root ?? null);
   loadJsBreakpoints(useProject.getState().project?.root ?? null);
+  loadResponseOverrides(useProject.getState().project?.root ?? null);
   const disposers = [
     () => useDebugRunSessions.setState({ sessions: [], serviceSessions: [], Console: null }),
     registerDebugActions(),
@@ -147,10 +149,12 @@ export function activate(): () => void {
         loadExceptionBreakpoints(root);
         loadSpecialBreakpoints(root);
         loadJsBreakpoints(root);
+        loadResponseOverrides(root);
       }
     }),
     watchPageSessions(),
     watchNetworkSessions(),
+    watchOverrideSessions(),
     watchProfiledSessions(),
   ];
   return () => disposers.reverse().forEach((d) => d());

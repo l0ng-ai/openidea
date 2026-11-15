@@ -234,7 +234,8 @@ export const intellijWindows: Record<string, string[]> = {
   "toolwindow.terminal": ["Alt+F12"],
   "toolwindow.hideAll": ["Ctrl+Shift+F12"],
   "toolwindow.maximize": ["Ctrl+Shift+'"],
-  "layout.restoreDefault": ["Shift+F12"],
+  "layout.restoreCurrent": ["Shift+F12"],
+  "layout.restoreDefault": [],
   "toolwindow.jumpToLast": ["F12"],
   "toolwindow.hideActive": ["Shift+Escape"],
   "toolwindow.focusEditor": ["Escape"],
@@ -370,6 +371,7 @@ export const intellijWindows: Record<string, string[]> = {
   "db.showToolWindow": [],
   "agents.newTask": ["Ctrl+Alt+Shift+I"],
   "agents.focusInput": ["Ctrl+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).

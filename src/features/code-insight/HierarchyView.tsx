@@ -160,6 +160,7 @@ export function HierarchyView() {
         <span className={styles.row}>
           <SymbolBadge kind={mode === "call" ? "function" : "class"} />
           <span className={styles.name}>{root.name}</span>
+          {root.detail && <span className={styles.detail}>{root.detail}</span>}
           <span className={styles.muted}>
             {basename(root.path)}:{root.line + 1}
           </span>

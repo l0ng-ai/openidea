@@ -364,6 +364,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
     italicOnly: true,
     defaultItalic: false,
   },
+  syn("shellCommand", "Command", ["Shell Script"], "shell-command"),
   syn("mdHeading", "Heading", ["Markdown"], "markup-heading", { defaultBold: true }),
   syn("mdCode", "Code span", ["Markdown"], "markup-code"),
   syn("mdLink", "Link", ["Markdown"], "link", { defaultEffect: "underline" }),

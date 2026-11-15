@@ -372,6 +372,97 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(narrow.reply).toBeLessThanOrEqual((narrow.width - narrow.padding) * 0.96);
 });
 
+test("fits conversation stream, composer, question card and user bubbles to window width when enabled", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1800, height: 1000 });
+  await openReply(page, "Initial reply");
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.useAgents.setState({
+      tasks: new Map([[task.id, { ...task, status: "needsInput" as const }]]),
+      entries: new Map([
+        [
+          task.id,
+          [
+            {
+              type: "user",
+              text: "Long prompt ".repeat(40),
+              attachments: [],
+              sentMs: 1,
+              doneMs: 2,
+              steered: false,
+            },
+            { type: "agent", text: "Wide reply body." },
+            {
+              type: "permission",
+              id: 1,
+              title: "Choose layout",
+              options: [],
+              chosen: null,
+              questions: [
+                {
+                  header: "Width",
+                  question: "Use full window width?",
+                  multiSelect: false,
+                  options: [{ label: "Yes", description: "Fill the pane", preview: null }],
+                },
+              ],
+            },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  await expect(page.getByRole("form", { name: "Choose layout" })).toBeVisible();
+
+  const measure = () =>
+    stream.evaluate((root) => {
+      const conversation = root.closest<HTMLElement>("[class*='_conversation_']")!;
+      const column = root.querySelector<HTMLElement>("[class*='_agentMessage_']")!.getBoundingClientRect();
+      const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!.getBoundingClientRect();
+      const composer = conversation.querySelector<HTMLElement>("[class*='_composerArea_']")!.getBoundingClientRect();
+      const question = conversation.querySelector<HTMLElement>("[class*='_questionCard_']")!.getBoundingClientRect();
+      const padding =
+        Number.parseFloat(getComputedStyle(root).paddingLeft) + Number.parseFloat(getComputedStyle(root).paddingRight);
+      return {
+        conversationWidth: conversation.clientWidth,
+        streamInnerWidth: root.clientWidth - padding,
+        columnWidth: column.width,
+        bubbleWidth: bubble.width,
+        composerWidth: composer.width,
+        questionWidth: question.width,
+      };
+    });
+
+  const capped = await measure();
+  expect(capped.conversationWidth).toBeGreaterThan(1000);
+  expect(Math.abs(capped.columnWidth - 900)).toBeLessThan(1);
+  expect(Math.abs(capped.bubbleWidth - 720)).toBeLessThan(1);
+  expect(Math.abs(capped.composerWidth - 924)).toBeLessThan(1);
+  expect(Math.abs(capped.questionWidth - 900)).toBeLessThan(1);
+
+  await page.evaluate(async () => {
+    const projectPath = "/src/platform/project.ts";
+    const { useProject } = await import(projectPath);
+    const settings = useProject.getState().settings;
+    useProject.setState({
+      settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: true } } as never,
+    });
+  });
+
+  const fitted = await measure();
+  expect(Math.abs(fitted.columnWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+  expect(fitted.bubbleWidth).toBeGreaterThan(720);
+  expect(Math.abs(fitted.bubbleWidth - fitted.streamInnerWidth * 0.8)).toBeLessThan(1);
+  expect(Math.abs(fitted.composerWidth - fitted.conversationWidth)).toBeLessThan(1);
+  expect(Math.abs(fitted.questionWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+});
+
 test("keeps hover actions reachable when the pointer leaves the message body", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const reply = await openReply(page, "A short answer.");

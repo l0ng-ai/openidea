@@ -12,6 +12,7 @@ import { effectivePython, interpreterTarget, targetChoices, type Sdk } from "./a
 import { tildify } from "./components";
 import { validateRunTargets } from "@/platform/remoteSettings";
 import { interpreterIcon, interpreterPathKey } from "./interpreters";
+import { trackStatusWidgetAvailability } from "./statusAvailability";
 
 /** What the widget last resolved for a project, so the popup action can read it without a render. */
 interface Status {
@@ -241,6 +242,11 @@ export function activatePythonStatus(): () => void {
       priority: 90,
       component: PythonStatus,
     }),
+    // The widget's own rule (Python files or a configured interpreter), also while it is hidden.
+    trackStatusWidgetAvailability(
+      "python.interpreter",
+      async () => !!useProject.getState().settings?.languages?.python?.interpreter || (await hasPythonFiles()),
+    ),
     registerActions([
       {
         id: "python.interpreterPopup",

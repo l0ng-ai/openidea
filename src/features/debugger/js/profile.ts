@@ -54,7 +54,7 @@ export async function stopPageProfile(): Promise<void> {
   try {
     const dir = await call(commands.debugJsStopProfile(page.id));
     const root = useProject.getState().project?.root ?? "";
-    await executeAction("profiler.showCpuProfiles", { name: page.name, dir, root });
+    await executeAction("profiler.showCpuProfiles", { name: page.name, dir, root, profiler: "js-debug" });
   } catch {
     // The page ended while it was recorded: there is no profile to show.
   }

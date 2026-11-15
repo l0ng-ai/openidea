@@ -8,6 +8,7 @@ import { intellijWindows } from "./intellij-windows";
 export const eclipseWindows: Record<string, string[]> = {
   ...intellijWindows,
   "agents.focusInput": ["Ctrl+L"],
+  "agents.cycleEffort": ["Alt+T"],
   // $Undo / $Redo stay unbound as in the parent keymap: the focused editor or view handles them.
   "code.autoIndentLines": ["Ctrl+I"],
   "navigate.back": ["Alt+Left", "Button4"],

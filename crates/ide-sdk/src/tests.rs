@@ -42,6 +42,7 @@ pub(crate) fn server(name: &str) -> LanguageServerConfig {
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }
@@ -1429,6 +1430,7 @@ fn typescript_7_runs_its_own_language_server() {
         configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
         assert_eq!(Path::new(&cfg.command), native, "{name}");
         assert_eq!(cfg.args, ["--lsp", "--stdio"]);
+        assert_eq!(cfg.display_name.as_deref(), Some("TypeScript 7"));
         assert!(cfg.initialization_options.is_none());
     }
     // Picked as a directory (its `lib`, as for older versions), too.
