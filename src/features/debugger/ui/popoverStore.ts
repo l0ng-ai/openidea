@@ -38,6 +38,8 @@ interface OverlayState {
    * `frame` is the frame they were found in; chain indexes mean nothing for another one.
    */
   streamChooser: { session: DebugSessionId; frame: number; chains: StreamChainInfo[] } | null;
+  /** The session whose stream trace "Abort Operation…" asks about. */
+  streamAbort: DebugSessionId | null;
 }
 
 export const useOverlays = create<OverlayState>(() => ({
@@ -48,6 +50,7 @@ export const useOverlays = create<OverlayState>(() => ({
   attach: null,
   smartStep: null,
   streamChooser: null,
+  streamAbort: null,
 }));
 
 export function openBreakpointPopover(path: string, id: string, at: { x: number; y: number }, focusLog = false) {

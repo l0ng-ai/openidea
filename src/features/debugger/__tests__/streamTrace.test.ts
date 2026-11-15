@@ -13,6 +13,9 @@ const ipc = vi.hoisted(() => ({
   debugStreamTrace: vi.fn(),
   debugStreamTraceAbort: vi.fn(),
   cancelRequest: vi.fn(() => Promise.resolve()),
+  debugStackTrace: vi.fn(),
+  debugThreads: vi.fn(),
+  debugScopes: vi.fn(),
 }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -29,9 +32,9 @@ vi.mock("../streams/streamTraceInput", async (importOriginal) => ({
 import type { DebugCapabilities, StackFrame, StreamChainInfo, StreamTraceResult, TraceProgress } from "@/platform/ipc";
 import { getAction, isActionEnabled } from "@/platform/actions";
 import { activate } from "../index";
-import { publishContext, useDebug, type DebugSession } from "../state";
+import { handleDebugEvent, publishContext, useDebug, type DebugSession } from "../state";
 import { useOverlays } from "../ui/popoverStore";
-import { provideNotificationService } from "@/workbench/contributions";
+import { provideEditorService, provideNotificationService, type EditorService } from "@/workbench/contributions";
 import {
   abortTrace,
   forgetStreamTrace,
@@ -76,6 +79,16 @@ const chain = (index: number, available = true): StreamChainInfo => ({
 });
 
 const FAILED: StreamTraceResult = { status: "failed", detail: "no" };
+const READY: StreamTraceResult = {
+  status: "ready",
+  chain: chain(0),
+  steps: ["stream", "map"],
+  records: [],
+  links: [],
+  terminal: { kind: "void" },
+  banners: [],
+  generation: 2,
+};
 const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
 
 function deferred<T>() {
@@ -97,7 +110,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   provideNotificationService({ notify });
   useStreamTrace.setState({ bySession: {} });
-  useOverlays.setState({ streamChooser: null });
+  useOverlays.setState({ streamChooser: null, streamAbort: null });
   dispose = activate();
   useDebug.setState({ sessions: { 1: session }, active: 1 });
   publishContext();
@@ -260,6 +273,18 @@ describe("Trace Stream Chain", () => {
     await running;
   });
 
+  it("an Abort dialog left open closes when its trace ends", async () => {
+    const reply = deferred<{ status: "ok"; data: StreamTraceResult }>();
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
+    ipc.debugStreamTrace.mockReturnValue(reply.promise);
+    const running = traceStreamChain(1);
+    await settle();
+    useOverlays.setState({ streamAbort: 1 });
+    reply.resolve({ status: "ok", data: FAILED });
+    await running;
+    expect(useOverlays.getState().streamAbort).toBeNull();
+  });
+
   it("the chooser shows why a chain cannot be traced and traces only an available one", async () => {
     ipc.debugStreamChains.mockReturnValue(ok([chain(0, false), chain(1)]));
     ipc.debugStreamTrace.mockReturnValue(ok(FAILED));
@@ -292,6 +317,46 @@ describe("Trace Stream Chain", () => {
     expect(useStreamTrace.getState().bySession[1]).toBeDefined();
     useDebug.setState({ sessions: {}, active: null });
     expect(useStreamTrace.getState().bySession[1]).toBeUndefined();
+  });
+
+  it("the stop a trace ends in leaves the trace tab in front; a later stop reveals its source", async () => {
+    const openFile = vi.fn(() => Promise.resolve());
+    provideEditorService({ openFile } as unknown as EditorService);
+    ipc.debugStackTrace.mockReturnValue(ok([frame]));
+    ipc.debugThreads.mockReturnValue(ok([{ id: 1, name: "main" }]));
+    ipc.debugScopes.mockReturnValue(ok([]));
+    const reply = deferred<{ status: "ok"; data: StreamTraceResult }>();
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
+    ipc.debugStreamTrace.mockReturnValue(reply.promise);
+    const running = traceStreamChain(1);
+    await settle();
+    const stop = { kind: "stopped", threadId: 1, reason: "step", description: null, allThreadsStopped: false } as const;
+    setSession({ status: "running" });
+    handleDebugEvent(1, stop);
+    await settle();
+    expect(openFile).not.toHaveBeenCalled();
+    reply.resolve({ status: "ok", data: READY });
+    await running;
+
+    setSession({ status: "running" });
+    handleDebugEvent(1, stop);
+    await settle();
+    expect(openFile).toHaveBeenCalledWith(frame.path, expect.objectContaining({ focus: false }));
+  });
+
+  it("a reply that comes before its stop still keeps that stop from revealing the source", async () => {
+    const openFile = vi.fn(() => Promise.resolve());
+    provideEditorService({ openFile } as unknown as EditorService);
+    ipc.debugStackTrace.mockReturnValue(ok([frame]));
+    ipc.debugThreads.mockReturnValue(ok([{ id: 1, name: "main" }]));
+    ipc.debugScopes.mockReturnValue(ok([]));
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
+    ipc.debugStreamTrace.mockReturnValue(ok(READY));
+    await traceStreamChain(1);
+    setSession({ status: "running" });
+    handleDebugEvent(1, { kind: "stopped", threadId: 1, reason: "step", description: null, allThreadsStopped: false });
+    await settle();
+    expect(openFile).not.toHaveBeenCalled();
   });
 
   it("action when clause", () => {

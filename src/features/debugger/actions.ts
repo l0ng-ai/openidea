@@ -42,7 +42,8 @@ import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
-import { traceStreamChain } from "./streams/streamState";
+import { stopRecording, traceStreamChain } from "./streams/streamState";
+import { useStreamTrace } from "./streams/streamStore";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
@@ -83,7 +84,13 @@ import { expressionAt, valueHint } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
-import { openBreakpointsDialog, openConfigChooser, openEvaluateDialog, openSmartStepChooser } from "./ui/popoverStore";
+import {
+  openBreakpointsDialog,
+  openConfigChooser,
+  openEvaluateDialog,
+  openSmartStepChooser,
+  useOverlays,
+} from "./ui/popoverStore";
 import { tx } from "@/platform/i18n";
 import { openAttachPopup } from "./attachPopup";
 
@@ -1054,6 +1061,33 @@ export function registerDebugActions(): () => void {
       run: () => {
         const t = pausedTarget();
         if (t) void report(tx("Trace Stream Chain failed"), traceStreamChain(t.s.id));
+      },
+    },
+    {
+      // The trace tab passes its session as `arg`.
+      id: "debug.streamTrace.stopRecording",
+      title: "Stop Recording",
+      category: "Debug",
+      keywords: ["stream", "trace"],
+      when: "debugStreamTracing",
+      enabled: ({ arg }) => {
+        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        return id != null && !useStreamTrace.getState().bySession[id]?.stoppedRecording;
+      },
+      run: ({ arg }) => {
+        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        if (id != null) stopRecording(id);
+      },
+    },
+    {
+      id: "debug.streamTrace.abort",
+      title: "Abort Operation…",
+      category: "Debug",
+      keywords: ["stream", "trace", "cancel"],
+      when: "debugStreamTracing",
+      run: ({ arg }) => {
+        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        if (id != null) useOverlays.setState({ streamAbort: id });
       },
     },
     {

@@ -55,7 +55,7 @@ import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
 import { JAVA_ADAPTER } from "./java";
-import { isTracing } from "./streams/streamStore";
+import { endsTrace, isTracing } from "./streams/streamStore";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
 
@@ -1332,7 +1332,8 @@ export function handleDebugEvent(id: DebugSessionId, event: DebugEvent) {
       publishContext();
       updateExecutionPoint();
       void loadThreads(id);
-      void loadFrames(id, event.threadId, true);
+      // The stop a stream trace ends in would bring the source tab over the trace tab that shows its result.
+      void loadFrames(id, event.threadId, !endsTrace(id, s.stops + 1));
       const dbg = workflowSettings().debugger;
       try {
         if (dbg.showOnBreakpoint) toolWindowService().show("debug");

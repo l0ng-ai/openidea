@@ -43,6 +43,7 @@ import {
 } from "../breakpoints/exceptions";
 import { EventBreakpointsSection } from "../js/EventBreakpointsSection";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
+import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -61,6 +62,7 @@ export function DebuggerOverlays() {
       <AttachPopup />
       <SmartStepChooser />
       <StreamChainChooser />
+      <StreamAbortDialog />
     </>
   );
 }

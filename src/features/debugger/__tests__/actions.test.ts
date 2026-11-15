@@ -194,6 +194,8 @@ describe("debugger actions (IDEA parity)", () => {
       "debug.toggleMethodBreakpoint": undefined,
       "debug.toggleFieldWatchpoint": undefined,
       "debug.traceStreamChain": undefined,
+      "debug.streamTrace.stopRecording": undefined,
+      "debug.streamTrace.abort": undefined,
     };
     for (const [id, keys] of Object.entries(expected)) {
       expect(getAction(id), id).toBeTruthy();

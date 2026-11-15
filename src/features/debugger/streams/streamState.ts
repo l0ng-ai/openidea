@@ -84,6 +84,7 @@ export async function startTrace(s: DebugSessionId, chain: StreamChainInfo): Pro
     error: null,
     stoppedRecording: false,
     abort: null,
+    stops: useDebug.getState().sessions[s]!.stops,
   };
   useStreamTrace.setState((st) => ({ bySession: { ...st.bySession, [s]: entry } }));
   publishContext();
@@ -99,6 +100,8 @@ export async function startTrace(s: DebugSessionId, chain: StreamChainInfo): Pro
   } catch (e) {
     patchEntry(s, request, { error: e instanceof Error ? e.message : String(e) });
   }
+  // Left open, it would come back with the session's next trace.
+  if (useOverlays.getState().streamAbort === s && !isTracing(s)) useOverlays.setState({ streamAbort: null });
   publishContext();
 }
 
@@ -120,6 +123,7 @@ export async function abortTrace(s: DebugSessionId): Promise<void> {
 
 export function forgetStreamTrace(s: DebugSessionId): void {
   if (useOverlays.getState().streamChooser?.session === s) useOverlays.setState({ streamChooser: null });
+  if (useOverlays.getState().streamAbort === s) useOverlays.setState({ streamAbort: null });
   if (!(s in useStreamTrace.getState().bySession)) return;
   useStreamTrace.setState((st) => {
     const { [s]: _gone, ...rest } = st.bySession;

@@ -48,6 +48,7 @@ import { jsBrowserType } from "./browser";
 import { forgetInstances } from "./memory/instancesState";
 import { forgetHeapCapture, forgetHeapOnProjectChange } from "./heap/heapState";
 import { heapEditorKind } from "./heap/heapEditorKind";
+import { streamTraceKind } from "./streams/streamTraceKind";
 import { installHeapContext } from "./heap/heapDumpFiles";
 import { forgetMemory } from "./memory/memoryState";
 import { closeStaleStreamChooser, forgetStreamTrace } from "./streams/streamState";
@@ -55,7 +56,17 @@ import { closeStaleStreamChooser, forgetStreamTrace } from "./streams/streamStat
 /** Whether a breakpoint popover, debugger dialog or chooser is open. */
 const useAnyOverlay = () =>
   useOverlays(
-    (s) => !!(s.popover || s.evaluate || s.breakpoints || s.chooser || s.attach || s.smartStep || s.streamChooser),
+    (s) =>
+      !!(
+        s.popover ||
+        s.evaluate ||
+        s.breakpoints ||
+        s.chooser ||
+        s.attach ||
+        s.smartStep ||
+        s.streamChooser ||
+        s.streamAbort != null
+      ),
   );
 
 /** The Debug stripe button's badge, like Run's: how many debug sessions (child sessions aside) are live. */
@@ -94,6 +105,7 @@ export function activate(): () => void {
       useBadge: useLiveSessionCount,
     }),
     registerEditorKind(heapEditorKind),
+    registerEditorKind(streamTraceKind),
     installHeapContext(),
     forgetHeapOnProjectChange(),
     registerOverlay({
