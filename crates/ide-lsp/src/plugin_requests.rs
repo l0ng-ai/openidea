@@ -57,6 +57,16 @@ impl LspManager {
         Ok(running.swap_remove(at))
     }
 
+    /// Names (in the language definition) of the servers attached to `doc`, or of every
+    /// server of the project when the document is not open.
+    pub fn server_names(&self, doc: ide_core::DocId) -> Vec<String> {
+        let servers = match self.snapshot(doc) {
+            Ok(snap) => snap.servers,
+            Err(_) => self.servers.lock().clone(),
+        };
+        servers.iter().map(|s| s.name.clone()).collect()
+    }
+
     /// Sends a plugin's request to the running server named `server` (its name in the
     /// language definition) and returns the result. `not_found` when it is not running,
     /// `invalid` for a method that is not the server's own.

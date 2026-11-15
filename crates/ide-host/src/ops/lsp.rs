@@ -1057,6 +1057,11 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
     open_plugin_action_target(&action, window);
+    if let Some(command) = &action.command
+        && let Some(result) = run_plugin_server_command(host, window, doc, None, command).await
+    {
+        return result;
+    }
     if let Some(command) = action.command
         && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
     {
@@ -1608,7 +1613,45 @@ pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command:
         return blocking(move || plugins.run_language_command(&plugin, &command_id, argument.as_deref(), invocation))
             .await;
     }
+    if let Some(result) = run_plugin_server_command(host, window, doc, None, &command).await {
+        return result;
+    }
     host.project(window)?.lsp.execute_command(doc, command).await
+}
+
+/// Runs `command` through the plugin that claims it (`[[contributes.serverCommands]]`)
+/// when no server of the document executes it itself: a code lens, code action or inlay
+/// hint may carry a command the server leaves to the client. `None` when no plugin does.
+async fn run_plugin_server_command(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    server: Option<ServerId>,
+    command: &Command,
+) -> Option<IdeResult<()>> {
+    let plugins = crate::plugins::editor_plugin_host()?;
+    let project = host.project(window).ok()?;
+    if project.lsp.provides_command(doc, server, &command.command).await {
+        return None;
+    }
+    let (plugin, run) = plugins.server_command(&project.lsp.server_names(doc), &command.command)?;
+    let snap = match project.documents.snapshot(doc) {
+        Ok(snap) => snap,
+        Err(e) => return Some(Err(e)),
+    };
+    let invocation = ide_plugin::Invocation {
+        client: Some(window.into()),
+        workspace_root: Some(project.root.clone()),
+        editor: Some(ide_plugin::EditorContext {
+            path: snap.path.0.clone(),
+            language: snap.language.0,
+            selections: vec![],
+        }),
+        selected_paths: vec![snap.path.0],
+        ..Default::default()
+    };
+    let arguments = serde_json::Value::Array(command.arguments.clone()).to_string();
+    Some(blocking(move || plugins.run_language_command(&plugin, &run, Some(&arguments), invocation)).await)
 }
 
 /// Resolves an interactive command without applying edits or executing it.
@@ -1651,6 +1694,11 @@ pub async fn lsp_execute_code_action(
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
                 .await
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
+        }
+        if let Some(command) = &action.command
+            && let Some(result) = run_plugin_server_command(host, window, doc, Some(action.server), command).await
+        {
+            return result.map(|()| Vec::new());
         }
         match action.command {
             Some(command) if edited && is_client_follow_up(&project, doc, Some(action.server), &command).await => {
