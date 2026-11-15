@@ -215,10 +215,16 @@ pub trait Handler: Send + Sync + 'static {
     /// Respond to a server→client request (e.g. `workspace/configuration`).
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)>;
 
-    /// [`on_request`](Self::on_request) for handlers whose errors carry `data`. This is the
-    /// one the connection calls.
+    /// [`on_request`](Self::on_request) for handlers whose errors carry `data`.
     fn on_request_with_data(&self, method: &str, params: Value) -> Result<Value, (i64, String, Option<Value>)> {
         self.on_request(method, params).map_err(|(code, message)| (code, message, None))
+    }
+
+    /// [`on_request_with_data`](Self::on_request_with_data) with the request as received, for
+    /// handlers that need what `Value` drops, such as the order of an object's keys. This is the
+    /// one the connection calls.
+    fn on_request_raw(&self, method: &str, params: Value, _raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        self.on_request_with_data(method, params)
     }
 
     /// Called once the response to a `method` request is queued: what it sends follows the response.
@@ -577,8 +583,8 @@ impl Peer {
                                     tracing::error!("jsonrpc notification handler panicked on {method}");
                                 }
                             }
-                            Incoming::Request(id, method, params) => {
-                                runtime.spawn(handle_request(inner.clone(), handler.clone(), id, method, params));
+                            Incoming::Request(id, method, params, raw) => {
+                                runtime.spawn(handle_request(inner.clone(), handler.clone(), id, method, params, raw));
                             }
                             Incoming::Response(tx, result) => {
                                 let _ = tx.send(result);
@@ -761,14 +767,21 @@ fn parse_id(id: &Value) -> Option<i64> {
 
 enum Incoming {
     Notification(String, Value),
-    Request(Value, String, Value),
+    Request(Value, String, Value, Arc<[u8]>),
     Response(oneshot::Sender<Result<Value, RpcError>>, Result<Value, RpcError>),
 }
 
-async fn handle_request(inner: Arc<Inner>, handler: Arc<dyn Handler>, id: Value, method: String, params: Value) {
+async fn handle_request(
+    inner: Arc<Inner>,
+    handler: Arc<dyn Handler>,
+    id: Value,
+    method: String,
+    params: Value,
+    raw: Arc<[u8]>,
+) {
     let m = method.clone();
     let h = handler.clone();
-    let result = tokio::task::spawn_blocking(move || h.on_request_with_data(&m, params)).await;
+    let result = tokio::task::spawn_blocking(move || h.on_request_raw(&m, params, &raw)).await;
     let reply = match result {
         Ok(Ok(result)) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Ok(Err((code, message, data))) => {
@@ -808,7 +821,7 @@ fn dispatch(inner: &Arc<Inner>, handler: &dyn Handler, notif_tx: &std::sync::mps
             let params = obj.remove("params").unwrap_or(Value::Null);
             match id {
                 Some(id) if !id.is_null() => {
-                    let _ = notif_tx.send(Incoming::Request(id, method, params));
+                    let _ = notif_tx.send(Incoming::Request(id, method, params, Arc::from(body)));
                 }
                 _ => {
                     let _ = notif_tx.send(Incoming::Notification(method, params));

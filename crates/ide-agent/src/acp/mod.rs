@@ -322,6 +322,13 @@ impl Handler for Dialect {
         }
         self.inner.on_request(method, params)
     }
+
+    fn on_request_raw(&self, method: &str, params: Value, raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        if self.v2() && method == "session/request_permission" {
+            return self.on_request_with_data(method, params);
+        }
+        self.inner.on_request_raw(method, params, raw)
+    }
 }
 
 /// A v2 permission request with the v1 `toolCall` (its subject's, titled with the request's title).
