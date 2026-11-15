@@ -1,0 +1,55 @@
+---
+title: "Zig"
+description: "ZLS、Zig 工具链、Zig Build 工具窗口、运行与测试配置，以及 CodeLLDB 调试。"
+---
+
+OpenIDEA 开箱即可高亮 Zig 文件（`.zig`）和 Zig 包清单（`.zon`），并把标准库和已获取的 `build.zig.zon` 包读入 **外部库**。代码智能由 ZLS 提供。构建步骤、可执行文件和包依赖显示在 **Zig Build** 工具窗口中。其他语言见[支持矩阵](/zh/languages/index)。
+
+## 语言服务器
+
+ZLS（[zigtools/zls](https://github.com/zigtools/zls)）为 Zig 和 `.zon` 文件提供补全、悬停、跳转、引用、重命名、格式化、语义标记、inlay hint、诊断和代码操作。可以在 **设置 › 语言和框架 › 语言服务器** 中点击 **安装**，从它的 GitHub releases 安装，或把 `zls` 放到 `PATH` 上；同一页面可以指定可执行文件。
+
+ZLS 必须与编译项目的 Zig 版本匹配；版本不匹配会表现为补全缺失或服务器启动后立即退出。
+
+Zig 项目中的 C 和 C++ 文件与普通 C/C++ 项目一样由 clangd 服务；ZLS 不服务这些文件。见 [C 与 C++](/zh/languages/cpp)。
+
+## Zig 工具链
+
+**设置 › 语言和框架 › Zig** 选择用于 **外部库** 的 Zig 安装：
+
+- **Zig 工具链**：包含 `zig` 的目录。**自动** 使用 `PATH` 上的 `zig`。会检测 PATH、Homebrew、zvm 以及 mise / asdf 安装；**浏览** 可以选择其他目录。
+- 字段旁会显示所选版本。外部库使用该目录；运行配置和 ZLS 从 `PATH` 查找 `zig`，因此也请把项目的 Zig 放在 `PATH` 上（或在这里选择同一个安装）。
+
+## Zig Build 工具窗口
+
+官方 **Zig Build** 插件（`openidea.zig`）提供一个显示项目构建大纲的工具窗口。请在 **设置 › 插件 › 可用** 中安装（在开发检出的仓库中，它会从 `plugins/official` 列出）。项目有 `build.zig` 时视图会出现在编辑器旁；**Zig: Show Build View** 可以打开它。
+
+- **Build** 运行默认的 `zig build`。
+- **构建步骤** 按源码顺序列出 `build.zig` 中的每个顶层 `b.step("名称", "说明")`，保留步骤 `install` 和 `uninstall` 除外。双击步骤（或按 Enter）会在该步骤自己的 **Zig Build** 终端中运行 `zig build <步骤>`；对正在运行的步骤再次点击会聚焦它的终端。
+- **可执行文件** 列出 `addExecutable` 目标及其根源文件。打开一项会跳到对应源文件；没有根源文件的可执行文件会打开它的 `addExecutable` 调用。
+- **依赖** 列出 `build.zig.zon` 中的条目及其 URL、路径或哈希。打开一项会跳到清单中的对应条目。
+
+视图会通过 **刷新** 按钮、**Zig: Refresh Build View**、保存 `build.zig` 或 `build.zig.zon` 时，以及再次显示时刷新。工作区包含多个项目时，它使用第一个含 `build.zig` 的项目。插件只读取这两个构建文件，不会为了生成大纲而执行构建脚本。运行步骤需要 `process:zig` 权限和可信项目；拒绝该权限后，大纲和跳转仍然可用。
+
+## 运行与测试
+
+运行配置从 `build.zig` 自动检测：
+
+- 默认步骤对应 `zig build`。
+- 每个顶层步骤对应 `zig build <步骤>`（`install` 和 `uninstall` 留给默认构建）。名称为 `test`、`test-*` 或 `test_*` 的步骤是测试配置，结果会进入测试树。
+- 每个 `addExecutable` 目标对应一个可执行配置：它会先构建，然后启动 `zig-out/bin` 中的程序，因此 **运行** 不需要单独的构建步骤。
+
+在 `.zig` 文件上使用 **运行上下文配置**（`⌃⇧R` / `Ctrl+Shift+F10`）可以直接运行它。`zig build test` 和 `zig test` 的失败会被解析到测试树，**重新运行失败的测试** 会用 `--test-filter` 缩小范围。
+
+Zig Build 工具窗口在终端中运行步骤；需要 Run 工具窗口、测试树和重新运行支持时，请使用运行配置。
+
+## 调试
+
+Zig 程序通过 **CodeLLDB** 调试。调试可执行配置时会先构建，再用 CodeLLDB 启动程序，因此 Zig、C 和 C++ 源码中的断点都可用。请在 **设置 › 语言和框架 › 语言服务器** 中安装 CodeLLDB。详见[调试](/zh/guide/debugging)。
+
+## 限制
+
+- Zig 工具链设置用于外部库和版本发现，不会改变运行配置和 ZLS 使用的 `zig`；它们从 `PATH` 查找。
+- Zig Build 工具窗口在各自的终端中运行步骤，不显示测试树；测试请使用检测到的运行配置。
+- 工作区包含多个项目时，工具窗口显示第一个含 `build.zig` 的项目。
+- ZLS 必须与编译项目的 Zig 版本匹配。IDE 不会自动下载匹配的组合。

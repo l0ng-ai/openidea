@@ -122,7 +122,8 @@
                   "en/languages/cpp",
                   "en/languages/csharp",
                   "en/languages/rust",
-                  "en/languages/sql"
+                  "en/languages/sql",
+                  "en/languages/zig"
                 ]
               },
               {
@@ -322,7 +323,8 @@
                   "zh/languages/cpp",
                   "zh/languages/csharp",
                   "zh/languages/rust",
-                  "zh/languages/sql"
+                  "zh/languages/sql",
+                  "zh/languages/zig"
                 ]
               },
               {

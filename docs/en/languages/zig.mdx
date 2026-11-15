@@ -1,0 +1,55 @@
+---
+title: "Zig"
+description: "ZLS, the Zig toolchain, the Zig Build tool window, run and test configurations, and CodeLLDB debugging."
+---
+
+OpenIDEA highlights Zig files (`.zig`) and Zig package manifests (`.zon`) out of the box, and reads the standard library and fetched `build.zig.zon` packages into **External Libraries**. Code intelligence comes from ZLS. Build steps, executables and package dependencies are in the **Zig Build** tool window. See the [support matrix](/en/languages/index) for other languages.
+
+## Language server
+
+ZLS ([zigtools/zls](https://github.com/zigtools/zls)) provides completion, hover, navigation, references, rename, formatting, semantic tokens, inlay hints, diagnostics and code actions for Zig and `.zon` files. It is installed from its GitHub releases with **Install** in **Settings › Languages & Frameworks › Language Servers**, or put `zls` on `PATH`; the same page sets the executable.
+
+ZLS must match the Zig version that compiles the project; a version mismatch shows up as missing completions or a server that exits at startup.
+
+C and C++ files in a Zig project are served by clangd like any C/C++ project; ZLS does not serve them. See [C and C++](/en/languages/cpp).
+
+## Zig toolchain
+
+**Settings › Languages & Frameworks › Zig** selects the Zig installation used for **External Libraries**:
+
+- **Zig toolchain**: the directory holding `zig`. **Auto** uses `zig` on `PATH`. PATH, Homebrew, zvm and mise / asdf installs are detected; **Browse** picks another directory.
+- The selected version is shown next to the field. External Libraries use this directory; run configurations and ZLS look up `zig` on `PATH`, so keep the project's Zig on `PATH` too (or select that same installation here).
+
+## The Zig Build tool window
+
+The official **Zig Build** plugin (`openidea.zig`) adds a tool window with the project's build outline. Install it from **Settings › Plugins › Available** (in a development checkout it is listed from `plugins/official`). Its view appears next to the editor when the project has a `build.zig`; **Zig: Show Build View** opens it.
+
+- **Build** runs the default `zig build`.
+- **Build steps** lists every top-level `b.step("name", "description")` in `build.zig`, in source order, except the reserved `install` and `uninstall` steps. Double-click a step (or press Enter) to run `zig build <step>` in a **Zig Build** terminal of its own; clicking a step that is already running focuses its terminal.
+- **Executables** lists the `addExecutable` targets and their root source files. Opening one jumps to that source; an executable without a root source opens its `addExecutable` call.
+- **Dependencies** lists the entries of `build.zig.zon` with their URL, path or hash. Opening one jumps to the entry in the manifest.
+
+The view refreshes with the **Refresh** button, after **Zig: Refresh Build View**, when `build.zig` or `build.zig.zon` is saved, and when it is shown again. In a workspace it uses the first project with a `build.zig`. The plugin reads the two build files; it never runs the build script to build the outline. Running a step needs the `process:zig` capability and a trusted project; refusing the capability keeps the outline and navigation working.
+
+## Run and test
+
+Run configurations are detected from `build.zig`:
+
+- `zig build` for the default step.
+- `zig build <step>` for every top-level step (`install` and `uninstall` are left to the default build). Steps named `test`, `test-*` or `test_*` are test configurations and report to the test tree.
+- An executable for every `addExecutable` target: it is built first and starts the installed binary from `zig-out/bin`, so **Run** works without a separate build step.
+
+**Run Context Configuration** (`⌃⇧R` / `Ctrl+Shift+F10`) on a `.zig` file runs it. Failures from `zig build test` and `zig test` are parsed into the test tree, and **Rerun Failed Tests** narrows a failed test with `--test-filter`.
+
+The Zig Build tool window runs steps in a terminal; use the run configurations when you want the Run tool window, the test tree and rerun support.
+
+## Debugging
+
+Zig applications run under **CodeLLDB**. Debugging an executable configuration builds it first, then starts the binary with CodeLLDB, so breakpoints in Zig, C and C++ sources work. Install CodeLLDB from **Settings › Languages & Frameworks › Language Servers**. See [Debugging](/en/guide/debugging).
+
+## Limitations
+
+- The Zig toolchain setting drives External Libraries and version discovery, not the `zig` that run configurations and ZLS use; those look up `PATH`.
+- The Zig Build tool window runs each step in a terminal; it does not show the test tree. Use the detected run configurations for tests.
+- In a workspace with several projects, the tool window shows the first project that has a `build.zig`.
+- ZLS must match the Zig version that compiles the project. The IDE does not download a matching pair.
