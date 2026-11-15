@@ -109,6 +109,7 @@ const caps = (p: Partial<DebugCapabilities> = {}): DebugCapabilities => ({
   jvmHeap: false,
   jsPage: false,
   liveEvaluate: false,
+  streamTrace: false,
   ...p,
 });
 

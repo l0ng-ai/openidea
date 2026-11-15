@@ -2,6 +2,8 @@
 //! are read back once the debuggee is suspended again.
 
 use crate::{InspectFuture, JvmValue, VmTarget};
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
 /// Assigned by the debuggee-side bundle; valid for one VM.
 pub type TraceId = u64;
@@ -23,7 +25,8 @@ pub enum TraceState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AbortState {
     Interrupted,
     Stopped,

@@ -46,6 +46,7 @@ pub mod sdk;
 pub mod search;
 pub mod spell;
 pub mod ssh;
+pub mod stream_trace;
 pub mod syntax;
 pub mod term;
 pub mod tools;
@@ -593,6 +594,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         heap::debug_heap_compare,
         heap::debug_heap_save,
         heap::debug_heap_close,
+        stream_trace::debug_stream_chains,
+        stream_trace::debug_stream_trace,
+        stream_trace::debug_stream_trace_abort,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,

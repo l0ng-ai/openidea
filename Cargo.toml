@@ -52,6 +52,7 @@ ide-jvm-attach = { path = "crates/ide-jvm-attach" }
 ide-jvm-inspect = { path = "crates/ide-jvm-inspect" }
 ide-jdwp = { path = "crates/ide-jdwp" }
 ide-heap = { path = "crates/ide-heap" }
+ide-streams = { path = "crates/ide-streams" }
 
 # serialization & IPC typing
 serde = { version = "1", features = ["derive"] }
