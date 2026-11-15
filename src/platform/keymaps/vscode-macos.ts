@@ -350,6 +350,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "diff.nextFile": [],
   "diff.prevFile": [],
   "diff.showSettings": [],
+  "diff.focusOppositePane": [],
   "diff.prevDifference": ["Shift+F7"],
   "diff.jumpToSource": [],
   // HTTP Client / Database console: run the request or statement at the caret.

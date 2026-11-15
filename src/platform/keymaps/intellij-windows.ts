@@ -336,6 +336,7 @@ export const intellijWindows: Record<string, string[]> = {
   "diff.nextFile": ["Alt+Shift+Right"],
   "diff.prevFile": ["Alt+Shift+Left"],
   "diff.showSettings": ["Ctrl+Shift+D"],
+  "diff.focusOppositePane": ["Ctrl+Shift+Tab"],
   // After Show Diff: Ctrl+D is Compare With… in the project view.
   "project.compareWith": ["Ctrl+D"],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts

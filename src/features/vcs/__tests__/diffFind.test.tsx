@@ -231,3 +231,46 @@ describe("Find in the diff viewer", () => {
     expect(v.state.selection.main.from).toBe(8);
   });
 });
+
+describe("Esc and the opposite pane", () => {
+  const escape = (v: EditorView) => fireEvent.keyDown(v.contentDOM, { key: "Escape", code: "Escape", keyCode: 27 });
+
+  it("closes the tab with Esc only once nothing in the diff takes it", async () => {
+    useKeymap.setState({ overrides: KEYMAP });
+    const onClose = vi.fn();
+    render(<DiffEditor input={revisions} onClose={onClose} />);
+    const v = await press(1, "KeyF");
+    fireEvent.change(await screen.findByRole("textbox", { name: "Find" }), { target: { value: "foo" } });
+    await waitFor(() => expect(v.state.selection.main.empty).toBe(false));
+    v.focus();
+    escape(v); // closes the find bar
+    await waitFor(() => expect(screen.queryByRole("search")).toBeNull());
+    escape(v); // collapses the found match
+    expect(v.state.selection.main.empty).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    escape(v);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("leaves Esc alone where the diff isn't a tab", async () => {
+    render(<DiffEditor input={revisions} />);
+    const v = await pane(1);
+    v.focus();
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    v.contentDOM.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("moves focus to the other side with Select Opposite Diff Pane", async () => {
+    const { focusedDiffNavigator } = await import("../diffNavigator");
+    render(<DiffEditor input={revisions} />);
+    const left = await pane(0);
+    const right = await pane(1);
+    right.focus();
+    await waitFor(() => expect(focusedDiffNavigator()).not.toBeNull());
+    expect(focusedDiffNavigator()!.focusOpposite()).toBe(true);
+    expect(left.hasFocus).toBe(true);
+    expect(focusedDiffNavigator()!.focusOpposite()).toBe(true);
+    expect(right.hasFocus).toBe(true);
+  });
+});

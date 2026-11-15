@@ -99,6 +99,7 @@ export const eclipseWindows: Record<string, string[]> = {
   "diff.nextDifference": ["Ctrl+F7"],
   "diff.prevFile": ["Ctrl+Alt+Shift+Right"],
   "diff.nextFile": ["Ctrl+Alt+Shift+Left"],
+  "diff.focusOppositePane": [],
   "diff.applyLeftSide": [],
   "diff.applyRightSide": [],
   "navigate.nextOccurrence": [],

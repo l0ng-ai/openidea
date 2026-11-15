@@ -176,6 +176,24 @@ export function registerCompareActions(): () => void {
       run: () => focusedDiffNavigator()?.showSettings(),
     },
     {
+      // Diff.FocusOppositePane; it beats the Switcher's ⌃⇧⇥ while a side-by-side diff is focused.
+      id: "diff.focusOppositePane",
+      title: "Select Opposite Diff Pane",
+      category: "Diff",
+      when: "diffEditorFocus",
+      keyWhen: "diffEditorFocus && !popupOpen",
+      enabled: () => (focusedDiffNavigator()?.viewer?.()?.panes().length ?? 0) > 1,
+      run: () => void focusedDiffNavigator()?.focusOpposite(),
+    },
+    {
+      // CloseDiffEditor: Esc in a diff tab that nothing in the diff takes (see DiffEditor).
+      id: "diff.closeEditor",
+      title: "Close Diff Editor",
+      category: "Diff",
+      when: "diffEditorFocus",
+      run: () => void focusedDiffNavigator()?.close(),
+    },
+    {
       id: "diff.nextFile",
       title: "Compare Next File",
       category: "Diff",
