@@ -2555,8 +2555,11 @@ impl Task {
 
     /// An agent's form (`elicitation/create`): asked in the conversation like a permission
     /// request, and answered with its values, declined or cancelled. Blocks like `ask_permission`.
-    fn elicit(self: &Arc<Self>, params: &Value) -> Result<Value, String> {
-        let form = elicitation::form_of(params)?;
+    fn elicit(self: &Arc<Self>, params: &Value, raw: Option<&[u8]>) -> Result<Value, String> {
+        let mut form = elicitation::form_of(params)?;
+        if let Some(raw) = raw {
+            elicitation::in_schema_order(&mut form, raw);
+        }
         let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
         let message = params.get("message").and_then(Value::as_str).unwrap_or_default().trim().to_owned();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -2656,9 +2659,17 @@ impl Handler for Client {
         let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned()))?;
         match method {
             "session/request_permission" => Ok(task.ask_permission(&params)),
-            "elicitation/create" => task.elicit(&params).map_err(|e| (codes::INVALID_PARAMS, e)),
+            "elicitation/create" => task.elicit(&params, None).map_err(|e| (codes::INVALID_PARAMS, e)),
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {method}"))),
         }
+    }
+
+    fn on_request_raw(&self, method: &str, params: Value, raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        if method != "elicitation/create" {
+            return self.on_request_with_data(method, params);
+        }
+        let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned(), None))?;
+        task.elicit(&params, Some(raw)).map_err(|e| (codes::INVALID_PARAMS, e, None))
     }
 }
 
