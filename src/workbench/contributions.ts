@@ -19,7 +19,7 @@ import {
 } from "react";
 import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
-import type { ProjectType } from "@/platform/projectType";
+import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";

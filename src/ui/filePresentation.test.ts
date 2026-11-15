@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { presentationIcon } from "./filePresentation";
-import type { RootFolder } from "./languageSettings";
-import type { JvmPresentation } from "./ipc";
+import type { RootFolder } from "@/platform/languageSettings";
+import type { JvmPresentation } from "@/platform/ipc";
 
 const roots: RootFolder[] = [
   { path: "src/main/java", kind: "source", detectedFrom: "pom.xml" },

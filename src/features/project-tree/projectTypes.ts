@@ -1,6 +1,6 @@
 /** Bounded, read-only detection for project roots, including collapsed workspace members. */
 import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
-import { detectProjectType, isProjectMarker } from "@/platform/projectType";
+import { detectProjectType, isProjectMarker } from "@/ui/projectType";
 import { useProjectTree } from "./store";
 
 async function detect(root: string) {
