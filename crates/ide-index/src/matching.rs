@@ -78,8 +78,8 @@ impl Needle {
         let mut b = 0;
         if n.eq_ignore_ascii_case(q) {
             b += EXACT;
-        } else if let Some(dot) = name.find('.')
-            && name.as_bytes()[..dot].eq_ignore_ascii_case(q)
+        } else if let Some(dot) = n.iter().position(|&b| b == b'.')
+            && n[..dot].eq_ignore_ascii_case(q)
         {
             b += EXACT_STEM;
         } else if n.len() >= q.len() && n[..q.len()].eq_ignore_ascii_case(q) {
@@ -97,17 +97,31 @@ fn hump_bonus(s: &str, indices: &[u32]) -> u32 {
     if indices.is_empty() {
         return 0;
     }
-    let chars: Vec<char> = s.chars().collect();
-    let is_start = |i: usize| {
-        if i == 0 {
-            return true;
+    // One pass over `s`: `indices` is sorted, and whether position `i` is a
+    // word start only needs the char before it, so no `Vec<char>` is collected.
+    let is_start = |prev: Option<char>, c: char| match prev {
+        None => true,
+        Some(p) => {
+            !p.is_alphanumeric()
+                || (p.is_lowercase() && c.is_uppercase())
+                || (!p.is_ascii_digit() && c.is_ascii_digit())
         }
-        let (p, c) = (chars[i - 1], chars[i]);
-        !p.is_alphanumeric() || (p.is_lowercase() && c.is_uppercase()) || (!p.is_ascii_digit() && c.is_ascii_digit())
     };
-    let humps = indices.iter().filter(|&&i| (i as usize) < chars.len() && is_start(i as usize)).count() as u32;
-    let first = if is_start(indices[0] as usize) { FIRST_AT_START } else { 0 };
-    humps * HUMP + first
+    let (mut humps, mut next, mut first_start) = (0u32, 0usize, false);
+    let (mut prev, mut at) = (None, 0u32);
+    for c in s.chars() {
+        if next < indices.len() && indices[next] == at {
+            let started = is_start(prev, c);
+            humps += u32::from(started);
+            if next == 0 {
+                first_start = started;
+            }
+            next += 1;
+        }
+        prev = Some(c);
+        at += 1;
+    }
+    humps * HUMP + u32::from(first_start) * FIRST_AT_START
 }
 
 #[derive(Clone, Copy)]
