@@ -58,13 +58,13 @@ impl LspManager {
     }
 
     /// Names (in the language definition) of the servers attached to `doc`, or of every
-    /// server of the project when the document is not open.
-    pub fn server_names(&self, doc: ide_core::DocId) -> Vec<String> {
+    /// server of the project when the document is not open; only `server`'s when given.
+    pub fn server_names(&self, doc: ide_core::DocId, server: Option<ide_core::ServerId>) -> Vec<String> {
         let servers = match self.snapshot(doc) {
             Ok(snap) => snap.servers,
             Err(_) => self.servers.lock().clone(),
         };
-        servers.iter().map(|s| s.name.clone()).collect()
+        servers.iter().filter(|s| server.is_none_or(|id| s.id == id)).map(|s| s.name.clone()).collect()
     }
 
     /// Sends a plugin's request to the running server named `server` (its name in the

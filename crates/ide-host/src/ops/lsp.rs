@@ -1634,7 +1634,7 @@ async fn run_plugin_server_command(
     if project.lsp.provides_command(doc, server, &command.command).await {
         return None;
     }
-    let (plugin, run) = plugins.server_command(&project.lsp.server_names(doc), &command.command)?;
+    let (plugin, run) = plugins.server_command(&project.lsp.server_names(doc, server), &command.command)?;
     let snap = match project.documents.snapshot(doc) {
         Ok(snap) => snap,
         Err(e) => return Some(Err(e)),
