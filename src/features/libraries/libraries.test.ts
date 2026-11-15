@@ -29,13 +29,24 @@ describe("External Libraries", () => {
 
   it("gives each ecosystem's groups their icon", () => {
     const root = librariesRoot(
-      ["jdk", "nodeCore", "nodeModules", "rust", "cargo", "go", "goModules", "maven", "gradle", "other"].map(
-        (kind) => ({
-          name: kind,
-          kind,
-          roots: [{ name: "r", path: `/libs/${kind}` }],
-        }),
-      ),
+      [
+        "jdk",
+        "nodeCore",
+        "nodeModules",
+        "rust",
+        "cargo",
+        "go",
+        "goModules",
+        "maven",
+        "gradle",
+        "zig",
+        "zigPackages",
+        "other",
+      ].map((kind) => ({
+        name: kind,
+        kind,
+        roots: [{ name: "r", path: `/libs/${kind}` }],
+      })),
     )!;
     expect(Object.fromEntries(root.children!.map((g) => [g.label, g.icon]))).toEqual({
       "< jdk >": "file-java",
@@ -47,6 +58,8 @@ describe("External Libraries", () => {
       goModules: "file-gomod",
       maven: "maven-project",
       gradle: "file-gradle",
+      "< zig >": "file-zig",
+      zigPackages: "file-zig",
       other: "library",
     });
   });
@@ -63,18 +76,22 @@ describe("External Libraries", () => {
       group("Go SDK 1.27.4", "go"),
       group("Maven: com.acme:core:2.1.27", "maven"),
       group("Node.js Core", "nodeCore"),
+      group("Zig 0.16.0", "zig"),
+      group("Zig packages", "zigPackages"),
     ];
     const labels = (groups: typeof detected) => librariesRoot(groups)!.children!.map((g) => g.label);
     expect(labels(detected)).toEqual([
       "< Go SDK 1.27.4 >",
       "< Python 3.14 >",
       "< temurin-21 >",
+      "< Zig 0.16.0 >",
       "Cargo dependencies",
       "Gradle: com.acme:lib:1.0",
       "Maven: com.acme:core:2.1.27",
       "Maven: org.junit:junit:4.13",
       "node_modules",
       "Node.js Core",
+      "Zig packages",
     ]);
     expect(labels([...detected].reverse())).toEqual(labels(detected));
   });
@@ -104,6 +121,7 @@ describe("External Libraries", () => {
     expect(touchesManifest(["C:\\p\\go.mod"])).toBe(true);
     expect(touchesManifest(["/p/.venv/pyvenv.cfg"])).toBe(true);
     expect(touchesManifest(["/p/pnpm-workspace.yaml", "/p/Gemfile.lock"])).toBe(true);
+    expect(touchesManifest(["/p/build.zig.zon", "/p/go.work"])).toBe(true);
     expect(touchesManifest(["/p/node_modules/react/package.json"])).toBe(false);
     expect(touchesManifest(["/p/src/package.json.bak", "/p/README.md"])).toBe(false);
   });

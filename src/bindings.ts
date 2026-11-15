@@ -6943,6 +6943,7 @@ export type LanguagesSettings = {
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
+	zig?: ZigSettings,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -7031,7 +7032,7 @@ export type Launch_Serialize = {
 export type LibraryGroup = {
 	/**  Display name, e.g. `Python 3.12 (.venv)`. */
 	name: string,
-	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath`. */
+	/**  `python` | `jdk` | `nodeModules` | `nodeCore` | `rust` | `cargo` | `go` | `goModules` | `maven` | `gradle` | `classpath` | `zig` | `zigPackages`. */
 	kind: string,
 	roots: LibraryRoot[],
 };
@@ -10955,6 +10956,11 @@ export type Worktree = {
 	main: boolean,
 	locked: boolean,
 	prunable: boolean,
+};
+
+export type ZigSettings = {
+	/**  Directory holding the `zig` executable; empty = the one on `PATH`. */
+	zig?: string,
 };
 
 /* Tauri Specta runtime */

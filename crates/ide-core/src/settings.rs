@@ -973,6 +973,7 @@ pub struct LanguagesSettings {
     pub ruby: RubySettings,
     pub markdown: MarkdownSettings,
     pub arduino: ArduinoSettings,
+    pub zig: ZigSettings,
 }
 
 impl Default for LanguagesSettings {
@@ -995,6 +996,7 @@ impl Default for LanguagesSettings {
             ruby: RubySettings::default(),
             markdown: MarkdownSettings::default(),
             arduino: ArduinoSettings::default(),
+            zig: ZigSettings::default(),
         }
     }
 }
@@ -1204,6 +1206,13 @@ impl Default for RustSettings {
             rustfmt_args: String::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ZigSettings {
+    /// Directory holding the `zig` executable; empty = the one on `PATH`.
+    pub zig: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]

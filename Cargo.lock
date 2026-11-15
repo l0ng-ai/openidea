@@ -4798,6 +4798,7 @@ name = "ide-sdk"
 version = "0.1.45"
 dependencies = [
  "dunce",
+ "flate2",
  "ide-core",
  "ide-language",
  "ide-run",
@@ -4807,6 +4808,7 @@ dependencies = [
  "serde",
  "serde_json",
  "specta",
+ "tar",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
@@ -4963,6 +4965,7 @@ dependencies = [
  "chardetng",
  "dunce",
  "encoding_rs",
+ "flate2",
  "gix",
  "globset",
  "ide-core",
@@ -4973,6 +4976,7 @@ dependencies = [
  "serde",
  "serde_json",
  "specta",
+ "tar",
  "tempfile",
  "tracing",
  "trash",
