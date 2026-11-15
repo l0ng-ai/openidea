@@ -171,6 +171,27 @@ describe("ProjectView", () => {
     await waitFor(() => expect(rows()).toEqual(["acme/w/acme", "build", "src", "App.kt", "Util.kt", "README.md"]));
   });
 
+  it("opens the selected file in the right split with ⇧Enter; a folder still expands", async () => {
+    dispatchViaKeymap();
+    const { tree, row, rows } = setup();
+    await waitFor(() => expect(rows()).toContain("README.md"));
+    fireEvent.mouseDown(row("README.md"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter", code: "Enter", shiftKey: true });
+    await waitFor(() =>
+      expect(openFile).toHaveBeenLastCalledWith(
+        "/w/acme/README.md",
+        expect.objectContaining({ side: true, focus: true }),
+      ),
+    );
+    openFile.mockClear();
+    fireEvent.mouseDown(row("src"));
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Enter", code: "Enter", shiftKey: true });
+    await waitFor(() => expect(rows()).toContain("App.kt"));
+    expect(openFile).not.toHaveBeenCalled();
+  });
+
   it("pastes the files Explorer copied into the selected folder, as copies", async () => {
     dispatchViaKeymap();
     // What Explorer leaves on the clipboard: a path outside the project.

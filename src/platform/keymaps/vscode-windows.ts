@@ -45,6 +45,7 @@ export const vscodeWindows: Record<string, string[]> = {
   "db.drop": ["Delete"],
   "project.copyAbsolutePath": ["Alt+Shift+C"],
   "project.open": [],
+  "project.openInRightSplit": ["Ctrl+Enter"],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": [],
   "code.cyclicExpandWordBackward": [],
