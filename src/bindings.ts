@@ -310,9 +310,14 @@ export const commands = {
 	/**  Whether the clipboard holds files: cheap, for the Paste item's enabled state. */
 	clipboardHasFiles: () => __TAURI_INVOKE<boolean>("clipboard_has_files"),
 	/**
-	 *  The clipboard's image as a PNG data URL, for a paste whose event carried no
-	 *  files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
-	 *  None when the clipboard holds no image, and always on other platforms.
+	 *  Whether the clipboard holds an image (a screenshot): cheap, for the Paste item's
+	 *  enabled state.
+	 */
+	clipboardHasImage: () => __TAURI_INVOKE<boolean>("clipboard_has_image"),
+	/**
+	 *  The clipboard's image as a PNG data URL: for a paste whose event carried no files
+	 *  (WebKitGTK leaves `clipboardData` empty for a raw image, a screenshot), and for
+	 *  the project view's Paste, which has no paste event. None when it holds no image.
 	 */
 	clipboardImage: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_image")),
 	/**

@@ -1,4 +1,5 @@
 {
+  "Cannot paste the image into {name}": "无法将图片粘贴为 {name}",
   "Worktree Conflict": "工作树冲突",
   "Branch '{branch}' is already checked out in a worktree at:\n{path}": "分支 '{branch}' 已在以下位置的工作树中签出：\n{path}",
   "Checkout Anyway": "仍然签出",

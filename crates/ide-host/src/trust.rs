@@ -342,6 +342,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "clear_caches"
             | "clipboard_file_list"
             | "clipboard_has_files"
+            | "clipboard_has_image"
             | "clipboard_image"
             | "clipboard_set_file_list"
             | "clipboard_write_text"

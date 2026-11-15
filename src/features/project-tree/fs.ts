@@ -14,6 +14,8 @@ import { isInside, joinPath, nameOf, parentOf } from "./paths";
 export interface ProjectFs {
   readDir(path: string): Promise<FileEntry[]>;
   createFile(path: string): Promise<void>;
+  /** Creates `path` with `data`; fails when it exists. */
+  createFileBytes(path: string, data: Uint8Array): Promise<void>;
   createDir(path: string): Promise<void>;
   rename(from: string, to: string): Promise<void>;
   /** Moves to the trash when possible. */
@@ -26,6 +28,10 @@ export const tauriFs: ProjectFs = {
   readDir: (path) => call(commands.fsReadDir(path)),
   createFile: async (path) => {
     await call(commands.fsCreateFile(path));
+    notifyFileOperation({ kind: "created", paths: [path] });
+  },
+  createFileBytes: async (path, data) => {
+    await call(commands.fsCreateFileBytes(path, [...data]));
     notifyFileOperation({ kind: "created", paths: [path] });
   },
   createDir: async (path) => void (await call(commands.fsCreateDir(path))),
@@ -158,6 +164,13 @@ export class MemoryFs implements ProjectFs {
     if (this.nodes.has(path)) throw err("alreadyExists", `${path} already exists`);
     this.mkdirp(parentOf(path));
     this.nodes.set(path, { kind: "file", size: 0 });
+    this.emit({ created: [path] });
+  }
+
+  async createFileBytes(path: string, data: Uint8Array) {
+    if (this.nodes.has(path)) throw err("alreadyExists", `${path} already exists`);
+    this.mkdirp(parentOf(path));
+    this.nodes.set(path, { kind: "file", size: data.length });
     this.emit({ created: [path] });
   }
 
