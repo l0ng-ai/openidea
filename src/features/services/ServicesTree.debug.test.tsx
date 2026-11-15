@@ -231,7 +231,7 @@ it("shows the owning Run output for attached debugging and routes the controls t
   useDebugRunSessions.setState({ serviceSessions: [d] });
   render(<ServicesTreeView />);
   select();
-  expect(screen.getByRole("log")).toHaveTextContent("Maven application log");
+  expect(await screen.findByRole("log")).toHaveTextContent("Maven application log");
   // The console strip keeps only console controls: the window toolbar owns Run / Debug / Stop.
   const strip = within(screen.getByRole("toolbar", { name: "Run actions" }));
   expect(strip.queryByRole("button", { name: "Rerun" })).toBeNull();

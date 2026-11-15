@@ -82,7 +82,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [root, project?.workspace]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
-  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
+  const shown = useEditorShown();
+  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command, shown);
   const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
   const launch = provider && JSON.stringify([provider.program, provider.args, provider.env, provider.command]);
@@ -96,7 +97,6 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   const { defaults, fitWindowWidth } = useAgentSettings();
   const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
   const homeRoot = useRef<HTMLDivElement>(null);
-  const shown = useEditorShown();
   const unavailableModel = config.some(
     (o) =>
       o.category === "model" &&
@@ -293,18 +293,29 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   );
 }
 
-/** What the agent reports about itself when it starts (no session is opened), once per agent. */
-function useProbe(provider: string | null, command?: string): AgentProbe | null {
+/** Rechecks the installed agent when this page is shown or its window regains focus; opens no session. */
+function useProbe(provider: string | null, command: string | undefined, shown: boolean): AgentProbe | null {
   const [probe, setProbe] = useState<AgentProbe | null>(null);
   useEffect(() => {
-    if (!provider) return;
+    if (!provider || !shown) return;
     let live = true;
-    call(commands.agentProbe(provider, false))
-      .then((p) => live && setProbe(p))
-      .catch(() => {});
+    let pending = false;
+    const refresh = () => {
+      if (pending) return;
+      pending = true;
+      call(commands.agentProbe(provider, true))
+        .then((p) => live && setProbe(p))
+        .catch(() => {})
+        .finally(() => {
+          pending = false;
+        });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
     return () => {
       live = false;
+      window.removeEventListener("focus", refresh);
     };
-  }, [provider, command]);
+  }, [provider, command, shown]);
   return probe?.provider === provider ? probe : null;
 }

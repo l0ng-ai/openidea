@@ -26,6 +26,7 @@ pub mod pinned;
 pub mod python;
 pub mod ruby;
 mod vue;
+mod zig;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;

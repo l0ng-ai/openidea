@@ -1590,6 +1590,85 @@ fn go_modules_skip_the_main_module_and_missing_downloads() {
 }
 
 #[test]
+fn build_zig_zon_dependencies_are_parsed() {
+    let zon = r#"// the manifest is a Zig struct literal
+.{
+    .name = .app,
+    .version = "0.1.0",
+    .fingerprint = 0x348e9ddfb4b9e03c,
+    .dependencies = .{
+        .zap = .{ .url = "https://example.com/zap.tar.gz", .hash = "zap-0.1.0-AAA" },
+        .@"weird name" = .{
+            .url = "https://example.com/w.tar.gz",
+            .hash = "weird-2.0.0-BBB",
+            .lazy = true,
+        },
+        .shared = .{ .path = "../shared" },
+    },
+    .paths = .{ "build.zig", "src" },
+}
+"#;
+    assert_eq!(
+        crate::zig::zon_dependencies(zon),
+        [
+            crate::zig::ZonDependency {
+                name: "zap".into(),
+                hash: Some("zap-0.1.0-AAA".into()),
+                path: None,
+                lazy: false
+            },
+            crate::zig::ZonDependency {
+                name: "weird name".into(),
+                hash: Some("weird-2.0.0-BBB".into()),
+                path: None,
+                lazy: true
+            },
+            crate::zig::ZonDependency {
+                name: "shared".into(),
+                hash: None,
+                path: Some("../shared".into()),
+                lazy: false
+            },
+        ]
+    );
+    assert!(crate::zig::zon_dependencies(".{ .name = .app, .dependencies = .{} }").is_empty());
+    assert!(crate::zig::zon_dependencies(".{ .name = .app }").is_empty());
+    assert!(crate::zig::zon_dependencies("{ broken").is_empty());
+    assert_eq!(
+        crate::zig::zon_string_field(".{ .name = .probe_pkg, .version = \"0.1.0\" }", "name").as_deref(),
+        Some("probe_pkg")
+    );
+}
+
+#[test]
+fn zig_env_is_parsed_from_json_and_struct_literals() {
+    let env = crate::zig::parse_zig_env(
+        r#"{"zig_exe":"/opt/zig/zig","lib_dir":"/opt/zig/lib","std_dir":"/opt/zig/lib/std","global_cache_dir":"/home/u/.cache/zig","version":"0.14.1"}"#,
+    )
+    .unwrap();
+    assert_eq!(env.std_sources().as_deref(), Some(std::path::Path::new("/opt/zig/lib/std")));
+    assert_eq!(env.global_cache_dir.as_deref(), Some(std::path::Path::new("/home/u/.cache/zig")));
+
+    // Zig ≥ 0.15 prints a struct literal; a relative std_dir resolves against the install dir.
+    let env = crate::zig::parse_zig_env(
+        r#".{
+    .zig_exe = "/opt/zig/zig",
+    .lib_dir = "/opt/zig/lib",
+    .std_dir = "lib/std",
+    .global_cache_dir = "/home/u/.cache/zig",
+    .version = "0.16.0",
+    .target = "aarch64-macos",
+    .env = .{ .ZIG_GLOBAL_CACHE_DIR = null, .HOME = "/home/u" },
+}"#,
+    )
+    .unwrap();
+    assert_eq!(env.std_sources().as_deref(), Some(std::path::Path::new("/opt/zig/lib/std")));
+    assert_eq!(env.version.as_deref(), Some("0.16.0"));
+    assert_eq!(env.global_cache_dir.as_deref(), Some(std::path::Path::new("/home/u/.cache/zig")));
+    assert!(crate::zig::parse_zig_env("error: nothing").is_none());
+}
+
+#[test]
 fn jdk_library_is_the_jdk_home() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("temurin-21.jdk/Contents/Home");

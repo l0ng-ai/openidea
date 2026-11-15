@@ -275,7 +275,10 @@ html {
   --terminal-ansi-bright-white: #ffffff;
 
   /* typography (Inter 13 UI, JetBrains Mono 13 editor) */
-  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+  /* Nerd Font icons (in agent task titles): an installed Nerd Font, set once the window is
+     idle by appearanceRuntime. Last in the UI stack, so only glyphs no text font has use it. */
+  --font-icons: sans-serif;
+  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif, var(--font-icons);
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;

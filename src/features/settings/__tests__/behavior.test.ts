@@ -132,10 +132,12 @@ describe("appearance & behavior settings", () => {
       appearance: { useCustomFont: true, uiFontFamily: "Menlo", uiFontFallback: "Songti SC" },
     });
     applyAppearanceOptions(settings, root);
-    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", "Songti SC", system-ui, sans-serif');
+    expect(root.style.getPropertyValue("--font-ui")).toBe(
+      '"Menlo", "Songti SC", system-ui, sans-serif, var(--font-icons)',
+    );
     settings.appearance.uiFontFallback = "";
     applyAppearanceOptions(settings, root);
-    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", system-ui, sans-serif');
+    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", system-ui, sans-serif, var(--font-icons)');
     settings.appearance.useCustomFont = false;
     applyAppearanceOptions(settings, root);
     expect(root.style.getPropertyValue("--font-ui")).toBe("");

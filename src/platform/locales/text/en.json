@@ -1,4 +1,7 @@
 {
+  "Copy as TSV": "Copy as TSV",
+  "Copy as CSV": "Copy as CSV",
+  "Copy as One-Row": "Copy as One-Row",
   "Show Diff in External Tool": "Show Diff in External Tool",
   "Show Diff for Lines": "Show Diff for Lines",
   "External Diff Tools": "External Diff Tools",
