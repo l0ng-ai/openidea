@@ -2211,6 +2211,7 @@ async fn task_project_root_controls_local_and_worktree_repositories() {
             .unwrap();
         mgr.respond(&task.id, permission, Some("yes".into())).unwrap();
         wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        count_every_change(&mgr, &task.id);
         assert_eq!(task.project_root, Some(IpcPath(member.clone())));
         assert_eq!(task.base.as_deref(), Some("member-main"));
         if isolation == Isolation::Local {
@@ -2842,12 +2843,14 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
-    mgr.cancel(&task.id, None).unwrap();
-    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    // What the agent did.
+    // What the agent did, while its turn ran.
     write("mine.txt", "my edit\nand the agent's\n");
     write("other.txt", "agent\n");
     write("new.txt", "agent\n");
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    // The user's (or another task's) work between turns is not the task's.
+    write("later.txt", "mine\n");
     async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
         mgr.changes(id).await.unwrap().into_iter().map(|c| c.rel_path).collect()
     }
@@ -2863,6 +2866,7 @@ async fn rolling_back_restores_the_start_of_the_task_and_keeps_the_users_own_edi
     mgr.rollback_changes(&task.id, None, AgentChangesView::SinceStart).await.unwrap();
     assert_eq!(read("mine.txt"), "my edit\n", "the user's edit stays");
     assert!(!dir.join("new.txt").exists());
+    assert_eq!(read("later.txt"), "mine\n", "not the task's to roll back");
     assert!(changed(&mgr, &task.id).await.is_empty());
 
     mgr.delete(&task.id, false).await.unwrap();
@@ -2947,8 +2951,15 @@ impl Checkout {
         wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
         mgr.cancel(&task.id, None).unwrap();
         wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        count_every_change(&mgr, &task.id);
         (mgr, task)
     }
+}
+
+/// Counts every change in the checkout as the task's, as for a task saved before tasks
+/// recorded what their turns changed: for tests that change files outside a turn.
+fn count_every_change(mgr: &AgentManager, id: &str) {
+    mgr.task(id).unwrap().state.lock().touched = None;
 }
 
 async fn changed(mgr: &AgentManager, id: &str) -> Vec<String> {
