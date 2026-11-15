@@ -1,4 +1,6 @@
 //! Desktop adapter for application-drawn project tabs. Each member retains its WebView and services.
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use crate::{
     state::AppState,
     windows::{self, WindowsState},

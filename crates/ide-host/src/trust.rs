@@ -419,6 +419,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "remote_bootstrap_list"
             | "wsl_distros"
             | "wsl_resolve"
+            | "remote_termux_setup"
             | "remote_list"
             | "remote_open"
             | "remote_of"

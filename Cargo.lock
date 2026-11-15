@@ -4857,6 +4857,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "parking_lot",
+ "rand 0.10.3",
  "russh",
  "russh-sftp",
  "rustls",

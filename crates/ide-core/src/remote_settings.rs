@@ -17,10 +17,36 @@ pub enum SshAuth {
 }
 
 /// Tools › SSH Configurations.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[cfg_attr(not(target_os = "android"), derive(Default))]
 #[serde(default, rename_all = "camelCase")]
 pub struct SshSettings {
     pub configs: Vec<SshConfiguration>,
+}
+
+/// Android: the SSH configuration of Termux on this device.
+pub const TERMUX_SSH: &str = "termux";
+
+/// Android: Termux on this device is configured out of the box. Remote
+/// Development shows its one-time setup (`remote_termux_setup`) until it connects.
+#[cfg(target_os = "android")]
+impl Default for SshSettings {
+    fn default() -> Self {
+        Self {
+            configs: vec![SshConfiguration {
+                id: TERMUX_SSH.into(),
+                name: "Termux (this device)".into(),
+                host: "127.0.0.1".into(),
+                port: Some(8022),
+                // Termux's sshd logs in as Termux's own user, whatever the name.
+                user: "termux".into(),
+                auth: SshAuth::KeyPair,
+                // HOME is the app's data directory (MainActivity.kt).
+                key_file: "~/.ssh/openidea_termux".into(),
+                save_secret: false,
+            }],
+        }
+    }
 }
 
 /// A named SSH host, shared by terminals, deployment, run targets and data sources.

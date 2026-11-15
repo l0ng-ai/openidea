@@ -1,6 +1,8 @@
 //! Window groups without native tabs: one member is shown at a time, and the hidden ones are kept
 //! at its frame so that selecting a tab only changes which window is visible.
 use super::Group;
+#[cfg(mobile)]
+use crate::mobile_compat::WindowCompat;
 use crate::windows::WindowsState;
 use ide_core::{IdeError, IdeResult};
 use std::sync::atomic::{AtomicU64, Ordering};
