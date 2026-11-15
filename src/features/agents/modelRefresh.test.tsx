@@ -215,7 +215,7 @@ it("retains cached model and effort choices after a command failure and retries 
   render(<HomeEditor />);
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("connection lost");
-  expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuetext", "low");
+  expect(screen.getByRole("button", { name: "Configure model" })).toHaveTextContent("biglow");
   fireEvent.click(screen.getByRole("option", { name: "small" }));
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("small");
   fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
@@ -241,7 +241,8 @@ it("preserves a valid remembered model and effort when discovery changes the def
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("biglow");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("option", { name: "new" })).toBeVisible();
-  expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuetext", "low");
+  fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
+  expect(screen.getByRole("radio", { name: "low" })).toHaveAttribute("aria-checked", "true");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([

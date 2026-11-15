@@ -158,3 +158,10 @@
 .option {
   display: contents;
 }
+
+.rowAction {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  margin-left: 2px;
+}

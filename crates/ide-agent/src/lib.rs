@@ -188,7 +188,7 @@ impl Shared {
 
     fn config_for_new_task(&self, mut config: Vec<AgentConfigOption>, provider: &str) -> Vec<AgentConfigOption> {
         // Model-specific options are offered separately, never as provider-wide defaults.
-        config.retain(|o| o.category.as_deref() != Some("thought_level"));
+        config.retain(|o| !config::is_per_model_option(o));
         config::add_client_options(provider, &mut config);
         let hook = self.new_task_approvals.read().clone();
         if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
@@ -234,8 +234,7 @@ impl Shared {
             && let Some(config) = config.filter(|c| !c.is_empty())
         {
             if let Some(model) = model {
-                let levels: Vec<_> =
-                    config.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
                 if known.thought_levels.get(model) != Some(&levels) {
                     known.thought_levels.insert(model.to_owned(), levels);
                     changed = true;
@@ -246,10 +245,9 @@ impl Shared {
                 changed = true;
             }
         }
-        // Discovery reads one model's efforts; a session on another model reports that model's.
+        // Discovery reads one model's options; a session on another model reports that model's.
         let learned = model.filter(|_| acp && known.authoritative).zip(config).map(|(model, config)| {
-            let levels: Vec<_> =
-                config.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+            let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
             (model, levels)
         });
         if let Some(commands) = commands.filter(|c| !c.is_empty())
@@ -1043,7 +1041,7 @@ impl AgentManager {
         {
             let mut s = task.state.lock();
             if !model_options {
-                s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
+                s.task.config.retain(|o| !config::is_per_model_option(o));
             }
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
                 o.current = Some(value);
@@ -2121,10 +2119,10 @@ impl Task {
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
         config::add_client_options(&provider_id, &mut options);
-        // Changing model can replace the effort choices; validate those only afterwards.
-        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id).and_then(|o| o.category.as_deref()) {
-            Some("model") => 0,
-            Some("thought_level") => 2,
+        // Changing model can replace the effort / context-tier choices; validate those only afterwards.
+        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id) {
+            Some(o) if o.category.as_deref() == Some("model") => 0,
+            Some(o) if config::is_per_model_option(o) => 2,
             _ => 1,
         });
         let mut model_options = known;
@@ -2137,7 +2135,7 @@ impl Task {
                 }
                 continue;
             }
-            if o.category.as_deref() == Some("thought_level") && !model_options {
+            if config::is_per_model_option(&o) && !model_options {
                 continue;
             }
             let already = known && o.current.as_deref() == Some(choice.value.as_str());
@@ -2154,7 +2152,7 @@ impl Task {
                         model_options = true;
                     } else if o.category.as_deref() == Some("model") {
                         if o.current.as_deref() != Some(choice.value.as_str()) {
-                            options.retain(|o| o.category.as_deref() != Some("thought_level"));
+                            options.retain(|o| !config::is_per_model_option(o));
                         }
                         model_options = false;
                     }
@@ -2218,7 +2216,7 @@ impl Task {
                         if let Some(fresh) = reply.get("configOptions") {
                             config::merge_update(&mut s.task.config, fresh);
                         } else if option.category.as_deref() == Some("model") {
-                            s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
+                            s.task.config.retain(|o| !config::is_per_model_option(o));
                         }
                         if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option.id) {
                             o.current = Some(value);

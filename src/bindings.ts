@@ -1986,6 +1986,8 @@ export type AgentConfigOption = {
 	/**  ACP category: `model`, `mode`, `thought_level`, or agent-specific. */
 	category: string | null,
 	current: string | null,
+	/**  Initial default value reported by the agent, preserved across session updates for Reset. */
+	defaultValue?: string | null,
 	values: AgentConfigValue[],
 	via: AgentConfigVia,
 };
@@ -1995,6 +1997,10 @@ export type AgentConfigValue = {
 	value: string,
 	name: string,
 	description: string | null,
+	/**  Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`). */
+	costCategory?: string | null,
+	/**  Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`). */
+	usageMultiplier?: string | null,
 };
 
 /**  How a setting is changed. */

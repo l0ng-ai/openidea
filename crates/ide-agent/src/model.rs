@@ -130,6 +130,14 @@ pub struct AgentConfigValue {
     pub value: String,
     pub name: String,
     pub description: Option<String>,
+    /// Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_category: Option<String>,
+    /// Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub usage_multiplier: Option<String>,
 }
 
 /// How a setting is changed.
@@ -155,6 +163,10 @@ pub struct AgentConfigOption {
     /// ACP category: `model`, `mode`, `thought_level`, or agent-specific.
     pub category: Option<String>,
     pub current: Option<String>,
+    /// Initial default value reported by the agent, preserved across session updates for Reset.
+    #[serde(default)]
+    #[specta(optional)]
+    pub default_value: Option<String>,
     pub values: Vec<AgentConfigValue>,
     pub via: AgentConfigVia,
 }

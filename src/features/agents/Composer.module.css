@@ -181,15 +181,12 @@
   color: var(--fg-muted);
 }
 .modelEffortPopup {
-  width: min(340px, calc(100vw - 24px));
-  padding: 12px 0 6px;
-}
-.effortBlock {
-  padding: 0 12px 8px;
+  width: min(356px, calc(100vw - 24px));
+  padding: 6px 0;
 }
 /* The list takes the height of its models; with many it scrolls inside the popup. */
 .modelEffortPopup .modelList {
-  max-height: 216px;
+  max-height: 240px;
 }
 .catalogFooter {
   margin-top: 6px;
@@ -225,64 +222,200 @@
   color: var(--fg-muted);
   cursor: default;
 }
-.effortHeader {
+.activeModelBar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: calc(100% - 12px);
+  margin: 2px 6px 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--fg-strong);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.activeModelBar:hover,
+.activeModelBar:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+}
+.activeModelName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.activeModelMeta {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.activeModelGear {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  flex: none;
+  color: var(--fg-muted);
+}
+.modelRowConfigure {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.modelRowConfigure:hover,
+.modelRowConfigure:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+.costBadge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: var(--radius-popup);
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-secondary);
+  font-size: var(--fs-tiny);
+  white-space: nowrap;
+}
+.costBadgeLow {
+  background: color-mix(in srgb, var(--success) 18%, var(--bg-elev));
+  color: var(--success);
+}
+.costBadgeHigh {
+  background: color-mix(in srgb, var(--warning) 20%, var(--bg-elev));
+  color: var(--warning);
+}
+
+/* Page 2: per-model configuration view. */
+.modelDetail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: 6px 12px 8px;
+}
+.modelDetailHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+}
+.modelDetailTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.modelDetailActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  flex: none;
+}
+.pinnedButton {
+  color: var(--accent);
+}
+.detailSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+.detailSectionLabel {
+  color: var(--fg-strong);
+  font-weight: 600;
+  font-size: var(--fs-small);
+}
+.detailRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.segmented {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-0-5);
+  padding: 2px;
+  border-radius: var(--radius-popup);
+  background: var(--bg-input);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.segment {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.segment:hover {
+  color: var(--fg-strong);
+}
+.segment:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.segmentActive {
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.costCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 8px 10px;
+  border-radius: var(--radius-popup);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.costCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.costCardTitle {
+  color: var(--fg-strong);
+  font-weight: 600;
+  font-size: var(--fs-small);
+}
+.costCardRow {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-3);
+  color: var(--fg-secondary);
+  font-size: var(--fs-small);
 }
-.effortValue {
+.costCardValue {
   color: var(--fg-strong);
-}
-.effortSlider {
-  --thumb: 14px;
-  margin-top: 8px;
-}
-.effortSlider input {
-  display: block;
-  width: 100%;
-  height: var(--thumb);
-  margin: 0;
-  appearance: none;
-  background: transparent;
-}
-.effortSlider input::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(to right, var(--accent) var(--fill), var(--control-off) var(--fill));
-}
-.effortSlider input::-webkit-slider-thumb {
-  width: var(--thumb);
-  height: var(--thumb);
-  margin-top: calc((4px - var(--thumb)) / 2);
-  border-radius: 50%;
-  appearance: none;
-  background: var(--fg-on-accent);
-  box-shadow:
-    0 0 0 1px var(--border-button),
-    var(--shadow-tooltip);
-}
-.effortSlider input:focus-visible {
-  outline: none;
-}
-.effortSlider input:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 2px var(--focus-ring);
-}
-/* One dot per level, centred under the thumb's positions. */
-.effortTicks {
-  display: flex;
-  justify-content: space-between;
-  padding: 0 calc(var(--thumb) / 2 - 2px);
-  margin-top: 4px;
-}
-.effortTicks > span {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--control-off);
-}
-.effortTicks > .effortTickActive {
-  background: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .modePopup {
   min-width: 200px;
