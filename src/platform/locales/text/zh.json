@@ -1,4 +1,9 @@
 {
+  "Open Blank Diff Window": "打开空白差异窗口",
+  "Blank Diff": "空白差异",
+  "Search In Changes": "在更改中搜索",
+  "Swaps the left and right sides of the diff": "交换差异的左右两侧",
+  "Opens two editors side by side to compare their content": "并排打开两个编辑器并比较其内容",
   "Select Opposite Diff Pane": "选择对侧差异窗格",
   "Close Diff Editor": "关闭差异编辑器",
   "Show Diff in Editor Tab": "在编辑器标签页中显示差异",

@@ -358,6 +358,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
     showSettings: () => void actionHost.run("settings"),
     focusOpposite: () => false,
     close: () => false,
+    swapSides: () => false,
   }));
   useEffect(
     () => () => {

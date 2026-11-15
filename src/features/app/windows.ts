@@ -284,7 +284,7 @@ async function openCliDiff(diff: { left: string; right: string }): Promise<void>
     import("@/features/vcs/diffInput"),
     import("@/features/vcs/compareData"),
   ]);
-  await openVcsDiff(compareFilesData(diff.left, diff.right));
+  await openVcsDiff({ ...compareFilesData(diff.left, diff.right), swappable: true });
 }
 
 /** Closes the project tabs on `side` of the `arg` tab (default: the current one), keeping that tab. */

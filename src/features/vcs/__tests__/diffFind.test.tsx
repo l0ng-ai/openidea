@@ -274,3 +274,70 @@ describe("Esc and the opposite pane", () => {
     expect(right.hasFocus).toBe(true);
   });
 });
+
+describe("Search In Changes", () => {
+  it("limits the find bar to the changed lines of the diff, and not while replacing", async () => {
+    useKeymap.setState({ overrides: KEYMAP });
+    render(<DiffEditor input={working} />);
+    const v = await press(1, "KeyF");
+    fireEvent.change(await screen.findByRole("textbox", { name: "Find" }), { target: { value: "foo" } });
+    await screen.findByText("1/2");
+    fireEvent.click(screen.getByRole("button", { name: "Filter Search Results" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Search In Changes" }));
+    await screen.findByText("0 results");
+    fireEvent.change(screen.getByRole("textbox", { name: "Find" }), { target: { value: "qu" } });
+    await screen.findByText("1/1");
+    // Replace searches the whole side, and doesn't offer the filter.
+    await press(1, "KeyR");
+    fireEvent.change(await screen.findByRole("textbox", { name: "Find" }), { target: { value: "foo" } });
+    await waitFor(() => expect(screen.getByText(/\/2$/)).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Filter Search Results" }));
+    await screen.findByRole("menuitem", { name: /Search In Selection/ });
+    expect(screen.queryByText("Search In Changes")).toBeNull();
+    expect(v.state.doc.toString()).toBe("foo\nqux\nfoo\n");
+  });
+});
+
+describe("Blank diff and Swap Sides", () => {
+  const blank = (swappable = true) =>
+    ({
+      kind: "diff",
+      key: "diff:blank",
+      data: {
+        path: "blank-diff:1",
+        left: { type: "text", text: "one\n", label: "", editable: true },
+        right: { type: "text", text: "", label: "", editable: true },
+        swappable,
+      },
+    }) as unknown as EditorInput;
+
+  it("lets both sides be typed into, and swaps them with what was typed", async () => {
+    render(<DiffEditor input={blank()} />);
+    const left = await pane(0);
+    const right = await pane(1);
+    expect(left.state.readOnly).toBe(false);
+    expect(right.state.readOnly).toBe(false);
+    right.dispatch({ changes: { from: 0, insert: "two\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Swap Sides" }));
+    await waitFor(() => expect(left.dom.isConnected).toBe(false));
+    expect((await pane(0)).state.doc.toString()).toBe("two\n");
+    expect((await pane(1)).state.doc.toString()).toBe("one\n");
+    (await pane(1)).dispatch({ changes: { from: 0, insert: "1 " } });
+    const { focusedDiffNavigator } = await import("../diffNavigator");
+    (await pane(0)).focus();
+    await waitFor(() => expect(focusedDiffNavigator()).not.toBeNull());
+    const before = await pane(0);
+    expect(focusedDiffNavigator()!.swapSides()).toBe(true);
+    await waitFor(() => expect(before.dom.isConnected).toBe(false));
+    expect((await pane(0)).state.doc.toString()).toBe("1 one\n");
+    expect((await pane(1)).state.doc.toString()).toBe("two\n");
+  });
+
+  it("offers Swap Sides only where the user picked both sides", async () => {
+    render(<DiffEditor input={revisions} />);
+    await pane(1);
+    expect(screen.queryByRole("button", { name: "Swap Sides" })).toBeNull();
+    const right = await pane(1);
+    expect(right.state.readOnly).toBe(true);
+  });
+});

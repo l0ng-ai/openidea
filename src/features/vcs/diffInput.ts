@@ -16,8 +16,11 @@ export type DiffSide =
   | { type: "worktree"; label?: string }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
-  /** `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent. */
-  | { type: "text"; text: string; label: string; absent?: boolean }
+  /**
+   * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
+   * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
+   */
+  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -63,6 +66,8 @@ export interface DiffData {
   annotateLeft?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
+  /** The user picked both sides (Compare Files, with Clipboard, blank diff): they can be swapped. */
+  swappable?: boolean;
 }
 
 export const DIFF_KIND = "diff";
