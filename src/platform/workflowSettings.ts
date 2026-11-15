@@ -121,6 +121,14 @@ export interface RunSettingsValid {
   terminationTimeoutMs: number;
 }
 
+/** Tools › External Diff Tools: the program Show Diff in External Tool starts. */
+export interface ExternalDiffValid {
+  enabled: boolean;
+  path: string;
+  /** `%1` the left file, `%2` the right file, `%3` the title. */
+  parameters: string;
+}
+
 export interface TerminalSettingsValid {
   startDirectory: string;
   env: Record<string, string>;
@@ -186,6 +194,7 @@ export interface WorkflowSettings extends RemoteSettings {
   terminal: TerminalSettingsValid;
   actionsOnSave: ActionsOnSaveValid;
   externalTools: ExternalToolValid[];
+  externalDiff: ExternalDiffValid;
   agentSecurity: AgentSecurityValid;
 }
 
@@ -341,6 +350,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
   },
   actionsOnSave: { optimizeImports: false, cleanup: false },
   externalTools: [],
+  externalDiff: { enabled: false, path: "", parameters: "%1 %2 %3" },
   agentSecurity: {
     allowedCommands: [],
     blockedCommands: ["rm -rf *", "rm -rf /", "mkfs*", "dd *", ":(){ :|:& };:", "shutdown*", "reboot*"],
@@ -496,6 +506,16 @@ export function validateRun(raw: unknown): RunSettingsValid {
   };
 }
 
+export function validateExternalDiff(raw: unknown): ExternalDiffValid {
+  const d = DEFAULT_WORKFLOW.externalDiff;
+  const v = obj(raw);
+  return {
+    enabled: bool(v.enabled, d.enabled),
+    path: text(v.path, d.path).trim(),
+    parameters: text(v.parameters, d.parameters),
+  };
+}
+
 export function validateTerminal(raw: unknown): TerminalSettingsValid {
   const d = DEFAULT_WORKFLOW.terminal;
   const v = obj(raw);
@@ -593,6 +613,7 @@ export function validateWorkflow(raw: unknown): WorkflowSettings {
     terminal: validateTerminal(root.terminal),
     actionsOnSave: validateActionsOnSave(root.actionsOnSave),
     externalTools: validateExternalTools(root.externalTools),
+    externalDiff: validateExternalDiff(root.externalDiff),
     agentSecurity: validateAgentSecurity(root.agentSecurity),
     ...validateRemote(root),
   };

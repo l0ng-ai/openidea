@@ -307,6 +307,7 @@ const ICONS = {
   "split-horizontal": "general/splitHorizontally",
   "editor-only": "general/editorOnly",
   "swap-panels": "actions/swapPanels",
+  "external-tools": "general/externalTools",
   "editor-preview": "general/editorPreview",
   "preview-details": "general/previewHorizontally",
   "preview-only": "general/previewOnly",

@@ -42,6 +42,8 @@ pub struct Settings {
     pub terminal: TerminalSettings,
     pub actions_on_save: ActionsOnSaveSettings,
     pub external_tools: Vec<ExternalTool>,
+    /// Tools › Diff & Merge › External Diff Tools.
+    pub external_diff: ExternalDiffSettings,
     /// Language servers / debug adapters at a user-chosen location, by the
     /// command the language definition launches (`elixir-ls`, `codelldb`).
     pub tools: BTreeMap<String, ToolSettings>,
@@ -482,6 +484,7 @@ impl Default for Settings {
             debugger: DebuggerSettings::default(),
             run: RunSettings::default(),
             terminal: TerminalSettings::default(),
+            external_diff: ExternalDiffSettings::default(),
             actions_on_save: ActionsOnSaveSettings::default(),
             external_tools: Vec::new(),
             tools: BTreeMap::new(),

@@ -176,6 +176,7 @@ deploy_server_root                           trusted            project_host bin
 deploy_sync                                  trusted            project_host bindings async
 deploy_test_connection                       always             project_host bindings async
 deploy_upload                                trusted            project_host bindings async
+diff_external_tool                           always             desktop      bindings async
 doc_close                                    always             project_host bindings async
 doc_edit                                     always             project_host bindings async
 doc_folding                                  always             project_host bindings async

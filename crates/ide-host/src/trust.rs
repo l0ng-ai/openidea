@@ -310,6 +310,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "fs_delete"
             | "fs_entry_kind"
             | "fs_open_with_system"
+            // The user's own diff program (global settings) on the diff's two sides.
+            | "diff_external_tool"
             | "fs_probe"
             | "fs_read_dir"
             | "fs_read_image"
