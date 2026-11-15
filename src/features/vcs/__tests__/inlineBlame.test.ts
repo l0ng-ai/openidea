@@ -12,7 +12,13 @@ import type { BlameLine, Settings } from "@/bindings";
 import { HEAVY_LIMIT, _emitEditorEvent } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import { useI18n } from "@/platform/i18n";
-import { formatInlineBlame, inlineBlame, inlineBlameSegments, relativeBlameDate } from "../inlineBlame";
+import {
+  formatInlineBlame,
+  inlineBlame,
+  inlineBlameSegments,
+  inlineBlameTheme,
+  relativeBlameDate,
+} from "../inlineBlame";
 import { useVcs } from "../store";
 
 const mocks = vi.hoisted(() => ({ blame: vi.fn(), file: vi.fn(), log: vi.fn(), action: vi.fn() }));
@@ -54,10 +60,12 @@ function editor(doc = "one\ntwo\nthree", context = ctx) {
 }
 
 const hint = () => view?.dom.querySelector<HTMLElement>(".cm-vcs-inline-blame");
+/** The out-of-flow, absolutely positioned label; the anchor itself is zero-width. */
+const label = () => hint()?.firstElementChild as HTMLElement | null;
 const tick = () => vi.advanceTimersByTimeAsync(300);
-/** The hover belongs to the label: put the pointer on it before activating, as a user would. */
+/** The hover belongs to the label: put the pointer on the inner box (the anchor is zero-width). */
 const hoverLabel = (v: EditorView, pos: number) => {
-  hint()!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  label()!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
   activateHover(v, pos, 1);
 };
 
@@ -130,12 +138,15 @@ describe("current line decoration", () => {
     expect(mocks.blame).toHaveBeenCalledTimes(1);
     expect(mocks.file).toHaveBeenCalledTimes(1);
     expect(hint()?.contentEditable).toBe("false");
-    expect([...hint()!.querySelectorAll("span")].map((s) => s.className)).toEqual([
+    expect(label()?.className).toBe("cm-vcs-inline-blame-inner");
+    expect([...label()!.querySelectorAll("span")].map((s) => s.className)).toEqual([
       "cm-vcs-inline-blame-author",
       "cm-vcs-inline-blame-date",
       "cm-vcs-inline-blame-subject",
     ]);
-    hint()?.click();
+    // The inner box is the pointer-hit region; the zero-width anchor is not interactive.
+    expect(label()?.getAttribute("role")).toBe("button");
+    label()!.click();
     expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", alice.commit);
   });
 
@@ -352,7 +363,7 @@ describe("current line decoration", () => {
     await tick();
     // the widget measures, and starts observing, in the task after its insertion
     await vi.advanceTimersByTimeAsync(10);
-    expect(hint()!.style.paddingLeft).toBe("");
+    expect(label()!.style.left).toBe("");
 
     // the hint shows up only after the blame mounted — the blame must still step past it
     view.dispatch({
@@ -368,11 +379,22 @@ describe("current line decoration", () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(view.dom.querySelector(".cm-openidea-lensInlineInner")).not.toBeNull();
     // hint 120px, then the message's 70px: the label steps past the whole chain
-    expect(hint()!.style.paddingLeft).toBe("calc(3ch + 190px)");
+    expect(label()!.style.left).toBe("calc(3ch + 190px)");
 
     // and it gives the space back when the hint and the message go away
     view.dispatch({ effects: lens.reconfigure([]) });
     await vi.advanceTimersByTimeAsync(10);
-    expect(hint()!.style.paddingLeft).toBe("");
+    expect(label()!.style.left).toBe("");
+  });
+
+  it("is an out-of-flow, zero-width anchor so soft wrap cannot fold it onto a new row", () => {
+    const anchor = inlineBlameTheme[".cm-vcs-inline-blame"];
+    const inner = inlineBlameTheme[".cm-vcs-inline-blame-inner"];
+    // The label no longer takes part in the line's flow: no soft-wrapped continuation row and
+    // no line-height stretch, unlike the old in-flow `inline-block; nowrap` label.
+    expect(anchor).toMatchObject({ width: "0", position: "relative", display: "inline-block" });
+    expect(inner).toMatchObject({ position: "absolute", whiteSpace: "nowrap" });
+    // The visible label is the pointer/click region; the anchor stays zero-width.
+    expect(inlineBlameTheme['.cm-vcs-inline-blame-inner[role="button"]']).toEqual({ cursor: "pointer" });
   });
 });
