@@ -112,8 +112,11 @@ pub struct Server {
     status: Mutex<(ServerStatus, Option<String>)>,
     /// Consecutive crashes of short-lived instances.
     crashes: Mutex<usize>,
-    /// When the current instance was launched.
+    /// When the current instance became ready: only time spent running counts as uptime,
+    /// not the time spent starting (an `initialize` that hangs for minutes is not a stable run).
     started: Mutex<Option<Instant>>,
+    /// Why the current instance's `initialize` failed, for the crash report.
+    start_error: Mutex<Option<(u64, String)>>,
     stderr: Mutex<VecDeque<String>>,
     pub progress: Mutex<HashMap<String, Progress>>,
     /// What the editor shows per path: the pushed and the pulled diagnostics together.
@@ -177,6 +180,7 @@ impl Server {
             status: Mutex::new((ServerStatus::Stopped, None)),
             crashes: Mutex::new(0),
             started: Mutex::new(None),
+            start_error: Mutex::new(None),
             stderr: Mutex::new(VecDeque::new()),
             progress: Mutex::new(HashMap::new()),
             diagnostics: Mutex::new(HashMap::new()),
@@ -211,6 +215,11 @@ impl Server {
             config.settings = Some(settings);
         }
         config
+    }
+
+    /// The configured server's display name for the current (or last) instance.
+    pub fn display_name(&self) -> Option<String> {
+        self.effective.lock().as_ref().and_then(|c| c.display_name.clone())
     }
 
     pub fn set_effective_config(&self, generation: u64, config: LanguageServerConfig) {
@@ -252,7 +261,8 @@ impl Server {
         st.conn = Conn::Starting;
         st.restarting = false;
         *self.start_cancel.lock() = CancellationToken::new();
-        *self.started.lock() = Some(Instant::now());
+        *self.started.lock() = None;
+        *self.start_error.lock() = None;
         // A crash report quotes only this instance's output, not its predecessors'.
         self.stderr.lock().clear();
         self.import_state.send_replace(None);
@@ -300,7 +310,13 @@ impl Server {
         }
         st.conn = Conn::Ready(run);
         *self.initializing.lock() = None;
+        *self.started.lock() = Some(Instant::now());
         true
+    }
+
+    /// Records why instance `generation` failed to initialize, so its crash report says so.
+    pub fn set_start_error(&self, generation: u64, reason: String) {
+        *self.start_error.lock() = Some((generation, reason));
     }
 
     /// Wakes requests waiting for the instance (after status and documents are in place).
@@ -320,6 +336,13 @@ impl Server {
 
     pub fn is_starting(&self) -> bool {
         matches!(self.state.lock().conn, Conn::Starting)
+    }
+
+    /// The server will not run until something changes: its binary is missing, its
+    /// configuration can't launch it, or it crashed too often (or its build expired).
+    /// Servers that crashed and are about to restart are not given up on.
+    pub fn gave_up(&self) -> bool {
+        matches!(self.state.lock().conn, Conn::Missing | Conn::Failed)
     }
 
     /// The instance told `initialized`, ready or not.
@@ -344,6 +367,13 @@ impl Server {
     /// The running instance if it is still generation `generation`.
     pub fn running_gen(&self, generation: u64) -> Option<Running> {
         self.running().filter(|r| r.generation == generation)
+    }
+
+    /// Instance `generation` is starting or running: not stopped, crashed or replaced.
+    /// Work it reports before it is ready (a Gradle import answers `initialize` late) still counts.
+    pub fn is_live(&self, generation: u64) -> bool {
+        let st = self.state.lock();
+        st.generation == generation && matches!(st.conn, Conn::Starting | Conn::Ready(_))
     }
 
     /// Waits through startup or a planned restart; returns the instance once ready.
@@ -436,10 +466,12 @@ impl Server {
         }
         let tail = self.stderr_tail(5);
         let cfg = self.effective_config();
-        let mut message = match (code, &cfg.connect) {
-            (Some(c), _) => format!("{} exited with code {c}", self.name),
-            (None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", self.name),
-            (None, None) => format!("{} terminated unexpectedly", self.name),
+        let start_error = self.start_error.lock().take().filter(|(g, _)| *g == generation).map(|(_, r)| r);
+        let mut message = match (&start_error, code, &cfg.connect) {
+            (Some(reason), _, _) => format!("{} failed to start: {reason}", self.name),
+            (None, Some(c), _) => format!("{} exited with code {c}", self.name),
+            (None, None, Some(addr)) => format!("{}: the connection to the server ({addr}) closed", self.name),
+            (None, None, None) => format!("{} terminated unexpectedly", self.name),
         };
         if !tail.is_empty() {
             message.push_str(":\n");
@@ -472,6 +504,7 @@ impl Server {
     /// Records a crash; returns the backoff before restarting, or `None` once
     /// [`MAX_RESTARTS`] instances in a row died before running [`STABLE_UPTIME`]
     /// (a server that crashes on every start, however slowly, is not restarted forever).
+    /// An instance that never became ready has run for no time at all.
     pub fn record_crash(&self) -> Option<Duration> {
         let uptime = self.started.lock().map(|t| t.elapsed()).unwrap_or_default();
         let mut crashes = self.crashes.lock();
@@ -507,7 +540,13 @@ impl Server {
             return;
         }
         *cur = (status, message.clone());
-        st.events.push_back(IdeEvent::LanguageServer { server: self.id, name: self.name.clone(), status, message });
+        st.events.push_back(IdeEvent::LanguageServer {
+            server: self.id,
+            name: self.name.clone(),
+            label: self.display_name(),
+            status,
+            message,
+        });
     }
 
     fn queue_cleanup(&self, st: &mut State) {
@@ -1026,6 +1065,38 @@ mod tests {
         assert!(!s.is_busy(), "a stuck task must not hold wait_indexed or ReferencesIncomplete::Indexing");
         s.progress.lock().get_mut("p").unwrap().stalled = false;
         assert!(s.is_busy(), "a reporting task keeps the server busy");
+    }
+
+    #[test]
+    fn only_time_spent_ready_counts_as_uptime() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        for n in 1..=MAX_RESTARTS + 1 {
+            // Never ready: crashes after a slow start count however long the start took.
+            let generation = s.begin_start().unwrap();
+            assert!(s.started.lock().is_none());
+            s.set_start_error(generation, "it did not answer initialize within 300 s".into());
+            let delay = s.on_closed(generation, &sink, None).unwrap();
+            assert_eq!(delay.is_some(), n <= MAX_RESTARTS, "crash {n}");
+            let message = s.status_message().unwrap();
+            assert!(
+                message.starts_with(&format!("{} failed to start: it did not answer initialize", s.name)),
+                "{message}"
+            );
+            s.state.lock().conn = Conn::Idle;
+        }
+        assert!(matches!(s.state.lock().conn, Conn::Idle));
+    }
+
+    #[test]
+    fn an_instance_is_live_from_its_start_until_it_is_retired() {
+        let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+        let s = server();
+        let generation = s.begin_start().unwrap();
+        assert!(s.is_live(generation), "still starting: its progress (an import) is being watched");
+        assert!(!s.is_live(generation + 1));
+        assert!(s.fail_start(generation, Conn::Failed, &sink, ServerStatus::Crashed, None));
+        assert!(!s.is_live(generation));
     }
 
     #[test]

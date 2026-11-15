@@ -1472,6 +1472,15 @@ pub async fn lsp_type_hierarchy(
     host.project(window)?.lsp.type_hierarchy(doc, pos, direction).await
 }
 
+pub async fn lsp_prepare_type_hierarchy(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<HierarchyItem>> {
+    host.project(window)?.lsp.prepare_type_hierarchy(doc, pos).await
+}
+
 pub fn lsp_servers(host: &Host, window: &str) -> IdeResult<Vec<ServerInfo>> {
     Ok(host.project(window)?.lsp.servers())
 }
@@ -1855,6 +1864,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("lsp_type_hierarchy", |c| async move {
         lsp_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?).await
+    });
+    d.add("lsp_prepare_type_hierarchy", |c| async move {
+        lsp_prepare_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
     });
     d.add("lsp_servers", |c| async move { lsp_servers(&c.host, &c.window) });
     d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });

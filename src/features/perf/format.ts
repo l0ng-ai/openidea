@@ -29,6 +29,13 @@ export function formatSize(bytes: number | null | undefined): string {
   return `${trim(bytes / GB)} GB`;
 }
 
+/** `0%`, `3.2%`, `45%`, `180%` (percent of one core, so several busy cores exceed 100). */
+export function formatPercent(p: number | null | undefined): string {
+  if (p == null || !Number.isFinite(p) || p < 0) return "–";
+  if (p < 0.05) return "0%";
+  return p < 10 ? `${trim(p)}%` : `${Math.round(p)}%`;
+}
+
 /** `0.4 ms`, `16 ms`, `2.3 s`. */
 export function formatMs(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "–";

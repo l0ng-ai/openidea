@@ -15,7 +15,8 @@
  * implementation search walks the whole workspace, so asking again is costly.
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
+import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { iconAreaSource } from "@/editor/core/cm/iconArea";
 import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
@@ -50,7 +51,16 @@ import {
   type MarkerCandidate,
   type MarkerGroup,
 } from "./lineMarkers";
-import { baseName, overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
+import { overridersInType, superMethodTargets, type SuperDeps, type SuperMethod } from "./structureNav";
+import {
+  classLocation,
+  declarationKey,
+  forgetInheritanceGraph,
+  inheritanceIndex,
+  methodInOutline,
+  pythonInheritanceGraph,
+  type InheritanceIndex,
+} from "./inheritanceGraph";
 import styles from "./LineMarkers.module.css";
 
 /** Lines above / below the viewport that are asked with it. */
@@ -93,30 +103,6 @@ export function affectsMarkers(paths: readonly string[]): boolean {
  * it again for each edit would walk every Python file again. Dropped when other files
  * change or a server settles (the index may have moved on).
  */
-let inheritanceGraphCache: { root: string; promise: Promise<ClassInheritance[]> } | null = null;
-
-/** The project whose graph is cached; `""` for no project (a loose file). */
-function projectRoot(): string {
-  return useProject.getState().project?.root ?? "";
-}
-
-/** Forgets the cached graph (files changed, a server settled, or tests). */
-export function forgetInheritanceGraph() {
-  inheritanceGraphCache = null;
-}
-
-function inheritanceGraph(): Promise<ClassInheritance[]> {
-  const root = projectRoot();
-  if (!inheritanceGraphCache || inheritanceGraphCache.root !== root) {
-    inheritanceGraphCache = { root, promise: lspRequest(() => commands.navInheritance()) };
-    // A failed request must not stick: the next pass retries it.
-    inheritanceGraphCache.promise.catch(() => {
-      if (inheritanceGraphCache?.root === root) inheritanceGraphCache = null;
-    });
-  }
-  return inheritanceGraphCache.promise;
-}
-
 /** Subscribes once per window and stays subscribed, so the settle echo guard survives remounts. */
 function watchChanges() {
   if (watching) return;
@@ -125,6 +111,9 @@ function watchChanges() {
     if (!affectsMarkers([...e.created, ...e.modified, ...e.removed])) return;
     changes++;
     forgetInheritanceGraph();
+    // A class added, moved or removed changes the targets and tooltips of the open
+    // documents: re-render them instead of waiting for an edit or a settling server.
+    for (const plugin of live) plugin.refreshSoon();
   });
   // Answers (outlines too) given while a server was starting or indexing may be incomplete.
   onServerSettled(() => {
@@ -173,6 +162,11 @@ export interface MarkerDeps {
    * Absent for languages whose servers do provide one (Java, Go, ...).
    */
   inheritance?: () => Promise<ClassInheritance[]>;
+  /**
+   * The file a Python `import` path names (`from a.b import X`), `.x` resolved
+   * relative to `from`. Disambiguates a base name two files both declare.
+   */
+  moduleFile?: (module: string, from: string) => Promise<string | null>;
 }
 
 interface CacheEntry {
@@ -262,14 +256,18 @@ export async function fillMarkers(
   }
   // Python without a type-hierarchy provider: the IDE's inheritance graph holds every
   // `class X(A)` of the project, so ↑/↓ are computed from it instead.
-  const byName = new Map<string, ClassInheritance[]>();
-  if (graph) for (const cls of graph) byName.set(cls.name, [...(byName.get(cls.name) ?? []), cls]);
+  const resolver: InheritanceIndex | null = graph ? inheritanceIndex(graph, deps) : null;
+  const byName = resolver?.byName ?? new Map<string, ClassInheritance[]>();
   // The inheritance graph's direct subclasses, keyed by the *declaration* each base
   // resolves to (path + position), so classes sharing a bare name never mix up.
   const subclassesOf = new Map<string, ClassInheritance[]>();
   for (const cls of graph ?? []) {
     for (const base of new Set(cls.bases)) {
-      for (const decl of resolveBase(byName, base, cls.path)) {
+      // Only this file's classes are looked up below: read another file's imports only
+      // when its base may name one of them, not for every shared or library base name.
+      const exact = resolver ? resolver.exact(base, cls.path) : [];
+      const named = exact.length || !byName.get(base)?.some((c) => c.path === path) ? exact : null;
+      for (const decl of named ?? (await resolver!.resolve(base, cls.path))) {
         const key = declarationKey(decl);
         subclassesOf.set(key, [...(subclassesOf.get(key) ?? []), cls]);
       }
@@ -317,11 +315,11 @@ export async function fillMarkers(
       const c = up[i]!;
       const self = classOf(c);
       if (!self) continue;
-      const found = await superMethodsFrom(byName, self.name, c.symbol, deps);
+      const found = resolver ? await superMethodsFrom(resolver, self.name, c.symbol, deps) : [];
       if (!found.length) continue;
       const known = supers[i]!;
       // Same merge rule as ↓: add the graph's super methods to what the server answered.
-      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameLocation(s.location, l)));
+      const extra = found.map((f) => f.location).filter((l) => !known.some((s) => sameDeclarationLine(s.location, l)));
       const owners = [...new Set(found.map((f) => f.owner))].sort((a, b) => a.localeCompare(b));
       entry(c).supers = {
         kind: "overriding",
@@ -360,57 +358,21 @@ export async function fillMarkers(
 
 // One entry per declaration line: the server and the graph may point at the same
 // declaration with different columns (the name vs the whole statement).
-const sameLocation = (a: Location, b: Location) => a.path === b.path && a.range.start.line === b.range.start.line;
+const sameDeclarationLine = (a: Location, b: Location) =>
+  a.path === b.path && a.range.start.line === b.range.start.line;
 
 /** `first`, then the locations of `more` not already in it. */
 function mergeLocations(first: readonly Location[], more: readonly Location[]): Location[] {
-  return [...first, ...more.filter((l) => !first.some((f) => sameLocation(f, l)))];
+  return [...first, ...more.filter((l) => !first.some((f) => sameDeclarationLine(f, l)))];
 }
 
 /** Identifies one class declaration in the inheritance graph. */
-function declarationKey(cls: ClassInheritance): string {
-  return `${cls.path}:${cls.line}:${cls.col}`;
-}
-
-/**
- * The classes a base name names. A bare name is only trusted when it is unique in the
- * project, or names a class in the subclass's own file: a `Config` declared in hundreds
- * of modules must not make every one of them a subclass of every other.
- */
-function resolveBase(byName: ReadonlyMap<string, ClassInheritance[]>, name: string, from: string): ClassInheritance[] {
-  const found = byName.get(name) ?? [];
-  if (found.length <= 1) return found;
-  return found.filter((c) => c.path === from);
-}
-
-/** The class declaration itself as a navigation target (its name identifier). */
-function classLocation(cls: ClassInheritance): Location {
-  const start = { line: cls.line, col: cls.col };
-  return { path: cls.path, range: { start, end: start } };
-}
-
-/** The method `method` (bare name) directly inside the class at `cls`'s position. */
-function methodInOutline(outline: readonly OutlineItem[], cls: ClassInheritance, method: string): OutlineItem | null {
-  const at = cls;
-  const find = (items: readonly OutlineItem[]): OutlineItem | null => {
-    for (const it of items) {
-      if (it.kind === "class" && it.selection_range.start.line === at.line && it.selection_range.start.col === at.col) {
-        return it.children.find((ch) => ch.kind === "method" && baseName(ch.name) === method) ?? null;
-      }
-      const deeper = find(it.children);
-      if (deeper) return deeper;
-    }
-    return null;
-  };
-  return find(outline);
-}
-
 /**
  * Super methods of `method` declared by a class in `byName`, walking the inheritance
  * graph's bases up to a few levels. Empty when no base declares the method.
  */
 async function superMethodsFrom(
-  byName: ReadonlyMap<string, ClassInheritance[]>,
+  resolver: InheritanceIndex,
   start: string,
   method: string,
   deps: MarkerDeps,
@@ -423,11 +385,11 @@ async function superMethodsFrom(
     const next: string[] = [];
     const found: { location: Location; owner: string }[] = [];
     for (const name of level) {
-      for (const cls of byName.get(name) ?? []) {
+      for (const cls of resolver.byName.get(name) ?? []) {
         for (const base of cls.bases) {
           if (!seen.add(base)) continue;
-          // Same rule as the graph: only a base that names one class is followed.
-          const declarations = resolveBase(byName, base, cls.path);
+          // Same rule as the graph: a base the imports name, else a unique one.
+          const declarations = await resolver.resolve(base, cls.path);
           let answered = false;
           for (const baseCls of declarations) {
             const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
@@ -793,7 +755,10 @@ function markerDeps(ctx: EditorDocContext, items: OutlineItem[], request: Reques
     readFiles: readManyFileLines,
     // Python servers answer no type hierarchy (basedpyright, pyrefly): the IDE's
     // own index knows every `class X(Base)` of the project, attached roots included.
-    inheritance: ctx.language === "python" ? inheritanceGraph : undefined,
+    inheritance: ctx.language === "python" ? pythonInheritanceGraph : undefined,
+    // A base name several modules declare is resolved through the file's imports.
+    moduleFile:
+      ctx.language === "python" ? (name, from) => lspRequest(() => commands.navResolveModule(name, from)) : undefined,
   };
 }
 
@@ -808,21 +773,20 @@ export function implementationGutter(ctx: EditorDocContext): Extension {
   return [
     markersField,
     ViewPlugin.fromClass(MarkersPlugin),
-    gutter({
-      class: `${styles.gutter} cm-openidea-gutter-lineMarkers`,
+    // In the shared icon area, beside run icons and the rendered-doc toggle.
+    iconAreaSource.of({
+      order: 50,
       markers: (view) => markerSet(view.state.field(markersField)),
-      domEventHandlers: {
-        mousedown: (view, block, event) => {
-          const e = event as MouseEvent;
-          if (e.button !== 0) return false;
-          const target = e.target instanceof Element ? e.target : null;
-          const marker = markerAt(view, block.from, target);
-          if (!marker) return false;
-          e.preventDefault();
-          const rect = (target?.closest(`.${styles.marker}`) ?? target)?.getBoundingClientRect();
-          void openMarkerTargets(marker, rect ? { x: rect.left, y: rect.bottom + 2 } : { x: e.clientX, y: e.clientY });
-          return true;
-        },
+      mousedown: (view, block, e) => {
+        if (e.button !== 0) return false;
+        const target = e.target instanceof Element ? e.target : null;
+        if (!target?.closest(`.${styles.marker}`)) return false;
+        const marker = markerAt(view, block.from, target);
+        if (!marker) return false;
+        e.preventDefault();
+        const rect = (target.closest(`.${styles.marker}`) ?? target).getBoundingClientRect();
+        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 });
+        return true;
       },
     }),
   ];

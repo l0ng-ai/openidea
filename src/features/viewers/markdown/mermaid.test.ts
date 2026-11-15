@@ -396,6 +396,15 @@ describe("mermaid in the markdown preview", () => {
     expect(root.querySelector("[data-mermaid]")?.getAttribute("data-mermaid-state")).toBe("pending");
   });
 
+  it("records a diagram's natural width so preview font zoom scales it without clamping", async () => {
+    const svg = await renderedSvg(
+      '<svg id="openidea-mermaid-1" width="100%" style="max-width: 540px;" viewBox="0 0 540 320"><text>flow</text></svg>',
+    );
+    expect(svg.hasAttribute("data-natural-width")).toBe(true);
+    expect(svg.style.getPropertyValue("--diagram-width")).toBe("540px");
+    expect(svg.style.maxWidth).toBe("calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1))");
+  });
+
   it("puts full-screen and download tools on a drawn diagram", async () => {
     const root = preview(SEQ);
     await renderMermaidIn(root).done;

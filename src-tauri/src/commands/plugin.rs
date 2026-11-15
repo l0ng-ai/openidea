@@ -1051,6 +1051,21 @@ pub async fn plugin_prepare_debug_run(
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// Waits for the process an `attach-child` plugin configuration's debugger attaches to.
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_debug_attach_target(
+    window: Window,
+    state: State<'_, AppState>,
+    config: String,
+    run: ide_core::RunId,
+) -> IdeResult<ide_dap::attach::AttachableProcess> {
+    let (plugins, host, client) = (state.plugins.clone(), state.host.clone(), window.label().to_owned());
+    tokio::task::spawn_blocking(move || plugins.debug_attach_target(&host, &client, &config, run))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn plugin_run_targets(

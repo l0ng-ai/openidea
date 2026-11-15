@@ -44,6 +44,92 @@ pub(crate) fn connect(
     })
 }
 
+/// A model lookup uses app-server directly: no thread, task, prompt or project MCP.
+pub(crate) async fn discover(
+    spec: ProviderSpec,
+    cwd: std::path::PathBuf,
+) -> Result<crate::catalogs::Discovered, String> {
+    let spec = tokio::task::spawn_blocking({
+        let cwd = cwd.clone();
+        move || spec.resolve_for_launch(&cwd)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let peer = Peer::spawn_framed(
+        &spec.command,
+        &spec.args,
+        &cwd,
+        &spec.env,
+        Arc::new(ide_jsonrpc::NoopHandler),
+        Box::new(|_| {}),
+        Framing::Lines,
+    )
+    .map_err(|e| e.to_string())?;
+    let _stop = crate::catalogs::KillPeer(peer.clone());
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let _: Value = peer.request("initialize", initialize_params(), None).await.map_err(|e| e.to_string())?;
+        peer.notify("initialized", Value::Null).map_err(|e| e.to_string())?;
+        let mut models = list_models(&peer).await.map_err(|e| e.message)?;
+        models.retain(|model| !model.hidden);
+        let mut settings = Settings::of(&json!({}), &models);
+        if settings.model.is_empty()
+            && let Some(model) = models.first()
+        {
+            settings.model = model.id.clone();
+            settings.fit_effort(&models);
+        }
+        let options = translate::config_options(&models, &settings);
+        let config = crate::config::options_of(&json!({ "configOptions": options }));
+        let levels = models
+            .iter()
+            .map(|model| {
+                let mut settings = settings.clone();
+                settings.model = model.id.clone();
+                settings.fit_effort(&models);
+                let options = translate::config_options(&models, &settings);
+                let levels = crate::config::options_of(&json!({ "configOptions": options }))
+                    .into_iter()
+                    .filter(|o| o.category.as_deref() == Some("thought_level"))
+                    .collect();
+                (model.id.clone(), levels)
+            })
+            .collect();
+        Ok(crate::catalogs::Discovered { config, commands: None, levels })
+    })
+    .await
+    .map_err(|_| "Codex model discovery timed out".to_owned())?
+}
+
+fn initialize_params() -> Value {
+    json!({
+        "clientInfo": { "name": "openidea", "title": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
+        "capabilities": { "experimentalApi": true, "optOutNotificationMethods": OPT_OUT },
+    })
+}
+
+async fn list_models(peer: &Peer) -> Result<Vec<ModelInfo>, ResponseError> {
+    let mut all = Vec::new();
+    let mut cursor = Value::Null;
+    let mut seen = HashSet::new();
+    loop {
+        let page: Value = peer.request("model/list", json!({ "cursor": cursor }), None).await.map_err(from_codex)?;
+        let Some(data) = page.get("data").and_then(Value::as_array) else {
+            return Err(error(codes::INTERNAL_ERROR, "Codex returned an invalid model list"));
+        };
+        let models = translate::models_of(&page);
+        if models.len() != data.len() {
+            return Err(error(codes::INTERNAL_ERROR, "Codex returned an invalid model list"));
+        }
+        all.extend(models);
+        match page.get("nextCursor") {
+            None | Some(Value::Null) => return Ok(all),
+            Some(Value::String(next)) if next.is_empty() => return Ok(all),
+            Some(Value::String(next)) if seen.insert(next.clone()) => cursor = json!(next),
+            _ => return Err(error(codes::INTERNAL_ERROR, "Codex returned an invalid model-list cursor")),
+        }
+    }
+}
+
 /// Connects `client` to a shim driving the codex connection `connect_codex` opens (it
 /// gets the handler for what codex sends). Each side's end closes the other.
 fn attach(
@@ -250,15 +336,7 @@ impl CodexShim {
     }
 
     async fn initialize(&self) -> Result<Value, ResponseError> {
-        let info = self
-            .call(
-                "initialize",
-                json!({
-                    "clientInfo": { "name": "openidea", "title": "OpenIDEA", "version": env!("CARGO_PKG_VERSION") },
-                    "capabilities": { "experimentalApi": true, "optOutNotificationMethods": OPT_OUT },
-                }),
-            )
-            .await?;
+        let info = self.call("initialize", initialize_params()).await?;
         self.codex().notify("initialized", Value::Null).map_err(from_codex)?;
         self.state.lock().initialized = true;
         // `<client>/<codex version> (<platform>) …`
@@ -282,32 +360,15 @@ impl CodexShim {
         }))
     }
 
-    /// The models codex offers; empty when it can't list them.
-    async fn models(&self) -> Arc<Vec<ModelInfo>> {
+    /// Cache only complete, successful listings; a failed page must never become availability.
+    async fn models(&self) -> Result<Arc<Vec<ModelInfo>>, ResponseError> {
         let mut cached = self.models.lock().await;
-        if let Some(m) = cached.as_ref() {
-            return m.clone();
+        if let Some(models) = cached.as_ref() {
+            return Ok(models.clone());
         }
-        let mut all = Vec::new();
-        let mut cursor = Value::Null;
-        loop {
-            match self.call("model/list", json!({ "cursor": cursor })).await {
-                Ok(page) => {
-                    all.extend(translate::models_of(&page));
-                    match page.get("nextCursor").filter(|c| c.is_string()) {
-                        Some(next) if *next != cursor => cursor = next.clone(),
-                        _ => break,
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("codex: listing models failed: {}", e.message);
-                    return Arc::new(all);
-                }
-            }
-        }
-        let models = Arc::new(all);
+        let models = Arc::new(list_models(self.codex()).await?);
         *cached = Some(models.clone());
-        models
+        Ok(models)
     }
 
     async fn publish_skills(&self, session: &str) {
@@ -341,7 +402,7 @@ impl CodexShim {
     }
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
-        let models = self.models().await;
+        let models = self.models().await?;
         let mut request = json!({ "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
             request["config"] = config;
@@ -358,7 +419,7 @@ impl CodexShim {
     /// Resumes the thread and replays its history before answering.
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
-        let models = self.models().await;
+        let models = self.models().await?;
         let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
             request["config"] = config;
@@ -376,7 +437,7 @@ impl CodexShim {
 
     async fn fork_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let source = str_param(params, "sessionId")?;
-        let models = self.models().await;
+        let models = self.models().await?;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
@@ -397,7 +458,7 @@ impl CodexShim {
         let session = str_param(params, "sessionId")?;
         let option = str_param(params, "configId")?;
         let value = str_param(params, "value")?;
-        let models = self.models().await;
+        let models = self.models().await?;
         let mut state = self.state.lock();
         let settings = state
             .threads
@@ -414,7 +475,7 @@ impl CodexShim {
         if input.is_empty() {
             return Err(invalid("empty prompt"));
         }
-        let models = self.models().await;
+        let models = self.models().await?;
         let (done, ended) = oneshot::channel();
         let settings = {
             let mut state = self.state.lock();

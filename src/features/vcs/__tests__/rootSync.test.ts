@@ -113,7 +113,7 @@ describe("installRootSync", () => {
       status: "ok",
       data: root === "/p" ? info("main", "origin/main", 1, 0) : info("dev", null),
     }));
-    useVcs.setState({ available: true, roots: ["/p", "/p/lib"] });
+    useVcs.setState({ available: true, roots: ["/p", "/p/lib"], status: [] });
   });
 
   afterEach(() => {
@@ -162,6 +162,51 @@ describe("installRootSync", () => {
     emitLocalIdeEvent({ type: "fsChanged", created: [], modified: ["/p/a.txt"], removed: [] } as never);
     await settle();
     expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts the changed files of each repository and follows the status without asking git", async () => {
+    enable(true);
+    dispose = installRootSync();
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(2));
+    const file = (path: string, unstaged: string) =>
+      ({ path, relPath: path, staged: null, unstaged, renamedFrom: null }) as never;
+    useVcs.setState({
+      status: [
+        file("/p/a.ts", "modified"),
+        file("/p/b.ts", "untracked"),
+        file("/p/lib/c.ts", "added"),
+        file("/p/d.log", "ignored"),
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(getFileDecoration("/p")?.suffix?.at(-1)).toEqual({
+        text: "2",
+        icon: "edit",
+        label: "2 changed files",
+        color: "var(--vcs-modified)",
+      }),
+    );
+    expect(getFileDecoration("/p/lib")?.suffix?.map((s) => s.text)).toEqual(["dev", "1"]);
+    useVcs.setState({ status: [] });
+    await vi.waitFor(() => expect(getFileDecoration("/p")?.suffix?.map((s) => s.text)).toEqual(["main", "/", "1"]));
+    expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
+  });
+
+  it("queries again when a HEAD moves or a fetch / pull / push finishes, without a .git event", async () => {
+    enable(true);
+    useVcs.setState({ heads: { "/p": { head: "main", headCommit: "a" } }, remoteBusy: null });
+    dispose = installRootSync();
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(2));
+    useVcs.setState({ remoteBusy: "Fetching…" });
+    await settle();
+    expect(ipc.branchInfo).toHaveBeenCalledTimes(2);
+    useVcs.setState({ remoteBusy: null });
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(4));
+    useVcs.setState({ heads: { "/p": { head: "main", headCommit: "a" } } });
+    await settle();
+    expect(ipc.branchInfo).toHaveBeenCalledTimes(4);
+    useVcs.setState({ heads: { "/p": { head: "main", headCommit: "b" } } });
+    await vi.waitFor(() => expect(ipc.branchInfo).toHaveBeenCalledTimes(6));
   });
 
   it("queries the repositories again when the set of roots changes", async () => {

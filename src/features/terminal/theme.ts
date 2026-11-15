@@ -142,9 +142,10 @@ export function readTerminalTheme(): ITheme {
 }
 
 const NERD_FONT_FALLBACKS = [
+  "Symbols Nerd Font",
   "Symbols Nerd Font Mono",
-  "JetBrainsMono Nerd Font Mono",
   "JetBrainsMono Nerd Font",
+  "JetBrainsMono Nerd Font Mono",
   "MesloLGS NF",
   "MesloLGS Nerd Font",
   "Hack Nerd Font",

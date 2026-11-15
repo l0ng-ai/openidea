@@ -26,6 +26,7 @@ import {
   produceContextChoices,
   produceDirectory,
   produceFile,
+  produceFuzz,
   scriptLanguage,
   type ContextInput,
   type Produced,
@@ -293,6 +294,21 @@ export function executorItems(config: RunConfig | null | undefined, name: string
     }));
 }
 
+/** "Run '<FuzzXxx>' with Fuzzing" at a Go fuzz target: `go test -fuzz` until it is stopped or fails. */
+export function fuzzItems(input: ContextInput, context: ContextArg): MenuItem[] {
+  const p = produceFuzz(input, OPTIMISTIC);
+  return p ? [{ label: tx`Run '${p.name}' with Fuzzing`, icon: "run", run: () => void fuzzContext(context) }] : [];
+}
+
+async function fuzzContext(arg: ContextArg): Promise<void> {
+  await ensureConfigs();
+  const input = await withArgContent(arg);
+  if (!input) return;
+  await loadGoModules(input.root, useRun.getState().configs);
+  const p = produceFuzz({ ...input, configs: useRun.getState().configs, goModule: goModulePath }, OPTIMISTIC);
+  if (p) await launchProduced(p, false);
+}
+
 export interface ContextArg {
   path: string;
   line?: number;
@@ -394,6 +410,7 @@ export function contextMenuItems(menu: ContextMenuId, ctx: MenuGroupContext): Me
       label: "More Run/Debug",
       submenu: [
         ...executorItems(p.config, p.name, arg),
+        ...fuzzItems(input, arg),
         { kind: "action", action: "run.modifyContext", arg, label: "Modify Run Configuration…", icon: "edit" },
       ],
     },

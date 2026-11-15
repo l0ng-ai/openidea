@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, useProject } from "@/platform/project";
-import { call, commands, type Scope, type Variable } from "@/platform/ipc";
+import { call, commands, isTauri, type Scope, type Variable } from "@/platform/ipc";
 import {
   EmptyState,
   Icon,
@@ -29,6 +29,7 @@ import {
   addWatch,
   closeSessionTab,
   evaluate,
+  isLive,
   selectFrame,
   selectSession,
   selectThread,
@@ -43,6 +44,7 @@ import { sessionTabs } from "./sessionTabs";
 import { stopNote } from "../js/eventBreakpoints";
 import { NetworkView } from "../js/NetworkView";
 import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
+import { pageProfileItems, useJsProfile } from "../js/profile";
 import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
@@ -86,6 +88,12 @@ const MORE_ITEMS: MenuItem[] = [
 function MoreActions() {
   const ref = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
+  const page = useDebug((s) => {
+    const a = s.active == null ? undefined : s.sessions[s.active];
+    return a && isLive(a) && a.caps?.jsPage ? a.id : null;
+  });
+  const recording = useJsProfile((s) => page != null && !!s.recording[page]);
+  const items = useMemo(() => [...MORE_ITEMS, ...pageProfileItems(page != null, recording)], [page, recording]);
   return (
     <>
       <IconButton
@@ -99,7 +107,7 @@ function MoreActions() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       />
-      <Menu open={open} anchor={ref} items={MORE_ITEMS} placement="bottom-start" onClose={() => setOpen(false)} />
+      <Menu open={open} anchor={ref} items={items} placement="bottom-start" onClose={() => setOpen(false)} />
     </>
   );
 }
@@ -108,6 +116,14 @@ type Tab = "variables" | "console" | "memory" | "network";
 
 /** The view the user last picked; the tool window opens on it again (Console until one is picked). */
 let chosenTab: Tab = "console";
+
+/** Threads & Variables › Focus On Breakpoint: whether a breakpoint hit selects that tab. */
+async function setVariablesOnBreakpoint(on: boolean) {
+  if (!isTauri()) return;
+  useProject.setState({
+    settings: await call(commands.settingsSet("global", "debugger.variablesOnBreakpoint", JSON.stringify(on))),
+  });
+}
 
 function statusText(s: DebugSession): string {
   if (s.status === "terminated") return s.exitCode != null ? `Finished · exit code ${s.exitCode}` : "Finished";
@@ -160,12 +176,16 @@ export function DebugToolWindow() {
     setView({
       session: active.startedAt,
       status: active.status,
-      // A breakpoint or exception brings Threads & Variables to the front; finishing a step keeps
-      // the tab the user is on (e.g. Console, to watch the output while stepping), and so does Memory.
+      // A breakpoint or exception brings Threads & Variables to the front unless its Focus On Breakpoint
+      // is off; finishing a step keeps the tab the user is on (e.g. Console, to watch the output while
+      // stepping), and so does Memory.
       tab:
         active.status === "starting"
           ? "console"
-          : active.status === "paused" && view.tab !== "memory" && active.stopReason !== "step"
+          : active.status === "paused" &&
+              view.tab !== "memory" &&
+              active.stopReason !== "step" &&
+              workflowSettings().debugger.variablesOnBreakpoint
             ? "variables"
             : view.tab,
     });
@@ -247,6 +267,20 @@ export function DebugToolWindow() {
                 chosenTab = id;
                 setView({ session: active.startedAt, status: active.status, tab: id });
               }}
+              onContextMenu={
+                id === "variables"
+                  ? (e) => {
+                      e.preventDefault();
+                      showContextMenu(e, [
+                        {
+                          label: "Focus On Breakpoint",
+                          checked: workflowSettings().debugger.variablesOnBreakpoint,
+                          run: () => void setVariablesOnBreakpoint(!workflowSettings().debugger.variablesOnBreakpoint),
+                        },
+                      ]);
+                    }
+                  : undefined
+              }
             >
               {tx(label)}
             </button>

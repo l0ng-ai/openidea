@@ -133,6 +133,8 @@ export interface ComposerProps {
   onSubmit: (now: boolean) => void;
   disabled?: boolean;
   autoFocus?: boolean;
+  /** A request from this host to focus its input without changing the selection. */
+  focusRequest?: number;
   /** Left of the bottom row: agent / model / mode pickers. */
   toolbar?: ReactNode;
   /** Right of the bottom row: send / stop buttons. */
@@ -345,6 +347,16 @@ export function Composer(props: ComposerProps) {
       scrollIntoView: true,
     });
   }, [focus]);
+
+  const previousFocusRequest = useRef(props.focusRequest);
+  useEffect(() => {
+    if (previousFocusRequest.current === props.focusRequest) return;
+    previousFocusRequest.current = props.focusRequest;
+    const view = viewRef.current;
+    if (!props.focusRequest || props.disabled || !view) return;
+    view.focus();
+    view.dispatch({ scrollIntoView: true });
+  }, [props.focusRequest, props.disabled]);
 
   // `@` completion: project file search, mapped into the task's directory.
   useEffect(() => {

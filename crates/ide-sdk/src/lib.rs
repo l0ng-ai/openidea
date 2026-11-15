@@ -9,6 +9,7 @@ mod angular;
 pub mod apply;
 pub mod arduino;
 mod astro;
+pub mod container_python;
 mod discover;
 mod exec;
 pub mod go;

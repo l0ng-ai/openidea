@@ -599,6 +599,28 @@ impl Store {
         txn.commit().map_err(err)
     }
 
+    /// [`Self::apply`] for records already serialized (by the parse pool).
+    pub(crate) fn apply_raw(&self, puts: &[(String, Vec<u8>)], deletes: &[String], durable: bool) -> Result<()> {
+        self.ensure_db()?;
+        let db = self.db.read();
+        let mut txn = db.as_ref().expect("ensured").begin_write().map_err(err)?;
+        if !durable {
+            txn.set_durability(Durability::None).map_err(err)?;
+        }
+        {
+            let mut table = txn.open_table(FILES).map_err(err)?;
+            for (rel, bytes) in puts {
+                table.insert(rel.as_str(), bytes.as_slice()).map_err(err)?;
+            }
+            for rel in deletes {
+                table.remove(rel.as_str()).map_err(err)?;
+            }
+        }
+        // Any file change makes the columnar start-up snapshot stale.
+        let _ = std::fs::remove_file(&self.snapshot);
+        txn.commit().map_err(err)
+    }
+
     /// Reclaims free pages in the database file; `true` if anything was compacted.
     pub(crate) fn compact(&self) -> Result<bool> {
         self.ensure_db()?;

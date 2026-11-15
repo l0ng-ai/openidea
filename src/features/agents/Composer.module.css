@@ -36,13 +36,15 @@
   outline: none;
 }
 .field :global(.cm-scroller) {
-  min-height: 44px;
   max-height: 280px;
   overflow-y: auto;
   font-family: inherit;
   line-height: 1.5;
 }
+/* The minimum height goes on the text itself, not the scroller: clicks below the last line
+   must land in the editable text, or they focus the bare scroller and no caret appears. */
 .field :global(.cm-content) {
+  min-height: 44px;
   padding: 10px 12px 2px;
   caret-color: var(--fg-strong);
   white-space: pre-wrap;
@@ -188,6 +190,40 @@
 /* The list takes the height of its models; with many it scrolls inside the popup. */
 .modelEffortPopup .modelList {
   max-height: 216px;
+}
+.catalogFooter {
+  margin-top: 6px;
+  padding: 8px 12px 2px;
+  border-top: 1px solid var(--border);
+}
+.catalogNote,
+.catalogError {
+  margin: 0;
+  padding: 6px 12px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+.catalogError {
+  color: var(--danger);
+}
+.catalogFooter .catalogError {
+  padding: 0 0 8px;
+}
+.refreshModels {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.refreshModels:hover:not(:disabled) {
+  color: var(--fg-strong);
+}
+.refreshModels:disabled {
+  color: var(--fg-muted);
+  cursor: default;
 }
 .effortHeader {
   display: flex;

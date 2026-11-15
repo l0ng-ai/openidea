@@ -199,11 +199,31 @@ export function bindingsFor(actionId: string): string[] {
   return overrides[actionId] ?? PRESETS[preset]?.[actionId] ?? usableExtensionBindings(extensions)[actionId] ?? [];
 }
 
+let bindingsCache: {
+  preset: string;
+  overrides: Keymap;
+  extensions: Keymap;
+  pairs: Array<[string, string]>;
+} | null = null;
+
 /** Every (binding, actionId) pair of the effective keymap. */
 export function effectiveBindings(): Array<[string, string]> {
   const { preset, overrides, extensions } = useKeymap.getState();
+  // The dispatcher asks for these on every keystroke; merging and normalizing
+  // the whole keymap each time costs more than handling the key. The store
+  // replaces `overrides` / `extensions` wholesale, so identity tracks changes.
+  if (
+    bindingsCache?.preset === preset &&
+    bindingsCache.overrides === overrides &&
+    bindingsCache.extensions === extensions
+  )
+    return bindingsCache.pairs;
   const merged: Keymap = { ...usableExtensionBindings(extensions), ...PRESETS[preset], ...overrides };
-  return Object.entries(merged).flatMap(([id, keys]) => keys.map((k) => [normalizeBinding(k), id] as [string, string]));
+  const pairs = Object.entries(merged).flatMap(([id, keys]) =>
+    keys.map((k) => [normalizeBinding(k), id] as [string, string]),
+  );
+  bindingsCache = { preset, overrides, extensions, pairs };
+  return pairs;
 }
 
 let extensionCache: { source: Keymap; preset: string; overrides: Keymap; usable: Keymap } | null = null;

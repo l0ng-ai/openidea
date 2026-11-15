@@ -2,12 +2,13 @@
 // (mcpserver.vcs/src/com/intellij/mcpserver/toolsets/vcs/VcsToolset.kt), Apache-2.0.
 //! Version control: repositories and git status.
 
+use crate::mcp::page::{OFFSET, Page};
 use crate::mcp::tool::{Call, Output, Param, ParamType, Tool};
 use ide_core::{IdeError, IdeResult};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
-const STATUS_DEFAULT_LIMIT: i64 = 1000;
+const STATUS_DEFAULT_LIMIT: usize = 100;
 
 pub fn tools() -> Vec<Tool> {
     vec![get_repositories(), git_status(), git_diff()]
@@ -254,11 +255,7 @@ By default all Git repositories are returned.",
         |call| async move {
             let include_untracked = call.flag("includeUntracked", true)?;
             let include_ignored = call.flag("includeIgnored", false)?;
-            let limit = call.opt_i64("limit")?.unwrap_or(STATUS_DEFAULT_LIMIT);
-            if limit <= 0 {
-                return Err(IdeError::invalid("limit must be > 0"));
-            }
-            let limit = limit as usize;
+            let page = Page::of(&call, STATUS_DEFAULT_LIMIT)?;
             let host = call.host();
             let h = host.clone();
             let w = call.window.clone();
@@ -305,7 +302,8 @@ By default all Git repositories are returned.",
                 let count = |f: fn(&StatusEntry) -> bool| entries.iter().filter(|e| f(e)).count();
                 let listed: Vec<Value> = entries
                     .iter()
-                    .take(limit)
+                    .skip(page.offset)
+                    .take(page.limit)
                     .map(|e| {
                         let mut v = json!({
                             "pathRelativeToRepository": e.path.trim_end_matches('/'),
@@ -318,19 +316,24 @@ By default all Git repositories are returned.",
                         v
                     })
                     .collect();
-                repositories.push(json!({
+                let more = entries.len() > page.end();
+                let mut repository = json!({
                     "repositoryPathRelativeToProject": rel,
                     "currentBranch": branch,
                     "isClean": entries.is_empty(),
                     "totalEntries": entries.len(),
-                    "hasMoreEntries": entries.len() > listed.len(),
+                    "hasMoreEntries": more,
                     "stagedCount": count(StatusEntry::staged),
                     "unstagedCount": count(StatusEntry::unstaged),
                     "untrackedCount": count(StatusEntry::untracked),
                     "ignoredCount": count(StatusEntry::ignored),
                     "conflictedCount": count(StatusEntry::conflicted),
                     "entries": listed,
-                }));
+                });
+                if more {
+                    repository["nextOffset"] = page.end().into();
+                }
+                repositories.push(repository);
             }
             Output::json(json!({ "repositories": repositories }))
         },
@@ -342,7 +345,8 @@ By default all Git repositories are returned.",
     ))
     .param(Param::optional("includeUntracked", ParamType::Boolean, "Whether to include untracked files"))
     .param(Param::optional("includeIgnored", ParamType::Boolean, "Whether to include ignored files"))
-    .param(Param::optional("limit", ParamType::Integer, "Maximum number of entries returned per repository"))
+    .param(Param::optional("limit", ParamType::Integer, "Entries to return per repository at most (default 100)"))
+    .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
 
 fn git_diff() -> Tool {

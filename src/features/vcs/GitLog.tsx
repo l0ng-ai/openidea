@@ -327,6 +327,7 @@ export function LogView() {
       key={showBranches ? "branches" : "no-branches"}
       orientation="horizontal"
       id={showBranches ? "git-log" : "git-log-no-branches"}
+      storageKey={`openidea.vcs.logSplit.${showBranches ? "branches" : "noBranches"}.${showDetails ? "details" : "noDetails"}`}
       className={styles.split}
     >
       {showBranches && (
@@ -2681,7 +2682,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
   };
 
   const details = (
-    <SplitGroup orientation="vertical" id="git-log-details">
+    <SplitGroup orientation="vertical" id="git-log-details" storageKey="openidea.vcs.logDetailsSplit">
       <SplitPanel id="files" defaultSize="60%" minSize="60px">
         <div
           className={styles.filesPane}
@@ -2802,6 +2803,7 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         <SplitGroup
           orientation={diffLocation === "right" ? "horizontal" : "vertical"}
           id={`git-log-preview-${diffLocation}`}
+          storageKey={`openidea.vcs.logPreviewSplit.${diffLocation}`}
         >
           <SplitPanel id="changes" defaultSize="55%" minSize="20%">
             {details}

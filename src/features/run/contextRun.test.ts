@@ -320,3 +320,48 @@ describe("Debug entry", () => {
     ).toBeNull();
   });
 });
+
+describe("Run with Fuzzing", () => {
+  const goTest: RunConfig = {
+    ...npmTest,
+    id: "go:test",
+    name: "go test ./...",
+    kind: "go",
+    command: "go",
+    args: ["test", "./..."],
+    debugAdapter: "delve",
+  };
+  const text = "package parse\nfunc TestParse(t *testing.T) {}\nfunc FuzzParse(f *testing.F) {\n}\n";
+  const path = `${ROOT}/parse/parse_test.go`;
+  const target = (line: number, name: string): RunTarget => ({ line, kind: "test", name, path: [name] });
+  const itemLabels = (items: MenuItem[]) => items.map((i) => ("label" in i ? (i.label ?? "") : "---"));
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [goTest], loaded: true });
+  });
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("the gutter offers it on a Fuzz function, after Run and Debug", () => {
+    expect(itemLabels(targetMenuItems(target(2, "FuzzParse"), path, text))).toEqual([
+      "Run 'FuzzParse in parse'",
+      "Debug 'FuzzParse in parse'",
+      "Run 'FuzzParse in parse' with Fuzzing",
+      "---",
+      "Modify Run Configuration…",
+    ]);
+    expect(itemLabels(targetMenuItems(target(1, "TestParse"), path, text)).some((l) => /Fuzzing/.test(l))).toBe(false);
+  });
+
+  it("the editor menu offers it under More Run/Debug at a Fuzz function only", () => {
+    const at = (line: number) => labels(contextMenuItems("editor", { paths: [path], text, line }));
+    expect(at(2)).toContain("Run 'FuzzParse in parse' with Fuzzing");
+    expect(at(1).some((l) => /Fuzzing/.test(l))).toBe(false);
+    expect(
+      labels(contextMenuItems("projectView", { paths: [path], dirs: [false] })).some((l) => /Fuzzing/.test(l)),
+    ).toBe(false);
+  });
+});

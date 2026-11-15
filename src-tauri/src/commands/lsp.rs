@@ -382,6 +382,17 @@ pub async fn lsp_call_hierarchy(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_prepare_type_hierarchy(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<HierarchyItem>> {
+    ide_host::ops::lsp::lsp_prepare_type_hierarchy(&state.host, window.label(), doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_type_hierarchy(
     window: Window,
     state: State<'_, AppState>,

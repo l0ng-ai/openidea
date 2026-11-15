@@ -322,7 +322,7 @@ describe("terminalFont", () => {
     columnWidth: 1,
   };
   const editor = { fontFamily: "JetBrains Mono", fontSize: 10, lineHeight: 12 };
-  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font Mono"'));
+  const head = (family: string) => family.slice(0, family.indexOf('"Symbols Nerd Font"'));
 
   it.each([
     // #26: "Use editor font" with the default family must reach the bundled face, not the system monospace.
@@ -405,6 +405,12 @@ describe("terminalFont", () => {
   it("keeps the terminal's line height with Use editor font", () => {
     expect(terminalFont(t, { ...editor, lineHeight: 21 }, BASE).lineHeight).toBe(1);
     expect(terminalFont({ ...t, lineHeight: 1.2 }, editor, BASE).lineHeight).toBe(1.2);
+  });
+
+  it("prefers full-width Nerd Font fallbacks ahead of shrunk Mono variants", () => {
+    const { family } = terminalFont(t, editor, BASE);
+    expect(family.indexOf('"Symbols Nerd Font"')).toBeLessThan(family.indexOf('"Symbols Nerd Font Mono"'));
+    expect(family.indexOf('"JetBrainsMono Nerd Font"')).toBeLessThan(family.indexOf('"JetBrainsMono Nerd Font Mono"'));
   });
 
   it("turns the column width into letter spacing", () => {

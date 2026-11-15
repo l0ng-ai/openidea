@@ -110,6 +110,11 @@ async fn reads_unsaved_text_and_searches_the_overlay_with_a_limit() {
     let found = h.json("search_text", json!({"q":"needle","limit":2})).await;
     assert_eq!(found["items"].as_array().unwrap().len(), 2);
     assert_eq!(found["more"], true);
+    assert_eq!(found["nextOffset"], 2);
+    // The next page goes on where this one ended.
+    let every = h.json("search_text", json!({"q":"needle","limit":20})).await["items"].as_array().unwrap().clone();
+    let next = h.json("search_text", json!({"q":"needle","limit":2,"offset":2})).await;
+    assert_eq!(next["items"].as_array().unwrap()[..], every[2..every.len().min(4)]);
     let all = h.json("search_text", json!({"q":"fresh","limit":20})).await;
     assert_eq!(all["items"][0]["filePath"], "src/a.txt");
     // The matched line comes with the result (unsaved text included), and lines around it on request.
@@ -162,7 +167,9 @@ async fn window_reports_supply_editor_selection_and_problems_then_disappear_on_c
     assert_eq!(focused["selection"]["startColumn"], 3);
     let problems = h.json("get_file_problems", json!({"filePath":"src/a.txt","errorsOnly":false})).await;
     assert_eq!(problems["errors"][0]["description"], "reported warning");
-    assert_eq!(h.json("get_project_problems", json!({})).await["files"].as_array().unwrap().len(), 1);
+    assert_eq!(h.json("get_project_problems", json!({})).await["files"], json!([]), "errors only by default");
+    let all = h.json("get_project_problems", json!({"errorsOnly":false})).await;
+    assert_eq!((all["files"].as_array().unwrap().len(), &all["total"]), (1, &json!(1)));
     h.host.close_project("main");
     h.host.open_project("main", &h.root).unwrap();
     assert_eq!(h.json("get_all_open_file_paths", json!({})).await["openFiles"], json!([]));
@@ -288,6 +295,41 @@ async fn execution_requires_a_window_and_denial_never_runs_a_build() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn run_configurations_are_listed_a_page_at_a_time_and_filtered() {
+    let h = Harness::new();
+    h.trust().await;
+    let saved = |name: &str, command: &str, env: &[(&str, &str)]| ide_run::RunConfig {
+        id: format!("user:{name}"),
+        name: name.into(),
+        kind: "shell".into(),
+        command: command.into(),
+        args: Vec::new(),
+        cwd: None,
+        env: env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    let configs =
+        [saved("build", "tsc", &[("MODE", "ci")]), saved("lint", "oxlint .", &[]), saved("test", "vitest", &[])];
+    ide_run::save_user_configs(&h.root, &configs).unwrap();
+    let all = h.json("get_run_configurations", json!({})).await;
+    let total = all["total"].as_u64().unwrap();
+    assert!(total >= 3, "{all}");
+    // A saved configuration's own environment is listed.
+    let build = all["configurations"].as_array().unwrap().iter().find(|c| c["name"] == "build").unwrap();
+    assert_eq!(build["environment"], json!({ "MODE": "ci" }));
+    let first = h.json("get_run_configurations", json!({"limit": 1})).await;
+    assert_eq!((first["configurations"].as_array().unwrap().len(), &first["nextOffset"]), (1, &json!(1)));
+    let lint = h.json("get_run_configurations", json!({"query": "OXLINT"})).await;
+    let found = lint["configurations"].as_array().unwrap();
+    assert!(!found.is_empty() && (found.len() as u64) < total, "{lint}");
+    assert!(found.iter().all(|c| c.to_string().to_lowercase().contains("oxlint")), "{lint}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn git_status_and_diff_on_a_temporary_repository() {
     let h = Harness::new();
     let git = |args: &[&str]| {
@@ -308,6 +350,18 @@ async fn git_status_and_diff_on_a_temporary_repository() {
     std::fs::write(h.root.join("src/a.txt"), "changed\n").unwrap();
     let status = h.json("git_status", json!({"repositoryPathRelativeToProject":"."})).await;
     assert_eq!(status["repositories"][0]["unstagedCount"], 1);
+    // Two entries, one per page.
+    std::fs::write(h.root.join("src/new.txt"), "new\n").unwrap();
+    let page =
+        |offset: u64| h.json("git_status", json!({"repositoryPathRelativeToProject":".","limit":1,"offset":offset}));
+    let first = page(0).await["repositories"][0].clone();
+    assert_eq!(
+        (&first["totalEntries"], &first["hasMoreEntries"], &first["nextOffset"]),
+        (&json!(2), &json!(true), &json!(1))
+    );
+    let second = page(1).await["repositories"][0].clone();
+    assert_ne!(second["entries"][0], first["entries"][0]);
+    assert!(second.get("nextOffset").is_none(), "{second}");
     assert!(h.call("git_diff", json!({"filePath":"src/a.txt"})).await.contains("+changed"));
     assert!(h.call("git_diff", json!({})).await.contains("src/a.txt"));
     assert!(h.call("git_diff", json!({"staged":true})).await.is_empty());
@@ -610,6 +664,19 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     assert!(from_start["output"].as_str().unwrap().contains("hello"), "one log across the tab's commands");
     let runs = h.json("list_runs", json!({})).await;
     assert_eq!(runs["runs"].as_array().unwrap().len(), 2, "{runs}");
+    // Newest first, brief, filtered by state and paged.
+    let newest = h.json("list_runs", json!({"limit": 1})).await;
+    assert_eq!(
+        (&newest["runs"][0]["name"], &newest["total"], &newest["nextOffset"]),
+        (&json!("_agent_server"), &json!(2), &json!(1))
+    );
+    assert!(newest["runs"][0].get("outputLength").is_none(), "{newest}");
+    assert_eq!(h.json("list_runs", json!({"state": "idle"})).await["total"], 2);
+    assert_eq!(h.json("list_runs", json!({"state": "running"})).await["total"], 0);
+    assert_eq!(h.json("list_runs", json!({"state": "stoppedByAgent"})).await["total"], 2);
+    assert_eq!(h.json("list_runs", json!({"state": "error"})).await["total"], 0);
+    let unknown = h.error("list_runs", json!({"state": "done"})).await;
+    assert!(unknown.contains("unknown state `done`"), "{unknown}");
     let missing = h.error("get_run_status", json!({"name": "nothing"})).await;
     assert!(missing.contains("no agent tab named `_agent_nothing`"), "{missing}");
 

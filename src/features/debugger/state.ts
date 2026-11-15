@@ -392,6 +392,7 @@ export function publishContext() {
   );
   // Refresh Memory View acts on the selected session only.
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
+  setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
 }
 
 // --- console -----------------------------------------------------------------
@@ -669,6 +670,8 @@ export async function startPreparedSession(
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
   preparations.set(id, controller);
+  // The new tab takes the place of finished ones while its build runs, not once the adapter starts.
+  dropFinished();
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
@@ -877,10 +880,10 @@ export async function closeSessionTab(id: DebugSessionId): Promise<boolean> {
     await stopSession(s.id);
   }
   removeSession(s.id);
-  // As in IDEA, the tool window goes away with its last tab.
+  // As in IDEA, the tool window and its stripe button go away with its last tab.
   if (!Object.keys(useDebug.getState().sessions).length) {
     try {
-      toolWindowService().hide("debug");
+      toolWindowService().hide("debug", { removeFromStripe: true });
     } catch {
       // Workbench not ready (tests).
     }

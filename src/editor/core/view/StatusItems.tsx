@@ -10,7 +10,7 @@ import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
-import { isVirtualUri, invalidateVirtualDocument } from "@/platform/virtualDocs";
+import { isUntitledUri, isVirtualUri, invalidateVirtualDocument, untitledTitle } from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
 import { symbolChain } from "./outline";
@@ -76,6 +76,11 @@ function projectCrumb(project: { root: string; name: string }): Crumb {
 
 /** The project › dirs › file part of the navigation path (IDEA navigation bar). */
 function pathCrumbs(project: { root: string; name: string } | null, path: string, dir = false): Crumb[] {
+  // A new-file buffer has no folder yet: only its name.
+  if (isUntitledUri(path)) {
+    const label = untitledTitle(path);
+    return [{ label, icon: fileIconName(label), title: label }];
+  }
   const target = dir ? path : dirname(path);
   const segments: Crumb[] = [];
   if (project && target !== project.root && !target.startsWith(project.root + "/")) project = null;

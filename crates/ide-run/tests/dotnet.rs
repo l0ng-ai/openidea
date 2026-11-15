@@ -68,6 +68,8 @@ fn profiles_filter_and_preserve_launch_properties() {
     assert_eq!(p["http"].command_line_args, "--message \"hello world\"");
     assert_eq!(p["http"].working_directory, "work");
     assert!(parse_profiles("invalid").is_empty());
+    // Visual Studio saves launchSettings.json with a byte order mark.
+    assert_eq!(parse_profiles(&format!("\u{feff}{PROFILES}")).len(), 2);
 }
 
 #[test]

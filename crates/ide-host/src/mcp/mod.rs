@@ -7,6 +7,7 @@ pub(crate) mod run;
 mod vcs;
 pub use requests::Requests;
 mod files;
+mod page;
 mod reports;
 mod search;
 mod symbols;
