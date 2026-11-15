@@ -134,6 +134,8 @@ export function closeFindTab(id: number) {
     const active = s.active === id ? (tabs[Math.min(i, tabs.length - 1)]?.id ?? null) : s.active;
     return { tabs, active };
   });
+  // As in IDEA, the tool window and its stripe button go away with its last tab.
+  if (!useFindWindow.getState().tabs.length) maybeToolWindowService()?.hide("find", { removeFromStripe: true });
 }
 
 export function disposeFindWindow() {

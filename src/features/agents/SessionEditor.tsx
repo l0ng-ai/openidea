@@ -81,7 +81,7 @@ import {
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { useEffortFocus } from "./effortFocus";
-import { findRanges, formatDuration, formatSentAt } from "./conversation";
+import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
@@ -594,10 +594,15 @@ function SubagentBar({
  * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
  * settles; Find in Conversation (`enabled` false) needs every row laid out.
  */
-function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
-  // The width the marked rows were laid out at.
-  const width = useRef(0);
-  useEffect(() => {
+function useOffscreenRows(
+  ref: RefObject<HTMLElement | null>,
+  visible: boolean,
+  enabled: boolean,
+  fitWindowWidth: boolean,
+) {
+  // The container width and column mode the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean } | null>(null);
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const unmark = () => {
@@ -605,10 +610,26 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
         row.removeAttribute("data-measured");
       }
     };
-    if (!enabled) return unmark();
+    if (!enabled) {
+      measured.current = null;
+      unmark();
+      return;
+    }
     if (!visible) return;
+    if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
+    measured.current = { width: el.clientWidth, fitWindowWidth };
+    unmark();
+  }, [ref, visible, enabled, fitWindowWidth]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled || !visible) return;
     let frame = 0;
     let timer: number | undefined;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
     const mark = () => {
       cancelAnimationFrame(frame);
       // The next frame lays the new rows out (and remembers their size); mark them after it.
@@ -621,8 +642,8 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       });
     };
     const remeasure = () => {
-      if (el.clientWidth === width.current) return;
-      width.current = el.clientWidth;
+      if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
+      measured.current = { width: el.clientWidth, fitWindowWidth };
       unmark();
     };
     remeasure();
@@ -643,7 +664,7 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled]);
+  }, [ref, visible, enabled, fitWindowWidth]);
 }
 
 interface StreamProps {
@@ -765,7 +786,8 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
-  useOffscreenRows(ref, visible, !finding);
+  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -874,7 +896,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
-  const { foldTurns, toolCalls } = useAgentSettings();
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");
@@ -1121,14 +1142,9 @@ interface RangeSet {
   clear(): void;
   add(range: Range): void;
 }
-const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
-const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
-
-/**
- * Sets the ranges of highlight `name`. One registered highlight per name, changed in
- * place: WebKit doesn't repaint where a replaced highlight object was.
- */
 function setHighlight(name: string, ranges: Range[]) {
+  const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
+  const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
   if (!highlights || !HighlightCtor) return;
   let set = highlights.get(name);
   if (!set) {
@@ -1204,12 +1220,15 @@ function FindBar({
     return () => stream?.removeEventListener("toggle", toggled, true);
   }, [streamRef]);
   useEffect(() => {
-    // Only rendered matches: WebKit paints those in collapsed <details> over the text next to them.
-    const visible = (r: Range) => r.getClientRects().length > 0;
+    const stream = streamRef.current;
+    if (!stream) return;
+    // Only rendered selectable matches outside closed <details>: WebKit paints unrendered
+    // or user-select:none ranges in CSS.highlights over the next selectable row instead.
+    const visible = (r: Range) => isFindRangeShown(r, stream);
     const current = index >= 0 ? ranges[index]! : null;
     setHighlight("agent-find", ranges.filter(visible));
     setHighlight("agent-find-current", current && visible(current) ? [current] : []);
-  }, [ranges, index, shown]);
+  }, [ranges, index, shown, streamRef]);
   useEffect(
     () => () => {
       setHighlight("agent-find", []);

@@ -372,20 +372,25 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(narrow.reply).toBeLessThanOrEqual((narrow.width - narrow.padding) * 0.96);
 });
 
-test("fits conversation stream, composer, question card and user bubbles to window width when enabled", async ({
+test("fits conversation stream, composer, question card and off-screen rows live from Settings without restarting", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1800, height: 1000 });
+  await page.setViewportSize({ width: 1800, height: 900 });
   await openReply(page, "Initial reply");
   await page.evaluate(async (task) => {
     const storePath = "/src/features/agents/store.ts";
     const store = await import(storePath);
+    const filler = Array.from({ length: 8 }, (_, i) => ({
+      type: "agent" as const,
+      text: `Earlier paragraph ${i + 1}: ` + "wrapped words across the column ".repeat(35),
+    }));
     store.useAgents.setState({
       tasks: new Map([[task.id, { ...task, status: "needsInput" as const }]]),
       entries: new Map([
         [
           task.id,
           [
+            ...filler,
             {
               type: "user",
               text: "Long prompt ".repeat(40),
@@ -419,11 +424,15 @@ test("fits conversation stream, composer, question card and user bubbles to wind
 
   const stream = page.locator("[class*='_stream_']:visible");
   await expect(page.getByRole("form", { name: "Choose layout" })).toBeVisible();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
 
   const measure = () =>
     stream.evaluate((root) => {
       const conversation = root.closest<HTMLElement>("[class*='_conversation_']")!;
-      const column = root.querySelector<HTMLElement>("[class*='_agentMessage_']")!.getBoundingClientRect();
+      const rows = [...root.querySelectorAll<HTMLElement>("[class*='_conversationRow_']")];
+      const column = [...root.querySelectorAll<HTMLElement>("[class*='_agentMessage_']")]
+        .at(-1)!
+        .getBoundingClientRect();
       const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!.getBoundingClientRect();
       const composer = conversation.querySelector<HTMLElement>("[class*='_composerArea_']")!.getBoundingClientRect();
       const question = conversation.querySelector<HTMLElement>("[class*='_questionCard_']")!.getBoundingClientRect();
@@ -436,6 +445,8 @@ test("fits conversation stream, composer, question card and user bubbles to wind
         bubbleWidth: bubble.width,
         composerWidth: composer.width,
         questionWidth: question.width,
+        offscreenRowHeight: rows[0]!.getBoundingClientRect().height,
+        scrollHeight: root.scrollHeight,
       };
     });
 
@@ -446,14 +457,18 @@ test("fits conversation stream, composer, question card and user bubbles to wind
   expect(Math.abs(capped.composerWidth - 924)).toBeLessThan(1);
   expect(Math.abs(capped.questionWidth - 900)).toBeLessThan(1);
 
+  // Toggle on through Settings › Agents › Chat › Apply and verify live re-layout including off-screen rows.
   await page.evaluate(async () => {
-    const projectPath = "/src/platform/project.ts";
-    const { useProject } = await import(projectPath);
-    const settings = useProject.getState().settings;
-    useProject.setState({
-      settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: true } } as never,
-    });
+    const actionsPath = "/src/platform/actions.ts";
+    const { executeAction } = await import(actionsPath);
+    await executeAction("file.settings", "agents.chat");
   });
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  const toggle = dialog.getByRole("checkbox", { name: "Fit conversation to the window width" });
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
 
   const fitted = await measure();
   expect(Math.abs(fitted.columnWidth - fitted.streamInnerWidth)).toBeLessThan(1);
@@ -461,6 +476,18 @@ test("fits conversation stream, composer, question card and user bubbles to wind
   expect(Math.abs(fitted.bubbleWidth - fitted.streamInnerWidth * 0.8)).toBeLessThan(1);
   expect(Math.abs(fitted.composerWidth - fitted.conversationWidth)).toBeLessThan(1);
   expect(Math.abs(fitted.questionWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+  expect(fitted.offscreenRowHeight).toBeLessThan(capped.offscreenRowHeight);
+  expect(fitted.scrollHeight).toBeLessThan(capped.scrollHeight);
+
+  // Toggle back off and click OK: dialog closes and conversation returns to the 900px column live.
+  await toggle.click();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const restored = await measure();
+  expect(Math.abs(restored.columnWidth - 900)).toBeLessThan(1);
+  expect(Math.abs(restored.offscreenRowHeight - capped.offscreenRowHeight)).toBeLessThan(1);
 });
 
 test("keeps hover actions reachable when the pointer leaves the message body", async ({ page, context }) => {
@@ -667,4 +694,70 @@ test("draws a diagram without reaching the hosts its configuration names", async
     "https://example.com/after",
   );
   expect(asked).toEqual(["/after"]);
+});
+
+test("Find in Conversation skips user-select:none summaries and closed <details> until stepped into", async ({
+  page,
+}) => {
+  await openReply(page, "Confirmed—PR is merged.");
+  await page.evaluate(async (task) => {
+    const path = "/src/features/agents/store.ts";
+    const store = await import(path);
+    store.useAgents.setState({
+      entries: new Map([
+        [
+          task.id,
+          [
+            {
+              type: "thought",
+              text: "**Confirming Active Watch Shell**\n\nCheck background shell before rebasing.",
+            },
+            {
+              type: "tool",
+              id: "t1",
+              title: "stop_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "<command with id: 60 had already stopped>",
+              diffs: [],
+            },
+            { type: "agent", text: "Confirmed—PR is merged." },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const runSummary = stream.locator("details[class*='_processRun_'] > summary");
+  await runSummary.click();
+  await expect(stream.getByText("stop_bash")).toBeVisible();
+
+  await stream.focus();
+  await page.keyboard.press("Meta+f");
+  const findBox = page.getByLabel("Find in Conversation");
+  await findBox.fill("confirm");
+
+  // 2 matches total (1 inside collapsed thought body, 1 in visible reply); unselectable <summary> is excluded.
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const initialHighlights = await page.evaluate(() => ({
+    find: [...(CSS.highlights.get("agent-find") ?? [])].map((r) => (r as Range).startContainer.textContent),
+    current: [...(CSS.highlights.get("agent-find-current") ?? [])].map((r) => (r as Range).startContainer.textContent),
+  }));
+  expect(initialHighlights.find).toEqual(["Confirmed—PR is merged."]);
+  expect(initialHighlights.current).toEqual([]);
+
+  // Stepping to match 2/2 opens the collapsed thought <details> and highlights it.
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("2/2");
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const expandedHighlights = await page.evaluate(() => ({
+    thoughtOpen: document.querySelector<HTMLDetailsElement>("details[class*='_thought_']")?.open,
+    findCount: CSS.highlights.get("agent-find")?.size ?? 0,
+    currentCount: CSS.highlights.get("agent-find-current")?.size ?? 0,
+  }));
+  expect(expandedHighlights).toEqual({ thoughtOpen: true, findCount: 2, currentCount: 1 });
 });

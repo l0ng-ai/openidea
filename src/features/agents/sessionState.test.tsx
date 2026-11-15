@@ -540,20 +540,60 @@ describe("opened runs", () => {
 });
 
 describe("folded content", () => {
-  it("is rendered for Find in Conversation, so its text is found", async () => {
-    backend.entries.set("A", [
-      tool("one", { output: "needle in a tool output" }),
-      tool("two"),
-      { type: "agent", text: "Answer A" },
-    ]);
-    useAgents.setState({ entries: new Map(backend.entries) });
-    render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Read 2 files");
-    expect(screen.queryByText("needle in a tool output")).toBeNull();
-    fireEvent.focus(summary);
-    act(() => focusedSession()!.openFind());
-    expect(await screen.findByText("needle in a tool output")).toBeInTheDocument();
-    expect(summary.closest("details")!.open).toBe(false);
+  it("is rendered for Find in Conversation without painting closed <details> highlights until stepped into", async () => {
+    const rectSpy = vi
+      .spyOn(Range.prototype, "getClientRects")
+      .mockImplementation(() => [new DOMRect(0, 0, 20, 12)] as unknown as DOMRectList);
+    const prevCss = (globalThis as { CSS?: unknown }).CSS;
+    const prevHighlight = (globalThis as { Highlight?: unknown }).Highlight;
+    const highlights = new Map<string, Set<Range>>();
+    if (typeof prevHighlight === "undefined") {
+      (globalThis as { Highlight?: unknown }).Highlight = Set;
+    }
+    if (!(prevCss as { highlights?: unknown } | undefined)?.highlights) {
+      (globalThis as { CSS?: unknown }).CSS = {
+        ...(typeof prevCss === "object" && prevCss ? prevCss : {}),
+        highlights,
+      };
+    }
+    try {
+      backend.entries.set("A", [
+        { type: "thought", text: "Reviewing Changes\n\nConfirm the branch state before rebasing." },
+        tool("one", { title: "stop_bash", output: "stopped" }),
+        { type: "agent", text: "Confirmed—PR is merged." },
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      const runSummary = await screen.findByText("Read 1 file");
+      const runDetails = runSummary.closest("details")!;
+      runDetails.open = true;
+      fireEvent(runDetails, new Event("toggle"));
+
+      const thoughtDetails = (await screen.findByText("Reviewing Changes")).closest("details")!;
+      expect(thoughtDetails.open).toBe(false);
+
+      fireEvent.focus(runSummary);
+      act(() => focusedSession()!.openFind());
+      const findBox = await screen.findByLabelText("Find in Conversation");
+      fireEvent.change(findBox, { target: { value: "confirm" } });
+
+      const registry = (globalThis as unknown as { CSS: { highlights: Map<string, Set<Range>> } }).CSS.highlights;
+      await waitFor(() => expect(screen.getByText("1/2")).toBeInTheDocument());
+      await waitFor(() => expect([...(registry.get("agent-find") ?? [])]).toHaveLength(1));
+      expect([...(registry.get("agent-find") ?? [])][0]!.startContainer.textContent).toContain("Confirmed");
+      expect([...(registry.get("agent-find-current") ?? [])]).toHaveLength(0);
+
+      fireEvent.keyDown(findBox, { key: "Enter" });
+      fireEvent.keyDown(findBox, { key: "Enter" });
+      fireEvent(thoughtDetails, new Event("toggle"));
+      expect(thoughtDetails.open).toBe(true);
+      await waitFor(() => expect([...(registry.get("agent-find") ?? [])]).toHaveLength(2));
+      expect([...(registry.get("agent-find-current") ?? [])]).toHaveLength(1);
+    } finally {
+      rectSpy.mockRestore();
+      (globalThis as { CSS?: unknown }).CSS = prevCss;
+      (globalThis as { Highlight?: unknown }).Highlight = prevHighlight;
+    }
   });
 });
 
@@ -1817,30 +1857,57 @@ describe("meters in the task header", () => {
     expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
 
-  it("toggles fitWidth on the session root from settings.agents.fitWindowWidth", () => {
-    const { container } = render(<SessionEditor input={input("A")} />);
-    const root = container.querySelector(`.${styles.session}`)!;
-    expect(root).not.toHaveClass(styles.fitWidth!);
-    act(() =>
-      useProject.setState({
-        settings: {
-          agents: {
-            fitWindowWidth: true,
-          },
-        } as never,
-      }),
-    );
-    expect(root).toHaveClass(styles.fitWidth!);
-    act(() =>
-      useProject.setState({
-        settings: {
-          agents: {
-            fitWindowWidth: false,
-          },
-        } as never,
-      }),
-    );
-    expect(root).not.toHaveClass(styles.fitWidth!);
+  it("toggles fitWidth on the session root and remeasures off-screen rows from settings.agents.fitWindowWidth", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    const flushFrames = () => {
+      for (let pass = 0; pass < 2; pass++) {
+        for (const cb of frames.splice(0)) cb(performance.now());
+      }
+    };
+    try {
+      const { container } = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      const root = container.querySelector(`.${styles.session}`)!;
+      const row = container.querySelector(`.${styles.conversationRow}`)!;
+      act(flushFrames);
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: true,
+            },
+          } as never,
+        }),
+      );
+      expect(root).toHaveClass(styles.fitWidth!);
+      // Cleared synchronously before paint so content-visibility doesn't keep the 900px intrinsic height.
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: false,
+            },
+          } as never,
+        }),
+      );
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+    } finally {
+      raf.mockRestore();
+    }
   });
 
   it("hides the status-bar Terminal button in the local checkout and opens the worktree's terminal otherwise", async () => {

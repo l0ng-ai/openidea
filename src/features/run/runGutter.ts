@@ -17,6 +17,7 @@ import {
   canDebugProduced,
   choiceItems,
   executeContext,
+  fuzzItems,
   launchProduced,
   modifyContext,
   produceResolved,
@@ -123,6 +124,7 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
     ...runExecutors()
       .filter((e) => !!p?.config && e.supports(p.config))
       .map((e) => ({ label: e.label(name), icon: e.icon, run: () => void executeContext(e.id, context) })),
+    ...fuzzItems(input, context),
     { kind: "separator" },
     { label: "Modify Run Configuration…", icon: "edit", run: () => void modifyContext(context) },
   ];
