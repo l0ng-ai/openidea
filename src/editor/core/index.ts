@@ -13,6 +13,8 @@ import {
 import { _provideCodePreview, _provideDocumentAttacher, editorsFor } from "@/editor/api";
 import { isUntitledUri } from "@/platform/virtualDocs";
 import { formatDocument } from "@/editor/lsp/format";
+import { chooserTitle, locationItems, pinToFind } from "@/editor/lsp/navigation";
+import { openPopup } from "@/editor/lsp/popupStore";
 import { editorController } from "./controller";
 import { attachDocument } from "./model/attachment";
 import { previewExtensions } from "./cm/preview";
@@ -64,6 +66,14 @@ export function activate(): void | (() => void) {
     forgetSavedTabs: () => ctrl.forgetSavedTabs(),
     keepSavedTabs: () => ctrl.keepSavedTabs(),
     documentHistory: (command) => ctrl.documentHistory(command),
+    chooseDeclaration: async (targets, name, anchor) =>
+      openPopup({
+        kind: "list",
+        anchor,
+        title: chooserTitle("declaration", name, targets.length),
+        items: await locationItems(targets),
+        pin: pinToFind(name, targets),
+      }),
     reformat: async (path) => {
       const handle = editorsFor(path)[0];
       return !!handle && (await formatDocument(handle.view, { explicit: false, selectionOnly: false })).applied;

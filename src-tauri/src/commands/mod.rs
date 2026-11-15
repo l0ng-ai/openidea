@@ -250,6 +250,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         nav::find_files_named,
         nav::find_dirs,
         nav::find_symbols,
+        nav::find_symbols_named,
         nav::mark_recent,
         nav::recent_files,
         nav::remove_recent,
