@@ -3170,6 +3170,218 @@ async fn jvm_inspect_sends_one_command_at_a_time() {
     assert_eq!(most.load(Ordering::SeqCst), 1);
 }
 
+async fn stream_harness() -> (Harness, Arc<MockState>, ide_lsp::JdtStreamTracer) {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let tracer = ide_lsp::JdtStreamTracer::new(h.mgr.clone(), path);
+    let state = h.launcher.state("jdtls");
+    (h, state, tracer)
+}
+
+fn stream_launch_target() -> ide_jvm_inspect::VmTarget {
+    ide_jvm_inspect::VmTarget { pid: Some(42), attach_host: None, attach_port: None, generation: 3 }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_commands_send_target_then_named_fields() {
+    use ide_jvm_inspect::StreamTracer;
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let target_json = json!({"pid": 42, "host": null, "port": null, "generation": 3});
+    let plan = json!({"root": {"line": 14}});
+
+    s.respond("workspace/executeCommand", json!({"ok": {"traceId": 3}}));
+    assert_eq!(tracer.arm(&target, 7, &plan, 500).await.unwrap(), 3);
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"state": "running", "records": 1, "dropped": 0, "elapsedMs": 2}}),
+    );
+    tracer.wait(&target, 3, 250).await.unwrap();
+    s.respond("workspace/executeCommand", json!({"ok": {"records": 9}}));
+    assert_eq!(tracer.stop(&target, 3).await.unwrap(), 9);
+    s.respond("workspace/executeCommand", json!({"ok": {"state": "stopped"}}));
+    tracer.abort(&target, 3).await.unwrap();
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [], "dropped": 0, "terminal": {"kind": "void"}, "skippedBreakpoints": 0,
+                      "sequentialized": false}}),
+    );
+    tracer.collect(&target, 3).await.unwrap();
+    s.respond("workspace/executeCommand", json!({"ok": {}}));
+    tracer.release(&target, 3).await.unwrap();
+
+    let asked = s.requested("workspace/executeCommand");
+    let seen: Vec<_> = asked.iter().map(|p| (p["command"].clone(), p["arguments"].clone())).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (json!("openidea.jvm.stream.arm"), json!([target_json, {"threadId": 7, "plan": plan, "budget": 500}])),
+            (json!("openidea.jvm.stream.wait"), json!([target_json, {"traceId": 3, "ms": 250}])),
+            (json!("openidea.jvm.stream.stop"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.abort"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.collect"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.release"), json!([target_json, {"traceId": 3}])),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_wait_decodes_states() {
+    use ide_jvm_inspect::{StreamTracer, TraceState};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let cases = [
+        (
+            json!({"state": "running", "records": 10, "dropped": 0, "elapsedMs": 5}),
+            TraceState::Running { records: 10, dropped: 0, elapsed_ms: 5 },
+        ),
+        (
+            json!({"state": "parked", "records": 50000, "dropped": 950000, "elapsedMs": 96}),
+            TraceState::Parked { records: 50000, dropped: 950000 },
+        ),
+        (
+            json!({"state": "failed", "records": 0, "dropped": 0, "elapsedMs": 12,
+                   "detail": "cancelled before the terminal ran"}),
+            TraceState::Failed { detail: "cancelled before the terminal ran".into() },
+        ),
+    ];
+    for (ok, expected) in cases {
+        s.respond("workspace/executeCommand", json!({"ok": ok}));
+        assert_eq!(tracer.wait(&target, 1, 10).await.unwrap(), expected, "{ok}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_abort_decodes_every_state() {
+    use ide_jvm_inspect::{AbortState, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let cases = [
+        (json!({"state": "interrupted"}), AbortState::Interrupted),
+        (json!({"state": "stopped"}), AbortState::Stopped),
+        (
+            json!({"state": "stuck", "holders": [{"threadId": 42, "name": "worker-1"}]}),
+            AbortState::Stuck { holders: vec![(42, "worker-1".into())] },
+        ),
+        (json!({"state": "cancelled"}), AbortState::Cancelled),
+        (json!({"state": "finished"}), AbortState::Finished),
+    ];
+    for (ok, expected) in cases {
+        s.respond("workspace/executeCommand", json!({"ok": ok}));
+        assert_eq!(tracer.abort(&target, 1).await.unwrap(), expected, "{ok}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_errors_map() {
+    use ide_jvm_inspect::{InspectError, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let cases = [
+        (
+            json!({"error": "notAtChainStart", "detail": "line 14 is not where the statement starts"}),
+            InspectError::NotAtChainStart("line 14 is not where the statement starts".into()),
+        ),
+        (json!({"error": "busy", "detail": "trace 2 is running"}), InspectError::Busy),
+        (json!({"error": "noTrace", "detail": "no trace 9 on this VM"}), InspectError::NoTrace),
+        (json!({"error": "noSession", "detail": "x"}), InspectError::NoSession),
+        (json!({"error": "stale", "detail": "no thread 77"}), InspectError::Stale),
+        (json!({"error": "notSuspended", "detail": "thread 1 is running"}), InspectError::NotSuspended),
+        (json!({"error": "unsupported", "detail": "xs is a List"}), InspectError::Unsupported("xs is a List".into())),
+        (
+            json!({"error": "badArgument", "detail": "budget must be 1 or more"}),
+            InspectError::Failed("budget must be 1 or more".into()),
+        ),
+        (json!({"error": "failed", "detail": "missed filter"}), InspectError::Failed("missed filter".into())),
+        (json!({"error": "surprise", "detail": "d"}), InspectError::Failed("surprise: d".into())),
+    ];
+    for (reply, expected) in cases {
+        s.respond("workspace/executeCommand", reply.clone());
+        assert_eq!(tracer.arm(&target, 1, &json!({}), 10).await.unwrap_err(), expected, "{reply}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_missing_bundle_is_unsupported() {
+    use ide_jvm_inspect::{InspectError, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    s.errors.lock().insert(
+        "workspace/executeCommand".into(),
+        (-32603, "No delegateCommandHandler for openidea.jvm.stream.wait".into()),
+    );
+    assert_eq!(
+        tracer.wait(&stream_launch_target(), 1, 10).await.unwrap_err(),
+        InspectError::Unsupported("the JVM inspector bundle is not loaded".into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_collect_decodes() {
+    use ide_jvm_inspect::{CollectedTerminal, JvmValue, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {
+            "records": [
+                {"step": 0, "value": {"kind": "boxed", "id": 1, "typeName": "java.lang.Integer", "text": "5"}},
+                {"step": 1, "value": {"kind": "string", "id": 2, "text": "5", "length": 1}},
+            ],
+            "dropped": 4,
+            "terminal": {"kind": "threw",
+                         "exception": {"kind": "object", "id": 9, "typeName": "java.lang.ArithmeticException"}},
+            "skippedBreakpoints": 1,
+            "sequentialized": true,
+        }}),
+    );
+    let collected = tracer.collect(&target, 3).await.unwrap();
+    assert_eq!(
+        collected.records,
+        vec![
+            (0, JvmValue::Boxed { id: 1, type_name: "java.lang.Integer".into(), text: "5".into() }),
+            (1, JvmValue::Str { id: 2, text: Some("5".into()), length: 1 }),
+        ]
+    );
+    assert_eq!(collected.dropped, 4);
+    assert_eq!(
+        collected.terminal,
+        CollectedTerminal::Threw(JvmValue::Object { id: 9, type_name: "java.lang.ArithmeticException".into() })
+    );
+    assert_eq!(collected.skipped_breakpoints, 1);
+    assert!(collected.sequentialized);
+
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [], "dropped": 0,
+                      "terminal": {"kind": "value", "value": {"kind": "object", "id": 19, "typeName": "java.util.ArrayList"}},
+                      "skippedBreakpoints": 0, "sequentialized": false}}),
+    );
+    assert_eq!(
+        tracer.collect(&target, 3).await.unwrap().terminal,
+        CollectedTerminal::Value(JvmValue::Object { id: 19, type_name: "java.util.ArrayList".into() })
+    );
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [], "dropped": 0, "terminal": {"kind": "void"},
+                      "skippedBreakpoints": 0, "sequentialized": false}}),
+    );
+    assert_eq!(tracer.collect(&target, 3).await.unwrap().terminal, CollectedTerminal::Void);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_collect_fails_cleanly_on_a_step_beyond_u16() {
+    use ide_jvm_inspect::{InspectError, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [{"step": 70000, "value": {"kind": "null"}}], "dropped": 0,
+                      "terminal": {"kind": "void"}, "skippedBreakpoints": 0, "sequentialized": false}}),
+    );
+    let error = tracer.collect(&stream_launch_target(), 3).await.unwrap_err();
+    assert!(matches!(error, InspectError::Failed(ref m) if m.contains("malformed")), "{error:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn debug_server_port_maps_to_module() {
     let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
