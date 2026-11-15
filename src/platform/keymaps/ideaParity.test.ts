@@ -35,6 +35,8 @@ describe("IDEA keymap parity", () => {
     ["project.reloadFromDisk", ["Meta+Alt+Y"], ["Ctrl+Alt+Y"]],
     ["project.expandAll", ["Meta+="], ["Ctrl+="]],
     ["project.collapseAll", ["Meta+-"], ["Ctrl+-"]],
+    ["run.expandAllTests", ["Meta+="], ["Ctrl+="]],
+    ["run.collapseAllTests", ["Meta+-"], ["Ctrl+-"]],
     ["navigate.searchText", ["Meta+Alt+Shift+E"], ["Ctrl+Alt+Shift+E"]],
     ["window.next", ["Meta+Alt+`"], ["Ctrl+Alt+]"]],
     ["window.previous", ["Meta+Alt+Shift+`"], ["Ctrl+Alt+["]],
@@ -78,7 +80,7 @@ describe("IDEA keymap parity", () => {
     ["editor.nextSplitter", ["Alt+Tab"], ["Alt+Tab"]],
     ["toolwindow.resizeLeft", ["Ctrl+Alt+Left"], ["Ctrl+Alt+Shift+Left"]],
     ["toolwindow.closeContent", ["Meta+W", "Ctrl+Shift+F4"], ["Ctrl+F4", "Ctrl+Shift+F4"]],
-    ["layout.restoreDefault", ["Shift+F12"], ["Shift+F12"]],
+    ["layout.restoreCurrent", ["Shift+F12"], ["Shift+F12"]],
     ["workbench.stopBackgroundProcesses", ["Meta+Shift+F2"], ["Ctrl+Shift+F2"]],
     ["navigate.back", ["Meta+[", "Meta+Alt+Left", "Button4", "SwipeRight"], ["Ctrl+Alt+Left", "Button4"]],
     ["navigate.forward", ["Meta+]", "Meta+Alt+Right", "Button5", "SwipeLeft"], ["Ctrl+Alt+Right", "Button5"]],
@@ -101,6 +103,8 @@ describe("IDEA keymap parity", () => {
     order(km, "file.reloadFromDisk", "project.reloadFromDisk");
     order(km, "code.unfold", "project.expandAll");
     order(km, "code.fold", "project.collapseAll");
+    order(km, "code.unfold", "run.expandAllTests");
+    order(km, "code.fold", "run.collapseAllTests");
     order(km, "navigate.nextError", "vcs.changelist.edit");
     order(km, "debug.setValue", "vcs.changelist.edit");
     order(km, "find.replaceInFile", "find.rerun");

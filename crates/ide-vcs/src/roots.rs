@@ -1,7 +1,7 @@
 //! The repositories of a project (IDEA's VCS roots): the one containing the project
 //! root plus those nested below it (separate clones side by side, submodules).
 
-use crate::{FileStatus, Repo};
+use crate::{Backend, FileStatus, Repo};
 use ide_core::IdeResult;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -142,18 +142,38 @@ impl Repos {
     /// Changes of every repository. A nested repository reports its own files, so the
     /// enclosing one's "untracked folder" entry for it is dropped. A repository that cannot
     /// be read (e.g. deleted since the last scan) is left out; fails only when all fail.
+    ///
+    /// The reads go through [`Backend`], the Changes-view surface — repositories of a
+    /// future second backend slot in here once `Repos` learns to hold them.
     pub fn status(&self) -> IdeResult<Vec<FileStatus>> {
+        let groups: Vec<(Arc<Repo>, Vec<PathBuf>)> = self.repos.iter().map(|repo| (repo.clone(), Vec::new())).collect();
+        self.read_status(groups, false)
+    }
+
+    /// [`status`](Self::status) for `paths` only: each path goes to its innermost repository,
+    /// so a repository without one is not read at all and a nested repository keeps its own
+    /// files (the enclosing one's "untracked folder" entry for them is dropped).
+    pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        self.read_status(self.group(paths), true)
+    }
+
+    /// Reads one status per repository: the whole working tree, or `scoped` the paths it was
+    /// given. A nested repository reports its own files, so the enclosing one's "untracked
+    /// folder" entry for it is dropped. A repository that cannot be read is left out; fails
+    /// only when all fail.
+    fn read_status(&self, groups: Vec<(Arc<Repo>, Vec<PathBuf>)>, scoped: bool) -> IdeResult<Vec<FileStatus>> {
         let mut out = Vec::new();
         let mut first_error = None;
         let mut read = 0;
-        for repo in &self.repos {
+        for (repo, mine) in groups {
             let nested: Vec<&Path> = self
                 .repos
                 .iter()
                 .map(|r| r.root())
                 .filter(|r| *r != repo.root() && r.starts_with(repo.root()))
                 .collect();
-            let status = match repo.status() {
+            let backend = repo.as_ref() as &dyn Backend;
+            let status = match if scoped { backend.status_paths(&mine) } else { backend.status() } {
                 Ok(status) => {
                     read += 1;
                     status

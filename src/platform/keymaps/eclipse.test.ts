@@ -32,6 +32,7 @@ const owners = (km: Record<string, string[]>, key: string) =>
 // parent collisions are not introduced by this preset; new pairs must be reviewed here.
 const shared = [
   ["navigate.gotoClass", "terminal.new"],
+  ["navigate.gotoLine", "agents.focusInput"],
   ["navigate.recentLocations", "project.open", "debug.jumpToSource", "diff.jumpToSource", "find.popup.openResult"],
   [
     "navigate.declaration",
@@ -50,13 +51,16 @@ const shared = [
   ["code.quickDocumentation", "db.quickDoc", "debug.setValue", "vcs.changelist.edit"],
   ["code.reformat", "project.reformatCode", "db.reformatValue"],
   ["code.optimizeImports", "project.optimizeImports"],
-  ["code.deleteLine", "db.duplicateSource", "project.compareWith", "vcs.showDiff"],
+  ["code.deleteLine", "db.duplicateSource", "project.compareWith", "vcs.showDiff", "vcs.log.changes.showDiff"],
   ["code.moveStatementDown", "find.field.recentSearches", "find.popup.recentSearches"],
-  ["code.foldAll", "project.collapseAll"],
+  ["code.foldAll", "project.collapseAll", "run.collapseAllTests"],
+  ["project.expandAll", "run.expandAllTests"],
   ["refactor.rename", "project.rename", "db.rename", "vcs.changelist.edit", "vcs.log.editMessage", "vcs.shelf.rename"],
   ["refactor.changeSignature", "db.modifyTable"],
   ["refactor.move", "project.move"],
   ["editor.closeTab", "toolwindow.closeContent"],
+  ["editor.nextTab", "db.nextResultTab"],
+  ["editor.prevTab", "db.previousResultTab"],
   ["run.rerun", "debug.rerun", "find.rerun", "usages.rerun"],
   [
     "debug.smartStepInto",
@@ -221,7 +225,7 @@ it("renames in the project view although the preset shares Alt+Shift+R with the 
   const dbRename = vi.fn();
   const refactorRename = vi.fn();
   // The claimants as they ship: `when` + `keyWhen` exactly as registered.
-  const EDITOR = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+  const EDITOR = "textEditorActive && (editorFocus || !toolWindowFocus)";
   const disposers = [
     registerAction({
       id: "project.rename",

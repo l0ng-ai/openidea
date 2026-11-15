@@ -7,10 +7,12 @@ import {
   type PermissionEntry,
 } from "./permission";
 
+const script = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
 const entry: PermissionEntry = {
   type: "permission",
   id: 1,
-  title: 'Run python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'',
+  title: `Run ${script}`,
+  command: script,
   options: [],
   chosen: null,
 };
@@ -30,6 +32,24 @@ it("keeps a subagent command in the code area without its session label", () => 
   expect(permissionDetails({ ...entry, title: `Explore: ${entry.title}` }).command).toBe(
     permissionDetails(entry).command,
   );
+});
+
+it("shows a request as a command only when it carries one, whatever its title", () => {
+  const escalation: PermissionEntry = {
+    type: "permission",
+    id: 2,
+    title: "Run git status",
+    options: [
+      { id: "turn", name: "Allow for this turn", kind: "allow_once" },
+      { id: "decline", name: "Decline", kind: "reject_once" },
+    ],
+    chosen: null,
+  };
+  const details = permissionDetails(escalation);
+  expect(details.command).toBeUndefined();
+  expect(details.title).toBe("Allow tool call?");
+  expect(details.detail).toBe("Run git status");
+  expect(permissionDetails({ ...escalation, command: null }).command).toBeUndefined();
 });
 
 describe("permission choices", () => {

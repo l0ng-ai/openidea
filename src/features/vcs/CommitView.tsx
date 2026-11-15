@@ -71,6 +71,7 @@ import {
   setCommitDiffPreview,
   setDiffPreview,
   setGroupByDir,
+  setGroupByRepo,
   setGroupByStaging,
   useCommit,
   type CommitTab,
@@ -82,6 +83,7 @@ import {
   DIFF_KIND,
   changeNodeDiff,
   changeNodeDiffData,
+  changeTreeDiffData,
   diffInput,
   openDiff,
   openVcsDiff,
@@ -183,12 +185,12 @@ export function StashContent({ tab }: { tab: CommitTab }) {
   const combine = useWorkflowSettings((s) => s.vcs.git.combineStashAndShelf);
   if (combine)
     return (
-      <SplitGroup orientation="vertical" className={styles.split}>
-        <SplitPanel defaultSize="50%" minSize="80px">
+      <SplitGroup orientation="vertical" className={styles.split} storageKey="openidea.vcs.stashShelfSplit">
+        <SplitPanel id="stashes" defaultSize="50%" minSize="80px">
           <StashesPanel />
         </SplitPanel>
         <SplitHandle />
-        <SplitPanel defaultSize="50%" minSize="80px">
+        <SplitPanel id="shelf" defaultSize="50%" minSize="80px">
           <ShelfPanel />
         </SplitPanel>
       </SplitGroup>
@@ -205,7 +207,8 @@ const bottomLeft = (el: HTMLElement) => {
 
 /**
  * Activates a change (Enter, double-click, Show Diff); F7 continues through the other
- * files of its group, in tree order. Enter and double-click follow IDEA's Show on
+ * files of its group, in tree order (Enter and double-click: of the whole tree, on into the
+ * unversioned files, as IDEA's Commit diff preview). Enter and double-click follow IDEA's Show on
  * Double-Click (opensDiffOnActivate): the source file, or the diff where the commit
  * interface puts it (openVcsDiff: a preview editor tab, or under the modal interface the
  * front diff window, behind the modal Commit dialog, #1863). `forceDiff` is Show Diff and
@@ -217,7 +220,7 @@ function openNode(n: ChangeNode, roots: readonly ChangeNode[], forceDiff = false
     void editorService().openFile(n.path, { focus: true });
     return;
   }
-  void openVcsDiff(changeNodeDiffData(roots, n), { preview: true });
+  void openVcsDiff((forceDiff ? changeNodeDiffData : changeTreeDiffData)(roots, n), { preview: true });
 }
 
 /** The setting behind Show on Double-Click (`None` follows the commit interface). */
@@ -409,6 +412,7 @@ export function nodeMenu(
       : []),
     { kind: "action", action: "vcs.shelve", arg: paths },
     { kind: "action", action: "vcs.createPatch", arg: paths },
+    { kind: "action", action: "vcs.stashSelected", arg: paths, disabled: !paths.length },
     { label: "Copy as Patch to Clipboard", run: () => void copyChangesAsPatch(paths) },
     { kind: "separator" },
     {
@@ -483,14 +487,18 @@ function ChangesPanel() {
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
   const hasChanges = useVcs((s) => s.status.length > 0);
   return (
-    <SplitGroup orientation="horizontal" className={styles.split}>
-      <SplitPanel defaultSize="62%" minSize="20%">
-        <SplitGroup orientation="vertical" className={styles.split}>
-          <SplitPanel defaultSize="62%" minSize="20%">
+    <SplitGroup
+      orientation="horizontal"
+      className={styles.split}
+      storageKey={preview ? "openidea.vcs.commitPreviewSplit" : undefined}
+    >
+      <SplitPanel id="commit" defaultSize="62%" minSize="20%">
+        <SplitGroup orientation="vertical" className={styles.split} storageKey="openidea.vcs.commitMessageSplit">
+          <SplitPanel id="changes" defaultSize="62%" minSize="20%">
             <ChangesTree mode="commit" />
           </SplitPanel>
           <SplitHandle />
-          <SplitPanel defaultSize="38%" minSize="120px">
+          <SplitPanel id="message" defaultSize="38%" minSize="120px">
             <CommitPanel included={included} />
           </SplitPanel>
         </SplitGroup>
@@ -498,7 +506,7 @@ function ChangesPanel() {
       {preview && (
         <>
           <SplitHandle />
-          <SplitPanel defaultSize="38%" minSize="120px">
+          <SplitPanel id="preview" defaultSize="38%" minSize="120px">
             {path ? (
               <DiffEditor input={diffInput(workingDiffData(path))} />
             ) : (
@@ -522,14 +530,20 @@ export function LocalChangesView() {
   const path = useCommit((s) => (s.selection.length === 1 ? s.selection[0] : null));
   const anchor = useToolWindowLayout((s) => s.placements.git?.anchor ?? "bottom");
   return (
-    <SplitGroup orientation={anchor === "bottom" ? "horizontal" : "vertical"} className={styles.split}>
-      <SplitPanel defaultSize="50%" minSize="20%">
+    <SplitGroup
+      orientation={anchor === "bottom" ? "horizontal" : "vertical"}
+      className={styles.split}
+      storageKey={
+        preview ? `openidea.vcs.localChangesSplit.${anchor === "bottom" ? "horizontal" : "vertical"}` : undefined
+      }
+    >
+      <SplitPanel id="changes" defaultSize="50%" minSize="20%">
         <ChangesTree mode="local" />
       </SplitPanel>
       {preview && (
         <>
           <SplitHandle />
-          <SplitPanel defaultSize="50%" minSize="120px">
+          <SplitPanel id="preview" defaultSize="50%" minSize="120px">
             {path ? (
               <DiffEditor input={diffInput(workingDiffData(path))} />
             ) : (
@@ -554,6 +568,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
   const groupByStaging = useCommit((s) => s.groupByStaging);
+  const groupByRepo = useCommit((s) => s.groupByRepo);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
   const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
@@ -571,8 +586,8 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads),
-    [status, root, groupByDir, lists, repos, groupByStaging, heads],
+    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -630,7 +645,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
     const active = maybeEditorService()?.activeInput?.();
     if (active?.kind !== DIFF_KIND || active.key !== followedDiff.current) return;
     if (diffInput(changeNodeDiff(node)).key === active.key) return;
-    void openDiff(changeNodeDiffData(roots, node), { preview: true, focus: false });
+    void openDiff(changeTreeDiffData(roots, node), { preview: true, focus: false });
   };
 
   // Reveal only after the ancestors have expanded, without moving keyboard focus.
@@ -690,6 +705,10 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
             showContextMenu(bottomLeft(viewRef.current), [
               { kind: "header", label: "Group By" },
               { label: "Directory", checked: groupByDir, run: () => setGroupByDir(!groupByDir) },
+              // IDEA offers it once the project has several repositories.
+              ...(repos.length > 1
+                ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
+                : []),
               { label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) },
               ...(mode === "local"
                 ? [
@@ -727,6 +746,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
       {mode !== "dialog" && <OperationBanner />}
       <div
         className={styles.treeWrap}
+        data-changes-tree={mode}
         onKeyDownCapture={(e) => {
           if (checkboxes && e.key === " " && !e.metaKey && !e.ctrlKey && selected.size) {
             e.preventDefault();
@@ -979,12 +999,21 @@ export function useCommitRunner(included: number, onCommitted?: () => void): Com
 }
 
 /** Amend, message history and the message field with its inspections and failed checks. */
-export function CommitMessageField({ included, runner }: { included: number; runner: CommitRunner }) {
+export function CommitMessageField({
+  included,
+  runner,
+  autoFocus = false,
+}: {
+  included: number;
+  runner: CommitRunner;
+  /** The message takes the initial focus of the dialog it is in (the Commit dialog). */
+  autoFocus?: boolean;
+}) {
   const message = useCommit((s) => s.message);
   const amend = useCommit((s) => s.amend);
   const focusTick = useCommit((s) => s.focusTick);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const historyRef = useRef<HTMLButtonElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyTick = useCommit((s) => s.historyTick);
   const checkProblems = useCommit((s) => s.checkProblems);
@@ -1015,10 +1044,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
 
   return (
     <>
-      <div className={styles.commitBar}>
+      <div ref={barRef} className={styles.commitBar}>
         <Checkbox checked={amend} onChange={(v) => void setAmend(v)} label="Amend" />
         <IconButton
-          ref={historyRef}
           icon="history"
           title="Commit Message History"
           size="small"
@@ -1030,8 +1058,9 @@ export function CommitMessageField({ included, runner }: { included: number; run
         <Menu
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          anchor={historyRef}
-          placement="bottom-end"
+          anchor={barRef}
+          placement="top-start"
+          iconColumn={false}
           aria-label="Recent commit messages"
           items={history.map((m, i) => ({
             id: `h${i}`,
@@ -1052,6 +1081,7 @@ export function CommitMessageField({ included, runner }: { included: number; run
       </div>
       <textarea
         ref={ref}
+        data-autofocus={autoFocus ? "" : undefined}
         className={clsx(styles.message, !showMargin && styles.noMargin, emptyError && styles.messageError)}
         aria-invalid={emptyError || undefined}
         style={{ ["--guide" as string]: `${margin}ch` }}
@@ -1295,8 +1325,8 @@ export function StashesPanel() {
                 {repos.length > 1 && s.repo ? `${repoName(s.repo)} · ` : ""}
                 {text}
               </span>
-              {branch && <span className={styles.detail}>{branch}</span>}
-              <span className={styles.detail}>{formatTime(s.timeMs)}</span>
+              {branch && <span className={clsx(styles.detail, styles.stashBranch)}>{branch}</span>}
+              <span className={clsx(styles.detail, styles.stashTime)}>{formatTime(s.timeMs)}</span>
             </span>
           );
         }}

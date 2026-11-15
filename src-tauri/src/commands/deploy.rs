@@ -158,6 +158,7 @@ pub async fn deploy_test_connection(
     state: State<'_, AppState>,
     connection: FsConnection,
     path: String,
+    password: Option<String>,
 ) -> IdeResult<()> {
-    ide_host::ops::deploy::deploy_test_connection(&state.host, connection, path).await
+    ide_host::ops::deploy::deploy_test_connection(&state.host, connection, path, password).await
 }

@@ -96,6 +96,8 @@ describe("McpServersPage", () => {
     expect(screen.getByText("HTTP · https://example.com/mcp (claude)")).toBeInTheDocument();
     expect(screen.getByText("azure")).toBeInTheDocument();
     expect(screen.getByText("npx -y @azure/mcp@latest server start")).toBeInTheDocument();
+    const workspace = screen.getByRole("region", { name: "Workspace" });
+    expect(within(workspace).getByText(/stay off until you turn them on here/)).toBeInTheDocument();
   });
 
   it("filters servers across sections by search query", async () => {

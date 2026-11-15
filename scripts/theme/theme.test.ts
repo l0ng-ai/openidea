@@ -219,6 +219,16 @@ describe("IntelliJ theme import", () => {
     });
   });
 
+  it("keeps the search result colour apart from the text search result and the lists' search match", () => {
+    const bg = (c: string) => `<value><option name="BACKGROUND" value="${c}"/></value>`;
+    const s = convertIcls(`<scheme name="Search" parent_scheme="Darcula"><attributes>
+      <option name="SEARCH_RESULT_ATTRIBUTES">${bg("2d543f")}</option>
+      <option name="TEXT_SEARCH_RESULT_ATTRIBUTES">${bg("114957")}</option>
+      </attributes></scheme>`);
+    expect(s.tokens).toMatchObject({ "--bg-search-result": "#2d543f", "--bg-text-search-result": "#114957" });
+    expect(s.tokens).not.toHaveProperty("--bg-search-match");
+  });
+
   it("produces an installable package", () => {
     const light = stripJsonComments(themeJson.replace('"dark": true,', ""));
     const c = convertIntellijTheme(light, icls.replace("Darcula", "Default"), "sea");

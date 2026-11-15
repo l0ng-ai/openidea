@@ -1,8 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AgentConfigOption, AgentProvider, NewAgentTask } from "@/bindings";
+import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
-import { HOME, savedDraft, updateComposer, useAgents } from "./store";
+import homeStyles from "./Home.module.css";
+import { HOME, disconnect, savedDraft, updateComposer, useAgents } from "./store";
 
 const backend = vi.hoisted(() => ({ providers: [] as AgentProvider[], create: vi.fn() }));
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok", data });
@@ -10,6 +12,16 @@ vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
     agentProviders: () => ok(backend.providers),
+    agentRefreshModels: (provider: string) =>
+      ok({
+        provider,
+        config: backend.providers.find((p) => p.id === provider)?.config ?? [],
+        thoughtLevels: backend.providers.find((p) => p.id === provider)?.thoughtLevels ?? {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      }),
     agentProbe: () => ok(null),
     vcsBranchInfo: () => ok({ head: "main" }),
     vcsBranches: () => ok([]),
@@ -33,6 +45,7 @@ const option = (id: string, category: string, values: string[], current: string)
 });
 
 beforeEach(() => {
+  disconnect();
   backend.create.mockReset().mockImplementation((req: NewAgentTask) => ok({ id: "new", config: req.config }));
   backend.providers = [
     {
@@ -94,7 +107,7 @@ it("switches model-specific levels and restores each draft effort before startin
 it.each(["plain", "unknown"])("hides effort for %s models and sends no stale effort", async (model) => {
   render(<HomeEditor />);
   await chooseModel(model);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "listbox");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "dialog");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([{ id: "model", value: model }]);
@@ -119,4 +132,37 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toContainEqual({ id: "effort", value: "high" });
+});
+
+it.each([
+  [undefined, "full-access"],
+  ["ask", undefined],
+] as const)("with new-task approvals %s, sends mode %s", async (newTaskApprovals, mode) => {
+  const provider = { ...backend.providers[0]!, config: [option("mode", "mode", ["ask", "full-access"], "ask")] };
+  useAgents.setState({ providers: [provider] });
+  const settings = useProject.getState().settings;
+  useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, newTaskApprovals } } as never });
+  try {
+    render(<HomeEditor />);
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(backend.create).toHaveBeenCalled());
+    expect(backend.create.mock.calls[0]![0].config.find((c: { id: string }) => c.id === "mode")?.value).toBe(mode);
+  } finally {
+    useProject.setState({ settings });
+  }
+});
+
+it("applies fitWidth on the New Task page only when fitWindowWidth is enabled", () => {
+  const settings = useProject.getState().settings;
+  try {
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: false } } as never });
+    const { container, rerender } = render(<HomeEditor />);
+    const root = container.querySelector(`.${homeStyles.home}`)!;
+    expect(root).not.toHaveClass(homeStyles.fitWidth!);
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: true } } as never });
+    rerender(<HomeEditor />);
+    expect(root).toHaveClass(homeStyles.fitWidth!);
+  } finally {
+    useProject.setState({ settings });
+  }
 });

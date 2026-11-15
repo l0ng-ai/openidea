@@ -235,7 +235,7 @@ async fn serve(mut sock: TcpStream, root: &Root) -> std::io::Result<()> {
     let head_only = req.method == "HEAD";
     let response = if !matches!(req.method.as_str(), "GET" | "HEAD") {
         Response::Error(405, "Method Not Allowed")
-    } else if !host_allowed(req.host.as_deref(), root.port) {
+    } else if !host_allowed(req.host.as_deref()) {
         Response::Error(403, "Forbidden")
     } else {
         resolve(root, &req.target).await
@@ -274,8 +274,11 @@ async fn serve(mut sock: TcpStream, root: &Root) -> std::io::Result<()> {
     sock.shutdown().await
 }
 
-fn host_allowed(host: Option<&str>, port: u16) -> bool {
-    host.is_some_and(|h| h == format!("127.0.0.1:{port}") || h == format!("localhost:{port}"))
+/// Loopback names only (DNS rebinding). Any port: a remote host's server is reached through
+/// a forwarded port of the client, and a browser names the port it connected to anyway.
+fn host_allowed(host: Option<&str>) -> bool {
+    host.and_then(|h| h.rsplit_once(':'))
+        .is_some_and(|(name, port)| matches!(name, "127.0.0.1" | "localhost") && port.parse::<u16>().is_ok())
 }
 
 async fn resolve(root: &Root, target: &str) -> Response {
@@ -424,6 +427,9 @@ mod tests {
         let other = url.replacen(token, "0123", 1);
         assert!(get(&other, None).await.starts_with("HTTP/1.1 404"));
         assert!(get(&url, Some("evil.example:80")).await.starts_with("HTTP/1.1 403"));
+        assert!(get(&url, Some("127.0.0.1.evil.example:80")).await.starts_with("HTTP/1.1 403"));
+        // Through a forwarded port of a remote client.
+        assert!(get(&url, Some("127.0.0.1:61234")).await.starts_with("HTTP/1.1 200"));
     }
 
     #[cfg(unix)]

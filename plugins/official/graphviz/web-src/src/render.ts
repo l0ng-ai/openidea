@@ -66,3 +66,13 @@ export function exportName(file: string, extension: string): string {
   const base = file.replace(/\.(dot|gv)$/i, "") || "graph";
   return `${base}.${extension}`;
 }
+
+/**
+ * Graphviz's SVG without its links, for the preview: Graphviz writes a graph's
+ * `URL` / `href` attributes as given (`javascript:` too), and the preview's
+ * page may run inline script. Exports keep them. Graphviz quotes attribute
+ * values with `"` and escapes the ones inside, so a value never holds one.
+ */
+export function withoutLinks(svg: string): string {
+  return svg.replace(/\s(?:xlink:)?(?:href|target)="[^"]*"/g, "");
+}

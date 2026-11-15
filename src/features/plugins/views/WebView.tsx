@@ -31,6 +31,7 @@ import {
   contentTabData,
   contentTabKey,
   handleContentTabReplyText,
+  openPluginDiffRequest,
   registerContentTabSender,
 } from "./contentTab";
 import { PLUGIN_LOG_EDITOR_KIND } from "./logEditor";
@@ -206,6 +207,22 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       }
       return true;
     };
+    const handleDiffMessage = (rawText: string): boolean => {
+      if (!rawText.includes('"open-diff"')) return false;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        return false;
+      }
+      if (!parsed || typeof parsed !== "object" || !("op" in parsed) || parsed.op !== "open-diff") return false;
+      try {
+        openPluginDiffRequest(parsed, rawText.length);
+      } catch (err) {
+        post({ text: JSON.stringify({ op: "diff-error", error: errorText(err) }) });
+      }
+      return true;
+    };
     const handleContentTabMessage = (rawText: string): boolean => {
       if (handleContentTabReplyText(pluginId, rawText)) return true;
       let parsed: unknown;
@@ -332,6 +349,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       } else if (typeof m.text === "string") {
         if (handleLogTabMessage(m.text)) return;
         if (handleContentTabMessage(m.text)) return;
+        if (handleDiffMessage(m.text)) return;
         if (ptys.handle(m.text)) return;
         if (hasCode) {
           pluginsBackend()

@@ -821,8 +821,10 @@ fn a_reporting_task_outlives_its_background_budget() {
 
 #[test]
 fn background_tasks_scale_and_renew_cpu_fuel_budget() {
+    // Room for activation (about 3_100 on macOS, more on Windows) but not for `patient`'s
+    // whole run (about 9_000) without the refill on each report.
     let f = fixture(Limits {
-        fuel: 3_500,
+        fuel: 6_000,
         timeout: Duration::from_millis(500),
         background: Duration::from_millis(5_000),
         ..Limits::default()
@@ -831,14 +833,14 @@ fn background_tasks_scale_and_renew_cpu_fuel_budget() {
     if f.host.set_capability("misbehave", "process:git", true).is_err() {
         return;
     }
-    // Warm up activation in its own call so `patient` starts with a fresh 3_500-fuel budget.
+    // Warm up activation in its own call so `patient` starts with a fresh budget.
     assert_eq!(f.run("misbehave", "echo", Some("warm")).unwrap().as_deref(), Some("warm"));
 
     let out = f.run("misbehave", "patient", None).expect("background task succeeds").expect("output");
     assert_eq!(out, "still here");
 
     let err = f.run("misbehave", "spin", None).unwrap_err();
-    assert!(err.contains("exceeded its CPU budget (3500 fuel per call)"), "{err}");
+    assert!(err.contains("exceeded its CPU budget (6000 fuel per call)"), "{err}");
 }
 
 #[test]
@@ -2554,7 +2556,8 @@ fn official_git_toolbox_fetches_on_schedule_after_idle_reclaim() {
     f.install(&official("git-toolbox"));
     // Focusing an editor wakes it to show the branch (nothing fetched yet).
     let now = Instant::now();
-    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some("src/notes.txt".into()))]);
+    let focused = f.project.join("src/notes.txt").to_string_lossy().into_owned();
+    f.host.post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(focused))]);
     f.host.flush_events_at(now + Duration::from_secs(3));
     assert!(f.host.wait_events(Duration::from_secs(10)));
     let item = |host: &PluginHost| {
@@ -2607,6 +2610,82 @@ fn git_toolbox_does_not_fetch_untrusted_projects() {
     f.host.set_workspace(Some(untrusted));
     let err = f.run("openidea.git-toolbox", "fetch", None).unwrap_err();
     assert!(err.contains("Restricted Mode"), "{err}");
+}
+
+/// Git Toolbox in a workspace window whose container folder is not a
+/// repository (every member is its own clone): the status bar follows the
+/// focused file's repository, and the scheduled fetch covers every member.
+#[test]
+fn official_git_toolbox_follows_members_in_a_workspace() {
+    let f = fixture(Limits { idle_timeout: Some(Duration::from_millis(50)), ..Limits::default() });
+    let tmp = tempfile::tempdir().unwrap();
+    // A remote with `main`, cloned by member `a` (at `main`) and member `b`
+    // (on its own branch, to tell the two apart in the status bar).
+    let remote = tmp.path().join("remote.git");
+    std::fs::create_dir(&remote).unwrap();
+    git(&remote, &["init", "--bare", "-b", "main"]);
+    let seed = tmp.path().join("seed");
+    std::fs::create_dir(&seed).unwrap();
+    git(&seed, &["init", "-b", "main"]);
+    std::fs::write(seed.join("seed.txt"), "seed\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-m", "one"]);
+    git(&seed, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    git(&seed, &["push", "-u", "origin", "main"]);
+    let member_a = tmp.path().join("member-a");
+    git(tmp.path(), &["clone", remote.to_str().unwrap(), member_a.to_str().unwrap()]);
+    let member_a = dunce::canonicalize(member_a).unwrap();
+    let member_b = tmp.path().join("member-b");
+    git(tmp.path(), &["clone", remote.to_str().unwrap(), member_b.to_str().unwrap()]);
+    let member_b = dunce::canonicalize(member_b).unwrap();
+    git(&member_b, &["checkout", "-b", "feature"]);
+    git(&member_b, &["push", "-u", "origin", "feature"]);
+    // The window's project is the container; the members are attached to it.
+    f.workspace.other_roots.lock().extend([member_a.clone(), member_b.clone()]);
+
+    f.install(&official("git-toolbox"));
+    let item = |host: &PluginHost| {
+        host.status_items().into_iter().find(|(p, id, _)| p == "openidea.git-toolbox" && id == "branch")
+    };
+    let now = Instant::now();
+    let focus = |path: &Path| {
+        f.host
+            .post_events(Some("main"), vec![WorkbenchEvent::EditorFocused(Some(path.to_string_lossy().into_owned()))]);
+        f.host.flush_events_at(now + Duration::from_secs(3));
+        f.host.wait_events(Duration::from_secs(10));
+    };
+    // Focusing a file of member `a` shows that member's branch: the window's
+    // project is the container, which is no repository.
+    focus(&member_a.join("seed.txt"));
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("main".into()));
+    // Fetch Now fetches the shown member; the container is not a repository.
+    f.run("openidea.git-toolbox", "fetch", None).unwrap();
+    let fetched = stored(&f, "openidea.git-toolbox");
+    assert!(
+        fetched.iter().any(|(key, _)| key == &format!("last-fetch:{}", to_ipc(&member_a))),
+        "{member_a:?}: {fetched:?}"
+    );
+    assert_eq!(fetched.iter().filter(|(key, _)| key.starts_with("last-fetch:")).count(), 1, "{fetched:?}");
+    // Switching to the other member follows it.
+    focus(&member_b.join("seed.txt"));
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()));
+
+    // Idle: reclaimed; the schedule then wakes it to fetch every member (the
+    // container is skipped: it has no repository).
+    std::thread::sleep(Duration::from_millis(100));
+    f.host.tick();
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()), "the item stays while it sleeps");
+    f.take_events();
+    f.host.tick_at(Instant::now() + Duration::from_secs(301));
+    assert!(f.host.wait_events(Duration::from_secs(30)));
+    let fetched = stored(&f, "openidea.git-toolbox");
+    for member in [&member_a, &member_b] {
+        assert!(
+            fetched.iter().any(|(key, _)| key == &format!("last-fetch:{}", to_ipc(member))),
+            "{member:?}: {fetched:?}"
+        );
+    }
+    assert_eq!(item(&f.host).map(|(_, _, i)| i.text), Some("feature".into()));
 }
 
 /// A tiny HTTP server: each request is answered after `delay(n)` (n counts
@@ -2916,13 +2995,18 @@ fn official_csv_editor_edits_the_shared_document() {
     f.host.view_event("openidea.csv-editor", "table", cell, inv.clone()).unwrap();
     assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n");
 
+    // Add Row appends, also on wasm32 (where its row index used to wrap to the header).
+    let add = ide_plugin::ViewEvent::Button { id: "add-row".into() };
+    f.host.view_event("openidea.csv-editor", "table", add, inv.clone()).unwrap();
+    assert_eq!(f.workspace.text("people.csv"), "name,city\nAda,\"Paris, FR\"\nBob,Oslo\n,\n");
+
     // Settings: without a header row every record is a row.
     let mut values = serde_json::Map::new();
     values.insert("firstRowIsHeader".into(), serde_json::Value::Bool(false));
     f.workspace.settings.lock().insert("openidea.csv-editor".into(), values);
     let view = f.host.render_view("openidea.csv-editor", "table", None, inv.clone()).unwrap();
     let ide_plugin::ViewBody::Table(t) = &view.body else { panic!("{view:?}") };
-    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 3));
+    assert_eq!((t.columns[0].as_str(), t.total_rows), ("Column 1", 4));
 
     // Undeclared views are refused before any code runs.
     let err = f.host.render_view("openidea.csv-editor", "other", None, inv).unwrap_err();
@@ -3676,6 +3760,43 @@ path = "templates/new.draw"
     f.host.set_enabled("web-demo", false).unwrap();
     assert!(file(&format!("{rev}/web/index.html")).is_err());
     assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+#[test]
+fn file_icons_without_patterns_require_api_1_8_and_project_assets() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("dynamic-icons");
+    std::fs::create_dir_all(pkg.join("icons")).unwrap();
+    std::fs::write(pkg.join("icons/helm-dir.svg"), r#"<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>"#)
+        .unwrap();
+    let write_manifest = |api: &str| {
+        std::fs::write(
+            pkg.join("plugin.toml"),
+            format!(
+                r#"id = "dynamic-icons"
+name = "Dynamic Icons"
+version = "0.1.0"
+engines.openidea = "{api}"
+
+[[contributes.fileIcons]]
+id = "helm-dir"
+icon = "icons/helm-dir.svg"
+"#
+            ),
+        )
+        .unwrap();
+    };
+    write_manifest("^1.7");
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("1.8"), "{err:?}");
+
+    write_manifest("^1.8");
+    let info = f.install(&pkg);
+    assert!(info.error.is_none(), "{:?}", info.error);
+    let assets = f.host.assets("dynamic-icons", "fileIcon/helm-dir/").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert!(assets[0].1.contains("<circle"));
 }
 
 #[test]
@@ -6329,7 +6450,13 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
     let configs = f.host.run_detection().detect(&f.project);
     assert!(configs.iter().any(|c| c.id == "plugin:execution:dynamic"
         && c.is_test
-        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")));
+        && c.extras.params.get("framework").map(String::as_str) == Some("plugin")
+        && c.env.get("OPENIDEA_EXECUTION_FIXTURE").map(String::as_str) == Some("1")
+        && c.extras.params.get("debugLanguage").map(String::as_str) == Some("python")));
+    let worker = configs.iter().find(|c| c.id == "plugin:execution:worker").unwrap();
+    assert_eq!(worker.extras.params.get("debugAttach").map(String::as_str), Some("dotnet"));
+    assert_eq!(worker.extras.params.get("debugAttachContains").map(String::as_str), Some("Worker.dll"));
+    assert!(worker.env.is_empty() && !worker.is_test);
     assert_eq!(
         f.host.parse_test_results("main", "plugin:execution:dynamic", "batch".into()).unwrap().unwrap().len(),
         3
@@ -6350,6 +6477,26 @@ fn api14_stage3_configurations_test_results_and_content_actions_use_real_exports
         f.events.lock().iter().any(|(client, event)| client.as_deref() == Some("main") && matches!(event, PluginEvent::ContentTabReply { request_id, reply, .. } if request_id == "ct-1" && reply.saved == Some(true)))
     }));
     assert!(f.host.parse_test_results("main", "plugin:execution:dynamic", "trap".into()).unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_plugin_command_opens_a_diff_in_its_window() {
+    let f = execution_fixture();
+    f.take_events();
+    f.run("execution", "diff", None).unwrap();
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(3));
+    assert!(eventually(|| {
+        f.events.lock().iter().any(|(client, event)| {
+            client.as_deref() == Some("main")
+                && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
+                    if plugin_id == "execution"
+                        && diff.left == "before\n"
+                        && diff.right == "after\n"
+                        && diff.title.as_deref() == Some("Review")
+                        && file_name.as_deref() == Some("src/review.rs"))
+        })
+    }));
 }
 
 #[test]
@@ -6682,7 +6829,11 @@ fn project_write_cannot_replace_the_git_file_of_a_linked_worktree() {
     }
     for rel in spellings {
         let err = f.run("misbehave", "projwrite", Some(rel)).unwrap_err();
-        assert!(err.contains("git's own files"), "{rel}: {err}");
+        // On Windows a stream name is refused before the path is looked at at all; elsewhere a colon
+        // is an ordinary character and the `.git` rule applies.
+        let refused =
+            if cfg!(windows) && rel.contains(':') { "file streams are not allowed" } else { "git's own files" };
+        assert!(err.contains(refused), "{rel}: {err}");
         assert_eq!(std::fs::read_to_string(&pointer).unwrap(), gitdir, "{rel}");
     }
 }

@@ -93,11 +93,36 @@ export function findAll(text: string, query: string): number[] {
   return out;
 }
 
-/** DOM ranges of `query` in the text under `root` (matches within one text node). */
+const SKIP_FIND_TAGS = new Set(["STYLE", "SCRIPT", "NOSCRIPT", "SVG", "BUTTON"]);
+
+function isUnselectable(el: Element): boolean {
+  const style = getComputedStyle(el);
+  return style.userSelect === "none" || style.webkitUserSelect === "none";
+}
+
+/**
+ * DOM ranges of `query` in the selectable text under `root` (matches within one text node).
+ * Skips `user-select: none` chrome (`.thought summary`, `.processSummary`, `.messageTime`,
+ * `.role`…): WebKit's `CSS.highlights` skips unselectable text renderers and paints the
+ * highlight over the next selectable text node instead.
+ */
 export function findRanges(root: Node, query: string): Range[] {
   const out: Range[] = [];
   if (!query) return out;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const el = node as Element;
+        const tag = el.tagName.toUpperCase();
+        if (SKIP_FIND_TAGS.has(tag)) return NodeFilter.FILTER_REJECT;
+        if (tag === "PRE" && el.parentElement?.getAttribute("data-mermaid-state") === "ok")
+          return NodeFilter.FILTER_REJECT;
+        if (isUnselectable(el)) return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_SKIP;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     for (const at of findAll(node.textContent ?? "", query)) {
       const range = document.createRange();
@@ -107,4 +132,21 @@ export function findRanges(root: Node, query: string): Range[] {
     }
   }
   return out;
+}
+
+/**
+ * True when `range` is rendered on screen and not inside a collapsed `<details>` or
+ * `user-select: none` subtree. WebKit hides closed `<details>` bodies with
+ * `content-visibility: hidden` (where `getClientRects()` stays non-empty once opened)
+ * and forwards unrendered or unselectable `CSS.highlights` ranges onto adjacent rows.
+ */
+export function isFindRangeShown(range: Range, root: Node): boolean {
+  for (let el = range.startContainer.parentElement; el && el !== root; el = el.parentElement) {
+    if (isUnselectable(el)) return false;
+    if (el instanceof HTMLDetailsElement && !el.open) {
+      const summary = el.querySelector(":scope > summary");
+      if (!summary?.contains(range.startContainer)) return false;
+    }
+  }
+  return range.getClientRects().length > 0;
 }

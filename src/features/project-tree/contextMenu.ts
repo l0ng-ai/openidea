@@ -3,7 +3,7 @@ import { executeAction, getAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import { canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
-import { relativePath, useProject } from "@/platform/project";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
 import type { MenuItem } from "@/ui";
 import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
@@ -31,6 +31,7 @@ import {
   vcsArg,
 } from "./operations";
 import { isSameOrInside } from "./paths";
+import { useProjectTree } from "./store";
 import { tx } from "@/platform/i18n";
 
 /** Keys handled by the project view itself (the default keymap has no entries for them). */
@@ -105,7 +106,12 @@ function showProjectView() {
 
 /** File kinds contributed to the `new` menu group (templates, HTTP Request, Scratch File…). */
 function contributedNewItems(parent: string | null): MenuItem[] {
-  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true] } : { paths: [] });
+  const owner = parent ? projectFolder(useProject.getState().project, parent) : null;
+  const projectType =
+    parent && owner && isSameOrInside(parent, owner.root)
+      ? useProjectTree.getState().projectTypes.get(owner.root)
+      : undefined;
+  const items = menuGroupItems("new", parent ? { paths: [parent], dirs: [true], projectType } : { paths: [] });
   return items.length ? [{ kind: "separator" }, ...items] : [];
 }
 
@@ -151,6 +157,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   const project = useProject.getState().project;
   // Scratches and other contributed roots live outside the project: no VCS, roots or LSP usages.
   const inProject = !!project && nodes.every((n) => isSameOrInside(n.path, project.root));
+  // Workspace members may live outside the workspace folder; they have VCS and usages too.
+  const memberRoots = project ? [project.root, ...(project.workspace?.projects ?? [])] : [];
+  const inWorkspace = nodes.every((n) => memberRoots.some((root) => isSameOrInside(n.path, root)));
   const items: MenuItem[] = [];
   const push = (...list: Entry[]) => list.forEach((i) => i && items.push(i));
 
@@ -170,7 +179,11 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  push({ id: "new", label: "New", submenu: newMenuItems(folder) }, { kind: "separator" });
+  push(
+    { id: "new", label: "New", submenu: newMenuItems(folder) },
+    single?.root && act("maven.importExternal", undefined, "Import Module from Existing Sources"),
+    { kind: "separator" },
+  );
 
   // Cut / Copy / Copy Path/Reference… / Paste
   push(
@@ -224,7 +237,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       shortcut: keyLabel("project.open"),
       run: () => files.forEach((f) => void openFile(f.path)),
     },
-    inProject &&
+    inWorkspace &&
       singleFile && {
         id: "findUsages",
         label: "Find Usages",
@@ -334,7 +347,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   );
 
   // Git › (`vcsAvailable` also covers repositories nested below a non-Git project root)
-  if (inProject && (project?.isGit || getContext().vcsAvailable === true)) {
+  if (inWorkspace && (project?.isGit || getContext().vcsAvailable === true)) {
     const arg = vcsArg(nodes);
     const dirs = nodes.some((n) => n.dir);
     push(
@@ -363,10 +376,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           act("vcs.rollback", arg, "Rollback…"),
           { kind: "separator" },
           act("vcs.push", undefined, "Push…"),
-          act("vcs.update", undefined, "Pull…"),
+          act("vcs.pull", arg, "Pull…"),
           act("vcs.fetch", undefined, "Fetch"),
-          act("vcs.merge", undefined, "Merge…"),
-          act("vcs.rebase", undefined, "Rebase…"),
+          act("vcs.merge", arg, "Merge…"),
+          act("vcs.rebase", arg, "Rebase…"),
           { kind: "separator" },
           act("vcs.branches", undefined, "Branches…"),
           act("vcs.newBranch", undefined, "New Branch…"),

@@ -16,7 +16,7 @@ import { useProject } from "@/platform/project";
 import { editorPrefs } from "@/platform/editorSettings";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { offsetsToRange, posToOffset } from "./positions";
-import { featureBackoff, onLspRefresh } from "./availability";
+import { featureBackoff, onLspRefresh, onServerSettled, anyServerBusy } from "./availability";
 import { gotoTargets } from "./navigation";
 import { tx } from "@/platform/i18n";
 
@@ -162,6 +162,7 @@ const inlayPlugin = ViewPlugin.fromClass(
     private refresh = debounce(() => void this.run(), 400);
     private unsubscribe: () => void;
     private offReady: () => void;
+    private offSettled: () => void;
     private offModifier: () => void;
     private skipped = false;
     constructor(private view: EditorView) {
@@ -178,6 +179,8 @@ const inlayPlugin = ViewPlugin.fromClass(
           this.refresh();
       });
       this.offReady = onLspRefresh("inlayHints", () => this.refresh());
+      // Answers given while the server was busy may have been partial; ask again once it settles.
+      this.offSettled = onServerSettled(() => this.refresh());
     }
     update(u: ViewUpdate) {
       if (u.docChanged || u.viewportChanged || (this.skipped && shownAgain(u))) this.refresh();
@@ -188,8 +191,16 @@ const inlayPlugin = ViewPlugin.fromClass(
       if (this.skipped) return;
       const doc = docOf(view);
       if (!doc) return;
-      if (!enabled(doc.language) || inlayBackoff.active(doc.doc)) {
+      if (!enabled(doc.language)) {
         if (view.state.field(inlayField).size) view.dispatch({ effects: setInlays.of(Decoration.none) });
+        return;
+      }
+      // The server is unavailable. While a server is starting or busy (a restart), keep the
+      // hints shown — they map through edits, and the settled refresh re-queries — instead of
+      // wiping them on every pass; a server that stays down takes its hints with it.
+      if (inlayBackoff.active(doc.doc)) {
+        if (!anyServerBusy() && view.state.field(inlayField).size)
+          view.dispatch({ effects: setInlays.of(Decoration.none) });
         return;
       }
       const state = view.state;
@@ -199,13 +210,14 @@ const inlayPlugin = ViewPlugin.fromClass(
       try {
         const hints = await lspRequest(() => commands.lspInlayHints(doc.doc, offsetsToRange(state.doc, first, last)));
         if (view.state.doc !== state.doc) return this.refresh();
+        const fresh = hints.filter((h) => shownKind(h.kind));
+        // A busy server (indexing, loading a build) can answer with nothing: keep the
+        // hints shown until it settles, instead of blinking them away and reflowing
+        // text. A partial non-empty answer is applied as-is: a subset of hints given
+        // mid-spell is trusted until the settled refresh that follows replaces it.
+        if (!fresh.length && view.state.field(inlayField).size && anyServerBusy()) return;
         view.dispatch({
-          effects: setInlays.of(
-            inlayDecorations(
-              view,
-              hints.filter((h) => shownKind(h.kind)),
-            ),
-          ),
+          effects: setInlays.of(inlayDecorations(view, fresh)),
         });
       } catch (e) {
         if (isUnavailable(e)) inlayBackoff.mark(doc.doc);
@@ -215,6 +227,7 @@ const inlayPlugin = ViewPlugin.fromClass(
       this.refresh.cancel();
       this.unsubscribe();
       this.offReady();
+      this.offSettled();
       this.offModifier();
       this.view.contentDOM.classList.remove("cm-lsp-navigation-modifier");
     }

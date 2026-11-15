@@ -3,8 +3,9 @@
 use crate::state::AppState;
 use ide_agent::registry::AgentRegistry;
 use ide_agent::{
-    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentCommand, AgentEntry, AgentEvent, AgentProbe, AgentPrompt,
-    AgentProvider, AgentQueued, AgentTask, CustomAgentInput, ExternalSession, McpServer, McpServerInput, NewAgentTask,
+    AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
+    AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
+    ExternalSession, McpServer, McpServerInput, NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -34,6 +35,18 @@ pub fn agent_subscribe(
 #[specta::specta]
 pub fn agent_providers(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<AgentProvider>> {
     agent::providers(&state.host, window.label())
+}
+
+/// Refreshes the model catalog; force bypasses freshness, not the cooldown.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_refresh_models(
+    window: Window,
+    state: State<'_, AppState>,
+    provider: String,
+    force: bool,
+) -> IdeResult<AgentModelCatalog> {
+    agent::refresh_models(&state.host, window.label(), provider, force)
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
@@ -273,6 +286,19 @@ pub async fn agent_fork(
     agent::fork(&state.host, window.label(), task, turns).await
 }
 
+/// Creates a temporary side conversation of `source`: lives in memory only, never
+/// persisted, not listed, and its session starts with the first message sent to it.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_create_ephemeral(
+    window: Window,
+    state: State<'_, AppState>,
+    request: NewAgentTask,
+    source: String,
+) -> IdeResult<AgentTask> {
+    agent::create_ephemeral(&state.host, window.label(), request, source).await
+}
+
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
 #[tauri::command]
 #[specta::specta]
@@ -370,7 +396,18 @@ pub async fn agent_changes(window: Window, state: State<'_, AppState>, task: Str
     agent::changes(&state.host, window.label(), task).await
 }
 
-/// Rollback: the task's changed files among `paths` (all without) back as they were when it started.
+/// The task's uncommitted changes and the commits made since it started.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_grouped_changes(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+) -> IdeResult<AgentChanges> {
+    agent::grouped_changes(&state.host, window.label(), task).await
+}
+
+/// Rollback: the task's changed files among `paths` (all without) back as `view` compares them.
 #[tauri::command]
 #[specta::specta]
 pub async fn agent_rollback_changes(
@@ -378,8 +415,9 @@ pub async fn agent_rollback_changes(
     state: State<'_, AppState>,
     task: String,
     paths: Option<Vec<String>>,
+    view: Option<AgentChangesView>,
 ) -> IdeResult<()> {
-    agent::rollback_changes(&state.host, window.label(), task, paths).await
+    agent::rollback_changes(&state.host, window.label(), task, paths, view).await
 }
 
 /// Accept: copies a worktree task's changed files among `paths` (all without) into the

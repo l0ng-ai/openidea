@@ -168,7 +168,7 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     let wip = format!("{}// work in progress\n", f.text(main_rs).await);
     f.host.project(WINDOW).unwrap().documents.replace_all(main_rs, &wip).unwrap();
     f.save(main_rs).await;
-    ops::vcs::vcs_stash_push(&f.host, WINDOW, None, Some("wip".into()), false, false).await.unwrap();
+    ops::vcs::vcs_stash_push(&f.host, WINDOW, None, Some("wip".into()), false, false, None).await.unwrap();
     assert!(f.status().await.is_empty());
     assert!(!f.text(main_rs).await.contains("work in progress"));
     let stashes = ops::vcs::vcs_stashes(&f.host, WINDOW, None).await.unwrap();
@@ -206,4 +206,23 @@ async fn change_commit_branch_stash_and_merge_a_conflict() {
     assert_eq!(head.parents.len(), 2, "{head:?}");
     assert!(f.status().await.is_empty());
     assert_eq!(std::fs::read_to_string(&lib_path).unwrap(), resolved);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn checkout_reports_a_branch_held_by_another_worktree() {
+    let f = Flow::new("rust-app").await;
+    let linked = f._tmp.path().join("linked");
+    git(&f.root, &["worktree", "add", "-q", "-b", "topic", linked.to_str().unwrap()]);
+
+    let outcome = ops::vcs::vcs_checkout(&f.host, WINDOW, None, "topic".into(), false, None).await.unwrap();
+    assert_eq!(
+        outcome,
+        ide_vcs::CheckoutOutcome::CheckedOutInWorktree {
+            branch: "topic".into(),
+            path: dunce::canonicalize(&linked).unwrap()
+        }
+    );
+    // Nothing changed: the project is still on main.
+    let branches = ops::vcs::vcs_branches(&f.host, WINDOW, None).await.unwrap();
+    assert!(branches.iter().any(|b| b.name == "main" && b.current), "{branches:?}");
 }

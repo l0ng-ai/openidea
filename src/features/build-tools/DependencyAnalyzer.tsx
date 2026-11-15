@@ -440,7 +440,11 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
 
   const treeView = (
     <div className={styles.body}>
-      <SplitGroup orientation="horizontal" id="maven-dependency-analyzer-split">
+      <SplitGroup
+        orientation="horizontal"
+        id="maven-dependency-analyzer-split"
+        storageKey="openidea.dependencyAnalyzer.split"
+      >
         <SplitPanel id="dependencies" minSize={200} className={styles.panel}>
           <Tree<Node>
             aria-label="Dependencies"

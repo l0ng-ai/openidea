@@ -84,6 +84,10 @@ registerAction({
 
 用 `executeAction(id, arg?)` 执行 action。`registerAction` 返回 disposer。
 
+### 右键菜单的所属元素
+
+`showContextMenu(at, items, { owner })` 可以将菜单关联到目标元素，而不选中该元素。菜单打开期间，`ContextMenuHost` 为目标添加 `data-context-menu-open` 标记，并在关闭、替换或卸载菜单时移除。共享 Tabs 样式通过该标记保留目标的悬停外观，不覆盖已选中或带颜色标签页的样式。该行为需要显式启用；数据库结果标签页会为鼠标和键盘菜单操作提供所属元素。
+
 ## Keymap 与键盘分发
 
 默认快捷键写在 `src/platform/keymaps/` 里，而不是写在 action 上。keymap 是 action id 到绑定的映射：
@@ -103,6 +107,10 @@ export const intellijMacos: Record<string, string[]> = {
 绑定语法：修饰键 `Meta Ctrl Alt Shift` 用 `+` 连接到按键（`Meta+Shift+O`）；空格分隔组合键的多个击键（`Meta+K Meta+C`）；连按两次修饰键写作 `Shift Shift`；鼠标按键为 `Button1`…`Button5`。按键按物理位置匹配（`KeyboardEvent.code`）。
 
 `installKeyboardDispatcher` 在捕获阶段监听 `keydown`，因此 IDE 快捷键优先于 CodeMirror 的默认按键；它把击键与当前 keymap 及用户覆盖项匹配，然后运行第一个启用的 action（满足 `when` 和 `keyWhen`）。需要自己处理某个按键的组件注册一个 key claim（`registerKeyClaim`），比如 Vim 模式处理快捷键冲突时。
+
+阻塞式提示框（`promptInput`、`chooseItem`、`pickItems` 和消息对话框）通过 `<Dialog blockWorkbenchShortcuts>` 显式启用快捷键隔离。其 effect 获取带引用计数的 `suspendKeyboardDispatch()` 保护，并在清理时释放，因此关闭嵌套提示框不会在其他提示框仍打开时恢复后台快捷键。输入框的系统文本编辑和对话框内部按键仍然有效。该行为需要显式启用：Search Everywhere 等非模态工作台弹出框保留原有的按键路由。
+
+暂停期间，键盘和鼠标分发会清除待完成的组合键及修饰键连按状态，避免关闭提示框后触发残留快捷键。普通文本输入框也会保留未按 Shift 的原生 `Backspace`/`Delete` 组合键；带 Shift 的绑定和终端输入保持原有路由。
 
 ## 上下文键与 `when` 子句
 

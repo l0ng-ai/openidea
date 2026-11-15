@@ -65,6 +65,8 @@ export interface ClassDecl {
   /** Java record components / Kotlin primary constructor parameters (`val`/`var` ones are properties). */
   ctorParams: Param[];
   classes: ClassDecl[];
+  /** The class it extends (`extends Base<T>` / Kotlin `: Base()`), as written. */
+  superclass?: string;
 }
 
 export interface SourceFile {
@@ -218,6 +220,26 @@ class Reader {
   is(i: number, text: string): boolean {
     const t = this.toks[i];
     return !!t && t.text === text && (t.kind === "p" || t.kind === "id");
+  }
+
+  /** A type name at `i` (`a.b.Base<T>`): its text and the index after it. */
+  typeName(i: number, to: number): { name: string; end: number } | null {
+    let j = i;
+    while (j < to && this.toks[j]?.kind === "id" && (j === i || this.is(j - 1, "."))) {
+      j++;
+      if (!this.is(j, ".") || this.toks[j + 1]?.kind !== "id") break;
+      j++;
+    }
+    if (j === i) return null;
+    if (this.is(j, "<")) {
+      let depth = 0;
+      for (; j < to; j++) {
+        if (this.is(j, "<")) depth++;
+        else if (this.is(j, ">") && --depth === 0) break;
+      }
+      j++;
+    }
+    return { name: joined(this.toks.slice(i, j)), end: j };
   }
 
   /** Kotlin: a token on a new line that starts a member ends the previous one. */
@@ -415,6 +437,12 @@ class Reader {
         }
         for (; j < to; j++) {
           if (this.is(j, "{") || this.is(j, ";") || this.startsMember(j)) break;
+          // Java `extends Base`; Kotlin `: Base(…)` (a supertype called with arguments is the class).
+          const javaSuper = this.toks[j]!.kind === "id" && this.toks[j]!.text === "extends";
+          if (!cls.superclass && (javaSuper || this.is(j, ":") || this.is(j, ","))) {
+            const type = this.typeName(j + 1, to);
+            if (type && (javaSuper || this.is(type.end, "("))) cls.superclass = type.name;
+          }
           if (OPEN[this.toks[j]!.text] && this.toks[j]!.kind === "p") j = this.match[j]!;
         }
         if (this.is(j, "{")) {

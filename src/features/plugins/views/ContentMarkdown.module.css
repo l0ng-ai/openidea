@@ -1,0 +1,123 @@
+/* Rendered Markdown of a plugin content tab, styled like the Markdown file preview. */
+.preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 28px 32px;
+  outline: none;
+  background: var(--bg-editor, var(--bg-app));
+  color: var(--fg-editor, var(--fg));
+  font-family: var(--font-ui);
+  font-size: var(--markdown-preview-font-size, 14px);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.preview > :first-child {
+  margin-top: 0;
+}
+.preview :global(h1),
+.preview :global(h2) {
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--border-strong);
+}
+.preview :global(h1),
+.preview :global(h2),
+.preview :global(h3),
+.preview :global(h4),
+.preview :global(h5),
+.preview :global(h6) {
+  margin: 1.2em 0 0.6em;
+  color: var(--fg-editor, var(--fg-strong));
+  line-height: 1.25;
+}
+.preview :global(h1) {
+  font-size: 1.9em;
+}
+.preview :global(h2) {
+  font-size: 1.5em;
+}
+.preview :global(h3) {
+  font-size: 1.25em;
+}
+.preview :global(p),
+.preview :global(ul),
+.preview :global(ol),
+.preview :global(blockquote),
+.preview :global(pre),
+.preview :global(table) {
+  margin: 0 0 1em;
+}
+.preview :global(a) {
+  color: var(--link);
+  text-decoration: none;
+  cursor: pointer;
+}
+.preview :global(a:hover) {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.preview :global(code) {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-small);
+  background: var(--bg-editor-inline, var(--bg-elev));
+}
+.preview :global(pre) {
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-editor-inline, var(--bg-elev));
+  overflow: auto;
+  line-height: 1.45;
+}
+.preview :global(pre code) {
+  padding: 0;
+  background: none;
+  font-size: 0.93em;
+}
+.preview :global(blockquote) {
+  padding: 0 1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--fg-editor, var(--fg-secondary));
+  opacity: 0.8;
+}
+.preview :global(table) {
+  border-collapse: collapse;
+}
+.preview :global(th),
+.preview :global(td) {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+}
+.preview :global(th) {
+  background: var(--bg-editor-inline, var(--bg-elev));
+}
+.preview :global(hr) {
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  margin: 1.5em 0;
+}
+.preview :global(img) {
+  max-width: 100%;
+}
+.layout {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.body > * {
+  flex: 1 1 50%;
+  min-width: 0;
+}
+.body > * + * {
+  border-left: 1px solid var(--border);
+}
+.hidden {
+  display: none;
+}

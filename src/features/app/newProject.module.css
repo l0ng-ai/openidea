@@ -1,8 +1,11 @@
 /* File › New Project… */
+.dialog {
+  height: min(602px, calc(100vh - 48px));
+}
 .layout {
   display: grid;
   grid-template-columns: 220px 1fr;
-  height: 520px;
+  height: 100%;
   min-height: 0;
 }
 .sidebar {

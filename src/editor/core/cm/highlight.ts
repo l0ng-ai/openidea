@@ -9,6 +9,8 @@ import { Tag, tags as t } from "@lezer/highlight";
 /** Log warnings: the UI warning colour, since no syntax token reads as one in every scheme. */
 export const logWarning = Tag.define("logWarning");
 export const parameter = Tag.define(t.variableName);
+/** A shell command name: its own colour in JetBrains schemes, else a function call. */
+export const shellCommand = Tag.define("shellCommand");
 /** Inside doc comments, as IntelliJ colours them: `@param` / `{@link`, a `@param` name, HTML markup. */
 export const docCommentTag = Tag.define(t.docComment);
 export const docCommentTagValue = Tag.define(t.docComment);
@@ -60,6 +62,7 @@ export const openideaHighlightStyle = HighlightStyle.define([
   token([t.typeName, t.className, t.namespace, t.definition(t.typeName)], "type"),
   token([t.standard(t.typeName), t.standard(t.variableName), t.standard(t.function(t.variableName))], "builtin"),
   token([t.function(t.variableName), t.function(t.propertyName)], "function-call"),
+  token(shellCommand, "shell-command", { color: "function-call" }),
   token(
     [
       t.function(t.definition(t.variableName)),

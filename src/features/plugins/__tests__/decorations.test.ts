@@ -4,6 +4,7 @@ import { EditorView } from "@codemirror/view";
 import type { DecorationSet } from "@/bindings";
 import { _addEditor, _removeEditor, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
 import { useProject } from "@/platform/project";
+import { fileIconName, registerExternalIcons, themedFolderIconName } from "@/ui";
 import { getFileDecoration } from "@/workbench/contributions";
 import { decorationExtension, setPluginDecorations } from "../decorations";
 import { capabilityDescription } from "../consent";
@@ -44,7 +45,11 @@ afterEach(() => {
 it("renders plain annotations, maps them through edits, and withdraws them", () => {
   setPluginDecorations("test", [set()]);
   expect(editor.view.dom.textContent).toContain("<plain>");
+  // The range mark carries the hover on the code; the line-end message carries it too.
   expect(editor.view.dom.querySelector('[title="hover"]')?.textContent).toBe("te");
+  const message = editor.view.dom.querySelector(".cm-plugin-after");
+  expect(message?.firstElementChild?.textContent).toBe("<plain>");
+  expect(message?.firstElementChild?.getAttribute("title")).toBe("hover");
   expect(editor.view.dom.querySelector("plain")).toBeNull();
   editor.view.dispatch({ changes: { from: 0, insert: "x" } });
   expect(editor.view.dom.querySelector('[title="hover"]')?.textContent).toBe("te");
@@ -52,18 +57,70 @@ it("renders plain annotations, maps them through edits, and withdraws them", () 
   expect(editor.view.dom.textContent).not.toContain("<plain>");
 });
 
-it("filters project roots and unknown styles and replaces tree badges", () => {
+it("filters tree badges by project root but not editor annotations, and drops unknown styles", () => {
+  // Editor annotations follow the file: a set from another root still renders where the file is open.
   setPluginDecorations("test", [set("/other")]);
-  expect(editor.view.dom.textContent).not.toContain("<plain>");
+  expect(editor.view.dom.textContent).toContain("<plain>");
   const unknown = set();
   unknown.items[0]!.style = "unknown";
   setPluginDecorations("test", [unknown]);
   expect(editor.view.dom.textContent).not.toContain("<plain>");
-  const tree = { ...set(), tree: true, items: [], file: { style: "modified", badge: "M", tooltip: "changed" } };
+  // Tree badges are per root.
+  const tree = { ...set("/other"), tree: true, items: [], file: { style: "modified", badge: "M", tooltip: "changed" } };
   setPluginDecorations("test", [tree]);
+  expect(getFileDecoration("/p/a.txt")?.badge).toBeUndefined();
+  setPluginDecorations("test", [{ ...tree, root: "/p" }]);
   expect(getFileDecoration("/p/a.txt")?.badge).toBe("M");
   setPluginDecorations("test", []);
   expect(getFileDecoration("/p/a.txt")?.badge).toBeUndefined();
+});
+
+it("shows a tree note after the name without colouring the file", () => {
+  const note = {
+    ...set(),
+    tree: true,
+    items: [],
+    file: { style: "", badge: null, tooltip: "why", note: "entry point" },
+  };
+  setPluginDecorations("test", [note]);
+  expect(getFileDecoration("/p/a.txt")).toMatchObject({ suffix: [{ text: "entry point" }], tooltip: "why" });
+  expect(getFileDecoration("/p/a.txt")?.color).toBeUndefined();
+  setPluginDecorations("test", []);
+});
+
+it("resolves dynamic file and folder icons declared by the plugin", () => {
+  const unregister = registerExternalIcons([
+    ["ext:fileIcon/test/helm-template", '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#39989F"/></svg>'],
+    ["ext:fileIcon/test/helm-dir", '<svg viewBox="0 0 16 16"><rect width="16" height="16" fill="#39989F"/></svg>'],
+  ]);
+  try {
+    setPluginDecorations("test", [
+      {
+        root: "/p",
+        path: "/p/chart",
+        setId: "icons",
+        tree: true,
+        items: [],
+        file: { style: "", badge: null, tooltip: "Helm chart", icon: "helm-dir" },
+      },
+      {
+        root: "/p",
+        path: "/p/chart/templates/stage.yaml",
+        setId: "icons",
+        tree: true,
+        items: [],
+        file: { style: "", badge: null, tooltip: "Helm template", icon: "helm-template" },
+      },
+    ]);
+    expect(themedFolderIconName("chart", false, false, "/p/chart")).toBe("ext:fileIcon/test/helm-dir");
+    expect(fileIconName("stage.yaml", "/p/chart/templates/stage.yaml")).toBe("ext:fileIcon/test/helm-template");
+    expect(getFileDecoration("/p/chart")?.tooltip).toBe("Helm chart");
+    setPluginDecorations("test", []);
+    expect(themedFolderIconName("chart", false, false, "/p/chart")).toBeNull();
+    expect(fileIconName("stage.yaml", "/p/chart/templates/stage.yaml")).toBe("file-yaml");
+  } finally {
+    unregister();
+  }
 });
 
 it("selects UTF-16 ranges and reveals without changing text", () => {

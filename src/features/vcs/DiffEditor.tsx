@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,7 +26,7 @@ import {
   uncollapseUnchanged,
   Chunk,
 } from "@codemirror/merge";
-import { attachDocument, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
+import { attachDocument, diffSideExtensions, embeddedEditorExtensions, type DocumentAttachment } from "@/editor/api";
 import { setFindOpen } from "@/editor/core/cm/find";
 import { softWrapActive } from "@/editor/core/cm/prefs";
 import { FindPanel, searchAgain, seedFind, type FindTarget } from "@/editor/core/view/FindBar";
@@ -37,6 +38,7 @@ import { call, commands } from "@/platform/ipc";
 import { bindingsFor, normalizeBinding, shortcutLabel, strokeOf } from "@/platform/keymap";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import { IconButton, Select, Spinner, T, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, type EditorInput } from "@/workbench/contributions";
@@ -63,6 +65,7 @@ import {
   isIndex,
   isWorktree,
   loadSide,
+  loadSideMode,
   oneSided,
   openDiff,
   sideFile,
@@ -244,6 +247,8 @@ export function DiffEditor({
   const [binary, setBinary] = useState<boolean | null>(null);
   /** Text of the sides that are not live documents. */
   const [statics, setStatics] = useState<{ a: string | null; b: string | null } | null>(null);
+  /** Git modes of the two sides (`100644`…), for the mode-only-change notice. */
+  const [modes, setModes] = useState<{ a: string | null; b: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opts, setOptsState] = useState<DiffViewOptions>(() => {
     const saved = loadDiffOptions();
@@ -315,9 +320,11 @@ export function DiffEditor({
     if (!attached) return;
     try {
       const paths = [sideFile(left, path), sideFile(right, path)].filter((p): p is string => !!p);
-      const [a, b, probes] = await Promise.all([
+      const [a, b, modeA, modeB, probes] = await Promise.all([
         attached.a ? null : loadSide(path, left),
         attached.b ? null : loadSide(path, right),
+        loadSideMode(path, left),
+        loadSideMode(path, right),
         Promise.all(paths.map((p) => call(commands.fsProbe(p)).catch(() => null))),
       ]);
       const prev = staticsRef.current;
@@ -325,6 +332,7 @@ export function DiffEditor({
         staticsRef.current = { a, b };
         setStatics({ a, b });
       }
+      setModes({ a: modeA, b: modeB });
       setBinary(probes.some((p) => p?.binary));
       setError(null);
     } catch (e) {
@@ -458,6 +466,8 @@ export function DiffEditor({
       lang,
       blameSlot(),
       att?.extension ?? [],
+      // The file's open document: quick docs and ⌘/Ctrl-click navigation, as in its editor.
+      att ? diffSideExtensions(att.context()) : [],
       editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
       notes
         ? diffAnnotations(
@@ -671,6 +681,21 @@ export function DiffEditor({
 
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
 
+  // The editor area focuses the tab's host (`[data-editor-focus]`), e.g. after F7 opened the next
+  // file: hand that focus on to the diff, so its keymap and Jump to Source apply right away.
+  useEffect(() => {
+    const host = rootRef.current?.closest<HTMLElement>("[data-editor-focus]");
+    const views = viewsRef.current;
+    if (!host || !views) return;
+    const forward = () => (focusedSide.current === "a" && views.a ? views.a : views.b).focus();
+    const onFocus = (e: FocusEvent) => {
+      if (e.target === host) forward();
+    };
+    host.addEventListener("focus", onFocus);
+    if (document.activeElement === host) forward();
+    return () => host.removeEventListener("focus", onFocus);
+  }, [viewsGen]);
+
   useEffect(
     () => () => {
       viewsRef.current?.destroy();
@@ -813,7 +838,8 @@ export function DiffEditor({
   const fileSource = sideFile(left, path) ?? sideFile(right, path);
   const [onDisk, setOnDisk] = useState<string | null>(null);
   useEffect(() => {
-    if (fileSource) return;
+    // A virtual path (a plugin's text diff) names no file on disk.
+    if (fileSource || isVirtualUri(path)) return;
     let alive = true;
     void call(commands.fsProbe(path)).then(
       () => alive && setOnDisk(path),
@@ -1098,8 +1124,11 @@ export function DiffEditor({
     showSettings,
     viewer: viewerOf,
   });
-  useEffect(() => {
-    nav.current = {
+  useLayoutEffect(() => {
+    // Keep the registered navigator's identity while refreshing its handlers. Before paint, so a
+    // shortcut pressed as the toolbar updates (Jump to Source once the working copy is found) runs
+    // the handlers that toolbar shows.
+    Object.assign(nav.current, {
       next: () => step(1),
       prev: () => step(-1),
       jumpToSource,
@@ -1107,7 +1136,7 @@ export function DiffEditor({
       file,
       showSettings,
       viewer: viewerOf,
-    };
+    });
   });
 
   useEffect(
@@ -1132,6 +1161,11 @@ export function DiffEditor({
   const eolOnly = ready && !binary && rawA !== rawB && sameText;
   const eolDiffers = ready && !binary && (badgeA !== badgeB || eolOnly);
   const identical = ready && chunkInfo.count === 0 && rawA === rawB;
+  // Equal texts with different git modes: the change git records (chmod).
+  const modeChange =
+    identical && modes !== null && modes.a !== null && modes.b !== null && modes.a !== modes.b
+      ? { from: modes.a, to: modes.b }
+      : null;
   // Staging applies to local changes against HEAD / the index only.
   const canStage = editableB && isWorktree(right) && left.type === "rev" && !!useVcs.getState().root;
   const hasSource = !!source;
@@ -1287,7 +1321,9 @@ export function DiffEditor({
             ? ""
             : chunkInfo.count === 0
               ? identical
-                ? tx("Contents are identical")
+                ? modeChange
+                  ? tx`File mode changed: ${modeChange.from} → ${modeChange.to}`
+                  : tx("Contents are identical")
                 : eolOnly
                   ? tx("Contents differ only in line separators")
                   : chunkInfo.whitespaceOnly

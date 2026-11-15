@@ -149,6 +149,14 @@
   font-size: var(--fs-small);
 }
 
+.sectionNote {
+  margin: 0;
+  padding: 2px 24px 6px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  line-height: 1.4;
+}
+
 .row {
   display: flex;
   align-items: center;

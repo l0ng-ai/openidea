@@ -28,7 +28,16 @@ import {
 } from "@/ui";
 import { PageContext, useSettingsFormFor } from "../components/context";
 import { SearchLabel } from "../components/Form";
-import { breadcrumb, buildPageTree, filterPageTree, flatten, groupKey, type PageNode } from "../model/pages";
+import {
+  breadcrumb,
+  buildPageTree,
+  filterPageTree,
+  flatten,
+  groupKey,
+  titledPage,
+  titleRank,
+  type PageNode,
+} from "../model/pages";
 import {
   applySettings,
   closeSettings,
@@ -68,6 +77,7 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   Editor: "Configure code editing: completion, folding, tabs, fonts, colors, code style and inspections.",
   "Build, Execution, Deployment": "Configure build tools, run configurations, debugger and deployment.",
   "Languages & Frameworks": "Configure language servers, interpreters, SDKs and framework support.",
+  Python: "Configure the project interpreter and its packages, every interpreter the IDE knows, and Ruff.",
   Agents: "Install coding agents and configure how they launch, chat and connect to the IDE.",
   Tools: "Configure external tools, terminal, database and other integrations.",
   "Version Control": "Configure the settings related to version control used in your project",
@@ -263,7 +273,15 @@ export function SettingsLayout() {
 
   const onQuery = (q: string) => {
     setQuery(q);
-    const next = flatten(filterPageTree(tree, q, pageLabels));
+    const filtered = filterPageTree(tree, q, pageLabels);
+    const next = flatten(filtered);
+    // A page named like the query wins over pages that only mention it.
+    const titled = titledPage(filtered, q);
+    const rank = (n: PageNode | undefined) => (n ? (titleRank(n, q) ?? 2) : 2);
+    if (titled && titled.key !== current?.key && rank(titled) < rank(current)) {
+      selectPage(titled.key);
+      return;
+    }
     if (q && current && !next.some((n) => n.key === current.key && n.matched)) {
       const first = firstPage(next);
       if (first) selectPage(first);

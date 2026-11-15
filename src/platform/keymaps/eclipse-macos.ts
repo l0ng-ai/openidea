@@ -7,6 +7,8 @@ import { intellijMacos } from "./intellij-macos";
 
 export const eclipseMacos: Record<string, string[]> = {
   ...intellijMacos,
+  "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   // $Undo / $Redo stay unbound as in the parent keymap: the focused editor or view handles them.
   "code.autoIndentLines": ["Meta+I"],
   "navigate.back": ["Meta+[", "Button4", "SwipeRight"],
@@ -18,6 +20,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "editor.closeAllTabs": ["Meta+Shift+W"],
   "analyze.inspectFile": [],
   "project.collapseAll": ["Meta+Shift+NumpadDivide"],
+  "run.collapseAllTests": ["Meta+Shift+NumpadDivide"],
   "code.foldAll": ["Meta+Shift+NumpadDivide"],
   "code.fold": ["Meta+NumpadSubtract"],
   "code.commentBlock": ["Shift+Meta+/"],
@@ -37,6 +40,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.shrinkSelection": ["Shift+Ctrl+Down"],
   "debug.evaluate": ["Meta+U"],
   "project.expandAll": ["Meta+Shift+NumpadMultiply"],
+  "run.expandAllTests": ["Meta+Shift+NumpadMultiply"],
   "code.unfoldAll": ["Meta+NumpadMultiply"],
   "code.unfold": ["Meta+NumpadAdd"],
   "code.expandAllToLevel1": [],
@@ -95,6 +99,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "diff.nextFile": [],
   "navigate.nextOccurrence": [],
   "editor.nextTab": ["Meta+F6", "Meta+Alt+Right"],
+  "db.nextResultTab": ["Meta+F6", "Meta+Alt+Right"],
   "code.optimizeImports": ["Shift+Meta+O"],
   "project.optimizeImports": ["Shift+Meta+O"],
   "code.overrideMethods": [],
@@ -102,6 +107,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.expressionTypeInfo": [],
   "navigate.prevOccurrence": [],
   "editor.prevTab": ["Shift+Meta+F6", "Meta+Alt+Left"],
+  "db.previousResultTab": ["Shift+Meta+F6", "Meta+Alt+Left"],
   "code.quickDocumentation": ["F2"],
   "db.quickDoc": ["F2"],
   "localHistory.recentChanges": [],

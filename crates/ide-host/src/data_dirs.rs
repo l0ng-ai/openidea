@@ -5,9 +5,52 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Moves the rebuildable local data (tools, language servers, indexes, caches);
-/// configuration and roaming data keep following the OS.
+/// Moves the rebuildable local data (tools, language servers, indexes, caches).
 pub const LOCAL_DATA_ENV: &str = "OPENIDEA_LOCAL_DATA_DIR";
+/// Moves the configuration (settings, recent projects, language definitions, window state).
+pub const CONFIG_ENV: &str = "OPENIDEA_CONFIG_DIR";
+/// Moves the user data (plugins, scratches, Local History, trusted projects).
+pub const DATA_ENV: &str = "OPENIDEA_DATA_DIR";
+/// Moves the logs.
+pub const LOG_ENV: &str = "OPENIDEA_LOG_DIR";
+
+/// `$OPENIDEA_CONFIG_DIR/<identifier>` when set, else the OS configuration directory
+/// (Tauri's `app_config_dir`). Like the local data, the identifier keeps release and
+/// per-worktree debug builds apart under one root; a relative path is an error.
+pub fn config_dir(identifier: &str) -> Result<PathBuf, String> {
+    resolve_env(CONFIG_ENV, std::env::var_os(CONFIG_ENV), dirs::config_dir(), identifier)
+}
+
+/// `$OPENIDEA_DATA_DIR/<identifier>` when set, else the OS data directory (Tauri's `app_data_dir`).
+pub fn data_dir(identifier: &str) -> Result<PathBuf, String> {
+    resolve_env(DATA_ENV, std::env::var_os(DATA_ENV), dirs::data_dir(), identifier)
+}
+
+/// `$OPENIDEA_LOG_DIR/<identifier>` when set, else `~/Library/Logs/<identifier>` on macOS and
+/// `<local data>/<identifier>/logs` elsewhere (Tauri's `app_log_dir`).
+pub fn log_dir(identifier: &str) -> Result<PathBuf, String> {
+    let os = if cfg!(target_os = "macos") {
+        dirs::home_dir().map(|home| home.join("Library/Logs").join(identifier))
+    } else {
+        dirs::data_local_dir().map(|dir| dir.join(identifier).join("logs"))
+    };
+    match std::env::var_os(LOG_ENV).filter(|v| !v.is_empty()) {
+        Some(var) => resolve_env(LOG_ENV, Some(var), None, identifier),
+        None => os.ok_or_else(|| "cannot find the log directory".into()),
+    }
+}
+
+/// The directory under `$<env>` when set (absolute, not created here), else under the OS directory.
+fn resolve_env(env: &str, var: Option<OsString>, os: Option<PathBuf>, identifier: &str) -> Result<PathBuf, String> {
+    let Some(root) = var.filter(|v| !v.is_empty()).map(PathBuf::from) else {
+        return os.map(|dir| dir.join(identifier)).ok_or_else(|| format!("cannot find the directory {env} replaces"));
+    };
+    // The working directory depends on how the IDE was launched.
+    if !root.is_absolute() {
+        return Err(format!("{env} must be an absolute path: {}", root.display()));
+    }
+    Ok(root.join(identifier))
+}
 
 /// A custom local-data root chosen in Settings › System Settings › Caches,
 /// stored in the configuration directory. The environment variable still wins.
@@ -51,11 +94,11 @@ fn startup_resolve(
 /// The file holding the custom local-data root, if the platform exposes its
 /// configuration directory. Both startup and Settings use this one path.
 pub fn override_path(identifier: &str) -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(identifier).join(OVERRIDE_FILE))
+    config_dir(identifier).ok().map(|dir| dir.join(OVERRIDE_FILE))
 }
 
 fn migration_path(identifier: &str) -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(identifier).join(MIGRATION_FILE))
+    config_dir(identifier).ok().map(|dir| dir.join(MIGRATION_FILE))
 }
 
 /// The custom root stored by Settings, if any (validated when it is used).
@@ -282,6 +325,20 @@ pub fn migrate(data: &Path, local: &Path) {
     if cfg!(target_os = "windows") && data != local {
         migrate_entries(data, local);
     }
+    if cfg!(target_os = "windows") {
+        relative_tool_shims(&local.join("tools"));
+    }
+}
+
+/// Wrappers written before they named their tool relative to themselves hold its absolute
+/// path, which cmd.exe can't find through a non-ASCII user directory (#3338).
+fn relative_tool_shims(tools: &Path) {
+    let Ok(entries) = fs::read_dir(tools) else { return };
+    for dir in entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+        if let Err(error) = relocate_shims(&dir, &dir) {
+            tracing::warn!(%error, ?dir, "cannot make the tool's wrappers relative");
+        }
+    }
 }
 
 fn migrate_entries(data: &Path, local: &Path) {
@@ -494,6 +551,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn config_data_and_log_dirs_follow_the_os_unless_their_variable_is_set() {
+        let os = Some(PathBuf::from("/os"));
+        for env in [CONFIG_ENV, DATA_ENV, LOG_ENV] {
+            for var in [None, Some(OsString::new())] {
+                assert_eq!(resolve_env(env, var, os.clone(), "id").unwrap(), PathBuf::from("/os/id"));
+            }
+            let root = std::env::temp_dir().join("openidea-moved");
+            assert_eq!(resolve_env(env, Some(root.clone().into()), os.clone(), "id").unwrap(), root.join("id"));
+            // Release and per-worktree debug builds stay apart under one root.
+            assert_ne!(
+                resolve_env(env, Some(root.clone().into()), None, "dev-a").unwrap(),
+                resolve_env(env, Some(root.clone().into()), None, "dev-b").unwrap()
+            );
+            let error = resolve_env(env, Some("relative/dir".into()), os.clone(), "id").unwrap_err();
+            assert!(error.contains(env) && error.contains("absolute"), "{error}");
+        }
+    }
+
+    #[test]
     fn local_dir_follows_the_os_unless_the_variable_is_set() {
         let os = Some(PathBuf::from("/os-local"));
         for var in [None, Some(OsString::new())] {
@@ -587,6 +663,22 @@ mod tests {
             assert!(resolve_local(Some(tmp.path().into()), None, "id").unwrap_err().contains("cannot write"));
         }
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn installed_tool_wrappers_become_relative() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = tmp.path().join("tools");
+        let tool = tools.join("taplo");
+        fs::create_dir_all(tool.join("bin")).unwrap();
+        let shim = tool.join("bin/taplo.cmd");
+        fs::write(&shim, format!("@echo off\r\n\"{}\\taplo.exe\" %*\r\n", tool.display())).unwrap();
+        // A wrapper the user re-saved in another encoding is left alone.
+        fs::create_dir_all(tools.join("other/bin")).unwrap();
+        fs::write(tools.join("other/bin/x.cmd"), b"@echo off\r\n\"C:\\\xd5\xc5\" %*\r\n").unwrap();
+        relative_tool_shims(&tools);
+        assert_eq!(fs::read_to_string(&shim).unwrap(), "@echo off\r\n\"%~dp0..\\taplo.exe\" %*\r\n");
+        relative_tool_shims(&tmp.path().join("missing"));
     }
 
     #[test]

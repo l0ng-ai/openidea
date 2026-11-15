@@ -264,7 +264,7 @@ describe("mermaid in the markdown preview", () => {
     const changed = vi.fn();
     const off = subscribeTheme(changed);
     try {
-      root.dataset.colorTheme = "one-dark";
+      root.dataset.colorTheme = "solarized-light";
       const firstKey = themeKey();
       await renderMermaidIn(preview(SEQ)).done;
       root.dataset.colorTheme = "solarized-dark";
@@ -380,7 +380,8 @@ describe("mermaid in the markdown preview", () => {
           }),
         }),
       );
-      expect(document.querySelector("span[hidden]")).toBeNull();
+      // One probe element serves every token.
+      expect(document.querySelectorAll("span[hidden]")).toHaveLength(1);
     } finally {
       computed.mockRestore();
     }
@@ -393,6 +394,15 @@ describe("mermaid in the markdown preview", () => {
     await pass.done;
     expect(m.render).not.toHaveBeenCalled();
     expect(root.querySelector("[data-mermaid]")?.getAttribute("data-mermaid-state")).toBe("pending");
+  });
+
+  it("records a diagram's natural width so preview font zoom scales it without clamping", async () => {
+    const svg = await renderedSvg(
+      '<svg id="openidea-mermaid-1" width="100%" style="max-width: 540px;" viewBox="0 0 540 320"><text>flow</text></svg>',
+    );
+    expect(svg.hasAttribute("data-natural-width")).toBe(true);
+    expect(svg.style.getPropertyValue("--diagram-width")).toBe("540px");
+    expect(svg.style.maxWidth).toBe("calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1))");
   });
 
   it("puts full-screen and download tools on a drawn diagram", async () => {
@@ -488,7 +498,7 @@ describe("mermaid in the markdown preview", () => {
     const html = document.documentElement;
     const previous = html.dataset.colorTheme;
     try {
-      html.dataset.colorTheme = "one-dark";
+      html.dataset.colorTheme = "solarized-light";
       const root = preview(SEQ);
       await renderMermaidIn(root).done;
       root.querySelector<HTMLButtonElement>('[data-mermaid-tools] button[aria-label="Full screen"]')!.click();
@@ -510,7 +520,7 @@ describe("mermaid in the markdown preview", () => {
       expect(pan.style.transform).toBe(zoomed);
 
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
-      html.dataset.colorTheme = "one-dark";
+      html.dataset.colorTheme = "solarized-light";
       await renderMermaidIn(root).done;
       expect(document.querySelector("[data-mermaid-preview]")).toBeNull();
     } finally {

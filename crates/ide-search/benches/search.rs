@@ -65,5 +65,26 @@ fn bench(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench);
+// No .ignore file: the query's subtree masks must prevent traversal themselves.
+fn excluded_subtrees(c: &mut Criterion) {
+    let dir = tempfile::tempdir().unwrap();
+    for module in 0..100 {
+        let root = dir.path().join(format!("modules/m{module}"));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.go"), "needle").unwrap();
+        for dependency in 0..50 {
+            let dep = root.join(format!("node_modules/dep{dependency}/lib"));
+            std::fs::create_dir_all(&dep).unwrap();
+            std::fs::write(dep.join("index.js"), "needle").unwrap();
+        }
+    }
+    let q = SearchQuery { exclude: vec!["**/node_modules/**".into()], ..query("needle", false) };
+    assert_eq!(run(dir.path(), &q), 100);
+    let mut group = c.benchmark_group("search_excluded_subtrees");
+    group.sample_size(15);
+    group.bench_function("5k_dependencies", |b| b.iter(|| black_box(run(dir.path(), &q))));
+    group.finish();
+}
+
+criterion_group!(benches, bench, excluded_subtrees);
 criterion_main!(benches);

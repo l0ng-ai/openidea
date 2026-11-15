@@ -10,7 +10,7 @@ import { showHint } from "@/editor/lsp/hint";
 import { activeSession, useExecutionPoint } from "../state";
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
 import { tx } from "@/platform/i18n";
-import { identifiersIn, inlineValue } from "../values";
+import { identifiersIn, inlineValue, shownValue } from "../values";
 import { valueHint } from "./valueTooltip";
 import styles from "./editor.module.css";
 
@@ -113,11 +113,13 @@ export function inlineValuesFor(
             evaluateName: id,
           })
         : raw;
+    const shown = shownValue(variable.value, variable.typeName);
+    const value = shown.text || shown.label || variable.value;
     parts.push({
       name: id,
-      text: `${id}: ${inlineValue(variable.value, 40)}`,
+      text: `${id}: ${inlineValue(value, 40)}`,
       variable,
-      truncated: variable.value.length > 40,
+      truncated: value.length > 40,
     });
     if (parts.length >= MAX_PER_LINE) break;
   }

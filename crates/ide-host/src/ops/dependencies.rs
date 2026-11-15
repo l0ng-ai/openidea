@@ -1,7 +1,7 @@
 //! Repository version lookups for manifest inspections and completion.
 use crate::{Host, rpc::Dispatcher};
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, RequestId};
-use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go, npm};
+use ide_workspace::dependencies::{DependencyVersionSource, DependencyVersions, cargo, go, maven, npm};
 use std::collections::BTreeMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -22,6 +22,79 @@ impl DependencyVersionSource for CratesIo {
             cancel,
         )?;
         cargo::parse_index(&text).ok_or_else(|| IdeError::internal("invalid sparse index"))
+    }
+}
+
+/// A cache key for a `package` that is not a filesystem-safe name (a Maven
+/// coordinate with dots, a query): hashed under the source's id.
+pub(crate) fn hashed_key(id: &str, package: &str) -> String {
+    let mut hash = DefaultHasher::new();
+    package.hash(&mut hash);
+    format!("{id}-{:016x}", hash.finish())
+}
+
+/// Maven Central's group-id suggestions: the search endpoint's groups matching
+/// a typed prefix, most recently updated first.
+pub(crate) struct MavenCentralGroups;
+impl DependencyVersionSource for MavenCentralGroups {
+    fn id(&self) -> &'static str {
+        "maven-central-groups"
+    }
+
+    fn cache_key(&self, prefix: &str) -> Option<String> {
+        Some(hashed_key(self.id(), prefix))
+    }
+
+    fn fetch(&self, prefix: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let url = maven::groups_url(prefix).ok_or_else(|| IdeError::internal("invalid group prefix"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        let text =
+            ide_tools::Http::new(&search_path)?.https_only().get_text_limited(&url, Some(1024 * 1024), cancel)?;
+        maven::parse_search_groups(&text).ok_or_else(|| IdeError::internal("invalid search response"))
+    }
+}
+
+/// The artifacts of one group matching a typed prefix, from the same endpoint.
+pub(crate) struct MavenCentralArtifacts {
+    pub group: String,
+}
+impl DependencyVersionSource for MavenCentralArtifacts {
+    fn id(&self) -> &'static str {
+        "maven-central-artifacts"
+    }
+
+    fn cache_key(&self, prefix: &str) -> Option<String> {
+        Some(hashed_key(self.id(), &format!("{}\u{1}{prefix}", self.group)))
+    }
+
+    fn fetch(&self, prefix: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let url =
+            maven::artifacts_url(&self.group, prefix).ok_or_else(|| IdeError::internal("invalid artifact prefix"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        let text =
+            ide_tools::Http::new(&search_path)?.https_only().get_text_limited(&url, Some(1024 * 1024), cancel)?;
+        maven::parse_search_artifacts(&text).ok_or_else(|| IdeError::internal("invalid search response"))
+    }
+}
+
+/// Every version published of one `group:artifact` on Central, newest first.
+pub(crate) struct MavenCentralVersions;
+impl DependencyVersionSource for MavenCentralVersions {
+    fn id(&self) -> &'static str {
+        "maven-central-versions"
+    }
+
+    fn cache_key(&self, coordinates: &str) -> Option<String> {
+        Some(hashed_key(self.id(), coordinates))
+    }
+
+    fn fetch(&self, coordinates: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
+        let (group, artifact) = coordinates.split_once(':').ok_or_else(|| IdeError::internal("invalid coordinates"))?;
+        let url = maven::metadata_url(group, artifact).ok_or_else(|| IdeError::internal("invalid coordinates"))?;
+        let search_path = std::env::var_os("PATH").unwrap_or_default();
+        let text =
+            ide_tools::Http::new(&search_path)?.https_only().get_text_limited(&url, Some(2 * 1024 * 1024), cancel)?;
+        Ok(maven::parse_metadata_versions(&text))
     }
 }
 

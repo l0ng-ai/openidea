@@ -139,7 +139,7 @@ async fn text_search_uses_overlay_excludes_utf16_and_limits() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn problems_share_project_reports_and_keep_sources_separate() {
+async fn problems_come_from_the_host_snapshot_whatever_window_published_them() {
     let f = Harness::new();
     let path = f.root.join("a.txt");
     std::fs::write(&path, "text").unwrap();
@@ -153,21 +153,30 @@ async fn problems_share_project_reports_and_keep_sources_separate() {
         deprecated: false,
         server: None,
     };
-    f.host.mcp_reports.report_problems(
-        "second",
-        true,
-        vec![ide_host::mcp::FileProblems {
+    // Producers publish per (file, producer) through the event sink, like the
+    // language servers and the spelling check do.
+    let publish = |host: &Host, source: &str, items: Vec<Diagnostic>| {
+        host.project("main").unwrap().sink.emit(ide_core::IdeEvent::Diagnostics {
             path: path.clone().into(),
-            items: vec![diagnostic("lsp"), diagnostic("plugin")],
-        }],
-    );
+            source: source.into(),
+            items,
+        });
+    };
+    publish(&f.host, "rust-analyzer", vec![diagnostic("lsp")]);
+    publish(&f.host, "build", vec![diagnostic("plugin")]);
+    // A file outside the window's project is visible too: annotations follow the file.
+    let outside = f.host.diagnostics.problems().len();
     let workspace = f.workspace();
     let files = workspace.problems("main", Some(&path)).unwrap();
     assert_eq!(files.len(), 2);
     assert!(files.iter().all(|f| f.diagnostics.len() == 1));
     assert!(workspace.problems("main", Some(&f.root.join("other.txt"))).unwrap().is_empty());
-    f.host.mcp_reports.forget_window("second");
-    assert!(workspace.problems("main", None).unwrap().is_empty());
+    assert_eq!(outside, 2);
+    // A full replacement per producer clears only that producer.
+    publish(&f.host, "rust-analyzer", vec![]);
+    let files = workspace.problems("main", None).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].source, "build");
 }
 
 #[tokio::test(flavor = "multi_thread")]

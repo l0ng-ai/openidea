@@ -299,27 +299,61 @@ export function changedLines(before: Text, after: Text): Array<{ from: number; t
  * Applies the first enabled whole-file action of `kind` without UI (Actions on
  * Save). Waits until the backend edit reached this editor; false when none.
  */
+/**
+ * Applies the server's `kind` action to the whole document without UI (Actions on Save,
+ * Code Cleanup). Fix-all runs once per server that offers it, one after another, each
+ * asked again for the document as the previous one left it (VS Code's codeActionsOnSave):
+ * vtsls and ESLint both answer `source.fixAll` for a TypeScript file.
+ */
 export async function applyKindSilently(view: EditorView, kind: string): Promise<boolean> {
   const doc = docOf(view);
   if (!doc || doc.readOnly) return false;
+  const matching = (actions: CodeAction[], server?: CodeAction["server"]) =>
+    actions.filter(
+      (a) =>
+        a.kind?.startsWith(kind) &&
+        !a.disabledReason &&
+        !isLazyPluginAction(a) &&
+        (server === undefined || a.server === server),
+    );
+  const pick = (actions: CodeAction[]) => actions.find((a) => a.isPreferred) ?? actions[0];
   let actions: CodeAction[];
   try {
-    actions = (await fetchActions(view, [kind], true)).filter(
-      (a) => a.kind?.startsWith(kind) && !a.disabledReason && !isLazyPluginAction(a),
-    );
-  } catch {
+    actions = matching(await fetchActions(view, [kind], true));
+  } catch (e) {
+    console.warn(`[lsp] ${kind} on ${doc.path} failed`, e);
     return false;
   }
-  const action = actions.find((a) => a.isPreferred) ?? actions[0];
-  if (!action) return false;
-  const before = view.state.doc;
-  try {
-    await lspRequest(() => commands.lspApplyCodeAction(doc.doc, action));
-  } catch {
-    return false;
+  const first = pick(actions);
+  if (!first) return false;
+  const servers = kind.startsWith("source.fixAll")
+    ? [first.server, ...new Set(actions.map((a) => a.server).filter((s) => s !== first.server))]
+    : [first.server];
+  let applied = false;
+  for (const [i, server] of servers.entries()) {
+    let action: CodeAction | undefined = first;
+    if (i > 0) {
+      // The previous server's edit changed the document: this one's answer must be fresh.
+      try {
+        action = pick(matching(await fetchActions(view, [kind], true), server));
+      } catch (e) {
+        console.warn(`[lsp] ${kind} on ${doc.path} failed`, e);
+        continue;
+      }
+      if (!action) continue;
+    }
+    const before = view.state.doc;
+    const chosen = action;
+    try {
+      await lspRequest(() => commands.lspApplyCodeAction(doc.doc, chosen));
+    } catch (e) {
+      console.warn(`[lsp] applying ${chosen.kind} on ${doc.path} failed`, e);
+      continue;
+    }
+    applied = true;
+    for (let i = 0; i < 25 && view.state.doc === before; i++) await new Promise((r) => setTimeout(r, 20));
   }
-  for (let i = 0; i < 25 && view.state.doc === before; i++) await new Promise((r) => setTimeout(r, 20));
-  return true;
+  return applied;
 }
 
 /**

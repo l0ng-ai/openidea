@@ -16,6 +16,7 @@ import {
   Select,
   Tree,
   folderIconName,
+  showContextMenu,
   type DialogButton,
   type FolderKind,
   type IconName,
@@ -64,6 +65,7 @@ import { choosePath, detectSdks, useSdks, type SdkKind } from "./api";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import { SdkField, tildify, useDetected, useJdtlsJdk, useProjectSetting } from "./components";
 import styles from "./Sdk.module.css";
+import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 
 export type ProjectStructureSectionId =
@@ -861,16 +863,31 @@ function ModulesSection() {
     <div className={styles.page}>
       {moduleError && (
         <div role="status" className={styles.note}>
-          <T>Select a module directory inside the project.</T>
+          <T>
+            Module overrides only apply to a directory inside the opened project. To import an existing module from
+            outside it, use Import Module from Existing Sources.
+          </T>
         </div>
       )}
       <div className={styles.splitLayout}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => void addModule()}>
-              <T>Add Module Overrides</T>
-            </Button>
-            <span className={styles.spacer} />
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Add"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: tx("Add Module Overrides…"), icon: "module", run: () => void addModule() },
+                  {
+                    label: tx("Import Module from Existing Sources…"),
+                    icon: "folder-open",
+                    run: () => void executeAction("maven.importExternal"),
+                  },
+                ]);
+              }}
+            />
             <IconButton
               icon="minus"
               size="small"
@@ -1103,6 +1120,17 @@ function LibrariesSection() {
     setSelectedIdx(next.length - 1);
   };
 
+  /** IDEA's Copy: a duplicate named "<name> (copy)", selected for editing. */
+  const copySelectedLibrary = () => {
+    if (!current) return;
+    const names = new Set(libs.map((l) => l.name));
+    let name = tx`${current.name} (copy)`;
+    for (let n = 2; names.has(name); n++) name = tx`${current.name} (copy ${n})`;
+    const next = [...libs, { ...current, name }];
+    setRawLibs(next);
+    setSelectedIdx(next.length - 1);
+  };
+
   const removeSelectedLibrary = () => {
     if (activeIdx < 0) return;
     const next = libs.filter((_, idx) => idx !== activeIdx);
@@ -1128,14 +1156,14 @@ function LibrariesSection() {
             <IconButton
               icon="plus"
               size="small"
-              title="Add JAR or Directory…"
-              onClick={() => void addLibraryFromJar(false)}
-            />
-            <IconButton
-              icon="folder-open"
-              size="small"
-              title="Add Classes Folder…"
-              onClick={() => void addLibraryFromJar(true)}
+              title="New Project Library"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: tx("JAR or Directory…"), icon: "file-archive", run: () => void addLibraryFromJar(false) },
+                  { label: tx("Classes Folder…"), icon: "folder-open", run: () => void addLibraryFromJar(true) },
+                ]);
+              }}
             />
             <IconButton
               icon="minus"
@@ -1143,6 +1171,13 @@ function LibrariesSection() {
               title="Remove Library"
               disabled={activeIdx < 0}
               onClick={removeSelectedLibrary}
+            />
+            <IconButton
+              icon="copy"
+              size="small"
+              title="Copy Library"
+              disabled={activeIdx < 0}
+              onClick={copySelectedLibrary}
             />
           </div>
           <div className={styles.sideItems}>

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import type { Terminal } from "@xterm/xterm";
-import { installDomRowCache } from "./domRowCache";
+import { ICON_SPAN_CLASS, installDomRowCache } from "./domRowCache";
 
 /** Mirrors the shape of xterm 6's private DomRenderer closely enough for the cache. */
 function fakeRendererClass() {
@@ -18,10 +18,13 @@ function fakeRendererClass() {
     dimensions = { css: { cell: { width: 8 } } };
     _widthCache = {};
     _rowFactory = {
+      defaultSpacing: 0,
       createRow: (line: string) =>
         line.split(" ").map((word) => {
           const span = document.createElement("span");
-          span.textContent = word;
+          const [text = "", spacing] = word.split("@");
+          span.textContent = text;
+          if (spacing) span.style.letterSpacing = spacing;
           return span;
         }),
     };
@@ -74,6 +77,23 @@ describe("installDomRowCache", () => {
     expect(rowAt(renderer, 0).firstChild).toBe(first);
     expect(rowAt(renderer, 1).firstChild).not.toBe(second);
     expect(rowAt(renderer, 1).textContent).toBe("ce");
+  });
+
+  it("lifts spans with Nerd Font icons or wider-than-cell fallback glyphs over the next cell's background", () => {
+    const Renderer = fakeRendererClass();
+    // PUA icons (U+E606, U+F0035), non-PUA Nerd Font symbols (U+26A1), and fallback symbols
+    // measured wider than one cell (U+23F2 with negative letter-spacing) lift; tiny subpixel
+    // DPR rounding (-0.1px) and narrow glyphs (+1.2px) stay normal.
+    const renderer = new Renderer(["\uE606 py \u{F0035} \u26A1 \u23F2@-2.4px a@-0.1px b@1.2px ~/src"]);
+    installDomRowCache(terminalWith(renderer));
+    renderer.renderRows(0, 0);
+    const lifted = [...rowAt(renderer, 0).children].map((span) => span.classList.contains(ICON_SPAN_CLASS));
+    expect(lifted).toEqual([true, false, true, true, true, false, false, false]);
+
+    // Hovering a link (_setCellUnderline) rebuilds the row directly; overhanging spans stay lifted.
+    renderer._setCellUnderline();
+    const liftedOnHover = [...rowAt(renderer, 0).children].map((span) => span.classList.contains(ICON_SPAN_CLASS));
+    expect(liftedOnHover).toEqual([true, false, true, true, true, false, false, false]);
   });
 
   it("re-renders rows after clear() and link underlines rebuilt them", () => {

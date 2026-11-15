@@ -77,6 +77,8 @@ pub enum AutoUpload {
 #[serde(default, rename_all = "camelCase")]
 pub struct DeploymentSettings {
     pub servers: Vec<DeploymentServer>,
+    /// Server groups: Upload to… on a group uploads to each of its servers.
+    pub groups: Vec<DeploymentGroup>,
     /// Server used by Upload / Download / Sync and automatic upload; empty = none.
     pub default_server: String,
     pub auto_upload: AutoUpload,
@@ -92,6 +94,7 @@ impl Default for DeploymentSettings {
     fn default() -> Self {
         Self {
             servers: Vec::new(),
+            groups: Vec::new(),
             default_server: String::new(),
             auto_upload: AutoUpload::Never,
             delete_remote: false,
@@ -101,6 +104,16 @@ impl Default for DeploymentSettings {
                 .to_vec(),
         }
     }
+}
+
+/// Named set of deployment servers that files are uploaded to together.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeploymentGroup {
+    pub id: String,
+    pub name: String,
+    /// [`DeploymentServer::id`]s, in upload order.
+    pub servers: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]

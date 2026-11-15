@@ -9,9 +9,11 @@ import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { hideContextMenu, resolveMenuItems, useContextMenuStore } from "@/ui";
-import { getContext, setContext } from "@/platform/context";
+import { evaluateWhen, getContext, setContext } from "@/platform/context";
 import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
+import { EDITOR_WHEN } from "@/editor/lsp/actions";
+import { setShownLine } from "@/editor/api";
 
 let ctrl: EditorController | null = null;
 
@@ -30,6 +32,24 @@ describe("EditorController", () => {
     setProjectViewLead({ path: "/p/src", dir: true });
     await ctrl.openInput({ kind: "agent-session", key: "task" });
     expect(useProjectViewLead.getState().lead).toBeNull();
+  });
+
+  it("goes back to the line a stand-in view shows (Markdown Preview only), not the hidden caret", async () => {
+    const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.md": text, "/p/b.md": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.md", { selection: { line: 45, col: 0 }, focus: false });
+    // The preview was scrolled after the file opened; then a link opens another file.
+    setShownLine("/p/a.md", 20);
+    try {
+      await ctrl.openFile("/p/b.md", { focus: false });
+      await ctrl.back();
+      const slot = ctrl.activeSlot!;
+      expect(slot.model.path).toBe("/p/a.md");
+      expect(slot.caret().line).toBe(20);
+    } finally {
+      setShownLine("/p/a.md", null);
+    }
   });
 
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
@@ -367,7 +387,7 @@ describe("EditorController", () => {
           "vcs.showHistoryForSelection",
           "vcs.rollback",
         ],
-        ["vcs.push", "vcs.update", "vcs.fetch"],
+        ["vcs.push", "vcs.pull", "vcs.fetch"],
         ["vcs.merge", "vcs.rebase"],
         ["vcs.branches", "vcs.newBranch", "vcs.newTag", "vcs.resetHead"],
         ["vcs.stash", "vcs.unstash"],
@@ -462,5 +482,23 @@ describe("EditorController", () => {
     } finally {
       offWrapper();
     }
+  });
+});
+
+describe("editor action when clauses", () => {
+  const editorBehind = { textEditorActive: true, editorTextFocus: false, editorFocus: false, popupOpen: true };
+
+  it.each([
+    ["TEXT_WHEN", TEXT_WHEN],
+    ["EDITOR_WHEN", EDITOR_WHEN],
+  ])("%s runs on the editor from a popup such as Find Action", (_, when) => {
+    expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: false })).toBe(true);
+  });
+
+  it.each([
+    ["TEXT_WHEN", TEXT_WHEN],
+    ["EDITOR_WHEN", EDITOR_WHEN],
+  ])("%s leaves keys to a tool window's speed search, e.g. ⌘⌫ to Delete Line", (_, when) => {
+    expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: true })).toBe(false);
   });
 });

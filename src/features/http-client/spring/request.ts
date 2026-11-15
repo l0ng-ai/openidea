@@ -115,9 +115,18 @@ export function skeleton(type: string, lookup: (name: string) => ClassDecl | nul
   if (MAP.test(t) || t === "Object" || t === "Any" || !t) return {};
   const cls = lookup(t.replace(/<.*$/, ""));
   if (!cls || depth > 1) return {};
+  // Superclass properties first, as Jackson writes them.
+  const chain = [cls];
+  for (let c = cls; c.superclass && chain.length <= MAX_SUPERCLASSES;) {
+    const parent = lookup(bareType(c.superclass).replace(/<.*$/, ""));
+    if (!parent || chain.includes(parent)) break;
+    chain.unshift((c = parent));
+  }
   const obj: { [k: string]: Json } = {};
-  for (const p of cls.ctorParams) obj[p.name] = skeleton(p.type, lookup, depth + 1);
-  for (const f of cls.fields) if (!f.isStatic && !(f.name in obj)) obj[f.name] = skeleton(f.type, lookup, depth + 1);
+  for (const c of chain) {
+    for (const p of c.ctorParams) if (!(p.name in obj)) obj[p.name] = skeleton(p.type, lookup, depth + 1);
+    for (const f of c.fields) if (!f.isStatic && !(f.name in obj)) obj[f.name] = skeleton(f.type, lookup, depth + 1);
+  }
   return obj;
 }
 
@@ -175,34 +184,52 @@ export function appendRequests(existing: string, blocks: string[]): { insert: st
 export interface SourceReader {
   /** File text, null when missing. */
   read(path: string): Promise<string | null>;
+  /** The project's files called `name` (from the index). */
+  filesNamed?(name: string): Promise<string[]>;
 }
+
+/** How many superclasses of a body type are followed for their fields. */
+const MAX_SUPERCLASSES = 5;
 
 const dirname = (p: string) => p.replace(/[\\/][^\\/]*$/, "");
 
-/** The Spring Boot configuration files for `sourcePath` (its module's `src/main/resources`), most specific first. */
-export function configCandidates(sourcePath: string, projectRoot: string | null): string[] {
+/** The Spring Boot configuration files (of `profile`) for `sourcePath` (its module's `src/main/resources`), most specific first. */
+export function configCandidates(sourcePath: string, projectRoot: string | null, profile?: string): string[] {
   const norm = sourcePath.replace(/\\/g, "/");
   const at = norm.lastIndexOf("/src/main/");
   const roots = at >= 0 ? [norm.slice(0, at)] : [];
   if (projectRoot && !roots.includes(projectRoot)) roots.push(projectRoot.replace(/\\/g, "/").replace(/\/$/, ""));
   return roots.flatMap((r) =>
-    ["application.properties", "application.yml", "application.yaml"].map((f) => `${r}/src/main/resources/${f}`),
+    ["properties", "yml", "yaml"].map((x) => `${r}/src/main/resources/application${profile ? `-${profile}` : ""}.${x}`),
   );
 }
 
 export async function findHost(sourcePath: string, projectRoot: string | null, fs: SourceReader): Promise<string> {
-  const configs: Map<string, string>[] = [];
-  for (const path of configCandidates(sourcePath, projectRoot)) {
-    const text = await fs.read(path).catch(() => null);
-    if (text === null) continue;
-    configs.push(path.endsWith(".properties") ? parseProperties(text) : parseYaml(text));
-  }
-  return hostFromConfig(configs);
+  const read = async (paths: string[]) => {
+    const configs: Map<string, string>[] = [];
+    for (const path of paths) {
+      const text = await fs.read(path).catch(() => null);
+      if (text !== null) configs.push(path.endsWith(".properties") ? parseProperties(text) : parseYaml(text));
+    }
+    return configs;
+  };
+  const base = await read(configCandidates(sourcePath, projectRoot));
+  // `spring.profiles.active=dev`: `application-dev.*` overrides the base files (the last profile wins).
+  const active = base.map((c) => resolved(c.get("spring.profiles.active"))).find(Boolean);
+  const profiles = (active ?? "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter((p) => /^[\w.-]+$/.test(p))
+    .reverse();
+  const profiled = await read(profiles.flatMap((p) => configCandidates(sourcePath, projectRoot, p)));
+  return hostFromConfig([...profiled, ...base]);
 }
 
 /**
- * Body types of `endpoints`: classes of the controller's file, then
- * `<Type>.java|.kt` beside it or where its import points (same source root).
+ * Body types of `endpoints`: classes of the controller's file, then `<Type>.java|.kt` beside
+ * it or where its import points (same source root), else the project file of that name in the
+ * imported (or same / wildcard-imported) package, e.g. a DTO in another Maven module. Their
+ * superclasses are loaded too.
  */
 export async function bodyLookup(
   sourcePath: string,
@@ -211,42 +238,78 @@ export async function bodyLookup(
   fs: SourceReader,
 ): Promise<(name: string) => ClassDecl | null> {
   const known = new Map<string, ClassDecl>();
-  const add = (f: SourceFile) => {
-    for (const c of allClasses(f)) if (!known.has(c.name)) known.set(c.name, c);
+  /** Where each class was read: names in its declarations resolve from that file. */
+  const origins = new Map<string, Origin>();
+  const add = (o: Origin) => {
+    for (const c of allClasses(o.file))
+      if (!known.has(c.name)) {
+        known.set(c.name, c);
+        origins.set(c.name, o);
+      }
   };
-  add(file);
+  const origin = { path: sourcePath.replace(/\\/g, "/"), file };
+  add(origin);
   const sourceRoot = (path: string, f: SourceFile) => {
     let root = dirname(path);
     for (let i = f.packageName ? f.packageName.split(".").length : 0; i > 0; i--) root = dirname(root);
     return root;
   };
   const ext = /\.kt$/.test(sourcePath) ? [".kt", ".java"] : [".java", ".kt"];
-  /** Loads `name` as seen from `from` (its imports, then its directory). */
-  const load = async (name: string, from: { path: string; file: SourceFile }) => {
-    if (known.has(name) || !/^[A-Z]\w*$/.test(name)) return null;
+  const readAt = async (path: string) => {
+    const text = await fs.read(path).catch(() => null);
+    if (text === null) return null;
+    const loaded = { path, file: parseSource(text) };
+    add(loaded);
+    return loaded;
+  };
+  /** Loads `name` as seen from `from` (its imports, then its package). */
+  const load = async (name: string, from: Origin) => {
+    if (known.has(name)) return origins.get(name) ?? null;
+    if (!/^[A-Z]\w*$/.test(name)) return null;
     const imported = from.file.imports.find((i) => i.endsWith(`.${name}`));
-    const dir = dirname(from.path);
-    const pkgDir = imported && `${sourceRoot(from.path, from.file)}/${imported.split(".").slice(0, -1).join("/")}`;
-    for (const d of pkgDir ? [pkgDir, dir] : [dir])
+    const packages = imported
+      ? [imported.split(".").slice(0, -1).join(".")]
+      : [from.file.packageName, ...from.file.imports.filter((i) => i.endsWith(".*")).map((i) => i.slice(0, -2))];
+    const root = sourceRoot(from.path, from.file);
+    const dirs = new Set([...packages.map((p) => (p ? `${root}/${p.replace(/\./g, "/")}` : root)), dirname(from.path)]);
+    for (const d of dirs)
       for (const x of ext) {
-        const path = `${d}/${name}${x}`;
-        const text = await fs.read(path).catch(() => null);
-        if (text === null) continue;
-        const loaded = parseSource(text);
-        add(loaded);
-        return { path, file: loaded };
+        const loaded = await readAt(`${d}/${name}${x}`);
+        if (loaded) return loaded;
       }
+    // Another source root or module: the project's files of that name, in one of those packages.
+    if (!fs.filesNamed) return null;
+    const suffixes = packages.map((p) => `/${p ? `${p.replace(/\./g, "/")}/` : ""}${name}`);
+    for (const x of ext) {
+      const paths = (await fs.filesNamed(`${name}${x}`).catch(() => [])).map((p) => p.replace(/\\/g, "/"));
+      const path = paths.find((p) => suffixes.some((s) => p.endsWith(`${s}${x}`)));
+      const loaded = path ? await readAt(path) : null;
+      if (loaded) return loaded;
+    }
     return null;
   };
   const typeName = (t: string) => bareType(t).replace(/<.*$/, "");
-  const origin = { path: sourcePath.replace(/\\/g, "/"), file };
+  /** `name`, its superclasses, and the property types of each, one level down. */
+  const loadWithProperties = async (name: string, from: Origin, depth: number) => {
+    const seen = new Set<string>();
+    let [current, at]: [string | undefined, Origin | null] = [name, from];
+    while (current && at && !seen.has(current) && seen.size < MAX_SUPERCLASSES) {
+      seen.add(current);
+      const loaded = await load(current, at);
+      const c = known.get(current);
+      if (!c || !loaded) break;
+      if (depth > 0)
+        for (const p of [...c.ctorParams, ...c.fields.filter((f) => !f.isStatic)])
+          await loadWithProperties(typeName(p.type), loaded, depth - 1);
+      [current, at] = [c.superclass && typeName(c.superclass), loaded];
+    }
+  };
   const names = new Set(endpoints.flatMap((e) => (e.bodyType ? [typeName(e.bodyType)] : [])));
-  for (const n of names) {
-    const from = (await load(n, origin)) ?? origin;
-    // Property types one level down, as seen from the body type's file.
-    const c = known.get(n);
-    for (const p of c ? [...c.ctorParams, ...c.fields.filter((f) => !f.isStatic)] : [])
-      await load(typeName(p.type), from);
-  }
+  for (const n of names) await loadWithProperties(n, origin, 1);
   return (name) => known.get(name) ?? null;
+}
+
+interface Origin {
+  path: string;
+  file: SourceFile;
 }

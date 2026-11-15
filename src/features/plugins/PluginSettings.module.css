@@ -84,3 +84,37 @@
 .scalars {
   max-width: 560px;
 }
+
+/* A severity's sample, drawn the way the annotation appears in the editor: the line-end
+   message carries the severity colour alone — the wave belongs to the code token, the
+   message itself is never underlined. The label column is fixed so the samples line up,
+   one row per setting. */
+.exampleRow {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: var(--space-3);
+}
+.example {
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-size: var(--fs-code);
+  white-space: pre-wrap;
+}
+.example[data-style="error"] {
+  color: var(--wave-error);
+}
+.example[data-style="warning"] {
+  color: var(--wave-warning);
+}
+.example[data-style="weak"] {
+  color: var(--fg-weak-warning);
+}
+.example[data-style="typo"] {
+  color: var(--wave-typo, var(--success));
+}
+.example[data-style="info"] {
+  color: var(--info);
+}
+.example[data-style="muted"] {
+  color: var(--fg-muted);
+}

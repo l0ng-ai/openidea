@@ -5,9 +5,12 @@ export interface CellActions {
   canToggle(): boolean;
   canSetNull(): boolean;
   canSetDefault(): boolean;
+  canFilter(): boolean;
   toggle(): void;
   setNull(): void;
   setDefault(): void;
+  /** Opens the local filter of the selected cell's column. */
+  filter(): void;
 }
 
 const grids = new WeakMap<Element, CellActions>();
@@ -58,6 +61,14 @@ export function installCellActions(): () => void {
       keyWhen: "dbCellGridFocus",
       enabled: (c) => handle(c)?.canSetDefault() ?? false,
       run: (c) => handle(c)?.setDefault(),
+    },
+    {
+      id: "db.localFilter",
+      title: "Local Filter",
+      category: "Database",
+      keyWhen: "dbCellGridFocus",
+      enabled: (c) => handle(c)?.canFilter() ?? false,
+      run: (c) => handle(c)?.filter(),
     },
   ]);
   return () => {

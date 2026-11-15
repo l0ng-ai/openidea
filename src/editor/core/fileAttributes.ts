@@ -1,7 +1,8 @@
 /**
  * File › File Properties › Make File Read-only / Writable (IDEA's "Toggle
  * Read-only Attribute", also the status bar lock): asks, then flips the
- * file's writable bit and the open document's editability.
+ * file's writable bit and the open document's editability. Typing into a file
+ * whose read-only attribute is set asks the same (IDEA's Clear Read-Only Status).
  */
 import { call, commands, isTauri } from "@/platform/ipc";
 import { basename } from "@/platform/project";
@@ -40,4 +41,23 @@ export function toggleReadOnly(model: DocModel) {
   void confirm({ title: q.title, message: q.message, ok: q.confirm }).then(
     (ok) => ok && void setFileWritable(model, meta.readOnly),
   );
+}
+
+let asking: DocModel | null = null;
+
+/**
+ * An edit was attempted in `model`. When only the file's read-only attribute is in the
+ * way (not a binary, too large or library file), offers to make it writable, once at a
+ * time. Returns whether the edit was refused: the caller drops it either way.
+ */
+export function offerMakeWritable(model: DocModel): boolean {
+  const meta = model.getMeta();
+  if (!meta.readOnly) return false;
+  if (model.virtual || meta.banner !== "readOnly" || asking) return true;
+  asking = model;
+  const q = readOnlyQuestion(basename(model.path), true);
+  void confirm({ title: q.title, message: q.message, ok: q.confirm })
+    .then((ok) => ok && model.getMeta().readOnly && setFileWritable(model, true))
+    .finally(() => (asking = null));
+  return true;
 }

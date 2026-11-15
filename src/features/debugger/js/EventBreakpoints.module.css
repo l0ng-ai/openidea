@@ -1,0 +1,54 @@
+.section {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+  border-top: 1px solid var(--border-popup);
+  padding: 6px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.title {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--fg-muted);
+  padding: 2px 0 2px;
+}
+
+.hint {
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding-bottom: 4px;
+}
+
+.refused {
+  font-size: var(--fs-small);
+  color: var(--danger);
+  padding-bottom: 4px;
+}
+
+.groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.groupTitle {
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding-top: 4px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+}

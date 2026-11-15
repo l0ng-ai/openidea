@@ -281,6 +281,9 @@ impl Repo {
         let commitish = arg(commitish, "revision")?;
         let mut args: Vec<String> = vec!["worktree".into(), "add".into()];
         if let Some(b) = new_branch.map(str::trim).filter(|b| !b.is_empty()) {
+            if crate::write::renamed_remote_start(self, b, &commitish) {
+                args.push("--no-track".into());
+            }
             args.extend(["-b".into(), arg(b, "branch name")?]);
         }
         args.extend(["--".into(), path, commitish]);

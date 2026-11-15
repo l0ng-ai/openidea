@@ -1,9 +1,13 @@
 /** IDE-rendered plugin settings; every control edits the dialog's staged form. */
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { tx } from "@/platform/i18n";
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
 import { registerSettingsPage, useSettingsForm } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
+import { localizeContributions, usePluginCatalogs } from "./pluginText";
+import { itemsOf } from "./projection";
+import { SecretsDetails, type SecretDecl } from "./secrets";
+import { usePlugins } from "./store";
 import styles from "./PluginSettings.module.css";
 
 export interface SettingSchema {
@@ -15,6 +19,8 @@ export interface SettingSchema {
   options?: string[] | null;
   multiline?: boolean;
   group?: string | null;
+  /** A sample drawn in the setting's own style, e.g. the message a severity produces. */
+  example?: { text: string; style: string } | null;
   items?: SettingSchema | null;
   properties?: SettingSchema[];
 }
@@ -213,20 +219,36 @@ function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema })
   const all = form.useValue("plugins") as PluginSettings | undefined;
   const stored = all?.[pluginId]?.[s.key];
   const value = accepts(s, stored) ? stored : s.default;
+  const control = (
+    <ValueControl
+      s={s}
+      value={value}
+      set={(v) => {
+        const valid = accepts(s, v);
+        setInvalid(!valid);
+        // Keep the chosen value even when it equals the default: false and ""
+        // are real plugin settings, not "remove the override".
+        if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
+      }}
+    />
+  );
+  const example = s.example ? (
+    <span className={styles.example} data-style={s.example.style}>
+      {s.example.text}
+    </span>
+  ) : null;
   return (
     <div className={styles.field}>
       {s.type !== "boolean" && <span>{s.title}</span>}
-      <ValueControl
-        s={s}
-        value={value}
-        set={(v) => {
-          const valid = accepts(s, v);
-          setInvalid(!valid);
-          // Keep the chosen value even when it equals the default: false and ""
-          // are real plugin settings, not "remove the override".
-          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v);
-        }}
-      />
+      {/* A sample sits in a second column, one row per setting, the way PyCharm previews a severity. */}
+      {example ? (
+        <div className={styles.exampleRow}>
+          {control}
+          {example}
+        </div>
+      ) : (
+        control
+      )}
       {s.description && <div className={styles.description}>{s.description}</div>}
       {invalid && (
         <p role="alert" className={styles.error}>
@@ -304,6 +326,7 @@ function settingsPage(pluginId: string, page: Pick<SettingsPage, "properties" | 
             </div>
           </>
         )}
+        <PluginSecrets pluginId={pluginId} />
       </div>
     );
   };
@@ -320,6 +343,30 @@ function keywords(page: Pick<SettingsPage, "properties" | "actions">): string[] 
     ...(s.properties ?? []).flatMap(fieldWords),
   ];
   return [...page.properties.flatMap(fieldWords), ...(page.actions ?? []).map((a) => a.title)];
+}
+
+/**
+ * The plugin's `[[contributes.secrets]]` on its Settings page: a password
+ * field per secret, which is where users look for an API key. The plugin
+ * details page lists the same fields.
+ */
+function PluginSecrets({ pluginId }: { pluginId: string }) {
+  const ui = usePlugins((s) => s.ui);
+  const catalogs = usePluginCatalogs((s) => s.catalogs);
+  const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
+  const items = useMemo(
+    () => (plugin ? itemsOf<SecretDecl>(localizeContributions(ui, catalogs), "secrets", pluginId) : []),
+    [ui, catalogs, pluginId, plugin],
+  );
+  if (!plugin || !items.length) return null;
+  return (
+    <section className={styles.group}>
+      <h3>
+        <T>Secrets</T>
+      </h3>
+      <SecretsDetails plugin={plugin} items={items} />
+    </section>
+  );
 }
 
 export function projectSettings(pluginId: string, decl: SettingsDecl): () => void {

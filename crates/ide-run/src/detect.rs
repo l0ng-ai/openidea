@@ -5,6 +5,7 @@
 
 pub(crate) mod cmake;
 mod dotnet;
+mod zig;
 
 use crate::RunConfig;
 use ide_core::project_roots::expand_members;
@@ -53,6 +54,8 @@ pub(crate) fn detect_with_profiles(
         &mut out,
     );
     detect_projects_matching(root, ruby_project, detect_ruby, &mut out);
+    detect_projects(root, &["rebar.config"], detect_rebar, &mut out);
+    detect_projects(root, &["mix.exs"], detect_mix, &mut out);
     for dir in ide_core::project_roots::discover(root, &["CMakeLists.txt"]) {
         let start = out.len();
         cmake::detect(&dir, if dir == root { profiles } else { None }, &mut out);
@@ -70,6 +73,7 @@ pub(crate) fn detect_with_profiles(
             }
         }
     }
+    detect_projects(root, &["build.zig"], zig::detect, &mut out);
     dotnet::detect(root, &mut out);
     detect_projects(root, &["Makefile", "makefile", "GNUmakefile"], detect_make, &mut out);
     detect_projects(root, &["justfile", "Justfile", ".justfile"], detect_just, &mut out);
@@ -1325,6 +1329,38 @@ pub(crate) fn just_recipes(src: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------- godot
+
+// ---------------------------------------------------------------- rebar3 / mix
+
+/// rebar3 (Erlang): the shell with the applications started, the EUnit tests and, with
+/// `*_SUITE.erl` suites, Common Test. A `rebar3` script in the project wins over the PATH.
+fn detect_rebar(root: &Path, out: &mut Vec<RunConfig>) {
+    let rebar = wrapper(root, "rebar3", "rebar3.cmd", "rebar3");
+    out.push(config("rebar3:shell", "rebar3 shell", "rebar3", &rebar, &["shell"]));
+    out.push(config("rebar3:eunit", "rebar3 eunit", "rebar3", &rebar, &["eunit"]).test());
+    let suites = |dir: &Path| {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().ends_with("_SUITE.erl"))
+    };
+    let mut apps = subdirs(&root.join("apps")).into_iter().chain(subdirs(&root.join("lib")));
+    if suites(&root.join("test")) || apps.any(|app| suites(&app.join("test"))) {
+        out.push(config("rebar3:ct", "rebar3 ct", "rebar3", &rebar, &["ct"]).test());
+    }
+}
+
+/// Mix (Elixir): the application in IEx (`phx.server` for Phoenix) and its ExUnit tests.
+fn detect_mix(root: &Path, out: &mut Vec<RunConfig>) {
+    let phoenix = read(&root.join("mix.exs")).is_some_and(|src| src.contains("{:phoenix,"));
+    if phoenix {
+        out.push(config("mix:phx.server", "iex -S mix phx.server", "mix", "iex", &["-S", "mix", "phx.server"]));
+    } else {
+        out.push(config("mix:iex", "iex -S mix", "mix", "iex", &["-S", "mix"]));
+    }
+    out.push(config("mix:test", "mix test", "mix", "mix", &["test"]).test());
+}
 
 /// Godot projects (`project.godot`) at the root or one level down: "Godot Project"
 /// runs the main scene (`godot --path .`), debuggable through the editor's adapter.

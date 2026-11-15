@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { executeAction, registerActions } from "@/platform/actions";
 import { call, commands, onIdeEvent, type TrustDecisions, type TrustStatus } from "@/platform/ipc";
 import { dirname, useProject } from "@/platform/project";
-import { initializeRemoteTrustMigration } from "@/platform/remote";
+import { initializeRemoteTrustMigration, isRemoteRoot } from "@/platform/remote";
 import { provideProjectTrustPrompt, type ProjectTrustScope } from "@/platform/projectTrust";
 import { invokeLocal } from "@/platform/tauriCore";
 import { registerOverlay, registerSettingsPage, registerWorkbenchBanner } from "@/workbench/contributions";
@@ -200,6 +200,7 @@ async function decide(trusted: boolean) {
     await invokeLocal("project_trust_set", { path, trusted, folder });
   } else {
     await call(commands.projectTrustSet(path, trusted, folder));
+    if (isRemoteRoot(path)) await call(commands.remoteTrustSet(trusted));
     const project = await commands.projectCurrent();
     if (project) useProject.setState({ project, settings: project.settings });
   }
@@ -239,6 +240,12 @@ export function activate(): () => void {
       const status = await (scope === "local"
         ? invokeLocal<TrustStatus>("project_trust_status", { path })
         : call(commands.projectTrustStatus(path)));
+      if (scope === "current" && isRemoteRoot(path)) {
+        // The server's answer covers what runs there; commands run here need this machine's own.
+        const desktop = await call(commands.remoteTrustStatus());
+        if (status.decided && desktop.decided && status.trusted === desktop.trusted) return true;
+        return promptForTrust(status, scope);
+      }
       if (status.decided) return true;
       return promptForTrust(status, scope);
     }),
@@ -267,7 +274,9 @@ export function activate(): () => void {
         category: "Project",
         run: async ({ arg }) => {
           const path = typeof arg === "string" ? arg : useProject.getState().project?.root;
-          if (path) await call(commands.projectTrustSet(path, false, false));
+          if (!path) return;
+          await call(commands.projectTrustSet(path, false, false));
+          if (isRemoteRoot(path)) await call(commands.remoteTrustSet(false));
         },
       },
       {

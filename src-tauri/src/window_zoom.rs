@@ -96,7 +96,7 @@ fn work_area_of(window: &WebviewWindow, monitor: &Monitor) -> IdeResult<Frame> {
 }
 
 fn frames_path(window: &WebviewWindow) -> Option<PathBuf> {
-    window.app_handle().path().app_data_dir().ok().map(|dir| dir.join("window-zoom.json"))
+    ide_host::data_dirs::data_dir(&window.app_handle().config().identifier).ok().map(|dir| dir.join("window-zoom.json"))
 }
 
 fn load_frames(path: &Path) -> HashMap<String, Frame> {

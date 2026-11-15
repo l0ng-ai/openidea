@@ -51,6 +51,7 @@ import {
   resolveLink,
   slugify,
 } from "./render";
+import { applyImageZoomWidth, svgDataUrlSize } from "./svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -110,6 +111,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const text = useLiveMarkdown((s) => s[path]?.text);
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
   const fontSize = useMarkdownPreviewFontSize();
+  const zoomScale = Number((Math.max(4, fontSize + fontZoom) / fontSize).toFixed(4));
   const topLine = useLiveMarkdown((s) => s[path]?.topLine ?? 0);
   const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
   const caretLine = useLiveMarkdown((s) => s[path]?.caretLine ?? 0);
@@ -161,10 +163,32 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root) return;
     let live = true;
-    root.querySelectorAll<HTMLImageElement>("img[data-src]").forEach((img) => {
+    const bindImageUrl = (img: HTMLImageElement, url: string, asyncLoad: boolean) => {
+      const svgSize = svgDataUrlSize(url);
+      if (svgSize && applyImageZoomWidth(img, svgSize) && asyncLoad) {
+        setDiagramsDrawn((n) => n + 1);
+      }
+      img.onload = () => {
+        if (!live) return;
+        if (!img.hasAttribute("data-natural-width") && img.naturalWidth > 0 && img.naturalHeight > 0) {
+          if (applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight })) {
+            setDiagramsDrawn((n) => n + 1);
+          }
+        } else if (asyncLoad) {
+          setDiagramsDrawn((n) => n + 1);
+        }
+      };
+      img.src = url;
+      if (!img.hasAttribute("data-natural-width") && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+        applyImageZoomWidth(img, { w: img.naturalWidth, h: img.naturalHeight });
+      }
+    };
+    const imgs = [...root.querySelectorAll<HTMLImageElement>("img[data-src]")];
+    imgs.forEach((img) => {
+      applyImageZoomWidth(img);
       const src = img.dataset.src ?? "";
       if (/^data:image\//i.test(src)) {
-        img.src = src;
+        bindImageUrl(img, src, false);
         return;
       }
       const target = resolveLink(path, src);
@@ -174,7 +198,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         return;
       }
       imageUrl(target.path).then(
-        (url) => live && (img.src = url),
+        (url) => live && bindImageUrl(img, url, true),
         () => live && img.classList.add(styles.blocked!),
       );
     });
@@ -187,6 +211,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     });
     return () => {
       live = false;
+      for (const img of imgs) img.onload = null;
     };
   }, [html, path]);
 
@@ -195,7 +220,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root || !sync) return;
     root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocksOf(root), topLine, root.scrollHeight);
-  }, [html, topLine, scrollSeq, sync, diagramsDrawn]);
+  }, [html, topLine, scrollSeq, sync, diagramsDrawn, fontZoom, fontSize]);
 
   // The preview's own scroll offset: tab switches and mode toggles unmount the
   // preview, so Preview Only would otherwise start over at the top. Writes made
@@ -233,8 +258,12 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         }
       }
     }
-    root.scrollTop = previewOffsetForLine(blocksOf(root), caretLine, root.scrollHeight);
-    scrolledTo.current = root.scrollTop;
+    const blocks = blocksOf(root);
+    // Back / Forward return to the line on screen: keep the restored offset within it.
+    if (previewLineAtOffset(blocks, root.scrollTop) !== caretLine) {
+      root.scrollTop = previewOffsetForLine(blocks, caretLine, root.scrollHeight);
+      scrolledTo.current = root.scrollTop;
+    }
     setShownLine(path, caretLine);
   }, [caretSeq, caretLine, sync, path, find]);
 
@@ -372,6 +401,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         {
           "--markdown-preview-font-size": `${fontSize}px`,
           "--markdown-font-zoom": `${fontZoom}px`,
+          "--markdown-zoom-scale": String(zoomScale),
         } as CSSProperties
       }
       tabIndex={-1}

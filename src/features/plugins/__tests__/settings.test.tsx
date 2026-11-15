@@ -173,6 +173,24 @@ it("does not run a command when applying settings fails", async () => {
   expect(run).not.toHaveBeenCalled();
 });
 
+it("lists the plugin's declared secrets on its settings page", async () => {
+  setPluginsBackend({
+    ...createMemoryPluginsBackend([]),
+    list: async () => ({
+      plugins: [{ id: "example.helper" } as never],
+      activeTheme: null,
+      ui: [
+        { pluginId: "example.helper", point: "secrets", key: "api-key", decl: { name: "api-key", label: "API key" } },
+      ],
+    }),
+  });
+  const { refreshPlugins } = await import("../store");
+  await refreshPlugins();
+  render(<Harness page="llm" />);
+  expect(screen.getByRole("heading", { name: "Secrets" })).toBeInTheDocument();
+  expect(await screen.findByLabelText("Value of API key")).toBeInTheDocument();
+});
+
 it("preserves the legacy single-schema page", () => {
   const remove = projectSettings("legacy", {
     title: "Legacy",

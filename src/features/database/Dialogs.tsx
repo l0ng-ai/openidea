@@ -3,7 +3,7 @@ import { Fragment, useState } from "react";
 import { call, commands, type DataSource } from "@/platform/ipc";
 import { Checkbox, Dialog, Input, lazyComponent, T } from "@/ui";
 import { sshLabel } from "./model";
-import { SourceDialog } from "./SourceDialog";
+import { SourceDialog, snowflakeSecretLabel } from "./SourceDialog";
 import { closeDialog, useDatabase } from "./store";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
@@ -42,7 +42,7 @@ function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok:
         </span>
         <span>{source.user || "(default)"}</span>
         <label className={styles.formLabel} htmlFor="db-ask-password">
-          <T>Password:</T>
+          {tx(source.driver === "snowflake" ? snowflakeSecretLabel(source.snowflake?.auth) : "Password:")}
         </label>
         <Input
           id="db-ask-password"

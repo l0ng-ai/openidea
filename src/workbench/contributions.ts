@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
+import type { ProjectType } from "@/platform/projectType";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -76,6 +77,11 @@ export interface ToolWindowContribution {
    * or "onUse" — listed under the stripe's "…" until first opened (Find, Run…).
    */
   stripe?: "shown" | "onUse";
+  /**
+   * Its content lasts only while the project is open (run and debug sessions, search results),
+   * so it isn't reopened with the project.
+   */
+  sessionContent?: boolean;
 }
 
 export type StatusAlign = "left" | "right";
@@ -137,6 +143,12 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /**
+   * Whether the tab is busy (a process is running, like a terminal session's):
+   * closing its last tab asks first, and tab-limit eviction skips it. May be
+   * async; both the close confirmation and the eviction await the answer.
+   */
+  isBusy?(input: EditorInput): boolean | Promise<boolean>;
   /**
    * The editor owns a document with unsaved state (a notebook): it takes part in
    * the dirty mark, Save All, autosave and the close prompts. Tabs with equal
@@ -519,6 +531,8 @@ export interface ExternalFileOpenHandler {
   id: string;
   /** Lower asks first. Default 100. */
   order?: number;
+  /** Whether `path` goes to another application. */
+  matches(path: string): boolean;
   /** Opens `path` outside the IDE; true when it was handed over. */
   open(path: string): boolean | Promise<boolean>;
 }
@@ -532,6 +546,11 @@ export function registerExternalFileOpenHandler(handler: ExternalFileOpenHandler
   };
 }
 
+/** Whether opening `path` would hand it to another application. */
+export function opensExternally(path: string): boolean {
+  return [...externalFileOpenHandlers.values()].some((h) => h.matches(path));
+}
+
 /** Opens `path` with another application; false when no handler took it. Handler failures fall through. */
 export async function openFileExternally(path: string): Promise<boolean> {
   const handlers = [...externalFileOpenHandlers.values()].sort(
@@ -539,7 +558,7 @@ export async function openFileExternally(path: string): Promise<boolean> {
   );
   for (const handler of handlers) {
     try {
-      if (await handler.open(path)) return true;
+      if (handler.matches(path) && (await handler.open(path))) return true;
     } catch (e) {
       console.warn(`external file opener ${handler.id} failed`, e);
     }
@@ -607,6 +626,8 @@ export interface OpenOptions {
   focus?: boolean;
   /** Open in the text editor even when a file editor provider claims the file (SVG as text). */
   asText?: boolean;
+  /** False: leave files that go to another application unopened (autoscroll must not launch apps). */
+  external?: boolean;
 }
 
 export interface OpenEditorTab {
@@ -623,12 +644,16 @@ export const EDITOR_TAB_MIME = "application/x-openidea-editor-tab";
 export interface EditorService {
   openFile(path: string, options?: OpenOptions): Promise<void>;
   openInput(input: EditorInput, options?: OpenOptions): Promise<void>;
+  /** File › New File: an editable untitled buffer; Save asks for a path. */
+  openUntitled?(options?: OpenOptions): Promise<void>;
   /** Path of the focused text editor, if any. */
   activePath(): string | null;
   /** Doc id + cursor of the focused text editor. */
   activeCursor(): { doc: number; path: string; line: number; col: number; offset: number } | null;
   /** Save all dirty documents; rejects with the failures once every save was tried. */
-  saveAll(): Promise<void>;
+  saveAll(opts?: { skipUntitled?: boolean }): Promise<void>;
+  /** Doc ids of untitled buffers with unsaved changes (they follow the window, not a project). */
+  untitledDirtyDocumentIds?(): number[];
   /** Includes local edits not yet acknowledged by the backend. */
   dirtyDocumentIds?(): number[];
   /** Move keyboard focus to the active editor (used by Escape from tool windows). */
@@ -639,6 +664,8 @@ export interface EditorService {
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
+  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
+  paneOf?(key: string): string | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
@@ -682,7 +709,11 @@ export interface EditorCloseSession {
 
 export interface ToolWindowService {
   show(id: string, focus?: boolean): void;
-  hide(id: string): void;
+  /**
+   * `removeFromStripe`: a window whose content is its tabs (Find, Run, Hierarchy…) lost its last
+   * one: its stripe button goes too, until new content opens it again (IDEA).
+   */
+  hide(id: string, options?: { removeFromStripe?: boolean }): void;
   toggle(id: string): void;
   isVisible(id: string): boolean;
 }
@@ -759,6 +790,7 @@ const services: {
   notifications?: NotificationService;
   embeddedTerminal?: EmbeddedTerminalFactory;
   runOutput?: RunOutputService;
+  hasRunConfiguration?: (kind: string, directory: string) => boolean;
 } = {};
 
 function need<T>(s: T | undefined, name: string): T {
@@ -771,6 +803,10 @@ export const provideToolWindowService = (s: ToolWindowService) => void (services
 export const provideNotificationService = (s: NotificationService) => void (services.notifications = s);
 export const provideEmbeddedTerminal = (f: EmbeddedTerminalFactory | undefined) => void (services.embeddedTerminal = f);
 export const provideRunOutput = (s: RunOutputService | undefined) => void (services.runOutput = s);
+export const provideRunConfigurationLookup = (lookup: typeof services.hasRunConfiguration) =>
+  void (services.hasRunConfiguration = lookup);
+export const hasRunConfiguration = (kind: string, directory: string): boolean =>
+  services.hasRunConfiguration?.(kind, directory) ?? false;
 
 export const editorService = (): EditorService => need(services.editor, "editor");
 export const toolWindowService = (): ToolWindowService => need(services.toolWindows, "toolWindows");
@@ -800,6 +836,35 @@ export interface CommitService {
 let commitServiceImpl: CommitService | undefined;
 export const provideCommitService = (s: CommitService | undefined) => void (commitServiceImpl = s);
 export const maybeCommitService = (): CommitService | undefined => commitServiceImpl;
+
+/**
+ * Context a feature offers the agent composer's `@` menu (`@problems`, `@terminal`): what
+ * choosing it inserts, a ``` block (`info` names its kind: `problems`, `terminal <title>`)
+ * or references to files.
+ */
+export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
+
+export interface AgentContextSource {
+  /** Typed after `@`. */
+  id: string;
+  /** English: shown through the text catalog. */
+  title: string;
+  description: string;
+  icon: string;
+  /** What to insert now; null when there is nothing (no problems, no terminal). */
+  resolve(): Promise<AgentContext | null>;
+}
+
+const agentContextSources = new Map<string, AgentContextSource>();
+
+export function registerAgentContextSource(source: AgentContextSource): () => void {
+  agentContextSources.set(source.id, source);
+  return () => {
+    if (agentContextSources.get(source.id) === source) agentContextSources.delete(source.id);
+  };
+}
+
+export const getAgentContextSources = (): AgentContextSource[] => [...agentContextSources.values()];
 
 /** A before-commit check contributed by an extension (a plugin's `commitChecks`). */
 export interface ContributedCommitCheck {
@@ -894,6 +959,12 @@ export interface DecorationSegment {
   icon?: string;
   strike?: boolean;
   label?: string;
+  /** CSS colour of this segment; falls back to the suffix colour. */
+  color?: string;
+  /** CSS values for the segment's font style / effect, e.g. scheme-driven bold or wavy underline. */
+  fontWeight?: string;
+  fontStyle?: string;
+  textDecoration?: string;
 }
 
 export interface FileDecoration {
@@ -1180,6 +1251,8 @@ export interface MenuGroupContext {
   paths: string[];
   /** Per path: whether it is a directory (project view). */
   dirs?: boolean[];
+  /** New menu: the detected type of the project owning the target directory. */
+  projectType?: ProjectType;
   /** The document text, when the menu is for an open document. */
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */

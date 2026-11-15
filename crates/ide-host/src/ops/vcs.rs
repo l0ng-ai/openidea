@@ -22,6 +22,27 @@ pub async fn status(host: &Host, window: &str) -> IdeResult<Vec<FileStatus>> {
     .await
 }
 
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch. `paths` that belong
+/// to no repository are ignored, and an empty list is the full status.
+pub async fn status_paths(host: &Host, window: &str, paths: Vec<std::path::PathBuf>) -> IdeResult<Vec<FileStatus>> {
+    let project = host.project(window)?;
+    host.blocking(move || {
+        let settings = project.settings.effective();
+        if project.is_trusted() {
+            apply_git_executable(&settings);
+        }
+        let repos = project.repos();
+        if repos.is_empty() {
+            return Err(ide_core::IdeError::unavailable("project is not a git repository"));
+        }
+        for r in repos.all() {
+            r.set_ignored_names(settings.ignored_names());
+        }
+        repos.status_paths(&paths)
+    })
+    .await
+}
+
 mod commands;
 pub use commands::*;
 

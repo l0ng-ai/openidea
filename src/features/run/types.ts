@@ -240,7 +240,7 @@ const npm: RunConfigTypeContribution = {
       mono: true,
       browse: "file",
       placeholder: "Project default",
-      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.",
+      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
     },
   ],
   commandLine(p) {

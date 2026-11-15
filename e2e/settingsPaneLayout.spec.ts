@@ -3,7 +3,7 @@ import { expect, test } from "./fixtures";
 for (const [id, selector] of [
   ["build.deployment", "[class*='layout'] > [class*='note']"],
   ["editor.inspections", "[class*='split'] > [class*='details']"],
-  ["languages.servers", "[class*='body'] > [class*='details']"],
+  ["languages.servers", "[class*='body'] > [class*='language'][aria-label]"],
   ["plugins", "[class*='body'] > [class*='details']"],
   ["agents.list", "section[aria-label='Codex']"],
 ]) {

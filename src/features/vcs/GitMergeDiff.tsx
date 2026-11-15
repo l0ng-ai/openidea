@@ -51,10 +51,7 @@ export function GitMergeDiff({ input }: { input: EditorInput }) {
           }
         for (const [i, text] of texts.entries()) {
           const pane = document.createElement("div");
-          pane.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column";
-          const label = document.createElement("div");
-          label.textContent = `${sides[i]!.rev.slice(0, 8)} · ${sides[i]!.path}`;
-          pane.append(label);
+          pane.className = styles.mergeDiffPane!;
           host.current.append(pane);
           const view = new EditorView({
             parent: pane,
@@ -86,10 +83,16 @@ export function GitMergeDiff({ input }: { input: EditorInput }) {
       element?.replaceChildren();
     };
   }, [data]);
+  const labels = [data.parents[0]!, { rev: data.revision, path: data.path }, data.parents[1]!];
   return (
-    <>
-      <div role={error ? "alert" : undefined}>{error}</div>
-      <div className={styles.revisionSource} style={{ display: "flex" }} ref={host} />
-    </>
+    <div className={styles.mergeDiff}>
+      {error && <div role="alert">{error}</div>}
+      <div className={styles.mergeDiffLabels}>
+        {labels.map((side, i) => (
+          <span key={i}>{`${side.rev.slice(0, 8)} · ${side.path}`}</span>
+        ))}
+      </div>
+      <div className={styles.mergeDiffPanes} ref={host} />
+    </div>
   );
 }

@@ -30,7 +30,7 @@ import {
 import { evaluateWhen } from "@/platform/context";
 
 /** Editor actions apply to the active text editor unless a tool window or popup owns the keyboard. */
-export const EDITOR_WHEN = "textEditorActive && (editorFocus || popupOpen || !toolWindowFocus)";
+export const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 
 /**
  * Languages whose servers offer Generate (constructors, accessors, overrides…).
@@ -90,6 +90,13 @@ function inFile(run: (view: EditorView) => unknown): Action["run"] {
 }
 
 const reformat = (v: EditorView) => formatDocument(v, { explicit: true });
+/** WebStorm's Fix ESLint Problems: vscode-eslint's fix-all for the whole file. */
+const fixEslintProblems = (v: EditorView) =>
+  runKindAction(v, "source.fixAll.eslint", {
+    whole: true,
+    none: "No ESLint problems to fix",
+    label: "Fix ESLint Problems",
+  });
 const optimizeImports = (v: EditorView) =>
   runKindAction(v, "source.organizeImports", {
     whole: true,
@@ -217,6 +224,9 @@ export function registerLspActions(): () => void {
     editorAction("code.reformatDialog", "Reformat File…", "Code", (v) =>
       reformatDialog(v, (view) => applyKindSilently(view, "source.organizeImports")),
     ),
+    editorAction("code.fixEslintProblems", "Fix ESLint Problems", "Code", fixEslintProblems, {
+      keywords: ["eslint", "lint", "fix all"],
+    }),
     editorAction("code.optimizeImports", "Optimize Imports", "Code", optimizeImports, {
       keywords: ["organize imports"],
     }),

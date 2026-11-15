@@ -155,9 +155,25 @@ export interface ArtifactConfigValid {
 
 export interface LanguagesValid {
   pluginFormatters: Record<string, string>;
-  python: { interpreter: string; activateVirtualenv: boolean };
+  python: {
+    interpreter: string;
+    activateVirtualenv: boolean;
+    /** Interpreters added to the IDE-wide list (Settings › Python › All Interpreters). */
+    interpreters: string[];
+    /** Interpreters removed from that list: detection does not show them again. */
+    hiddenInterpreters: string[];
+    /** Hide interpreters that belong to another project. */
+    hideOtherProjectInterpreters: boolean;
+    /** Show each interpreter's path under its name on the interpreters page. */
+    showInterpreterPaths: boolean;
+  };
   ruby: { interpreter: string };
-  node: { runTarget: string; interpreter: string; packageManager: "" | "npm" | "pnpm" | "yarn" | "bun" };
+  node: {
+    runTarget: string;
+    interpreter: string;
+    packageManager: "" | "npm" | "pnpm" | "yarn" | "bun";
+    runtime: "" | "node" | "bun" | "deno";
+  };
   php: {
     runTarget: string;
     interpreter: string;
@@ -259,9 +275,16 @@ export type FolderListKey =
 
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   pluginFormatters: {},
-  python: { interpreter: "", activateVirtualenv: true },
+  python: {
+    interpreter: "",
+    activateVirtualenv: true,
+    interpreters: [],
+    hiddenInterpreters: [],
+    hideOtherProjectInterpreters: false,
+    showInterpreterPaths: true,
+  },
   ruby: { interpreter: "" },
-  node: { runTarget: "", interpreter: "", packageManager: "" },
+  node: { runTarget: "", interpreter: "", packageManager: "", runtime: "" },
   php: { runTarget: "", interpreter: "", languageLevel: "", includePaths: [], stubs: [], phpstanConfig: "" },
   rust: { toolchain: "", stdlib: "", checkOnSave: true, checkCommand: "check", rustfmtArgs: "" },
   go: { goroot: "", gopath: "", buildTags: DEFAULT_GO_BUILD_TAGS, modules: { env: {}, autoVendor: true } },
@@ -390,12 +413,17 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     python: {
       interpreter: text(py.interpreter, d.python.interpreter),
       activateVirtualenv: bool(py.activateVirtualenv, d.python.activateVirtualenv),
+      interpreters: strings(py.interpreters),
+      hiddenInterpreters: strings(py.hiddenInterpreters),
+      hideOtherProjectInterpreters: bool(py.hideOtherProjectInterpreters, d.python.hideOtherProjectInterpreters),
+      showInterpreterPaths: bool(py.showInterpreterPaths, d.python.showInterpreterPaths),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },
     node: {
       runTarget: text(node.runTarget, ""),
       interpreter: text(node.interpreter, d.node.interpreter),
       packageManager: oneOf(node.packageManager, ["", "npm", "pnpm", "yarn", "bun"] as const, d.node.packageManager),
+      runtime: oneOf(node.runtime, ["", "node", "bun", "deno"] as const, d.node.runtime),
     },
     php: {
       runTarget: text(php.runTarget, ""),

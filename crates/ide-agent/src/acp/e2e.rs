@@ -107,6 +107,8 @@ fn manager(dir: &Path, agent: Arc<FakeV2Agent>) -> AgentManager {
             models_file: dir.join("models.json"),
             custom_agents_dir: None,
             home_dir: None,
+            env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,

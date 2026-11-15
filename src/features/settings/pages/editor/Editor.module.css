@@ -294,6 +294,110 @@
   outline-offset: 1px;
 }
 
+/* Git preview mirrors the two real surfaces: the editor inline blame widget and
+   the project tree root branch suffix. Only the Git page uses these. */
+.gitPreview {
+  margin: 14px 0 0;
+  border-radius: var(--radius-small);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  background: var(--bg-editor, var(--bg-island));
+  overflow: auto;
+  max-height: 260px;
+}
+.gitSection {
+  padding: 8px 0;
+}
+.gitSection + .gitSection {
+  border-top: 1px solid var(--border);
+}
+.gitSectionTitle {
+  padding: 0 12px 6px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  color: var(--fg-muted);
+}
+.gitEditor {
+  color: var(--fg-editor, var(--fg));
+  font-family: var(--openidea-editor-font, var(--font-mono));
+  font-weight: var(--fw-code);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+}
+.gitBlame {
+  display: inline-block;
+  max-width: min(60ch, 50vw);
+  margin-left: 3ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.gitTree {
+  padding: 0 6px;
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
+}
+.gitRow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding-left: 4px;
+  padding-right: 8px;
+  border-radius: var(--radius-selection, 5px);
+  white-space: nowrap;
+}
+.gitChevron {
+  flex: none;
+  width: 16px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+.gitContent {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: var(--radius-row);
+}
+.gitIconStack {
+  display: inline-flex;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.gitFolderIcon {
+  color: var(--fg-subtle);
+}
+.gitRootLabel {
+  flex: none;
+  max-width: 60%;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.gitSuffix {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  color: var(--git-local-branch, var(--accent));
+  white-space: nowrap;
+}
+.gitSuffixSegment {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
 /* Code Style tables */
 .guides {
   width: 160px;

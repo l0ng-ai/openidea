@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { loadPlatformInfo, usePlatform } from "./platformInfo";
+import { appDataDir, loadPlatformInfo, usePlatform } from "./platformInfo";
 
 const appInfo = vi.hoisted(() => vi.fn());
 vi.mock("@/platform/ipc", () => ({ isTauri: () => true, commands: { appInfo } }));
@@ -22,4 +22,9 @@ it("keeps platform defaults when the query fails", async () => {
   appInfo.mockRejectedValue(new Error("unavailable"));
   await loadPlatformInfo();
   expect(usePlatform.getState()).toEqual(initialPlatform);
+});
+
+it("takes the user data directory from the backend, which may have moved it", async () => {
+  appInfo.mockResolvedValue({ platform: "windows", dataDir: "E:/OpenIDEA/ai.l0ng.openidea/" });
+  expect(await appDataDir()).toBe("E:/OpenIDEA/ai.l0ng.openidea");
 });

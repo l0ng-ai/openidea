@@ -3,7 +3,7 @@ title: "API 参考"
 description: "openidea:plugin WIT 包中的每个 interface：一句话说明及源码链接。"
 ---
 
-插件 API 是 [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中的 WIT 包 `openidea:plugin@1.6.0`。WIT 文件就是参考文档：每个 interface、类型和函数都在注释中有说明。1.6.0 是 `main` 上的版本；最新已发布版本是 1.4.0，其 WIT 保存在 [`sdk/rust/openidea-plugin/tests/api/released/`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/tests/api/released)。
+插件 API 是 [`wit/`](https://github.com/l0ng-ai/openidea/tree/main/wit) 中的 WIT 包 `openidea:plugin@1.7.0`。WIT 文件就是参考文档：每个 interface、类型和函数都在注释中有说明。1.7.0 是 `main` 上的版本；最新已发布版本是 1.6.0，其 WIT 保存在 [`sdk/rust/openidea-plugin/tests/api/released/`](https://github.com/l0ng-ai/openidea/tree/main/sdk/rust/openidea-plugin/tests/api/released)。
 
 <Info>
   自动生成的 API 参考正在计划中。在此之前，请参考下面的 WIT 文件、Rust SDK 的 `cargo
@@ -77,6 +77,7 @@ description: "openidea:plugin WIT 包中的每个 interface：一句话说明及
 | `detail-provider`          | [details.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/details.wit)                     | Services 工具窗口中插件节点的详情面板                                             |
 | `commit-checker`           | [commit.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/commit.wit)                       | 提交前检查                                                                        |
 | `run-configurations`       | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | 项目的动态运行配置（API 1.4）                                                     |
+| `launch-configurations`    | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | 带环境变量和调试器的运行配置（API 1.9）                                           |
 | `test-results`             | [run.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/run.wit)                             | 解析测试输出、选择要重新运行的测试（API 1.4）                                     |
 | `mcp-provider`             | [mcp.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/mcp.wit)                             | 插件为内置 MCP 服务器提供的工具（API 1.4）                                        |
 

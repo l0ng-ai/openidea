@@ -46,6 +46,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "clear_caches",
         "clipboard_file_list",
         "clipboard_has_files",
+        "clipboard_has_image",
         "clipboard_image",
         "clipboard_set_file_list",
         "clipboard_write_text",
@@ -66,6 +67,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "docker_set_registry_password",
         "docker_run_env",
         "db_console_path",
+        "db_consoles",
         "db_export_file",
         "vcs_write_patch",
         "remote_bootstrap_list",
@@ -92,6 +94,7 @@ async fn application_commands_work_in_restricted_projects_and_without_a_project(
         "vcs_git_version",
         "docker_compose_op",
         "db_execute",
+        "agent_refresh_models",
         "remote_delete",
         "remote_mkdir",
         "remote_rename",
@@ -183,7 +186,7 @@ async fn welcome_window_browses_selected_ssh_host_without_executing_commands() {
     host.remote.test_connection(&connection, "/projects").await.unwrap();
     let local = tmp.path().join("local-deployment");
     std::fs::create_dir(&local).unwrap();
-    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into())
+    ide_host::ops::deploy::deploy_test_connection(&host, FsConnection::Local, local.to_str().unwrap().into(), None)
         .await
         .unwrap();
     assert_eq!(std::fs::read_dir(local).unwrap().count(), 0, "write probe is cleaned up");

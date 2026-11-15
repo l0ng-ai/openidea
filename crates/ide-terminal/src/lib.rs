@@ -1,4 +1,5 @@
-//! Integrated terminal sessions over a native PTY. Rendering is xterm.js.
+//! Integrated terminal sessions over a native PTY, or over a [`TerminalChannel`]
+//! such as an SSH shell. Rendering is xterm.js.
 
 mod integration;
 mod utf8;
@@ -52,14 +53,56 @@ pub struct TerminalInfo {
     pub pid: Option<u32>,
 }
 
+/// A terminal whose shell runs elsewhere (an SSH channel). Its output and exit
+/// arrive through the [`TerminalFeed`] paired with it by [`feed`].
+pub trait TerminalChannel: Send + Sync {
+    fn write(&self, data: &[u8]) -> IdeResult<()>;
+    fn resize(&self, cols: u16, rows: u16) -> IdeResult<()>;
+    /// Hangs up; the exit is still reported through the feed.
+    fn close(&self);
+}
+
+/// Where a [`TerminalChannel`] reports its output and exit.
+#[derive(Clone)]
+pub struct TerminalFeed(mpsc::Sender<Msg>);
+
+impl TerminalFeed {
+    pub fn output(&self, data: &[u8]) {
+        let _ = self.0.send(Msg::Data(data.to_vec()));
+    }
+
+    pub fn exited(&self, code: Option<i32>) {
+        let _ = self.0.send(Msg::Exited(code));
+    }
+}
+
+/// The receiving end of a [`TerminalFeed`], handed to [`TerminalManager::attach`].
+pub struct FeedReceiver(mpsc::Receiver<Msg>);
+
+/// A feed for a channel that is about to be opened.
+pub fn feed() -> (TerminalFeed, FeedReceiver) {
+    let (tx, rx) = mpsc::channel();
+    (TerminalFeed(tx), FeedReceiver(rx))
+}
+
+enum Io {
+    Pty {
+        // Cancel input before dropping the master (ClosePseudoConsole on Windows).
+        writer: ide_core::input::InputWriter,
+        master: Mutex<Box<dyn MasterPty + Send>>,
+        killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    },
+    Channel {
+        channel: Box<dyn TerminalChannel>,
+        size: Mutex<(u16, u16)>,
+    },
+}
+
 struct Session {
     /// The window that opened it: closing that window's project closes its terminals.
     key: String,
     info: TerminalInfo,
-    // Cancel input before dropping the master (ClosePseudoConsole on Windows).
-    writer: ide_core::input::InputWriter,
-    master: Mutex<Box<dyn MasterPty + Send>>,
-    killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
+    io: Io,
     exited: Arc<AtomicBool>,
     started: Instant,
     /// The first input was logged (startup diagnostics, see `spawn`).
@@ -200,9 +243,7 @@ impl TerminalManager {
         let session = Arc::new(Session {
             key,
             info: info.clone(),
-            master: Mutex::new(pair.master),
-            writer,
-            killer: Mutex::new(child.clone_killer()),
+            io: Io::Pty { writer, master: Mutex::new(pair.master), killer: Mutex::new(child.clone_killer()) },
             exited: exited.clone(),
             started: Instant::now(),
             input_logged: AtomicBool::new(false),
@@ -221,13 +262,48 @@ impl TerminalManager {
         .and_then(|_| spawn_pump(id, rx, on_output, exited, self.sessions.clone(), sink, Instant::now()));
         if let Err(e) = spawned {
             if let Some(s) = self.sessions.lock().remove(&id) {
-                let _ = s.killer.lock().kill();
+                terminate(&s);
             }
             return Err(IdeError::internal(format!("failed to start terminal threads: {e}")));
         }
         // Info level, with the first output and input below: a session that starts but never shows a
         // prompt can then be told apart in a user's log (no output, or no reply to the shell's query).
         tracing::info!(%id, shell, pid = ?info.pid, cols = size.cols, rows = size.rows, "terminal spawned");
+        Ok(info)
+    }
+
+    /// Registers an opened `channel` as terminal `title`; its output (from `feed`)
+    /// is batched and decoded as a PTY's is, and its exit emits `IdeEvent::TerminalExited`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach(
+        &self,
+        title: String,
+        size: (u16, u16),
+        channel: Box<dyn TerminalChannel>,
+        feed: FeedReceiver,
+        key: String,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(String) + Send>,
+    ) -> IdeResult<TerminalInfo> {
+        let id = TerminalId::next();
+        let info = TerminalInfo { id, title, pid: None };
+        let exited = Arc::new(AtomicBool::new(false));
+        let session = Arc::new(Session {
+            key,
+            info: info.clone(),
+            io: Io::Channel { channel, size: Mutex::new(size) },
+            exited: exited.clone(),
+            started: Instant::now(),
+            input_logged: AtomicBool::new(false),
+        });
+        self.sessions.lock().insert(id, session);
+        if let Err(e) = spawn_pump(id, feed.0, on_output, exited, self.sessions.clone(), sink, Instant::now()) {
+            if let Some(s) = self.sessions.lock().remove(&id) {
+                terminate(&s);
+            }
+            return Err(IdeError::internal(format!("failed to start terminal threads: {e}")));
+        }
+        tracing::info!(%id, title = info.title, "terminal attached");
         Ok(info)
     }
 
@@ -238,17 +314,26 @@ impl TerminalManager {
             let ms = session.started.elapsed().as_millis();
             tracing::info!(%id, ms, bytes = data.len(), cursor_report, "terminal first input");
         }
-        session.writer.write(data.as_bytes())?;
+        match &session.io {
+            Io::Pty { writer, .. } => writer.write(data.as_bytes())?,
+            Io::Channel { channel, .. } => channel.write(data.as_bytes())?,
+        }
         Ok(())
     }
 
     pub fn resize(&self, id: TerminalId, cols: u16, rows: u16) -> IdeResult<()> {
         let session = self.session(id)?;
-        session
-            .master
-            .lock()
-            .resize(pty_size(cols, rows))
-            .map_err(|e| IdeError::internal(format!("resize failed: {e}")))
+        match &session.io {
+            Io::Pty { master, .. } => master
+                .lock()
+                .resize(pty_size(cols, rows))
+                .map_err(|e| IdeError::internal(format!("resize failed: {e}"))),
+            Io::Channel { channel, size } => {
+                let new = pty_size(cols, rows);
+                *size.lock() = (new.cols, new.rows);
+                channel.resize(new.cols, new.rows)
+            }
+        }
     }
 
     /// Closes the terminals `key` opened: the project of that window is closing.
@@ -292,8 +377,13 @@ impl TerminalManager {
     /// Current PTY size of a session (for diagnostics and tests).
     pub fn size(&self, id: TerminalId) -> IdeResult<(u16, u16)> {
         let session = self.session(id)?;
-        let size = session.master.lock().get_size().map_err(|e| IdeError::internal(e.to_string()))?;
-        Ok((size.cols, size.rows))
+        match &session.io {
+            Io::Pty { master, .. } => {
+                let size = master.lock().get_size().map_err(|e| IdeError::internal(e.to_string()))?;
+                Ok((size.cols, size.rows))
+            }
+            Io::Channel { size, .. } => Ok(*size.lock()),
+        }
     }
 
     fn session(&self, id: TerminalId) -> IdeResult<Arc<Session>> {
@@ -321,7 +411,8 @@ fn not_found(id: TerminalId) -> IdeError {
 
 #[cfg(unix)]
 fn foreground_busy(session: &Session, pid: u32) -> bool {
-    let leader = session.master.lock().process_group_leader();
+    let Io::Pty { master, .. } = &session.io else { return false };
+    let leader = master.lock().process_group_leader();
     leader.is_some_and(|fg| u32::try_from(fg).ok() != Some(pid))
 }
 
@@ -391,11 +482,20 @@ mod win {
 
 /// Hangs up the shell (and its process group), escalating to SIGKILL if it lingers.
 fn terminate(session: &Session) {
-    session.writer.close();
+    let (writer, killer) = match &session.io {
+        Io::Pty { writer, killer, .. } => (writer, killer),
+        Io::Channel { channel, .. } => {
+            if !session.exited.load(Ordering::Acquire) {
+                channel.close();
+            }
+            return;
+        }
+    };
+    writer.close();
     if session.exited.load(Ordering::Acquire) {
         return;
     }
-    if let Err(e) = session.killer.lock().kill() {
+    if let Err(e) = killer.lock().kill() {
         tracing::debug!(id = %session.info.id, "terminal kill: {e}");
     }
     #[cfg(unix)]
@@ -1081,6 +1181,77 @@ mod tests {
         let env = terminal_env(&BTreeMap::from([("TERM".into(), "dumb".into())]));
         assert_eq!(env["TERM"], "dumb");
         assert_eq!(env["COLORTERM"], "truecolor");
+    }
+
+    #[derive(Default)]
+    struct FakeChannel {
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TerminalChannel for FakeChannel {
+        fn write(&self, data: &[u8]) -> IdeResult<()> {
+            self.log.lock().push(format!("write {}", String::from_utf8_lossy(data)));
+            Ok(())
+        }
+        fn resize(&self, cols: u16, rows: u16) -> IdeResult<()> {
+            self.log.lock().push(format!("resize {cols}x{rows}"));
+            Ok(())
+        }
+        fn close(&self) {
+            self.log.lock().push("close".into());
+        }
+    }
+
+    #[test]
+    fn attached_channel_gets_input_and_resizes_and_reports_output_and_exit() {
+        let h = harness();
+        let channel = FakeChannel::default();
+        let log = channel.log.clone();
+        let (feed, rx) = feed();
+        let (tx, output) = mpsc::channel();
+        let info = h
+            .manager
+            .attach(
+                "host".into(),
+                (80, 24),
+                Box::new(channel),
+                rx,
+                "test".into(),
+                h.sink.clone(),
+                Box::new(move |s| {
+                    let _ = tx.send(s);
+                }),
+            )
+            .unwrap();
+        assert_eq!((info.title.as_str(), info.pid), ("host", None));
+        assert!(!h.manager.is_busy(info.id).unwrap());
+        h.manager.write(info.id, "ls\r").unwrap();
+        h.manager.resize(info.id, 120, 40).unwrap();
+        assert_eq!(h.manager.size(info.id).unwrap(), (120, 40));
+        // A character split across two chunks arrives whole.
+        feed.output("pr\u{e9}".as_bytes().split_at(3).0);
+        feed.output(&"pr\u{e9}mpt".as_bytes()[3..]);
+        assert_eq!(read_until(&output, "mpt"), "pr\u{e9}mpt");
+        feed.exited(Some(3));
+        assert_eq!(wait_exit(&h, info.id), Some(3));
+        assert!(!h.manager.contains(info.id));
+        assert_eq!(*log.lock(), ["write ls\r", "resize 120x40"]);
+    }
+
+    #[test]
+    fn killing_an_attached_channel_hangs_it_up() {
+        let h = harness();
+        let channel = FakeChannel::default();
+        let log = channel.log.clone();
+        let (feed, rx) = feed();
+        let info = h
+            .manager
+            .attach("host".into(), (80, 24), Box::new(channel), rx, "test".into(), h.sink.clone(), Box::new(|_| {}))
+            .unwrap();
+        h.manager.kill(info.id).unwrap();
+        assert_eq!(*log.lock(), ["close"]);
+        drop(feed);
+        assert_eq!(wait_exit(&h, info.id), None);
     }
 }
 

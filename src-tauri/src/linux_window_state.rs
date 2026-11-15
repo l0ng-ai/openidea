@@ -419,7 +419,7 @@ mod runtime {
 
     fn persist(app: &AppHandle) {
         let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let dir = app.path().app_config_dir()?;
+            let dir = ide_host::data_dirs::config_dir(&app.config().identifier)?;
             std::fs::create_dir_all(&dir)?;
             let cache = app.state::<Mutex<Cache>>();
             let data = serde_json::to_vec_pretty(&cache.lock().saved)?;
@@ -439,9 +439,7 @@ mod runtime {
                 // Plugins are set up on the main thread once GTK is initialised, before any window exists.
                 use gtk::gdk::prelude::DisplayExtManual;
                 let _ = WAYLAND.set(gtk::gdk::Display::default().is_some_and(|d| d.backend().is_wayland()));
-                let saved = app
-                    .path()
-                    .app_config_dir()
+                let saved = ide_host::data_dirs::config_dir(&app.config().identifier)
                     .ok()
                     .and_then(|dir| std::fs::read(dir.join(FILE)).ok())
                     .and_then(|data| serde_json::from_slice(&data).ok())

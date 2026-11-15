@@ -27,6 +27,7 @@ import { buildFileTree, type FileTreeNode } from "./fileTree";
 import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
 import { repositoryPath } from "./repositoryPaths";
+import { RepoPicker } from "./gitMenuDialogs";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -437,15 +438,27 @@ export function showTagDialog() {
 }
 
 function TagDialog({ onClose }: { onClose: () => void }) {
-  const [repo] = useState(currentRepo);
+  const [repo, setRepo] = useState(currentRepo);
   const [name, setName] = useState("");
   const [commit, setCommit] = useState("HEAD");
   const [message, setMessage] = useState("");
   const [force, setForce] = useState(false);
   const [existing, setExisting] = useState<string[]>([]);
   useEffect(() => {
-    void call(commands.vcsTags(repo)).then(setExisting, () => undefined);
-  }, []);
+    let live = true;
+    void call(commands.vcsTags(repo)).then(
+      (tags) => live && setExisting(tags),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [repo]);
+  const chooseRepo = (root: string) => {
+    if (root === repo) return;
+    setRepo(root);
+    setExisting([]);
+  };
   const error = validateTagName(name, force ? [] : existing);
   const run = async () => {
     if (error) return;
@@ -470,6 +483,7 @@ function TagDialog({ onClose }: { onClose: () => void }) {
       ]}
     >
       <div className={styles.form}>
+        <RepoPicker repo={repo} onChange={chooseRepo} />
         <label className={styles.fieldLabel} htmlFor="openidea-tag-name">
           <T>Tag name:</T>
         </label>
@@ -518,21 +532,21 @@ export function showCompareVersions(older: Commit, newer: Commit) {
   showComparison({ rev: older.id, label: short(older.id) }, { rev: newer.id, label: short(newer.id) });
 }
 
-/** Files that differ between two revisions (e.g. two branches from Compare with Current). */
-export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to) {
-  showComparison({ rev: from, label: fromLabel }, { rev: to, label: toLabel });
+/** Files that differ between two revisions (e.g. two branches from Compare with Current) of `repo`. */
+export function showCompareRevisions(from: string, to: string, fromLabel = from, toLabel = to, repo = currentRepo()) {
+  showComparison({ rev: from, label: fromLabel }, { rev: to, label: toLabel }, undefined, repo);
 }
 
 export function showPathComparison(paths: string[], rev: string, repositories: string[] | null) {
   showComparison({ rev, label: rev }, null, { paths, repositories });
 }
 
-function showComparison(from: Revision, to: Revision | null, scope?: ScopedComparison) {
+function showComparison(from: Revision, to: Revision | null, scope?: ScopedComparison, repo = currentRepo()) {
   if (!isTauri()) {
-    openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} onClose={close} />);
+    openDialog((close) => <ChangesBetweenDialog from={from} to={to} scope={scope} repo={repo} onClose={close} />);
     return;
   }
-  const comparison = { from, to, scope: scope ?? null, repo: currentRepo() };
+  const comparison = { from, to, scope: scope ?? null, repo };
   void call(commands.windowOpenComparison(comparison, windowBackgroundHex())).catch((error) =>
     notifications().notify({ level: "error", title: "Could not open comparison", body: String(error) }),
   );
@@ -596,6 +610,7 @@ export function ChangesBetweenDialog({
   from,
   to,
   scope,
+  repo: givenRepo,
   onClose,
   native = false,
   onCaption,
@@ -607,6 +622,8 @@ export function ChangesBetweenDialog({
   from: Revision;
   to: Revision | null;
   scope?: ScopedComparison;
+  /** The repository compared (the selected one when omitted). */
+  repo?: string | null;
   onClose: () => void;
   /** Content of the comparison window rather than a dialog: its caption goes to `onCaption`. */
   native?: boolean;
@@ -619,8 +636,8 @@ export function ChangesBetweenDialog({
   /** Files only, each diff opening in the editor (the Compare tool window's narrow sidebar). */
   listOnly?: boolean;
 }) {
-  const [root] = useState(currentRepoRoot);
-  const [repo] = useState(currentRepo);
+  const [repo] = useState(() => (givenRepo === undefined ? currentRepo() : givenRepo));
+  const [root] = useState(() => repo ?? currentRepoRoot());
   const [files, setFiles] = useState<ComparisonFile[] | null>(null);
   const [result, setResult] = useState<CompareResult | null>(null);
   const [error, setError] = useState<string | null>(null);

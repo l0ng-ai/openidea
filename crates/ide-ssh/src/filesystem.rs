@@ -35,6 +35,22 @@ impl RemoteFs {
         Self::Sftp(SftpFs::new(sftp))
     }
 
+    /// Lets [`RemoteFs::tree`] list a whole folder tree with one command over `shell`.
+    pub fn with_shell(self, shell: std::sync::Arc<crate::Session>) -> Self {
+        match self {
+            Self::Sftp(fs) => Self::Sftp(fs.with_shell(shell)),
+            other => other,
+        }
+    }
+
+    /// See [`SftpFs::tree`]; `None` means list folder by folder.
+    pub async fn tree(&self, dir: &str, prune: &[String]) -> Option<Vec<RemoteEntry>> {
+        match self {
+            Self::Sftp(fs) => fs.tree(dir, prune).await,
+            Self::Ftp(_) | Self::Local => None,
+        }
+    }
+
     pub async fn home(&self) -> IdeResult<String> {
         match self {
             Self::Sftp(fs) => fs.home().await,

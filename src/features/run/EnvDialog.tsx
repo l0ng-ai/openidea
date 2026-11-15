@@ -1,4 +1,4 @@
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
 import { commands, isTauri, type RunConfig } from "@/platform/ipc";
@@ -94,7 +94,7 @@ export function EnvDialog({
   };
   const paste = async () => {
     try {
-      const text = await navigator.clipboard.readText();
+      const text = await readClipboardPlainText();
       setRows((r) => pasteRows(r, text));
     } catch {
       /* clipboard unavailable */

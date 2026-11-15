@@ -35,6 +35,10 @@ const WHILE_RUNNING_OPTIONS = [
   { value: "queue", label: "Queues the message for after the turn" },
   { value: "steer", label: "Sends it into the turn" },
 ];
+const NEW_TASK_APPROVAL_OPTIONS = [
+  { value: "bypass", label: "Without asking for approval" },
+  { value: "ask", label: "Asking for approval" },
+];
 const TOOL_CALL_OPTIONS = [
   { value: "grouped", label: "Grouped by what they did" },
   { value: "each", label: "One per line" },
@@ -665,8 +669,24 @@ export const TOOLS_PAGES: PageSpec[] = [
       "meter",
       "send",
       "reasoning",
+      "approval",
+      "permission",
+      "bypass",
+      "width",
     ],
     sections: [
+      {
+        title: "New Tasks",
+        options: [
+          {
+            kind: "select",
+            key: "agents.newTaskApprovals",
+            label: "New tasks start",
+            options: NEW_TASK_APPROVAL_OPTIONS,
+            hint: "Without asking means the agent's bypass or full-access mode, where command permissions don't apply",
+          },
+        ],
+      },
       {
         title: "Sending",
         options: [
@@ -707,6 +727,11 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.smoothText",
             label: "Reveal streaming text smoothly",
             hint: "Text appears at a steady pace instead of in bursts",
+          },
+          {
+            kind: "toggle",
+            key: "agents.fitWindowWidth",
+            label: "Fit conversation to the window width",
           },
         ],
       },

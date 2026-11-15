@@ -20,22 +20,6 @@ const palettes = [
     fg: "rgb(131, 148, 150)",
     frame: [7, 54, 66, 255],
   },
-  {
-    id: "one-light",
-    label: "One Light",
-    kind: "light",
-    bg: "rgb(250, 250, 250)",
-    fg: "rgb(56, 58, 66)",
-    frame: [234, 234, 235, 255],
-  },
-  {
-    id: "one-dark",
-    label: "One Dark",
-    kind: "dark",
-    bg: "rgb(40, 44, 52)",
-    fg: "rgb(171, 178, 191)",
-    frame: [33, 37, 43, 255],
-  },
 ];
 
 async function choose(page: Page, control: string, label: string) {
@@ -100,15 +84,7 @@ for (const palette of palettes) {
           return activeSession().term.options.theme.background;
         }),
       )
-      .toBe(
-        palette.id === "solarized-light"
-          ? "#fdf6e3"
-          : palette.id === "solarized-dark"
-            ? "#002b36"
-            : palette.id === "one-light"
-              ? "#fafafa"
-              : "#282c34",
-      );
+      .toBe(palette.id === "solarized-light" ? "#fdf6e3" : "#002b36");
     await editor.locator(".cm-content").click();
     await page.keyboard.press("Meta+a");
     await expect(editor.locator(".cm-selectionBackground:visible").first()).toBeVisible();
@@ -135,15 +111,7 @@ for (const palette of palettes) {
 test("same-kind switching, legacy themes, system mode and explicit editor schemes", async ({ workbench: page }) => {
   await openFromTree(page, "build.gradle.kts");
   const dialog = await settings(page);
-  for (const label of [
-    "Solarized Light",
-    "One Light",
-    "Solarized Dark",
-    "One Dark",
-    "Islands Light",
-    "Islands Dark",
-    "High Contrast",
-  ]) {
+  for (const label of ["Solarized Light", "Solarized Dark", "Islands Light", "Islands Dark", "High Contrast"]) {
     await choose(page, "Theme", label);
     await dialog.getByRole("button", { name: "Apply", exact: true }).click();
     if (label === "High Contrast") await expect(page.locator("html")).toHaveAttribute("data-contrast", "high");
@@ -160,7 +128,7 @@ test("same-kind switching, legacy themes, system mode and explicit editor scheme
           : "rgb(0, 0, 0)");
     await expect(page.locator(".cm-editor").first()).toHaveCSS("background-color", bg);
   }
-  await choose(page, "Theme", "One Light");
+  await choose(page, "Theme", "Solarized Light");
   await choose(page, "Editor color scheme", "Solarized Dark");
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await expect(page.locator(".cm-editor").first()).toHaveCSS("background-color", "rgb(0, 43, 54)");
@@ -168,16 +136,16 @@ test("same-kind switching, legacy themes, system mode and explicit editor scheme
   await dialog.getByLabel("Sync with OS", { exact: true }).check();
   await dialog.getByRole("button", { name: "Preferred themes", exact: true }).click();
   await choose(page, "Preferred light theme", "Solarized Light");
-  await choose(page, "Preferred dark theme", "One Dark");
+  await choose(page, "Preferred dark theme", "Solarized Dark");
   await page.keyboard.press("Escape");
   await dialog.getByRole("button", { name: "Apply", exact: true }).click();
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-color-theme", "solarized-light");
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "one-dark");
+  await expect(page.locator("html")).toHaveAttribute("data-color-theme", "solarized-dark");
 });
 
-test("quick theme menu offers all four palettes and applies their kind", async ({ workbench: page }) => {
+test("quick theme menu offers both palettes and applies their kind", async ({ workbench: page }) => {
   for (const palette of palettes) {
     await page.getByRole("button", { name: "IDE and Project Settings", exact: true }).click();
     await page.getByText("Theme", { exact: true }).click();
@@ -206,14 +174,14 @@ test("gear › Theme previews the theme under the pointer and keeps the one chos
 
   await gear.click();
   await page.getByRole("menuitem", { name: "Theme", exact: true }).hover();
-  await theme("One Dark").hover();
-  await expect(html).toHaveAttribute("data-color-theme", "one-dark");
-  await theme("One Dark").click();
-  await expect(html).toHaveAttribute("data-color-theme", "one-dark");
+  await theme("Solarized Dark").hover();
+  await expect(html).toHaveAttribute("data-color-theme", "solarized-dark");
+  await theme("Solarized Dark").click();
+  await expect(html).toHaveAttribute("data-color-theme", "solarized-dark");
   // Chosen, not previewed: the next start-up opens with it.
   await expect
     .poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("openidea.theme") ?? "{}").colorTheme))
-    .toBe("one-dark");
+    .toBe("solarized-dark");
 });
 
 test("Settings › Appearance › Theme previews the highlighted theme until Cancel", async ({ workbench: page }) => {
@@ -226,8 +194,8 @@ test("Settings › Appearance › Theme previews the highlighted theme until Can
   await expect(html).toHaveAttribute("data-theme", "light");
   await expect(html).not.toHaveAttribute("data-color-theme");
   // Picked: it shows until Apply or Cancel.
-  await choose(page, "Theme", "One Dark");
-  await expect(html).toHaveAttribute("data-color-theme", "one-dark");
+  await choose(page, "Theme", "Solarized Dark");
+  await expect(html).toHaveAttribute("data-color-theme", "solarized-dark");
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(html).toHaveAttribute("data-theme", "light");
   await expect(html).not.toHaveAttribute("data-color-theme");

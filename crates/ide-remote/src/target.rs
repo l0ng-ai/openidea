@@ -263,10 +263,15 @@ fn target_command(
     RemoteCommand { program, args, cwd, env, shell_line: None }
 }
 
+/// How long Stop waits for the channel to close after `KILL`.
+const KILL_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 struct RemoteRun {
     info: Mutex<RunInfo>,
     process: Mutex<Option<Arc<RemoteProcess>>>,
     cancel: CancellationToken,
+    /// Stop gave up waiting for the channel to report the exit: the run finishes locally.
+    abandon: CancellationToken,
     stopping: AtomicBool,
     /// The runtime it started on: stdin / stop requests may come from threads without one.
     runtime: tokio::runtime::Handle,
@@ -318,6 +323,7 @@ impl RemoteRuns {
             info: Mutex::new(info.clone()),
             process: Mutex::new(None),
             cancel: CancellationToken::new(),
+            abandon: CancellationToken::new(),
             stopping: AtomicBool::new(false),
             runtime: tokio::runtime::Handle::current(),
         });
@@ -361,7 +367,8 @@ impl RemoteRuns {
         Ok(())
     }
 
-    /// `INT`, then `KILL` (closing the channel) after `grace`.
+    /// `INT`, then `KILL` (closing the channel) after `grace`; a channel that still reports no
+    /// exit after another [`KILL_WAIT`] is left behind and the run finishes as stopped.
     pub fn stop(&self, id: RunId, grace: std::time::Duration) -> IdeResult<()> {
         let run =
             self.runs.lock().get(&id).cloned().ok_or_else(|| IdeError::not_found(format!("no such run: {id}")))?;
@@ -374,6 +381,8 @@ impl RemoteRuns {
             tokio::time::sleep(grace).await;
             if run.info.lock().running {
                 let _ = process.signal(Sig::KILL).await;
+                tokio::time::sleep(KILL_WAIT).await;
+                run.abandon.cancel();
             }
         });
         Ok(())
@@ -420,7 +429,10 @@ async fn run_remote(
         .await?;
     let process = Arc::new(process);
     *run.process.lock() = Some(process.clone());
-    Ok(process.wait().await)
+    tokio::select! {
+        code = process.wait() => Ok(code),
+        _ = run.abandon.cancelled() => Ok(None),
+    }
 }
 
 #[cfg(test)]

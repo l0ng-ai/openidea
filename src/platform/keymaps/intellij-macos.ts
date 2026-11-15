@@ -218,6 +218,9 @@ export const intellijMacos: Record<string, string[]> = {
   "project.reloadFromDisk": ["Meta+Alt+Y"],
   "project.expandAll": ["Meta+="],
   "project.collapseAll": ["Meta+-"],
+  // In the test results tree (keyWhen).
+  "run.expandAllTests": ["Meta+="],
+  "run.collapseAllTests": ["Meta+-"],
 
   // Tool windows
   "toolwindow.project": ["Meta+1"],
@@ -237,7 +240,8 @@ export const intellijMacos: Record<string, string[]> = {
   "toolwindow.resizeRight": ["Ctrl+Alt+Right"],
   "toolwindow.resizeUp": ["Ctrl+Alt+Up"],
   "toolwindow.resizeDown": ["Ctrl+Alt+Down"],
-  "layout.restoreDefault": ["Shift+F12"],
+  "layout.restoreCurrent": ["Shift+F12"],
+  "layout.restoreDefault": [],
   "toolwindow.jumpToLast": ["F12"],
   "toolwindow.hideActive": ["Shift+Escape"],
   "toolwindow.focusEditor": ["Escape"],
@@ -303,6 +307,7 @@ export const intellijMacos: Record<string, string[]> = {
   "vcs.rollback": ["Meta+Alt+Z"],
   "vcs.addToVcs": ["Meta+Alt+A"],
   "vcs.showDiff": ["Meta+D"],
+  "vcs.log.changes.showDiff": ["Meta+D"],
   "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Ctrl+Alt+Shift+Down"],
   "vcs.prevChange": ["Ctrl+Alt+Shift+Up"],
@@ -362,12 +367,16 @@ export const intellijMacos: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
+  "db.nextResultTab": ["Meta+Shift+]", "Ctrl+Right"],
+  "db.previousResultTab": ["Meta+Shift+[", "Ctrl+Left"],
   // Table editor with pending changes (after `vcs.rollback`, so ⌥⌘Z reverts the table's edits there).
   "db.goToColumn": ["Meta+F12"],
   "db.submitChanges": ["Meta+Enter"],
   "db.revertChanges": ["Meta+Alt+Z"],
   "db.showToolWindow": [],
   "agents.newTask": ["Meta+Shift+I"],
+  "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Database tool window (when the tree has focus; `db.openConsole` anywhere).
@@ -401,6 +410,8 @@ export const intellijMacos: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.selectOpened": [],
+  "db.expandAll": [],
   "db.collapseAll": [],
   // Terminal (keyWhen: terminalFocus); after VCS Update / Go to Test so it wins there.
   "terminal.new": ["Meta+T"],

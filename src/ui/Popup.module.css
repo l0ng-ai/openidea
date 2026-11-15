@@ -43,3 +43,32 @@
     animation: none;
   }
 }
+/* `resizable`: the right and bottom edges and their corner, inside the border like IDEA's resize border. */
+.resizeRight,
+.resizeBottom,
+.resizeCorner {
+  position: absolute;
+  z-index: 1;
+  touch-action: none;
+}
+.resizeRight {
+  top: 0;
+  right: 0;
+  bottom: 8px;
+  width: 4px;
+  cursor: ew-resize;
+}
+.resizeBottom {
+  left: 0;
+  right: 8px;
+  bottom: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+.resizeCorner {
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  cursor: nwse-resize;
+}

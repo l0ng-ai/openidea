@@ -11,6 +11,155 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
+struct ModelPages {
+    pages: Mutex<VecDeque<Result<Value, (i64, String)>>>,
+    cursors: Mutex<Vec<Value>>,
+}
+
+impl Handler for ModelPages {
+    fn on_notification(&self, _: &str, _: Value) {}
+
+    fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        assert_eq!(method, "model/list", "listing models must never start a thread or turn");
+        self.cursors.lock().push(params["cursor"].clone());
+        self.pages.lock().pop_front().expect("another expected page")
+    }
+}
+
+fn model_peer(pages: Arc<ModelPages>) -> (Peer, Peer) {
+    let (ours, theirs) = tokio::io::duplex(1 << 16);
+    let (read, write) = tokio::io::split(theirs);
+    let server = Peer::connect_framed(read, write, pages, Framing::Lines);
+    let (read, write) = tokio::io::split(ours);
+    (Peer::connect_framed(read, write, Arc::new(ide_jsonrpc::NoopHandler), Framing::Lines), server)
+}
+
+#[tokio::test]
+async fn model_pagination_failure_does_not_cache_an_incomplete_catalog() {
+    let first = json!({ "data": [{ "id": "first" }], "nextCursor": "next" });
+    let pages = Arc::new(ModelPages {
+        pages: Mutex::new(VecDeque::from([
+            Ok(first.clone()),
+            Err((-32000, "authentication expired".into())),
+            Ok(first),
+            Ok(json!({ "data": [{ "id": "second" }], "nextCursor": null })),
+        ])),
+        cursors: Mutex::default(),
+    });
+    let (peer, server) = model_peer(pages.clone());
+    let shim = CodexShim {
+        runtime: tokio::runtime::Handle::current(),
+        codex: OnceLock::from(peer.clone()),
+        client: OnceLock::new(),
+        state: Mutex::default(),
+        models: tokio::sync::Mutex::new(None),
+        skills: tokio::sync::Mutex::new(()),
+    };
+    assert_eq!(shim.models().await.unwrap_err().message, "authentication expired");
+    let models = shim.models().await.unwrap();
+    assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+    assert_eq!(shim.models().await.unwrap().len(), 2);
+    assert_eq!(*pages.cursors.lock(), [Value::Null, json!("next"), Value::Null, json!("next")]);
+    peer.kill();
+    server.kill();
+}
+
+#[tokio::test]
+async fn repeated_or_invalid_model_cursors_and_malformed_pages_are_failures() {
+    for pages in [
+        vec![json!({ "data": [], "nextCursor": "a" }), json!({ "data": [], "nextCursor": "a" })],
+        vec![
+            json!({ "data": [], "nextCursor": "a" }),
+            json!({ "data": [], "nextCursor": "b" }),
+            json!({ "data": [], "nextCursor": "a" }),
+        ],
+        vec![json!({ "data": [], "nextCursor": 7 })],
+        vec![json!({ "nextCursor": null })],
+        vec![json!({ "data": [{}], "nextCursor": null })],
+    ] {
+        let pages =
+            Arc::new(ModelPages { pages: Mutex::new(pages.into_iter().map(Ok).collect()), cursors: Mutex::default() });
+        let (peer, server) = model_peer(pages);
+        assert!(list_models(&peer).await.is_err());
+        peer.kill();
+        server.kill();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn native_discovery_only_initializes_and_pages_models_then_stops_the_process() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let script = tmp.path().join("fake-codex");
+    std::fs::write(
+        &script,
+        r#"#!/usr/bin/env python3
+import json, os, pathlib, sys
+pathlib.Path('pid').write_text(str(os.getpid()))
+for line in sys.stdin:
+    request = json.loads(line)
+    with pathlib.Path('requests').open('a') as f:
+        f.write(json.dumps(request) + '\n')
+    method = request['method']
+    if method == 'initialized':
+        continue
+    if method == 'initialize':
+        result = {}
+    elif method == 'model/list':
+        cursor = request['params']['cursor']
+        model = 'one' if cursor is None else 'two'
+        result = {'data': [{'id': model, 'isDefault': cursor is None,
+            'defaultReasoningEffort': 'low', 'supportedReasoningEfforts': [{'reasoningEffort': 'low'}]}],
+            'nextCursor': 'second-page' if cursor is None else None}
+    else:
+        raise RuntimeError('must not create a thread or prompt: ' + method)
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let spec = ProviderSpec {
+        id: "codex".into(),
+        name: "Codex".into(),
+        driver: crate::provider::Driver::Codex,
+        command: script.to_string_lossy().into_owned(),
+        args: Vec::new(),
+        env: Vec::new(),
+        login_hint: String::new(),
+        source: crate::AgentSource::Builtin,
+    };
+    let found = discover(spec, tmp.path().to_path_buf()).await.unwrap();
+    let models: Vec<_> = found
+        .config
+        .iter()
+        .filter(|o| o.category.as_deref() == Some("model"))
+        .flat_map(|o| o.values.iter().map(|v| v.value.as_str()))
+        .collect();
+    assert_eq!(models, ["one", "two"]);
+    assert_eq!(found.levels.keys().map(String::as_str).collect::<Vec<_>>(), ["one", "two"]);
+    let requests = std::fs::read_to_string(tmp.path().join("requests")).unwrap();
+    let requests: Vec<Value> = requests.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(
+        requests.iter().map(|r| r["method"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["initialize", "initialized", "model/list", "model/list"]
+    );
+    assert_eq!(requests[2]["params"]["cursor"], Value::Null);
+    assert_eq!(requests[3]["params"]["cursor"], "second-page");
+    let pid = std::fs::read_to_string(tmp.path().join("pid")).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let alive = std::process::Command::new("kill").args(["-0", pid.trim()]).output().unwrap().status.success();
+            if !alive {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("discovery must kill and reap its child");
+}
+
 // ---- Pure translations -------------------------------------------------------------
 
 fn models() -> Vec<ModelInfo> {
@@ -535,8 +684,10 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     .unwrap()
                     .unwrap_or_else(|| panic!("the shim closed before {frame}"));
                 let actual: Value = serde_json::from_str(&line).unwrap();
-                // Older recordings predate skill discovery; play an unsupported server.
-                if actual["method"] == "skills/list" && frame["method"] != "skills/list" {
+                // Older recordings predate skill discovery and thread naming; play an
+                // unsupported server.
+                let method = actual["method"].as_str().unwrap_or_default();
+                if matches!(method, "skills/list" | "thread/sample") && frame["method"] != method {
                     let reply = json!({ "id": actual["id"], "error": { "code": -32601, "message": "unsupported" } });
                     write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
                     continue;
@@ -574,7 +725,14 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 /// Runs `scenario` against its transcript; returns the ACP results, the client and
 /// the frames the shim sent.
 async fn replay(scenario: Scenario) -> (Results, Arc<Client>, Vec<Value>, Value) {
-    let t = load(scenario.file());
+    let (results, client, sent, meta, _codex) = replay_transcript(scenario, load(scenario.file())).await;
+    (results, client, sent, meta)
+}
+
+/// Both connections of a replay, which stay open while it is held.
+type CodexEnd = Box<dyn std::any::Any>;
+
+async fn replay_transcript(scenario: Scenario, t: Transcript) -> (Results, Arc<Client>, Vec<Value>, Value, CodexEnd) {
     let (ours, theirs) = tokio::io::duplex(1 << 20);
     let (tr, tw) = tokio::io::split(theirs);
     let client = Arc::new(Client::default());
@@ -590,8 +748,8 @@ async fn replay(scenario: Scenario) -> (Results, Arc<Client>, Vec<Value>, Value)
         .await
         .expect("the scenario finished");
     // Codex stays up until the scenario is over.
-    let (sent, _read, _write) = player.await.unwrap();
-    (results, client, sent, meta)
+    let (sent, read, write) = player.await.unwrap();
+    (results, client, sent, meta, Box::new((acp, read, write)))
 }
 
 fn sent<'a>(frames: &'a [Value], method: &str) -> Vec<&'a Value> {
@@ -799,6 +957,42 @@ async fn a_simple_turn_streams_reasoning_text_and_usage() {
     assert!(kinds.contains(&"usage_update".to_owned()));
     let info = client.of(&session).into_iter().find(|u| u["sessionUpdate"] == "session_info_update").unwrap();
     assert_eq!(info["title"], "Say hi");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unnamed_thread_is_named_after_its_first_turn() {
+    let mut t = load(Scenario::Simple.file());
+    t.frames.retain(|(_, f)| f["method"] != "thread/name/updated");
+    let thread = "01a18300-0000-7000-8000-000000000001";
+    t.frames.extend([
+        (true, json!({"id": 90, "method": "thread/sample"})),
+        (false, json!({"id": 90, "result": {"responseId": "r", "sourceTurnId": thread, "text": "\"Say hi.\"\n"}})),
+        (true, json!({"id": 91, "method": "thread/name/set"})),
+        (false, json!({"id": 91, "result": {}})),
+        (false, json!({"method": "thread/name/updated", "params": {"threadId": thread, "threadName": "Say hi"}})),
+    ]);
+    let (results, client, frames, _, _codex) = replay_transcript(Scenario::Simple, t).await;
+    let session = session_of(&results, "new");
+    let sample = &sent(&frames, "thread/sample")[0]["params"];
+    assert_eq!((sample["threadId"].as_str(), sample["expectedTurnId"].as_str()), (Some(thread), Some(thread)));
+    assert_eq!(sent(&frames, "thread/name/set")[0]["params"], json!({"threadId": thread, "name": "Say hi"}));
+    let mut info = Vec::new();
+    for _ in 0..100 {
+        info = client.of(&session).into_iter().filter(|u| u["sessionUpdate"] == "session_info_update").collect();
+        if !info.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(info.iter().map(|u| u["title"].clone()).collect::<Vec<_>>(), [json!("Say hi")]);
+}
+
+#[test]
+fn thread_names_are_the_first_line_of_the_reply() {
+    assert_eq!(thread_name("  \n“修复登录表单。”\nmore").as_deref(), Some("修复登录表单"));
+    assert_eq!(thread_name("**Fix the login form.**").as_deref(), Some("Fix the login form"));
+    assert_eq!(thread_name(" \n\"\" "), None);
+    assert_eq!(thread_name(&"x".repeat(100)).map(|n| n.chars().count()), Some(80));
 }
 
 #[tokio::test(flavor = "multi_thread")]

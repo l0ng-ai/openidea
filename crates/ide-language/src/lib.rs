@@ -22,11 +22,13 @@ pub use markers::{arduino_sketch_root, is_arduino_sketch_dir, marked_root};
 pub use plugin_point::PluginLanguages;
 pub use registry::{FileTypes, LanguageRegistry};
 pub use syntax::{
-    CSS_CLASS, CSS_ID, CSS_VARIABLE, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken,
-    FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind, SpellingRegion,
-    Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError, WebReference,
-    WebReferenceKind, merge_visibility, set_external_syntax, shift_pos, shift_range,
+    CSS_CLASS, CSS_ID, CSS_VARIABLE, ClassBases, ConfigurationKey, ExternalFold, ExternalSymbol, ExternalSyntax,
+    ExternalToken, FileReference, Literal, LiteralKind, MAX_CACHED_TREES, MAX_PARSE_BYTES, ParsedTree, SpellingKind,
+    SpellingRegion, Syntax, SyntaxCache, SyntaxCacheStats, SyntaxHighlightKind, SyntaxHighlights, TreeError,
+    VueComponentImport, VueRefAccess, VueRefElement, WebReference, WebReferenceKind, merge_visibility,
+    set_external_syntax, shift_pos, shift_range,
 };
+pub use syntax::{MethodBody, PythonClassFacts, PythonFacts, PythonMethodFacts};
 
 /// Parsed form of `languages/<id>.toml`. Backend-only; the UI gets [`LanguageInfo`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -197,6 +199,10 @@ pub struct LanguageServerConfig {
     /// it parses a document.
     #[serde(default)]
     pub resync_on_configuration: bool,
+    /// Set by the settings hook: what the user sees as the server when another program serves
+    /// in its place (TypeScript 7's own `tsc --lsp` for vtsls).
+    #[serde(skip)]
+    pub display_name: Option<String>,
     /// Set on plugin languages: start exactly this approved program.
     #[serde(skip)]
     pub pinned: Option<ProgramPin>,

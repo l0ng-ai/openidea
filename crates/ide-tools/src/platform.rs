@@ -249,6 +249,7 @@ mod tests {
             ("buf", "buf-Windows-arm64.zip"),
             ("texlab", "texlab-aarch64-windows.zip"),
             ("neocmakelsp", "neocmakelsp-aarch64-pc-windows-msvc.zip"),
+            ("slint-lsp", "slint-lsp-aarch64-pc-windows-msvc.zip"),
         ] {
             assert_eq!(
                 select_asset(&[asset], crate::registry::find(tool).unwrap().asset_rules(), platform),

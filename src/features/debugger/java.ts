@@ -20,6 +20,7 @@ import { withEnvFiles } from "./launch";
 
 export const JAVA_ADAPTER = "java-debug";
 export const KOTLIN_ADAPTER = "kotlin-debug-adapter";
+const KOTLIN_LSP = "kotlin-lsp";
 
 export function isJavaDebuggable(rc: RunConfig): boolean {
   return isJvmApplication(rc) && [JAVA_ADAPTER, KOTLIN_ADAPTER].includes(rc.debugAdapter ?? JAVA_ADAPTER);
@@ -77,6 +78,31 @@ export async function moduleHasKotlinSources(cwd: string): Promise<boolean> {
       if (entry.kind === "dir") pending.push(entry.path);
     }
   }
+  return false;
+}
+
+/**
+ * Whether the debugger for the JVMs of `module` is installed. Maven / Gradle start those JVMs
+ * before the debugger attaches, so a missing Kotlin debugger is offered here, before the build
+ * runs: "Install and Debug" installs it and calls `retry`. An installed kotlin-lsp debugs Kotlin
+ * itself (the backend falls back to kotlin-debug-adapter only when it can't).
+ */
+export async function jvmAttachDebuggerReady(module: string, root: string, retry: () => void): Promise<boolean> {
+  if (!(await moduleHasKotlinSources(module ? join(root, module) : root))) return true;
+  const tools = await call(commands.toolsList()).catch(() => []);
+  const missing = (name: string) => tools.find((t) => t.name === name)?.status === "missing";
+  if (!missing(KOTLIN_ADAPTER) || !missing(KOTLIN_LSP)) return true;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    key: "debug.start",
+    title: "The Kotlin debugger is not installed",
+    body: "This module has Kotlin sources, so debugging it needs the Kotlin debugger (kotlin-debug-adapter).",
+    sticky: true,
+    actions: [
+      { label: "Install and Debug", run: () => void executeAction("tools.install", KOTLIN_ADAPTER).then(retry) },
+    ],
+  });
   return false;
 }
 

@@ -5,7 +5,7 @@ use ide_build::compile::{BuildEvent, BuildKind, BuildResult};
 use ide_build::maven::PomGoto;
 use ide_build::pom_edit::ArtifactKey;
 use ide_build::{BuildModel, BuildTool, SyncProgress};
-use ide_core::{IdeResult, Location, Pos, RequestId};
+use ide_core::{DocId, IdeResult, Location, Pos, RequestId};
 #[allow(unused_imports)]
 pub use ide_host::ops::build::*;
 use tauri::ipc::Channel;
@@ -127,6 +127,20 @@ pub async fn maven_goto_declaration(
     pos: Pos,
 ) -> IdeResult<Option<PomGoto>> {
     ide_host::ops::build::maven_goto_declaration(&state.host, window.label(), pom, pos).await
+}
+
+/// Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
+/// in the value of in the POM `doc`, from the local repository and Maven Central.
+#[tauri::command]
+#[specta::specta]
+pub async fn maven_dependency_completion(
+    window: Window,
+    state: State<'_, AppState>,
+    doc: DocId,
+    offset: u32,
+    request: RequestId,
+) -> IdeResult<Option<ide_build::maven::completion::PomCompletion>> {
+    ide_host::ops::build::maven_dependency_completion(&state.host, window.label(), doc, offset, request).await
 }
 
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency

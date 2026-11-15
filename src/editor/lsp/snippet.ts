@@ -189,8 +189,12 @@ function field(n: number | string, text: string): string {
 
 /** Converts an LSP snippet into a CodeMirror snippet template. */
 export function lspSnippetToCm(snippet: string, vars: SnippetVariables = {}): string {
+  const nodes = parse(snippet);
+  const hasField = nodes.some(
+    (n) => n.t === "tab" || n.t === "choice" || (n.t === "var" && vars[n.name] === undefined && !n.children),
+  );
   let out = "";
-  for (const n of parse(snippet)) {
+  for (const n of nodes) {
     if (n.t === "text") out += escapeText(n.v);
     else if (n.t === "tab") out += field(n.n, n.children ? flatten(n.children, vars) : "");
     else if (n.t === "choice") out += field(n.n, n.options[0] ?? "");
@@ -202,7 +206,8 @@ export function lspSnippetToCm(snippet: string, vars: SnippetVariables = {}): st
       else out += field(n.name, "");
     }
   }
-  return out;
+  // CodeMirror leaves the caret before an insertion without fields.
+  return hasField ? out : out + "${0}";
 }
 
 /** The snippet's text with every field replaced by its default (for previews / plain insertion). */

@@ -1,7 +1,7 @@
 id = "execution"
 name = "Plugin execution tests"
 version = "0.1.0"
-engines.openidea = "^1.5"
+engines.openidea = "^1.9"
 wasm = "dist/plugin.wasm"
 activation = ["on-command:*"]
 [capabilities]
@@ -39,6 +39,10 @@ title = "write"
 [[contributes.commands]]
 id = "content"
 title = "content"
+
+[[contributes.commands]]
+id = "diff"
+title = "diff"
 
 [[contributes.commands]]
 id = "events"

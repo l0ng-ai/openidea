@@ -47,7 +47,7 @@ jobs:
             exit 0
           fi
           # No `nightly` tag yet (the first run): compare fails and the build goes on.
-          status="$(gh api "repos/$GH_REPO/compare/nightly...$sha" --jq .status 2>/dev/null || echo ahead)"
+          status="$(gh api "repos/$GH_REPO/compare/nightly...$sha" --jq .status 2>/dev/null)" || status=ahead
           if [ "$status" != ahead ] && [ "$FORCE" != true ]; then
             echo "::notice::$sha is not newer than the last nightly"
             exit 0

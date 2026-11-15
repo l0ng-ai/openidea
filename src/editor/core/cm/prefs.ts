@@ -49,9 +49,10 @@ import {
   selectHumpRight,
 } from "./editing";
 import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
-import { enterInDocComment } from "./docComment";
+import { enterInBlockComment, enterInDocComment } from "./docComment";
 import { renderDocComments } from "./renderedDocs";
 import { skipClosingQuote, smartAngleBrackets, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { linkedTags } from "./linkedTags";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
@@ -471,14 +472,27 @@ const noSurround = EditorView.inputHandler.of((view, from, to, text) => {
   return true;
 });
 
-/** Gutter icon groups of Settings › Editor › General › Gutter Icons (stable gutter classes). */
+/**
+ * Gutter icon groups of Settings › Editor › General › Gutter Icons. A hidden group sets
+ * `cm-openidea-hideGutter-<id>` on the editor (the theme hides the bookmark, color and
+ * script/compose run columns by it); the icon area's run and inheritance icons read the
+ * setting themselves.
+ */
 export const GUTTER_ICON_GROUPS = [
-  { id: "run", gutterClass: "cm-openidea-gutter-run" },
-  { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
-  { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
-  { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
-  { id: "colors", gutterClass: "cm-openidea-gutter-colors" },
+  { id: "run" },
+  { id: "bookmarks" },
+  { id: "inheritors" },
+  { id: "supers" },
+  { id: "colors" },
 ] as const;
+
+/**
+ * Languages whose outer parser is `@lezer/html`, where simultaneous
+ * `<tag></tag>` editing works from the syntax tree. Angular templates carry
+ * the `html` backend id (the Angular mode is picked per project), `erb` is a
+ * token-based mode without a syntax tree and stays out.
+ */
+const LINKED_TAG_LANGUAGES = new Set(["html", "vue", "jsp", "django-html", "astro"]);
 
 export interface PrefsOptions {
   prefs: EditorExtras;
@@ -605,6 +619,11 @@ export function prefsExtension(o: PrefsOptions): Extension {
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
   if (k.tabOutOfPair) out.push(tabOut);
+  // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
+  // parser is `@lezer/html` — plain HTML plus the HTML-based modes (Vue SFCs, Angular
+  // templates, JSP, Django and Astro; Angular templates carry the `html` backend id).
+  // ERB is token-based (no syntax tree), so it stays out.
+  if (!o.readOnly && k.simultaneousTagEditing && LINKED_TAG_LANGUAGES.has(o.language ?? "")) out.push(linkedTags);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 
   const keys = [];
@@ -626,7 +645,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
-  if (!o.readOnly) keys.push({ key: "Enter", run: enterInLineComment });
+  if (!o.readOnly) keys.push({ key: "Enter", run: enterInBlockComment }, { key: "Enter", run: enterInLineComment });
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });
   else if (smartBackspaceApplies(k.backspaceUnindent, o.language)) keys.push({ key: "Backspace", run: smartBackspace });

@@ -10,11 +10,12 @@ export const KIND_LABELS: Record<AttachKind, string> = {
   java: "Java (JDWP)",
   node: "Node.js",
   python: "Python (debugpy)",
+  dotnet: ".NET (netcoredbg)",
   go: "Go (Delve)",
   native: "Native (LLDB)",
 };
 
-const KIND_ORDER: AttachKind[] = ["java", "node", "python", "go", "native"];
+const KIND_ORDER: AttachKind[] = ["java", "node", "python", "dotnet", "go", "native"];
 
 export type AttachRow =
   | { kind: "group"; key: string; label: string; count: number }
@@ -84,6 +85,8 @@ export async function attachConfig(p: AttachableProcess, root: string): Promise<
         // (`--pid` injection ships only an x86_64 helper on macOS.)
         p.port != null ? { debugServer: p.port, justMyCode: skip } : { processId: p.pid, justMyCode: skip },
       );
+    case "dotnet":
+      return base(p, root, { processId: p.pid, justMyCode: skip });
     case "go":
       return base(p, root, { mode: "local", processId: p.pid });
     case "native":

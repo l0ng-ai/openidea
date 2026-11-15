@@ -11,6 +11,37 @@
   font-size: var(--fs-ui);
 }
 
+/* Temporary side conversation: an accent bar divides it from what it forked from. */
+.sideBanner {
+  grid-column: 1 / -1;
+  /* The grid stretches auto rows; keep the bar at its content height. */
+  align-self: start;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+.sideBanner :global(svg) {
+  color: var(--accent);
+  flex: none;
+}
+.sideName {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sideHint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+
 .conversation {
   container-type: inline-size;
   display: flex;
@@ -30,8 +61,23 @@
 .docked .conversation {
   border-right: 0;
 }
-.docked .changes {
-  width: auto;
+/* The pane takes its width while the conversation keeps 240px (half of a narrower session);
+   keep that minimum in step with ChangesResizer. */
+.withChanges {
+  grid-template-columns: minmax(min(240px, 50%), 1fr) minmax(0, var(--agent-changes-width, 280px));
+}
+.fitWidth .stream > * {
+  width: 100%;
+}
+.fitWidth .userMessage > .user {
+  max-width: var(--session-card-width);
+}
+.fitWidth .composerArea {
+  max-width: none;
+}
+.fitWidth .questionCard {
+  width: calc(100% - var(--space-3) * 2);
+  max-width: none;
 }
 
 .providerIcon {
@@ -41,12 +87,77 @@
 /* The task's state and its terminal and changes, just above the composer. */
 .statusBar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  /* What doesn't fit moves to the next line whole, instead of every fact shrinking to a letter. */
+  flex-wrap: wrap;
+  /* The changes chip sits above the line; the facts stay on that line's baseline. */
+  align-items: flex-end;
+  gap: 2px 6px;
   min-width: 0;
   padding: 0 2px;
+  overflow: hidden;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
+}
+/* The facts on the bar's line are as tall as its chips, so their text shares one centre line. */
+.agent {
+  display: inline-flex;
+  flex: 0 1 auto;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  min-width: 0;
+  color: var(--fg-secondary);
+}
+.agentName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Where the task works, as the new-task composer shows it. */
+.where {
+  display: inline-flex;
+  flex: 0 1 auto;
+  max-width: 100%;
+  align-items: center;
+  /* The chips' own padding spaces them. */
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+.note {
+  flex: none;
+  color: var(--fg-subtle);
+}
+.state {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 22px;
+  white-space: nowrap;
+}
+/* The rest of the line: the changes at its start, the meter, time and terminal at its end.
+   On a line of its own (a narrow session) the changes line up with the facts above. */
+.statusEnd {
+  display: inline-flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+/* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
+.statusMeters {
+  display: inline-flex;
+  flex: 0 1 auto;
+  margin-left: auto;
+  align-items: center;
+  height: 22px;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 .statusActions {
   display: flex;
@@ -54,12 +165,43 @@
   align-items: center;
   gap: 2px;
 }
-.statusText {
-  flex: 1 1 0;
+/* What changed (files, commits) above the meters; both open the Changes pane. */
+.statusChips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
   min-width: 0;
+}
+.statusChip {
+  composes: surface from "../../ui/Chip.module.css";
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  overflow: hidden;
+  border: none;
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  cursor: pointer;
+}
+.statusChip:hover,
+.statusChip[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+/* In a narrow docked session the chip is narrower than its text: the label ends in an ellipsis. */
+.statusChipLabel {
+  display: inline-block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .muted {
   color: var(--fg-subtle);
@@ -113,10 +255,11 @@
 .stream:focus {
   outline: none;
 }
-/* Scrolled up: one click back to the latest message, floating over the stream's end. */
+/* Scrolled up: one click back to the latest message, centred over the stream's end like the conversation. */
 .jumpToLatest {
   position: absolute;
-  right: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
   bottom: var(--space-2);
   z-index: 2;
   display: inline-flex;
@@ -225,6 +368,14 @@
     --session-card-width: 96%;
   }
 }
+/* A narrow docked session: rather than cut every fact to a letter or two, the bar keeps the
+   agent's icon and its state; where it works is in the task's tooltip and Changes. */
+@container (max-width: 420px) {
+  .where,
+  .agentName {
+    display: none;
+  }
+}
 .messageActions {
   display: inline-flex;
   gap: 4px;
@@ -322,6 +473,13 @@
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* Quoted context a reply carried with it: dimmer, with a marker line. */
+.quote {
+  margin: 0;
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--border);
+  color: var(--fg-muted);
 }
 
 .editMessage {
@@ -954,9 +1112,12 @@
 }
 .meter {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
+  min-width: 0;
   height: 22px;
   gap: 5px;
+  overflow: hidden;
 }
 .usageBar {
   width: 36px;
@@ -1025,11 +1186,30 @@
 }
 
 .changes {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  width: 280px;
+}
+/* On the conversation's border; the hit area reaches 3px either side of it. */
+.changesResizer {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: -1px;
+  width: 0;
+  outline: none;
+}
+.changesResizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+  cursor: ew-resize;
+}
+.changesResizer:focus-visible::after {
+  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
 }
 .changesHeader {
   min-width: 0;
@@ -1048,6 +1228,10 @@
   white-space: nowrap;
   font-weight: 600;
   color: var(--fg-strong);
+}
+.changesHeader > .muted {
+  flex: none;
+  white-space: nowrap;
 }
 .changesSummary {
   flex: none;
@@ -1100,6 +1284,47 @@
   font-size: var(--fs-small);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+/* Group and commit rows of the grouped Changes pane. */
+.changeGroup {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeGroupName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+.changeCommit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.changeCommitHash {
+  flex: none;
+  color: var(--fg-subtle);
+  font-family: var(--font-mono);
+}
+.changeCommitSummary {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.changeCommitTime {
+  flex: none;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
 }
 
 .added {
@@ -1565,7 +1790,6 @@
   cursor: pointer;
 }
 .trayChip:hover,
-.trayChip[aria-pressed="true"],
 .trayChip[aria-expanded="true"] {
   background: var(--bg-hover);
   color: var(--fg);

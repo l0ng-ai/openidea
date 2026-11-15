@@ -156,6 +156,42 @@
   font-size: var(--fs-ui);
   pointer-events: none;
 }
+/* The field variant sits on the 32px toolbar row above the tree, covering its first buttons. */
+.speedField {
+  top: auto;
+  bottom: calc(100% + 2px);
+  left: 6px;
+  gap: 4px;
+  height: 28px;
+  min-width: 160px;
+  padding: 0 2px 0 8px;
+  box-shadow: none;
+  pointer-events: auto;
+}
+.speedField .speedQuery {
+  margin-left: 2px;
+}
+.caret {
+  flex-shrink: 0;
+  width: 1px;
+  height: 16px;
+  margin: 0 auto 0 -2px;
+  background: var(--fg-strong);
+  animation: caret-blink 1s steps(1) infinite;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+}
+.onlyMatches {
+  flex-shrink: 0;
+}
 .speedQuery {
   color: var(--fg-strong);
   overflow: hidden;

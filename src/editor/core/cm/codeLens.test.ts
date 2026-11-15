@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { codeLenses } from "@/editor/api";
 import { codeLensExtension, codeLensPositions, declarationStart, groupLenses, indentColumns } from "./codeLens";
@@ -74,6 +74,24 @@ describe("code lens position", () => {
     const v = view({ usages: "right", author: "right" });
     expect(v.dom.querySelector(".cm-openidea-lens")).toBeNull();
     expect(texts(v.dom.querySelectorAll(".cm-openidea-lensInline"))).toEqual(["1 usageDenis"]);
+    v.destroy();
+  });
+
+  it("rebuilds the lens when its position changes in an open editor", () => {
+    const positions = new Compartment();
+    const v = new EditorView({
+      state: EditorState.create({
+        doc,
+        extensions: [codeLensExtension, codeLenses.of(lenses), positions.of(codeLensPositions.of({}))],
+      }),
+      parent: document.body,
+    });
+    v.dispatch({ effects: positions.reconfigure(codeLensPositions.of({ usages: "right", author: "right" })) });
+    expect(v.dom.querySelector(".cm-openidea-lens")).toBeNull();
+    expect(texts(v.dom.querySelectorAll(".cm-openidea-lensInline"))).toEqual(["1 usageDenis"]);
+    v.dispatch({ effects: positions.reconfigure(codeLensPositions.of({})) });
+    expect(v.dom.querySelector(".cm-openidea-lensInline")).toBeNull();
+    expect(texts(v.dom.querySelectorAll(".cm-openidea-lens"))).toEqual(["1 usageDenis"]);
     v.destroy();
   });
 });

@@ -73,6 +73,13 @@
 .pathInput {
   width: 320px;
 }
+.backgroundPreview {
+  height: var(--h-control);
+  max-width: 64px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
 .patternInput {
   width: 160px;
 }

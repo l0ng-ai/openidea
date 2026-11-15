@@ -1,0 +1,19 @@
+.value {
+  margin-top: var(--space-2);
+  padding: var(--space-2);
+  max-height: 160px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-strong);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+}
+
+.note {
+  margin-top: var(--space-2);
+  color: var(--fg-muted);
+}

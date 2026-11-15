@@ -36,6 +36,9 @@ pub struct AgentCapabilities {
     pub steer: bool,
     /// It reports its background tasks and stops them one by one.
     pub background_tasks: bool,
+    /// The task runs read-only: it asks before anything, and requests that would change
+    /// the project are denied (a temporary side conversation).
+    pub read_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -384,6 +387,10 @@ pub enum AgentEntry {
     Permission {
         id: u32,
         title: String,
+        /// The shell command the request asks to run, from its structured input; `None` for
+        /// any other request, whatever its title says.
+        #[serde(default)]
+        command: Option<String>,
         options: Vec<AgentPermissionOption>,
         /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
         /// of question to answer instead of an option.
@@ -484,7 +491,8 @@ pub struct NewAgentTask {
     pub base: Option<String>,
 }
 
-/// A file the task changed, relative to [`AgentTask::base_commit`].
+/// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
+/// grouped view.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentChange {
@@ -493,6 +501,57 @@ pub struct AgentChange {
     pub kind: ide_vcs::ChangeKind,
     pub added: u32,
     pub removed: u32,
+    /// Path before a rename; the left side of its diff reads this path.
+    pub old_path: Option<String>,
+}
+
+/// A commit made while the task ran, with the files it changed against its first parent.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommit {
+    pub id: String,
+    pub short_id: String,
+    pub summary: String,
+    pub message: String,
+    pub time_ms: f64,
+    /// First parent, or `None` for a root commit.
+    pub parent: Option<String>,
+    pub files: Vec<AgentChange>,
+}
+
+/// Which comparison a rollback of the task's changes uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentChangesView {
+    /// Everything since the commit the task started from.
+    #[default]
+    SinceStart,
+    /// The uncommitted files against `HEAD`; commits made since the start stay.
+    Group,
+}
+
+/// A task's uncommitted files and the commits made since it started.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChanges {
+    /// Files changed against `HEAD`, less those changed before the task started and untouched since.
+    pub uncommitted: Vec<AgentChange>,
+    /// Commits from the task's start (exclusive) to `HEAD` (inclusive), newest first. Empty
+    /// for tasks working in the project's own checkout.
+    pub commits: Vec<AgentCommit>,
+}
+
+/// Authoritative choices for new tasks, independent of any running session's settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelCatalog {
+    pub provider: String,
+    pub config: Vec<AgentConfigOption>,
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
+    pub refreshing: bool,
+    pub refreshed_at_ms: Option<f64>,
+    pub retry_at_ms: Option<f64>,
+    pub error: Option<String>,
 }
 
 /// Streamed to the window that subscribed (`AgentManager::subscribe`).
@@ -531,6 +590,10 @@ pub enum AgentEvent {
     Limits {
         provider: String,
         limits: Vec<AgentLimit>,
+    },
+    /// A model lookup started or completed, including unsuccessful lookups.
+    ModelCatalog {
+        catalog: AgentModelCatalog,
     },
     /// The installed or configured agent providers changed.
     Providers,

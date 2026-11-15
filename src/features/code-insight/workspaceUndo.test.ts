@@ -35,7 +35,7 @@ it("waits for pending typing before undoing the entire backend transaction", asy
       release = resolve;
     }),
   );
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 17, paths: [] });
+  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 17, paths: [], byAgent: false });
   const action = notices[0]!.actions![0]!;
   expect(action.label).toBe("Undo");
   const pending = action.run();
@@ -47,13 +47,13 @@ it("waits for pending typing before undoing the entire backend transaction", asy
 
 it("reports a refused undo instead of discarding newer work", async () => {
   mocks.undo.mockRejectedValue(new Error("a.txt changed"));
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 18, paths: [] });
+  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 18, paths: [], byAgent: false });
   await notices[0]!.actions![0]!.run();
   expect(notices[1]).toMatchObject({ level: "error", title: "Cannot undo refactoring", body: "a.txt changed" });
 });
 
 it("does not apply an old notification's id to a different project", async () => {
-  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 19, paths: [] });
+  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 19, paths: [], byAgent: false });
   const previous = useProject.getState().project;
   useProject.setState({ project: { ...previous, root: "/different-project" } as NonNullable<typeof previous> });
   try {
@@ -63,4 +63,9 @@ it("does not apply an old notification's id to a different project", async () =>
   } finally {
     useProject.setState({ project: previous });
   }
+});
+
+it("does not announce an agent's edit as a refactoring", () => {
+  emitLocalIdeEvent({ type: "workspaceEditApplied", id: 20, paths: [], byAgent: true });
+  expect(notices).toEqual([]);
 });

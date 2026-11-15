@@ -118,7 +118,10 @@ const route: InvokeRoute = (cmd, args, options) => {
   });
 };
 
-/** Routes the commands the server answers (`session.commands`) to it from now on. */
+/**
+ * Routes `session.commands` to the server from now on: the commands this build's
+ * server answers, as the desktop backend knows them (not as the server reports them).
+ */
 export function enableRemote(session: RemoteSession) {
   routed = new Set(session.commands);
   useRemote.setState({ session });
@@ -133,6 +136,11 @@ export function disableRemote() {
 
 export function isRemoteWindow(): boolean {
   return useRemote.getState().session !== null;
+}
+
+/** Whether `path` is the project folder of this window's remote session. */
+export function isRemoteRoot(path: string): boolean {
+  return useRemote.getState().session?.root === path;
 }
 
 /** The OS this window's commands run on: the remote server's, else this desktop's (`usePlatform`). */
@@ -181,6 +189,7 @@ export async function connectRemote(target: RemoteTarget, path: string) {
     if (takeLegacyRemoteTrust(r.target, path, r.host)) {
       const status = await call(commands.projectTrustStatus(r.root));
       if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));
+      if (!(await call(commands.remoteTrustStatus())).decided) await call(commands.remoteTrustSet(true));
     }
     try {
       await confirmProjectTrust(r.root);

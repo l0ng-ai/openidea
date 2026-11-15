@@ -11,7 +11,6 @@ import { Marked } from "marked";
 import DOMPurify from "dompurify";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { iconNode } from "@/editor/lsp/iconMarkup";
-import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import { copyText } from "@/ui";
@@ -20,6 +19,7 @@ import { hasMermaid, renderMermaidIn } from "@/features/viewers/markdown/mermaid
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { fileHref, pathLink, type PathLink } from "./conversation";
 import { loadImages, type MessageImages } from "./markdownImages";
+import { fileExists } from "./ReferenceChip";
 import styles from "./Session.module.css";
 
 const escapeHtml = (s: string) =>
@@ -165,20 +165,6 @@ function wrapLooseText(li: Element) {
     else run.push(n);
   }
   flush();
-}
-
-/** Whether a path names an existing file, per path (agents name the same files again and again). */
-const existing = new Map<string, Promise<boolean>>();
-function fileExists(path: string): Promise<boolean> {
-  let known = existing.get(path);
-  if (!known) {
-    known = call(commands.fsProbe(path)).then(
-      () => true,
-      () => false,
-    );
-    existing.set(path, known);
-  }
-  return known;
 }
 
 export function openPathLink(link: PathLink) {

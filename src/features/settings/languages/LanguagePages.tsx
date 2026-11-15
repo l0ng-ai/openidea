@@ -93,7 +93,15 @@ function RunTargetRow({ language }: { language: "php" | "node" }) {
   );
 }
 
+const RUNTIME_OPTIONS: SelectOption[] = [
+  { value: "", label: "Auto", detail: "deno.json → Deno, bun.lock → Bun, else Node.js" },
+  { value: "node", label: "Node.js" },
+  { value: "bun", label: "Bun" },
+  { value: "deno", label: "Deno" },
+];
+
 export function NodePage() {
+  const [runtime, setRuntime] = useSetting<string>("languages.node.runtime");
   const [pm, setPm] = useSetting<string>("languages.node.packageManager");
   const { list } = useDetected("packageManager");
   const pmOptions = useMemo<SelectOption[]>(
@@ -113,6 +121,17 @@ export function NodePage() {
   return (
     <div className={styles.page}>
       <Section>
+        <Row
+          label="Preferred runtime"
+          hint="Runs JavaScript and TypeScript files from the gutter and the editor's Run action."
+        >
+          <Select value={runtime} options={RUNTIME_OPTIONS} onChange={setRuntime} aria-label="Preferred runtime" />
+        </Row>
+        <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
+          <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
+        </Row>
+      </Section>
+      <Section title="Node.js">
         <SdkRow
           k="languages.node.interpreter"
           label="Node interpreter"
@@ -124,9 +143,6 @@ export function NodePage() {
           hint="Runs npm scripts and Node-based language servers (vtsls, eslint, pyright…)."
         />
         <RunTargetRow language="node" />
-        <Row label="Package manager" hint="Used by the npm run configurations detected from package.json scripts.">
-          <Select value={pm} options={pmOptions} onChange={setPm} aria-label="Package manager" />
-        </Row>
       </Section>
     </div>
   );
@@ -648,6 +664,7 @@ export function MavenPage() {
 
 export function TypeScriptPage() {
   const [version, setVersion] = useSetting<string>("languages.typescript.version");
+  const [memory, setMemory] = useSetting<number>("languages.typescript.tsserverMaxMemory");
   const { list } = useDetected("typeScript");
   const workspace = list.find((s) => s.source === "workspace");
   const options = useMemo<SelectOption[]>(() => {
@@ -663,6 +680,17 @@ export function TypeScriptPage() {
       out.push({ value: version, label: tildify(version), detail: "custom" });
     return out;
   }, [workspace, version]);
+  const memoryOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "0", label: "Auto", detail: "8192 MB in Vue hybrid mode, else the server default" },
+      { value: "4096", label: "4096 MB" },
+      { value: "6144", label: "6144 MB" },
+      { value: "8192", label: "8192 MB" },
+      { value: "12288", label: "12288 MB" },
+      { value: "16384", label: "16384 MB" },
+    ],
+    [],
+  );
   return (
     <div className={styles.page}>
       <Section>
@@ -682,6 +710,17 @@ export function TypeScriptPage() {
               }}
             />
           </span>
+        </Row>
+        <Row
+          label="tsserver memory limit"
+          hint="Heap limit of the TypeScript server (typescript.tsserver.maxTsServerMemory, in MB). Auto raises it for Vue projects, whose single program holds every .vue file's virtual TypeScript."
+        >
+          <Select
+            value={String(memory ?? 0)}
+            options={memoryOptions}
+            onChange={(v) => setMemory(Number(v))}
+            aria-label="tsserver memory limit"
+          />
         </Row>
       </Section>
     </div>

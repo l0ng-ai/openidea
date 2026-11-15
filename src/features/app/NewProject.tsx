@@ -80,6 +80,25 @@ interface Job {
   cancel: () => void;
 }
 
+const SIZE_KEY = "openidea.newProject.size";
+
+function loadDialogSize(): { w: number; h: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(SIZE_KEY) ?? "null") as { w?: unknown; h?: unknown } | null;
+    return typeof v?.w === "number" && typeof v.h === "number" ? { w: v.w, h: v.h } : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveDialogSize(size: { w: number; h: number }) {
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify(size));
+  } catch {
+    // Not kept: the dialog opens at its default size next time.
+  }
+}
+
 function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
@@ -235,6 +254,12 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
       title="New Project"
       onClose={onClose}
       width={860}
+      resizable="both"
+      minWidth={720}
+      minHeight={480}
+      initialSize={loadDialogSize()}
+      onResized={saveDialogSize}
+      className={styles.dialog}
       buttons={[
         { label: "Create", role: "default", disabled: invalid, onClick: () => void createProject() },
         { label: "Cancel", role: "cancel" },

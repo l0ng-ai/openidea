@@ -25,6 +25,8 @@ export interface ConsoleFindBarProps {
   onNext: () => void;
   onPrevious: () => void;
   onClose: () => void;
+  /** What is searched, for the field's placeholder and label. */
+  label?: string;
 }
 
 export function ConsoleFindBar({
@@ -40,6 +42,7 @@ export function ConsoleFindBar({
   onNext,
   onPrevious,
   onClose,
+  label = "Find in console",
 }: ConsoleFindBarProps) {
   const none = !!query && !invalid && count === 0;
   const counter = invalid
@@ -81,20 +84,14 @@ export function ConsoleFindBar({
 
   return (
     <div className={styles.container}>
-      <div
-        className={styles.find}
-        role="search"
-        aria-label={tx("Find in console")}
-        data-console-find=""
-        onKeyDown={onKeyDown}
-      >
+      <div className={styles.find} role="search" aria-label={tx(label)} data-console-find="" onKeyDown={onKeyDown}>
         <SearchField
           ref={inputRef}
           className={styles.findField}
           value={query}
           onChange={onChange}
-          placeholder="Find in console"
-          aria-label="Find in console"
+          placeholder={label}
+          aria-label={label}
           invalid={invalid || none}
           toggles={[
             {

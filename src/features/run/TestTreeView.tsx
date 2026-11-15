@@ -1,10 +1,22 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
-import { Icon, IconButton, showContextMenu, useContextMenuStore, Spinner, Tree, type MenuItem } from "@/ui";
+import {
+  findOccurrence,
+  Icon,
+  IconButton,
+  showContextMenu,
+  useContextMenuStore,
+  Spinner,
+  Tree,
+  type MenuItem,
+  type TreeHandle,
+} from "@/ui";
+import { useOccurrenceNavigator } from "@/workbench/contributions";
 import { openTarget } from "./navigate";
 import { nodeStatus, type TestNode, type TestResults, type TestStatus } from "./testing";
 import { parseComparison } from "./testing/comparison";
+import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -84,6 +96,24 @@ export function StatusIcon({ status }: { status: TestStatus | null }) {
   }
 }
 
+const isFailedTest = (n: TestNode) => n.children.length === 0 && nodeStatus(n) === "failed";
+
+const treeModel = {
+  getKey: (n: TestNode) => n.id,
+  getChildren: (n: TestNode) => n.children,
+  isExpandable: (n: TestNode) => n.children.length > 0,
+  isOccurrence: isFailedTest,
+};
+
+function suiteIds(nodes: readonly TestNode[], out: Set<string> = new Set()): Set<string> {
+  for (const n of nodes) {
+    if (n.children.length === 0) continue;
+    out.add(n.id);
+    suiteIds(n.children, out);
+  }
+  return out;
+}
+
 function filterTree(nodes: readonly TestNode[], keep: (n: TestNode) => boolean): TestNode[] {
   const out: TestNode[] = [];
   for (const n of nodes) {
@@ -129,6 +159,7 @@ export function TestTreeView({
     });
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
+  const tree = useRef<TreeHandle>(null);
   const selectedKeys = useMemo(
     () => (selected === null ? new Set<string>() : selection.has(selected) ? selection : new Set([selected])),
     [selected, selection],
@@ -209,6 +240,28 @@ export function TestTreeView({
     return set;
   }, [expanded, roots]);
 
+  // Collapse All leaves the top-level suites in view, as IDEA's test tree does.
+  useEffect(() => {
+    testTree.expandAll = () => setExpanded(suiteIds(results.roots));
+    testTree.collapseAll = () => setExpanded(new Set());
+    return () => {
+      testTree.expandAll = null;
+      testTree.collapseAll = null;
+    };
+  });
+  const hasSuites = roots.some((n) => n.children.length > 0);
+
+  // Previous / Next Failed Test (⌘⌥↑ / ⌘⌥↓): like IDEA, stops at the first / last failure instead of wrapping.
+  useOccurrenceNavigator("run", (dir, focus) => {
+    const step = tree.current?.selectOccurrence(dir);
+    if (!step) return null;
+    const n = step.node as TestNode;
+    if (n.location) void openTarget(n.location, cwd, focus);
+    return step;
+  });
+  const hasPrevFailed = findOccurrence(roots, selected, -1, treeModel) !== null;
+  const hasNextFailed = findOccurrence(roots, selected, 1, treeModel) !== null;
+
   const status = running ? "running" : counts.failed > 0 ? "failed" : counts.total > 0 ? "passed" : null;
   const duration = results.summary.durationMs;
 
@@ -240,15 +293,42 @@ export function TestTreeView({
           pressed={showIgnored}
           onClick={() => toggle("showIgnored")}
         />
+        <IconButton icon="expand-all" action="run.expandAllTests" size="small" iconSize={16} disabled={!hasSuites} />
+        <IconButton
+          icon="collapse-all"
+          action="run.collapseAllTests"
+          size="small"
+          iconSize={16}
+          disabled={!hasSuites}
+        />
+        <IconButton
+          icon="arrow-up"
+          action="navigate.prevOccurrence"
+          size="small"
+          iconSize={16}
+          title="Previous Failed Test"
+          disabled={!hasPrevFailed}
+        />
+        <IconButton
+          icon="arrow-down"
+          action="navigate.nextOccurrence"
+          size="small"
+          iconSize={16}
+          title="Next Failed Test"
+          disabled={!hasNextFailed}
+        />
       </div>
       <Tree<TestNode>
         aria-label="Test results"
         className={styles.testTree}
+        handleRef={tree}
+        focusContext={TEST_TREE_FOCUS}
         roots={roots}
         getKey={(n) => n.id}
         getLabel={(n) => n.name}
         getChildren={(n) => (n.children.length ? n.children : undefined)}
         isExpandable={(n) => n.children.length > 0}
+        isOccurrence={isFailedTest}
         expanded={effectiveExpanded}
         onExpandedChange={(next) => setExpanded(next)}
         selected={selectedKeys}

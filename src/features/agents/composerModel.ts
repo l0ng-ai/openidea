@@ -27,19 +27,26 @@ export interface ComposerDraft {
   images: AgentImage[];
 }
 
-export const emptyDraft = (): ComposerDraft => ({ text: "", files: [], images: [] });
+export const emptyDraft = (): ComposerDraft => ({
+  text: "",
+  files: [],
+  images: [],
+});
 
 export type MessageToken = { kind: "text" | "file" | "command"; value: string };
 
 /**
  * A message's text split into plain runs, `@file` references and `/command` skills. A
  * command is a `/word` at the start or after whitespace; a reference likewise after `@`.
+ * Punctuation that ends either belongs to the text.
  */
 export function messageTokens(text: string): MessageToken[] {
   const out: MessageToken[] = [];
   let last = 0;
-  for (const match of text.matchAll(/(^|\s)([@/][^\s@]+)/g)) {
-    const token = match[2]!;
+  // Full-width punctuation ends one too, as Chinese text runs on without a space after it.
+  for (const match of text.matchAll(/(^|\s)([@/][^\s@，。；：！？、（）【】《》「」『』]+)/g)) {
+    // Punctuation after it ends the sentence, not the path: "see @a.ts, then /review."
+    const token = match[2]!.replace(/^(.+?)[,.;:!?)\]}>'"，。；：！？、）】》」』]+$/, "$1");
     const start = match.index! + match[1]!.length;
     const command = /^\/[A-Za-z][\w:.-]*$/.test(token);
     if (token.startsWith("/") && !command) continue;
@@ -61,7 +68,12 @@ export function completionAt(text: string, caret: number): Completion | null {
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
   if (!word) return null;
   const from = caret - word[3]!.length - 1;
-  return { kind: word[2] === "/" ? "command" : "file", query: word[3]!, from, to: caret };
+  return {
+    kind: word[2] === "/" ? "command" : "file",
+    query: word[3]!,
+    from,
+    to: caret,
+  };
 }
 
 /** Replaces the completion with `insert` plus a space; returns the text and the caret after it. */
@@ -119,6 +131,8 @@ interface IndexMatch {
   path: string;
   relPath: string;
   score: number;
+  /** Matched characters of `relPath`. */
+  indices?: number[];
 }
 
 /**
@@ -129,13 +143,168 @@ export function mergeMatches(
   files: readonly IndexMatch[],
   dirs: readonly IndexMatch[],
   limit: number,
-): { path: string; rel: string; dir: boolean; score: number }[] {
+): {
+  path: string;
+  rel: string;
+  dir: boolean;
+  score: number;
+  indices: number[];
+}[] {
   return [
-    ...files.map((f) => ({ path: f.path, rel: f.relPath, dir: false, score: f.score })),
-    ...dirs.map((d) => ({ path: d.path, rel: d.relPath.replace(/\/$/, ""), dir: true, score: d.score })),
+    ...files.map((f) => ({
+      path: f.path,
+      rel: f.relPath,
+      dir: false,
+      score: f.score,
+      indices: f.indices ?? [],
+    })),
+    ...dirs.map((d) => ({
+      path: d.path,
+      rel: d.relPath.replace(/\/$/, ""),
+      dir: true,
+      score: d.score,
+      indices: d.indices ?? [],
+    })),
   ]
     .sort((a, b) => b.score - a.score || Number(a.dir) - Number(b.dir))
     .slice(0, limit);
+}
+
+export interface Mention {
+  /** As written after `@`; a folder keeps its trailing `/`. */
+  rel: string;
+  dir: boolean;
+  /** 1-based lines, when the mention names a range. */
+  lines?: { from: number; to: number };
+}
+
+/** `@src/a.rs:10-20` → its path and lines; `null` for an empty `@`. */
+export function parseMention(token: string): Mention | null {
+  const m = /^@(.+?)(?::(\d+)(?:-(\d+))?)?$/.exec(token);
+  if (!m) return null;
+  const rel = m[1]!;
+  const from = m[2] ? Number(m[2]) : undefined;
+  const lines = from === undefined ? undefined : { from, to: m[3] ? Math.max(from, Number(m[3])) : from };
+  return { rel, dir: rel.endsWith("/"), ...(lines && { lines }) };
+}
+
+/** "10" or "10–20". */
+export const linesLabel = (lines: { from: number; to: number }) =>
+  lines.from === lines.to ? String(lines.from) : `${lines.from}–${lines.to}`;
+
+/** Lines of `text` that start with `>`: a quoted reply or selection, drawn as a block. */
+export const isQuoteLine = (line: string) => /^>( |$)/.test(line);
+
+export interface Fence {
+  /** Line indexes (0-based) of the opening and the closing fence. */
+  open: number;
+  close: number;
+  /** After the opening fence: a language, or `terminal <title>`. */
+  info: string;
+}
+
+/** The closed ``` blocks among `lines`. */
+export function fencedBlocks(lines: readonly string[]): Fence[] {
+  const out: Fence[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const open = /^(`{3,})([^`]*)$/.exec(lines[i]!);
+    if (!open) continue;
+    const ticks = open[1]!.length;
+    const close = lines.findIndex((l, j) => j > i && new RegExp(`^\`{${ticks},}\\s*$`).test(l));
+    if (close < 0) break;
+    out.push({ open: i, close, info: open[2]!.trim() });
+    i = close;
+  }
+  return out;
+}
+
+/** `text` as a ``` block on its own lines, fenced longer than any run of backticks in it. */
+export function fenced(text: string, info: string): string {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = "`".repeat(longest + 1);
+  return `${fence}${info}\n${text.replace(/\r\n?/g, "\n").replace(/\s+$/, "")}\n${fence}`;
+}
+
+export type FenceKind = "terminal" | "problems" | "trace" | "text" | "code";
+
+/**
+ * A block's kind and label: `terminal zsh` → a terminal named zsh, `problems`, `trace` (an
+ * error's stack), `text` (a long paste); anything else is code in that language (`ts`).
+ */
+export function fenceLabel(info: string): { kind: FenceKind; label: string; language: string | null } {
+  const [first = "", ...rest] = info.split(/\s+/);
+  if (first === "terminal" || first === "problems" || first === "trace" || first === "text")
+    return { kind: first, label: rest.join(" "), language: null };
+  return { kind: "code", label: info, language: first || null };
+}
+
+/** An error's stack trace or a crash: pasted as a block, its project lines as references. */
+export function looksLikeTrace(text: string): boolean {
+  if (!text.trim().includes("\n")) return false;
+  return [
+    /^\s+at\s+\S/m, // JavaScript, Java, C#
+    /^Traceback \(most recent call last\)/m,
+    /^\s*File ".+", line \d+/m,
+    /panicked at /,
+    /^goroutine \d+ \[/m,
+    /^\s*\d+: .+\n\s+at \S+:\d+/m, // Rust backtrace
+    /^(?:Uncaught |Unhandled )?[\w.$]*(?:Error|Exception)\b.*\n\s+(?:at|File|in) /m,
+  ].some((re) => re.test(text));
+}
+
+/** Long pasted text goes in as a block rather than filling the box. */
+export const LONG_PASTE_LINES = 30;
+
+/**
+ * `path:line` places in output (`src/a.ts:12`, `/abs/a.go:34:5`, `(a.js:3:9)`,
+ * `File "a.py", line 7`), each once, at most `limit`, dependency paths left out.
+ */
+export function placesInText(text: string, limit = 8): { path: string; line: number }[] {
+  const out: { path: string; line: number }[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string, line: string) => {
+    const path = raw.replace(/^file:\/\//, "");
+    if (/(^|[\\/])(node_modules|site-packages|\.cargo|\.rustup|go[\\/]pkg[\\/]mod)[\\/]/.test(path)) return;
+    const key = `${path}:${line}`;
+    if (seen.has(key) || out.length >= limit) return;
+    seen.add(key);
+    out.push({ path, line: Number(line) });
+  };
+  for (const m of text.matchAll(/File "([^"]+)", line (\d+)/g)) add(m[1]!, m[2]!);
+  for (const m of text.matchAll(/(?:file:\/\/)?((?:[A-Za-z]:)?[\w.@+\-\\/]*[\w-]\.[A-Za-z0-9]{1,8}):(\d+)(?::\d+)?/g))
+    add(m[1]!, m[2]!);
+  return out;
+}
+
+/**
+ * Pasted absolute paths, one per line (`/abs/a.rs`, `/abs/a.rs:10-20`, `/abs/a.rs:10:5`,
+ * quoted, or `file://` URLs); `null` when any line is something else.
+ */
+export function pastedPaths(text: string): { path: string; lines?: { from: number; to: number } }[] | null {
+  const rows = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!rows.length) return null;
+  const out: { path: string; lines?: { from: number; to: number } }[] = [];
+  for (let row of rows) {
+    row = row.replace(/^(["'])(.*)\1$/, "$2");
+    if (row.startsWith("file://")) {
+      try {
+        row = decodeURIComponent(new URL(row).pathname).replace(/^\/([A-Za-z]:)/, "$1");
+      } catch {
+        return null;
+      }
+    }
+    const m = /^((?:\/|[A-Za-z]:[\\/]).*?)(?::(\d+)(?:(?:-(\d+))|(?::\d+))?)?$/.exec(row);
+    if (!m) return null;
+    const from = m[2] ? Number(m[2]) : undefined;
+    out.push({
+      path: m[1]!.replace(/[\\/]+$/, "") || m[1]!,
+      ...(from !== undefined && { lines: { from, to: m[3] ? Math.max(from, Number(m[3])) : from } }),
+    });
+  }
+  return out;
 }
 
 /** `@rel` with a line range suffix when given ("@src/a.rs:10-20"). */
@@ -156,7 +325,11 @@ export function toPrompt(draft: ComposerDraft): AgentPrompt {
     seen.add(f.path);
     return true;
   });
-  return { text: draft.text.trim(), files: files.map((f) => f.path), images: draft.images };
+  return {
+    text: draft.text.trim(),
+    files: files.map((f) => f.path),
+    images: draft.images,
+  };
 }
 
 export const canSend = (d: ComposerDraft) => !!d.text.trim() || d.images.length > 0 || d.files.some((f) => f.attached);
@@ -246,7 +419,6 @@ export function nextValue(option: AgentConfigOption, current = option.current): 
   return option.values[(i + 1) % option.values.length]!.value;
 }
 
-/** "12%" of the context window and a tooltip with the numbers. */
 /** A pending API retry: "3/10" (or "3" when the agent gives no limit) and the seconds left. */
 export function retryParts(r: AgentRetry, now: number): { attempt: string; wait: number } {
   return {
@@ -255,9 +427,18 @@ export function retryParts(r: AgentRetry, now: number): { attempt: string; wait:
   };
 }
 
-export function usageLabel(u: AgentUsage): { short: string; detail: string } {
-  const pct = Math.min(100, Math.round((u.used / u.size) * 100));
-  return { short: `${pct}%`, detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens` };
+/** "167k/1M (17%)" of the context window and a tooltip with the exact counts. */
+export function usageLabel(u: AgentUsage): {
+  short: string;
+  percent: number;
+  detail: string;
+} {
+  const percent = Math.min(100, Math.round((u.used / u.size) * 100));
+  return {
+    short: `${tokens(u.used)}/${tokens(u.size)} (${percent}%)`,
+    percent,
+    detail: tx`${tokens(u.used)} / ${tokens(u.size)} tokens`,
+  };
 }
 
 /** The usage-limit windows agents report, by the name they give them; others show that name. */
@@ -274,9 +455,18 @@ export function limitLabel(l: AgentLimit, now: number): { short: string; percent
   const percent = Math.min(100, Math.round(l.usedPercent ?? 0));
   const name = known ? tx(known.name) : l.window;
   const used = tx`${name}: ${percent}% used`;
-  if (l.resetsMs == null) return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: used };
+  if (l.resetsMs == null)
+    return {
+      short: `${known?.short ?? l.window} ${percent}%`,
+      percent,
+      detail: used,
+    };
   const reset = untilReset(Math.max(0, l.resetsMs - now));
-  return { short: `${known?.short ?? l.window} ${percent}%`, percent, detail: tx`${used}, resets in ${reset}` };
+  return {
+    short: `${known?.short ?? l.window} ${percent}%`,
+    percent,
+    detail: tx`${used}, resets in ${reset}`,
+  };
 }
 
 /** `45m`, `2h 51m`, `5d 3h`. */
@@ -291,7 +481,10 @@ function untilReset(ms: number): string {
 /** "$0.42": what the session has cost so far. */
 export function costLabel(c: AgentCost): string {
   try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: c.currency }).format(c.amount ?? 0);
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: c.currency,
+    }).format(c.amount ?? 0);
   } catch {
     // Not an ISO 4217 code.
     return `${(c.amount ?? 0).toFixed(2)} ${c.currency}`;

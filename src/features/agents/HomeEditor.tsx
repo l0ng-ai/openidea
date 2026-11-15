@@ -1,18 +1,19 @@
 /** New Task page: one prompt box with the agent and its settings; where it works under it. */
 import clsx from "clsx";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Icon, Select, T, type SelectOption } from "@/ui";
+import { Chip, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { useEffortFocus } from "./effortFocus";
 import { providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import {
@@ -20,6 +21,7 @@ import {
   NO_COMMANDS,
   draftConfig,
   refreshProviders,
+  refreshModels,
   setDraftOption,
   startTask,
   updateDraft,
@@ -42,6 +44,8 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   );
   const members = project?.workspace?.projects ?? [];
   const root = members.includes(selected ?? "") ? selected! : (members[0] ?? project?.root ?? "");
+  // A window without a project yet has no fact to show: the where row stays empty until it does.
+  const projectLabel = members.length ? basename(root) : project?.name;
   const [repoState, setRepoState] = useState<{
     root: string;
     branches: Branch[];
@@ -79,6 +83,27 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
   const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
+  const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
+  const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
+  const launch = provider && JSON.stringify([provider.program, provider.args, provider.env, provider.command]);
+  useEffect(() => {
+    if (!provider?.installed) return;
+    const refresh = () => void refreshModels(provider.id, false);
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [provider?.id, provider?.installed, launch, project?.root]);
+  const { defaults, fitWindowWidth } = useAgentSettings();
+  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const homeRoot = useRef<HTMLDivElement>(null);
+  const shown = useEditorShown();
+  const unavailableModel = config.some(
+    (o) =>
+      o.category === "model" &&
+      draft.config[o.id] !== undefined &&
+      !o.values.some((v) => v.value === draft.config[o.id]),
+  );
+  const effortAnnouncement = useEffortFocus(homeRoot, shown && !starting && !unavailableModel, config, setDraftOption);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -86,7 +111,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   const isolation = isGit ? draft.isolation : "local";
   const base = draft.base ?? current;
   const canStart =
-    canSend(composer) && !!provider?.installed && !starting && (!project?.workspace || repoState?.root === root);
+    canSend(composer) &&
+    !!provider?.installed &&
+    !unavailableModel &&
+    !starting &&
+    (!project?.workspace || repoState?.root === root);
 
   const start = () => {
     if (!canStart) return;
@@ -96,11 +125,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const defaults = useAgentSettings().defaults;
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
 
   return (
-    <div className={clsx(styles.home, docked && styles.docked)}>
+    <div ref={homeRoot} className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}>
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>
@@ -111,24 +138,29 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
         <div className={styles.where}>
           {members.length > 1 ? (
             <Select
-              variant="ghost"
+              variant="chip"
               aria-label={tx("Project")}
               className={styles.projectPicker}
               value={root}
-              options={members.map((path) => ({ value: path, label: basename(path), detail: path }))}
+              options={members.map((path) => ({
+                value: path,
+                label: basename(path),
+                detail: path,
+                icon: "folder",
+              }))}
               onChange={(path) => {
                 setSelected(path);
                 updateDraft({ base: null });
               }}
             />
-          ) : (
-            <span className={styles.project} title={root}>
-              {members.length ? basename(root) : project?.name}
-            </span>
-          )}
+          ) : projectLabel ? (
+            <Chip icon="folder" title={root} className={styles.projectChip}>
+              {projectLabel}
+            </Chip>
+          ) : null}
           {isGit && (
             <Select
-              variant="ghost"
+              variant="chip"
               aria-label="Isolation"
               className={styles.isolation}
               value={isolation}
@@ -152,10 +184,9 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   <T>on</T>
                 </span>
               )}
-              <span className={styles.branch} title={current}>
-                <Icon name="branch" size={14} />
-                <span className={styles.branchName}>{current}</span>
-              </span>
+              <Chip icon="branch" title={current} className={styles.branch}>
+                {current}
+              </Chip>
             </>
           )}
           {isolation === "worktree" && branches.length > 0 && (
@@ -166,11 +197,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                 </span>
               )}
               <Select
-                variant="ghost"
+                variant="chip"
                 aria-label="Base branch"
                 className={styles.basePicker}
                 value={base}
-                options={branches.map((b) => ({ value: b.name, label: b.name }))}
+                options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
                 onChange={(b) => updateDraft({ base: b === current ? null : b })}
               />
             </>
@@ -203,7 +234,21 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
                 }
               />
-              <ConfigPickers config={config} onChange={setDraftOption} />
+              <ConfigPickers
+                key={provider?.id}
+                config={config}
+                onChange={setDraftOption}
+                modelRefresh={
+                  provider?.installed
+                    ? {
+                        refreshing: requestingModels || (catalog?.refreshing ?? false),
+                        retryAtMs: catalog?.retryAtMs ?? null,
+                        error: catalog?.error ?? null,
+                        onRefresh: () => void executeAction("agents.refreshModels"),
+                      }
+                    : undefined
+                }
+              />
             </>
           }
           actions={
@@ -215,26 +260,34 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             />
           }
         />
-        {probe && (!docked || probe.error) && (
-          <p className={probe.error ? styles.warning : styles.note}>
-            {probe.error
-              ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
-              : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
-          </p>
-        )}
-        {(error || (provider && !provider.installed) || (provider && !provider.config.length)) && (
-          <p
-            className={error || !provider?.installed ? styles.warning : styles.note}
-            role={error ? "alert" : undefined}
-          >
-            {error ??
-              (provider && !provider.installed ? (
-                txTemplate(`${provider.command} was not found on PATH`)
-              ) : (
-                <T>Models and modes appear after this agent's first task.</T>
-              ))}
-          </p>
-        )}
+        {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
+        <div className={styles.notes}>
+          {effortAnnouncement && (
+            <p className={styles.note} role="status" aria-live="polite" aria-atomic="true">
+              {tx("Effort: {level}").replace("{level}", effortAnnouncement)}
+            </p>
+          )}
+          {unavailableModel && (
+            <p className={styles.warning} role="alert">
+              <T>Choose another model before starting.</T>
+            </p>
+          )}
+          {probe && (!docked || probe.error) && (
+            <p className={probe.error ? styles.warning : styles.note}>
+              {probe.error
+                ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
+                : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {(error || (provider && !provider.installed)) && (
+            <p
+              className={error || !provider?.installed ? styles.warning : styles.note}
+              role={error ? "alert" : undefined}
+            >
+              {error ?? txTemplate(`${provider?.command ?? ""} was not found on PATH`)}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );

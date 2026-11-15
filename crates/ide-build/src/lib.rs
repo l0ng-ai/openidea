@@ -122,6 +122,14 @@ pub fn gradle_external_roots(
     gradle::external_roots(root, dirs.iter().map(String::as_str))
 }
 
+/// Directories of Maven POMs linked from outside `root`, outermost only.
+/// Reads just those explicit paths (no POM parse and no directory walk).
+pub fn maven_external_roots(root: &Path, linked: &[String]) -> Vec<PathBuf> {
+    let dirs = maven::external_pom_dirs(root, linked);
+    let owned: Vec<String> = dirs.iter().map(|dir| dir.to_string_lossy().into_owned()).collect();
+    gradle::external_roots(root, owned.iter().map(String::as_str))
+}
+
 /// Source, resource and build folders of the last Gradle sync, absolute.
 pub fn gradle_source_roots(
     root: &Path,

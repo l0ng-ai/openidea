@@ -83,6 +83,14 @@ export function touchesManifest(paths: readonly string[]): boolean {
   );
 }
 
+/** IDEA's order, whatever order the ecosystems were detected in: SDKs first, then libraries, each by name. */
+function sortedGroups(groups: readonly LibraryGroup[]): LibraryGroup[] {
+  const rank = (g: LibraryGroup) => (SDK_KINDS.has(g.kind) ? 0 : 1);
+  return [...groups].sort(
+    (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }),
+  );
+}
+
 /** The "External Libraries" node for `groups` (`< Python 3.12 (.venv) >` › `python3.12`, `site-packages`). */
 export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootContribution | null {
   if (!groups.length) return null;
@@ -93,7 +101,7 @@ export function librariesRoot(groups: readonly LibraryGroup[]): ProjectViewRootC
     // After the project, before Scratches and Consoles (IDEA's order).
     order: 5,
     readOnly: true,
-    children: groups.map((g) => ({
+    children: sortedGroups(groups).map((g) => ({
       label: SDK_KINDS.has(g.kind) ? `< ${g.name} >` : g.name,
       icon: GROUP_ICONS[g.kind] ?? "library",
       children: g.roots.map((r) => ({
@@ -133,12 +141,15 @@ export function activate(): () => void {
   let disposeReadOnly = () => {};
   let seq = 0;
   let shown = "";
+  /** The last complete result: what a refresh shows for ecosystems that haven't reported yet. */
+  let settled: LibraryGroup[] = [];
   let request: RequestId | undefined;
   const clear = () => {
     disposeRoot();
     disposeReadOnly();
     disposeRoot = disposeReadOnly = () => {};
     shown = "";
+    settled = [];
   };
   const refresh = () => {
     const id = ++seq;
@@ -151,25 +162,33 @@ export function activate(): () => void {
       if (id !== seq) return;
       const key = JSON.stringify(groups);
       if (key === shown) return;
-      clear();
+      // The new node replaces the old one in place: removing it first would drop it from the tree
+      // until the new one renders, and collapse it.
+      const [oldRoot, oldReadOnly] = [disposeRoot, disposeReadOnly];
+      disposeRoot = disposeReadOnly = () => {};
       shown = key;
       const root = librariesRoot(groups);
-      if (!root) return;
-      disposeReadOnly = setLibraryRoots(
-        "externalLibraries",
-        groups.flatMap((g) => g.roots.map((r) => r.path)),
-      );
-      disposeRoot = registerProjectViewRoot(root);
+      if (root) {
+        disposeReadOnly = setLibraryRoots(
+          "externalLibraries",
+          groups.flatMap((g) => g.roots.map((r) => r.path)),
+        );
+        disposeRoot = registerProjectViewRoot(root);
+      }
+      oldRoot();
+      oldReadOnly();
     };
     const channel = new Channel<LibraryGroup[]>();
     channel.onmessage = (groups) => {
       collected = mergeLibraryGroups([...collected, ...groups]);
-      show(collected);
+      const reported = new Set(collected.map((g) => g.kind));
+      show(mergeLibraryGroups([...collected, ...settled.filter((g) => !reported.has(g.kind))]));
     };
     const current = (request = nextRequestId());
     call(commands.sdkProjectLibraries(current, channel))
       .then((groups) => {
-        collected = groups;
+        if (id !== seq) return;
+        collected = settled = groups;
         show(groups);
       })
       .catch((e: unknown) => {
@@ -192,12 +211,18 @@ export function activate(): () => void {
     clearTimeout(timer);
     timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
   });
+  // A Maven / Gradle sync changes the dependency versions without touching a manifest.
+  const unsubRoots = onIdeEvent("projectRootsChanged", () => {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, MANIFEST_REFRESH_DELAY);
+  });
   return () => {
     seq++;
     if (request !== undefined) void commands.cancelRequest(request).catch(() => {});
     clearTimeout(timer);
     unsub();
     unsubFs();
+    unsubRoots();
     disposeActions();
     clear();
   };

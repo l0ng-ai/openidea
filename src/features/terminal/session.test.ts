@@ -77,6 +77,113 @@ describe("Windows PTY metadata", () => {
   });
 });
 
+describe("terminal clear output", () => {
+  const write = (session: TerminalSession, data: string) =>
+    new Promise<void>((resolve) => session.term.write(data, resolve));
+  const create = () => {
+    const session = new TerminalSession({ key: "clear", cwd: "/repo", onChange() {}, onFocus() {} });
+    session.term.resize(20, 4);
+    return session;
+  };
+  const start = async (session: TerminalSession) => {
+    let onmessage: ((chunk: string) => void) | null = null;
+    ipc.commands.termSpawn.mockImplementationOnce(
+      async (_options: unknown, channel: { onmessage: typeof onmessage }) => {
+        onmessage = (chunk) => channel.onmessage?.(chunk);
+        return { id: 42, title: "pwsh" };
+      },
+    );
+    await session.start();
+    return async (chunk: string) => {
+      onmessage?.(chunk);
+      await write(session, "");
+    };
+  };
+
+  it.each(["\x1b[H\x1b[2J", "\x1b[H\x1b[J"])(
+    "keeps scrollback when a program erases the viewport with %s",
+    async (erase) => {
+      const session = create();
+      try {
+        await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+        expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+        await write(session, `${erase}new prompt`);
+        await write(session, "");
+        expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+        expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("old-1");
+      } finally {
+        session.dispose();
+      }
+    },
+  );
+
+  it("keeps scrollback after ConPTY's full-screen row repaint", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      session.term.resize(20, 5);
+      await output("\x1b[Hrepaint\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K\r\n\x1b[K");
+      expect(session.term.buffer.active.baseY).toBeGreaterThan(0);
+      expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("old-1");
+      await output("\x1b]133;OpenIDEA;ClearScrollback\x07\x1b[H\x1b[2Jnew prompt");
+      expect(session.term.buffer.active.baseY).toBe(0);
+      expect(session.term.buffer.active.getLine(0)?.translateToString(true)).toBe("new prompt");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("removes prompts left in the viewport after empty commands and cls", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await output(Array.from({ length: 8 }, () => "PS /repo> \r\n").join(""));
+      await output("\x1b]133;OpenIDEA;ClearScrollback\x07\x1b[HPS /repo> \x1b[K");
+      const lines = Array.from({ length: session.term.buffer.active.length }, (_, i) =>
+        session.term.buffer.active.getLine(i)?.translateToString(true),
+      );
+      expect(lines).toEqual(["PS /repo> ", "", "", ""]);
+      expect(session.term.buffer.active.baseY).toBe(0);
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("clears old history in order and retains multi-screen output after a split marker", async () => {
+    const session = create();
+    try {
+      const output = await start(session);
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      await output("\x1b[H\x1b]133;OpenIDEA;Clear");
+      await output("Scrollback\x07\x1b[2J" + Array.from({ length: 12 }, (_, i) => `new-${i}\r\n`).join(""));
+      const lines = Array.from({ length: session.term.buffer.active.length }, (_, i) =>
+        session.term.buffer.active.getLine(i)?.translateToString(true),
+      );
+      expect(lines).not.toContain("old-1");
+      expect(lines).toContain("new-0");
+      expect(lines).toContain("new-11");
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("keeps scrollback for partial row erases and alternate-screen redraws", async () => {
+    const session = create();
+    try {
+      await write(session, "old-1\r\nold-2\r\nold-3\r\nold-4\r\nold-5\r\n");
+      const baseY = session.term.buffer.active.baseY;
+      await write(session, "\x1b[Hnew prompt\x1b[K");
+      expect(session.term.buffer.active.baseY).toBe(baseY);
+      await write(session, "\x1b[?1049h\x1b[H\x1b[2J");
+      await write(session, "\x1b[?1049l");
+      expect(session.term.buffer.active.baseY).toBe(baseY);
+    } finally {
+      session.dispose();
+    }
+  });
+});
+
 describe("openFileLink", () => {
   beforeEach(() => vi.clearAllMocks());
 

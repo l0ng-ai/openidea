@@ -21,6 +21,8 @@ describe("boolean cell editing", () => {
     expect(booleanLiterals("sqlite")).toEqual({ t: "1", f: "0" });
     expect(booleanLiterals("sqlServer")).toEqual({ t: "true", f: "false" });
     expect(booleanLiterals("oracle")).toEqual({ t: "true", f: "false" });
+    expect(booleanLiterals("snowflake")).toEqual({ t: "true", f: "false" });
+    expect(isBooleanType("BOOLEAN", "snowflake")).toBe(true);
     expect(booleanLiterals(undefined)).toEqual({ t: "true", f: "false" });
   });
 

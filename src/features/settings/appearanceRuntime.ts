@@ -3,15 +3,17 @@
  * other feature owns: root attributes read by tokens / global CSS (compact
  * mode, contrast scrollbars, red-green palette, antialiasing, menu icons…),
  * the UI font, IDE zoom (+ ⌃⌥= / ⌃⌥- / ⌃⌥0 actions), "Drag-and-drop with Alt
- * pressed only" and "Save files if the IDE is idle".
+ * pressed only", "Save files if the IDE is idle" and the background image.
  */
 import { executeAction, type Action } from "@/platform/actions";
+import { editorPrefs } from "@/platform/editorSettings";
 import { uiFontFamily } from "@/platform/fonts";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { setDragRequiresAlt } from "@/ui";
 import { ZOOM_LIMITS } from "@/platform/zoom";
 import { DEFAULT_SETTINGS, validateSettings, type ValidSettings } from "./model/schema";
+import type { BackgroundImageValid } from "./model/behaviorSchema";
 
 const FONT_VARS = [
   ["--fs-ui", 0],
@@ -51,6 +53,53 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   root.dataset.aaIde = a.ideAntialiasing;
   root.dataset.aaEditor = a.editorAntialiasing;
   applyZoom(a.zoom, root);
+  applyBackgroundImage(a.backgroundImage, root);
+}
+
+// ---------------------------------------------------------------------------
+// Background image (IDEA: Appearance › Background Image): drawn over the workbench
+// by `Workbench.module.css` from these variables, under dialogs and popups.
+
+const FILLS = {
+  scale: { size: "cover", repeat: "no-repeat" },
+  plain: { size: "auto", repeat: "no-repeat" },
+  tile: { size: "auto", repeat: "repeat" },
+} as const;
+
+const BG_VARS = ["--background-image", "--background-image-opacity", "--background-image-size"] as const;
+const BG_LAYOUT_VARS = ["--background-image-repeat", "--background-image-position"] as const;
+
+let bgPath = "";
+let bgLoad = 0;
+
+export function applyBackgroundImage(bg: BackgroundImageValid, root: HTMLElement = document.documentElement): void {
+  if (!bg.path || bg.opacity === 0) {
+    bgPath = "";
+    bgLoad++;
+    for (const name of [...BG_VARS, ...BG_LAYOUT_VARS]) root.style.removeProperty(name);
+    return;
+  }
+  const fill = FILLS[bg.fill];
+  root.style.setProperty("--background-image-opacity", String(bg.opacity / 100));
+  root.style.setProperty("--background-image-size", fill.size);
+  root.style.setProperty("--background-image-repeat", fill.repeat);
+  root.style.setProperty("--background-image-position", bg.anchor.replace("-", " "));
+  if (bg.path === bgPath) return;
+  bgPath = bg.path;
+  const load = ++bgLoad;
+  root.style.removeProperty("--background-image");
+  call(commands.fsReadImage(bg.path))
+    .then((url) => {
+      if (load === bgLoad) root.style.setProperty("--background-image", `url("${url}")`);
+    })
+    .catch((e) => {
+      if (load === bgLoad) console.warn("cannot load the background image", e);
+    });
+}
+
+/** Editor › Font › "Enable ligatures" also covers mono text outside the editor (Find results, Usages…). */
+export function applyLigatures(raw: unknown, root: HTMLElement = document.documentElement): void {
+  flag(root, "ligatures", editorPrefs(raw).ligatures);
 }
 
 let lastZoom = 100;

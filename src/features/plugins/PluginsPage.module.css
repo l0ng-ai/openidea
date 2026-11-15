@@ -9,18 +9,7 @@
 .topBar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.tabs {
-  flex: none;
-  border-bottom: 0;
-}
-.tabCount {
-  margin-left: 6px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-  font-variant-numeric: tabular-nums;
+  gap: 6px;
 }
 .side {
   display: flex;
@@ -30,15 +19,17 @@
   min-height: 0;
   border-right: 1px solid var(--border);
 }
-.searchRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px;
-}
 .searchField {
-  flex: 1;
+  flex: 0 1 340px;
   min-width: 0;
+}
+/* The installed and marketplace lists scroll together, as one list. */
+.lists {
+  overflow: auto;
+}
+.lists .list {
+  flex: none;
+  overflow: visible;
 }
 .spacer {
   flex: 1;
@@ -78,6 +69,27 @@
 }
 .groupCount {
   font-variant-numeric: tabular-nums;
+}
+.groupToggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.groupToggle:hover {
+  color: var(--fg);
+}
+.groupToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-small);
 }
 .notice {
   display: flex;

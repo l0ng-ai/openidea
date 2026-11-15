@@ -21,6 +21,7 @@ pub mod process;
 pub mod project_dir;
 pub mod project_roots;
 pub mod proxy_settings;
+pub mod real_path;
 pub mod remote_settings;
 pub mod settings;
 pub mod task;

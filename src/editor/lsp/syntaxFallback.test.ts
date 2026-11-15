@@ -45,6 +45,7 @@ provideEditorService({ openFile } as never);
 
 const fb = await import("./syntaxFallback");
 const { gotoTargets, navigationExtension, highlightUsages } = await import("./navigation");
+const { registerNavigationProvider } = await import("@/editor/navigationProviders");
 const { startRename, renameNamePart } = await import("./rename");
 const { lspDoc } = await import("./lsp");
 const { invalidateConfigurationNavigation } = await import("./configurationNavigation");
@@ -414,6 +415,48 @@ describe("navigation wiring", () => {
     await gotoTargets(view, "definition");
     expect(executeAction).toHaveBeenCalledWith("find.showUsages");
     expect(openFile).not.toHaveBeenCalled();
+  });
+
+  it("shows usages on a declaration a plugin's index links elsewhere, and follows the link from a call", async () => {
+    // MyBatis Duo indexes the mapper method's name as a link to its XML statement.
+    const xml = { path: "/p/UserMapper.xml", range: r(3, 16, 24) };
+    const off = registerNavigationProvider(async (view) => {
+      const at = view.state.doc.toString().indexOf("findName");
+      return { from: at, to: at + 8, targets: [xml] };
+    });
+    try {
+      // The syntax tree puts the caret on the method's name; the host then answers both.
+      cmd.syntaxNodeAt.mockReturnValueOnce(
+        ok({
+          node: node("identifier", r(3, 11, 19), "name"),
+          ancestors: [node("method_declaration", { start: { line: 3, col: 4 }, end: { line: 3, col: 29 } })],
+        }),
+      );
+      cmd.lspGoto.mockReturnValueOnce(ok([xml, { path: "/p/UserMapper.java", range: r(3, 11, 19) }]));
+      const view = editor(
+        "package demo;\n\npublic interface UserMapper {\n    String findName(Long id);\n}\n",
+        "java",
+        58,
+        "/p/UserMapper.java",
+      );
+      await gotoTargets(view, "definition");
+      expect(executeAction).toHaveBeenCalledWith("find.showUsages");
+      expect(openFile).not.toHaveBeenCalled();
+
+      // A call: the plugin's link is followed without asking the language server.
+      executeAction.mockClear();
+      cmd.lspGoto.mockClear();
+      cmd.syntaxNodeAt.mockReturnValueOnce(
+        ok({ node: node("identifier", r(1, 26, 34), "name"), ancestors: [node("method_invocation", r(1, 24, 38))] }),
+      );
+      const call = editor("class S {\n  void f(UserMapper m) { m.findName(1L); }\n}\n", "java", 37, "/p/S.java");
+      await gotoTargets(call, "definition");
+      expect(openFile).toHaveBeenCalledWith("/p/UserMapper.xml", expect.objectContaining({ focus: true }));
+      expect(executeAction).not.toHaveBeenCalledWith("find.showUsages");
+      expect(cmd.lspGoto).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
   });
 
   it("looks past a server answer that points at the import itself", async () => {

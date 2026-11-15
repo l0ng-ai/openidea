@@ -12,6 +12,32 @@
   background: none;
 }
 
+/* Archived agent tabs (`run_command`), after the run tabs. */
+.agentArchive {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  margin: 0 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.agentArchive:hover {
+  background: var(--bg-hover);
+}
+.agentArchive[data-active] {
+  color: var(--accent);
+}
+.agentArchiveCount {
+  font-size: var(--fs-small);
+}
+
 .panel {
   flex: 1;
   display: flex;
@@ -275,9 +301,11 @@
 .widget {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 4px;
 }
 .widgetChooser {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -350,6 +378,7 @@
   flex: none;
 }
 .widgetButtons {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -449,6 +478,17 @@
 .chooserActions {
   display: flex;
   margin-right: -4px;
+}
+.chooserSeparator {
+  flex: 1;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--border-popup);
+}
+/* IDEA: the number of configurations after "All Configurations". */
+.chooserCount {
+  margin-left: 6px;
+  color: var(--fg-faint);
 }
 .badge {
   flex: none;

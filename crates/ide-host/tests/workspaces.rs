@@ -106,6 +106,56 @@ async fn linked_projects_share_navigation_but_keep_files_repositories_and_run_di
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn python_effective_interpreter_falls_back_to_the_primary_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let primary = base.join("primary");
+    let venv_python =
+        if cfg!(windows) { primary.join(".venv/Scripts/python.exe") } else { primary.join(".venv/bin/python") };
+    std::fs::create_dir_all(venv_python.parent().unwrap()).unwrap();
+    std::fs::write(primary.join(".venv/pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+    std::fs::write(&venv_python, "").unwrap();
+    let member = base.join("attached");
+    std::fs::create_dir_all(member.join("src")).unwrap();
+    // The primary project with an attached folder (the "attach" flow, not a container workspace).
+    Workspace::attach(&primary, "Primary", vec![primary.clone(), member.clone()]).unwrap();
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&primary, true, false).unwrap();
+    host.trust.decide(&member, true, false).unwrap();
+    host.open_project("main", &primary).unwrap();
+    let python = |near: Option<&std::path::Path>| {
+        ops::sdk::sdk_python_effective(&host, "main", near.map(|p| p.to_path_buf())).unwrap().map(|p| p.into_path_buf())
+    };
+    // The primary project's own virtualenv, and the bare member inheriting it.
+    assert_eq!(python(Some(&primary)), Some(venv_python.clone()));
+    assert_eq!(python(Some(&member.join("src"))), Some(venv_python.clone()));
+    // The member's own settings win: an explicit interpreter configured for it
+    // (its file is created here — a missing one would be skipped as invalid).
+    let configured = member.join("selected").join(if cfg!(windows) { "python.exe" } else { "python" });
+    std::fs::create_dir_all(configured.parent().unwrap()).unwrap();
+    std::fs::write(&configured, "").unwrap();
+    ide_workspace::SettingsStore::load(&base.join("config"), Some(&member))
+        .set(
+            ide_workspace::SettingsScope::Project,
+            "languages.python.interpreter",
+            serde_json::to_value(configured.to_string_lossy().into_owned()).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(python(Some(&member.join("src"))), Some(configured));
+    host.close_project("main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn php_language_level_follows_the_member_of_the_file() {
     use ide_sdk::php::{PhpLanguageLevel, PhpLevelSource};
     let temp = tempfile::tempdir().unwrap();

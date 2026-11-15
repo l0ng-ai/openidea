@@ -85,6 +85,8 @@ const FISH_INIT: &str = concat!(
     r#"function __openidea_preexec --on-event fish_preexec; printf '\e]133;C\a'; end"#,
 );
 
+const POWERSHELL_INIT: &str = r#"$openideaClearHost = (Get-Command Clear-Host).ScriptBlock; $openideaClearHandler = { & $openideaClearHost @args; [Console]::Write([char]27 + ']133;OpenIDEA;ClearScrollback' + [char]7) }.GetNewClosure(); Set-Item Function:global:Clear-Host -Value $openideaClearHandler"#;
+
 /// Directory holding the generated startup files (written on demand).
 fn scripts_dir() -> PathBuf {
     std::env::temp_dir().join(format!("openidea-shell-integration-{}", env!("CARGO_PKG_VERSION")))
@@ -104,6 +106,13 @@ fn write_if_changed(path: &Path, content: &str) -> std::io::Result<()> {
 /// resolved arguments; returns `false` (leaving everything untouched) for
 /// shells without integration or when the scripts cannot be written.
 pub(crate) fn apply(shell_name: &str, args: &mut Vec<String>, env: &mut BTreeMap<String, String>) -> bool {
+    if cfg!(windows) && (shell_name.eq_ignore_ascii_case("pwsh") || shell_name.eq_ignore_ascii_case("powershell")) {
+        if !args.is_empty() {
+            return false;
+        }
+        args.extend(["-NoExit".into(), "-Command".into(), POWERSHELL_INIT.into()]);
+        return true;
+    }
     if !cfg!(unix) {
         return false;
     }
@@ -156,6 +165,23 @@ pub(crate) fn apply(shell_name: &str, args: &mut Vec<String>, env: &mut BTreeMap
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powershell_clear_integration_only_changes_plain_windows_starts() {
+        for shell in ["pwsh", "powershell", "PwSh"] {
+            let mut args = Vec::new();
+            let mut env = BTreeMap::new();
+            assert_eq!(apply(shell, &mut args, &mut env), cfg!(windows));
+            if cfg!(windows) {
+                assert_eq!(args, ["-NoExit", "-Command", POWERSHELL_INIT]);
+            } else {
+                assert!(args.is_empty());
+            }
+            let mut explicit = vec!["-NoProfile".into()];
+            assert!(!apply(shell, &mut explicit, &mut env));
+            assert_eq!(explicit, ["-NoProfile"]);
+        }
+    }
 
     #[test]
     fn bash_gets_init_file_and_login_flag() {

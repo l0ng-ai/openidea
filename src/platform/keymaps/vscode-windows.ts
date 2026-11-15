@@ -37,6 +37,8 @@ export const vscodeWindows: Record<string, string[]> = {
   "toolwindow.closeContent": ["Ctrl+W", "Ctrl+F4"],
   "editor.nextTab": ["Ctrl+PageDown"],
   "editor.prevTab": ["Ctrl+PageUp"],
+  "db.nextResultTab": ["Ctrl+PageDown"],
+  "db.previousResultTab": ["Ctrl+PageUp"],
   "window.toggleFullScreen": ["F11"],
   "project.rename": ["F2"],
   "project.delete": ["Delete"],
@@ -61,6 +63,8 @@ export const vscodeWindows: Record<string, string[]> = {
   "markdown.previewOnly": ["Ctrl+Shift+V"],
   // Agents (VS Code's chat: Ctrl+Shift+I)
   "agents.newTask": ["Ctrl+Shift+I"],
+  "agents.focusInput": ["Ctrl+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
 };

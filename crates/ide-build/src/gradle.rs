@@ -204,7 +204,7 @@ pub fn parse_settings(text: &str) -> Settings {
 }
 
 /// `a/b/../c` → `a/c`, without touching the filesystem.
-fn normalize(p: &Path) -> PathBuf {
+pub(crate) fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {

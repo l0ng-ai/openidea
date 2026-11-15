@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 futures.workspace = true
+tokio-tungstenite.workspace = true
+base64.workspace = true
 tempfile.workspace = true
 ide-core.workspace = true
 ide-language.workspace = true
@@ -27,6 +29,9 @@ tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Wdk_System_Threading", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

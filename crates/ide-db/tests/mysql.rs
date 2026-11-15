@@ -183,3 +183,51 @@ async fn a_reused_physical_connection_restores_the_configured_database() -> IdeR
     assert_eq!(pool.execute("SELECT CONNECTION_ID()", 1, &c).await?.rows, backend);
     Ok(())
 }
+
+/// Forwards to the test server, adding `CLIENT_DEPRECATE_EOF` to the capabilities its greeting
+/// advertises, like proxies that set the flag but leave a 5.x server sending legacy EOF packets.
+async fn deprecate_eof_proxy(host: String, port: u16) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            let mut server = tokio::net::TcpStream::connect((host.as_str(), port)).await.unwrap();
+            tokio::spawn(async move {
+                let mut header = [0u8; 4];
+                server.read_exact(&mut header).await.unwrap();
+                let len = u32::from_le_bytes([header[0], header[1], header[2], 0]) as usize;
+                let mut greeting = vec![0u8; len];
+                server.read_exact(&mut greeting).await.unwrap();
+                // protocol version, NUL-terminated server version, connection id, 8 bytes of
+                // auth data, filler, lower capabilities, charset, status, upper capabilities.
+                let version_end = 1 + greeting[1..].iter().position(|&b| b == 0).unwrap();
+                let upper = version_end + 1 + 4 + 8 + 1 + 2 + 1 + 2;
+                greeting[upper + 1] |= 0x01; // bit 24 of the capability flags
+                client.write_all(&header).await.unwrap();
+                client.write_all(&greeting).await.unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut server).await;
+            });
+        }
+    });
+    local
+}
+
+#[tokio::test]
+async fn servers_that_advertise_deprecate_eof_but_send_legacy_eof_packets() -> IdeResult<()> {
+    use ide_db::Pool;
+    let Some((host, port, user, password)) = server() else { return Ok(()) };
+    let source = DataSource {
+        driver: DbDriver::Mysql,
+        host: "127.0.0.1".into(),
+        port: Some(deprecate_eof_proxy(host, port).await),
+        user,
+        ..Default::default()
+    };
+    let pool = Pool::connect(&source, Some(&password), None).await?;
+    assert_eq!(pool.rows("SELECT 1 + 1", 1).await?, vec![vec![Some("2".into())]]);
+    let c = CancellationToken::new();
+    let r = pool.execute("SELECT 'a' UNION ALL SELECT 'b'", 10, &c).await?;
+    assert_eq!(r.rows, vec![vec![Some("a".into())], vec![Some("b".into())]]);
+    Ok(())
+}

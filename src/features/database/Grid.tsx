@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
 } from "react";
@@ -48,7 +49,7 @@ export interface GridColumn {
   enumValues?: readonly string[];
 }
 
-const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$/i;
+const NUMERIC_TYPE = /int|num|dec|real|float|double|money|serial|^bit$|^fixed\b/i;
 const NUMBER = /^-?\d+(\.\d+)?(e[+-]?\d+)?$/i;
 
 /** Numbers are right-aligned (IDEA): by type, else when every sampled value is one. */
@@ -392,6 +393,7 @@ export function Grid(props: GridProps) {
       canToggle: () => canEdit() && !!bools[sel!.c1] && props.rowState?.(sel!.r1) !== "deleted",
       canSetNull: () => canEdit() && nullOk(norm(sel!)),
       canSetDefault: () => canEdit() && defaultable(norm(sel!)),
+      canFilter: () => !!props.onFilter && !!sel && !editing,
       toggle: () => {
         if (actions.canToggle()) toggleBoolean(sel!.r1, sel!.c1, booleanLiterals(props.driver));
       },
@@ -400,6 +402,12 @@ export function Grid(props: GridProps) {
       },
       setDefault: () => {
         if (actions.canSetDefault()) setDefaults(norm(sel!));
+      },
+      filter: () => {
+        if (!actions.canFilter()) return;
+        scrollColumnIntoView(sel!.c1);
+        const anchor = scrollRef.current?.querySelectorAll<HTMLElement>("[data-column-filter]")[sel!.c1];
+        if (anchor) props.onFilter!(sel!.c1, anchor);
       },
     };
     Object.assign((cellActions.current ??= {} as CellActions), actions);
@@ -430,6 +438,14 @@ export function Grid(props: GridProps) {
       startEdit(sel.r1, sel.c1, e.key === "Enter" && e.shiftKey);
       return;
     }
+    if (e.key === "Tab") {
+      // IDEA's tables: Tab moves between cells, leaving the grid after the last one.
+      const next = mod || e.altKey ? null : nextCell(sel.r1, sel.c1, e.shiftKey ? -1 : 1);
+      if (!next) return;
+      e.preventDefault();
+      moveTo(next[0], next[1], false);
+      return;
+    }
     const moves: Record<string, [number, number]> = {
       ArrowUp: [-1, 0],
       ArrowDown: [1, 0],
@@ -439,11 +455,30 @@ export function Grid(props: GridProps) {
     const m = moves[e.key];
     if (!m) return;
     e.preventDefault();
-    const r = Math.max(0, Math.min(rowCount - 1, sel.r1 + m[0]));
-    const c = Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1]));
-    setSel(e.shiftKey ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
+    moveTo(
+      Math.max(0, Math.min(rowCount - 1, sel.r1 + m[0])),
+      Math.max(0, Math.min(columns.length - 1, sel.c1 + m[1])),
+      e.shiftKey,
+    );
+  };
+
+  /** The cell Tab (`step` 1) or Shift+Tab (-1) goes to, row by row; null past either end. */
+  const nextCell = (r: number, c: number, step: 1 | -1): [number, number] | null => {
+    const i = Math.min(r, rowCount - 1) * columns.length + c + step;
+    return i < 0 || i >= rowCount * columns.length ? null : [Math.floor(i / columns.length), i % columns.length];
+  };
+
+  const moveTo = (r: number, c: number, extend: boolean) => {
+    setSel(extend && sel ? { ...sel, r1: r, c1: c } : { r0: r, c0: c, r1: r, c1: c });
     virtualizer.scrollToIndex(r, { align: "auto" });
     scrollColumnIntoView(c);
+  };
+
+  /** Focus from a click lands on the clicked cell; from the keyboard, on the first cell. */
+  const pointerFocus = useRef(false);
+  const onFocus = (e: FocusEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || pointerFocus.current || sel || editing) return;
+    if (rowCount && columns.length) moveTo(0, 0, false);
   };
 
   const onCellMouseDown = (e: MouseEvent, r: number, c: number) => {
@@ -512,6 +547,9 @@ export function Grid(props: GridProps) {
         { kind: "action", action: "db.setCellDefault", arg: cellActions.current },
       );
     }
+    if (props.onFilter) {
+      items.push({ kind: "separator" }, { kind: "action", action: "db.localFilter", arg: cellActions.current });
+    }
     const extra = rowMenu?.(selectedRows()) ?? [];
     if (extra.length) items.push({ kind: "separator" }, ...extra);
     showContextMenu(e, items);
@@ -546,6 +584,11 @@ export function Grid(props: GridProps) {
       aria-label={props["aria-label"] ?? "Results"}
       aria-rowcount={rowCount}
       onKeyDown={onKeyDown}
+      onFocus={onFocus}
+      onMouseDownCapture={() => {
+        pointerFocus.current = true;
+        setTimeout(() => (pointerFocus.current = false));
+      }}
       onPaste={onPaste}
       onContextMenu={onContextMenu}
     >
@@ -615,6 +658,10 @@ export function Grid(props: GridProps) {
                 {props.onFilter && (
                   <button
                     type="button"
+                    data-column-filter=""
+                    // Not a Tab stop, like IDEA's table header: Tab past the last cell leaves the grid.
+                    // The keyboard opens it with the Local Filter action.
+                    tabIndex={-1}
                     className={clsx(styles.headerFilter, props.filtered?.(ci) && styles.headerFilterOn)}
                     aria-label={`Filter ${c.name}`}
                     title={tx("Local filter")}
@@ -709,6 +756,13 @@ export function Grid(props: GridProps) {
                           return;
                         }
                         if (e.key === "Enter") commit();
+                        if (e.key === "Tab") {
+                          // Like IDEA's table editor: Tab commits and selects the next cell.
+                          e.preventDefault();
+                          const next = nextCell(editing.row, editing.col, e.shiftKey ? -1 : 1);
+                          commit();
+                          if (next) moveTo(next[0], next[1], false);
+                        }
                         if (e.key === "Escape") {
                           skipBlurCommit.current = true;
                           setEditing(null);
@@ -726,6 +780,7 @@ export function Grid(props: GridProps) {
                   <div
                     key={c}
                     role="gridcell"
+                    aria-selected={selected(r, c)}
                     className={clsx(
                       styles.cell,
                       numeric[c] && styles.cellNumber,
@@ -751,6 +806,7 @@ export function Grid(props: GridProps) {
                           onDoubleClick={(e) => e.stopPropagation()}
                         >
                           <Checkbox
+                            tabIndex={-1}
                             className={styles.cellCheckbox}
                             aria-label={tx`Toggle ${columns[c]!.name}`}
                             checked={val === lit.t}

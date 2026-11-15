@@ -74,3 +74,26 @@ test("⌘K commits the checked changes with the typed message", async ({ workben
   expect(await ipcCalls(page, "vcs_stage")).toHaveLength(0);
   await expect(changes.getByRole("checkbox", { name: "Include build.gradle.kts in commit" })).toBeHidden();
 });
+
+test("commit message history opens above the message without an empty icon column", async ({ workbench: page }) => {
+  await stubRepository(page);
+  await page.keyboard.press("Meta+k");
+  const message = page.getByRole("textbox", { name: "Commit message" });
+  await expect(message).toBeVisible();
+  await page.evaluate((root) => {
+    localStorage.setItem(`openidea.vcs.commitMessages:${root}`, JSON.stringify(["Previous commit message"]));
+  }, ROOT);
+  await message.fill("Draft");
+  await page.getByRole("button", { name: "Commit Message History" }).click();
+
+  const menu = page.getByRole("menu", { name: "Recent commit messages" });
+  const row = menu.getByRole("menuitem", { name: "Previous commit message" });
+  await expect(row).toBeVisible();
+  const messageBox = await message.boundingBox();
+  const menuBox = await menu.locator("..").boundingBox();
+  expect(messageBox).not.toBeNull();
+  expect(menuBox).not.toBeNull();
+  expect(menuBox!.y + menuBox!.height).toBeLessThan(messageBox!.y);
+  expect(Math.abs(menuBox!.x - messageBox!.x)).toBeLessThan(2);
+  await expect(row.locator("span")).toHaveCount(1);
+});

@@ -4,7 +4,9 @@ import { tx } from "@/platform/i18n";
 export type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
 
 export function permissionDetails(entry: PermissionEntry, provider = "Codex") {
-  const command = entry.title.match(/^Run ([\s\S]+)/)?.[1] ?? entry.title.match(/^[^\n]+?: Run ([\s\S]+)/)?.[1];
+  // The backend names the command from the request's structured input; the title is the
+  // agent's own words and never makes a request a command.
+  const command = entry.command ?? undefined;
   return {
     command,
     title: command ? tx`${provider} wants to run a command` : tx("Allow tool call?"),

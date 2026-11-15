@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { commands } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { installTerminalPaste, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
 
 const notify = vi.hoisted(() => vi.fn());
@@ -524,4 +525,29 @@ it("recovers quoted local file paths when clipboard text permission is denied", 
   await pasteTerminalClipboard(paste, () => localTarget("pwsh"));
   expect(paste).toHaveBeenCalledExactlyOnceWith("'C:\\a b\\image.png'");
   expect(notify).not.toHaveBeenCalled();
+});
+
+it.each([
+  // WebKitGTK pastes nothing from a menu through execCommand or readText: native text first.
+  { os: "linux", native: "ls -la", expected: ["ls -la"], execCommand: 0 },
+  // An image-only clipboard keeps the WebView paths.
+  { os: "linux", native: "", expected: [], execCommand: 1 },
+  { os: "macos", native: "ls -la", expected: ["ls -la"], execCommand: 1 },
+] as const)("menu paste on $os with native text '$native'", async ({ os, native, expected, execCommand }) => {
+  usePlatform.setState({ os });
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: native });
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "web" } });
+  const exec = vi.fn(() => false);
+  Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: () => true });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: exec });
+  const paste = vi.fn();
+  try {
+    await pasteTerminalClipboard(paste, () => localTarget());
+  } finally {
+    usePlatform.setState({ os: "macos" });
+    Reflect.deleteProperty(document, "queryCommandSupported");
+    Reflect.deleteProperty(document, "execCommand");
+  }
+  expect(exec).toHaveBeenCalledTimes(execCommand);
+  expect(paste.mock.calls).toEqual(expected.map((text) => [text]));
 });

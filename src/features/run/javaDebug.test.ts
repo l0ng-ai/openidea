@@ -4,6 +4,8 @@ import type { RunConfig } from "@/platform/ipc";
 const h = vi.hoisted(() => ({
   attached: [] as number[],
   onLine: null as ((line: string) => void) | null,
+  ready: true,
+  retry: null as (() => void) | null,
 }));
 vi.mock("@/platform/ipc", async (orig) => {
   const ipc = await orig<typeof import("@/platform/ipc")>();
@@ -15,8 +17,12 @@ vi.mock("@/platform/ipc", async (orig) => {
 });
 vi.mock("@/platform/actions", async (orig) => ({
   ...(await orig<typeof import("@/platform/actions")>()),
-  executeAction: async (id: string, arg: { port: number }) => {
+  executeAction: async (id: string, arg: { port: number; retry: () => void; done: (ready: boolean) => void }) => {
     if (id === "debug.attach") h.attached.push(arg.port);
+    if (id === "debug.jvmAttachReady") {
+      h.retry = arg.retry;
+      arg.done(h.ready);
+    }
     return true;
   },
 }));
@@ -44,6 +50,8 @@ const mavenTest: RunConfig = {
 beforeEach(() => {
   h.attached = [];
   h.onLine = null;
+  h.ready = true;
+  h.retry = null;
 });
 
 describe("Maven test debugging", () => {
@@ -65,5 +73,14 @@ describe("Maven test debugging", () => {
     // The fork's own line, released once the tests run, doesn't attach twice.
     h.onLine!("Listening for transport dt_socket at address: 50123");
     expect(h.attached).toEqual([50123]);
+  });
+
+  it("doesn't start the build while the debugger is missing; its install debugs again", async () => {
+    h.ready = false;
+    expect(await debugWithAgent(mavenTest)).toBe(true);
+    expect(h.onLine).toBeNull();
+    h.ready = true;
+    h.retry!();
+    await vi.waitFor(() => expect(h.onLine).not.toBeNull());
   });
 });

@@ -13,7 +13,7 @@ export const REGISTRY_PAGE = "agents.list";
 export const AGENTS_GROUP = "Agents";
 /** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
 export const MCP_PAGE = "agents.mcpServers";
-/** Settings › Agents › Command Execution Policy. */
+/** Settings › Agents › Command Permissions. */
 export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
@@ -85,6 +85,17 @@ const GROUPS: Array<[TaskGroup["status"], string, AgentStatus[]]> = [
   ["archived", "Archived", ["archived"]],
 ];
 
+const ATTENTION_RANK = new Map<AgentStatus, number>(
+  GROUPS.flatMap(([, , members], rank) => members.map((status): [AgentStatus, number] => [status, rank])),
+);
+
+/** Where a task sits in the panel by status: what waits for the user comes first. */
+export const attentionRank = (status: AgentStatus) => ATTENTION_RANK.get(status) ?? GROUPS.length;
+
+/** The group a status is shown in (`starting` runs). */
+export const groupStatus = (status: AgentStatus): TaskGroup["status"] =>
+  GROUPS.find(([, , members]) => members.includes(status))?.[0] ?? "ready";
+
 export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
   const sorted = [...tasks].sort((a, b) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));
   return GROUPS.map(([status, label, members]) => ({
@@ -95,6 +106,10 @@ export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
 }
 
 export const isBusy = (s: AgentStatus) => s === "running" || s === "starting" || s === "needsInput";
+
+/** Whether `task` runs outside the project root (its own worktree, or an imported subfolder). */
+export const hasTaskTerminal = (task: AgentTask, projectRoot?: string | null) =>
+  task.isolation === "worktree" || (!!projectRoot && task.cwd !== projectRoot);
 
 /** `entries` with `entry` at `index` (appended when `index` is the length; gaps wait for a reload). */
 export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEntry): AgentEntry[] | null {

@@ -143,18 +143,22 @@ pub(crate) fn run(req: Request<'_>) -> IdeResult<SearchSummary> {
     }
 
     if !ctx.ctl.should_stop() {
-        walk_files(&on_disk, || {
-            let mut searcher = searcher_builder.build();
-            let matcher = matcher.clone();
-            let ctx = &ctx;
-            Box::new(move |path| {
-                if ctx.ctl.should_stop() {
-                    return WalkState::Quit;
-                }
-                ctx.search_file(path, &matcher, &mut searcher);
-                if ctx.ctl.stopped() { WalkState::Quit } else { WalkState::Continue }
-            })
-        });
+        walk_files(
+            &on_disk,
+            &|path| ctx.mask.has_directory_exclusions() && ctx.mask.excludes_dir(&rel_path(ctx.root, path)),
+            || {
+                let mut searcher = searcher_builder.build();
+                let matcher = matcher.clone();
+                let ctx = &ctx;
+                Box::new(move |path| {
+                    if ctx.ctl.should_stop() {
+                        return WalkState::Quit;
+                    }
+                    ctx.search_file(path, &matcher, &mut searcher);
+                    if ctx.ctl.stopped() { WalkState::Quit } else { WalkState::Continue }
+                })
+            },
+        );
     }
 
     let cancelled = ctx.ctl.cancelled.load(Relaxed) || req.cancel.is_cancelled();
@@ -176,7 +180,11 @@ pub(crate) type VisitFile<'s> = Box<dyn FnMut(&Path) -> WalkState + Send + 's>;
 /// them, while ignored files elsewhere (`.env`) and hidden files and folders
 /// (`.github`, `.eslintrc`) are visited. `.git`, symlinks and archives (jar,
 /// zip: browsed, not searched) are never visited.
-pub(crate) fn walk_files<'s>(roots: &[PathBuf], mut visitor: impl FnMut() -> VisitFile<'s> + Send) {
+pub(crate) fn walk_files<'s>(
+    roots: &[PathBuf],
+    skip_dir: &'s (dyn Fn(&Path) -> bool + Sync),
+    mut visitor: impl FnMut() -> VisitFile<'s> + Send,
+) {
     let Some((first, rest)) = roots.split_first() else { return };
     let mut walk = WalkBuilder::new(first);
     for path in rest {
@@ -204,6 +212,9 @@ pub(crate) fn walk_files<'s>(roots: &[PathBuf], mut visitor: impl FnMut() -> Vis
             };
             let Some(file_type) = entry.file_type() else { return WalkState::Continue };
             if file_type.is_dir() {
+                if skip_dir(entry.path()) {
+                    return WalkState::Skip;
+                }
                 // The walker drops ignored files unseen, so the files of every walked
                 // directory come from listing it; the walker only picks the directories.
                 let Ok(children) = std::fs::read_dir(entry.path()) else { return WalkState::Continue };
@@ -593,5 +604,41 @@ mod tests {
             assert!(!probe(&gbk, chunk), "chunk {chunk}");
             assert!(!probe(&utf8[..utf8.len() - 2], chunk), "truncated, chunk {chunk}");
         }
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn excluded_subtree_is_not_visited() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("edge/device/build/deep")).unwrap();
+        std::fs::create_dir_all(root.join("edge/device/src")).unwrap();
+        std::fs::write(root.join("edge/device/build/deep/generated.go"), "hit").unwrap();
+        std::fs::write(root.join("edge/device/src/main.go"), "hit").unwrap();
+        let mask = FileMask::new(&[], &["**/build/**".into()]).unwrap();
+        let seen = Mutex::new(Vec::new());
+        walk_files(&[root.to_path_buf()], &|path| mask.excludes_dir(&rel_path(root, path)), || {
+            let seen = &seen;
+            Box::new(move |path| {
+                // No file-level mask here: a visit means the walker entered the subtree.
+                seen.lock().unwrap().push(rel_path(root, path));
+                WalkState::Continue
+            })
+        });
+        assert_eq!(*seen.lock().unwrap(), ["edge/device/src/main.go"]);
+        seen.lock().unwrap().clear();
+        walk_files(&[root.join("edge/device/build/deep")], &|path| mask.excludes_dir(&rel_path(root, path)), || {
+            let seen = &seen;
+            Box::new(move |path| {
+                seen.lock().unwrap().push(rel_path(root, path));
+                WalkState::Continue
+            })
+        });
+        assert!(seen.lock().unwrap().is_empty());
     }
 }

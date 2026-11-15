@@ -24,6 +24,7 @@ const local = {
   appearance: { theme: "dark" },
   editor: { fontSize: 19, tabSize: 8 },
   terminal: { fontSize: 18, shellPath: "/local" },
+  agents: { fitWindowWidth: true, newTaskApprovals: "ask" },
 };
 const remote = {
   keymap: "intellij-linux",
@@ -32,6 +33,7 @@ const remote = {
   appearance: { theme: "light" },
   editor: { fontSize: 13, tabSize: 2 },
   terminal: { fontSize: 13, shellPath: "/remote" },
+  agents: { fitWindowWidth: false, newTaskApprovals: "bypass", mcpServers: { docs: { command: "npx" } } },
 };
 const served = new Set(["settings_get", "settings_set", "project_current"]);
 let invoke: ReturnType<typeof vi.fn>;
@@ -142,6 +144,9 @@ describe("remote client settings", () => {
     "terminal.env",
     "tools.node",
     "languages.python.interpreter",
+    "agents.newTaskApprovals",
+    "agents.defaults",
+    "agents.mcpServers",
     "keymapExtra",
   ])("preserves routing for host setting %s", (key) => {
     expect(remoteRouting("settings_set", { scope: "project", key }, served)).toBe("remote");
@@ -222,6 +227,7 @@ describe("remote client settings", () => {
       ...local,
       editor: { fontSize: 19, tabSize: 2 },
       terminal: { fontSize: 18, shellPath: "/remote" },
+      agents: { fitWindowWidth: true, newTaskApprovals: "bypass", mcpServers: { docs: { command: "npx" } } },
     });
     expect(invoke).toHaveBeenCalledWith("settings_get_global", {}, undefined);
   });

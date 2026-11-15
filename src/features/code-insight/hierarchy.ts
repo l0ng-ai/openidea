@@ -1,11 +1,28 @@
 /** Call / type hierarchy state, with lazily expanded levels. */
 import { create } from "zustand";
 import type { HierarchyDirection, HierarchyItem, OutlineItem, Pos, RequestId, SymbolKind } from "@/bindings";
+import {
+  classAt,
+  classItem,
+  isPythonPath,
+  projectPythonHierarchy,
+  pythonAncestors,
+  pythonSubtypes,
+} from "@/editor/navigation/pythonHierarchy";
 import { incompleteNote } from "@/editor/lsp/lsp";
 import { IpcError, call, commands, nextRequestId } from "@/platform/ipc";
 import { toolWindowService } from "@/workbench/contributions";
 import { basename } from "@/platform/project";
-import { caretContext, caretSynced, hint, lspRequest, reportError, withDocument, type CaretContext } from "./ipc";
+import {
+  caretContext,
+  caretSynced,
+  hint,
+  isUnavailable,
+  lspRequest,
+  reportError,
+  withDocument,
+  type CaretContext,
+} from "./ipc";
 import { tx } from "@/platform/i18n";
 
 export type HierarchyMode = "call" | "type";
@@ -22,6 +39,8 @@ export interface HierarchyRoot {
   path: string;
   line: number;
   col: number;
+  /** The server's detail for the root type (its package for Java), shown beside the name. */
+  detail?: string | null;
 }
 
 interface HierarchyState {
@@ -73,10 +92,10 @@ export function resetHierarchy() {
   }));
 }
 
-/** Closes the hierarchy's content tab; with no content left the tool window hides. */
+/** Closes the hierarchy's content tab; with no content left the tool window and its stripe button go. */
 export function closeHierarchy() {
   resetHierarchy();
-  toolWindowService().hide("hierarchy");
+  toolWindowService().hide("hierarchy", { removeFromStripe: true });
 }
 
 /** The empty-result line of the hierarchy tree. */
@@ -96,11 +115,55 @@ export function hierarchyTitle(mode: HierarchyMode, direction: HierarchyDirectio
   return direction === "incoming" ? tx`Supertypes of ${name}` : tx`Subtypes of ${name}`;
 }
 
-async function request(mode: HierarchyMode, doc: number, line: number, col: number, direction: HierarchyDirection) {
-  if (mode === "type") {
-    const items = await lspRequest(() => commands.lspTypeHierarchy(doc, { line, col }, direction));
-    return { items, incomplete: null };
+/** `first`, then the items of `more` no item of `first` already names. */
+function mergeItems(first: readonly HierarchyItem[], more: readonly HierarchyItem[]): HierarchyItem[] {
+  const seen = new Set(first.map(itemKey));
+  return [...first, ...more.filter((item) => !seen.has(itemKey(item)))];
+}
+
+/**
+ * Type hierarchy items of the type at `pos`. A Python server's answer is merged with the
+ * IDE's inheritance graph rather than trusted: pyrefly answers only what it resolved in
+ * its own root (`object` for a class whose base lives in an attached project), so a
+ * non-empty answer still misses the attached project's supertypes.
+ */
+async function typeHierarchyItems(
+  path: string,
+  doc: number,
+  pos: Pos,
+  direction: HierarchyDirection,
+): Promise<HierarchyItem[]> {
+  const python = isPythonPath(path);
+  let served: HierarchyItem[] = [];
+  let unavailable = false;
+  try {
+    served = await lspRequest(() => commands.lspTypeHierarchy(doc, pos, direction));
+  } catch (e) {
+    if (!python || !isUnavailable(e)) throw e;
+    unavailable = true;
   }
+  if (!python) return served;
+  const hierarchy = await projectPythonHierarchy();
+  const cls = classAt(hierarchy, path, pos);
+  if (!cls) {
+    if (unavailable) throw new IpcError({ kind: "notFound", message: "No type at the caret" });
+    return served;
+  }
+  // Supertypes are the whole chain, subtypes only the direct ones: each node expands lazily.
+  const graph = direction === "incoming" ? await pythonAncestors(hierarchy, cls) : await pythonSubtypes(hierarchy, cls);
+  return mergeItems(served, graph.map(classItem));
+}
+
+async function request(
+  mode: HierarchyMode,
+  doc: number,
+  path: string,
+  line: number,
+  col: number,
+  direction: HierarchyDirection,
+) {
+  if (mode === "type")
+    return { items: await typeHierarchyItems(path, doc, { line, col }, direction), incomplete: null };
   const id = nextRequestId();
   inflight.add(id);
   try {
@@ -164,6 +227,20 @@ function setChildren(
 
 type RootResult = "loaded" | "noTarget" | "failed" | "stale";
 
+/** The root type's detail (Java: its package), like the nodes below it show theirs. */
+async function loadRootDetail(generation: number, root: HierarchyRoot) {
+  try {
+    const item = await withDocument(root.path, (doc) =>
+      call(commands.lspPrepareTypeHierarchy(doc, { line: root.line, col: root.col })),
+    );
+    const s = useHierarchy.getState();
+    if (s.generation !== generation || s.root !== root || !item?.detail) return;
+    useHierarchy.setState({ root: { ...root, detail: item.detail } });
+  } catch {
+    // Older servers (remote) and servers without type hierarchy: the name alone.
+  }
+}
+
 /** Loads the root's level. `quiet`: a position without a symbol isn't reported (the caller retries). */
 async function loadRoot(quiet = false): Promise<RootResult> {
   const s = useHierarchy.getState();
@@ -174,10 +251,11 @@ async function loadRoot(quiet = false): Promise<RootResult> {
   useHierarchy.setState({ generation, children: new Map(), failed: new Set(), notes: new Map(), loading: true });
   try {
     const { items, incomplete } = await withDocument(root.path, (doc) =>
-      request(s.mode, doc, root.line, root.col, s.direction),
+      request(s.mode, doc, root.path, root.line, root.col, s.direction),
     );
     setChildren(generation, ROOT_ID, [rootKey(root)], items, incomplete && incompleteNote(incomplete, root.name));
     prefetchLevels(useHierarchy.getState().children.get(ROOT_ID) ?? []);
+    if (s.mode === "type") void loadRootDetail(generation, root);
     return "loaded";
   } catch (e) {
     if (useHierarchy.getState().generation !== generation) return "stale";
@@ -227,7 +305,7 @@ export async function loadChildren(node: HierarchyNode, ahead = false) {
   const at = node.item.selectionRange.start;
   try {
     const { items, incomplete } = await withDocument(node.item.path, (doc) =>
-      request(mode, doc, at.line, at.col, direction),
+      request(mode, doc, node.item.path, at.line, at.col, direction),
     );
     setChildren(
       generation,

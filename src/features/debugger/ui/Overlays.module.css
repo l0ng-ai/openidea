@@ -181,6 +181,13 @@
   gap: 10px;
 }
 
+.evalImport {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
 /* Grows with the dialog when it is resized. */
 .evalResult {
   flex: 1;
@@ -230,6 +237,11 @@
   display: flex;
   align-items: center;
   min-height: 22px;
+}
+.exceptionHint {
+  font-size: var(--fs-small);
+  color: var(--fg-subtle);
+  padding: 0 0 4px 22px;
 }
 
 .attachList {
