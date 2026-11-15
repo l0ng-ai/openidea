@@ -146,6 +146,10 @@
   background: transparent;
   color: var(--fg-secondary);
 }
+.mainMenuButton:hover,
+.mainMenuButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+}
 .mainMenuButton:focus-visible,
 .menuTitle:focus-visible,
 .caption:focus-visible {

@@ -33,7 +33,7 @@
   font-size: var(--fs-small, var(--fs-ui));
 }
 
-.button.text:hover,
+.button:hover,
 .button[aria-expanded="true"] {
   background-color: var(--bg-toolbar-hover);
 }
