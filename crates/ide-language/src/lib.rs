@@ -170,6 +170,11 @@ pub struct LanguageServerConfig {
     /// basedpyright): only used while none of those is installed.
     #[serde(default)]
     pub fallback: bool,
+    /// Names of servers listed after this one that it makes redundant (a PHP server
+    /// with its own Laravel support replaces `laravel-lsp`): they aren't used while
+    /// this one serves the file.
+    #[serde(default)]
+    pub replaces: Vec<String>,
     /// What the server is used for (`completion`, `code-action`, `diagnostics`,
     /// … `FEATURES` in `ide-lsp/src/caps.rs`); empty means everything. The other
     /// capabilities it announces are ignored, so a refactoring-only server next

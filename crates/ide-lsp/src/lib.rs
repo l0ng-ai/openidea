@@ -660,15 +660,17 @@ impl LspManager {
     /// The servers serving `path`: every regular one, and each `fallback` one
     /// only while all servers listed before it have given up (missing, not
     /// launchable, or crashed for good). One that requires a root marker serves
-    /// only files below one, and stands in for no other.
+    /// only files below one, and stands in for no other. One that a server before
+    /// it `replaces` is left out while that server serves the file.
     fn servers_for(&self, language: &LanguageId, path: &Path) -> Vec<Arc<Server>> {
         if let Some(servers) = self.arduino_servers(language, path) {
             return servers;
         }
         let mut out = Vec::new();
         let mut available_before = false;
+        let mut replaced: Vec<String> = Vec::new();
         for sc in &self.language_servers(language) {
-            if sc.fallback && available_before {
+            if (sc.fallback && available_before) || replaced.contains(&sc.name) {
                 continue;
             }
             if sc.require_root_marker
@@ -678,6 +680,9 @@ impl LspManager {
             }
             let server = self.server_for(sc, language, path);
             available_before |= !sc.require_root_marker && !server.gave_up();
+            if !server.gave_up() {
+                replaced.extend(sc.replaces.iter().cloned());
+            }
             out.push(server);
         }
         out
@@ -865,7 +870,7 @@ impl LspManager {
                     ide_core::event::ServerStatus::Missing,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
@@ -878,7 +883,7 @@ impl LspManager {
                     ide_core::event::ServerStatus::Misconfigured,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
@@ -891,7 +896,7 @@ impl LspManager {
                     ide_core::event::ServerStatus::Crashed,
                     Some(message),
                 ) {
-                    self.attach_fallbacks();
+                    self.fallbacks_take_over().await;
                 }
                 return;
             }
@@ -1039,7 +1044,7 @@ impl LspManager {
                 }
             }
             // Gave up (crashed repeatedly, or its build expired): the fallbacks it hid take over.
-            None => self.attach_fallbacks(),
+            None => self.fallbacks_take_over().await,
         }
     }
 
@@ -3828,8 +3833,16 @@ impl LspManager {
         }
     }
 
-    /// A server enabled again shadows the fallbacks attached in its place: they
-    /// leave the open documents, and stop once no document uses them.
+    /// A server gave up: its fallbacks take over the open documents, and the servers
+    /// they replace leave.
+    async fn fallbacks_take_over(&self) {
+        self.attach_fallbacks();
+        self.detach_shadowed_fallbacks().await;
+    }
+
+    /// A server enabled again shadows the fallbacks attached in its place, and a
+    /// fallback that took over may replace a server attached earlier: they leave the
+    /// open documents, and stop once no document uses them.
     async fn detach_shadowed_fallbacks(&self) {
         let open: Vec<(DocId, LanguageId, PathBuf)> =
             self.docs.lock().iter().map(|(id, d)| (*id, d.language.clone(), d.path.clone())).collect();
@@ -3845,6 +3858,7 @@ impl LspManager {
                 .filter(|a| {
                     !wanted.iter().any(|w| w.id == a.server.id)
                         && (configs.iter().any(|c| c.fallback && c.name == a.server.name)
+                            || configs.iter().any(|c| c.replaces.contains(&a.server.name))
                             || (a.server.name == "clangd" && wanted.iter().any(|s| s.name == arduino::SERVER)))
                 })
                 .map(|a| a.server.id)

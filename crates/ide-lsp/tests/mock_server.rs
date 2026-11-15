@@ -264,6 +264,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -3284,6 +3285,67 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.open("a.mk", "x");
     h.wait_status("framework", ServerStatus::Ready).await;
     h.wait_status("alt", ServerStatus::Ready).await;
+}
+
+/// A server that `replaces` another (a PHP server with its own Laravel support and
+/// `laravel-lsp`) keeps it away while it serves, and only then.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replaced_server_stays_away_while_its_replacement_serves() {
+    let servers = [("main", incremental_caps()), ("alt", incremental_caps()), ("framework", incremental_caps())];
+    let configure = |cfg: &mut LanguageServerConfig| match cfg.name.as_str() {
+        "alt" => {
+            cfg.fallback = true;
+            cfg.replaces = vec!["framework".into()];
+        }
+        "framework" => cfg.require_root_marker = true,
+        _ => {}
+    };
+    let h = harness_configured("mock", "mk", &servers, configure);
+    let disabled: Arc<Mutex<Vec<String>>> = Default::default();
+    {
+        let disabled = disabled.clone();
+        h.mgr.set_servers_hook(Box::new(move |_, defined| {
+            defined.iter().filter(|c| !disabled.lock().contains(&c.name)).cloned().collect()
+        }));
+    }
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    let (_, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+
+    // The preferred server serves: the framework's server joins it, the alternative stays away.
+    h.wait_status("main", ServerStatus::Ready).await;
+    h.wait_status("framework", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("framework").docs.lock().contains_key(&uri)).await;
+    assert!(h.statuses("alt").is_empty());
+
+    // The alternative takes over: the server it replaces closes the document and stops.
+    disabled.lock().push("main".into());
+    h.mgr.reconfigure().await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(!h.launcher.state("framework").notified("textDocument/didClose").is_empty());
+    assert_eq!(h.statuses("framework").last(), Some(&ServerStatus::Stopped));
+    assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["alt"]);
+
+    // The preferred server again: the framework's server comes back with it.
+    disabled.lock().clear();
+    h.mgr.reconfigure().await;
+    h.wait_status("main", ServerStatus::Ready).await;
+    eventually(|| h.statuses("framework").last() == Some(&ServerStatus::Ready)).await;
+    assert_eq!(h.statuses("alt").last(), Some(&ServerStatus::Stopped));
+
+    // A preferred server that is not installed: the alternative replaces the framework's
+    // server although that one attached first.
+    let servers = [("ghost", json!({})), ("alt", incremental_caps()), ("framework", incremental_caps())];
+    let h = harness_configured("mock", "mk", &servers, configure);
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    let (_, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+    h.wait_status("ghost", ServerStatus::Missing).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    eventually(|| !h.mgr.servers().iter().any(|s| s.name == "framework")).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
