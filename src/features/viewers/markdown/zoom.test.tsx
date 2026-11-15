@@ -101,14 +101,102 @@ describe("editor font size actions", () => {
     );
     const preview = screen.getByRole("document", { name: "Markdown preview" });
     expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("0px");
+    expect(preview.style.getPropertyValue("--markdown-zoom-scale")).toBe("1");
 
     await act(() => executeAction("editor.increaseFontSize"));
     await act(() => executeAction("editor.increaseFontSize"));
     expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("2px");
+    expect(preview.style.getPropertyValue("--markdown-zoom-scale")).toBe("1.1538");
+
+    await act(() => executeAction("editor.decreaseFontSize"));
+    await act(() => executeAction("editor.decreaseFontSize"));
+    await act(() => executeAction("editor.decreaseFontSize"));
+    expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("-1px");
+    expect(preview.style.getPropertyValue("--markdown-zoom-scale")).toBe("0.9231");
 
     await act(() => executeAction("editor.resetFontSize"));
     expect(zoom(md)).toBe(0);
     expect(preview.style.getPropertyValue("--markdown-font-zoom")).toBe("0px");
+    expect(preview.style.getPropertyValue("--markdown-zoom-scale")).toBe("1");
+  });
+
+  it("sizes embedded excalidraw.svg, graph SVGs and raster images so they scale with font zoom", async () => {
+    const excalidrawSvg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 940" width="1280" height="940"><!-- svg-source:excalidraw --></svg>';
+    const excalidrawUrl = `data:image/svg+xml;base64,${btoa(excalidrawSvg)}`;
+    const graphvizUrl = `data:image/svg+xml;utf8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300pt" height="150pt" viewBox="0 0 300 150"></svg>')}`;
+    const wordmarkUrl = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 56"></svg>')}`;
+    const pngUrl = "data:image/png;base64,iVBORw0KGgo=";
+
+    const ipc = await import("@/platform/ipc");
+    const fsReadImage = vi.spyOn(ipc.commands, "fsReadImage").mockImplementation(async (p: string) => {
+      if (p.endsWith("architecture.excalidraw.svg")) return { status: "ok", data: excalidrawUrl };
+      if (p.endsWith("wordmark.svg")) return { status: "ok", data: wordmarkUrl };
+      if (p.endsWith("shot.png")) return { status: "ok", data: pngUrl };
+      return { status: "error", error: { kind: "notFound", message: p } } as never;
+    });
+
+    try {
+      const doc = [
+        "![Architecture](./architecture.excalidraw.svg)",
+        "",
+        `![Graph](${graphvizUrl})`,
+        "",
+        '<img src="./wordmark.svg" alt="Wordmark" height="56">',
+        "",
+        '<img src="./wordmark.svg" alt="Icon" width="80">',
+        "",
+        "![Shot](./shot.png)",
+      ].join("\n");
+      const live = editorContributions().find((c) => c.id === "viewers.markdownLive")!;
+      const view = new EditorView({
+        state: EditorState.create({ doc, extensions: [fontZoom, live.extensions(mdCtx)] }),
+      });
+      const handle = { view, ctx: mdCtx };
+      _addEditor(handle);
+      disposers.push(() => _removeEditor(handle));
+      views.push(view);
+      activate(view);
+
+      act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [mdCtx.path]: "preview" } })));
+      render(
+        <MarkdownEditor path={mdCtx.path} tabId="t">
+          <div />
+        </MarkdownEditor>,
+      );
+      const preview = screen.getByRole("document", { name: "Markdown preview" });
+      await vi.waitFor(() => {
+        const arch = preview.querySelector<HTMLImageElement>('img[alt="Architecture"]');
+        expect(arch?.getAttribute("src")).toBe(excalidrawUrl);
+      });
+
+      const arch = preview.querySelector<HTMLImageElement>('img[alt="Architecture"]')!;
+      expect(arch.hasAttribute("data-natural-width")).toBe(true);
+      expect(arch.style.getPropertyValue("--image-width")).toBe("1280px");
+
+      const graph = preview.querySelector<HTMLImageElement>('img[alt="Graph"]')!;
+      expect(graph.hasAttribute("data-natural-width")).toBe(true);
+      expect(graph.style.getPropertyValue("--image-width")).toBe("400px");
+
+      const wordmark = preview.querySelector<HTMLImageElement>('img[alt="Wordmark"]')!;
+      expect(wordmark.hasAttribute("data-natural-width")).toBe(true);
+      expect(wordmark.style.getPropertyValue("--image-width")).toBe("280px");
+
+      const icon = preview.querySelector<HTMLImageElement>('img[alt="Icon"]')!;
+      expect(icon.hasAttribute("data-natural-width")).toBe(true);
+      expect(icon.style.getPropertyValue("--image-width")).toBe("80px");
+
+      const shot = preview.querySelector<HTMLImageElement>('img[alt="Shot"]')!;
+      Object.defineProperty(shot, "naturalWidth", { value: 960, configurable: true });
+      Object.defineProperty(shot, "naturalHeight", { value: 600, configurable: true });
+      act(() => {
+        shot.dispatchEvent(new Event("load"));
+      });
+      expect(shot.hasAttribute("data-natural-width")).toBe(true);
+      expect(shot.style.getPropertyValue("--image-width")).toBe("960px");
+    } finally {
+      fsReadImage.mockRestore();
+    }
   });
 
   it("scales a configured editor font size", () => {
