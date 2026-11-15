@@ -8284,5 +8284,6 @@
   "No playful words: the status stays factual": "没有趣味文字：状态只显示实际进展",
   "e.g. Reticulating splines…": "例如：正在网格化样条曲线…",
   "New playful word": "新的趣味文字",
-  "Restore Built-in Words": "恢复内置文字"
+  "Restore Built-in Words": "恢复内置文字",
+  "None — type the Engine API URL below": "无（在下方输入 Engine API URL）"
 }
