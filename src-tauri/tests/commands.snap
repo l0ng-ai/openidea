@@ -72,6 +72,7 @@ cancel_task                                  always             project_host bin
 clear_caches                                 always             desktop      bindings async
 clipboard_file_list                          always             desktop      bindings async
 clipboard_has_files                          always             desktop      bindings sync
+clipboard_has_image                          always             desktop      bindings sync
 clipboard_image                              always             desktop      bindings async
 clipboard_set_file_list                      always             desktop      bindings async
 clipboard_text                               trusted            desktop      bindings async

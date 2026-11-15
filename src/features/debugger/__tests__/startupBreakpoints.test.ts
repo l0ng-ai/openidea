@@ -6,7 +6,7 @@ import {
   removeAllBreakpoints,
   useBreakpoints,
 } from "../breakpoints/store";
-import { handleDebugEvent, startPreparedSession, startSession, useDebug } from "../state";
+import { handleDebugEvent, pinSession, rerunSession, startPreparedSession, startSession, useDebug } from "../state";
 import type { LaunchConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import {
@@ -260,4 +260,26 @@ it("replaces only the finished tab of the same name; other finished tabs stay", 
   expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
   await started;
   expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+});
+
+it("keeps a pinned finished tab; Rerun on it takes its place and keeps it pinned", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 });
+  await startSession({ ...config("launch"), name: "Server" });
+  pinSession(1, true);
+  handleDebugEvent(1, { kind: "terminated" });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "Server" });
+  const tabs = () => Object.values(useDebug.getState().sessions).map((s) => [s.id, s.status, !!s.pinned]);
+  expect(tabs()).toEqual([
+    [1, "terminated", true],
+    [2, "running", false],
+  ]);
+
+  handleDebugEvent(2, { kind: "terminated" });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
+  await rerunSession(1);
+  expect(tabs()).toEqual([
+    [2, "terminated", false],
+    [3, "running", true],
+  ]);
 });
