@@ -3630,6 +3630,18 @@ fn attention_reasons(events: &[AgentEvent]) -> Vec<AgentAttentionReason> {
         .collect()
 }
 
+/// `wait_for(Ready/Failed/…)` can return after status is written but before the
+/// following `emit_attention` runs on the agent thread — poll the sink instead.
+async fn wait_for_attention(events: &Mutex<Vec<AgentEvent>>, reason: AgentAttentionReason) {
+    for _ in 0..500 {
+        if attention_reasons(&events.lock()).contains(&reason) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never saw Attention::{reason:?}: {:?}", *events.lock());
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn attention_finished_not_cancelled() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3651,7 +3663,7 @@ async fn attention_finished_not_cancelled() {
         .await
         .unwrap();
     wait_for(&mgr, &done.id, AgentStatus::Ready).await;
-    assert!(attention_reasons(&events.lock()).contains(&AgentAttentionReason::Finished), "{:?}", *events.lock());
+    wait_for_attention(&events, AgentAttentionReason::Finished).await;
     events.lock().clear();
 
     let cancelled = mgr
@@ -3668,6 +3680,8 @@ async fn attention_finished_not_cancelled() {
     wait_for(&mgr, &cancelled.id, AgentStatus::Running).await;
     mgr.cancel(&cancelled.id, None).unwrap();
     wait_for(&mgr, &cancelled.id, AgentStatus::Ready).await;
+    // Give a late Finished emission a chance; cancellation must not produce one.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         !attention_reasons(&events.lock()).contains(&AgentAttentionReason::Finished),
         "cancelled must not notify finished: {:?}",
@@ -3700,7 +3714,7 @@ async fn attention_failed() {
         .await
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Failed).await;
-    assert!(attention_reasons(&events.lock()).contains(&AgentAttentionReason::Failed), "{:?}", *events.lock());
+    wait_for_attention(&events, AgentAttentionReason::Failed).await;
     mgr.shutdown();
 }
 
@@ -3725,7 +3739,7 @@ async fn attention_input_not_auto_bypass() {
         .await
         .unwrap();
     wait_for(&mgr, &asked.id, AgentStatus::NeedsInput).await;
-    assert!(attention_reasons(&events.lock()).contains(&AgentAttentionReason::Input), "{:?}", *events.lock());
+    wait_for_attention(&events, AgentAttentionReason::Input).await;
     events.lock().clear();
     mgr.cancel(&asked.id, None).unwrap();
     wait_for(&mgr, &asked.id, AgentStatus::Ready).await;
@@ -3742,6 +3756,7 @@ async fn attention_input_not_auto_bypass() {
         .await
         .unwrap();
     wait_for(&mgr, &bypassed.id, AgentStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         !attention_reasons(&events.lock()).contains(&AgentAttentionReason::Input),
         "auto-bypass must not notify input: {:?}",
