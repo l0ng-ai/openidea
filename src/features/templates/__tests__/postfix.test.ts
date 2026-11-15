@@ -99,10 +99,22 @@ describe("postfix target", () => {
     expect(e.snippet).toBe("const ${1:name} = user.getName();${0}");
   });
 
+  it("Zig: optional unwrap and expansion", () => {
+    const doc = "const value = maybe.nn";
+    const target = findPostfixTarget(EditorState.create({ doc }), doc.length, "zig")!;
+    expect(target.key).toBe("nn");
+    expect(target.candidates[0]!.text).toBe("maybe");
+    const tpl = postfixTemplatesFor("zig").find((x) => x.key === "nn")!;
+    const e = expandTemplate(tpl, { predefined: { EXPR: "maybe" } });
+    expect(e.snippet).toBe("if (maybe) |${1:item}| \\{\n\t${0}\n\\}");
+  });
+
   it("every language has the core keys", () => {
-    for (const lang of ["typescript", "rust", "python", "go", "java", "kotlin"]) {
+    for (const lang of ["typescript", "rust", "python", "go", "zig", "java", "kotlin"]) {
       const keys = postfixTemplatesFor(lang).map((t) => t.key);
-      for (const k of ["if", "not", "return", "par", "nn"].filter((k) => !(lang === "rust" && k === "nn")))
+      for (const k of ["if", "not", "return", "par", "nn"].filter(
+        (k) => !(lang === "rust" && k === "nn") && !(lang === "zig" && k === "not"),
+      ))
         expect(keys).toContain(k);
     }
     expect(postfixTemplatesFor("typescript", new Set(["ts.if"])).some((t) => t.key === "if")).toBe(false);
