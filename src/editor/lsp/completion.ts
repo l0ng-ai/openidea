@@ -25,7 +25,7 @@ import {
   type CompletionSource,
 } from "@codemirror/autocomplete";
 import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap, type Rect, type ViewUpdate } from "@codemirror/view";
 import {
   call,
   commands,
@@ -157,6 +157,43 @@ function buildInfo(c: LspCompletion, delay: number): Promise<CompletionInfo> {
 function resetLookupDocs() {
   docsRequested = false;
   docWaiters.clear();
+}
+
+const DOC_MIN_WIDTH = 220;
+const DOC_MAX_WIDTH = 440;
+const DOC_MAX_HEIGHT = 320;
+const DOC_GAP = 6;
+
+/**
+ * Places the documentation beside the lookup, on whichever side has more room,
+ * with the two popups' top edges aligned. Room is measured to the window's
+ * edges, so a narrow editor still has space for a readable pane; when even the
+ * window is too narrow, the pane keeps a readable width rather than covering the
+ * options.
+ */
+export function positionCompletionInfo(
+  _view: EditorView,
+  list: Rect,
+  _option: Rect,
+  _info: Rect,
+  space: Rect,
+): { style: string; class: string } {
+  const windowWidth = document.documentElement.clientWidth;
+  const rightRoom = windowWidth - list.right - DOC_GAP;
+  const leftRoom = list.left - DOC_GAP;
+  const side = rightRoom >= leftRoom ? "right" : "left";
+  const room = side === "right" ? rightRoom : leftRoom;
+  const width = Math.max(DOC_MIN_WIDTH, Math.min(DOC_MAX_WIDTH, room));
+  return {
+    class: `cm-completionInfo-${side}`,
+    style: [
+      "top: 0",
+      // `left`/`right` names the side the pane sits on; the offset goes on the opposite edge.
+      `${side === "right" ? "left" : "right"}: calc(100% + ${DOC_GAP}px)`,
+      `max-width: ${width}px`,
+      `max-height: ${Math.min(DOC_MAX_HEIGHT, space.bottom - list.top)}px`,
+    ].join("; "),
+  };
 }
 
 /**
@@ -867,6 +904,7 @@ export function completionExtension() {
         );
       },
       tooltipClass: () => "cm-lsp-completion",
+      positionInfo: positionCompletionInfo,
     }),
     completionFooter,
     lookupTracker,
