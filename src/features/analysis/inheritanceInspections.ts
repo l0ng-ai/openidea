@@ -36,6 +36,7 @@ import {
   applyProfile,
   enabledByDefault,
   inspectionProfile,
+  subscribeInspectionProfile,
   producerInspectionId,
 } from "@/platform/inspections";
 import {
@@ -380,6 +381,9 @@ function watchChanges() {
     if ([...e.created, ...e.modified, ...e.removed].some(isPythonFile)) refreshAll();
   });
   onServerSettled(refreshAll);
+  // Switching an inspection on or off in Settings applies to the open documents too: the
+  // rules read the profile when they run, so a change must schedule a run.
+  subscribeInspectionProfile(refreshAll);
 }
 
 /** The producers whose inspection is on in the profile in effect. */
