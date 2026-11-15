@@ -211,6 +211,7 @@ export const intellijMacos: Record<string, string[]> = {
   "project.paste": ["Meta+V"],
   "project.copyAbsolutePath": ["Meta+Shift+C"],
   "project.open": ["F4", "Meta+Down"],
+  "project.openInRightSplit": ["Shift+Enter"],
   "project.findUsages": ["Alt+F7"],
   "project.reformatCode": ["Meta+Alt+L"],
   "project.optimizeImports": ["Ctrl+Alt+O"],

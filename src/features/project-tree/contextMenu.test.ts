@@ -142,6 +142,7 @@ describe("project view context menu", () => {
       "-",
       "Run 'a'",
       "-",
+      "Open in Right Split",
       "Open In",
       "-",
       "Local History",
@@ -228,7 +229,7 @@ describe("project view context menu", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
-    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'"])
+    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'", "Open in Right Split"])
       expect(l).not.toContain(fileOnly);
   });
 

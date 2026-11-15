@@ -24,9 +24,11 @@ import {
   openMoveDialog,
   openRenameDialog,
   openSelection,
+  openSelectionInRightSplit,
   paste,
   reloadFromDisk,
   revealInFinder,
+  selectedFiles,
   selectedNodes,
   type PathKind,
 } from "./operations";
@@ -290,6 +292,16 @@ export function registerProjectActions(): () => void {
       category: "Project View",
       when: FOCUS,
       run: openSelection,
+    },
+    {
+      id: "project.openInRightSplit",
+      title: "Open in Right Split",
+      category: "Project View",
+      icon: "split",
+      when: FOCUS,
+      // Folders keep Enter's expand / collapse.
+      enabled: () => selectedFiles().length > 0,
+      run: () => openSelectionInRightSplit(),
     },
     {
       id: "project.rename",
