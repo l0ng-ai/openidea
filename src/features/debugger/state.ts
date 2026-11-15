@@ -304,15 +304,18 @@ function settleStart(id: DebugSessionId | null, discard = false) {
   for (const s of leftovers) if (isLive(useDebug.getState().sessions[s])) markTerminated(s);
 }
 
-/** Drops finished sessions; running ones stay (multiple concurrent sessions are fine). */
-function dropFinished() {
-  useDebug.setState((s) => {
-    const sessions = Object.fromEntries(Object.entries(s.sessions).filter(([, v]) => isLive(v)));
-    const consoleLines = Object.fromEntries(Object.entries(s.console).filter(([k]) => sessions[+k]));
-    for (const id of ansiStreams.keys()) if (!sessions[id]) ansiStreams.delete(id);
-    return { sessions, console: consoleLines, active: s.active != null && sessions[s.active] ? s.active : null };
-  });
-  publishContext();
+/**
+ * As IDEA reuses run content: a new session takes the place of one finished tab (with its
+ * children), preferring one named like it, then the selected one; other finished tabs stay.
+ */
+function replaceFinished(name: string) {
+  const { sessions, active } = useDebug.getState();
+  const finished = Object.values(sessions).filter((s) => s.parent == null && !isLive(s));
+  const selected = active != null ? sessions[active] : undefined;
+  const ordered =
+    selected && finished.includes(selected) ? [selected, ...finished.filter((s) => s !== selected)] : finished;
+  const reused = ordered.find((s) => s.name === name) ?? ordered[0];
+  if (reused) removeSession(reused.id);
 }
 
 /**
@@ -670,8 +673,8 @@ export async function startPreparedSession(
   const id = --preparationSeq as DebugSessionId;
   const controller = new AbortController();
   preparations.set(id, controller);
-  // The new tab takes the place of finished ones while its build runs, not once the adapter starts.
-  dropFinished();
+  // The new tab takes the place of a finished one while its build runs, not once the adapter starts.
+  replaceFinished(config.name);
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
@@ -728,7 +731,7 @@ export async function startSession(
   // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
   const afterDetach = justDetached(options.process);
   const previousActive = useDebug.getState().active;
-  if (!afterDetach) dropFinished();
+  if (!afterDetach && !options.preparation) replaceFinished(launch.name);
   try {
     if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -743,7 +746,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
-    if (afterDetach) dropFinished();
+    if (afterDetach && !options.preparation) replaceFinished(launch.name);
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -918,6 +921,7 @@ export function removeSession(id: DebugSessionId) {
   });
   for (const goneId of gone) {
     owned.delete(goneId);
+    ansiStreams.delete(goneId);
     unfollowProcessOutput(goneId);
   }
   updateExecutionPoint();

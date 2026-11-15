@@ -237,3 +237,27 @@ it("replaces finished tabs as soon as a prepared start begins", async () => {
   await expect(started).resolves.toBe(43);
   expect(Object.keys(useDebug.getState().sessions)).toEqual(["43"]);
 });
+
+it("replaces only the finished tab of the same name; other finished tabs stay", async () => {
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 1 }).mockResolvedValueOnce({ status: "ok", data: 2 });
+  await startSession({ ...config("launch"), name: "Server" });
+  await startSession({ ...config("launch"), name: "Client" });
+  handleDebugEvent(1, { kind: "terminated" });
+  handleDebugEvent(2, { kind: "terminated" });
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 3 });
+  await startSession({ ...config("launch"), name: "Server" });
+  expect(Object.values(useDebug.getState().sessions).map((s) => [s.name, s.status])).toEqual([
+    ["Client", "terminated"],
+    ["Server", "running"],
+  ]);
+
+  ipc.debugStart.mockResolvedValueOnce({ status: "ok", data: 4 });
+  const started = startPreparedSession({ id: "other", name: "Other" } as never, async () => ({
+    ...config("launch"),
+    name: "Other",
+  }));
+  // No finished tab named "Other": the first finished one (Client) gives way.
+  expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+  await started;
+  expect(Object.values(useDebug.getState().sessions).map((s) => s.name)).toEqual(["Server", "Other"]);
+});
