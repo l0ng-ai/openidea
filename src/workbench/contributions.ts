@@ -709,7 +709,11 @@ export interface EditorCloseSession {
 
 export interface ToolWindowService {
   show(id: string, focus?: boolean): void;
-  hide(id: string): void;
+  /**
+   * `removeFromStripe`: a window whose content is its tabs (Find, Run, Hierarchy…) lost its last
+   * one: its stripe button goes too, until new content opens it again (IDEA).
+   */
+  hide(id: string, options?: { removeFromStripe?: boolean }): void;
   toggle(id: string): void;
   isVisible(id: string): boolean;
 }
