@@ -2573,7 +2573,7 @@ fn a_member_without_python_falls_back_to_the_primary_project_interpreter() {
     assert_eq!(config.env["VIRTUAL_ENV"], outer.parent().unwrap().parent().unwrap().to_string_lossy());
     // Saving strips what settings derived, so the fallback keeps following settings.
     let stored = without_derived_in(&config, &bare, Some(&primary), &settings);
-    assert_eq!(stored.command, exe("python"));
+    assert_eq!(stored.command, "python", "the bare program, also on Windows");
     assert!(!stored.env.contains_key("VIRTUAL_ENV"));
 
     // The member's explicit interpreter wins over the primary project's venv —
