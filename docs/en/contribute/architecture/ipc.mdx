@@ -197,5 +197,5 @@ You don't write anything special for remote development. In a remote window, `sr
 1. Put the logic in the owning crate; convert errors to `IdeError` at its edge; use IPC coordinates.
 2. Add the shared implementation to `ide-host::ops::<domain>` if it touches a project; register it with the remote dispatcher if remote windows need it.
 3. Add the `#[tauri::command] #[specta::specta]` adapter in `src-tauri/src/commands/<domain>.rs` and list it in `collect_commands!`.
-4. If it executes anything, leave it out of the restricted-mode allowlist (it is denied in untrusted projects by default).
-5. `pnpm gen:bindings`, then call it with `call(commands.yourCommand(...))`.
+4. Decide its trust class: list it by exact name in `restricted_command_allowed` (also in Restricted Mode) or `projectless_command_allowed` (also with no project open), or leave it out to require a trusted project. There are no name prefixes; if it executes anything, leave it out.
+5. `pnpm gen:bindings`, then call it with `call(commands.yourCommand(...))`. It also rewrites `src-tauri/tests/commands.snap`; check that the new line shows the trust class and placement you meant.
