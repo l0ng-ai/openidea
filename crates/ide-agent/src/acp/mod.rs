@@ -17,6 +17,8 @@
 pub(crate) mod discover;
 mod normalize;
 
+pub(crate) use normalize::base64 as normalize_base64;
+
 use ide_jsonrpc::{Handler, Peer, RpcError, codes};
 use normalize::Normalizer;
 use parking_lot::Mutex;

@@ -109,6 +109,7 @@ impl LaunchContext {
                 provider::Driver::Acp => b"acp",
                 provider::Driver::Codex => b"codex",
                 provider::Driver::Claude => b"claude",
+                provider::Driver::Copilot => b"copilot",
             },
         );
         field(&mut hash, self.spec.command.as_bytes());
@@ -201,6 +202,14 @@ impl AgentCatalogs {
             .get(&Self::key(shared, provider))
             .and_then(|e| e.catalog.clone())
             .unwrap_or_else(|| Self::fallback(shared, provider))
+    }
+
+    pub(crate) fn evict_if_idle(&self, shared: &Shared, provider: &str) {
+        let key = Self::key(shared, provider);
+        let mut state = self.state.lock();
+        if state.entries.get(&key).is_some_and(|e| e.flight.is_none()) {
+            state.entries.remove(&key);
+        }
     }
 
     fn snapshot(&self, shared: &Shared, provider: &str, entry: &Entry) -> AgentModelCatalog {
@@ -471,6 +480,43 @@ async fn discover(shared: &Arc<Shared>, spec: provider::ProviderSpec) -> Result<
                     })
                     .collect(),
             })
+        }
+        provider::Driver::Copilot => {
+            if shared.uses_copilot_acp_fallback(&spec) {
+                let acp_spec = native::copilot::acp_fallback_spec(&spec);
+                return acp::discover::run(shared, &acp_spec).await;
+            }
+            match native::copilot::discover(spec.clone(), shared.paths.project_root.clone()).await {
+                Ok(found) => Ok(Discovered {
+                    commands: Some(config::commands_of(
+                        &serde_json::json!({ "availableCommands": found.commands }),
+                        &spec.id,
+                    )),
+                    config: config::options_of(&serde_json::json!({ "configOptions": found.options })),
+                    levels: found
+                        .per_model
+                        .into_iter()
+                        .map(|(model, opts)| {
+                            let parsed = if opts.is_empty() {
+                                Vec::new()
+                            } else {
+                                config::options_of(&serde_json::json!({ "configOptions": opts }))
+                            };
+                            (model, parsed)
+                        })
+                        .collect(),
+                }),
+                Err(err) if err.allow_acp_fallback => {
+                    tracing::warn!(
+                        "Copilot headless catalog discovery failed ({}); falling back to `copilot --acp`",
+                        err.message
+                    );
+                    shared.mark_copilot_acp_fallback(&spec);
+                    let acp_spec = native::copilot::acp_fallback_spec(&spec);
+                    acp::discover::run(shared, &acp_spec).await
+                }
+                Err(err) => Err(err.message),
+            }
         }
     }
 }
