@@ -27,8 +27,8 @@ The **Refactor** menu has IntelliJ IDEA's refactorings with their usual shortcut
 | **Inline…**              | `⌥⌘N` | `Ctrl+Alt+N`    | Language server                                        |
 | **Move…**                | `F6`  | `F6`            | Language server (symbols); the IDE (files and folders) |
 | **Safe Delete…**         | `⌘⌦`  | `Alt+Delete`    | The IDE, using the server's references                 |
-| **Pull Members Up…**     | —     | —               | Java only                                              |
-| **Push Members Down…**   | —     | —               | Java only                                              |
+| **Pull Members Up…**     | —     | —               | Java; PHP with Phoxite                                 |
+| **Push Members Down…**   | —     | —               | Java; PHP with Phoxite                                 |
 
 ## Rename
 
@@ -80,7 +80,7 @@ In the editor, **Move…** on a symbol runs the server's move refactoring, where
 
 ## Pull Members Up and Push Members Down
 
-These move fields and methods between a Java class and its superclasses or subclasses. A dialog lets you pick the members and the destination; problems the move would cause are listed in **Problems Detected** before you continue. They are provided by the Java extension bundled with OpenIDEA, so they are not available for other languages.
+These move fields and methods between a class and its superclasses or subclasses, in Java and, with Phoxite as the PHP server, in PHP (methods, properties and constants). A dialog lets you pick the members and the destination; problems the move would cause are listed in **Problems Detected** before you continue. For Java they are provided by the extension bundled with OpenIDEA, for PHP by Phoxite; they are not available for other languages or other PHP servers.
 
 ## Undo
 
