@@ -114,7 +114,11 @@ export function interpolationParser<S>(base: StreamParser<S>, dialect: Interpola
       }
       if (opening && style !== "comment" && style !== "string.special") {
         stream.pos = from + opening.length;
-        base.token(new StringStream('""', 4, state.indentUnit), frame.code);
+        // Let the base tokenizer see an empty string at the literal's own column: a stream
+        // at column 0 would read as a new line and reset the base's line indentation.
+        const empty = new StringStream(stream.string.slice(0, from) + '""', 4, state.indentUnit);
+        empty.pos = empty.start = from;
+        base.token(empty, frame.code);
         frame.literal = {
           quote,
           braces,
