@@ -758,7 +758,10 @@ mod tests {
         let cfg = reg.get(&LanguageId::new("php")).unwrap();
         let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
         // After the fallback: hover, rename and symbols stay with Intelephense.
-        assert_eq!(names, ["intelephense", "phpactor", "laravel-lsp"]);
+        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "laravel-lsp"]);
+        // Phoxite answers the Laravel strings itself.
+        let phoxite = cfg.language_servers.iter().find(|s| s.name == "phoxite").unwrap();
+        assert!(phoxite.fallback && phoxite.replaces == ["laravel-lsp"]);
         let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
         assert_eq!(lsp.command.as_str(), "laravel-lsp");
         // Its `lsp` command takes no options and speaks over stdio; `--stdio` stops it at startup.
