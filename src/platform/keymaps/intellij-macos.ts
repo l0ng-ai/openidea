@@ -218,6 +218,9 @@ export const intellijMacos: Record<string, string[]> = {
   "project.reloadFromDisk": ["Meta+Alt+Y"],
   "project.expandAll": ["Meta+="],
   "project.collapseAll": ["Meta+-"],
+  // In the test results tree (keyWhen).
+  "run.expandAllTests": ["Meta+="],
+  "run.collapseAllTests": ["Meta+-"],
 
   // Tool windows
   "toolwindow.project": ["Meta+1"],
