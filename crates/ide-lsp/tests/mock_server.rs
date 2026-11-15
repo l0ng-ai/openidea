@@ -296,37 +296,48 @@ fn harness_configured(
     servers: &[(&str, Value)],
     adjust: impl Fn(&mut LanguageServerConfig),
 ) -> Harness {
+    harness_languages(&[(lang_id, ext, servers)], adjust)
+}
+
+/// A language as `(id, extension, servers)`.
+type MockLanguage<'a> = (&'a str, &'a str, &'a [(&'a str, Value)]);
+
+/// Several languages; documents open as the first.
+fn harness_languages(languages: &[MockLanguage<'_>], adjust: impl Fn(&mut LanguageServerConfig)) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     // Edits and references report canonical paths.
     let root = dunce::canonicalize(dir.path()).unwrap();
-    let lang = LanguageConfig {
-        id: LanguageId::new(lang_id),
-        name: "Mock".into(),
-        extensions: vec![ext.into()],
-        filenames: vec![],
-        first_line: None,
-        line_comment: None,
-        block_comment: None,
-        indent: None,
-        ui_mode: None,
-        framework_ui_modes: Vec::new(),
-        framework_files: Vec::new(),
-        formatter: None,
-        scratch_template: None,
-        tree_sitter: None,
-        language_servers: servers
-            .iter()
-            .map(|(n, _)| {
-                let mut cfg = server_cfg(n);
-                adjust(&mut cfg);
-                cfg
-            })
-            .collect(),
-        debugger: None,
-    };
-    let registry = Arc::new(LanguageRegistry::from_configs(vec![lang]));
+    let configs = languages
+        .iter()
+        .map(|(lang_id, ext, servers)| LanguageConfig {
+            id: LanguageId::new(*lang_id),
+            name: "Mock".into(),
+            extensions: vec![ext.to_string()],
+            filenames: vec![],
+            first_line: None,
+            line_comment: None,
+            block_comment: None,
+            indent: None,
+            ui_mode: None,
+            framework_ui_modes: Vec::new(),
+            framework_files: Vec::new(),
+            formatter: None,
+            scratch_template: None,
+            tree_sitter: None,
+            language_servers: servers
+                .iter()
+                .map(|(n, _)| {
+                    let mut cfg = server_cfg(n);
+                    adjust(&mut cfg);
+                    cfg
+                })
+                .collect(),
+            debugger: None,
+        })
+        .collect();
+    let registry = Arc::new(LanguageRegistry::from_configs(configs));
     let launcher = Arc::new(MockLauncher::default());
-    for (name, caps) in servers {
+    for (name, caps) in languages.iter().flat_map(|(_, _, servers)| servers.iter()) {
         *launcher.state(name).caps.lock() = caps.clone();
     }
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -335,7 +346,7 @@ fn harness_configured(
         Arc::new(move |e: IdeEvent| events.lock().push(e))
     };
     let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
-    Harness { _dir: dir, root, mgr, launcher, events, lang: LanguageId::new(lang_id) }
+    Harness { _dir: dir, root, mgr, launcher, events, lang: LanguageId::new(languages[0].0) }
 }
 
 impl Harness {
@@ -2944,6 +2955,63 @@ async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
     assert_eq!(vd.text, "package acme\n\nclass Thing");
     let asked = s.requested("workspace/executeCommand");
     assert_eq!(asked[0], json!({ "command": "decompile", "arguments": [thing] }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn library_classes_without_sources_open_decompiled_by_a_running_jdtls() {
+    use std::io::Write;
+    let repo = tempfile::tempdir().unwrap();
+    let jar = dunce::canonicalize(repo.path()).unwrap().join("acme/lib/1.0/lib-1.0.jar");
+    std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+    zip.start_file("acme/Thing.class", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"\0").unwrap();
+    zip.finish().unwrap();
+    let class = format!("jar://{}!/acme/Thing.class", uri_of(&jar).trim_start_matches("file://"));
+    let escaped = jar.to_string_lossy().replace('/', "%5C/");
+    let jdt = format!("jdt://contents/lib-1.0.jar/acme/Thing.class?=app/{escaped}%3Cacme%28Thing.class");
+    let decompiled =
+        "package acme;\n\npublic class Thing {\n   public void run() {\n      System.out.println();\n   }\n}\n";
+
+    let mut kotlin = incremental_caps();
+    kotlin["executeCommandProvider"] = json!({ "commands": ["decompile"] });
+    let mut java = incremental_caps();
+    java["workspaceSymbolProvider"] = json!(true);
+    let h =
+        harness_languages(&[("kotlin", "kt", &[("kotlin-lsp", kotlin)]), ("java", "java", &[("jdtls", java)])], |_| {});
+    let (doc, _) = h.open("Main.kt", "val thing = Thing()\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let k = h.launcher.state("kotlin-lsp");
+    k.respond(
+        "textDocument/definition",
+        json!({ "uri": class, "range": {"start":{"line":0,"character":6},"end":{"line":0,"character":11}} }),
+    );
+    let r = json!({"start":{"line":2,"character":13},"end":{"line":2,"character":18}});
+
+    // jdtls not running: the Kotlin server's own target and decompiler.
+    let defs = h.mgr.goto(doc, Pos::new(0, 14), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(class.as_str()));
+
+    let path = h.root.join("Sample.java");
+    std::fs::write(&path, "class Sample {}").unwrap();
+    h.mgr.did_open(DocId::next(), &path, &LanguageId::new("java"), 1, "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let j = h.launcher.state("jdtls");
+    j.respond(
+        "workspace/symbol",
+        json!([{ "name": "Thing", "kind": 5, "containerName": "acme", "location": { "uri": jdt, "range": r } }]),
+    );
+    j.respond("java/classFileContents", json!(decompiled));
+
+    let defs = h.mgr.goto(doc, Pos::new(0, 14), GotoKind::Definition).await.unwrap();
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: jdt.clone().into(), range: rng(2, 13, 2, 18), uri: Some(jdt.clone()) }]
+    );
+    assert_eq!(j.requested("workspace/symbol")[0]["query"], "acme.Thing");
+    let vd = h.mgr.virtual_document(&jdt).await.unwrap();
+    assert_eq!(vd.text, decompiled);
+    assert!(k.requested("workspace/executeCommand").is_empty(), "the Kotlin stub is not asked for");
 }
 
 #[tokio::test(flavor = "multi_thread")]

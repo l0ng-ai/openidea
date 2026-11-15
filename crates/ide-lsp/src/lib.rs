@@ -1767,6 +1767,38 @@ impl LspManager {
         }
     }
 
+    /// Library classes in `jar:` targets that have no cached sources jar: the official Kotlin
+    /// LSP decompiles them to signatures only (`/* compiled code */`). When jdtls is running,
+    /// the same class from its Java model instead, decompiled with method bodies and navigable.
+    /// Its documents belong to jdtls ([`Self::virtual_document`] records it).
+    async fn jdt_library_classes(&self, snap: &DocSnap, pos: Pos, locs: Vec<Location>) -> Vec<Location> {
+        let jar_class = |l: &Location| l.uri.as_deref().is_some_and(|u| u.starts_with("jar:") && u.ends_with(".class"));
+        if !locs.iter().any(jar_class)
+            || !self.servers.lock().iter().any(|s| s.name == jdtls::SERVER && s.running().is_some())
+        {
+            return locs;
+        }
+        let name = library_source::identifier_at(snap.text.line(pos.line as usize), pos.col).map(str::to_owned);
+        let mut out = Vec::with_capacity(locs.len());
+        for loc in locs {
+            let entry = loc.uri.as_deref().filter(|_| jar_class(&loc)).and_then(library_source::parse);
+            let Some(entry) = entry else {
+                out.push(loc);
+                continue;
+            };
+            let Ok(uri) = self.java_class_file(Path::new(""), Some((entry.jar, entry.entry))).await else {
+                out.push(loc);
+                continue;
+            };
+            let range = match (&name, self.virtual_document(&uri).await) {
+                (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),
+                _ => Range::default(),
+            };
+            out.push(Location { path: uri.clone().into(), range, uri: Some(uri) });
+        }
+        out
+    }
+
     async fn goto_in(
         &self,
         snap: &DocSnap,
@@ -1808,6 +1840,7 @@ impl LspManager {
                     let locs = library_sources(snap, &self.project_root, pos, locs).await;
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
+                    let locs = self.jdt_library_classes(snap, pos, locs).await;
                     let locs = merge_locations(first, locs);
                     if !locs.is_empty() {
                         return Ok(locs);
