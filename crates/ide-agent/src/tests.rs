@@ -3270,24 +3270,20 @@ async fn ephemeral_tasks_stay_in_memory_only() {
 
     // Its first message starts the session like any task's, and still saves nothing: the
     // conversation records the question, not the context that rode along to the agent.
+    // The fake agent's turn asks to change something, which a side conversation denies by
+    // itself, so the turn ends without waiting for the user.
     mgr.prompt(&task.id, text("Why?"), false).await.unwrap();
-    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     let entries = mgr.entries(&task.id, None).unwrap();
     let question = entries.iter().find_map(|e| match e {
         AgentEntry::User { text, .. } => Some(text.clone()),
         _ => None,
     });
     assert_eq!(question.as_deref(), Some("Why?"));
-    let pending = entries
-        .iter()
-        .find_map(|e| match e {
-            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no pending permission request"));
-    mgr.respond(&task.id, pending, Some("no".into())).unwrap();
-    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    assert!(!mgr.entries(&task.id, None).unwrap().is_empty());
+    assert!(
+        entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c.contains("read-only"))),
+        "its `cargo test` request was denied: {entries:?}"
+    );
     assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
 
     // A fresh subscriber (a reloaded page) sweeps it: it never reaches the task list.
@@ -3308,6 +3304,8 @@ fn side_conversation_context_is_bounded() {
         "
 ",
     );
+    // Each reply alone is well inside the budget; together they are past it.
+    let reply = |n: usize| AgentEntry::Agent { text: format!("reply {n} {}", "x".repeat(30_000)) };
     let entries = vec![
         AgentEntry::User {
             text: "oldest question".into(),
@@ -3317,6 +3315,10 @@ fn side_conversation_context_is_bounded() {
             done_ms: None,
             steered: false,
         },
+        reply(1),
+        reply(2),
+        reply(3),
+        reply(4),
         AgentEntry::Tool {
             id: "t1".into(),
             title: "grep".into(),

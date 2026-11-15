@@ -739,7 +739,7 @@
   "Start Side Conversation": "Start Side Conversation",
   "Side conversation": "Side conversation",
   "Side conversation: {title}": "Side conversation: {title}",
-  "Temporary: closing it discards the conversation and its context.": "Temporary: closing it discards the conversation and its context.",
+  "Temporary and read-only: closing it discards the conversation and its context.": "Temporary and read-only: closing it discards the conversation and its context.",
   "Discard Side Conversation": "Discard Side Conversation",
   "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.": "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
   "Copy Path From Source Root": "Copy Path From Source Root",

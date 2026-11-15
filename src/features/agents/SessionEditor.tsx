@@ -250,7 +250,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <T>Side conversation</T>
           </span>
           <span className={styles.sideHint}>
-            <T>Temporary: closing it discards the conversation and its context.</T>
+            <T>Temporary and read-only: closing it discards the conversation and its context.</T>
           </span>
           <IconButton
             icon="close"
