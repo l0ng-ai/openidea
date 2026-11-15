@@ -146,7 +146,8 @@ Closing a selected result activates its left neighbor, or its right neighbor if 
 **Edit Data** (`F4`) opens a table in an editor tab with server-side paging (100 to 5,000 rows), a `WHERE` filter and an `ORDER BY` field (both with completion). Click a column header to sort; `Shift`-click to add more sort columns.
 
 - Double-click, `Enter` or `F2` edits a cell; `Shift+Enter` opens a larger editor. Pasting tab-separated text fills several cells.
-- **Add Row**, **Delete Rows**, **Set NULL** (`⌘⌫` / `Ctrl+Backspace`), **Set DEFAULT** (`⌘⇧⌫` / `Ctrl+Shift+Backspace`). `Space` toggles booleans.
+- **Add Row** (`⌘N` / `Alt+Insert`), **Delete Rows** (`Ctrl+Y` on Windows and Linux), **Set NULL** (`⌘⌫` / `Ctrl+Backspace`), **Set DEFAULT** (`⌘⇧⌫` / `Ctrl+Shift+Backspace`). `Space` toggles booleans.
+- **Reload Page** (`⌘R` / `Ctrl+F5`), **Previous Page** and **Next Page** (`⌘⌥↑` / `⌘⌥↓`, `Ctrl+Alt+Up` / `Ctrl+Alt+Down`). These, the copy commands and **Export Data** are actions: find them with **Find Action** and assign shortcuts in **Settings › Keymap**.
 - **Submit** (`⌘Enter` / `Ctrl+Enter`) sends all pending changes in one transaction; **Revert** (`⌘⌥Z` / `Ctrl+Alt+Z`) discards them.
 
 Console results are editable the same way when the query is a plain select from one table that includes the primary key. Tables without a primary key, joins, aggregates, `UNION` queries, read-only data sources and ClickHouse results are read-only.
