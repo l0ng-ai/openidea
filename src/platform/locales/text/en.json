@@ -1779,5 +1779,7 @@
   "Redundant override of '{name}'": "Redundant override of '{name}'",
   "All Configurations": "All Configurations",
   "'{name}' keeps running without the debugger: {message}": "'{name}' keeps running without the debugger: {message}",
-  "Show Changes": "Show Changes"
+  "Show Changes": "Show Changes",
+  "Previous Failed Test": "Previous Failed Test",
+  "Next Failed Test": "Next Failed Test"
 }
