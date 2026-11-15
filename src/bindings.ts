@@ -4917,6 +4917,8 @@ export type EditorSettings_Deserialize = {
 	tabs?: EditorTabsSettings,
 	smartKeys?: SmartKeysSettings,
 	codeEditing?: CodeEditingSettings,
+	/**  Edit › Sort Lines (natural vs code-point order, #3516). */
+	sortLines?: SortLinesSettings,
 	inlay?: InlayHintsSettings,
 	inlineCompletion?: InlineCompletionSettings,
 	/**  Gutter icon groups turned off (`run`, `breakpoints`, `bookmarks`, `vcs`, `blame`). */
@@ -4971,6 +4973,8 @@ export type EditorSettings_Serialize = {
 	tabs: EditorTabsSettings,
 	smartKeys: SmartKeysSettings,
 	codeEditing: CodeEditingSettings,
+	/**  Edit › Sort Lines (natural vs code-point order, #3516). */
+	sortLines: SortLinesSettings,
 	inlay: InlayHintsSettings,
 	inlineCompletion: InlineCompletionSettings,
 	/**  Gutter icon groups turned off (`run`, `breakpoints`, `bookmarks`, `vcs`, `blame`). */
@@ -10012,6 +10016,18 @@ export type SmartKeysSettings = {
 	insertDocStub?: boolean,
 	/**  Backspace › Unindent: `autoindent` (proper indent position) | `nearest` indent position | `none`. */
 	backspaceUnindent?: string,
+};
+
+/**  Sort Lines comparison order: the locale collator or plain code points. */
+export type SortLinesOrder = "natural" | "codePoint";
+
+/**  Edit › Sort Lines. */
+export type SortLinesSettings = {
+	/**
+	 *  Comparison order: `natural` (the locale collator, today's behaviour) or
+	 *  `codePoint` (plain code points, `LC_ALL=C sort`).
+	 */
+	order?: SortLinesOrder,
 };
 
 export type SourceFolder = {

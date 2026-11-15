@@ -847,6 +847,8 @@ pub struct EditorSettings {
     pub tabs: EditorTabsSettings,
     pub smart_keys: SmartKeysSettings,
     pub code_editing: CodeEditingSettings,
+    /// Edit › Sort Lines (natural vs code-point order, #3516).
+    pub sort_lines: SortLinesSettings,
     pub inlay: InlayHintsSettings,
     pub inline_completion: InlineCompletionSettings,
     /// Gutter icon groups turned off (`run`, `breakpoints`, `bookmarks`, `vcs`, `blame`).
@@ -888,6 +890,7 @@ impl Default for EditorSettings {
             tabs: EditorTabsSettings::default(),
             smart_keys: SmartKeysSettings::default(),
             code_editing: CodeEditingSettings::default(),
+            sort_lines: SortLinesSettings::default(),
             inlay: InlayHintsSettings::default(),
             inline_completion: InlineCompletionSettings::default(),
             gutter_icons_disabled: Vec::new(),

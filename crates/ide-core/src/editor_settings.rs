@@ -331,6 +331,32 @@ impl Default for CodeEditingSettings {
     }
 }
 
+/// Edit › Sort Lines.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SortLinesSettings {
+    /// Comparison order: `natural` (the locale collator, today's behaviour) or
+    /// `codePoint` (plain code points, `LC_ALL=C sort`).
+    pub order: SortLinesOrder,
+}
+
+impl Default for SortLinesSettings {
+    fn default() -> Self {
+        Self { order: SortLinesOrder::Natural }
+    }
+}
+
+/// Sort Lines comparison order: the locale collator or plain code points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SortLinesOrder {
+    /// `Intl.Collator` (default).
+    #[default]
+    Natural,
+    /// Every uppercase letter sorts before every lowercase one.
+    CodePoint,
+}
+
 /// Editor › Inlay Hints.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
@@ -528,6 +554,26 @@ mod auto_import_tests {
             let json = serde_json::json!({ "importsOnPaste": mode });
             let settings: AutoImportSettings = serde_json::from_value(json).unwrap();
             assert_eq!(serde_json::to_value(settings).unwrap()["importsOnPaste"], mode);
+        }
+    }
+}
+
+#[cfg(test)]
+mod sort_lines_tests {
+    use super::SortLinesSettings;
+
+    #[test]
+    fn sort_lines_defaults_to_natural_for_existing_settings() {
+        let settings: SortLinesSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.order, super::SortLinesOrder::Natural);
+    }
+
+    #[test]
+    fn sort_lines_orders_round_trip() {
+        for order in ["natural", "codePoint"] {
+            let json = serde_json::json!({ "order": order });
+            let settings: SortLinesSettings = serde_json::from_value(json).unwrap();
+            assert_eq!(serde_json::to_value(settings).unwrap()["order"], order);
         }
     }
 }

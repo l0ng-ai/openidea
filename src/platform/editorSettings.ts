@@ -27,6 +27,10 @@ export type CustomColorSchemes = Record<string, CustomColorScheme>;
 export const DOCSTRING_FORMATS = ["plain", "rest", "epytext", "google", "numpy"] as const;
 export type DocstringFormat = (typeof DOCSTRING_FORMATS)[number];
 
+/** Edit › Sort Lines › Order ("natural" keeps the locale collator, "codePoint" is `LC_ALL=C sort`). */
+export const SORT_LINES_ORDERS = ["natural", "codePoint"] as const;
+export type SortLinesOrder = (typeof SORT_LINES_ORDERS)[number];
+
 export interface LanguageCodeStyle {
   /** Java formatter; relative XML paths start at the project root. */
   formatter?: "default" | "intellij" | "custom";
@@ -175,6 +179,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     nextErrorErrorsOnly: true,
     stickyLinesMax: 5,
   },
+  sortLines: { order: "natural" as SortLinesOrder },
   inlay: {
     types: true,
     parameters: true,
@@ -266,6 +271,7 @@ export function validateEditorExtras(raw: unknown): EditorExtras {
   const out = coerceLike(raw, EDITOR_EXTRA_DEFAULTS);
   if (!["ask", "always", "never"].includes(out.autoImport.importsOnPaste)) out.autoImport.importsOnPaste = "ask";
   if (!DOCSTRING_FORMATS.includes(out.docstringFormat)) out.docstringFormat = "rest";
+  if (!SORT_LINES_ORDERS.includes(out.sortLines.order)) out.sortLines.order = "natural";
   for (const k of ["codeVisionUsagesPosition", "codeVisionAuthorPosition"] as const)
     if (!["top", "right"].includes(out.inlay[k])) out.inlay[k] = "top";
   out.fontWeight = fontWeightOf(out.fontWeight, EDITOR_EXTRA_DEFAULTS.fontWeight);

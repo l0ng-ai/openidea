@@ -9,6 +9,14 @@ import {
 
 const collator = new Intl.Collator(undefined, { numeric: false, sensitivity: "variant" });
 
+/** Sort Lines order: "natural" is the locale collator, "codePoint" compares by code points (`LC_ALL=C sort`). */
+export type SortLinesOrder = "natural" | "codePoint";
+
+function compareLines(order: SortLinesOrder): (a: string, b: string) => number {
+  if (order === "codePoint") return (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  return (a, b) => collator.compare(a, b);
+}
+
 /** Line blocks the command applies to: one per non-empty selection range, or the document. */
 function blocks(state: EditorState): Array<{ from: number; to: number }> {
   const ranges = state.selection.ranges.filter((r) => !r.empty);
@@ -59,8 +67,8 @@ function rewrite(
   };
 }
 
-export function sortLinesSpec(state: EditorState): TransactionSpec | null {
-  return rewrite(state, (lines) => [...lines].sort((a, b) => collator.compare(a, b)), "input.sort");
+export function sortLinesSpec(state: EditorState, order: SortLinesOrder = "natural"): TransactionSpec | null {
+  return rewrite(state, (lines) => [...lines].sort(compareLines(order)), "input.sort");
 }
 
 export function reverseLinesSpec(state: EditorState): TransactionSpec | null {
@@ -69,9 +77,9 @@ export function reverseLinesSpec(state: EditorState): TransactionSpec | null {
 
 type Dispatch = { state: EditorState; dispatch: (tr: Transaction | TransactionSpec) => void };
 
-export function sortLines(view: Dispatch): boolean {
+export function sortLines(view: Dispatch, order: SortLinesOrder = "natural"): boolean {
   if (view.state.readOnly) return false;
-  const spec = sortLinesSpec(view.state);
+  const spec = sortLinesSpec(view.state, order);
   if (spec) view.dispatch(spec);
   return !!spec;
 }

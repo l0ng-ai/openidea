@@ -858,7 +858,7 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       keywords: ["clipboard", "paste multiple"],
     }),
-    text("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
+    text("code.sortLines", "Sort Lines", (v) => sortLines(v, editorPrefs().sortLines.order), { category: "Edit" }),
     text("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
     text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
       keywords: ["unwrap", "remove if"],

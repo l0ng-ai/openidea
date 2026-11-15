@@ -803,7 +803,7 @@ const CODE_EDITING = editorPage({
   id: "editor.codeEditing",
   title: "Code Editing",
   order: 21,
-  keywords: ["highlight", "quick documentation", "hover", "error"],
+  keywords: ["highlight", "quick documentation", "hover", "error", "sort lines"],
   sections: [
     {
       title: "Highlight on Caret Movement",
@@ -840,6 +840,21 @@ const CODE_EDITING = editorPage({
           t: "check",
           key: `${P}.codeEditing.nextErrorErrorsOnly`,
           label: "Next error action goes to high priority problems only",
+        },
+      ],
+    },
+    {
+      title: "Sort Lines",
+      items: [
+        {
+          t: "radio",
+          key: `${P}.sortLines.order`,
+          label: "Sort Lines order",
+          hint: "Applies to Edit › Sort Lines, for the selected lines or the whole file.",
+          options: [
+            { value: "natural", label: "Natural (locale-aware)" },
+            { value: "codePoint", label: "Code points (all capitals before lowercase, as LC_ALL=C sort does)" },
+          ],
         },
       ],
     },
