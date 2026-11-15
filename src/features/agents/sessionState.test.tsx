@@ -1817,30 +1817,57 @@ describe("meters in the task header", () => {
     expect(screen.getByText("$0.42")).toBeInTheDocument();
   });
 
-  it("toggles fitWidth on the session root from settings.agents.fitWindowWidth", () => {
-    const { container } = render(<SessionEditor input={input("A")} />);
-    const root = container.querySelector(`.${styles.session}`)!;
-    expect(root).not.toHaveClass(styles.fitWidth!);
-    act(() =>
-      useProject.setState({
-        settings: {
-          agents: {
-            fitWindowWidth: true,
-          },
-        } as never,
-      }),
-    );
-    expect(root).toHaveClass(styles.fitWidth!);
-    act(() =>
-      useProject.setState({
-        settings: {
-          agents: {
-            fitWindowWidth: false,
-          },
-        } as never,
-      }),
-    );
-    expect(root).not.toHaveClass(styles.fitWidth!);
+  it("toggles fitWidth on the session root and remeasures off-screen rows from settings.agents.fitWindowWidth", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    const flushFrames = () => {
+      for (let pass = 0; pass < 2; pass++) {
+        for (const cb of frames.splice(0)) cb(performance.now());
+      }
+    };
+    try {
+      const { container } = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      const root = container.querySelector(`.${styles.session}`)!;
+      const row = container.querySelector(`.${styles.conversationRow}`)!;
+      act(flushFrames);
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: true,
+            },
+          } as never,
+        }),
+      );
+      expect(root).toHaveClass(styles.fitWidth!);
+      // Cleared synchronously before paint so content-visibility doesn't keep the 900px intrinsic height.
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: false,
+            },
+          } as never,
+        }),
+      );
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+    } finally {
+      raf.mockRestore();
+    }
   });
 
   it("hides the status-bar Terminal button in the local checkout and opens the worktree's terminal otherwise", async () => {
