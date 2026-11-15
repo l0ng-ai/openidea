@@ -1861,12 +1861,24 @@ impl Task {
             let s = self.state.lock();
             s.busy && s.task.status == AgentStatus::Running
         };
-        let Some(live) = live.filter(|l| running && (prompt.images.is_empty() || l.capabilities.images)) else {
+        let Some((live, method)) = live
+            .filter(|l| running && (prompt.images.is_empty() || l.capabilities.images))
+            .and_then(|l| steer_method(&l.init).map(|m| (l, m)))
+        else {
             return Err(prompt);
         };
         let content = self.content(&live, &prompt).await;
         let sent: Result<Value, RpcError> =
-            live.peer.request("_openidea/steer", json!({ "sessionId": live.session, "prompt": content }), None).await;
+            live.peer.request(method, json!({ "sessionId": live.session, "prompt": content }), None).await;
+        // `_session/steering` answers with an outcome: only `injected` joined the turn
+        // (`promptRequired`: no turn is running any more).
+        let sent = match sent {
+            Ok(reply) => match reply.get("outcome").and_then(Value::as_str) {
+                None | Some("injected") => Ok(()),
+                Some(outcome) => Err(reply.get("reason").and_then(Value::as_str).unwrap_or(outcome).to_owned()),
+            },
+            Err(e) => Err(e.to_string()),
+        };
         if let Err(e) = sent {
             // The turn ended meanwhile: the message waits for the next one instead.
             tracing::debug!("agent task {}: steering failed: {e}", self.id);
@@ -2865,13 +2877,27 @@ fn shown_background(tasks: &[Value], known: &[AgentBackgroundTask]) -> Vec<Agent
         .collect()
 }
 
+/// The method that adds a message to the running turn: OpenIDEA's own, or the
+/// `_session/steering` extension an agent advertises in the response's top-level `_meta`
+/// (OMP).
+fn steer_method(init: &acp::Negotiated) -> Option<&'static str> {
+    let supported = |v: Option<&Value>| v.and_then(Value::as_bool) == Some(true);
+    if supported(init.meta("/openidea/steer")) {
+        Some("_openidea/steer")
+    } else if supported(init.meta.as_ref().and_then(|m| m.pointer("/steering/supported"))) {
+        Some("_session/steering")
+    } else {
+        None
+    }
+}
+
 fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
     let meta = |p: &str| init.meta(p).and_then(Value::as_bool) == Some(true);
     let capabilities = AgentCapabilities {
         images: init.prompt("image"),
         fork: init.session("fork"),
         rollback: meta("/openidea/rollback"),
-        steer: meta("/openidea/steer"),
+        steer: steer_method(init).is_some(),
         background_tasks: meta("/openidea/backgroundTasks"),
         read_only: false,
     };

@@ -51,6 +51,9 @@ struct FakeAgent {
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
     model_options: Mutex<HashMap<String, Vec<Value>>>,
+    /// Advertises steering as OMP does (`_meta.steering` at the top of `initialize`)
+    /// instead of `_meta.openidea.steer`.
+    session_steering: bool,
 }
 
 impl FakeAgent {
@@ -156,6 +159,10 @@ impl Handler for FakeAgent {
                 if params.pointer("/clientCapabilities/subagents").is_some_and(Value::is_object) {
                     self.calls.lock().push("subagents".into());
                 }
+                if self.session_steering {
+                    return Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true},
+                        "_meta": {"steering": {"supported": true}}}));
+                }
                 Ok(
                     json!({"protocolVersion": 1, "authMethods": self.auth_methods, "agentCapabilities": {"loadSession": !self.no_load,
                     "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true, "backgroundTasks": true}}}}),
@@ -182,6 +189,13 @@ impl Handler for FakeAgent {
                 let detail = params.get("turns").cloned().unwrap_or_else(|| params["prompt"][0]["text"].clone());
                 self.calls.lock().push(format!("{method} {detail}"));
                 Ok(json!({}))
+            }
+            "_session/steering" => {
+                let text = params["prompt"][0]["text"].clone();
+                self.calls.lock().push(format!("{method} {text}"));
+                // OMP answers whether the message joined the turn rather than failing.
+                let outcome = if text == "too late" { "promptRequired" } else { "injected" };
+                Ok(json!({"outcome": outcome, "queue": "steering"}))
             }
             "session/load" => {
                 self.say(&session, "replayed history");
@@ -1058,6 +1072,42 @@ async fn a_task_runs_asks_for_permission_and_survives_a_restart() {
 
 fn text(t: &str) -> AgentPrompt {
     AgentPrompt { text: t.into(), ..AgentPrompt::default() }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn steers_through_session_steering() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { session_steering: true, ..FakeAgent::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("wait"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Running).await;
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.capabilities.steer);
+
+    mgr.prompt(&task.id, text("also this"), true).await.unwrap();
+    assert!(agent.calls.lock().iter().any(|c| c == "_session/steering \"also this\""));
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(matches!(entries.last(), Some(AgentEntry::User { steered: true, .. })));
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+
+    // The agent didn't take it into the turn: the turn stops and it goes next, as without
+    // steering (the fake agent's next turn asks for permission).
+    mgr.prompt(&task.id, text("too late"), true).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: false, .. } if text == "too late")));
+    assert!(!entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: true, .. } if text == "too late")));
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
