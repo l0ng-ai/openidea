@@ -124,13 +124,13 @@ pub(crate) fn options_of(result: &Value) -> Vec<AgentConfigOption> {
 }
 
 pub(crate) fn is_context_option(id: &str) -> bool {
-    matches!(id, "context_tier" | "contextTier" | "context" | "context_size" | "contextSize")
+    matches!(id, "context_tier" | "contextTier")
 }
 
 /// Whether an option's available values and default belong to the selected model
 /// (`thought_level` and model context-tier options) rather than the provider as a whole.
 pub(crate) fn is_per_model_option(o: &AgentConfigOption) -> bool {
-    matches!(o.category.as_deref(), Some("thought_level" | "context_tier" | "context"))
+    matches!(o.category.as_deref(), Some("thought_level" | "context_tier"))
         || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
         || is_context_option(&o.id)
 }
