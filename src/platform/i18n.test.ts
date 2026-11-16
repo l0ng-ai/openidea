@@ -261,6 +261,7 @@ describe("catalogs", () => {
     "12288 MB",
     "16384 MB",
     "Docker",
+    "Code Vision",
     "JUnit",
     "⌘Enter",
     "Fork",
