@@ -23,7 +23,10 @@ export interface FeatureStep {
   /** Offsets of the step text (after the keyword) in its file. */
   from: number;
   to: number;
+  /** The keyword as written, in the file's language. */
   keyword: string;
+  /** What the keyword is, in English (`*` for the bullet). */
+  type: "Given" | "When" | "Then" | "And" | "But" | "*";
   /** The text as written. */
   text: string;
   /** The text matched against definitions: Scenario Outline placeholders take the first example's values. */
@@ -163,11 +166,71 @@ export function expressionRegExp(expression: string): RegExp | null {
   }
 }
 
-const STEP = /^(\s*)(Given|When|Then|And|But|\*)(\s+)(\S.*?)\s*$/;
-const BLOCK = /^\s*(Feature|Rule|Background|Scenario|Scenario Outline|Scenario Template|Example|Examples|Scenarios):/;
+/** A spoken language's Gherkin keywords; step keywords keep their trailing space (`Given `, but `假如`). */
+export interface GherkinDialect {
+  given: string[];
+  when: string[];
+  then: string[];
+  and: string[];
+  but: string[];
+  /** Feature, Rule, Background, Scenario and Scenario Outline keywords (before their `:`). */
+  blocks: string[];
+  examples: string[];
+}
 
-/** The steps of a feature file (English keywords), placeholders filled from each outline's first example. */
-export function featureSteps(text: string): FeatureStep[] {
+export const ENGLISH: GherkinDialect = {
+  given: ["Given "],
+  when: ["When "],
+  then: ["Then "],
+  and: ["And "],
+  but: ["But "],
+  blocks: [
+    "Scenario Outline",
+    "Scenario Template",
+    "Background",
+    "Business Need",
+    "Feature",
+    "Ability",
+    "Scenario",
+    "Example",
+    "Rule",
+  ],
+  examples: ["Examples", "Scenarios"],
+};
+
+/** The `# language: <code>` of a feature file's header comments, if any. */
+export function gherkinLanguage(text: string): string | null {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (!trimmed.startsWith("#")) return null;
+    const m = /^#\s*language\s*:\s*(\S+)/.exec(trimmed);
+    if (m) return m[1]!;
+  }
+  return null;
+}
+
+const TYPES = [
+  ["given", "Given"],
+  ["when", "When"],
+  ["then", "Then"],
+  ["and", "And"],
+  ["but", "But"],
+] as const;
+
+/** Step keywords of a dialect, longest first, with what they are. */
+function stepKeywords(dialect: GherkinDialect): Array<{ keyword: string; type: FeatureStep["type"] }> {
+  const out: Array<{ keyword: string; type: FeatureStep["type"] }> = [{ keyword: "* ", type: "*" }];
+  for (const [key, type] of TYPES) for (const keyword of dialect[key]) out.push({ keyword, type });
+  return out.sort((a, b) => b.keyword.length - a.keyword.length);
+}
+
+const keywordCache = new WeakMap<GherkinDialect, ReturnType<typeof stepKeywords>>();
+
+/** The steps of a feature file in `dialect`, placeholders filled from each outline's first example. */
+export function featureSteps(text: string, dialect: GherkinDialect = ENGLISH): FeatureStep[] {
+  let keywords = keywordCache.get(dialect);
+  if (!keywords) keywordCache.set(dialect, (keywords = stepKeywords(dialect)));
   const out: FeatureStep[] = [];
   let outline: FeatureStep[] = [];
   let header: string[] | null = null;
@@ -187,9 +250,9 @@ export function featureSteps(text: string): FeatureStep[] {
       continue;
     }
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("@")) continue;
-    const block = BLOCK.exec(line);
-    if (block) {
-      examples = block[1] === "Examples" || block[1] === "Scenarios";
+    const block = [...dialect.examples, ...dialect.blocks].find((k) => trimmed.startsWith(`${k}:`));
+    if (block !== undefined) {
+      examples = dialect.examples.includes(block);
       if (!examples) outline = [];
       header = null;
       continue;
@@ -210,10 +273,15 @@ export function featureSteps(text: string): FeatureStep[] {
       }
       continue;
     }
-    const m = STEP.exec(line);
-    if (!m) continue;
-    const from = start + m[1]!.length + m[2]!.length + m[3]!.length;
-    const step = { from, to: from + m[4]!.length, keyword: m[2]!, text: m[4]!, matchText: m[4]! };
+    const found = keywords.find((k) => trimmed.startsWith(k.keyword));
+    if (!found) continue;
+    const rest = trimmed.slice(found.keyword.length);
+    const stepText = rest.trim();
+    if (!stepText) continue;
+    const from =
+      start + (line.length - line.trimStart().length) + found.keyword.length + (rest.length - rest.trimStart().length);
+    const keyword = found.keyword.trimEnd();
+    const step = { from, to: from + stepText.length, keyword, type: found.type, text: stepText, matchText: stepText };
     out.push(step);
     if (step.text.includes("<")) outline.push(step);
   }
@@ -226,7 +294,7 @@ export const matchesStep = (definition: StepDefinition, step: FeatureStep) => de
 export function definingKeyword(steps: readonly FeatureStep[], step: FeatureStep): "Given" | "When" | "Then" {
   let keyword: "Given" | "When" | "Then" = "Given";
   for (const s of steps) {
-    if (s.keyword === "Given" || s.keyword === "When" || s.keyword === "Then") keyword = s.keyword;
+    if (s.type === "Given" || s.type === "When" || s.type === "Then") keyword = s.type;
     if (s === step) break;
   }
   return keyword;

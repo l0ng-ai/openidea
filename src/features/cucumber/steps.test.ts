@@ -4,6 +4,7 @@ import {
   definitionInsertions,
   expressionRegExp,
   featureSteps,
+  gherkinLanguage,
   matchesStep,
   snippetStyle,
   stepDefinitions,
@@ -202,5 +203,46 @@ public class CartSteps {
     ]);
     expect(snippetStyle("src/test/kotlin/CartSteps.kt", "")).toBe("kotlin");
     expect(snippetStyle("steps/cart.steps.ts", "createBdd()")).toBe("playwright-bdd");
+  });
+});
+
+describe("Gherkin languages", () => {
+  it("reads the steps of a feature in its # language", async () => {
+    const { GHERKIN_DIALECTS } = await import("./gherkinDialects");
+    const zh = `# language: zh-CN
+功能: 购物车
+
+  场景大纲: 添加
+    假如我有一个空购物车
+    当我添加<数量>个苹果
+    而且 价格是 3.50
+    那么总数是<数量>
+
+    例子:
+      | 数量 |
+      | 2    |
+`;
+    expect(gherkinLanguage(zh)).toBe("zh-CN");
+    const steps = featureSteps(zh, GHERKIN_DIALECTS["zh-CN"]);
+    expect(steps.map((s) => [s.keyword, s.type, s.text, s.matchText])).toEqual([
+      ["假如", "Given", "我有一个空购物车", "我有一个空购物车"],
+      ["当", "When", "我添加<数量>个苹果", "我添加2个苹果"],
+      ["而且", "And", "价格是 3.50", "价格是 3.50"],
+      ["那么", "Then", "总数是<数量>", "总数是2"],
+    ]);
+    expect(zh.slice(steps[0]!.from, steps[0]!.to)).toBe("我有一个空购物车");
+    expect(steps.map((s) => definingKeyword(steps, s))).toEqual(["Given", "When", "When", "Then"]);
+
+    const fr =
+      "# language: fr\nFonctionnalité: Panier\n  Scénario: vide\n    Soit un panier vide\n    Et que j'ajoute 2 pommes\n";
+    expect(featureSteps(fr, GHERKIN_DIALECTS.fr).map((s) => [s.type, s.text])).toEqual([
+      ["Given", "un panier vide"],
+      ["And", "j'ajoute 2 pommes"],
+    ]);
+  });
+
+  it("finds no language in plain English files", () => {
+    expect(gherkinLanguage("Feature: Cart\n# language: fr\n")).toBeNull();
+    expect(gherkinLanguage("# a comment\n\n#language:de\nFunktionalität: x\n")).toBe("de");
   });
 });
