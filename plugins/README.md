@@ -150,7 +150,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
 | `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                                                                                                        | to use them   |
 | `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`; API 1.4: `editor.title`, `mainToolbar`, `problems.context`, `searchResults.context`), `view?`, `command`, `when?` | no            |
-| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                                                                                                      | no            |
+| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
 | `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
@@ -443,6 +443,10 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
   `build.dependencies`) returns the Maven / Gradle graph the Dependency Analyzer
   has, as a flat list with conflict and omission status, behind the low-risk
   `build.read` capability. No build tool runs. See _Build dependency graph_.
+- **Escape in the editor.** `[[contributes.keymaps]]` takes `key = "Escape"` with a
+  required `when`: the command runs on a plain Escape in a focused editor once the
+  IDE's own Escape handling (popups, completion, rename, selection, extra carets,
+  Vim) found nothing to do.
 
 ### API 1.9
 
