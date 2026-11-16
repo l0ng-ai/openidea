@@ -208,11 +208,15 @@ jobs:
       - run: pnpm build
 
   e2e:
-    name: E2E
+    name: E2E (${{ matrix.shard }}/2)
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 30
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
     container: mcr.microsoft.com/playwright:v1.64.1-noble
     steps:
@@ -222,12 +226,12 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm e2e
+      - run: pnpm e2e --shard=${{ matrix.shard }}/2
         env:
           HOME: /root
       - uses: actions/upload-artifact@v6
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7
