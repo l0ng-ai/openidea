@@ -8535,5 +8535,7 @@
   "Describe a task. @ for files, / for commands": "描述一个任务。@ 引用文件，/ 运行命令",
   "Effort": "推理",
   "Don't Add the Current File": "不附带当前文件",
-  "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区"
+  "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区",
+  "Cannot paste this path safely: its name contains control characters.": "无法安全粘贴此路径：名称包含控制字符。",
+  "Cannot paste the dropped files": "无法粘贴拖入的文件"
 }

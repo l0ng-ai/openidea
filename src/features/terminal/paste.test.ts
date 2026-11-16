@@ -518,6 +518,12 @@ it("reads file URI lists without relying on a native file-list backend", async (
 
 it.each([
   { shell: "pwsh", path: "C:\\Users\\a'b $c\\image.png", expected: "'C:\\Users\\a''b $c\\image.png'" },
+  {
+    shell: "pwsh",
+    path: "C:\\a\u2019; calc; \u2018b\\image.png",
+    expected: "'C:\\a\u2019\u2019; calc; \u2018\u2018b\\image.png'",
+  },
+  { shell: "powershell", path: "C:\\a\u201ab\u201bc.png", expected: "'C:\\a\u201a\u201ab\u201b\u201bc.png'" },
   { shell: "powershell", path: "C:\\a b\\image.png", expected: "'C:\\a b\\image.png'" },
   { shell: "zsh", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
   { shell: "bash", path: "/tmp/a'b $中文.png", expected: "'/tmp/a'\\''b $中文.png'" },
@@ -532,6 +538,23 @@ it.each([
   const remove = installTerminalPaste(host, paste, () => localTarget(shell));
   host.dispatchEvent(imageEvent(image()));
   await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith(expected));
+  remove();
+});
+
+it.each(["bash", "pwsh", "fish"])("rejects control characters in a stored path for %s", async (shell) => {
+  vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/a\nb.png" });
+  const host = document.createElement("div");
+  const paste = vi.fn();
+  const remove = installTerminalPaste(host, paste, () => localTarget(shell));
+  host.dispatchEvent(imageEvent(image()));
+  await vi.waitFor(() =>
+    expect(notify).toHaveBeenCalledWith({
+      level: "error",
+      title: "Cannot paste clipboard media",
+      body: "Cannot paste this path safely: its name contains control characters.",
+    }),
+  );
+  expect(paste).not.toHaveBeenCalled();
   remove();
 });
 

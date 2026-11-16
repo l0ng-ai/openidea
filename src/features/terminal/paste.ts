@@ -4,6 +4,7 @@ import { tx } from "@/platform/i18n";
 import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
 import type { Terminal } from "@xterm/xterm";
+import { dialectOf, quoteForShell } from "./quote";
 
 export interface TerminalPasteTarget {
   id: TerminalId;
@@ -28,19 +29,8 @@ export function pasteIntoTerminal(term: Pick<Terminal, "paste" | "modes">, text:
 }
 
 function pathsText(paths: readonly string[], target: TerminalPasteTarget): string {
-  const shell = target.shell.toLowerCase().replace(/\.exe$/, "");
-  return paths
-    .map((path) => {
-      if (shell === "cmd") {
-        if (/[%!"\r\n]/.test(path))
-          throw new Error(tx("Cannot paste this path safely in cmd.exe. Use PowerShell or a POSIX shell."));
-        return `"${path}"`;
-      }
-      if (shell === "powershell" || shell === "pwsh") return `'${path.replaceAll("'", "''")}'`;
-      if (shell === "fish") return `'${path.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
-      return `'${path.replaceAll("'", "'\\''")}'`;
-    })
-    .join(" ");
+  const dialect = dialectOf(target.shell, false);
+  return paths.map((path) => quoteForShell(path, dialect, true)).join(" ");
 }
 
 function isMedia(type: string): boolean {
