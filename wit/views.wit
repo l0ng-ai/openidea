@@ -1,4 +1,4 @@
-package openidea:plugin@1.9.0;
+package openidea:plugin@1.10.0;
 
 /// Declarative views: tool windows declared
 /// under `[[contributes.views]]` and custom editors under
@@ -135,6 +135,10 @@ interface views {
     }
     /// A comparison opened by a content action reply.
     record content-diff { left: string, right: string, left-label: option<string>, right-label: option<string>, title: option<string> }
+    /// A file's before and after for `open-file-diff` (API 1.10): none is a side
+    /// where the file doesn't exist (an added file has no left side, a deleted
+    /// one no right side).
+    record file-diff { left: option<string>, right: option<string>, left-label: option<string>, right-label: option<string>, title: option<string> }
     /// Optional updates to an outstanding action or Save request.
     record content-tab-reply {
         content: option<string>, saved: option<bool>, read-only: option<bool>,
@@ -156,6 +160,11 @@ interface views {
     /// of a window. Each side at most 8 MiB (earlier hosts: 1 MiB); a larger
     /// side fails with `invalid("diff too large: …")`.
     open-diff: func(diff: content-diff, file-name: option<string>) -> result<_, error>;
+    /// `open-diff` for a file that may not exist on one side (API 1.10): the
+    /// diff viewer shows the existing side alone, as for the IDE's own added
+    /// and deleted files, instead of next to an empty text. Both sides none is
+    /// `invalid`.
+    open-file-diff: func(diff: file-diff, file-name: option<string>) -> result<_, error>;
 
     /// The view (or every custom editor of that id) shows outdated content:
     /// the IDE renders it again.

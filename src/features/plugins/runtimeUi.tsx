@@ -581,7 +581,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
             title: diff.title ?? undefined,
             fileName: fileName ?? undefined,
           },
-          diff.left.length + diff.right.length,
+          (diff.left?.length ?? 0) + (diff.right?.length ?? 0),
         );
       } catch (err) {
         console.warn(`plugin ${e.pluginId} diff:`, err);
