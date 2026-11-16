@@ -1576,7 +1576,8 @@ function ArtifactsSection() {
     if (!root || !isTauri()) return;
     let live = true;
     call(commands.runTomcatArtifacts())
-      .then((list) => live && setWebArtifacts(list))
+      // Artifacts the IDE builds itself are the ones this page configures.
+      .then((list) => live && setWebArtifacts(list.filter((a) => a.tool !== "project")))
       .catch(() => {});
     return () => {
       live = false;

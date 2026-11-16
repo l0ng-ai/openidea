@@ -7,6 +7,7 @@ mod fingerprint;
 mod launch_resources;
 mod parse;
 mod single;
+mod structure;
 mod up_to_date;
 
 pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
@@ -14,6 +15,10 @@ pub use launch_resources::process_launch_resources;
 pub use single::{
     SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, single_file_classpath,
     single_file_target,
+};
+pub use structure::{
+    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
+    structure_war_plan, structure_web_artifacts,
 };
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 
@@ -55,6 +60,8 @@ pub enum BuildSystem {
     CMake,
     #[serde(rename = "dotnet")]
     Dotnet,
+    /// A Java project without a build tool, compiled from its Project Structure.
+    Javac,
 }
 
 /// One command of a build.
@@ -65,6 +72,10 @@ pub struct BuildStep {
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
     format: Format,
+    /// Folders created before the command runs (a compiler's output).
+    mkdirs: Vec<PathBuf>,
+    /// Work done in the IDE instead of a command, with its console title.
+    action: Option<(structure::Action, String)>,
 }
 
 impl BuildStep {
@@ -75,16 +86,26 @@ impl BuildStep {
             cwd: cwd.to_path_buf(),
             env: BTreeMap::new(),
             format,
+            mkdirs: Vec::new(),
+            action: None,
         }
+    }
+
+    fn action(action: structure::Action, root: &Path) -> Self {
+        let title = action.display(root);
+        BuildStep { action: Some((action, title)), ..Self::new("", &[], root, Format::Gradle) }
     }
 
     /// A CMake configure/build invocation, parsed as compiler output in the Build view.
     pub fn cmake(program: &str, args: Vec<String>, cwd: PathBuf, env: BTreeMap<String, String>) -> Self {
-        Self { program: program.into(), args, cwd, env, format: Format::Gcc }
+        Self { program: program.into(), args, cwd, env, format: Format::Gcc, mkdirs: Vec::new(), action: None }
     }
 
     /// The command line as echoed in the console.
     pub fn display(&self) -> String {
+        if let Some((_, title)) = &self.action {
+            return title.clone();
+        }
         let program = Path::new(&self.program).file_name().map_or(self.program.clone(), |n| n.to_string_lossy().into());
         std::iter::once(program)
             .chain(self.args.iter().map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }))
@@ -249,6 +270,8 @@ pub fn plan(
         BuildSystem::TypeScript => ts_steps(&dir, kind),
         BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
         BuildSystem::Dotnet => dotnet_steps(&dir, kind)?,
+        // Never detected from a folder: it comes from the Project Structure (`structure_plan`).
+        BuildSystem::Javac => return Err(IdeError::invalid("no build tool to run")),
     };
     Ok(BuildPlan { system, title, steps })
 }
@@ -650,6 +673,36 @@ pub fn run(
         let command = step.display();
         on_event(BuildEvent::Step { command: command.clone(), cwd: step.cwd.clone().into() });
         on_event(BuildEvent::Progress { message: command.clone(), fraction: None });
+        if let Some((action, _)) = &step.action {
+            match action.run(cancel) {
+                Ok(text) => {
+                    if !text.is_empty() {
+                        on_event(BuildEvent::Output { text: format!("{text}\n"), stderr: false });
+                    }
+                    continue;
+                }
+                Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled => return Err(e),
+                Err(e) => {
+                    let m = BuildMessage {
+                        severity: Severity::Error,
+                        text: e.message.clone(),
+                        path: None,
+                        range: None,
+                        code: None,
+                    };
+                    on_event(BuildEvent::Output { text: format!("{}\n", e.message), stderr: true });
+                    on_event(BuildEvent::Message { message: m.clone() });
+                    messages.push(m);
+                    success = false;
+                    break;
+                }
+            }
+        }
+        for dir in &step.mkdirs {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                tracing::debug!(dir = %dir.display(), %e, "cannot create the build output folder");
+            }
+        }
         let mut parser = OutputParser::new(step.format);
         let mut emit = |raws: Vec<RawMessage>, messages: &mut Vec<BuildMessage>| {
             for raw in raws {
