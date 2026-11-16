@@ -1426,7 +1426,7 @@ function ThoughtEntry({
     if (working && open) onDiagramDrawn();
   }, [shown, working, open, onDiagramDrawn]);
   return (
-    <div className={styles.process}>
+    <div className={clsx(styles.process, styles.thoughtEntry)}>
       <Fold
         className={clsx(styles.thought, thinking === "auto" && working && styles.thoughtLive)}
         open={open}
@@ -2072,12 +2072,15 @@ const ToolEntry = memo(function ToolEntry({
   );
   if (!entry.output)
     return (
-      <div className={styles.process}>
-        <div className={styles.tool}>{head}</div>
+      <div className={clsx(styles.process, styles.toolEntry)}>
+        <div className={styles.tool}>
+          <span className={styles.toolChevronSpacer} aria-hidden="true" />
+          {head}
+        </div>
       </div>
     );
   return (
-    <div className={styles.process}>
+    <div className={clsx(styles.process, styles.toolEntry)}>
       <Fold
         className={styles.toolDetails}
         open={liveTool(entry) || expandToolOutput}
