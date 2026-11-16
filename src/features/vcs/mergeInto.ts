@@ -16,8 +16,10 @@ export interface MergeIntoRequest {
   source: string;
   target: MergeTarget;
   options: MergeOptions;
-  /** The target repository's branches, as the dialog listed them. */
+  /** The target repository's branches, as the window listed them. */
   branches: readonly Branch[];
+  /** Fetch first, so a remote target is merged as it is on the server, not as last seen. */
+  fetch: boolean;
 }
 
 /** Runs the merge; `true` once it landed on the target (a push failure is reported, not fatal). */
@@ -27,9 +29,16 @@ export async function mergeIntoTarget({
   target,
   options,
   branches,
+  fetch: fetchFirst,
 }: MergeIntoRequest): Promise<boolean> {
   const local = localBranchFor(target);
   await saveAll();
+
+  // A remote target is merged in the state the server has, not the one this clone last saw.
+  if (fetchFirst && target.kind === "remote") {
+    const fetched = await runRemote({ op: "fetch" }, tx`Fetching ${target.remote}`, [repo]);
+    if (!fetched) return false;
+  }
 
   // A remote target merges on its local namesake, which is checked out first (created
   // as a tracking branch when the repository has no local one yet).

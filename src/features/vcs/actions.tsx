@@ -51,9 +51,9 @@ import { showPushDialog, showUpdateDialog, type PushTarget, type UpdateTarget } 
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "./comparePaths";
 import { showCloneDialog } from "./clone";
 import { createRepository } from "./createRepository";
+import { showMergeTool } from "./mergeTool";
 import {
   showManageRemotes,
-  showMergeDialog,
   showNewWorktree,
   showPullDialog,
   showRebaseDialog,
@@ -311,7 +311,7 @@ export function registerVcsActions(): () => void {
       category: "Git",
       when: VCS,
       keywords: ["merge branch"],
-      run: ({ arg }) => showMergeDialog(operationRepo(arg)),
+      run: ({ arg }) => showMergeTool(operationRepo(arg)),
     },
     {
       id: "vcs.rebase",

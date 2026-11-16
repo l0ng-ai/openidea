@@ -20,9 +20,6 @@ import {
 } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
-import { localBranchFor, mergeRequestUrl, parseTarget, targetOptions } from "./mergeRequest";
-import { mergeIntoTarget, remoteUrlOf } from "./mergeInto";
-import { openUrl } from "./issueLinks";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
@@ -75,7 +72,7 @@ const FLAG_LABELS: Array<[MergeFlag, string]> = [
   ["noCommit", "--no-commit"],
 ];
 
-function MergeFlags({
+export function MergeFlags({
   on,
   setOn,
   rebase = false,
@@ -276,113 +273,6 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
         <div className={styles.hint}>
           <T>Uncommitted changes are stashed before the pull and restored afterwards.</T>
         </div>
-      </div>
-    </Dialog>
-  );
-}
-
-// --- Merge ------------------------------------------------------------------
-
-/** `repo`: the repository it starts on (the context's), else the selected one. */
-export function showMergeDialog(repo?: string | null) {
-  openDialog((close) => <MergeDialog initialRepo={repo} onClose={close} />);
-}
-
-function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; onClose: () => void }) {
-  const [repo, setRepo] = useState(() => (initialRepo === undefined ? currentRepo() : initialRepo));
-  const head = useBranchInfo(repo)?.head ?? null;
-  const branches = useBranches(repo);
-  const [branch, setBranch] = useState<string | null>(null);
-  const [targetRef, setTargetRef] = useState("");
-  const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
-  const [withMessage, setWithMessage] = useState(false);
-  const [message, setMessage] = useState("");
-  const [openRequest, setOpenRequest] = useState(true);
-  const options = useMemo(
-    () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
-    [branches],
-  );
-  const target = useMemo(() => parseTarget(targetRef, branches), [targetRef, branches]);
-  const targetLabel = localBranchFor(target) ?? head ?? "HEAD";
-  const intoRemote = target.kind === "remote";
-
-  const chooseRepo = (root: string) => {
-    if (root === repo) return;
-    setRepo(root);
-    setBranch(null);
-    setTargetRef("");
-  };
-
-  const run = async () => {
-    if (!branch) return;
-    onClose();
-    const merged = await mergeIntoTarget({
-      repo,
-      source: branch,
-      target,
-      options: mergeOptionsOf(flags, withMessage ? message : null),
-      branches,
-    });
-    if (!merged || !intoRemote || !openRequest || target.kind !== "remote") return;
-    const url = mergeRequestUrl(await remoteUrlOf(repo, target.remote), branch, target.branch);
-    if (url) await openUrl(url);
-  };
-
-  return (
-    <Dialog
-      open
-      title={tx`Merge into ${targetLabel}`}
-      onClose={onClose}
-      width={460}
-      buttons={[
-        { label: "Merge", role: "default", disabled: !branch, onClick: () => void run() },
-        { label: "Cancel", role: "cancel" },
-      ]}
-    >
-      <div className={styles.form}>
-        <RepoPicker repo={repo} onChange={chooseRepo} />
-        <div className={styles.fieldLabel}>
-          <T>Branch to merge:</T>
-        </div>
-        <Select
-          aria-label="Branch to merge"
-          value={branch}
-          placeholder="Select branch"
-          options={options}
-          onChange={setBranch}
-          searchable
-        />
-        <div className={styles.fieldLabel}>
-          <T>Merge into:</T>
-        </div>
-        <Select
-          aria-label="Merge into"
-          value={targetRef}
-          placeholder={head ? `Current branch (${head})` : "Current branch"}
-          options={targetOptions(branches, head, branch)}
-          onChange={setTargetRef}
-          searchable
-        />
-        {intoRemote && (
-          <Checkbox
-            label={tx`Open merge request page after the merge`}
-            checked={openRequest}
-            onChange={setOpenRequest}
-          />
-        )}
-        <div className={styles.fieldLabel}>
-          <T>Options:</T>
-        </div>
-        <MergeFlags on={flags} setOn={setFlags} />
-        <Checkbox label="-m (commit message)" checked={withMessage} onChange={setWithMessage} />
-        {withMessage && (
-          <Input
-            aria-label="Commit message"
-            value={message}
-            placeholder={branch ? tx`Merge branch '${branch}' into ${head ?? "HEAD"}` : ""}
-            onChange={(e) => setMessage(e.target.value)}
-          />
-        )}
       </div>
     </Dialog>
   );
