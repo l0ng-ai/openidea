@@ -200,7 +200,8 @@ export function CombinedDiffTab({ input }: { input: EditorInput }) {
         {items.length ? (
           items.map((item, index) => (
             <Block
-              key={`${item.path}:${mode}`}
+              // Keyed by file alone: switching the layout keeps each block's diff and its documents.
+              key={item.path}
               item={item}
               index={index}
               items={items}
