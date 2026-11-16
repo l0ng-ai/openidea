@@ -1459,7 +1459,9 @@ impl Tools {
         let pkg = staging.join("pkg");
         let kind = archive::ArchiveKind::from_name(&dl.name);
         let main = spec.commands[0];
-        let exe_name = self.platform.exe(main);
+        // A PHP archive keeps its name and runs through `php` (Windows can't launch it itself).
+        let phar = dl.name.ends_with(".phar");
+        let exe_name = if phar { format!("{main}.phar") } else { self.platform.exe(main) };
         match kind {
             archive::ArchiveKind::Gz | archive::ArchiveKind::Raw => {
                 archive::extract(&archive, kind, &pkg.join("bin"), &exe_name, cancel)?
@@ -1503,6 +1505,8 @@ impl Tools {
             if self.exe_in(&bin, main).as_deref() != Some(target.as_path()) {
                 if spec.name == "unity-debug" && cfg!(unix) {
                     archive::link_executable_with_runtime(&bin, main, &target, Some("mono"))?;
+                } else if phar {
+                    archive::link_executable_with_runtime(&bin, main, &target, Some("php"))?;
                 } else {
                     archive::link_executable(&bin, main, &target)?;
                 }
