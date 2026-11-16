@@ -203,6 +203,8 @@ export function activate(): () => void {
       },
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       restorable: true,
+      // Mounting it again on every switch rebuilds the composer and refetches the agent, models and branches.
+      keepAlive: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.
     registerEditorDropHandler({
