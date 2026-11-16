@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const DEFAULT_TIMEOUT_MS: usize = 60_000;
-const MAX_TIMEOUT_MS: usize = 3_600_000;
 const MAX_PROBLEMS: usize = 300;
 /// Console lines attached to a failure whose messages were not parsed.
 const CONSOLE_LINES: usize = 200;
@@ -84,13 +83,13 @@ You have to use this tool after performing edits to validate if the edits are va
 In OpenIDEA the project's build system builds it (Maven, Gradle, Cargo, Go or TypeScript); with `filesToRebuild`, the \
 modules containing those files. Asks the user first for every call. Problems have the project-relative \
 `file` and 1-based `line` / `column`; at most 300 problems are listed, and `isSuccess` is false whenever one of them \
-is an ERROR. On timeout (at most 1 hour; 0 times out at once) the build is stopped.",
+is an ERROR. On timeout (0 times out at once) the build is stopped.",
         |call| async move {
             let files: Vec<String> =
                 call.str_list("filesToRebuild")?.into_iter().filter(|f| !f.trim().is_empty()).collect();
             let rebuild = call.flag("rebuild", false)? && files.is_empty();
             let kind = if rebuild { BuildKind::Rebuild } else { BuildKind::Build };
-            let limit = timeout(&call, DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)?;
+            let limit = timeout(&call, DEFAULT_TIMEOUT_MS)?;
             let mut targets: Vec<Option<PathBuf>> = Vec::new();
             let mut dirs: Vec<PathBuf> = Vec::new();
             for f in &files {

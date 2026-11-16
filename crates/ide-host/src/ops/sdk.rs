@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub(crate) mod container_python;
+pub use container_python::{ContainerPython, sdk_container_python, sdk_container_python_refresh};
+
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
 }
@@ -61,13 +64,16 @@ pub async fn sdk_python_project_interpreters(host: &Host, window: &str) -> IdeRe
     host.require_trust(window)?;
     let current = host.project(window).ok().map(|p| p.root.clone());
     let config = host.config_dir.clone();
+    // Probing runs the project's interpreter (and its settings may name any program): only
+    // projects trusted in their own right, not ones last opened in Restricted Mode.
+    let roots: Vec<PathBuf> = ide_workspace::RecentProjects::load(&config)
+        .list()
+        .into_iter()
+        .map(|p| p.path.into_path_buf())
+        .filter(|root| current.as_deref() != Some(root.as_path()))
+        .filter(|root| host.trust.window_trusted(root).unwrap_or(false))
+        .collect();
     tokio::task::spawn_blocking(move || {
-        let roots: Vec<PathBuf> = ide_workspace::RecentProjects::load(&config)
-            .list()
-            .into_iter()
-            .map(|p| p.path.into_path_buf())
-            .filter(|root| current.as_deref() != Some(root.as_path()))
-            .collect();
         // Each project resolves its configured interpreter, else its own virtualenv. The
         // probes run `python`, so keep them off the async runtime and bound how many run at
         // once: the recent list can hold ~30 projects, and each probe starts a process.
@@ -229,12 +235,17 @@ pub async fn sdk_project_libraries(
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     let cancel = host.begin_project_request(window, request);
+    let container = container_python::library_group(host, &root, &settings);
     let libraries = {
         let (root, settings, cancel, on_groups) = (root.clone(), settings.clone(), cancel.clone(), on_groups.clone());
         tokio::task::spawn_blocking(move || {
-            ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
+            if let Some(group) = &container {
+                let _ = on_groups.send(vec![group.clone()]);
+            }
+            let groups = ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
                 let _ = on_groups.send(groups);
-            })
+            });
+            container.into_iter().chain(groups).collect::<Vec<_>>()
         })
     };
     let dependencies = {
@@ -374,6 +385,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
+    d.add("sdk_container_python", |c| async move { sdk_container_python(&c.host, &c.window) });
+    d.add("sdk_container_python_refresh", |c| async move { sdk_container_python_refresh(&c.host, &c.window).await });
     d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
     d.add(
         "sdk_php_language_level",
@@ -521,6 +534,10 @@ mod tests {
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
 
+        // A project last opened in Restricted Mode: its interpreter is never run.
+        host.trust.decide(&other, false, false).unwrap();
+        assert!(sdk_python_project_interpreters(&host, "main").await.unwrap().is_empty());
+        host.trust.decide(&other, true, false).unwrap();
         let list = sdk_python_project_interpreters(&host, "main").await.unwrap();
         assert_eq!(list.len(), 1, "{list:?}");
         assert_eq!(&*list[0].project, other.as_path());

@@ -58,6 +58,7 @@ import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
 import { TerminalOutput } from "./terminalOutput";
 import { typeFor } from "./types";
+import { agentName } from "./agentConfig";
 import { loadRunTemplates } from "./runTemplates";
 import { startedPort } from "@/platform/serverPort";
 import { tomcatBrowserUrl } from "./tomcat";
@@ -92,6 +93,8 @@ export interface RunSession {
   terminal?: boolean;
   /** The HTTP port the application's embedded web server reported it started on. */
   httpPort?: number;
+  /** Pinned tab: once finished, a later run opens a new tab instead of taking its place. */
+  pinned?: boolean;
 }
 
 interface SessionRuntime {
@@ -147,6 +150,8 @@ interface RunState {
   pinned: string[];
   /** Ids of the configurations started last, newest first (at most `MAX_RECENT`). */
   recent: string[];
+  /** The chooser's "All Configurations" group is expanded (kept per project). */
+  allExpanded: boolean;
   sessions: RunSession[];
   activeSession: string | null;
   /** Output version per session (re-render trigger for the console). */
@@ -174,6 +179,7 @@ export const useRun = create<RunState>(() => ({
   temporary: [],
   pinned: [],
   recent: [],
+  allExpanded: false,
   sessions: [],
   activeSession: null,
   versions: {},
@@ -244,6 +250,7 @@ export async function loadConfigs(): Promise<void> {
       temporary: temps.map((t) => t.id),
       pinned: readIds(PINNED_KEY, root),
       recent: readIds(RECENT_KEY, root),
+      allExpanded: readAllExpanded(root),
       loaded: true,
       loadError: null,
       selectedId,
@@ -274,7 +281,30 @@ export function selectConfig(id: string | null) {
 
 const PINNED_KEY = "openidea.run.pinned:";
 const RECENT_KEY = "openidea.run.recent:";
+const ALL_EXPANDED_KEY = "openidea.run.allExpanded:";
 export const MAX_RECENT = 5;
+
+function readAllExpanded(root: string): boolean {
+  try {
+    return localStorage.getItem(ALL_EXPANDED_KEY + root) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Expands or collapses the chooser's "All Configurations" group. Kept per project. */
+export function toggleAllConfigurations() {
+  const allExpanded = !useRun.getState().allExpanded;
+  useRun.setState({ allExpanded });
+  const root = useProject.getState().project?.root;
+  if (!root) return;
+  try {
+    if (allExpanded) localStorage.setItem(ALL_EXPANDED_KEY + root, "1");
+    else localStorage.removeItem(ALL_EXPANDED_KEY + root);
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 function readIds(key: string, root: string): string[] {
   try {
@@ -724,26 +754,64 @@ export function sessionsOf(config: RunConfig, sessions = useRun.getState().sessi
   return sessions.filter((s) => ids.has(s.config.id));
 }
 
-/** Starts `config`, reusing the tab of a finished (or the given) session for the same config. */
+/**
+ * The finished tab a run of `config` takes the place of, as IDEA reuses run content: not a
+ * pinned one; that of the same configuration first, then the selected one, then the first.
+ * Agents' commands keep to their own tabs.
+ */
+function reusableTab(sessions: readonly RunSession[], active: string | null, config: RunConfig) {
+  const free = sessions.filter((s) => !isLive(s) && !s.pinned && !claimedTabs.has(s.id));
+  const same = free.find((s) => s.config.id === config.id);
+  if (same || agentName(config) !== null) return same;
+  const others = free.filter((s) => agentName(s.config) === null);
+  return others.find((s) => s.id === active) ?? others[0];
+}
+
+/** Tabs a starting run is about to take: runs started together (compounds, reruns of several packages) must not take the same one. */
+const claimedTabs = new Set<string>();
+
+/** Pins or unpins a session's tab. */
+export function pinSession(id: string, pinned: boolean) {
+  patchSession(id, { pinned });
+}
+
+interface StartRunOptions {
+  show?: boolean;
+  /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
+  launch?: RunConfig;
+  /** Every output line of this run. */
+  onLine?: (text: string) => void;
+  /** The process exited. */
+  onExit?: (exitCode: number | null, stopped: boolean) => void;
+  /** Before launch tasks already ran (or must not run). */
+  prepared?: boolean;
+  /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
+  chain?: readonly string[];
+  /** Runs before the stop signal when the user stops this run (run executors). */
+  beforeStop?: (runId: RunId) => Promise<void>;
+}
+
+/** Starts `config`, reusing the tab of a finished (or the given) session (see `reusableTab`). */
 export async function startRun(
   config: RunConfig,
   reuse?: string,
   baseConfig?: RunConfig,
-  options: {
-    show?: boolean;
-    /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
-    launch?: RunConfig;
-    /** Every output line of this run. */
-    onLine?: (text: string) => void;
-    /** The process exited. */
-    onExit?: (exitCode: number | null, stopped: boolean) => void;
-    /** Before launch tasks already ran (or must not run). */
-    prepared?: boolean;
-    /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
-    chain?: readonly string[];
-    /** Runs before the stop signal when the user stops this run (run executors). */
-    beforeStop?: (runId: RunId) => Promise<void>;
-  } = {},
+  options: StartRunOptions = {},
+): Promise<RunSession | null> {
+  if (!reuse || claimedTabs.has(reuse)) return startRunIn(config, reuse, baseConfig, options);
+  claimedTabs.add(reuse);
+  try {
+    return await startRunIn(config, reuse, baseConfig, options);
+  } finally {
+    claimedTabs.delete(reuse);
+  }
+}
+
+async function startRunIn(
+  config: RunConfig,
+  reuse: string | undefined,
+  baseConfig: RunConfig | undefined,
+  options: StartRunOptions,
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
   if (!options.launch && isCMakeBuild(config)) {
@@ -792,12 +860,17 @@ export async function startRun(
   // The new process starts once the old one is gone (it may still hold a port or a lock). As in
   // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
   await waitForExit(stopping, null);
-  session ??= state.sessions.find((s) => s.config.id === config.id && !busy(s));
+  const now = useRun.getState();
+  const picked = session ? undefined : reusableTab(now.sessions, now.activeSession, config);
+  session ??= picked;
 
+  if (picked) claimedTabs.add(picked.id);
   try {
     await maybeEditorService()?.saveAll();
   } catch {
     /* saving is best effort */
+  } finally {
+    if (picked) claimedTabs.delete(picked.id);
   }
 
   const startedAt = Date.now();
@@ -836,6 +909,7 @@ export async function startRun(
       endedAt: null,
       stdinClosed: false,
       baseConfig,
+      pinned: workflowSettings().run.pinTabs || undefined,
     };
     runtimes.set(session.id, newRuntime(config));
     const created = session;
@@ -1075,9 +1149,7 @@ function finishSession(sessionId: string, code: number | null) {
         // Surefire / Gradle print only failures and class totals: per-test results come from the XML reports.
         if (frameworkFor(session.config) === "jvm") {
           const reports = await jvmReports(session);
-          const tests = rt.tests;
-          // Tests the run reported already (Gradle's init script, Surefire failures) keep their output.
-          tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+          applyTestReports(rt.tests, reports);
           moveToReportedClasses(
             rt.tests,
             reports.map((r) => r.className),
@@ -1109,13 +1181,32 @@ async function jvmReports(session: RunSession): Promise<TestCaseReport[]> {
   }
 }
 
-/** JUnit XML report cases → test tree events (`[class, method]`, failure output and source line). */
+/**
+ * Adds the reports' results to the run's tree. Tests the run reported already (Gradle's init script,
+ * Surefire failures) keep their result and output, but Surefire's console shows a failure without
+ * what the test printed before it.
+ */
+export function applyTestReports(tests: TestResults, reports: readonly TestCaseReport[]) {
+  const reported = reports.filter((r) => tests.hasResult([r.className, r.name]));
+  tests.apply(testReportEvents(reports).filter((e) => !("path" in e) || !tests.hasResult(e.path)));
+  for (const r of reported) {
+    const path = [r.className, r.name];
+    const printed = printedLines(r);
+    const shown = new Set(tests.node(path).output);
+    if (printed.length && !printed.every((l) => shown.has(l))) tests.prependOutput(path, printed);
+  }
+}
+
+const printedLines = (r: TestCaseReport) => (r.stdout ? r.stdout.split("\n").slice(0, 200) : []);
+
+/** JUnit XML report cases → test tree events (`[class, method]`, printed and failure output, source line). */
 export function testReportEvents(reports: readonly TestCaseReport[]): TestEvent[] {
   const events: TestEvent[] = [];
   for (const r of reports) {
     if (!r.className || !r.name) continue;
     const path = [r.className, r.name];
     events.push({ type: "result", path, status: r.status, durationMs: r.durationMs ?? undefined });
+    for (const line of printedLines(r)) events.push({ type: "output", path, line });
     if (r.status !== "failed") continue;
     const text = [r.message, r.output].filter(Boolean).join("\n");
     for (const line of text.split("\n").slice(0, 200)) events.push({ type: "output", path, line });
@@ -1473,10 +1564,17 @@ export async function closeSessionTab(sessionId: string): Promise<boolean> {
   return true;
 }
 
-export function closeSession(sessionId: string) {
+/**
+ * Removes a session's tab (stopping its process). An agent tab's closing is told to the MCP
+ * server for the agent unless `agentTabClosed` is false (the archive dropping its oldest).
+ */
+export function closeSession(sessionId: string, options: { agentTabClosed?: boolean } = {}) {
   const session = getSession(sessionId);
   if (!session) return;
   if (isLive(session)) void stopSession(sessionId);
+  const agent = agentName(session.config);
+  if (agent !== null && options.agentTabClosed !== false && isTauri())
+    void call(commands.mcpAgentRunClosed(agent)).catch(() => {});
   const rt = runtimes.get(sessionId);
   if (rt) cancelFlush(rt);
   runtimes.delete(sessionId);
@@ -1509,6 +1607,7 @@ export function resetRuns() {
     temporary: [],
     pinned: [],
     recent: [],
+    allExpanded: false,
     sessions: [],
     activeSession: null,
     versions: {},

@@ -15,6 +15,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -26,11 +27,13 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Icon, type IconName } from "./icons";
 import { HighlightedText } from "./HighlightedText";
 import { Spinner } from "./Feedback";
+import { IconButton } from "./Button";
 import { fuzzyMatch } from "./match";
 import { acquirePopup } from "./popupState";
 import styles from "./Tree.module.css";
 import { T } from "./T";
 import { setContext } from "@/platform/context";
+import { registerKeyClaim } from "@/platform/keymap";
 import { useGivenTx } from "@/platform/i18n";
 import { useTreeReorder, type TreeReorder } from "./treeReorder";
 import { startPointerDrag, type DragData } from "./pointerDrag";
@@ -61,8 +64,8 @@ export interface TreeOccurrence {
 
 export interface TreeHandle {
   focus(): void;
-  /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it. */
-  reveal(key: string): void;
+  /** Selects `key` (must be visible, i.e. ancestors expanded) and scrolls to it; false when no row has `key`. */
+  reveal(key: string): boolean;
   leadKey(): string | null;
   /** Selects the next (1) / previous (-1) row, for a filter field that keeps the focus (Settings search). */
   moveSelection(dir: 1 | -1): void;
@@ -117,10 +120,17 @@ export interface TreeProps<T> {
 
   speedSearch?: boolean;
   speedSearchMode?: "highlight" | "filter";
+  /**
+   * Speed search shows as a field over the bar right above the tree (a tool window's toolbar)
+   * instead of a popup over its first rows, with a toggle to show only the matches.
+   */
+  speedSearchField?: boolean;
   rowHeight?: number;
   indent?: number;
   className?: string;
   rowClassName?: (node: T) => string | undefined;
+  /** CSS colour the row background is tinted with (File Colors). */
+  rowTint?: (node: T) => string | undefined;
   "aria-label"?: string;
   handleRef?: Ref<TreeHandle>;
   /** Context key set while the tree itself has keyboard focus. */
@@ -261,10 +271,12 @@ export function Tree<T>(props: TreeProps<T>) {
     onContextMenu,
     speedSearch = true,
     speedSearchMode = "highlight",
+    speedSearchField = false,
     rowHeight: fixedRowHeight,
     indent = 20,
     className,
     rowClassName,
+    rowTint,
     handleRef,
     empty,
   } = props;
@@ -274,6 +286,8 @@ export function Tree<T>(props: TreeProps<T>) {
   const [lead, setLead] = useState<string | null>(() => [...selected][0] ?? null);
   const [anchor, setAnchor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [onlyMatches, setOnlyMatches] = useState(false);
+  const filterMatches = speedSearchMode === "filter" || (speedSearchField && onlyMatches);
   const scrollRef = useRef<HTMLDivElement>(null);
   const baseId = useId();
 
@@ -319,14 +333,14 @@ export function Tree<T>(props: TreeProps<T>) {
   }, [allRows, query, getLabel]);
 
   const rows = useMemo(() => {
-    if (!query || speedSearchMode !== "filter") return allRows;
+    if (!query || !filterMatches) return allRows;
     const keep = new Set<number>();
     allRows.forEach((r, i) => {
       if (!matchMap.has(r.key)) return;
       for (let j = i; j >= 0 && !keep.has(j); j = allRows[j]!.parent) keep.add(j);
     });
     return allRows.filter((_, i) => keep.has(i));
-  }, [allRows, matchMap, query, speedSearchMode]);
+  }, [allRows, matchMap, query, filterMatches]);
 
   const byKey = useMemo(() => new Map(allRows.map((r) => [r.key, r])), [allRows]);
   const emptyState = !rows.length && !!empty && !query;
@@ -367,17 +381,34 @@ export function Tree<T>(props: TreeProps<T>) {
     pendingScrollToLead.current = null;
   }, [lead, indexOfKey, virtualizer]);
 
-  // Speed search owns Escape while active.
+  // Speed search owns Escape while active, and ⌫ with any modifier: the query is edited like a
+  // text field instead of the view's shortcuts running (⌘⌫ is Drop… in the Database view).
   useEffect(() => {
     if (!query) return;
-    return acquirePopup();
+    const release = acquirePopup();
+    const unclaim = registerKeyClaim(
+      (e) => e.key === "Backspace" && e.target instanceof Node && !!scrollRef.current?.contains(e.target),
+    );
+    return () => {
+      release();
+      unclaim();
+    };
   }, [query]);
 
   const setExpanded = (row: Row<T>, open: boolean) => {
     if (!row.expandable || row.expanded === open) return;
     const next = new Set(expanded);
     if (open) next.add(row.key);
-    else next.delete(row.key);
+    else {
+      // Collapsing a node also collapses everything expanded below it, so expanding it again
+      // shows only its direct children.
+      next.delete(row.key);
+      const stack = [...(getChildren(row.node) ?? [])];
+      while (next.size && stack.length) {
+        const n = stack.pop()!;
+        if (next.delete(getKey(n)) || isExpandable(n)) stack.push(...(getChildren(n) ?? []));
+      }
+    }
     if (!expandedControlled) setExpandedInner(next);
     props.onExpandedChange?.(next, row.node, open);
     if (open && getChildren(row.node) === undefined) void loadChildren?.(row.node);
@@ -420,10 +451,11 @@ export function Tree<T>(props: TreeProps<T>) {
     focus: () => scrollRef.current?.focus(),
     reveal: (key: string) => {
       const i = indexOfKey.get(key);
-      if (i === undefined) return;
+      if (i === undefined) return false;
       setAnchor(key);
       commitSelection(new Set([key]), key);
       virtualizer.scrollToIndex(i, { align: "center" });
+      return true;
     },
     leadKey: () => lead,
     moveSelection: (dir: 1 | -1) => {
@@ -523,7 +555,8 @@ export function Tree<T>(props: TreeProps<T>) {
         break;
       case "Backspace":
         if (!query) return;
-        setQuery(query.slice(0, -1));
+        // ⌘⌫ erases the query, ⌥⌫ / Ctrl+⌫ its last word, as in a text field.
+        setQuery(e.metaKey ? "" : e.altKey || e.ctrlKey ? query.replace(/\w*\W*$/, "") : query.slice(0, -1));
         break;
       case "ArrowDown":
       case "ArrowUp": {
@@ -719,6 +752,7 @@ export function Tree<T>(props: TreeProps<T>) {
             const icon = getIcon?.(row.node, row.expanded);
             const detail = getDetail?.(row.node);
             const color = getColor?.(row.node);
+            const tint = rowTint?.(row.node);
             return (
               <div
                 key={v.key}
@@ -734,13 +768,14 @@ export function Tree<T>(props: TreeProps<T>) {
                   styles.row,
                   props.horizontalScroll && styles.wideRow,
                   rowClassName?.(row.node),
+                  tint && styles.tinted,
                   isSelected && styles.selected,
                   joinPrev && styles.joinPrev,
                   joinNext && styles.joinNext,
                   isLead && styles.lead,
                   reordering.drop?.key === row.key && styles[reordering.drop.position],
                 )}
-                style={style}
+                style={tint ? ({ ...style, "--row-tint": tint } as CSSProperties) : style}
                 onPointerDown={
                   props.reorder
                     ? (e) => reordering.start(e, row)
@@ -795,12 +830,33 @@ export function Tree<T>(props: TreeProps<T>) {
           })}
         </div>
       </div>
-      {query && (
-        <div className={clsx(styles.speedSearch, noMatch && styles.noMatch)} role="status" aria-live="polite">
-          <Icon name="search" size={12} />
-          <span className={styles.speedQuery}>{query}</span>
-        </div>
-      )}
+      {query &&
+        (speedSearchField ? (
+          // Typing stays in the tree: a press here must not take its focus, which would end the search.
+          <div
+            className={clsx(styles.speedSearch, styles.speedField, noMatch && styles.noMatch)}
+            onMouseDown={(e) => e.preventDefault()}
+          >
+            <Icon name="search" size={14} />
+            <span className={styles.speedQuery} role="status" aria-live="polite">
+              {query}
+            </span>
+            <span className={styles.caret} aria-hidden="true" />
+            <IconButton
+              icon="filter"
+              size="small"
+              className={styles.onlyMatches}
+              title="Show Only Matches"
+              pressed={onlyMatches}
+              onClick={() => setOnlyMatches(!onlyMatches)}
+            />
+          </div>
+        ) : (
+          <div className={clsx(styles.speedSearch, noMatch && styles.noMatch)} role="status" aria-live="polite">
+            <Icon name="search" size={12} />
+            <span className={styles.speedQuery}>{query}</span>
+          </div>
+        ))}
     </div>
   );
 }

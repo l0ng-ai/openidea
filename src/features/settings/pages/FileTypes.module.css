@@ -1,14 +1,14 @@
 .fileTypes {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
 }
 
 .types {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 
@@ -29,7 +29,7 @@
 .type {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-row);
   padding: 0 8px;
   border: none;
@@ -63,7 +63,7 @@
 .patterns {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 

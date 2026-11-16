@@ -4,11 +4,13 @@
  * (view/FindBar.tsx). Highlighting is ours because CodeMirror only highlights
  * while its own panel is open. Match positions found by the bar's counter are
  * kept in `findMarks` for the overview lane. The search context (comments /
- * string literals) and excluded matches filter matches through the query's
- * `test`, so CodeMirror's own commands honour them too.
+ * string literals), excluded matches and "Search In Changes" (a diff's changed
+ * ranges) filter matches through the query's `test`, so CodeMirror's own commands
+ * honour them too.
  */
 import {
   EditorSelection,
+  Facet,
   Prec,
   StateEffect,
   StateField,
@@ -93,16 +95,33 @@ export function isExcluded(state: EditorState, from: number, to: number): boolea
   return (state.field(findExcluded, false) ?? []).some((x) => x.from === from && x.to === to);
 }
 
-type MatchTest = (match: string, state: EditorState, from: number, to: number) => boolean;
-const tests = new Map<SearchContext, MatchTest>();
+/**
+ * The changed ranges of a diff pane, for "Search In Changes"; editors outside a diff have none.
+ * Called per match, so providers read state the diff already keeps.
+ */
+export const findChangedRanges = Facet.define<
+  (state: EditorState) => readonly FindScope[],
+  ((state: EditorState) => readonly FindScope[]) | null
+>({ combine: (values) => values[0] ?? null });
 
-/** One stable test per context, so equal options give equal queries (`SearchQuery.eq`). */
-function testFor(context: SearchContext): MatchTest {
-  let test = tests.get(context);
+function inChangedRange(state: EditorState, from: number, to: number): boolean {
+  const ranges = state.facet(findChangedRanges)?.(state) ?? [];
+  return ranges.some((r) => r.from <= from && to <= r.to);
+}
+
+type MatchTest = (match: string, state: EditorState, from: number, to: number) => boolean;
+const tests = new Map<string, MatchTest>();
+
+/** One stable test per filter, so equal options give equal queries (`SearchQuery.eq`). */
+function testFor(context: SearchContext, inChanges: boolean): MatchTest {
+  const key = `${context}:${inChanges}`;
+  let test = tests.get(key);
   if (!test) {
     test = (_match, state, from, to) =>
-      !isExcluded(state, from, to) && (context === "any" || contextAccepts(context, literalKindAt(state, from)));
-    tests.set(context, test);
+      !isExcluded(state, from, to) &&
+      (!inChanges || inChangedRange(state, from, to)) &&
+      (context === "any" || contextAccepts(context, literalKindAt(state, from)));
+    tests.set(key, test);
   }
   return test;
 }
@@ -215,7 +234,13 @@ export interface FindOptions {
   preserveCase?: boolean;
 }
 
-export function makeQuery(o: FindOptions) {
+/** A bar's query: its options, plus filters that belong to what it searches rather than the last search. */
+export interface FindQueryOptions extends FindOptions {
+  /** Only matches inside a diff's changed ranges (`findChangedRanges`). */
+  inChanges?: boolean;
+}
+
+export function makeQuery(o: FindQueryOptions) {
   return new SearchQuery({
     search: o.search,
     // Plain-text search and replace are literal (`\n` is not a newline), as in IDEA.
@@ -224,11 +249,11 @@ export function makeQuery(o: FindOptions) {
     wholeWord: o.wholeWord,
     regexp: o.regexp,
     replace: o.replace,
-    test: testFor(o.context ?? "any"),
+    test: testFor(o.context ?? "any", !!o.inChanges),
   });
 }
 
-export function setQuery(view: EditorView, o: FindOptions) {
+export function setQuery(view: EditorView, o: FindQueryOptions) {
   const q = makeQuery(o);
   if (q.eq(getSearchQuery(view.state))) return;
   view.dispatch({ effects: setSearchQuery.of(q) });

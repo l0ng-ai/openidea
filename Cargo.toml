@@ -5,7 +5,7 @@ members = ["crates/*", "src-tauri"]
 exclude = ["sdk", "plugins"]
 
 [workspace.package]
-version = "0.1.43"
+version = "0.1.45"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0"
@@ -90,6 +90,8 @@ dunce = "1"
 dirs = "6"
 memmap2 = "0.9"
 zip = { version = "9.2.3", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
 
 # search, index, language
 grep-searcher = "0.1"

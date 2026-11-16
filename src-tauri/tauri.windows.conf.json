@@ -8,7 +8,7 @@
         "width": 1440,
         "height": 900,
         "center": true,
-        "minWidth": 800,
+        "minWidth": 400,
         "minHeight": 500,
         "decorations": false,
         "backgroundColor": "#E9EAEE",

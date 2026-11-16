@@ -7,12 +7,16 @@ import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { executeAction } from "@/platform/actions";
-import { lazyComponent } from "@/ui";
+import { tx } from "@/platform/i18n";
+import { lazyComponent, lazyWhen } from "@/ui";
 import { isVirtualUri } from "@/platform/virtualDocs";
+import { call, commands } from "@/platform/ipc";
 import {
+  registerAgentContextSource,
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerOverlay,
   registerSettingsPage,
   registerStatusItem,
   registerToolWindow,
@@ -28,11 +32,25 @@ import {
   SESSION_KIND,
   TASK_DRAG,
   TOOL_WINDOW,
+  WORKING_STATUS_PAGE,
   providerIcon,
 } from "./model";
-import { sendPaths, sendSelection } from "./references";
+import { sendPaths, sendSelection, trackEditorCopies } from "./references";
 import { focusedSession } from "./sessionFocus";
-import { closeActiveTask, closeAndNewTask, connect, disconnect, openHome, refreshProviders, useAgents } from "./store";
+import { cycleFocusedEffort } from "./effortFocus";
+import { clearAgentTabFontZoom } from "./fontZoom";
+import {
+  closeActiveTask,
+  closeAndNewTask,
+  connect,
+  disconnect,
+  discardEphemeral,
+  openHome,
+  refreshModels,
+  refreshProviders,
+  useAgents,
+  watchEphemeralTasks,
+} from "./store";
 import { TaskStatusMark } from "./TaskStatusMark";
 import { taskActions, useAgentsHeaderMenu } from "./taskActions";
 import { replyActions } from "./replyActions";
@@ -50,6 +68,15 @@ export function activateSettingsPages(): () => void {
       component: lazyComponent(() => import("./AgentRegistryPage").then((m) => m.AgentRegistryPage)),
     }),
     registerSettingsPage({
+      id: WORKING_STATUS_PAGE,
+      title: "Working Status",
+      group: AGENTS_GROUP,
+      // After Chat.
+      order: 465,
+      keywords: ["agent", "status", "playful", "words", "working", "spinner", "fun", "delay", "seconds"],
+      component: lazyComponent(() => import("./WorkingStatusPage").then((m) => m.WorkingStatusPage)),
+    }),
+    registerSettingsPage({
       id: MCP_PAGE,
       title: "External MCP Servers",
       group: AGENTS_GROUP,
@@ -59,7 +86,7 @@ export function activateSettingsPages(): () => void {
     }),
     registerSettingsPage({
       id: POLICY_PAGE,
-      title: "Command Execution Policy",
+      title: "Command Permissions",
       group: AGENTS_GROUP,
       order: 490,
       keywords: ["agent", "policy", "security", "whitelist", "blacklist", "permission", "command", "exec"],
@@ -77,6 +104,17 @@ export function activate(): () => void {
   sync(useProject.getState().project?.root);
   const disposers = [
     activateSettingsPages(),
+    trackEditorCopies(),
+    registerAgentContextSource({
+      id: "changes",
+      title: "Changes",
+      description: "Files with uncommitted changes",
+      icon: "diff",
+      resolve: async () => {
+        const changed = await call(commands.vcsStatus());
+        return changed.length ? { kind: "files", paths: changed.map((f) => f.path) } : null;
+      },
+    }),
     // The performance harness (`perf/`): long conversations to switch between and scroll.
     import.meta.env.DEV || import.meta.env.MODE === "perf"
       ? registerActions([
@@ -99,6 +137,7 @@ export function activate(): () => void {
       else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
         void refreshProviders();
     }),
+    watchEphemeralTasks(),
     registerToolWindow({
       id: TOOL_WINDOW,
       title: "Agents",
@@ -110,18 +149,29 @@ export function activate(): () => void {
       plainTitle: true,
       headerActions: lazyComponent(() => import("./AgentsView").then((m) => m.AgentsHeaderActions)),
       useBadge: () => {
-        const n = useAgents(
-          (s) => [...s.tasks.values()].filter((t) => t.status === "needsInput" || s.unread.has(t.id)).length,
-        );
+        const n = useAgents((s) => {
+          const ephemeral = s.ephemeral;
+          return [...s.tasks.values()].filter(
+            (t) => !ephemeral.has(t.id) && (t.status === "needsInput" || s.unread.has(t.id)),
+          ).length;
+        });
         return n || null;
       },
+    }),
+    registerOverlay({
+      id: "agents.importSessions",
+      component: lazyWhen(
+        () => useAgents((s) => s.importOpen),
+        () => import("./ImportSessionsDialog").then((m) => m.ImportSessionsOverlay),
+      ),
     }),
     registerEditorKind({
       kind: SESSION_KIND,
       component: lazyComponent(() => import("./SessionEditor").then((m) => m.SessionEditor)),
       title: (input) => {
         const data = input.data as { task: string; title?: string };
-        return useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
+        const title = useAgents.getState().tasks.get(data.task)?.title ?? data.title ?? "Agent Task";
+        return useAgents.getState().ephemeral.has(data.task) ? tx`Side conversation: ${title}` : title;
       },
       icon: (input) => {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
@@ -130,7 +180,16 @@ export function activate(): () => void {
       // Busy / done marker in the tab's trailing slot (#2233).
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
+      // A side conversation restored after a page reload is valid again; after an app
+      // restart its task is gone and this same mechanism closes the tab.
       restorable: true,
+      // Closing a side conversation's last tab discards it (the task, context included).
+      onClose: (input) => {
+        const task = (input.data as { task: string }).task;
+        const s = useAgents.getState();
+        if (s.ephemeral.has(task) && s.docked !== task) void discardEphemeral(task);
+      },
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       // Rebuilding a long conversation on every switch back is slow.
       keepAlive: true,
     }),
@@ -142,6 +201,7 @@ export function activate(): () => void {
         const task = useAgents.getState().tasks.get((input.data as { task: string }).task);
         return task ? providerIcon(task.provider) : "toolwindow-agents";
       },
+      onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       restorable: true,
     }),
     // An explicit editor drop sets the placement for subsequent sessions too.
@@ -171,6 +231,24 @@ export function activate(): () => void {
         run: () => focusedSession()?.openFind(),
       },
       {
+        id: "agents.focusInput",
+        title: "Focus Agent Input",
+        description: "Focuses the message input of the current agent task without moving the caret.",
+        category: "Agents",
+        when: "agentSessionFocus && agentInputAvailable",
+        keyWhen: "agentSessionFocus && !popupOpen",
+        run: () => focusedSession()?.focusInput?.(),
+      },
+      {
+        id: "agents.cycleEffort",
+        title: "Cycle Agent Effort",
+        description: "Cycles the current model's supported effort levels without changing the message.",
+        category: "Agents",
+        when: "agentEffortAvailable",
+        keyWhen: "agentEffortAvailable && !popupOpen",
+        run: cycleFocusedEffort,
+      },
+      {
         id: "agents.newTask",
         title: "New Agent Task",
         description: "Opens the New Task page; a string `arg` pre-fills the task description.",
@@ -179,6 +257,13 @@ export function activate(): () => void {
         when: "projectOpen",
         keywords: ["agent", "claude", "codex", "gemini", "ai"],
         run: ({ arg }) => openHome(typeof arg === "string" ? arg : undefined),
+      },
+      {
+        id: "agents.refreshModels",
+        title: "Refresh models",
+        category: "Agents",
+        when: "projectOpen",
+        run: () => refreshModels(),
       },
       {
         id: "agents.closeTask",

@@ -19,6 +19,7 @@ function stubAttacher(docs: Map<string, { text: string; dirty?: boolean; readOnl
       lineEnding: () => "lf",
       dirty: () => !!docs.get(path)!.dirty,
       uiMode: () => null,
+      context: () => ({ doc: 1, path, language: "plaintext", uiMode: null, readOnly: !!docs.get(path)!.readOnly }),
       readOnly: !!docs.get(path)!.readOnly,
       editorState: () => null,
       dispatchTransactions: (trs, view) => view.update(trs),

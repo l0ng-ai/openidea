@@ -44,6 +44,18 @@ pub async fn db_test(
     ide_host::ops::db::test(&state.host, window.label(), source, password, ssh_secret).await
 }
 
+/// Data Source › SSH/SSL › Test SSH Tunnel.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_test_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    source: DataSource,
+    ssh_secret: Option<String>,
+) -> IdeResult<String> {
+    ide_host::ops::db::test_tunnel(&state.host, window.label(), source, ssh_secret).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn db_set_ssh_secret(
@@ -349,4 +361,11 @@ pub async fn db_apply_edits(
 #[specta::specta]
 pub fn db_console_path(state: State<'_, AppState>, id: String) -> IdeResult<IpcPath> {
     ide_host::ops::db::console_path(&state.host, &id)
+}
+
+/// The query consoles of data source `id`; `create` adds the next one first.
+#[tauri::command]
+#[specta::specta]
+pub fn db_consoles(state: State<'_, AppState>, id: String, create: bool) -> IdeResult<Vec<IpcPath>> {
+    ide_host::ops::db::consoles(&state.host, &id, create)
 }

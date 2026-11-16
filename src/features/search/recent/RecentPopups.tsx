@@ -1,4 +1,4 @@
-import { useFilePresentation } from "@/platform/filePresentation";
+import { useFilePresentation } from "@/ui/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { flushSync } from "react-dom";
 import clsx from "clsx";

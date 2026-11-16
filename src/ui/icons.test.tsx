@@ -284,3 +284,30 @@ describe("fileIconName", () => {
     }
   });
 });
+
+describe("image icons", () => {
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+  it("renders a raster data URI as an image of the icon's size", () => {
+    const { container } = render(<Icon name={png} size={14} />);
+    const img = container.querySelector("img")!;
+    expect(img.getAttribute("src")).toBe(png);
+    expect([img.width, img.height]).toEqual([14, 14]);
+    expect(container.querySelector("svg")).toBeNull();
+  });
+
+  it("falls back to the file icon for other URIs and oversized images", () => {
+    for (const name of [
+      "https://example.com/avatar.png",
+      "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+      `data:image/png;base64,${"A".repeat(70 * 1024)}`,
+      "data:image/png;base64,not base64!",
+    ]) {
+      const { container, unmount } = render(<Icon name={name} />);
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.querySelector("svg")).toBeTruthy();
+      unmount();
+    }
+  });
+});

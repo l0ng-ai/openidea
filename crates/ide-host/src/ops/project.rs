@@ -65,6 +65,15 @@ pub fn settings(host: &Host, window: &str) -> Settings {
     })
 }
 
+/// The removed built-in theme a settings file of this window still names, if any
+/// (`settings` reports its stand-in): the "provided by a plugin now" notice targets these.
+pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
+    match host.project(window) {
+        Ok(p) => p.settings.named_removed_theme().or_else(|| host.global_settings.named_removed_theme()),
+        Err(_) => host.global_settings.named_removed_theme(),
+    }
+}
+
 pub fn roots(host: &Host, window: &str) -> IdeResult<ide_workspace::ProjectRoots> {
     Ok(host.project(window)?.roots())
 }
@@ -239,6 +248,12 @@ pub fn set_settings(
     let toolchain = ["languages", "tools", "languageServers", "projectStructure"]
         .iter()
         .any(|k| key == *k || key.starts_with(&format!("{k}.")));
+    // A run target chosen as the Python interpreter (or changed) needs a snapshot of its libraries.
+    if ["languages", "languages.python", "languages.python.interpreter", "runTargets"].contains(&key) {
+        for project in affected() {
+            crate::ops::sdk::container_python::ensure(host, &project);
+        }
+    }
     // Code style only reaches servers as settings (e.g. jdtls' formatter profile); builds don't depend on it.
     if code_style || toolchain {
         for project in affected() {

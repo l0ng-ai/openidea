@@ -11,6 +11,7 @@ import { attachPanZoom } from "../panZoom";
 import { attachDiagramTools, TOOLS_ATTR } from "./mermaidTools";
 import { localSvg } from "./localSvg";
 import { reid } from "./svgIds";
+import { svgElementSize } from "@/ui/svgSize";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
 const OUTPUT_CLASS = "mermaid-output";
@@ -250,7 +251,15 @@ function show(block: HTMLElement, result: Result | null, stale?: Node) {
   if (block.getAttribute(RENDERED_ATTR) === "ok") {
     attachPanZoom(out);
     const svg = out.querySelector("svg");
-    if (svg) attachDiagramTools(block, svg);
+    if (svg) {
+      const size = svgElementSize(svg);
+      if (size) {
+        svg.dataset.naturalWidth = "";
+        svg.style.setProperty("--diagram-width", `${Number(size.w.toFixed(2))}px`);
+        svg.style.maxWidth = "calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1))";
+      }
+      attachDiagramTools(block, svg);
+    }
   }
 }
 

@@ -5,13 +5,39 @@ import {
   fixDefaultServer,
   folderWithin,
   formatExcludes,
+  newGroup,
   newServer,
   nextServerName,
   parseExcludes,
+  pruneGroups,
   remoteParent,
   removeMapping,
+  toggleGroupServer,
   updateMapping,
 } from "./deploymentModel";
+
+describe("server groups", () => {
+  const servers = ["a", "b", "c"].map((id) => ({ ...DEFAULT_DEPLOYMENT_SERVER, id, name: id }));
+  it("names a new group after the first free number", () => {
+    const g = newGroup([{ id: "x", name: "Group 2", servers: [] }]);
+    expect(g.name).toBe("Group 3");
+    expect(g.servers).toEqual([]);
+    expect(g.id).toMatch(/^group-/);
+  });
+  it("toggles members, keeping the server list's order", () => {
+    let g = { id: "g", name: "G", servers: [] as string[] };
+    g = toggleGroupServer(g, "c", servers);
+    g = toggleGroupServer(g, "a", servers);
+    expect(g.servers).toEqual(["a", "c"]);
+    expect(toggleGroupServer(g, "a", servers).servers).toEqual(["c"]);
+  });
+  it("drops removed servers from groups and keeps untouched groups as they are", () => {
+    const keep = { id: "k", name: "K", servers: ["a"] };
+    const pruned = pruneGroups([keep, { id: "g", name: "G", servers: ["a", "b"] }], servers.slice(0, 1));
+    expect(pruned[0]).toBe(keep);
+    expect(pruned[1]!.servers).toEqual(["a"]);
+  });
+});
 
 describe("exclude names", () => {
   it("parses a ;-separated list", () => {

@@ -234,6 +234,7 @@ function ConnectionDialog({ existing, onDone }: { existing?: DockerConnection; o
               <SshConfigSelect
                 value={shown}
                 onChange={pickSsh}
+                configs={sshConfigs}
                 none="None — type the Engine API URL below"
                 aria-label="SSH configuration"
               />

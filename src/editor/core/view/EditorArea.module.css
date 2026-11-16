@@ -74,7 +74,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px 0 8px;
 }
 .pin {
@@ -89,7 +89,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 36px;
   padding: 0 12px;
   background: var(--bg-editor-banner, color-mix(in srgb, var(--accent) 7%, var(--bg-editor, var(--bg-elev))));
@@ -133,8 +133,8 @@
   display: grid;
   grid-template-columns: minmax(220px, 420px) auto 1fr;
   align-items: center;
-  column-gap: 6px;
-  row-gap: 6px;
+  column-gap: var(--space-1-5);
+  row-gap: var(--space-1-5);
   padding: 6px 8px 6px 10px;
   background: var(--bg-editor-inline, var(--bg-elev));
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
@@ -155,7 +155,7 @@
 .findButtons {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .findCount {
   font-size: var(--fs-ui);
@@ -173,14 +173,14 @@
 .replaceButtons {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 /* Go to line */
 .gotoBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 8px 16px 0;
 }
 .gotoHint {
@@ -270,12 +270,28 @@
 }
 .tabsVertical > .tabs,
 .tabsVertical > .tabRows {
+  /* Fits the labels up to the draggable limit (SideTabsResizer); the editor keeps at least 60%. */
   width: max-content;
-  /* A narrow editor group keeps most of its width for the editor; labels truncate. */
-  min-width: min(140px, 40%);
-  max-width: min(260px, 40%);
+  max-width: min(var(--side-tabs-limit, 260px), 40%);
   border-bottom: none;
   border-right: 1px solid var(--border-editor-tabs, var(--border));
+}
+/* A zero-width handle on the column's inner border, with a wider hit area. */
+.sideTabsResizer {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 0;
+  outline: none;
+}
+.sideTabsResizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+  cursor: ew-resize;
+}
+.sideTabsResizer:focus-visible::after {
+  background: color-mix(in srgb, var(--focus-ring) 55%, transparent);
 }
 .tabsVertical .tabRows > .tabs {
   min-height: 0;
@@ -285,9 +301,12 @@
   flex: 1 1 auto;
   border-top: 1px solid var(--border-editor-tabs, var(--border));
 }
+.tabsRight > .sideTabsResizer {
+  order: 1;
+}
 .tabsRight > .tabs,
 .tabsRight > .tabRows {
-  order: 1;
+  order: 2;
   border-right: none;
   border-left: 1px solid var(--border-editor-tabs, var(--border));
 }
@@ -297,7 +316,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: 26px;
   padding: 0 8px;
   overflow: hidden;

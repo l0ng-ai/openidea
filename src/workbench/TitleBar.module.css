@@ -3,7 +3,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 8px 0 10px;
   white-space: nowrap;
   -webkit-user-select: none;
@@ -62,11 +62,12 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 /* Main toolbar dropdown widgets. */
 .widget {
+  min-width: 0;
   height: 30px;
   margin: 0;
   padding: 0 8px;
@@ -75,7 +76,7 @@
   font-size: var(--fs-ui);
 }
 .widget {
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .widget:hover,
 .widget[aria-expanded="true"] {
@@ -113,7 +114,7 @@
 .tools {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-left: 12px;
 }
 .tool {
@@ -145,6 +146,10 @@
   background: transparent;
   color: var(--fg-secondary);
 }
+.mainMenuButton:hover,
+.mainMenuButton[aria-expanded="true"] {
+  background: var(--bg-toolbar-hover);
+}
 .mainMenuButton:focus-visible,
 .menuTitle:focus-visible,
 .caption:focus-visible {
@@ -161,7 +166,6 @@
   height: var(--stripe-icon-button);
   overflow: hidden;
 }
-.mainMenuSlot ~ .item,
 .mainMenuSlot ~ .tools {
   flex-shrink: 0;
 }
@@ -193,7 +197,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 .menuTitle {
@@ -235,4 +239,29 @@
 .captionClose:active {
   background: var(--caption-close-pressed);
   color: var(--fg-caption-close-hover);
+}
+
+/* A narrow window: tighter spacing, and the widgets give way (ellipsis) before anything overlaps. */
+@media (max-width: 560px) {
+  .bar {
+    gap: var(--space-0-5);
+  }
+  .widget {
+    padding: 0 4px;
+  }
+  .tools {
+    margin-left: 2px;
+  }
+  .drag {
+    min-width: 0;
+  }
+  .mainMenuButton {
+    margin-right: 0;
+  }
+  .captions {
+    margin-left: 0;
+  }
+  .caption {
+    width: 28px;
+  }
 }

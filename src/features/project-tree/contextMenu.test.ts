@@ -100,6 +100,25 @@ describe("project view context menu", () => {
     }
   });
 
+  it("lists contributed links in Copy Path/Reference…", () => {
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => [
+          { label: `Link ${ctx.paths.join()} ${ctx.dirs?.join()}`, verbatim: true, run: () => undefined },
+        ],
+      }),
+    );
+    expect(sub(contextMenuItems([node("/p/src", true)]), "Copy Path/Reference…")).toEqual([
+      "Absolute Path",
+      "File Name",
+      "Path From Content Root",
+      "-",
+      "Link /p/src true",
+    ]);
+  });
+
   it("follows IDEA's order for a file", () => {
     const items = contextMenuItems([node(`${ROOT}/src/a.py`)]);
     expect(labels(items)).toEqual([
@@ -123,6 +142,7 @@ describe("project view context menu", () => {
       "-",
       "Run 'a'",
       "-",
+      "Open in Right Split",
       "Open In",
       "-",
       "Local History",
@@ -131,8 +151,20 @@ describe("project view context menu", () => {
       "Git",
       "-",
       "Compare With…",
+      "File Color",
     ]);
     expect(sub(items, "Refactor")).toEqual(["Rename…", "Move File…", "Copy File…", "-", "Safe Delete…"]);
+    expect(sub(items, "File Color")).toEqual([
+      "Blue",
+      "Green",
+      "Orange",
+      "Rose",
+      "Violet",
+      "Yellow",
+      "Gray",
+      "-",
+      "Edit File Colors…",
+    ]);
     expect(sub(items, "Open In")).toEqual([revealLabel(), "Terminal"]);
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });
@@ -209,7 +241,7 @@ describe("project view context menu", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
-    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'"])
+    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'", "Open in Right Split"])
       expect(l).not.toContain(fileOnly);
   });
 
@@ -299,6 +331,32 @@ it("offers workspace removal for every member root", () => {
   expect(contextMenuItems([node("/b/src", true)])).not.toContainEqual(
     expect.objectContaining({ action: "workspace.removeProject" }),
   );
+});
+
+it("offers Git and Find Usages in workspace members outside the workspace folder", () => {
+  useProject.setState({
+    project: {
+      root: "/work/workspaces/demo",
+      name: "demo",
+      settings: {},
+      trusted: true,
+      isGit: false,
+      workspace: { version: 1, name: "demo", projects: ["/work/repos/a", "/work/repos/b"] },
+    },
+  });
+  setContext("vcsAvailable", true);
+  try {
+    for (const target of [node("/work/repos/a", true, true), node("/work/repos/a/src", true)])
+      expect(sub(contextMenuItems([target]), "Git")).toContain("Commit…");
+    expect(sub(contextMenuItems([node("/work/repos/a/x.py")]), "Git")).toContain("Annotate with Git Blame");
+    expect(labels(contextMenuItems([node("/work/repos/a/x.py")]))).toContain("Find Usages");
+    // Project structure is the workspace folder's: its roots can't name a folder outside it.
+    expect(labels(contextMenuItems([node("/work/repos/a/src", true)]))).not.toContain("Mark Directory as");
+    // Scratches stay outside.
+    expect(sub(contextMenuItems([node("/config/scratches/s.py")]), "Git")).toBeUndefined();
+  } finally {
+    clearContext("vcsAvailable");
+  }
 });
 
 it("does not offer removal on the attached primary", () => {

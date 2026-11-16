@@ -66,15 +66,18 @@ When the desktop machine can't reach GitHub, give it the server binary yourself.
 this order:
 
 1. The file named by the `OPENIDEA_SERVER_BINARY` environment variable, if it is set when OpenIDEA starts.
-2. `server/<os>-<arch>/openidea-server` in the desktop's [local data directory](/en/reference/data-directories), for
-   example `server/linux-x86_64/openidea-server`.
-3. An `openidea-server` next to the OpenIDEA executable, when the host has the same platform as the desktop.
+2. An `openidea-server` next to the OpenIDEA executable, when the host has the same platform as the desktop.
+3. `server/<version>/<os>-<arch>/openidea-server` in the desktop's
+   [local data directory](/en/reference/data-directories), for example `server/0.1.44/linux-x86_64/openidea-server`.
+   This is also where the desktop keeps the server it downloads, so a file put there is used instead of downloading.
 
 Download `openidea-server-<os>-<arch>.gz` from the release that matches your OpenIDEA version, unpack it with
-`gunzip`, and put it in one of these places. Use the same version as the desktop app; the desktop refuses a server
-that speaks a different protocol.
+`gunzip`, and put it in the version's folder. After an update the desktop looks in the new version's folder, so an
+older server is never used by mistake.
 
-If the host already has a build of the current version installed, the desktop uses it when nothing can be downloaded.
+If nothing can be downloaded, the desktop uses a build of the current version already installed on the host, and then
+`server/<os>-<arch>/openidea-server` (the place earlier versions used), which may be another version: commands added
+since then report that the server does not match the app.
 
 ### Build from source
 

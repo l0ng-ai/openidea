@@ -87,7 +87,7 @@ async fn create_or_replace(call: &Call, path: PathBuf, text: Option<String>, ove
         return Ok(());
     }
     let edit = crate::ops::lsp::prepare_workspace_edit(&call.host, call.window(), edit).await?;
-    crate::ops::lsp::apply_workspace_edit(&call.host, call.window(), edit).await
+    crate::ops::lsp::apply_agent_workspace_edit(&call.host, call.window(), edit).await
 }
 
 /// The open document of `path`, or a transient one (`true`: close it after use).
@@ -317,7 +317,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 preconditions: Vec::new(),
             };
             let edit = crate::ops::lsp::prepare_workspace_edit(&host, call.window(), edit).await?;
-            crate::ops::lsp::apply_workspace_edit(&host, call.window(), edit).await
+            crate::ops::lsp::apply_agent_workspace_edit(&host, call.window(), edit).await
         }
         FileOp::Update { path: first, move_to, hunks, or } => {
             // A plain diff's other names count when its `+++` path does not exist.
@@ -400,7 +400,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 edit.files.push(FileEdit::Rename { from: path.into(), to: to.into() });
             }
             let edit = crate::ops::lsp::prepare_workspace_edit(&host, call.window(), edit).await?;
-            crate::ops::lsp::apply_workspace_edit(&host, call.window(), edit).await?;
+            crate::ops::lsp::apply_agent_workspace_edit(&host, call.window(), edit).await?;
             if dirty {
                 notes.push(format!("{shown}: patched the unsaved editor buffer"));
             }

@@ -1,11 +1,12 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
+import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { baseName, effectiveKind } from "./model";
 import { readWorkingText } from "./ops";
-import { groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
+import { changeFileNodes, groupFileNodes, renamedFromPath, stagingSide, type ChangeNode } from "./changes";
 import { currentRepoRoot, statusOf } from "./store";
 import { repositoryPath } from "./repositoryPaths";
 
@@ -16,8 +17,11 @@ export type DiffSide =
   | { type: "worktree"; label?: string }
   /** Another file (Compare With…, Compare Files); editable like the working file. */
   | { type: "file"; path: string; label?: string }
-  /** `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent. */
-  | { type: "text"; text: string; label: string; absent?: boolean }
+  /**
+   * `absent`: the file doesn't exist on this side (added / deleted), as IDEA's EmptyContent.
+   * `editable`: a scratch text the user edits in the diff (Open Blank Diff Window).
+   */
+  | { type: "text"; text: string; label: string; absent?: boolean; editable?: boolean }
   /** A Local History revision. */
   | { type: "history"; id: string; label: string };
 
@@ -59,8 +63,12 @@ export interface DiffData {
   context?: { kind: string; [key: string]: unknown };
   /** Shown inside another view (deployment comparison), not as an editor tab: no tab controls. */
   embedded?: boolean;
+  /** Annotate the left (previous) side with Git Blame when the diff opens. */
+  annotateLeft?: boolean;
   /** Show the sides this way at first instead of the saved mode, which it leaves unchanged. */
   mode?: "split" | "unified";
+  /** The user picked both sides (Compare Files, with Clipboard, blank diff): they can be swapped. */
+  swappable?: boolean;
 }
 
 export const DIFF_KIND = "diff";
@@ -141,7 +149,20 @@ export function diffTitle(data: DiffData): string {
 }
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
+  const combined = combinedOf(data);
+  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
+}
+
+/** An all-in-one diff tab: one per change (the same files with the same sides). */
+export function combinedDiffInput(data: CombinedDiffData): EditorInput {
+  const items = data.items.map(({ chain: _chain, reveal: _reveal, line: _line, lineSide: _side, ...item }) => item);
+  return {
+    kind: COMBINED_DIFF_KIND,
+    key: `combined-diff:${items.map(diffKey).join("\n")}`,
+    path: data.reveal ?? items[0]?.path ?? "",
+    data: { ...data, items },
+  };
 }
 
 /**
@@ -185,6 +206,20 @@ export function changeNodeDiffData(roots: readonly ChangeNode[], node: ChangeNod
   return withChain(
     nodes.map((n) => changeNodeDiff(n)),
     Math.max(0, nodes.indexOf(node)),
+  );
+}
+
+/**
+ * The Commit window's diff of a file: every file of the tree (in tree order) as the F7 chain,
+ * so past the last change it goes on into the unversioned files, as IDEA's Commit diff
+ * preview does (`ChangesViewDiffPreviewProcessor.iterateAllChanges`).
+ */
+export function changeTreeDiffData(roots: readonly ChangeNode[], node: ChangeNode): DiffData {
+  const all = changeFileNodes(roots);
+  const nodes = all.includes(node) ? all : [node];
+  return withChain(
+    nodes.map((n) => changeNodeDiff(n)),
+    nodes.indexOf(node),
   );
 }
 

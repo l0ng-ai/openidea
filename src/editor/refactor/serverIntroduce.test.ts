@@ -1,6 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import type { CodeAction } from "@/bindings";
-import { introducedName, occurrenceVariants } from "./serverIntroduce";
+
+const { openPopup, applyCodeAction } = vi.hoisted(() => ({
+  openPopup: vi.fn(),
+  applyCodeAction: vi.fn(async () => {}),
+}));
+vi.mock("@/editor/lsp/popupStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/editor/lsp/popupStore")>()),
+  openPopup,
+}));
+vi.mock("@/editor/lsp/intentions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/editor/lsp/intentions")>()),
+  applyCodeAction,
+}));
+
+const { chooseOccurrences, introducedName, occurrenceVariants } = await import("./serverIntroduce");
 
 const spansText = (text: string, spans: { from: number; to: number }[]) => spans.map((s) => text.slice(s.from, s.to));
 
@@ -53,5 +69,31 @@ describe("occurrenceVariants", () => {
     expect(occurrenceVariants([one, all])).toEqual({ one, all });
     expect(occurrenceVariants([one])).toBeNull();
     expect(occurrenceVariants([one, action("Extract to field"), all])).toBeNull();
+  });
+});
+
+describe("chooseOccurrences", () => {
+  const action = (title: string) => ({ title, kind: "refactor.extract.variable", server: 1 }) as CodeAction;
+  const one = action("Extract to local variable");
+  const all = action("Extract to local variable (replace all occurrences)");
+  const viewOf = (doc: string, selected: string) => {
+    const from = doc.indexOf(selected);
+    return new EditorView({
+      state: EditorState.create({ doc, selection: { anchor: from, head: from + selected.length } }),
+    });
+  };
+
+  it("asks when the selected expression occurs more than once", () => {
+    openPopup.mockClear();
+    expect(chooseOccurrences(viewOf("f(a + b); g(a + b);", "a + b"), [one, all], "extractVariable")).toBe(true);
+    expect(openPopup).toHaveBeenCalledWith(expect.objectContaining({ title: "Multiple occurrences found" }));
+  });
+
+  it("introduces it directly when it occurs once", async () => {
+    openPopup.mockClear();
+    applyCodeAction.mockClear();
+    expect(chooseOccurrences(viewOf("f(a + b); g(c);", "a + b"), [one, all], "extractVariable")).toBe(true);
+    expect(openPopup).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(applyCodeAction).toHaveBeenCalledWith(expect.anything(), one));
   });
 });

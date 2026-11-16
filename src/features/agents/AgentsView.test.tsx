@@ -230,7 +230,17 @@ describe("Agents docked view", () => {
       { kind: "action", action: "agents.useEditor", icon: "", checked: false },
       { kind: "separator" },
       { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
+      { kind: "action", action: "agents.importSessions", icon: "download" },
     ]);
+  });
+
+  it("lists Import Sessions from Other Apps in Find Action", () => {
+    const action = taskActions.find((a) => a.id === "agents.importSessions");
+    expect(action?.hidden).toBeFalsy();
+    expect(action?.when).toBe("projectOpen");
+    act(() => void action?.run({} as never));
+    expect(useAgents.getState().importOpen).toBe(true);
+    act(() => useAgents.setState({ importOpen: false }));
   });
 
   it("opens tabs as usual without a docked conversation", () => {
@@ -332,6 +342,23 @@ describe("Agents task menu", () => {
     expect(menu).not.toContainEqual(expect.objectContaining({ action: "agents.openTask" }));
     expect(menu[0]).toMatchObject({ action: "agents.renameTask" });
   });
+
+  it("offers Terminal for worktree or off-root tasks and hides it for local-checkout tasks at the project root", () => {
+    const localMenu = taskMenu([{ ...task("one", "ready", "local"), projectRoot: "/project", cwd: "/project" }]);
+    expect(localMenu).not.toContainEqual(expect.objectContaining({ action: "terminal.openAt" }));
+
+    const worktree = { ...task("two", "ready", "worktree"), cwd: "/worktrees/two" };
+    const worktreeMenu = taskMenu([worktree]);
+    expect(worktreeMenu).toContainEqual(
+      expect.objectContaining({ action: "terminal.openAt", label: "Terminal", arg: "/worktrees/two" }),
+    );
+
+    const subfolder = { ...task("three", "ready", "local"), projectRoot: "/project", cwd: "/project/packages/api" };
+    const subfolderMenu = taskMenu([subfolder]);
+    expect(subfolderMenu).toContainEqual(
+      expect.objectContaining({ action: "terminal.openAt", label: "Terminal", arg: "/project/packages/api" }),
+    );
+  });
 });
 
 describe("Agents drag & drop", () => {
@@ -389,6 +416,32 @@ describe("Agents pinned and grouped tasks", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
     await waitFor(() => expect(useAgents.getState().organize.pinned).toEqual([]));
     expect(treeRows().some((text) => text.includes("Pinned"))).toBe(false);
+  });
+
+  it("filters every section by the search, archived ones included, and highlights the match", () => {
+    const tasks = useAgents.getState().tasks;
+    const rename = (id: string, title: string, status: AgentTask["status"] = "ready") =>
+      tasks.set(id, { ...tasks.get(id)!, title, status });
+    rename("one", "Fix the lexer");
+    rename("two", "Refactor parser");
+    rename("three", "Lexer cleanup", "archived");
+    useAgents.setState({ tasks: new Map(tasks), organize: { groups: [frontend], groupOf: { two: "g1" }, pinned: [] } });
+    setup();
+    const field = screen.getByLabelText("Search tasks");
+    fireEvent.change(field, { target: { value: "lxr" } });
+    const rows = treeRows();
+    expect(rows.some((text) => text.includes("Fix the lexer"))).toBe(true);
+    // Archived is collapsed by default; a search looks inside it.
+    expect(rows.some((text) => text.includes("Lexer cleanup"))).toBe(true);
+    // The user group has no match: it goes.
+    expect(rows.some((text) => text.includes("Frontend") || text.includes("Refactor parser"))).toBe(false);
+    const lexer = screen.getAllByRole("treeitem").find((item) => item.textContent?.includes("Fix the lexer"))!;
+    expect([...lexer.querySelectorAll("mark")].map((m) => m.textContent).join("")).toBe("lxr");
+
+    fireEvent.change(field, { target: { value: "nothing like it" } });
+    expect(screen.getByText("No matching tasks")).toBeInTheDocument();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(treeRows().some((text) => text.includes("Frontend"))).toBe(true);
   });
 
   it("shows a user group above the status groups, without its tasks in them too", () => {

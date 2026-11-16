@@ -1,6 +1,6 @@
 import type { TabStripHandle } from "@/ui/Tabs";
 
-/** Content tab strips rendered in each tool window's header (Run sessions, Find tabs, terminals…). */
+/** Content tab strips of each tool window, in its header or content (Run sessions, Find tabs, terminals, query results…). */
 const strips = new Map<string, Set<TabStripHandle>>();
 const registries = new Map<string, (handle: TabStripHandle) => () => void>();
 

@@ -17,6 +17,19 @@ const PYTHON_FILES: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "Pipf
 const SKIP_DIRS: &[&str] =
     &["node_modules", "target", "build", "dist", "out", "venv", "__pycache__", "vendor", "bower_components"];
 
+/// A Python virtual environment (`python -m venv`, virtualenv, uv) or conda environment,
+/// whatever it is named: its packages are dependencies, not modules of the project.
+/// Returns the file that marks it.
+pub(crate) fn virtual_env_marker(dir: &Path) -> Option<&'static str> {
+    if dir.join("pyvenv.cfg").is_file() {
+        Some("pyvenv.cfg")
+    } else if dir.join("conda-meta").is_dir() {
+        Some("conda-meta")
+    } else {
+        None
+    }
+}
+
 /// Build files whose changes can change the detected roots.
 pub(crate) const BUILD_FILES: &[&str] = &[
     "pom.xml",
@@ -65,7 +78,10 @@ pub fn affects_roots(rel: &Path) -> bool {
     let Some(name) = names.next() else { return false };
     BUILD_FILES.contains(&name)
         || ROOT_NAMES.contains(&name)
-        || matches!(name, "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt")
+        || matches!(
+            name,
+            "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt" | "pyvenv.cfg" | "conda-meta"
+        )
         || names.next() == Some("src")
 }
 
@@ -129,6 +145,13 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
             let child = join(&rel, &name);
             // Roots are not searched for nested modules (`src/main/java` can be huge).
             if found.iter().any(|f| *f == child || f.is_empty() && name == "src") {
+                continue;
+            }
+            if let Some(marker) = virtual_env_marker(&root.join(&child)) {
+                if !out.iter().any(|r| r.path == child) {
+                    let from = join(&child, marker);
+                    out.push(SourceFolder { path: child, kind: RootKind::Excluded, detected_from: Some(from) });
+                }
                 continue;
             }
             queue.push_back((child, depth + 1));
@@ -503,6 +526,35 @@ mod tests {
                 "web/src=Source@web/package.json",
             ]
         );
+    }
+
+    #[test]
+    fn virtual_environments_are_excluded_whatever_their_name() {
+        // A package in the environment's site-packages has build files of its own; as a
+        // source root it would be put on PYTHONPATH and shadow the standard library.
+        let dir = tree(&[
+            "requirements.txt",
+            "app.py",
+            "code10/pyvenv.cfg",
+            "code10/Lib/site-packages/pkg/pyproject.toml",
+            "code10/Lib/site-packages/pkg/io/__init__.py",
+            "envs/conda/conda-meta/",
+            "envs/conda/lib/pkg/setup.py",
+            "svc/pyproject.toml",
+            "svc/env/pyvenv.cfg",
+            "svc/env/lib/python3.12/site-packages/dep/setup.py",
+        ]);
+        assert_eq!(
+            summary(&detect(dir.path())),
+            vec![
+                "=Source@requirements.txt",
+                "code10=Excluded@code10/pyvenv.cfg",
+                "envs/conda=Excluded@envs/conda/conda-meta",
+                "svc=Source@svc/pyproject.toml",
+                "svc/env=Excluded@svc/env/pyvenv.cfg",
+            ]
+        );
+        assert!(affects_roots(Path::new("code10/pyvenv.cfg")));
     }
 
     #[test]

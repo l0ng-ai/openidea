@@ -49,6 +49,17 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 
 状态栏上的 **Python 解释器** 显示当前解释器，点击可以切换，也可以打开 **添加新的解释器…** 和 **解释器设置…**。
 
+### 以 Docker 或 Compose 运行目标作为解释器
+
+如果项目的依赖只安装在镜像里，可以把 Docker 或 Docker Compose [运行目标](/zh/guide/remote/containers#docker-和-docker-compose-运行目标)选为解释器：解释器列表和状态栏项会把这些目标列在本地解释器旁边。
+
+- **编辑器。** IDE 在新容器中运行一次目标的 Python（跳过镜像的入口点和服务的依赖），然后用 `docker cp` 把其 `sys.path` 中标准库和项目以外的目录（例如 `site-packages`）复制到缓存。basedpyright 和 Pyright 以 `extraPaths` 的形式获得这些副本，解释器则是 IDE 创建的空虚拟环境，因此不会混入本地软件包。本机完全没有 Python 时，只传 `extraPaths`，并使用它们自带的标准库存根。副本显示在 **外部库** 下。
+- **重新构建。** 副本与镜像对应：项目打开或选择解释器时，重新构建过的镜像会得到新的副本。软件包列表上的刷新按钮会重新复制。
+- **运行。** 没有自己运行目标的 Python 运行配置会在该目标上运行。
+- **软件包。** 列表来自副本，并且只读：请修改镜像或其依赖要求，重新构建，再重新复制。不会向容器中安装任何内容。
+
+如果 `pyrightconfig.json` 或 `[tool.basedpyright]` / `[tool.pyright]` 设置了自己的 `extraPaths`，它们会取代复制的路径。解释器的 Python 版本取自空虚拟环境；本机有相同版本的 Python 时会用它来创建。
+
 ### 创建环境
 
 在 **设置 › 语言和框架 › Python 解释器** 中选择 **添加 Python 解释器**，再选 **解释器类型**：

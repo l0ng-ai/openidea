@@ -97,10 +97,13 @@ fn the_negotiating_request_carries_both_versions() {
         p["clientCapabilities"]["_meta"]["parameterizedModelPicker"], true,
         "Cursor and similar agents need parameterized model options (e.g. fast on/off)"
     );
+    // Forms only: URL mode would open pages the agent names.
+    assert_eq!(p["clientCapabilities"]["elicitation"], json!({ "form": {} }));
     // What we sent in the capture is what claude-agent-acp negotiated v2 and v1 from.
     let sent = frames(TURN, "out")[0]["params"]["clientCapabilities"].clone();
     let mut expected = sent;
     expected["_meta"] = p["clientCapabilities"]["_meta"].clone();
+    expected["elicitation"] = p["clientCapabilities"]["elicitation"].clone();
     assert_eq!(expected, p["clientCapabilities"]);
 }
 
@@ -155,6 +158,7 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
             custom_agents_dir: None,
             home_dir: None,
             env_secrets: None,
+            catalogs: Arc::default(),
         },
         tokio::runtime::Handle::current(),
         connector,
@@ -167,7 +171,8 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
     let fast = cursor.config.iter().find(|o| o.id == "fast").expect("fast option");
     assert_eq!(fast.category.as_deref(), Some("model_config"));
     assert_eq!(fast.current.as_deref(), Some("false"));
-    assert!(cursor.thought_levels.contains_key("m1") && cursor.thought_levels.contains_key("m2"));
+    // The effort option belongs to the session's model; m2 may offer other levels.
+    assert_eq!(cursor.thought_levels.keys().collect::<Vec<_>>(), ["m1"]);
     assert!(cursor.thought_levels["m1"].iter().any(|o| o.category.as_deref() == Some("thought_level")));
 }
 

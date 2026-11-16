@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, openFromTree, test } from "./fixtures";
 
 const edgeTitle = "Result 3 — a long query result at the edge of the Services pane";
 const bindings = { "alpha-console.sql": "alpha", "beta-console.sql": "beta" };
@@ -64,7 +64,9 @@ function menu(page: Page) {
 
 async function choose(page: Page, title: string, command: string) {
   await tab(page, title).click({ button: "right" });
-  await menu(page).getByRole("menuitem", { name: command, exact: true }).click();
+  await menu(page)
+    .getByRole("menuitem", { name: command.startsWith("Select ") ? new RegExp(`^${command}`) : command, exact: true })
+    .click();
   await expect(menu(page)).toHaveCount(0);
 }
 
@@ -90,9 +92,11 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
     "Close",
     "Close Others",
     "Close All",
+    "Close All but Pinned",
+    "Pin Tab",
     "Rename Tab",
-    "Select Next Tab",
-    "Select Previous Tab",
+    "Select Next Tab⇧⌘]",
+    "Select Previous Tab⇧⌘[",
   ]);
   await expect(popup.getByRole("separator")).toHaveCount(2);
   await selected(page, "Result 2", "beta rows");
@@ -140,7 +144,7 @@ test("result context menu fits the viewport, responds to hover and keyboard, and
   await page.keyboard.press("ArrowUp");
   await expect(popup.getByRole("menuitem", { name: "Close", exact: true })).toBeFocused();
   await page.keyboard.press("ArrowUp");
-  await expect(popup.getByRole("menuitem", { name: "Select Previous Tab", exact: true })).toBeFocused();
+  await expect(popup.getByRole("menuitem", { name: /^Select Previous Tab/ })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(popup).toHaveCount(0);
   await selected(page, "Result 1", "alpha rows");
@@ -170,6 +174,8 @@ for (const [theme, label] of [
     const surface = target.locator("..");
     const other = tab(page, "Result 3");
     const otherSurface = other.locator("..");
+    // The results hold focus, as they do at the end when the menu is opened from a result tab.
+    await tab(page, "Result 2").focus();
     await page.mouse.move(0, 0);
     const idle = await surface.evaluate((element) => getComputedStyle(element).backgroundColor);
     const selectedColor = await tab(page, "Result 2")
@@ -207,7 +213,9 @@ for (const [theme, label] of [
     await expect(surface).toHaveCSS("background-color", idle);
     await expect(otherSurface).toHaveCSS("background-color", hovered);
     await selected(page, "Result 2", "beta rows");
-    await menu(page).getByRole("menuitem", { name: "Select Previous Tab", exact: true }).click();
+    await menu(page)
+      .getByRole("menuitem", { name: /^Select Previous Tab/ })
+      .click();
     await expect(menu(page)).toHaveCount(0);
     await page.mouse.move(0, 0);
     await expect(otherSurface).toHaveCSS("background-color", idle);
@@ -220,6 +228,43 @@ for (const [theme, label] of [
     await expect(menu(page)).toHaveCount(0);
   });
 }
+
+test("accents the selected tabs only in the part holding focus, as IDEA does", async ({ workbench: page }) => {
+  await openFromTree(page, "README.md");
+  await seedResults(page);
+  const token = (name: string) =>
+    page.evaluate((name) => {
+      const probe = document.body.appendChild(document.createElement("div"));
+      probe.style.background = `var(${name})`;
+      const color = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return color;
+    }, name);
+  const accent = await token("--bg-tab-selected");
+  const inactive = await token("--bg-tab-selected-inactive");
+  expect(inactive).not.toBe(accent);
+  const surfaces = [
+    page.getByRole("tablist", { name: "Editor tabs" }).getByRole("tab", { name: "README.md" }),
+    page.getByRole("tab", { name: "Database", exact: true }),
+    tab(page, "Result 2"),
+  ].map((tab) => tab.locator(".."));
+  const colors = () =>
+    Promise.all(surfaces.map((surface) => surface.evaluate((element) => getComputedStyle(element).backgroundColor)));
+
+  await page.getByRole("gridcell", { name: "beta rows", exact: true }).click();
+  await expect.poll(colors).toEqual([inactive, accent, accent]);
+  // A menu opened from a result tab keeps the results active.
+  await tab(page, "Result 2").click({ button: "right" });
+  await expect(menu(page)).toBeVisible();
+  await expect.poll(colors).toEqual([inactive, accent, accent]);
+  await page.keyboard.press("Escape");
+  await expect(menu(page)).toHaveCount(0);
+
+  await page.locator(".cm-content").first().click();
+  await expect.poll(colors).toEqual([accent, inactive, inactive]);
+  await page.getByRole("tree", { name: "Project", exact: true }).click({ position: { x: 10, y: 10 } });
+  await expect.poll(colors).toEqual([inactive, inactive, inactive]);
+});
 
 test("renames the clicked inactive result without changing its rows and navigates through Output with wraparound", async ({
   workbench: page,
@@ -264,6 +309,59 @@ test("renames the clicked inactive result without changing its rows and navigate
   await selected(page, "Output");
   await choose(page, "Result 2", "Select Previous Tab");
   await selected(page, "Result 3", "third rows");
+});
+
+test("default tab shortcuts stay in results across repeated tab and grid switches, and remain editor shortcuts elsewhere", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "build.gradle.kts");
+  await openFromTree(page, "settings.gradle.kts");
+  const editors = page.getByRole("tablist", { name: "Editor tabs", exact: true });
+  const build = editors.getByRole("tab", { name: "build.gradle.kts", exact: true });
+  const settings = editors.getByRole("tab", { name: "settings.gradle.kts", exact: true });
+  await seedResults(page);
+
+  await tab(page, "Result 1").focus();
+  for (const [shortcut, title, value] of [
+    ["Meta+Shift+BracketRight", "Result 3", "third rows"],
+    ["Meta+Shift+BracketRight", "Output"],
+    ["Meta+Shift+BracketRight", "Result 1", "alpha rows"],
+    ["Meta+Shift+BracketLeft", "Output"],
+    ["Meta+Shift+BracketLeft", "Result 3", "third rows"],
+  ]) {
+    await page.keyboard.press(shortcut!);
+    await selected(page, title!, value);
+    await expect(settings).toHaveAttribute("aria-selected", "true");
+  }
+
+  // The grid is replaced on a tab switch; the second press must still belong to results.
+  await page.getByRole("gridcell", { name: "third rows", exact: true }).click();
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Output");
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Result 1", "alpha rows");
+  await page.getByRole("gridcell", { name: "alpha rows", exact: true }).click();
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Result 2", "beta rows");
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await selected(page, "Result 3", "third rows");
+  await expect(settings).toHaveAttribute("aria-selected", "true");
+
+  await settings.click();
+  await page.locator(".cm-content[contenteditable=true]").first().click();
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await expect(build).toHaveAttribute("aria-selected", "true");
+  await selected(page, "Result 3", "third rows");
+  await page.keyboard.press("Meta+Shift+BracketLeft");
+  await expect(settings).toHaveAttribute("aria-selected", "true");
+  await selected(page, "Result 3", "third rows");
+
+  await tab(page, "Result 1").click({ button: "right" });
+  await page.keyboard.press("Meta+Shift+BracketRight");
+  await page.keyboard.press("Meta+Shift+BracketLeft");
+  await selected(page, "Result 3", "third rows");
+  await expect(menu(page)).toBeVisible();
+  await page.keyboard.press("Escape");
 });
 
 test("rename owns deletion and Cmd+Enter without editing the previously focused query", async ({ workbench: page }) => {
@@ -355,4 +453,149 @@ test("closes clicked results, other results and all results without removing Out
   });
   await expect(page.getByRole("treeitem", { name: "Alpha database", exact: true })).toBeVisible();
   await expect(page.getByRole("treeitem", { name: "Beta database", exact: true })).toBeVisible();
+});
+
+/** Runs `text` in console `path` through the production store, with the backend's answers stubbed. */
+async function runConsole(page: Page, path: string, text: string) {
+  await page.evaluate(
+    async ({ path, text }) => {
+      const bindingsPath = "/src/bindings.ts";
+      const storePath = "/src/features/database/store.ts";
+      const { commands } = await import(bindingsPath);
+      const { executeConsole } = await import(storePath);
+      commands.dbStatements = async (_id: string, sql: string) => {
+        let from = 0;
+        const data = sql.split(";").flatMap((part) => {
+          const start = from + part.length - part.trimStart().length;
+          from += part.length + 1;
+          const st = part.trim();
+          return st ? [{ from: start, to: start + st.length, text: st }] : [];
+        });
+        return { status: "ok", data };
+      };
+      commands.dbExecute = async (_r: unknown, _id: string, statements: { text: string }[]) => ({
+        status: "ok",
+        data: statements.map((statement) => ({
+          statement,
+          error: null,
+          result: {
+            statement: statement.text,
+            columns: [{ name: "payload", typeName: "text" }],
+            rows: [[/'(.*)'/.exec(statement.text)![1]]],
+            affected: null,
+            hasMore: false,
+            elapsedMs: 1,
+            executionMs: 1,
+          },
+        })),
+      });
+      await executeConsole(path, text, 0, text.length);
+    },
+    { path, text },
+  );
+}
+
+test("console runs replace their unpinned results; pinned results stay until Close All but Pinned", async ({
+  workbench: page,
+}) => {
+  await seedResults(page);
+  const strip = page.getByRole("tablist", { name: "Results", exact: true }).getByRole("tab");
+  await choose(page, "Result 1", "Close All");
+  // The seeded Output line's id would collide with the ids of the lines the runs log.
+  await page.evaluate(async () => {
+    const storePath = "/src/features/database/store.ts";
+    const { useDatabase } = await import(storePath);
+    useDatabase.setState({ output: [] });
+  });
+  await runConsole(page, "alpha-console.sql", "SELECT 'one'");
+  const n = Number(/\d+/.exec((await strip.nth(1).textContent())!)![0]);
+  const result = (run: number, index = 1) => `Result ${n + run}${index > 1 ? `-${index}` : ""}`;
+  await runConsole(page, "alpha-console.sql", "SELECT 'two'");
+  await expect(strip).toHaveText(["Output", result(1)]);
+  await selected(page, result(1), "two");
+
+  const pin = page.getByRole("button", { name: "Pin Tab", exact: true });
+  await pin.click();
+  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await runConsole(page, "alpha-console.sql", "SELECT 'three'; SELECT 'four'");
+  await runConsole(page, "beta-console.sql", "SELECT 'beta'");
+  await expect(strip).toHaveText(["Output", result(1), result(2), result(2, 2), result(3)]);
+  await selected(page, result(3), "beta");
+
+  await tab(page, result(2)).click({ button: "right" });
+  await expect(menu(page).getByRole("menuitem", { name: "Close All but Pinned", exact: true })).toBeEnabled();
+  await menu(page).getByRole("menuitem", { name: "Pin Tab", exact: true }).click();
+  await expect(menu(page)).toHaveCount(0);
+  await runConsole(page, "alpha-console.sql", "SELECT 'five'");
+  await expect(strip).toHaveText(["Output", result(1), result(2), result(4), result(3)]);
+  await selected(page, result(4), "five");
+  await expect(pin).toHaveAttribute("aria-pressed", "false");
+
+  await tab(page, result(2)).click();
+  await expect(pin).toHaveAttribute("aria-pressed", "true");
+  await choose(page, result(3), "Close All but Pinned");
+  await expect(strip).toHaveText(["Output", result(1), result(2)]);
+  await selected(page, result(2), "three");
+  await tab(page, result(1)).click({ button: "right" });
+  await expect(menu(page).getByRole("menuitem", { name: "Unpin Tab", exact: true })).toBeVisible();
+  await expect(menu(page).getByRole("menuitem", { name: "Close All but Pinned", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+
+  // A pinned tab's close button is its Unpin button; middle-click leaves it open.
+  const slot = tab(page, result(1)).locator("..");
+  await expect(slot.getByRole("button", { name: "Close Tab", exact: true })).toHaveCount(0);
+  await tab(page, result(1)).click({ button: "middle" });
+  await expect(strip).toHaveText(["Output", result(1), result(2)]);
+  await slot.getByRole("button", { name: "Unpin Tab", exact: true }).click();
+  await selected(page, result(2), "three");
+  await slot.getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(strip).toHaveText(["Output", result(2)]);
+});
+
+test("Tab goes from a result tab to its first cell, and the result toolbar is one stop back", async ({
+  workbench: page,
+}) => {
+  await openFromTree(page, "README.md");
+  await seedResults(page);
+  const grid = page.getByRole("grid");
+  const cell = page.getByRole("gridcell", { name: "beta rows", exact: true });
+  await expect(cell).toHaveAttribute("aria-selected", "false");
+
+  await tab(page, "Result 2").focus();
+  await page.keyboard.press("Tab");
+  await expect(grid).toBeFocused();
+  await expect(cell).toHaveAttribute("aria-selected", "true");
+
+  const toolbar = page.getByRole("toolbar", { name: "Result actions", exact: true });
+  await page.keyboard.press("Shift+Tab");
+  await expect(toolbar.getByRole("button", { name: "Table", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(toolbar.getByRole("button", { name: "Chart", exact: true })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(tab(page, "Result 2")).toBeFocused();
+  // The toolbar is entered at the control used last.
+  await page.keyboard.press("Tab");
+  await expect(grid).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(toolbar.getByRole("button", { name: "Chart", exact: true })).toBeFocused();
+
+  // Past the last cell, Tab leaves the grid instead of landing on its header's filter button.
+  await page.keyboard.press("Tab");
+  await expect(grid).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(grid).not.toBeFocused();
+  expect(await page.evaluate(() => !!document.activeElement?.closest("[role=grid]"))).toBe(false);
+
+  // The keyboard path to the header's local filter is the Local Filter action.
+  await grid.focus();
+  await page.evaluate(async () => {
+    const actionsModule = "/src/platform/actions.ts";
+    const { executeAction } = await import(/* @vite-ignore */ actionsModule);
+    await executeAction("db.localFilter");
+  });
+  const filter = page.getByRole("dialog", { name: "Local filter of payload", exact: true });
+  await expect(filter.getByRole("textbox", { name: "Search values", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(filter).toBeHidden();
+  await expect(grid).toBeFocused();
 });

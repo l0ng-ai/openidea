@@ -9,7 +9,8 @@ const ROOT = "/dev/acme-api";
 
 async function openBranches(page: Page) {
   await page.evaluate(async () => {
-    const { executeAction } = await import(/* @vite-ignore */ "/src/platform/actions.ts");
+    const actionsModule = "/src/platform/actions.ts";
+    const { executeAction } = await import(/* @vite-ignore */ actionsModule);
     await executeAction("vcs.branches");
   });
   const popup = page.getByRole("dialog", { name: "Git Branches" });
@@ -48,7 +49,8 @@ test.beforeEach(async ({ workbench: page }) => {
       branch("main", true),
       ...Array.from({ length: 40 }, (_, i) => branch(`task-${i}-a-long-branch-name-that-gets-cut-off`)),
     ];
-    const { useVcs, refreshNow, loadBranches } = await import(/* @vite-ignore */ "/src/features/vcs/store.ts");
+    const vcsModule = "/src/features/vcs/store.ts";
+    const { useVcs, refreshNow, loadBranches } = await import(/* @vite-ignore */ vcsModule);
     useVcs.setState({ available: true, root, repo: root, branchesLoaded: false, stashesLoaded: false });
     await refreshNow();
     await loadBranches();

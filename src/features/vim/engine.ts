@@ -5,8 +5,8 @@
  */
 import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
-import { Vim, getCM, vim } from "@replit/codemirror-vim";
-import { transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
+import { CodeMirror, Vim, getCM, vim } from "@replit/codemirror-vim";
+import { externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
@@ -16,6 +16,17 @@ import { resolveActionId, type RcCommand } from "./rc";
 import { mapFunctionTextObjects } from "./textObjects";
 
 /** Insert/Replace state as seen by transactions (mode changes are queued). */
+// Vim's `u` / `Ctrl-R` call CodeMirror's history; an editor that keeps its history elsewhere
+// (notebook cells) provides `externalHistory` and gets those keys too.
+for (const name of ["undo", "redo"] as const) {
+  const own = CodeMirror.commands[name];
+  CodeMirror.commands[name] = (cm) => {
+    const history = cm.cm6.state.facet(externalHistory);
+    if (history) history[name]();
+    else own(cm);
+  };
+}
+
 const setVimInsert = StateEffect.define<boolean>();
 
 const vimInsert = StateField.define<boolean>({
@@ -269,8 +280,15 @@ const caret = "var(--caret, var(--fg-strong))";
 
 /** Block caret and command line in theme tokens (the package's defaults are fixed colours). */
 const vimTheme = EditorView.theme({
+  // A solid block with the character under it in the editor's background colour, as IdeaVim's
+  // block caret: a translucent fill over light text on a dark theme read as a brighter letter.
   "& .cm-vimCursorLayer .cm-fat-cursor": {
-    background: `color-mix(in srgb, ${caret} 60%, transparent)`,
+    background: caret,
+  },
+  // The package sets the letter's own colour inline; a partial block (replace, operator-pending)
+  // draws no letter.
+  "&.cm-focused .cm-vimCursorLayer .cm-fat-cursor:not([style*='color: transparent'])": {
+    color: "var(--bg-editor, var(--bg-island, var(--bg-app))) !important",
   },
   "&:not(.cm-focused) .cm-vimCursorLayer .cm-fat-cursor": {
     background: "none",

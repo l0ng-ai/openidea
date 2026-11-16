@@ -79,6 +79,13 @@ export class TestResults {
     return !!own && own !== "running";
   }
 
+  /** Puts lines before a test's output (what it printed, read after the run, goes before its failure). */
+  prependOutput(path: string[], lines: readonly string[]) {
+    const n = this.node(path);
+    n.output = [...lines, ...n.output].slice(0, MAX_OUTPUT_LINES);
+    this.version++;
+  }
+
   /** Finds a test by a suffix of its path (pytest failure headers name `Class.test`). */
   findBySuffix(suffix: string[]): TestNode | undefined {
     let best: TestNode | undefined;

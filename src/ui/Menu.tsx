@@ -51,6 +51,8 @@ export type MenuItem =
       /** The pointer or the keyboard made it the active item (not on opening the menu). */
       onActive?: () => void;
       submenu?: MenuItem[];
+      /** The text the item copies, for choosers that show it (Copy Path/Reference…). */
+      preview?: string;
     };
 
 interface Resolved {
@@ -344,6 +346,9 @@ export function MenuList({
       aria-label={aria["aria-label"]}
       className={styles.menu}
       onKeyDown={onKeyDown}
+      // A right-click in an open menu does nothing; without this it reaches whatever is under the
+      // menu in the component tree, e.g. the title bar's toolbar menu behind File › Open Recent.
+      onContextMenu={(e) => e.preventDefault()}
       onPointerMove={(e) => {
         if (e.currentTarget.contains(e.target as Node)) pointerMove({ x: e.clientX, y: e.clientY });
       }}

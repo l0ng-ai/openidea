@@ -4,7 +4,8 @@
  * along the parent chain (a parent POM outside the project opens from the local
  * repository, read-only as a plain file) — and a dependency / plugin whose version a
  * `<dependencyManagement>` / `<pluginManagement>` entry provides opens that managing
- * declaration. The backend resolves both with the build model's POM reader and parent
+ * declaration; otherwise a dependency, plugin or `<parent>` opens the artifact's own POM
+ * (a project module's, else the local repository's). The backend resolves both with the build model's POM reader and parent
  * resolver; here only cheap eligibility is computed (a reference span, an artifact
  * element), so the ⌘-hover underline stays out of the rest of the file, and nothing
  * resolves to no jump at all: an unresolvable property or parent never navigates
@@ -34,12 +35,12 @@ function inside(name: string, text: string, at: number): boolean {
 }
 
 /**
- * Whether `at` may sit in a `<dependency>` / `<plugin>` element: an eligibility test
- * only (a `<dependency>` inside a comment counts too) — whether the element's version
- * actually comes from a management entry is the backend's answer.
+ * Whether `at` may sit in a `<dependency>` / `<plugin>` / `<parent>` element: an
+ * eligibility test only (a `<dependency>` inside a comment counts too) — what the
+ * element resolves to is the backend's answer.
  */
 export function inArtifactElement(text: string, at: number): boolean {
-  return inside("dependency", text, at) || inside("plugin", text, at);
+  return inside("dependency", text, at) || inside("plugin", text, at) || inside("parent", text, at);
 }
 
 /** Go to declaration in a POM of the project (or an opened parent POM of the local repository). */

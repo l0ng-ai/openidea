@@ -311,6 +311,8 @@ struct Replay {
     sent: Arc<Mutex<Vec<Vec<Value>>>>,
     launched: Mutex<Vec<Vec<String>>>,
     errors: Arc<Mutex<Vec<String>>>,
+    /// Each process's kill token.
+    kills: Mutex<Vec<CancellationToken>>,
 }
 
 impl Cli for Replay {
@@ -331,6 +333,7 @@ impl Cli for Replay {
         let (shim_in, cli_in) = tokio::io::duplex(1 << 20);
         let (mut cli_out, shim_out) = tokio::io::duplex(1 << 20);
         let kill = CancellationToken::new();
+        self.kills.lock().push(kill.clone());
         let (sent, errors, token) = (self.sent.clone(), self.errors.clone(), kill.clone());
         sent.lock().push(Vec::new());
         tokio::spawn(async move {
@@ -421,14 +424,18 @@ impl Replayed {
     }
 }
 
-async fn replay(name: &str) -> Replayed {
-    let processes = load_fixture(name);
-    let cli = Arc::new(Replay {
+fn replay_cli(processes: Vec<Vec<Frame>>) -> Arc<Replay> {
+    Arc::new(Replay {
         processes: Mutex::new(processes.into()),
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
-    });
+        kills: Mutex::default(),
+    })
+}
+
+async fn replay(name: &str) -> Replayed {
+    let cli = replay_cli(load_fixture(name));
     let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
     let h =
@@ -459,6 +466,69 @@ async fn replay_simple() {
     assert!(args.contains(&"--permission-prompt-tool".to_owned()));
     let user = r.sent(0).into_iter().find(|m| m["type"] == "user").unwrap();
     assert_eq!(user["message"]["content"][0]["text"], "Reply with exactly: hello there");
+}
+
+/// The app closing the connection (an idle task released, archived or deleted) stops the
+/// CLI processes of its sessions, idle ones included.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_connection_stops_the_processes() {
+    let r = replay("simple").await;
+    assert!(r.cli.kills.lock().iter().all(|k| !k.is_cancelled()));
+    r.h.client.kill();
+    let kills = r.cli.kills.lock().clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for k in kills {
+            k.cancelled().await;
+        }
+    })
+    .await
+    .expect("every process was stopped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_without_a_title_get_one_generated() {
+    let mut processes = load_fixture("simple");
+    processes[0].extend([
+        Frame::Shim(json!({"type": "control_request", "request_id": "req_3",
+            "request": {"subtype": "generate_session_title"}})),
+        Frame::Cli(json!({"type": "control_response",
+            "response": {"subtype": "success", "request_id": "req_3", "response": {"title": "Say hello"}}})),
+    ]);
+    let cli = replay_cli(processes);
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h = Harness::connect(
+        cli.clone(),
+        config.path().into(),
+        config.path().join("pending"),
+        cwd_path.clone(),
+        Vec::new(),
+    )
+    .await;
+    let session = h.new_session().await;
+    // The transcript Claude Code writes, without the title it gives sessions in a terminal.
+    let dir = config.path().join("projects").join(history::escape(&cwd_path));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prompt = json!({"type": "user", "uuid": "u1", "parentUuid": null,
+        "message": {"role": "user", "content": "Reply with exactly: hello there"}});
+    std::fs::write(dir.join(format!("{session}.jsonl")), format!("{prompt}\n")).unwrap();
+
+    h.prompt(&session, "Reply with exactly: hello there").await.unwrap();
+    let mut titles = Vec::new();
+    for _ in 0..100 {
+        titles = h.updates(&session, "session_info_update");
+        if !titles.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    assert_eq!(titles.iter().map(|t| t["title"].clone()).collect::<Vec<_>>(), [json!("Say hello")]);
+    let sent = cli.sent.lock()[0].clone();
+    let request =
+        sent.iter().find(|m| m.pointer("/request/subtype") == Some(&json!("generate_session_title"))).unwrap();
+    assert_eq!(request["request"]["description"], "Reply with exactly: hello there");
+    assert_eq!(request["request"]["persist"], true);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -727,6 +797,7 @@ async fn a_stop_ahead_of_its_prompt_cancels_it() {
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
@@ -770,6 +841,7 @@ async fn a_failed_turn_reports_its_failure() {
             sent: Arc::default(),
             launched: Mutex::default(),
             errors: Arc::default(),
+            kills: Mutex::default(),
         });
         let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let h =

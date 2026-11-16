@@ -283,6 +283,17 @@ describe("Menu action enablement", () => {
     expect(open).toHaveFocus();
   });
 
+  it("keeps a right-click in a menu from reaching the components behind it", () => {
+    const behind = vi.fn((e: { defaultPrevented: boolean }) => e.defaultPrevented);
+    render(
+      <div onContextMenu={(e) => behind(e)}>
+        <MenuList items={[{ label: "Recent", run: () => undefined }]} onDone={() => {}} />
+      </div>,
+    );
+    fireEvent.contextMenu(screen.getByRole("menuitem", { name: "Recent" }));
+    expect(behind).toHaveReturnedWith(true);
+  });
+
   it("reports a hovered row once and lets the keyboard continue from it", () => {
     const active: string[] = [];
     const item = (label: string) => ({ label, onActive: () => active.push(label), run: () => undefined });

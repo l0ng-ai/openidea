@@ -74,9 +74,15 @@ pub async fn lsp_completion(
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
-    let items = plugin_call(move || plugins.provide_completion(&d, pos, trigger.as_deref())).await.unwrap_or_default();
+    let (covered, items) = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref()))
+        .await
+        .unwrap_or_default();
     if items.is_empty() {
-        return Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }));
+        return if covered {
+            Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }))
+        } else {
+            result
+        };
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
     list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
@@ -309,9 +315,13 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
 
 pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: GotoKind) -> IdeResult<Vec<Location>> {
     let target = position_document(host, window, doc, pos).await?;
+    // ⌘B on a declaration shows its usages, also when a plugin's index links the name elsewhere
+    // (a MyBatis mapper method to its XML statement): the server's answer comes along for the
+    // editor to tell.
     if target == doc
         && kind == GotoKind::Definition
         && let Some(plugins) = crate::plugins::editor_plugin_host()
+        && !on_declaration_name(host, window, doc, pos).await
     {
         let project = host.project(window)?;
         // A notebook cell is a language-server document only: no plugin navigates in it.
@@ -350,6 +360,30 @@ pub async fn lsp_goto(host: &Host, window: &str, doc: DocId, pos: Pos, kind: Got
         found.into_iter().map(|l| Location { path: l.path.into(), range: l.range, uri: None }).collect();
     let in_string = !found.is_empty() && in_string_literal(host, window, doc, pos).await;
     definition_targets(result, found, in_string)
+}
+
+/// Whether the syntax tree puts the identifier at `pos` as a declaration's name (`int f()`'s `f`).
+async fn on_declaration_name(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
+    let Ok(project) = host.project(window) else { return false };
+    blocking(move || {
+        let snap = project.documents.text_snapshot(doc)?;
+        if snap.large {
+            return Ok(false);
+        }
+        let s = ide_syntax::Snapshot::doc(doc, snap.version, &snap.language, &snap.text);
+        let cancel = ide_core::CancellationToken::new();
+        let Ok(Some(at)) = project.structure.node_at(&s, Range::new(pos, pos), &cancel) else { return Ok(false) };
+        Ok(is_declaration_name(&at))
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn is_declaration_name(at: &ide_syntax::NodeAt) -> bool {
+    at.node.field.as_deref() == Some("name")
+        && at.ancestors.first().is_some_and(|parent| {
+            ["declaration", "definition", "declarator"].iter().any(|kind| parent.kind.ends_with(kind))
+        })
 }
 
 async fn in_string_literal(host: &Host, window: &str, doc: DocId, pos: Pos) -> bool {
@@ -1023,6 +1057,11 @@ pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action
         blocking(move || apply_edit(&documents, &edit)).await?;
     }
     open_plugin_action_target(&action, window);
+    if let Some(command) = &action.command
+        && let Some(result) = run_plugin_server_command(host, window, doc, None, command).await
+    {
+        return result;
+    }
     if let Some(command) = action.command
         && !(action.edit.is_some() && is_client_follow_up(&project, doc, None, &command).await)
     {
@@ -1438,6 +1477,15 @@ pub async fn lsp_type_hierarchy(
     host.project(window)?.lsp.type_hierarchy(doc, pos, direction).await
 }
 
+pub async fn lsp_prepare_type_hierarchy(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<HierarchyItem>> {
+    host.project(window)?.lsp.prepare_type_hierarchy(doc, pos).await
+}
+
 pub fn lsp_servers(host: &Host, window: &str) -> IdeResult<Vec<ServerInfo>> {
     Ok(host.project(window)?.lsp.servers())
 }
@@ -1483,21 +1531,36 @@ pub async fn lsp_restart_named(host: &Host, name: &str) -> IdeResult<()> {
 pub async fn apply_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
     let project = host.project(window)?;
     blocking(move || {
-        // Multi-file refactorings leave a Local History point to go back to.
-        let paths: Vec<&std::path::Path> = edit
-            .files
-            .iter()
-            .filter_map(|f| match f {
-                ide_core::FileEdit::Edit { path, .. } => Some(&**path),
-                _ => None,
-            })
-            .collect();
-        if edit.files.len() > 1 {
-            project.record_before_refactoring(&paths, "Apply changes");
-        }
+        record_before_multi_file_edit(&project, &edit);
         apply_edit(&project.documents, &edit)
     })
     .await
+}
+
+/// [`apply_workspace_edit`] for the MCP server's tools: undoable the same way, but the UI does
+/// not announce it as a refactoring.
+pub async fn apply_agent_workspace_edit(host: &Host, window: &str, edit: WorkspaceEdit) -> IdeResult<()> {
+    let project = host.project(window)?;
+    blocking(move || {
+        record_before_multi_file_edit(&project, &edit);
+        project.documents.apply_agent_workspace_edit(&edit)
+    })
+    .await
+}
+
+/// Multi-file edits leave a Local History point to go back to.
+fn record_before_multi_file_edit(project: &crate::Project, edit: &WorkspaceEdit) {
+    let paths: Vec<&std::path::Path> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            ide_core::FileEdit::Edit { path, .. } => Some(&**path),
+            _ => None,
+        })
+        .collect();
+    if edit.files.len() > 1 {
+        project.record_before_refactoring(&paths, "Apply changes");
+    }
 }
 
 pub async fn prepare_workspace_edit(host: &Host, window: &str, mut edit: WorkspaceEdit) -> IdeResult<WorkspaceEdit> {
@@ -1550,7 +1613,45 @@ pub async fn lsp_execute_command(host: &Host, window: &str, doc: DocId, command:
         return blocking(move || plugins.run_language_command(&plugin, &command_id, argument.as_deref(), invocation))
             .await;
     }
+    if let Some(result) = run_plugin_server_command(host, window, doc, None, &command).await {
+        return result;
+    }
     host.project(window)?.lsp.execute_command(doc, command).await
+}
+
+/// Runs `command` through the plugin that claims it (`[[contributes.serverCommands]]`)
+/// when no server of the document executes it itself: a code lens, code action or inlay
+/// hint may carry a command the server leaves to the client. `None` when no plugin does.
+async fn run_plugin_server_command(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    server: Option<ServerId>,
+    command: &Command,
+) -> Option<IdeResult<()>> {
+    let plugins = crate::plugins::editor_plugin_host()?;
+    let project = host.project(window).ok()?;
+    if project.lsp.provides_command(doc, server, &command.command).await {
+        return None;
+    }
+    let (plugin, run) = plugins.server_command(&project.lsp.server_names(doc, server), &command.command)?;
+    let snap = match project.documents.snapshot(doc) {
+        Ok(snap) => snap,
+        Err(e) => return Some(Err(e)),
+    };
+    let invocation = ide_plugin::Invocation {
+        client: Some(window.into()),
+        workspace_root: Some(project.root.clone()),
+        editor: Some(ide_plugin::EditorContext {
+            path: snap.path.0.clone(),
+            language: snap.language.0,
+            selections: vec![],
+        }),
+        selected_paths: vec![snap.path.0],
+        ..Default::default()
+    };
+    let arguments = serde_json::Value::Array(command.arguments.clone()).to_string();
+    Some(blocking(move || plugins.run_language_command(&plugin, &run, Some(&arguments), invocation)).await)
 }
 
 /// Resolves an interactive command without applying edits or executing it.
@@ -1593,6 +1694,11 @@ pub async fn lsp_execute_code_action(
             tokio::task::spawn_blocking(move || apply_edit(&documents, &edit))
                 .await
                 .map_err(|e| ide_core::IdeError::internal(e.to_string()))??;
+        }
+        if let Some(command) = &action.command
+            && let Some(result) = run_plugin_server_command(host, window, doc, Some(action.server), command).await
+        {
+            return result.map(|()| Vec::new());
         }
         match action.command {
             Some(command) if edited && is_client_follow_up(&project, doc, Some(action.server), &command).await => {
@@ -1806,6 +1912,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("lsp_type_hierarchy", |c| async move {
         lsp_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?, c.arg("direction")?).await
+    });
+    d.add("lsp_prepare_type_hierarchy", |c| async move {
+        lsp_prepare_type_hierarchy(&c.host, &c.window, c.arg("doc")?, c.arg("pos")?).await
     });
     d.add("lsp_servers", |c| async move { lsp_servers(&c.host, &c.window) });
     d.add("lsp_resend_diagnostics", |c| async move { lsp_resend_diagnostics(&c.host, &c.window) });
@@ -2119,6 +2228,24 @@ mod tests {
             ["/p/routes/web.php"]
         );
         assert_eq!(paths(definition_targets(Ok(vec![helper, guess]), Vec::new(), false)), ["/p/app/helpers.php"]);
+    }
+
+    #[test]
+    fn declaration_names_are_told_apart_from_uses() {
+        let syntax = std::sync::Arc::new(ide_language::Syntax::new());
+        let structure = ide_syntax::StructureService::new(std::sync::Arc::new(ide_language::SyntaxCache::new(syntax)));
+        let java = ide_core::LanguageId::new("java");
+        let text = "interface ShareMapper {\n    int batchCancel(List<Long> ids);\n}\nclass S { int f(ShareMapper m) { return m.batchCancel(null); } }\n";
+        let snap = ide_syntax::Snapshot::text(&java, text);
+        let cancel = ide_core::CancellationToken::new();
+        let at = |line, col| {
+            let pos = Pos::new(line, col);
+            is_declaration_name(&structure.node_at(&snap, Range::new(pos, pos), &cancel).unwrap().unwrap())
+        };
+        assert!(at(1, 10), "the mapper method's name");
+        assert!(at(0, 12), "the interface's name");
+        assert!(!at(3, 45), "a call of the method");
+        assert!(!at(1, 4), "its return type");
     }
 
     #[test]

@@ -18,6 +18,10 @@
 //!
 //! Other platforms (`text/uri-list` on X11) are not wired up: [`files`] is
 //! empty and [`set_files`] fails there.
+//!
+//! [`png`] reads an image (a screenshot) for the project view's Paste, which
+//! saves it as a file: `public.png` or `public.tiff` on macOS, the registered
+//! `PNG` format or `CF_DIB` on Windows. Linux reads it through GTK in the app.
 
 use std::path::PathBuf;
 
@@ -25,6 +29,26 @@ use std::path::PathBuf;
 /// handle on Windows, ignored elsewhere. Call on the main thread on macOS and Linux.
 pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
     imp::set_text(text, owner)
+}
+
+/// The clipboard's plain text, None when it holds none. macOS only (main thread);
+/// Linux reads it asynchronously through GTK in the app, Windows through the WebView.
+#[cfg(target_os = "macos")]
+pub fn text() -> Option<String> {
+    imp::text()
+}
+
+/// The clipboard's image as PNG bytes, None when it holds none. Call on the main
+/// thread on macOS.
+#[cfg(any(windows, target_os = "macos"))]
+pub fn png() -> Option<Vec<u8>> {
+    imp::png()
+}
+
+/// Whether the clipboard holds an image, without reading it. Call on the main
+/// thread on macOS and Linux.
+pub fn has_image() -> bool {
+    imp::has_image()
 }
 
 /// Size of `DROPFILES`: `pFiles`, `pt` (two `LONG`s), `fNC`, `fWide`.
@@ -127,9 +151,62 @@ pub fn decode(bytes: &[u8]) -> Vec<PathBuf> {
     out
 }
 
+/// `BI_RGB` and `BI_BITFIELDS`: uncompressed pixels, the forms screenshots take.
+#[cfg(any(windows, test))]
+const BI_RGB: u32 = 0;
+#[cfg(any(windows, test))]
+const BI_BITFIELDS: u32 = 3;
+
+/// A packed DIB (`BITMAPINFOHEADER` or a later header, then the pixels) as PNG.
+/// Only 24- and 32-bit uncompressed bitmaps, which is what screenshots and
+/// copied images are; None for anything else. A 32-bit bitmap whose alpha is
+/// all zero (most writers leave it unset) is opaque.
+#[cfg(any(windows, test))]
+fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
+    let u32_at = |at: usize| dib.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let header = u32_at(0)? as usize;
+    let width = u32_at(4)? as i32;
+    let height = u32_at(8)? as i32;
+    let bits = u16::from_le_bytes([*dib.get(14)?, *dib.get(15)?]);
+    let compression = u32_at(16)?;
+    if header < 40 || width <= 0 || height == 0 || !matches!(bits, 24 | 32) {
+        return None;
+    }
+    if compression != BI_RGB && !(compression == BI_BITFIELDS && bits == 32) {
+        return None;
+    }
+    // A `BITMAPINFOHEADER` keeps the three bitfield masks after it; later
+    // headers hold them inside. Masks other than BGRA's are not supported.
+    let masks = if compression == BI_BITFIELDS && header == 40 { 12 } else { 0 };
+    let colors = u32_at(32)? as usize;
+    let (width, rows) = (width as usize, height.unsigned_abs() as usize);
+    let stride = (width * bits as usize).div_ceil(32) * 4;
+    let start = header + masks + colors * 4;
+    let pixels = dib.get(start..start.checked_add(stride.checked_mul(rows)?)?)?;
+    let step = bits as usize / 8;
+    let mut rgba = Vec::with_capacity(width * rows * 4);
+    for row in 0..rows {
+        // A positive height stores the bottom row first.
+        let source = if height > 0 { rows - 1 - row } else { row };
+        let line = &pixels[source * stride..source * stride + width * step];
+        for px in line.chunks_exact(step) {
+            rgba.extend_from_slice(&[px[2], px[1], px[0], if step == 4 { px[3] } else { 255 }]);
+        }
+    }
+    if step == 4 && rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
+        rgba.as_chunks_mut::<4>().0.iter_mut().for_each(|px| px[3] = 255);
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width as u32, rows as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().ok()?.write_image_data(&rgba).ok()?;
+    Some(out)
+}
+
 #[cfg(windows)]
 mod imp {
-    use super::{HEADER, decode, encode, names_text};
+    use super::{HEADER, decode, dib_to_png, encode, names_text};
     use std::ffi::c_void;
     use std::path::PathBuf;
     use std::ptr;
@@ -157,6 +234,59 @@ mod imp {
         fn GetClipboardData(format: u32) -> Handle;
         fn SetClipboardData(format: u32, memory: Handle) -> Handle;
         fn IsClipboardFormatAvailable(format: u32) -> i32;
+        fn RegisterClipboardFormatW(name: *const u16) -> u32;
+    }
+
+    /// `CF_DIB`: Windows synthesizes it from `CF_BITMAP` and `CF_DIBV5`, so every
+    /// bitmap on the clipboard reads as one.
+    const CF_DIB: u32 = 8;
+
+    /// The `PNG` format browsers and the Snipping Tool add beside the bitmap; it
+    /// keeps transparency, so it is read first.
+    fn png_format() -> u32 {
+        let name: Vec<u16> = "PNG\0".encode_utf16().collect();
+        unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+    }
+
+    pub fn has_image() -> bool {
+        let png = png_format();
+        (png != 0 && unsafe { IsClipboardFormatAvailable(png) } != 0)
+            || unsafe { IsClipboardFormatAvailable(CF_DIB) } != 0
+    }
+
+    /// A copy of the clipboard's `format` block. Call with the clipboard open.
+    fn read_block(format: u32) -> Option<Vec<u8>> {
+        // SAFETY: the clipboard keeps the block alive while it is open, and
+        // `GlobalSize` bounds the bytes read from it.
+        unsafe {
+            let memory = GetClipboardData(format);
+            if memory.is_null() {
+                return None;
+            }
+            let data = GlobalLock(memory);
+            if data.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(data as *const u8, GlobalSize(memory)).to_vec();
+            GlobalUnlock(memory);
+            Some(bytes)
+        }
+    }
+
+    pub fn png() -> Option<Vec<u8>> {
+        if !open() {
+            return None;
+        }
+        let png = png_format();
+        let image = if png != 0 && unsafe { IsClipboardFormatAvailable(png) } != 0 {
+            read_block(png)
+        } else if unsafe { IsClipboardFormatAvailable(CF_DIB) } != 0 {
+            read_block(CF_DIB).and_then(|dib| dib_to_png(&dib))
+        } else {
+            None
+        };
+        unsafe { CloseClipboard() };
+        image
     }
 
     #[link(name = "kernel32")]
@@ -320,8 +450,8 @@ mod imp {
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
     use objc2::{ClassType, MainThreadMarker};
     use objc2_app_kit::{
-        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypeString, NSPasteboardURLReadingFileURLsOnlyKey,
-        NSPasteboardWriting,
+        NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypePNG,
+        NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
     };
     use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
@@ -370,6 +500,41 @@ mod imp {
                 // Finder ends a folder's URL in `/`; the project view names it without.
                 .map(|path| path.components().collect())
                 .collect())
+        })
+    }
+
+    pub fn has_image() -> bool {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            // SAFETY: the types are AppKit constants, valid for the process' lifetime.
+            let types = NSArray::from_slice(&[unsafe { NSPasteboardTypePNG }, unsafe { NSPasteboardTypeTIFF }]);
+            NSPasteboard::generalPasteboard().availableTypeFromArray(&types).is_some()
+        })
+    }
+
+    /// PNG as copied, else TIFF (what macOS screenshots and most apps write) converted.
+    pub fn png() -> Option<Vec<u8>> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the types are AppKit constants, valid for the process' lifetime.
+            if let Some(png) = board.dataForType(unsafe { NSPasteboardTypePNG }) {
+                return Some(png.to_vec());
+            }
+            let tiff = board.dataForType(unsafe { NSPasteboardTypeTIFF })?;
+            let image = NSBitmapImageRep::imageRepWithData(&tiff)?;
+            // SAFETY: an empty property dictionary is valid for every file type.
+            let png =
+                unsafe { image.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
+            Some(png.to_vec())
+        })
+    }
+
+    pub fn text() -> Option<String> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
         })
     }
 
@@ -431,6 +596,17 @@ mod imp {
 
     pub fn has_files() -> bool {
         false
+    }
+
+    pub fn has_image() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_is_image_available()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
@@ -505,5 +681,63 @@ mod tests {
         bytes[16] = 0; // fWide: the list is single-byte
         bytes.extend_from_slice(b"C:\\a\\b.txt\0C:\\c\0\0");
         assert_eq!(decode(&bytes), paths(&["C:\\a\\b.txt", "C:\\c"]));
+    }
+
+    /// A `BITMAPINFOHEADER` DIB of `width` × `height` (positive: bottom-up).
+    fn dib(width: i32, height: i32, bits: u16, compression: u32, rows: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&bits.to_le_bytes());
+        out.extend_from_slice(&compression.to_le_bytes());
+        out.extend_from_slice(&[0u8; 20]);
+        if compression == super::BI_BITFIELDS {
+            for mask in [0x00ff_0000u32, 0x0000_ff00, 0x0000_00ff] {
+                out.extend_from_slice(&mask.to_le_bytes());
+            }
+        }
+        for row in rows {
+            out.extend_from_slice(row);
+        }
+        out
+    }
+
+    fn decode_png(png: &[u8]) -> (u32, u32, Vec<u8>) {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        buf.truncate(info.buffer_size());
+        (info.width, info.height, buf)
+    }
+
+    #[test]
+    fn a_bottom_up_24_bit_bitmap_becomes_an_upright_opaque_png() {
+        // Rows are padded to 4 bytes; the first stored row is the bottom one.
+        let bottom: &[u8] = &[255, 0, 0, 0, 255, 0, 0, 0];
+        let top: &[u8] = &[0, 0, 255, 255, 255, 255, 0, 0];
+        let png = super::dib_to_png(&dib(2, 2, 24, super::BI_RGB, &[bottom, top])).unwrap();
+        let (w, h, rgba) = decode_png(&png);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(rgba, [255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn a_32_bit_bitmap_keeps_its_alpha_unless_none_was_written() {
+        let row: &[u8] = &[10, 20, 30, 0, 40, 50, 60, 0];
+        let (_, _, rgba) = decode_png(&super::dib_to_png(&dib(2, -1, 32, super::BI_BITFIELDS, &[row])).unwrap());
+        assert_eq!(rgba, [30, 20, 10, 255, 60, 50, 40, 255]);
+        let row: &[u8] = &[10, 20, 30, 128, 40, 50, 60, 0];
+        let (_, _, rgba) = decode_png(&super::dib_to_png(&dib(2, -1, 32, super::BI_RGB, &[row])).unwrap());
+        assert_eq!(rgba, [30, 20, 10, 128, 60, 50, 40, 0]);
+    }
+
+    #[test]
+    fn unsupported_or_truncated_bitmaps_are_not_images() {
+        let row: &[u8] = &[1, 2, 3, 4];
+        assert!(super::dib_to_png(&dib(4, 1, 8, super::BI_RGB, &[row])).is_none());
+        assert!(super::dib_to_png(&dib(2, 2, 24, super::BI_RGB, &[row])).is_none());
+        assert!(super::dib_to_png(&[0; 10]).is_none());
     }
 }

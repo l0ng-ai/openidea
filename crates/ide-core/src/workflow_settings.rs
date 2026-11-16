@@ -69,6 +69,9 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
+    /// stage and unstage instead of inclusion checkboxes, and no change lists.
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
@@ -90,6 +93,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }
@@ -172,6 +176,24 @@ impl Default for VcsConfirmationSettings {
             confirm_drop_commits: true,
             on_patch_created: "ask".into(),
         }
+    }
+}
+
+/// Tools › Diff & Merge › External Diff Tools: a program that shows two files' differences.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalDiffSettings {
+    /// Offer Show Diff in External Tool in diff viewers.
+    pub enabled: bool,
+    /// The program to start.
+    pub path: String,
+    /// Its arguments: `%1` the left file, `%2` the right file, `%3` the diff's title.
+    pub parameters: String,
+}
+
+impl Default for ExternalDiffSettings {
+    fn default() -> Self {
+        Self { enabled: false, path: String::new(), parameters: "%1 %2 %3".into() }
     }
 }
 
@@ -260,18 +282,24 @@ pub struct DebuggerSettings {
     pub show_on_breakpoint: bool,
     pub focus_app_on_breakpoint: bool,
     pub hide_on_termination: bool,
+    /// A breakpoint or exception hit brings the Debug tool window's Threads & Variables tab to the front.
+    pub variables_on_breakpoint: bool,
     pub breakpoints_any_file: bool,
     /// While suspended, hovering the start of a line shows a Run to Cursor button.
     pub run_to_cursor_inlay: bool,
     pub inline_values: bool,
     /// Data Views: list variables by name instead of the adapter's order.
     pub sort_values: bool,
+    /// Data Views: evaluate watches while the program runs, where the debugger can (JavaScript).
+    pub live_watches: bool,
     pub value_tooltip: bool,
     /// While suspended, selecting an expression shows its value.
     pub value_tooltip_on_selection: bool,
     pub value_tooltip_delay: u32,
     /// Stepping: do not step into library code (debugpy `justMyCode`, js-debug `skipFiles`).
     pub skip_library_code: bool,
+    /// JavaScript: debugging a dev server (`vite`, `next dev`) also opens its page in a browser session.
+    pub debug_server_page: bool,
     pub python: PythonDebuggerSettings,
 }
 
@@ -281,14 +309,17 @@ impl Default for DebuggerSettings {
             show_on_breakpoint: true,
             focus_app_on_breakpoint: false,
             hide_on_termination: false,
+            variables_on_breakpoint: true,
             breakpoints_any_file: false,
             run_to_cursor_inlay: true,
             inline_values: true,
             sort_values: false,
+            live_watches: false,
             value_tooltip: true,
             value_tooltip_on_selection: true,
             value_tooltip_delay: 700,
             skip_library_code: true,
+            debug_server_page: false,
             python: PythonDebuggerSettings::default(),
         }
     }
@@ -318,6 +349,8 @@ pub struct RunSettings {
     /// Ask before closing a Run tab whose process is still running.
     pub confirm_terminate: bool,
     pub show_on_start: bool,
+    /// New Run/Debug tabs start pinned: a later run doesn't take their place once finished.
+    pub pin_tabs: bool,
     /// Grace period between interrupt and kill when stopping a process.
     pub termination_timeout_ms: u32,
 }
@@ -329,6 +362,7 @@ impl Default for RunSettings {
             confirm_rerun: true,
             confirm_terminate: true,
             show_on_start: true,
+            pin_tabs: false,
             termination_timeout_ms: 3000,
         }
     }

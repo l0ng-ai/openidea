@@ -108,7 +108,9 @@ fn discover_with_limit(
                 if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
                     continue;
                 }
-                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                if entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && crate::roots::virtual_env_marker(&entry.path()).is_none()
+                {
                     children.push(entry.path());
                 }
             }
@@ -168,6 +170,19 @@ mod tests {
         let result = discover(vec![root.into()], &CancellationToken::new()).unwrap();
         assert!(result.projects.is_empty());
         assert_eq!(result.direct[0], root);
+    }
+
+    #[test]
+    fn skips_virtual_environments_whatever_their_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        project(root, "code10", "pyvenv.cfg");
+        project(root, "code10/Lib/site-packages/pkg", "pyproject.toml");
+        fs::create_dir_all(root.join("conda/conda-meta")).unwrap();
+        project(root, "conda/pkgs/dep", "setup.py");
+        let app = project(root, "app", "pyproject.toml");
+        let result = discover(vec![root.into()], &CancellationToken::new()).unwrap();
+        assert_eq!(result.projects.iter().map(|p| p.path.to_path_buf()).collect::<Vec<_>>(), [app]);
     }
 
     #[test]

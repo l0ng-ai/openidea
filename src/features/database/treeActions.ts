@@ -22,7 +22,10 @@ import {
   loadSchemas,
   loadSources,
   loadTables,
+  consoleFiles,
+  newConsole,
   openConsole,
+  openConsoleFile,
   openConsoleWith,
   openDdl,
   openObjectDdl,
@@ -31,6 +34,7 @@ import {
   readableDdl,
   refresh,
   revealInTree,
+  revealOpened,
   runSql,
   sourceById,
   tablesKey,
@@ -41,9 +45,15 @@ import {
 } from "./store";
 import { tableInput } from "./tableInput";
 import { tx } from "@/platform/i18n";
+import { chooseItem } from "@/workbench/inputDialogs";
+import { databaseRequest } from "./requests";
 
 /** Context key: the Database tree has focus. */
 export const DB_VIEW_FOCUS = "databaseViewFocus";
+
+/** Set while the Database view is mounted: Expand All walks its tree's loaded nodes. */
+export const databaseTree: { expandAll: (() => void) | null } = { expandAll: null };
+
 const OPEN = "projectOpen";
 
 const isNode = (v: unknown): v is DbNode => !!v && typeof v === "object" && "kind" in v && "key" in v;
@@ -94,18 +104,25 @@ async function tablesIn(id: string, schema: string): Promise<DbTableInfo[]> {
 async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
   const id = nodeTarget(n);
   if (!id) return null;
+  const current = databaseRequest(id);
   const one = async (schema: string, table: string) =>
     readableDdl(await withConnection(id, () => call(commands.dbDdl(id, schema, table))), driverOf(id));
   try {
     const o = schemaObjectOf(n);
-    if (o)
-      return { id, text: await withConnection(id, () => call(commands.dbObjectDdl(id, o.schema, o.kind, o.name))) };
+    if (o) {
+      const text = await withConnection(id, () => call(commands.dbObjectDdl(id, o.schema, o.kind, o.name)));
+      return current() ? { id, text } : null;
+    }
     const t = tableOf(n);
-    if (t) return { id, text: await one(t.schema, t.table) };
+    if (t) {
+      const text = await one(t.schema, t.table);
+      return current() ? { id, text } : null;
+    }
     let schemas: string[] = [];
     if (n.kind === "schema" || n.kind === "folder") schemas = [n.schema];
     else if (n.kind === "source" || n.kind === "database") {
       if (useDatabase.getState().schemas[id]?.status !== "ok") await loadSchemas(id);
+      if (!current()) return null;
       const l = useDatabase.getState().schemas[id];
       schemas = l?.status === "ok" ? l.value : [];
     }
@@ -114,12 +131,17 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
       const tables = (await tablesIn(id, schema)).filter(
         (t) => n.kind !== "folder" || tableFolder(t.kind) === n.folder,
       );
+      if (!current()) return null;
       // Tables before views: views select from them.
       tables.sort((a, b) => Number(a.kind !== "table") - Number(b.kind !== "table"));
-      for (const t of tables) parts.push(await one(schema, t.name));
+      for (const t of tables) {
+        parts.push(await one(schema, t.name));
+        if (!current()) return null;
+      }
     }
     return { id, text: parts.join("\n") };
   } catch (e) {
+    if (!current()) return null;
     notifications().notify({
       level: "error",
       title: "Cannot generate the DDL",
@@ -133,8 +155,10 @@ async function ddlOf(n: DbNode): Promise<{ id: string; text: string } | null> {
 export async function insertScript(n: DbNode, kind: ScriptKind) {
   const t = tableOf(n);
   if (!t) return;
+  const current = databaseRequest(t.id);
   const key = detailsKey(t.id, t.schema, t.table);
   if (useDatabase.getState().details[key]?.status !== "ok") await loadDetails(t.id, t.schema, t.table);
+  if (!current()) return;
   const d = useDatabase.getState().details[key];
   const columns = d?.status === "ok" ? d.value.columns : [];
   try {
@@ -259,7 +283,7 @@ export function registerDatabaseTreeActions(): () => void {
         const id = n ? nodeTarget(n) : null;
         const { sources } = useDatabase.getState();
         const target = id ?? (sources.length === 1 ? (sources[0]!.id ?? null) : null);
-        if (target) void openConsole(target);
+        if (target) void jumpToConsole(target);
         else toolWindowService().show(DB_TOOL_WINDOW, true);
       },
     }),
@@ -482,10 +506,36 @@ export function registerDatabaseTreeActions(): () => void {
       run: toggleSeparateProceduresAndFunctions,
     }),
     tree({
+      id: "db.selectOpened",
+      title: "Select Opened File",
+      icon: "locate",
+      keywords: ["locate", "scroll from editor", "scroll from source", "select in database view"],
+      // From the editor: a user-assigned shortcut works outside the Database view too.
+      keyWhen: undefined,
+      run: () => void revealOpened(),
+    }),
+    tree({
+      id: "db.expandAll",
+      title: "Expand All",
+      icon: "expand-all",
+      run: () => databaseTree.expandAll?.(),
+    }),
+    tree({
       id: "db.collapseAll",
       title: "Collapse All",
       icon: "collapse-all",
       run: () => useDatabase.setState({ treeExpanded: new Set() }),
     }),
   ]);
+}
+
+/** One console opens directly; with several, DataGrip's list of them plus New Query Console. */
+async function jumpToConsole(id: string): Promise<void> {
+  const files = await consoleFiles(id).catch(() => []);
+  if (files.length <= 1) return openConsole(id);
+  const names = files.map((f) => (f.split(/[\\/]/).pop() ?? f).replace(/\.sql$/, ""));
+  const create = tx("New Query Console");
+  const picked = await chooseItem({ title: "Query Consoles", items: [...names, create] });
+  if (picked === create) await newConsole(id);
+  else if (picked) await openConsoleFile(id, files[names.indexOf(picked)]!);
 }

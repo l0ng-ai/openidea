@@ -13,8 +13,10 @@ export const REGISTRY_PAGE = "agents.list";
 export const AGENTS_GROUP = "Agents";
 /** Settings › Agents › External MCP Servers: User and Workspace MCP configurations. */
 export const MCP_PAGE = "agents.mcpServers";
-/** Settings › Agents › Command Execution Policy. */
+/** Settings › Agents › Command Permissions. */
 export const POLICY_PAGE = "agents.policy";
+/** Settings › Agents › Working Status: the playful words under a working conversation. */
+export const WORKING_STATUS_PAGE = "agents.workingStatus";
 
 export const sessionKey = (task: string) => `agent:${task}`;
 
@@ -106,6 +108,10 @@ export function groupTasks(tasks: Iterable<AgentTask>): TaskGroup[] {
 }
 
 export const isBusy = (s: AgentStatus) => s === "running" || s === "starting" || s === "needsInput";
+
+/** Whether `task` runs outside the project root (its own worktree, or an imported subfolder). */
+export const hasTaskTerminal = (task: AgentTask, projectRoot?: string | null) =>
+  task.isolation === "worktree" || (!!projectRoot && task.cwd !== projectRoot);
 
 /** `entries` with `entry` at `index` (appended when `index` is the length; gaps wait for a reload). */
 export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEntry): AgentEntry[] | null {

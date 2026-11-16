@@ -69,6 +69,8 @@ function segmentMatches(result: string, target: string): boolean {
 
 const cleanPath = (p: string) => p.replace(/\\/g, "/").replace(/^\.\//, "");
 
+const stemOf = (p: string) => p.replace(/.*\//, "").replace(/\.[^.]+$/, "");
+
 function sameFile(resultRoot: string, relPath: string): boolean {
   const b = cleanPath(relPath);
   // unittest / Django results are rooted at the dotted module (`polls.tests`).
@@ -80,6 +82,8 @@ function sameFile(resultRoot: string, relPath: string): boolean {
     const module = resultRoot.replace(/\./g, "/");
     return [`${module}.py`, `${module}/__init__.py`].some((f) => b === f || b.endsWith(`/${f}`));
   }
+  // Zig results are rooted at the module stem (`tally` for `src/tally.zig`).
+  if (/^[\p{L}_][\p{L}\p{N}_]*$/u.test(resultRoot) && stemOf(b) === resultRoot) return true;
   const a = cleanPath(resultRoot);
   return a === b || b.endsWith(`/${a}`) || a.endsWith(`/${b}`);
 }

@@ -36,6 +36,7 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDea
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use crate::wit_host::launch_configurations_bindings::exports::openidea::plugin::launch_configurations as wit_launch;
 use crate::wit_host::run_configurations_bindings::exports::openidea::plugin::run_configurations as wit_configs;
 use crate::wit_host::test_results_bindings::exports::openidea::plugin::test_results as wit_tests;
 use bindings::openidea::plugin::events as wit_events;
@@ -55,7 +56,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.6";
+pub const API_VERSION: &str = "1.9";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -98,6 +99,23 @@ pub trait HostApi: Send + Sync {
     ) -> Result<(), HostError> {
         let _ = (root, client, id, cancel, timeout);
         Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
+    }
+    /// Sends `method` to the running language server named `server` of the project at
+    /// `root`: a request (the result as JSON), or with `notify` a notification (`null`).
+    /// `params` is JSON. Never starts a server.
+    #[allow(clippy::too_many_arguments)]
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (root, method, params, notify, cancel, timeout);
+        Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
     }
     /// Stdio argv only; no URL or bearer token.
     fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
@@ -170,6 +188,11 @@ pub trait HostApi: Send + Sync {
         let _ = (client, tab, cancel, timeout);
         Err(HostError::Failed("content tabs unavailable".into()))
     }
+    /// Opens a diff of two texts in the invoking window.
+    fn open_diff(&self, client: &str, diff: crate::ContentDiff, file_name: Option<String>) -> Result<(), HostError> {
+        let _ = (client, diff, file_name);
+        Err(HostError::Failed("diffs unavailable".into()))
+    }
     /// Answers a content action in the invoking window.
     fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
         let _ = (client, request, reply);
@@ -227,6 +250,11 @@ pub trait HostApi: Send + Sync {
         item: Option<crate::FileDecoration>,
     ) -> Result<(), HostError> {
         let _ = (path, set, item);
+        Err(HostError::Failed("decorations unavailable".into()))
+    }
+    /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
+        let _ = (set, items);
         Err(HostError::Failed("decorations unavailable".into()))
     }
     /// Trusted repository history.
@@ -998,6 +1026,7 @@ struct Exports {
     inlay: Option<wit_inlay::Guest>,
     endpoints: Option<wit_endpoints::Guest>,
     run_configurations: Option<wit_configs::Guest>,
+    launch_configurations: Option<wit_launch::Guest>,
     test_results: Option<wit_tests::Guest>,
     mcp: Option<crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest>,
 }
@@ -1053,6 +1082,9 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
+        WorkbenchEvent::ProblemsChanged => {
+            wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
+        }
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
@@ -1134,6 +1166,7 @@ impl Runtime {
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
+        let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
@@ -1144,6 +1177,8 @@ impl Runtime {
         let mcp = mcp_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_configurations =
             configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let launch_configurations =
+            launch_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
@@ -1217,6 +1252,7 @@ impl Runtime {
                 inlay,
                 endpoints,
                 run_configurations,
+                launch_configurations,
                 test_results,
                 mcp,
                 file_actions,
@@ -1256,34 +1292,67 @@ impl Runtime {
         .map(|r| r.map_err(|message| clip(message, 4096)))
     }
 
-    /// Complete configurations from the optional API 1.4 export.
+    /// Complete configurations from the optional API 1.9 export, else the API 1.4 one.
     pub fn run_configurations(
         &mut self,
         root: String,
         timeout: Duration,
     ) -> Result<Vec<crate::PluginRunConfiguration>, CallError> {
-        if self.exports.run_configurations.is_none() {
-            return Err(CallError::missing_export("run-configurations"));
-        }
         let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
-        let items = self.call(invocation, timeout, |e, store| {
-            e.run_configurations.as_ref().unwrap().call_configurations(store, &root)
-        })?;
-        if items.len() > 1000 {
-            return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
-        }
-        Ok(items
-            .into_iter()
-            .map(|c| crate::PluginRunConfiguration {
-                id: c.id,
-                name: c.name,
-                program: c.program,
-                args: c.args,
-                cwd: c.cwd,
-                test: c.test,
-                framework: c.framework,
-            })
-            .collect())
+        let items: Vec<crate::PluginRunConfiguration> = if self.exports.launch_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.launch_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    env: c.env,
+                    debugger: match c.debugger {
+                        Some(wit_launch::Debugger::Launch(language)) => {
+                            Some(crate::PluginDebugger::Launch { language })
+                        }
+                        Some(wit_launch::Debugger::AttachChild(a)) => Some(crate::PluginDebugger::AttachChild {
+                            kind: a.kind,
+                            command_contains: a.command_contains,
+                        }),
+                        Some(wit_launch::Debugger::Other(_)) | None => None,
+                    },
+                })
+                .collect()
+        } else if self.exports.run_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.run_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    ..Default::default()
+                })
+                .collect()
+        } else {
+            return Err(CallError::missing_export("run-configurations"));
+        };
+        Ok(items)
     }
     /// Selects tests under the same budget as the test parser.
     pub fn select_tests(

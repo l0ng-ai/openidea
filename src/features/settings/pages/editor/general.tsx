@@ -115,7 +115,19 @@ const GENERAL = editorPage({
     {
       title: "Mouse Control",
       items: [
-        { t: "check", key: `${P}.general.wheelZoom`, label: "Change font size with Ctrl/Command+Mouse Wheel" },
+        {
+          t: "check",
+          key: `${P}.general.wheelZoom`,
+          label: "Change font size with Ctrl/Command+Mouse Wheel",
+          inline: {
+            kind: "select",
+            key: `${P}.general.wheelZoomScope`,
+            options: [
+              { value: "active", label: "Active editor" },
+              { value: "all", label: "All editors" },
+            ],
+          },
+        },
         { t: "check", key: `${P}.general.dragAndDrop`, label: "Enable drag-and-drop functionality in editor" },
       ],
     },
@@ -701,6 +713,7 @@ const SMART_KEYS = editorPage({
         { t: "check", key: `${P}.smartKeys.pairQuotes`, label: "Insert pair quote" },
         { t: "check", key: `${P}.smartKeys.surroundSelection`, label: "Surround selection on typing quote or brace" },
         { t: "check", key: `${P}.smartKeys.tabOutOfPair`, label: "Jump outside closing bracket/quote with Tab" },
+        { t: "check", key: `${P}.smartKeys.simultaneousTagEditing`, label: "Simultaneous <tag></tag> editing" },
         {
           t: "select",
           key: `${P}.smartKeys.reformatOnPaste`,

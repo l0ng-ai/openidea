@@ -48,7 +48,7 @@ openidea-server --stdio | --connect <host> <port> | --version
 
 ### Installing it on the remote machine
 
-The desktop picks the server binary for the remote OS and architecture (from `uname -sm`): `OPENIDEA_SERVER_BINARY` if set, then `<data dir>/server/<os>-<arch>/openidea-server`, then the one next to the app when the platforms match; otherwise it downloads the release build for that platform once into its data dir. It uploads the binary into `~/.openidea/server/` on the remote host, one folder per version, keyed by a content hash, and removes other builds of that version. CI keeps a static Linux (musl) build working.
+The desktop picks the server binary for the remote OS and architecture (from `uname -sm`): `OPENIDEA_SERVER_BINARY` if set, then the one next to the app when the platforms match; otherwise the release build of this version for that platform, downloaded once into `<data dir>/server/<version>/<os>-<arch>/`. Offline, it falls back to a build of this version already on the host, then to the unversioned `<data dir>/server/<os>-<arch>/openidea-server`. The server reports its version in `initialize`; a command missing on a server of another version fails with both versions named. It uploads the binary into `~/.openidea/server/` on the remote host, one folder per version, keyed by a content hash, and removes other builds of that version. CI keeps a static Linux (musl) build working.
 
 ## The protocol
 

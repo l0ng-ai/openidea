@@ -8,6 +8,7 @@ import { setContext } from "@/platform/context";
 import { t } from "@/platform/i18n";
 import { basename } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
+import { toolWindowService } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
 import { readStored, writeStored, type StoredTerminals } from "./persist";
 import { TerminalSession, type SessionOptions, type SessionSnapshot } from "./session";
@@ -96,7 +97,15 @@ function createSession(cwd: string, command?: SessionOptions["command"], fallbac
     },
     onExit: (k) => {
       const tab = tabOfSession(k);
-      if (tab && workflowSettings().terminal.closeOnExit) closeTab(tab.id);
+      if (!tab || !workflowSettings().terminal.closeOnExit) return;
+      // A session ending on its own only takes the caret back when the terminal had it: a
+      // background shell exiting must not pull focus out of the editor.
+      const focus = document.activeElement;
+      const hadFocus = !!focus && [...sessions.values()].some((s) => s.host?.contains(focus));
+      closeTab(tab.id);
+      if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+      // Wait for the surviving pane to re-mount before giving xterm the caret.
+      else if (hadFocus) requestAnimationFrame(() => activeSession()?.focus());
     },
   });
   sessions.set(key, session);
@@ -240,6 +249,23 @@ export function closeTab(id: string) {
   if (!tab) return;
   disposeSession(tab.session);
   useTerminals.setState((s) => withoutTab(s, id));
+}
+
+/**
+ * Takes tab `id` out of the tool window and hands back its session, still running
+ * (Move to Editor): the tab goes away, the session is no longer this store's.
+ */
+export function detachTab(id: string): TerminalSession | undefined {
+  const tab = useTerminals.getState().tabs.find((t) => t.id === id);
+  const session = tab && sessions.get(tab.session);
+  if (!tab || !session) return undefined;
+  sessions.delete(tab.session);
+  useTerminals.setState((s) => {
+    const next = { ...s.sessions };
+    delete next[tab.session];
+    return { ...withoutTab(s, id), sessions: next };
+  });
+  return session;
 }
 
 /**

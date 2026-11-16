@@ -120,9 +120,10 @@ export function selectReadingPane(focused: Element | null): boolean {
   const pane = focused.closest<HTMLElement>("[data-selection-scope]");
   const selection = pane?.ownerDocument.getSelection();
   if (!pane || !selection) return false;
-  const range = pane.ownerDocument.createRange();
-  range.selectNodeContents(pane);
-  selection.removeAllRanges();
-  selection.addRange(range);
+  // From the first to the last text, not the pane's own boundaries, which WebKit paints into
+  // the field after the pane (the composer).
+  const start = textEdge(pane, "start");
+  const end = textEdge(pane, "end");
+  selection.setBaseAndExtent(start.node, start.offset, end.node, end.offset);
   return true;
 }

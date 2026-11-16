@@ -26,6 +26,17 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.goToColumn": ["Meta+Shift+O"],
   "db.submitChanges": ["Meta+Enter"],
   "db.revertChanges": ["Meta+Alt+Z"],
+  // Data editor commands: VS Code has no counterpart.
+  "db.reloadPage": [],
+  "db.firstPage": [],
+  "db.previousPage": [],
+  "db.nextPage": [],
+  "db.lastPage": [],
+  "db.addRow": [],
+  "db.deleteRows": [],
+  "db.restoreRows": [],
+  "db.exportData": [],
+  "db.editCell": [],
   "navigate.relatedSymbol": [],
   "navigate.nextError": ["F8"],
   "navigate.prevError": ["Shift+F8"],
@@ -65,6 +76,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "toolwindow.resizeRight": [],
   "toolwindow.resizeUp": [],
   "toolwindow.resizeDown": [],
+  "layout.restoreCurrent": [],
   "layout.restoreDefault": [],
   "workbench.stopBackgroundProcesses": [],
   "navigate.typeHierarchy": [],
@@ -181,7 +193,8 @@ export const vscodeMacos: Record<string, string[]> = {
 
   // File / editor tabs
   "file.save": ["Meta+S"],
-  "file.new": ["Meta+N"],
+  "file.newUntitled": ["Meta+N"],
+  "file.new": [],
   "file.settings": ["Meta+,"],
   "file.projectStructure": [],
   "file.openProject": ["Meta+O"],
@@ -223,9 +236,13 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.paste": ["Meta+V"],
   "project.copyAbsolutePath": ["Meta+Alt+C"],
   "project.open": ["Meta+Down"],
+  // Explorer: Open to the Side.
+  "project.openInRightSplit": ["Meta+Enter"],
   "project.reloadFromDisk": [],
   "project.expandAll": [],
   "project.collapseAll": [],
+  "run.expandAllTests": [],
+  "run.collapseAllTests": [],
   "project.findUsages": ["Alt+Shift+F12"],
   "project.reformatCode": ["Alt+Shift+F"],
   "project.optimizeImports": ["Alt+Shift+O"],
@@ -300,6 +317,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "vcs.rollback": [],
   "vcs.addToVcs": [],
   "vcs.showDiff": [],
+  "vcs.log.changes.showDiff": [],
   "vcs.showDiffInNewWindow": [],
   "vcs.nextChange": ["Alt+F5"],
   "vcs.prevChange": ["Alt+Shift+F5"],
@@ -345,6 +363,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "diff.nextFile": [],
   "diff.prevFile": [],
   "diff.showSettings": [],
+  "diff.focusOppositePane": [],
   "diff.prevDifference": ["Shift+F7"],
   "diff.jumpToSource": [],
   // HTTP Client / Database console: run the request or statement at the caret.
@@ -358,6 +377,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.openValueWindow": [],
   "db.findInValue": ["Meta+F"],
   "db.execute": ["Meta+Enter"],
+  "db.nextResultTab": ["Meta+Alt+Right", "Meta+Shift+]"],
+  "db.previousResultTab": ["Meta+Alt+Left", "Meta+Shift+["],
   "db.showToolWindow": [],
   // Database tool window (when the tree has focus).
   "db.openConsole": [],
@@ -389,6 +410,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.runSqlScript": [],
   "db.sqlScript": [],
   "db.goToReferencedTable": [],
+  "db.selectOpened": [],
+  "db.expandAll": [],
   "db.collapseAll": [],
   // Find in Files popup (findPopupOpen): after the editor's keys, so these win while it is open.
   "find.popup.nextResult": ["Meta+G"],
@@ -397,6 +420,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "find.popup.recentSearches": ["Alt+Down"],
   // Agents (VS Code's chat: ⇧⌘I)
   "agents.newTask": ["Meta+Shift+I"],
+  "agents.focusInput": ["Meta+L"],
+  "agents.cycleEffort": ["Alt+T"],
   "agents.showToolWindow": [],
   "agents.sendToAgent": [],
   // Search fields (find bar, Find in Files): last, so they win over editor keys while one is focused.

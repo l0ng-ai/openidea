@@ -95,7 +95,7 @@ function ProjectButton() {
   );
 }
 
-const VCS_FALLBACK_ACTIONS = ["vcs.clone", "vcs.localHistory", "vcs.showLog"];
+const VCS_FALLBACK_ACTIONS = ["vcs.createRepository", "vcs.clone", "vcs.localHistory", "vcs.showLog"];
 
 /** "Version Control ▾" shown while no VCS widget is contributed (project without a repository). */
 function VcsFallback() {

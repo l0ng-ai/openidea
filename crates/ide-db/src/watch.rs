@@ -143,9 +143,12 @@ mod tests {
         std::fs::create_dir_all(root.join(".openidea")).unwrap();
         let (count, on_change) = counting();
         let _watch = SourcesWatch::start(&root, None, on_change).unwrap();
+        // FSEvents can deliver the creation of `.openidea/` above after the watch started.
+        std::thread::sleep(Duration::from_secs(1));
+        let seen = count.load(Ordering::SeqCst);
         std::fs::write(root.join(".openidea/settings.toml"), "").unwrap();
         std::fs::write(root.join("main.py"), "").unwrap();
         std::thread::sleep(SETTLE * 3);
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(count.load(Ordering::SeqCst), seen);
     }
 }

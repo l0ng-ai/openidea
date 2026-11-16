@@ -419,6 +419,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         install_hint: Some("npm i -g nope-ls".into()),
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -426,6 +427,7 @@ async fn missing_binary_is_reported_with_install_hint() {
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     };
     let (mgr, events) = manager(dir.path(), LanguageRegistry::from_configs(vec![lang("nope", "nope", server)]));
@@ -691,6 +693,7 @@ async fn typescript_language_server_end_to_end() {
         install_hint: None,
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -698,6 +701,7 @@ async fn typescript_language_server_end_to_end() {
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     };
     let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![lang("typescript", "ts", server)]));
@@ -743,6 +747,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         install_hint: None,
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -750,6 +755,7 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }
@@ -1015,4 +1021,83 @@ async fn basedpyright_and_ruff_serve_notebook_cells() {
     .await;
     mgr.close_notebook(&path);
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// Pull Members Up through Phoxite's own requests: the real server moves a method to
+/// the parent class in another file.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires phoxite-lsp on PATH (or OPENIDEA_TEST_PHOXITE_LSP)"]
+async fn phoxite_pulls_a_member_up_end_to_end() {
+    use ide_core::FileEdit;
+    use ide_lsp::types::{HierarchyChoice, HierarchyRefactoring};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("composer.json"), r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#).unwrap();
+    let animal = root.join("src").join("Animal.php");
+    std::fs::write(&animal, "<?php\n\nnamespace App;\n\nclass Animal\n{\n}\n").unwrap();
+    let path = root.join("src").join("Dog.php");
+    let source = "<?php\n\nnamespace App;\n\nclass Dog extends Animal\n{\n    public function bark(): string\n    {\n        return 'woof';\n    }\n}\n";
+    std::fs::write(&path, source).unwrap();
+    let mut php = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("php")).unwrap();
+    php.language_servers.retain(|s| s.name == "phoxite");
+    assert_eq!(php.language_servers.len(), 1);
+    php.language_servers[0].fallback = false;
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_PHOXITE_LSP") {
+        php.language_servers[0].command = bin;
+    }
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![php]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &path, &LanguageId::new("php"), 1, source);
+    retry("phoxite ready", Duration::from_secs(30), || {
+        let status = last_status(&events, "phoxite");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, msg)) = &status {
+            panic!("phoxite failed: {msg:?}");
+        }
+        async move { matches!(status, Some((ServerStatus::Ready | ServerStatus::Busy, _))).then_some(()) }
+    })
+    .await;
+    // On `bark`; the parent is known once the project is indexed.
+    let at = Pos::new(6, 22);
+    let info = retry("the movable members", Duration::from_secs(60), || {
+        let mgr = mgr.clone();
+        async move { mgr.hierarchy_members(doc, at, HierarchyRefactoring::PullUp, Default::default()).await.ok() }
+    })
+    .await;
+    assert_eq!(info.class_name, "Dog");
+    assert_eq!(
+        info.targets.iter().map(|t| t.qualified_name.trim_start_matches('\\')).collect::<Vec<_>>(),
+        ["App\\Animal"]
+    );
+    let bark = info.members.iter().find(|m| m.label.starts_with("bark")).expect("bark is movable");
+    assert!(bark.selected, "{bark:?}");
+    let choices = vec![HierarchyChoice { id: bark.id.clone(), make_abstract: false }];
+    let done = mgr
+        .hierarchy_refactor(
+            doc,
+            at,
+            HierarchyRefactoring::PullUp,
+            Some(info.targets[0].id.clone()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    let edit = done.edit.expect("an edit");
+    let mut edited: Vec<_> = edit
+        .files
+        .iter()
+        .filter_map(|f| match f {
+            FileEdit::Edit { path, edits, .. } if !edits.is_empty() => path.0.file_name()?.to_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+    edited.sort();
+    assert_eq!(edited, ["Animal.php", "Dog.php"], "the method leaves Dog and arrives in Animal");
+    // Outside any class the server refuses with `RequestFailed`: the reason reaches the user.
+    let refused = mgr.hierarchy_members(doc, Pos::new(0, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let refused = refused.unwrap_err();
+    assert_eq!(refused.kind, ide_core::error::ErrorKind::InvalidInput, "{refused:?}");
+    assert!(!refused.message.is_empty() && !refused.message.starts_with("phoxite:"), "{refused:?}");
+    mgr.shutdown_all().await;
 }

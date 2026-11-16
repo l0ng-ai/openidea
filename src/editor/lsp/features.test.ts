@@ -64,6 +64,11 @@ describe("semanticRanges", () => {
     ]);
   });
 
+  it("colours rust-analyzer's `self` as a keyword", () => {
+    const input = { tokenTypes: ["selfKeyword"], tokenModifiers: [], data: [0, 0, 3, 0, 0] };
+    expect(semanticRanges(doc, input)[0]?.className).toBe("cm-sem-keyword");
+  });
+
   it("colours a constructor (jdtls: class + `constructor`) as a function", () => {
     const input = { tokenTypes: ["class"], tokenModifiers: ["constructor", "declaration"], data: [0, 0, 3, 0, 0b11] };
     expect(semanticRanges(doc, input)[0]?.className).toBe("cm-sem-function cm-sem-declaration");

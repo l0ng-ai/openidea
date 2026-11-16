@@ -25,7 +25,7 @@ import { languageSemantics } from "./semantic";
 import { caretAnchor, openPopup, type ListPopupItem, type ListPreview } from "./popupStore";
 import { editPreviewLines } from "./workspaceEdit";
 import { featureBackoff } from "./availability";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { editorPrefs } from "@/platform/editorSettings";
 import { spellingIntentions } from "./spelling";
 import { inspectionsAt, type EditorDiagnostic } from "./diagnostics";

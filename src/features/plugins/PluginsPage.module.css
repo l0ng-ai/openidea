@@ -1,7 +1,7 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   height: 100%;
   min-height: 420px;
@@ -9,18 +9,7 @@
 .topBar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.tabs {
-  flex: none;
-  border-bottom: 0;
-}
-.tabCount {
-  margin-left: 6px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-  font-variant-numeric: tabular-nums;
+  gap: var(--space-1-5);
 }
 .side {
   display: flex;
@@ -30,15 +19,17 @@
   min-height: 0;
   border-right: 1px solid var(--border);
 }
-.searchRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 8px;
-}
 .searchField {
-  flex: 1;
+  flex: 0 1 340px;
   min-width: 0;
+}
+/* The installed and marketplace lists scroll together, as one list. */
+.lists {
+  overflow: auto;
+}
+.lists .list {
+  flex: none;
+  overflow: visible;
 }
 .spacer {
   flex: 1;
@@ -70,7 +61,7 @@
 .groupHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: var(--h-row);
   padding: 0 12px;
   color: var(--fg-muted);
@@ -79,10 +70,31 @@
 .groupCount {
   font-variant-numeric: tabular-nums;
 }
+.groupToggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.groupToggle:hover {
+  color: var(--fg);
+}
+.groupToggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-small);
+}
 .notice {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-1-5);
   margin: 0 8px 4px;
   padding: 6px 8px;
   border-radius: var(--radius-small);
@@ -138,7 +150,7 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding-right: 8px;
 }
 .row:hover {
@@ -175,7 +187,7 @@
 .rowMeta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -214,7 +226,7 @@
   display: flex;
   flex: 1 1 160px;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 .detailTabs {
@@ -230,7 +242,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 /* Badges are counter pills (`min-width: 16px`): in a narrow window they wrap instead of shrinking under their text. */
 .titleLine > * {
@@ -254,7 +266,7 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .description {
   margin: 10px 0 0;
@@ -272,7 +284,7 @@
 .facts {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
-  gap: 2px 16px;
+  gap: var(--space-0-5) var(--space-4);
   margin: 12px 0 0;
 }
 .facts dt {
@@ -367,7 +379,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   margin: 6px 0 0 26px;
 }
@@ -397,7 +409,7 @@
 .consentNotice {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   justify-content: space-between;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -423,7 +435,7 @@
 .rowTitle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .rowDescription {
@@ -437,7 +449,7 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   color: var(--fg-muted);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -520,7 +532,7 @@
 .intellijThemesStatus {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 8px 10px;
   color: var(--fg-muted);
 }
@@ -529,13 +541,13 @@
   flex: 1;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
 }
 .intellijPluginHead {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .intellijPluginThemes {

@@ -70,10 +70,14 @@ async fn open(fixture: &str) -> Opened {
 }
 
 /// Polls `check` until it holds; fails with its last answer.
-async fn until<T: std::fmt::Debug>(what: &str, timeout: Duration, mut check: impl FnMut() -> Result<(), T>) {
+async fn until<T: std::fmt::Debug, F, Fut>(what: &str, timeout: Duration, mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), T>>,
+{
     let deadline = Instant::now() + timeout;
     loop {
-        match check() {
+        match check().await {
             Ok(()) => return,
             Err(last) if Instant::now() > deadline => panic!("{what}: timed out after {timeout:?}; last: {last:?}"),
             Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
@@ -82,25 +86,25 @@ async fn until<T: std::fmt::Debug>(what: &str, timeout: Duration, mut check: imp
 }
 
 impl Opened {
-    fn files(&self, query: &str) -> Vec<String> {
-        let found = ops::nav::find_files(&self.host, WINDOW, query.into(), 20).unwrap();
+    async fn files(&self, query: &str) -> Vec<String> {
+        let found = ops::nav::find_files(&self.host, WINDOW, query.into(), 20).await.unwrap();
         found.into_iter().map(|f| f.rel_path).collect()
     }
 
-    fn symbols(&self, query: &str, filter: SymbolFilter) -> Vec<(String, String)> {
-        let found = ops::nav::find_symbols(&self.host, WINDOW, query.into(), filter, 20).unwrap();
+    async fn symbols(&self, query: &str, filter: SymbolFilter) -> Vec<(String, String)> {
+        let found = ops::nav::find_symbols(&self.host, WINDOW, query.into(), filter, 20).await.unwrap();
         found.into_iter().map(|s| (s.name, s.rel_path)).collect()
     }
 
-    fn has_symbol(&self, name: &str, file: &str, filter: SymbolFilter) -> Result<(), Vec<(String, String)>> {
-        let found = self.symbols(name, filter);
+    async fn has_symbol(&self, name: &str, file: &str, filter: SymbolFilter) -> Result<(), Vec<(String, String)>> {
+        let found = self.symbols(name, filter).await;
         if found.iter().any(|(n, f)| n == name && f == file) { Ok(()) } else { Err(found) }
     }
 }
 
 async fn smoke(f: Fixture) {
     let p = open(f.dir).await;
-    until("indexing", Duration::from_secs(30), || {
+    until("indexing", Duration::from_secs(30), || async {
         let s = ops::nav::index_status(&p.host, WINDOW).unwrap();
         if !s.indexing && s.files > 0 && s.symbols > 0 { Ok(()) } else { Err(s) }
     })
@@ -115,12 +119,12 @@ async fn smoke(f: Fixture) {
         );
     }
 
-    let files = p.files(f.file.0);
+    let files = p.files(f.file.0).await;
     assert!(files.iter().any(|r| r == f.file.1), "{}: files for {:?}: {files:?}", f.dir, f.file.0);
-    if let Err(found) = p.has_symbol(f.class.0, f.class.1, SymbolFilter::Types) {
+    if let Err(found) = p.has_symbol(f.class.0, f.class.1, SymbolFilter::Types).await {
         panic!("{}: Go to Class {:?}: {found:?}", f.dir, f.class.0);
     }
-    if let Err(found) = p.has_symbol(f.symbol.0, f.symbol.1, SymbolFilter::All) {
+    if let Err(found) = p.has_symbol(f.symbol.0, f.symbol.1, SymbolFilter::All).await {
         panic!("{}: Go to Symbol {:?}: {found:?}", f.dir, f.symbol.0);
     }
 
@@ -130,8 +134,8 @@ async fn smoke(f: Fixture) {
     until("a new file's class", Duration::from_secs(20), || p.has_symbol("FreshWidget", added, SymbolFilter::Types))
         .await;
     std::fs::remove_file(p.root.join(added)).unwrap();
-    until("a deleted file's class", Duration::from_secs(20), || {
-        let found = p.symbols("FreshWidget", SymbolFilter::Types);
+    until("a deleted file's class", Duration::from_secs(20), || async {
+        let found = p.symbols("FreshWidget", SymbolFilter::Types).await;
         if found.is_empty() { Ok(()) } else { Err(found) }
     })
     .await;
@@ -250,6 +254,77 @@ async fn maven_sync() {
     let junit = maven.projects[0].dependencies.iter().find(|d| d.artifact_id == "junit-jupiter").unwrap();
     // The resolved tree, not only the declaration.
     assert!(!junit.children.is_empty(), "{junit:?}");
+}
+
+/// The launch classpath must come from the runner JDK, not the JDK that happened
+/// to load the language-server model: JDK-activated profiles can select a
+/// different dependency classifier. Use real Maven so this covers the scenario
+/// rather than only the probe arguments.
+#[test]
+#[ignore = "project smoke: needs Maven and a JDK"]
+fn maven_launch_classpath_uses_the_runner_jdk_classifier() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let java_home = PathBuf::from(std::env::var("JAVA_HOME").expect("JAVA_HOME"));
+    let release = std::fs::read_to_string(java_home.join("release")).unwrap();
+    let version = release
+        .lines()
+        .find_map(|line| line.strip_prefix("JAVA_VERSION=\""))
+        .and_then(|line| line.strip_suffix('"'))
+        .expect("JAVA_VERSION in release");
+    let major = version.strip_prefix("1.").unwrap_or(version).split(['.', '_']).next().unwrap().parse::<u32>().unwrap();
+    let jar = java_home.join(if cfg!(windows) { "bin/jar.exe" } else { "bin/jar" });
+    let jars = root.join("libs");
+    let staging = root.join("empty");
+    std::fs::create_dir_all(&jars).unwrap();
+    std::fs::create_dir_all(&staging).unwrap();
+    for name in ["api-jdk8.jar", "api-jdk9.jar"] {
+        let status = std::process::Command::new(&jar)
+            .args(["cf"])
+            .arg(jars.join(name))
+            .arg(".")
+            .current_dir(&staging)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    std::fs::write(
+        root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+          <modelVersion>4.0.0</modelVersion>
+          <groupId>demo</groupId><artifactId>jdk-classifier</artifactId><version>1</version>
+          <profiles>
+            <profile><id>jdk8</id><activation><jdk>1.8</jdk></activation><dependencies>
+              <dependency><groupId>demo</groupId><artifactId>api</artifactId><version>1</version><classifier>jdk8</classifier>
+                <scope>system</scope><systemPath>${project.basedir}/libs/api-jdk8.jar</systemPath></dependency>
+            </dependencies></profile>
+            <profile><id>jdk9</id><activation><jdk>[9,)</jdk></activation><dependencies>
+              <dependency><groupId>demo</groupId><artifactId>api</artifactId><version>1</version><classifier>jdk9</classifier>
+                <scope>system</scope><systemPath>${project.basedir}/libs/api-jdk9.jar</systemPath></dependency>
+            </dependencies></profile>
+          </profiles>
+        </project>"#,
+    )
+    .unwrap();
+    let cache = root.join("cache");
+    let mut model = ide_build::load(root, &cache, None);
+    for project in &mut model.maven.as_mut().unwrap().projects {
+        project.env.insert("JAVA_HOME".into(), java_home.to_string_lossy().into_owned());
+    }
+    let classpath = ide_build::compile::module_classpath(
+        root,
+        &model,
+        root,
+        false,
+        None,
+        &root.join("classpath-cache"),
+        &ide_core::CancellationToken::new(),
+    )
+    .unwrap();
+    let expected = if major <= 8 { "api-jdk8.jar" } else { "api-jdk9.jar" };
+    let other = if major <= 8 { "api-jdk9.jar" } else { "api-jdk8.jar" };
+    assert!(classpath.contains(expected), "{classpath}");
+    assert!(!classpath.contains(other), "{classpath}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

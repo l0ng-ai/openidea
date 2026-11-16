@@ -16,6 +16,7 @@ toml.workspace = true
 tree-sitter.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+memchr = "2"
 regex-lite = "0.1"
 blake3.workspace = true
 tree-sitter-language = "0.1"

@@ -19,8 +19,6 @@ tar = "0.4"
 zip.workspace = true
 sha2 = "0.10"
 hex = "0.4"
-
-[dev-dependencies]
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]

@@ -170,6 +170,12 @@ impl AppState {
         self.host.open_light(window, file)
     }
 
+    /// LightEdit without a file (File › New File from a welcome window).
+    pub fn open_light_empty(&self, window: &str) -> IdeResult<Arc<Project>> {
+        self.remote_dev.disconnect(window);
+        self.host.open_light_empty(window)
+    }
+
     /// Called on the event-loop thread (window destruction, the `close_project`
     /// command), so it must not wait for the project's workers to shut down.
     pub fn close_project(&self, window: &str) {

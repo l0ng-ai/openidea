@@ -3,6 +3,9 @@ import { tx } from "@/platform/i18n";
 
 export type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
 
+/** Questions and forms are answered in a card above the composer, not with the request's options. */
+export const asksInCard = (entry: PermissionEntry) => !!entry.questions?.length || !!entry.form;
+
 export function permissionDetails(entry: PermissionEntry, provider = "Codex") {
   // The backend names the command from the request's structured input; the title is the
   // agent's own words and never makes a request a command.

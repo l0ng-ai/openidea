@@ -496,6 +496,9 @@ pub struct CheckoutOptions {
     /// Required when checking out a remote branch whose local namesake is ahead of it.
     #[serde(default)]
     pub diverged: Option<DivergedLocal>,
+    /// Check the branch out even though another worktree has it checked out.
+    #[serde(default)]
+    pub ignore_other_worktrees: bool,
 }
 
 /// Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`
@@ -521,6 +524,12 @@ pub enum CheckoutOutcome {
     /// on conflicts in these files.
     Conflicts {
         files: Vec<String>,
+    },
+    /// Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
+    /// changed; the branch can be worked on there.
+    CheckedOutInWorktree {
+        branch: String,
+        path: PathBuf,
     },
 }
 
@@ -610,6 +619,7 @@ pub struct ChangelistState {
     pub files: std::collections::BTreeMap<String, String>,
 }
 
+mod backend;
 mod bek;
 mod blame;
 mod block_history;
@@ -617,6 +627,7 @@ pub mod changelists;
 mod cli;
 mod compare;
 mod diff;
+mod external_diff;
 mod history;
 mod ignore;
 mod index_writes;
@@ -637,11 +648,13 @@ pub use index_writes::is_own_index_write;
 mod text_encoding;
 mod write;
 
+pub use backend::Backend;
 pub use cli::{
     GitCommandObserver, detected_git_executable, filter_overrides_from, git_version, restrict, set_askpass_env,
     set_git_command_observer, set_git_executable,
 };
 pub use diff::build_partial_patch;
+pub use external_diff::{ExternalDiffSide, launch_external_diff};
 pub use ignore::{IgnoreDestination, add_to_ignore};
 pub use manage::{MergeOptions, RebaseOptions, RemoteEdit, Worktree};
 pub use remotes::Remote;
@@ -762,6 +775,24 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         status::status(self)
     }
+    /// Status of `paths` only (absolute; those outside the repository are ignored), for the
+    /// dirty-scope refresh after a watcher batch. An empty list is the full status.
+    pub fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        // Restricted Mode starts no program of the repository, and the scoped read is `git status`
+        // with a pathspec: answer with the full gitoxide status instead.
+        if !self.execution_allowed.load(std::sync::atomic::Ordering::Acquire) {
+            return status::status(self);
+        }
+        if paths.is_empty() {
+            return status::status_paths(self, &[]);
+        }
+        let rel: Vec<String> = paths.iter().filter_map(|p| self.given_rel_path(p).ok()).collect();
+        if rel.is_empty() {
+            return Ok(Vec::new());
+        }
+        status::status_paths(self, &rel)
+    }
     pub fn branch_info(&self) -> IdeResult<BranchInfo> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         refs::branch_info(self)
@@ -863,6 +894,12 @@ impl Repo {
         let encoding = encoding.into();
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::blame(self, path, current_text, revision, encoding)
+    }
+    /// Adds `commit` to the list `blame.ignoreRevsFile` names, so annotate skips it; with none
+    /// configured, to `.git-blame-ignore-revs` at the worktree root, which the local config then names.
+    pub fn ignore_blame_revision(&self, commit: &str) -> IdeResult<()> {
+        let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
+        write::ignore_blame_revision(self, commit)
     }
     /// History for Selection: commits that changed `lines` (0-based, inclusive, of the
     /// current text: `current_text`, or the file on disk), mapped to HEAD's lines first.
@@ -1242,10 +1279,17 @@ impl Repo {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::rebase(self, onto)
     }
+    /// `paths` (absolute) stashes only those files; empty stashes the whole working tree.
     /// `keep_index`: changes already staged stay in the index (and the working tree).
-    pub fn stash_push(&self, message: Option<&str>, include_untracked: bool, keep_index: bool) -> IdeResult<()> {
+    pub fn stash_push(
+        &self,
+        message: Option<&str>,
+        include_untracked: bool,
+        keep_index: bool,
+        paths: &[PathBuf],
+    ) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
-        write::stash_push(self, message, include_untracked, keep_index)
+        write::stash_push(self, message, include_untracked, keep_index, paths)
     }
     /// `reinstate_index`: also restore what was staged when the stash was made.
     pub fn stash_apply(&self, index: u32, pop: bool, reinstate_index: bool) -> IdeResult<()> {

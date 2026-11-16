@@ -61,8 +61,9 @@ pub fn artifacts_url(group: &str, prefix: &str) -> Option<String> {
 
 /// The published version metadata of one artifact on Central.
 pub fn metadata_url(group: &str, artifact: &str) -> Option<String> {
-    (part(group, 200) && part(artifact, 100)).then(|| {
-        let path = group.split('.').chain(artifact.split('.')).collect::<Vec<_>>().join("/");
+    // The group's dots are directories; an artifact id is one directory, dots and all.
+    (part(group, 200) && part(artifact, 100) && artifact != "." && artifact != "..").then(|| {
+        let path = group.split('.').chain([artifact]).collect::<Vec<_>>().join("/");
         format!("https://repo1.maven.org/maven2/{path}/maven-metadata.xml")
     })
 }
@@ -146,6 +147,11 @@ mod tests {
             metadata_url("org.apache.maven", "maven-core").as_deref(),
             Some("https://repo1.maven.org/maven2/org/apache/maven/maven-core/maven-metadata.xml")
         );
+        assert_eq!(
+            metadata_url("org.eclipse.platform", "org.eclipse.core.runtime").as_deref(),
+            Some("https://repo1.maven.org/maven2/org/eclipse/platform/org.eclipse.core.runtime/maven-metadata.xml")
+        );
+        assert_eq!(metadata_url("org.example", ".."), None);
     }
 
     #[test]

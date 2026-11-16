@@ -71,7 +71,14 @@ async function openReply(page: Page, text: string, imageData?: string, theme?: "
           [
             task.id,
             [
-              { type: "user", text: "Show Markdown", attachments: [], sentMs: 0, doneMs: 1, steered: false },
+              {
+                type: "user",
+                text: "Show Markdown",
+                attachments: [],
+                sentMs: 0,
+                doneMs: 1,
+                steered: false,
+              },
               { type: "agent", text },
             ],
           ],
@@ -111,7 +118,11 @@ test("scrolls a wide table inside the reply", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   const sizes = await reply.evaluate((el) => {
     const table = el.querySelector("table")!;
-    return { reply: el.clientWidth, table: table.clientWidth, content: table.scrollWidth };
+    return {
+      reply: el.clientWidth,
+      table: table.clientWidth,
+      content: table.scrollWidth,
+    };
   });
   expect(sizes.table).toBeLessThanOrEqual(sizes.reply);
   expect(sizes.content).toBeGreaterThan(sizes.table);
@@ -148,7 +159,10 @@ test("loads local reply images, and web ones when asked", async ({ page }) => {
   let fetched = 0;
   await page.route("https://images.example.com/code.gif", (route) => {
     fetched++;
-    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+    return route.fulfill({
+      contentType: "image/gif",
+      body: Buffer.from(PIXEL.split(",")[1]!, "base64"),
+    });
   });
   const reply = await openReply(
     page,
@@ -158,7 +172,9 @@ test("loads local reply images, and web ones when asked", async ({ page }) => {
   const width = (name: string) =>
     reply.getByRole("img", { name, includeHidden: true }).evaluate((img: HTMLImageElement) => img.naturalWidth);
   await expect.poll(() => width("Local QR")).toBe(1);
-  const load = reply.getByRole("button", { name: "Load image from images.example.com" });
+  const load = reply.getByRole("button", {
+    name: "Load image from images.example.com",
+  });
   await expect(load).toBeVisible();
   expect(fetched).toBe(0);
   await load.click();
@@ -182,6 +198,37 @@ test("copies reply Markdown with the keyboard and keeps code copying separate", 
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("const a = 1;");
 });
 
+test("copies a reply link's address from its context menu and keeps Copy for the selected text", async ({
+  page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const url = "https://example.com/pull/42?tab=files#diff";
+  const reply = await openReply(page, `[**Review changes**](${url})\n\nOrdinary reply text`);
+  const link = reply.getByRole("link", { name: "Review changes" });
+  await link.locator("strong").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Copy Link Address" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(url);
+
+  await link.evaluate((el) => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+  });
+  await link.click({ button: "right" });
+  await page
+    .getByRole("menuitem", { name: /^Copy\b/ })
+    .first()
+    .click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Review changes");
+
+  const paragraph = reply.getByText("Ordinary reply text", { exact: true });
+  await paragraph.click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Copy Link Address" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+});
+
 test("keeps latest reply actions visible and quotes into the draft without shifting content", async ({ page }) => {
   const reply = await openReply(page, REPLY);
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
@@ -203,12 +250,10 @@ test("keeps latest reply actions visible and quotes into the draft without shift
   await page.getByRole("button", { name: "Quote Reply", exact: true }).click();
   const draft = page.getByRole("textbox", { name: "Message", exact: true });
   await expect(draft).toBeFocused();
-  await expect(draft).toHaveValue(
-    REPLY.trimEnd()
-      .split("\n")
-      .map((line) => (line ? `> ${line}` : ">"))
-      .join("\n") + "\n\n",
-  );
+  // Quoted as `> ` lines, drawn as a block without their markers, an empty line to type in after it.
+  const quoted = REPLY.trimEnd().split("\n");
+  await expect(draft.locator(".cm-line")).toHaveText([...quoted, "", ""]);
+  await expect(draft.locator(".cm-line[class*='_quoteLine_']")).toHaveCount(quoted.length);
 });
 
 test("copies a mouse selection with Ctrl+C and pops up no Quote button", async ({ page, context }) => {
@@ -231,7 +276,14 @@ test("keeps chat history readable and selections free of timestamps and status l
   await page.evaluate(async (task) => {
     const path = "/src/features/agents/store.ts";
     const store = await import(path);
-    const user = (text: string) => ({ type: "user", text, attachments: [], sentMs: 1, doneMs: 5001, steered: false });
+    const user = (text: string) => ({
+      type: "user",
+      text,
+      attachments: [],
+      sentMs: 1,
+      doneMs: 5001,
+      steered: false,
+    });
     store.useAgents.setState({
       entries: new Map([
         [
@@ -320,13 +372,133 @@ test("keeps chat history readable and selections free of timestamps and status l
   expect(narrow.reply).toBeLessThanOrEqual((narrow.width - narrow.padding) * 0.96);
 });
 
+test("fits conversation stream, composer, question card and off-screen rows live from Settings without restarting", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1800, height: 900 });
+  await openReply(page, "Initial reply");
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    const filler = Array.from({ length: 8 }, (_, i) => ({
+      type: "agent" as const,
+      text: `Earlier paragraph ${i + 1}: ` + "wrapped words across the column ".repeat(35),
+    }));
+    store.useAgents.setState({
+      tasks: new Map([[task.id, { ...task, status: "needsInput" as const }]]),
+      entries: new Map([
+        [
+          task.id,
+          [
+            ...filler,
+            {
+              type: "user",
+              text: "Long prompt ".repeat(40),
+              attachments: [],
+              sentMs: 1,
+              doneMs: 2,
+              steered: false,
+            },
+            { type: "agent", text: "Wide reply body." },
+            {
+              type: "permission",
+              id: 1,
+              title: "Choose layout",
+              options: [],
+              chosen: null,
+              questions: [
+                {
+                  header: "Width",
+                  question: "Use full window width?",
+                  multiSelect: false,
+                  options: [{ label: "Yes", description: "Fill the pane", preview: null }],
+                },
+              ],
+            },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  await expect(page.getByRole("form", { name: "Choose layout" })).toBeVisible();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const measure = () =>
+    stream.evaluate((root) => {
+      const conversation = root.closest<HTMLElement>("[class*='_conversation_']")!;
+      const rows = [...root.querySelectorAll<HTMLElement>("[class*='_conversationRow_']")];
+      const column = [...root.querySelectorAll<HTMLElement>("[class*='_agentMessage_']")]
+        .at(-1)!
+        .getBoundingClientRect();
+      const bubble = root.querySelector<HTMLElement>("[class*='_user_']")!.getBoundingClientRect();
+      const composer = conversation.querySelector<HTMLElement>("[class*='_composerArea_']")!.getBoundingClientRect();
+      const question = conversation.querySelector<HTMLElement>("[class*='_questionCard_']")!.getBoundingClientRect();
+      const padding =
+        Number.parseFloat(getComputedStyle(root).paddingLeft) + Number.parseFloat(getComputedStyle(root).paddingRight);
+      return {
+        conversationWidth: conversation.clientWidth,
+        streamInnerWidth: root.clientWidth - padding,
+        columnWidth: column.width,
+        bubbleWidth: bubble.width,
+        composerWidth: composer.width,
+        questionWidth: question.width,
+        offscreenRowHeight: rows[0]!.getBoundingClientRect().height,
+        scrollHeight: root.scrollHeight,
+      };
+    });
+
+  const capped = await measure();
+  expect(capped.conversationWidth).toBeGreaterThan(1000);
+  expect(Math.abs(capped.columnWidth - 900)).toBeLessThan(1);
+  expect(Math.abs(capped.bubbleWidth - 720)).toBeLessThan(1);
+  expect(Math.abs(capped.composerWidth - 924)).toBeLessThan(1);
+  expect(Math.abs(capped.questionWidth - 900)).toBeLessThan(1);
+
+  // Toggle on through Settings › Agents › Chat › Apply and verify live re-layout including off-screen rows.
+  await page.evaluate(async () => {
+    const actionsPath = "/src/platform/actions.ts";
+    const { executeAction } = await import(actionsPath);
+    await executeAction("file.settings", "agents.chat");
+  });
+  const dialog = page.getByRole("dialog", { name: "Settings" });
+  const toggle = dialog.getByRole("checkbox", { name: "Fit conversation to the window width" });
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await dialog.getByRole("button", { name: "Apply", exact: true }).click();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const fitted = await measure();
+  expect(Math.abs(fitted.columnWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+  expect(fitted.bubbleWidth).toBeGreaterThan(720);
+  expect(Math.abs(fitted.bubbleWidth - fitted.streamInnerWidth * 0.8)).toBeLessThan(1);
+  expect(Math.abs(fitted.composerWidth - fitted.conversationWidth)).toBeLessThan(1);
+  expect(Math.abs(fitted.questionWidth - fitted.streamInnerWidth)).toBeLessThan(1);
+  expect(fitted.offscreenRowHeight).toBeLessThan(capped.offscreenRowHeight);
+  expect(fitted.scrollHeight).toBeLessThan(capped.scrollHeight);
+
+  // Toggle back off and click OK: dialog closes and conversation returns to the 900px column live.
+  await toggle.click();
+  await dialog.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(stream.locator("[data-measured]").first()).toBeAttached();
+
+  const restored = await measure();
+  expect(Math.abs(restored.columnWidth - 900)).toBeLessThan(1);
+  expect(Math.abs(restored.offscreenRowHeight - capped.offscreenRowHeight)).toBeLessThan(1);
+});
+
 test("keeps hover actions reachable when the pointer leaves the message body", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const reply = await openReply(page, "A short answer.");
   const copy = page.getByRole("button", { name: "Copy Markdown", exact: true });
   await reply.hover();
   const box = await copy.boundingBox();
-  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, { steps: 20 });
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2, {
+    steps: 20,
+  });
   await expect(copy.locator("..")).toHaveCSS("opacity", "1");
   await copy.click();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("A short answer.");
@@ -468,7 +640,10 @@ for (const theme of ["dark", "light"] as const) {
           const bar = document.getElementById(el.id.replace(/-text$/, ""))!;
           const fg = luminance(getComputedStyle(el).fill);
           const bg = luminance(getComputedStyle(bar).fill);
-          return { text: el.textContent, ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05) };
+          return {
+            text: el.textContent,
+            ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05),
+          };
         });
       });
     expect(contrasts).toHaveLength(4);
@@ -480,7 +655,10 @@ test("draws a diagram without reaching the hosts its configuration names", async
   const asked: string[] = [];
   await page.route(/^https:\/\/([a-z\d-]+\.)*example\.com\//, (route) => {
     asked.push(new URL(route.request().url()).pathname);
-    return route.fulfill({ contentType: "image/gif", body: Buffer.from(PIXEL.split(",")[1]!, "base64") });
+    return route.fulfill({
+      contentType: "image/gif",
+      body: Buffer.from(PIXEL.split(",")[1]!, "base64"),
+    });
   });
   const at = (name: string) => `https://images.example.com/${name}`;
   const fence = (...lines: string[]) => ["```mermaid", ...lines, "```"].join("\n");
@@ -516,4 +694,128 @@ test("draws a diagram without reaching the hosts its configuration names", async
     "https://example.com/after",
   );
   expect(asked).toEqual(["/after"]);
+});
+
+test("Find in Conversation skips user-select:none summaries and closed <details> until stepped into", async ({
+  page,
+}) => {
+  await openReply(page, "Confirmed—PR is merged.");
+  await page.evaluate(async (task) => {
+    const path = "/src/features/agents/store.ts";
+    const store = await import(path);
+    store.useAgents.setState({
+      entries: new Map([
+        [
+          task.id,
+          [
+            {
+              type: "thought",
+              text: "**Confirming Active Watch Shell**\n\nCheck background shell before rebasing.",
+            },
+            {
+              type: "tool",
+              id: "t1",
+              title: "stop_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "<command with id: 60 had already stopped>",
+              diffs: [],
+            },
+            { type: "agent", text: "Confirmed—PR is merged." },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const runSummary = stream.locator("details[class*='_processRun_'] > summary");
+  await runSummary.click();
+  await expect(stream.getByText("stop_bash")).toBeVisible();
+
+  await stream.focus();
+  await page.keyboard.press("Meta+f");
+  const findBox = page.getByLabel("Find in Conversation");
+  await findBox.fill("confirm");
+
+  // 2 matches total (1 inside collapsed thought body, 1 in visible reply); unselectable <summary> is excluded.
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const initialHighlights = await page.evaluate(() => ({
+    find: [...(CSS.highlights.get("agent-find") ?? [])].map((r) => (r as Range).startContainer.textContent),
+    current: [...(CSS.highlights.get("agent-find-current") ?? [])].map((r) => (r as Range).startContainer.textContent),
+  }));
+  expect(initialHighlights.find).toEqual(["Confirmed—PR is merged."]);
+  expect(initialHighlights.current).toEqual([]);
+
+  // Stepping to match 2/2 opens the collapsed thought <details> and highlights it.
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("2/2");
+  await findBox.press("Enter");
+  await expect(page.locator("[class*='_findCount_']")).toHaveText("1/2");
+  const expandedHighlights = await page.evaluate(() => ({
+    thoughtOpen: document.querySelector<HTMLDetailsElement>("details[class*='_thought_']")?.open,
+    findCount: CSS.highlights.get("agent-find")?.size ?? 0,
+    currentCount: CSS.highlights.get("agent-find-current")?.size ?? 0,
+  }));
+  expect(expandedHighlights).toEqual({ thoughtOpen: true, findCount: 2, currentCount: 1 });
+});
+
+test("keeps ordered, bulleted and task list markers unclipped inside measured rows when zoomed in", async ({
+  page,
+}) => {
+  const numbered = Array.from({ length: 10 }, (_, i) => `${i + 1}. **Item ${i + 1}**\n   - Nested bullet`).join("\n");
+  await openReply(page, `## Feature Gaps\n\n${numbered}\n\n- [x] Checked task\n- [ ] Open task`);
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const actionsPath = "/src/platform/actions.ts";
+    const store = await import(storePath);
+    const { executeAction } = await import(actionsPath);
+    store.openTaskInEditorLocation(task.id);
+    await new Promise((r) => setTimeout(r, 150));
+    const stream = document.querySelector<HTMLElement>("[class*='_stream_']");
+    stream?.focus();
+    for (let i = 0; i < 12; i++) await executeAction("editor.increaseFontSize");
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const row = stream.locator("[class*='_conversationRow_'][data-measured]", { has: page.locator("ol") });
+  await expect(row).toBeVisible();
+
+  const bounds = await row.evaluate((rowEl) => {
+    const rowLeft = rowEl.getBoundingClientRect().left;
+    const items = [...rowEl.querySelectorAll<HTMLElement>("ol > li, ul > li")];
+    const markers = items
+      .filter((li) => getComputedStyle(li, "::before").content !== "none")
+      .map((li) => {
+        const rect = li.getBoundingClientRect();
+        const before = getComputedStyle(li, "::before");
+        const lineHeight = Number.parseFloat(getComputedStyle(li).lineHeight);
+        const markerRight = rect.right - Number.parseFloat(before.right);
+        const markerLeft = markerRight - Number.parseFloat(before.width);
+        return {
+          text: li.firstChild?.textContent?.trim() ?? "",
+          offsetFromRowLeft: Math.round((markerLeft - rowLeft) * 100) / 100,
+          singleLine: Number.parseFloat(before.height) <= lineHeight * 1.15,
+        };
+      });
+    const checkboxes = [...rowEl.querySelectorAll<HTMLInputElement>('li > input[type="checkbox"]')].map((input) => ({
+      offsetFromRowLeft: Math.round((input.getBoundingClientRect().left - rowLeft) * 100) / 100,
+    }));
+    return { fontSize: getComputedStyle(streamElement()!).fontSize, markers, checkboxes };
+    function streamElement() {
+      return rowEl.closest<HTMLElement>("[class*='_stream_']");
+    }
+  });
+
+  expect(bounds.fontSize).toBe("25px");
+  expect(bounds.markers.length).toBeGreaterThanOrEqual(10);
+  for (const m of bounds.markers) {
+    expect(m.singleLine, `single-line marker for ${m.text}`).toBe(true);
+    expect(m.offsetFromRowLeft, `marker for ${m.text}`).toBeGreaterThanOrEqual(0);
+  }
+  for (const cb of bounds.checkboxes) {
+    expect(cb.offsetFromRowLeft).toBeGreaterThanOrEqual(0);
+  }
 });

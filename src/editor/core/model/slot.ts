@@ -34,6 +34,7 @@ import {
 import { showContextMenu } from "@/ui";
 import { baseExtensions, compartments, contributionExtensions } from "../cm/setup";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
+import { offerMakeWritable } from "../fileAttributes";
 import type { DocModel } from "./document";
 import type { WorkspaceHistoryTarget } from "./workspaceHistory";
 import { isNavigation } from "./navHistory";
@@ -147,6 +148,12 @@ export class EditorSlot {
     return this.state;
   }
 
+  private refuseReadOnlyEdit(e: Event): boolean {
+    if (!offerMakeWritable(this.model)) return false;
+    e.preventDefault();
+    return true;
+  }
+
   private slotExtensions() {
     return [
       this.model.manager.workspaceHistory.extension(this.historyTarget),
@@ -169,6 +176,10 @@ export class EditorSlot {
           this.host.onContextMenu(this, e);
           return true;
         },
+        // Typing, pasting or dropping into a read-only file offers to make it writable.
+        beforeinput: (e) => this.refuseReadOnlyEdit(e),
+        paste: (e) => this.refuseReadOnlyEdit(e),
+        drop: (e) => this.refuseReadOnlyEdit(e),
       }),
       ViewPlugin.define((view) => {
         // Gutters sit outside the content DOM. Gutter extensions with their own menu (breakpoints,

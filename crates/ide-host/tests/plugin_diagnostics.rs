@@ -430,3 +430,61 @@ async fn typing_is_debounced_versioned_and_scoped_to_document_project_and_window
     host.shutdown().await;
     set_editor_providers(None);
 }
+
+/// A host with a project open: `problems` and `decorations` need a workspace.
+fn harness(root: &Path) -> Arc<Host> {
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: root.join("config"),
+        data_dir: root.join("data"),
+        local_data_dir: root.join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    host.open_project("main", root).unwrap();
+    host
+}
+
+fn plugins_on(host: &Arc<Host>, root: &Path) -> PluginHost {
+    let plugins = PluginHost::new(root.join("plugins"), Arc::new(|_: Option<&str>, _| {}), generous()).unwrap();
+    plugins.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(host)))));
+    plugins.install_from_dir(&fixture(), &Consent::all()).unwrap();
+    plugins
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_reads_back_the_diagnostics_the_host_recorded() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = harness(tmp.path());
+    let plugins = plugins_on(&host, tmp.path());
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "text").unwrap();
+    // `publish` goes through the host's recording sink into the snapshot a plugin reads.
+    let invocation = || Invocation { client: Some("main".into()), ..Invocation::default() };
+    plugins.run_command(ID, "publish", Some(path.to_str().unwrap()), invocation()).unwrap();
+    let problems = plugins.run_command(ID, "problems", None, invocation()).unwrap().unwrap();
+    assert!(problems.contains("a.txt"), "problems returned {problems:?}");
+    assert!(problems.ends_with(":1"), "one diagnostic from its producer, got {problems:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_line_end_annotation_takes_the_typo_and_weak_styles() {
+    let tmp = tempfile::tempdir().unwrap();
+    let host = harness(tmp.path());
+    let plugins = plugins_on(&host, tmp.path());
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "text").unwrap();
+    // `decorate` publishes both styles; the host drops an unknown style silently, so a
+    // rejection here means one of the two is not a known decoration style.
+    plugins
+        .run_command(
+            ID,
+            "decorate",
+            Some(path.to_str().unwrap()),
+            Invocation { client: Some("main".into()), ..Invocation::default() },
+        )
+        .unwrap();
+}

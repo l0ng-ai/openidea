@@ -30,3 +30,11 @@ command = "vscode-html-language-server"
 args = ["--stdio"]
 initialization-options = { provideFormatter = true, embeddedLanguages = { css = true, javascript = true } }
 install-hint = "npm i -g vscode-langservers-extracted"
+
+# Scripts in a page run in the browser: breakpoints in them are hit by a JavaScript Debug configuration.
+[debugger]
+adapter = "js-debug"
+command = "js-debug-adapter"
+args = ["${port}", "127.0.0.1"]
+transport = "tcp"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

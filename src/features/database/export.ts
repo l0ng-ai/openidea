@@ -5,6 +5,7 @@
  * distinguishes them.
  */
 import type { DbDriver } from "@/platform/ipc";
+import { jsonNumber } from "@/platform/losslessJson";
 import { isNumericColumn } from "./Grid";
 import { toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { quoteIdent } from "./sql/complete";
@@ -49,6 +50,16 @@ function laidOut(d: ExportData, o: ExportOptions): { head: string[] | null; rows
   return { head: null, rows: head.map((h, c) => [...(o.columnHeader ? [h] : []), ...rows.map((r) => r[c] ?? null)]) };
 }
 
+/** A cell as JSON: numeric columns keep their exact digits, everything else is a string. */
+function jsonCell(v: Cell, numeric: boolean): string {
+  if (v === null) return "null";
+  if (!numeric) return JSON.stringify(v);
+  const literal = jsonNumber(v);
+  if (literal !== null) return literal;
+  const number = Number(v);
+  return Number.isFinite(number) ? JSON.stringify(number) : JSON.stringify(v);
+}
+
 export function exportData(
   format: ExportFormat,
   d: ExportData,
@@ -71,13 +82,12 @@ export function exportData(
       return toTsv(t.head, t.rows);
     }
     case "json": {
-      const value = (v: Cell, i: number) =>
-        v === null ? null : numeric[i] && Number.isFinite(Number(v)) ? Number(v) : v;
-      return JSON.stringify(
-        d.rows.map((r) => Object.fromEntries(names.map((n, i) => [n, value(r[i] ?? null, i)]))),
-        null,
-        2,
-      );
+      const rows = d.rows.map((r) => {
+        const cells = Object.fromEntries(names.map((n, i) => [n, jsonCell(r[i] ?? null, numeric[i]!)]));
+        const members = Object.entries(cells).map(([name, value]) => `    ${JSON.stringify(name)}: ${value}`);
+        return members.length ? `  {\n${members.join(",\n")}\n  }` : "  {}";
+      });
+      return rows.length ? `[\n${rows.join(",\n")}\n]` : "[]";
     }
     case "sql": {
       const literal = (v: Cell, i: number) =>

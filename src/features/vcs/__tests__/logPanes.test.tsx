@@ -44,6 +44,7 @@ import { canUpdateBranch, useBranchesPane } from "../logPaneActions";
 import { BranchesPanel, CommitDetails, changesMenu, graphOptionsMenu } from "../GitLog";
 import { LogSettingsPage } from "../LogSettingsPage";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
+import { renameFrom } from "../model";
 import { emptyFilters, useGitLog } from "../logStore";
 import { useVcs } from "../store";
 
@@ -146,6 +147,20 @@ describe("changed files model", () => {
   });
 });
 
+describe("rename label", () => {
+  it("names the original directory of a move, relative to the file's new directory (#3529)", () => {
+    // The issue's scenario: `git mv old/original.txt new/moved.txt`.
+    expect(renameFrom("new/moved.txt", "old/original.txt")).toBe("moved from ../old/original.txt");
+    // A rename within one directory stays as written.
+    expect(renameFrom("old/renamed.txt", "old/original.txt")).toBe("renamed from original.txt");
+    expect(renameFrom("b.ts", "a.ts")).toBe("renamed from a.ts");
+    // Moves across the repository root climb with `..` or stay below it.
+    expect(renameFrom("moved.txt", "old/original.txt")).toBe("moved from old/original.txt");
+    expect(renameFrom("new/moved.txt", "original.txt")).toBe("moved from ../original.txt");
+    expect(renameFrom("a/b/c.txt", "a/c.txt")).toBe("moved from ../c.txt");
+  });
+});
+
 describe("changed files pane", () => {
   it("shows the files flat or by directory and shares the selection with its actions", async () => {
     vcsCommitFiles.mockResolvedValue({
@@ -197,6 +212,22 @@ describe("changed files pane", () => {
 
     useLogOptions.setState({ showLineStats: false });
     await waitFor(() => expect(screen.queryByLabelText("2 lines added")).not.toBeInTheDocument());
+  });
+
+  it("shows a moved file's original directory in its rename label", async () => {
+    vcsCommitFiles.mockResolvedValue({
+      status: "ok",
+      data: [
+        // The issue's scenario: `git mv old/original.txt new/moved.txt`.
+        { path: "new/moved.txt", kind: "renamed", oldPath: "old/original.txt" },
+        { path: "old/renamed.txt", kind: "renamed", oldPath: "old/original.txt" },
+      ],
+    });
+    useGitLog.setState({ commits: [commit], selected: commit.id, selection: [commit.id] });
+    render(<CommitDetails commits={[commit]} />);
+    expect(await screen.findByText("moved from ../old/original.txt")).toBeInTheDocument();
+    // A rename within one directory keeps naming just the file.
+    expect(screen.getByText("renamed from original.txt")).toBeInTheDocument();
   });
 });
 

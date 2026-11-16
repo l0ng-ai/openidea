@@ -6,7 +6,8 @@ import { useProject } from "@/platform/project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { useSetting } from "../components/context";
-import { choosePath, detectSdks, useSdks, type Sdk, type SdkKind } from "./api";
+import { detectSdks, useSdks, type Sdk, type SdkKind } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import styles from "./Sdk.module.css";
 

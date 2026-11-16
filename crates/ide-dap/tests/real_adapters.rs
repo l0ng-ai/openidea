@@ -557,6 +557,17 @@ async fn attach_to_processes() {
             extra: |pid, _| serde_json::json!({"pid": pid}),
         },
     ];
+    // A .NET app built into `dotnet/bin` (`<OutDir>bin</OutDir>`), attached by its apphost.
+    let dotnet_app = dir.join("dotnet/bin").join(if cfg!(windows) { "Server.exe" } else { "Server" });
+    if dotnet_app.is_file() {
+        cases.push(AttachCase {
+            kind: attach::AttachKind::Dotnet,
+            command: vec![s(&dotnet_app)],
+            source: dir.join("dotnet/Program.cs"),
+            line: 1,
+            extra: |pid, _| serde_json::json!({"processId": pid, "justMyCode": true}),
+        });
+    }
     if java_server.is_some() {
         cases.insert(
             0,

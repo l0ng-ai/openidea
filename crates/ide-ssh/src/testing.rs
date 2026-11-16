@@ -1,7 +1,8 @@
 //! An in-process SSH server for tests (feature `testing`): password `dev` /
 //! `secret`, commands answered by a closure, SFTP served from a local
 //! folder (remote `/x` is `<root>/x`), and a shell that echoes its input
-//! (`exit` ends it with status 0).
+//! (`exit` ends it with status 0). `direct-tcpip` channels are forwarded to local TCP
+//! ports, and refused when nothing listens there.
 
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, Server as _, Session};
 use russh::{Channel, ChannelId};
@@ -68,6 +69,27 @@ impl server::Handler for Conn {
     ) -> Result<(), Self::Error> {
         self.channels.lock().await.insert(channel.id(), channel);
         reply.accept().await;
+        Ok(())
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host: &str,
+        port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Ok(mut upstream) = tokio::net::TcpStream::connect((host, port as u16)).await else {
+            return Ok(());
+        };
+        reply.accept().await;
+        tokio::spawn(async move {
+            let mut stream = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+        });
         Ok(())
     }
 

@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 pub struct EditorGeneralSettings {
     /// Change font size with ⌘ + mouse wheel.
     pub wheel_zoom: bool,
+    /// Scope of ⌘ + mouse wheel font zoom: `active` editor | `all` editors.
+    pub wheel_zoom_scope: String,
     pub markdown_image_folder: String,
     pub markdown_image_name_pattern: String,
     /// Drag-and-drop of selected text inside the editor.
@@ -37,6 +39,7 @@ impl Default for EditorGeneralSettings {
     fn default() -> Self {
         Self {
             wheel_zoom: false,
+            wheel_zoom_scope: "active".into(),
             markdown_image_folder: "assets".into(),
             markdown_image_name_pattern: "image-{timestamp}".into(),
             drag_and_drop: true,
@@ -270,6 +273,8 @@ pub struct SmartKeysSettings {
     pub pair_quotes: bool,
     pub surround_selection: bool,
     pub tab_out_of_pair: bool,
+    /// Simultaneous `<tag></tag>` editing: renaming a tag renames its matching tag.
+    pub simultaneous_tag_editing: bool,
     /// Reformat on paste: `none` | `indentBlock` | `indentEachLine`.
     pub reformat_on_paste: String,
     pub escape_on_paste: bool,
@@ -289,6 +294,7 @@ impl Default for SmartKeysSettings {
             pair_quotes: true,
             surround_selection: true,
             tab_out_of_pair: true,
+            simultaneous_tag_editing: true,
             reformat_on_paste: "indentEachLine".into(),
             escape_on_paste: true,
             smart_indent: true,

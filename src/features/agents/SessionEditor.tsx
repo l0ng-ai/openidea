@@ -43,7 +43,6 @@ import {
   Icon,
   IconButton,
   Input,
-  InlineTag,
   Radio,
   SearchField,
   Spinner,
@@ -63,8 +62,11 @@ import { isImeKey } from "@/platform/ime";
 import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
 import { setChangesOptions, useChangesOptions } from "./changesOptions";
+import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
+import { ReferencedText } from "./ReferenceChip";
 import { selectionIn } from "./selection";
+import { SelectionToolbar } from "./SelectionToolbar";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -72,18 +74,33 @@ import {
   emptyDraft,
   limitLabel,
   messageTokens,
+  parseMention,
   retryParts,
   usageLabel,
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
-import { findRanges, formatDuration, formatSentAt } from "./conversation";
+import { useEffortFocus } from "./effortFocus";
+import { useAgentFontZoomSurface } from "./fontZoom";
+import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import { foldedTurns, summarizeWork, workParts, type FoldedTurn, type WorkSummary } from "./timeline";
 import { useRevealedText } from "./reveal";
-import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
 import {
+  ACTIVITY_STATUS,
+  PLAYFUL_MIN_MS,
+  PLAYFUL_WORD_MS,
+  PLAYFUL_WORDS,
+  activityOf,
+  playfulIndex,
+  progressKey,
+  type Activity,
+} from "./workingStatus";
+import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
+import { FormCard } from "./FormCard";
+import {
+  asksInCard,
   commandPrefix,
   permissionDetails,
   permissionOption,
@@ -96,8 +113,10 @@ import {
   branchLabel,
   entriesKey,
   findSubagent,
+  hasTaskTerminal,
   isBusy,
   providerIcon,
+  sessionKey,
   statusLabel,
   subagentStatusLabel,
   subagentTitle,
@@ -118,6 +137,7 @@ import {
   refreshChanges,
   rollbackChanges,
   scheduleChanges,
+  discardEphemeral,
   editQueued,
   forkTask,
   rerunFrom,
@@ -144,6 +164,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const entries = useAgents((s) => s.entries.get(id));
   // Grouping needs commits of the task's own: local checkouts keep the flat list.
   const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
+  const ephemeral = useAgents((s) => s.ephemeral.has(id));
   const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
   const sinceStart = useAgents((s) => s.changes.get(id));
   const review = useAgents((s) => s.groupedChanges.get(id));
@@ -155,6 +176,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
     project?.workspace ? (task?.projectRoot ?? project.root) : null,
   );
   const [changesOpen, setChangesOpen] = useChangesOpen(id, changes ?? null, docked);
+  const changesWidth = useChangesWidthStyle();
   // The subagent conversation shown, with the subagents that lead to it (empty: the task's own).
   const [path, setPath] = useState<string[]>([]);
   const view = path.at(-1) ?? null;
@@ -200,29 +222,66 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const openSubagent = useCallback((sub: string) => setPath((p) => [...p, sub]), []);
   const [finding, setFinding] = useState(false);
   const [findFocus, setFindFocus] = useState(0);
-  const [session] = useState<FocusedSession>(() => ({
-    openFind: () => {
-      setFinding(true);
-      setFindFocus((n) => n + 1);
-    },
-  }));
-  useEffect(
-    () => () => {
-      if (focusedSession() === session) setFocusedSession(null);
-    },
-    [session],
+  const [inputFocus, setInputFocus] = useState(0);
+  const { fitWindowWidth } = useAgentSettings();
+  const sessionRoot = useRef<HTMLDivElement>(null);
+  const { fontZoom, zoomStyle } = useAgentFontZoomSurface(sessionRoot, sessionKey(id), docked, !!task);
+  const canFocusInput = shown && !!task && task.status !== "archived" && !view;
+  const session = useMemo<FocusedSession>(
+    () => ({
+      openFind: () => {
+        setFinding(true);
+        setFindFocus((n) => n + 1);
+      },
+      focusInput: canFocusInput
+        ? () => {
+            if (docked) setChangesOpen(false);
+            setInputFocus((n) => n + 1);
+          }
+        : undefined,
+    }),
+    [canFocusInput, docked, setChangesOpen],
   );
+  useLayoutEffect(() => {
+    if (shown && sessionRoot.current?.contains(document.activeElement)) setFocusedSession(session);
+    return () => {
+      if (focusedSession() === session) setFocusedSession(null);
+    };
+  }, [session, shown]);
   if (!task) return <EmptyState title="This agent task no longer exists" />;
   return (
     <div
-      className={clsx(styles.session, docked && styles.docked)}
-      onFocusCapture={() => setFocusedSession(session)}
+      ref={sessionRoot}
+      className={clsx(
+        styles.session,
+        docked && styles.docked,
+        changesOpen && !docked && styles.withChanges,
+        fitWindowWidth && styles.fitWidth,
+      )}
+      style={{ ...changesWidth, ...zoomStyle }}
+      onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
           setFocusedSession(null);
         }
       }}
     >
+      {ephemeral && (
+        <div className={styles.sideBanner}>
+          <Icon name="branch" size={13} />
+          <span className={styles.sideName}>
+            <T>Side conversation</T>
+          </span>
+          <span className={styles.sideHint}>
+            <T>Temporary and read-only: closing it discards the conversation and its context.</T>
+          </span>
+          <IconButton
+            icon="close"
+            title="Discard Side Conversation"
+            onClick={() => void discardEphemeral(id).catch(() => undefined)}
+          />
+        </div>
+      )}
       <div className={styles.conversation} hidden={docked && changesOpen}>
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <FoldedContent.Provider value={finding && shown}>
@@ -235,6 +294,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             onOpenSubagent={openSubagent}
             finding={finding && shown}
             findFocus={findFocus}
+            fontZoom={fontZoom}
             onCloseFind={() => setFinding(false)}
           />
         </FoldedContent.Provider>
@@ -247,6 +307,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             <QuestionCard task={task} entries={entries ?? null} />
             <SessionComposer
               task={task}
+              focusRequest={inputFocus}
+              focusRoot={sessionRoot}
               entries={entries ?? null}
               head={head}
               changes={changes ?? null}
@@ -324,6 +386,7 @@ function SessionStatus({
   changes,
   commits,
   changesOpen,
+  effortAnnouncement,
   onToggleChanges,
 }: {
   task: AgentTask;
@@ -332,6 +395,7 @@ function SessionStatus({
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
   changesOpen: boolean;
+  effortAnnouncement: string | null;
   onToggleChanges: () => void;
 }) {
   const tx = useTx();
@@ -351,7 +415,7 @@ function SessionStatus({
         showContextMenu(e, taskMenu([task]));
       }}
     >
-      <span className={styles.agent} title={task.cwd}>
+      <span className={styles.agent} title={`${providerName(task.provider)} · ${task.cwd}`}>
         <Icon name={providerIcon(task.provider)} size={13} className={styles.providerIcon} />
         <span className={styles.agentName}>
           {providerName(task.provider)}
@@ -386,7 +450,10 @@ function SessionStatus({
         <T>{statusLabel(task.status)}</T>
         {task.status === "limited" && task.resetsMs != null && ` · ${tx`resets ${formatSentAt(task.resetsMs)}`}`}
       </span>
-      {/* What changed sits above the meter, time and terminal; those keep their one row at the right. */}
+      <span className={styles.state} role="status" aria-live="polite" aria-atomic="true">
+        {effortAnnouncement ? tx("Effort: {level}").replace("{level}", effortAnnouncement) : ""}
+      </span>
+      {/* What changed sits before the meter, time and terminal, or above them when the row is full. */}
       <span className={styles.statusEnd}>
         {(!!changes?.length || !!commits.length) && (
           <span className={styles.statusChips}>
@@ -416,7 +483,7 @@ function SessionStatus({
         )}
         <span className={styles.statusMeters}>
           <Meters task={task} entries={entries} />
-          <StatusActions task={task} />
+          {hasTaskTerminal(task, projectRoot) && <StatusActions task={task} />}
         </span>
       </span>
     </div>
@@ -543,10 +610,16 @@ function SubagentBar({
  * doesn't jump (WebKit has no scroll anchoring). A new width lays them out again once it
  * settles; Find in Conversation (`enabled` false) needs every row laid out.
  */
-function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, enabled: boolean) {
-  // The width the marked rows were laid out at.
-  const width = useRef(0);
-  useEffect(() => {
+function useOffscreenRows(
+  ref: RefObject<HTMLElement | null>,
+  visible: boolean,
+  enabled: boolean,
+  fitWindowWidth: boolean,
+  fontZoom: number,
+) {
+  // The container width, column mode and font zoom the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean; fontZoom: number } | null>(null);
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const unmark = () => {
@@ -554,10 +627,31 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
         row.removeAttribute("data-measured");
       }
     };
-    if (!enabled) return unmark();
+    if (!enabled) {
+      measured.current = null;
+      unmark();
+      return;
+    }
     if (!visible) return;
+    if (
+      measured.current?.width === el.clientWidth &&
+      measured.current.fitWindowWidth === fitWindowWidth &&
+      measured.current.fontZoom === fontZoom
+    )
+      return;
+    measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
+    unmark();
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled || !visible) return;
     let frame = 0;
     let timer: number | undefined;
+    const unmark = () => {
+      for (const row of el.querySelectorAll(`:scope > .${styles.conversationRow}[data-measured]`)) {
+        row.removeAttribute("data-measured");
+      }
+    };
     const mark = () => {
       cancelAnimationFrame(frame);
       // The next frame lays the new rows out (and remembers their size); mark them after it.
@@ -570,8 +664,13 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       });
     };
     const remeasure = () => {
-      if (el.clientWidth === width.current) return;
-      width.current = el.clientWidth;
+      if (
+        measured.current?.width === el.clientWidth &&
+        measured.current.fitWindowWidth === fitWindowWidth &&
+        measured.current.fontZoom === fontZoom
+      )
+        return;
+      measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
       unmark();
     };
     remeasure();
@@ -592,7 +691,7 @@ function useOffscreenRows(ref: RefObject<HTMLElement | null>, visible: boolean, 
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
 }
 
 interface StreamProps {
@@ -605,6 +704,7 @@ interface StreamProps {
   finding: boolean;
   /** Bumped by Find in Conversation: focus the find field again. */
   findFocus: number;
+  fontZoom: number;
   onCloseFind: () => void;
 }
 
@@ -620,7 +720,17 @@ function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
   return false;
 }
 
-function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({
+  loadError,
+  task,
+  entries,
+  subagent,
+  onOpenSubagent,
+  finding,
+  findFocus,
+  fontZoom,
+  onCloseFind,
+}: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
@@ -714,7 +824,8 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   }, [start]);
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
-  useOffscreenRows(ref, visible, !finding);
+  const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -823,7 +934,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   const busy = subagent ? subagentWorking(subagent.status) : isBusy(task.status);
   const lastIndex = entries ? entries.length - 1 : -1;
   // Keep the row stable when earlier history is prepended; its author can move with the work.
-  const { foldTurns, toolCalls } = useAgentSettings();
   const rows = useMemo(() => {
     if (!entries) return [];
     const rows = conversationRows(entries, start, toolCalls === "grouped");
@@ -884,9 +994,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
             onWheel={(e) => {
+              if (e.defaultPrevented) return;
               markUserScroll();
-              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+              if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.metaKey) scrollingUp.current = false;
             }}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
@@ -920,7 +1031,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
               const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
               const laidOut =
                 el.scrollHeight !== seenHeight.current.content || el.clientHeight !== seenHeight.current.view;
-              seenHeight.current = { content: el.scrollHeight, view: el.clientHeight };
+              seenHeight.current = {
+                content: el.scrollHeight,
+                view: el.clientHeight,
+              };
               const byUser = dragging.current || performance.now() - userScrolled.current < 500 || !laidOut;
               const movedDown = el.scrollTop > position.current.top;
               const stayedAtEnd = position.current.stick && el.scrollTop === position.current.top;
@@ -1001,6 +1115,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
+          <SelectionToolbar streamRef={ref} task={task} subagent={!!subagent} />
         </div>
       </RevealFold.Provider>
     </OpenFolds.Provider>
@@ -1008,23 +1123,6 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
 }
 
 type UserEntry = Extract<AgentEntry, { type: "user" }>;
-
-/** Message text with file references and skills as tags, distinct from prose. */
-function MessageText({ text }: { text: string }) {
-  return (
-    <>
-      {messageTokens(text).map((token, i) =>
-        token.kind === "text" ? (
-          <Fragment key={i}>{token.value}</Fragment>
-        ) : (
-          <InlineTag key={i} accent={token.kind === "command"}>
-            {token.value}
-          </InlineTag>
-        ),
-      )}
-    </>
-  );
-}
 
 /** When a message was sent, or when the turn behind a reply finished, and how long it took. */
 function MessageTime({
@@ -1083,14 +1181,9 @@ interface RangeSet {
   clear(): void;
   add(range: Range): void;
 }
-const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
-const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
-
-/**
- * Sets the ranges of highlight `name`. One registered highlight per name, changed in
- * place: WebKit doesn't repaint where a replaced highlight object was.
- */
 function setHighlight(name: string, ranges: Range[]) {
+  const highlights = (globalThis as { CSS?: { highlights?: Map<string, RangeSet> } }).CSS?.highlights;
+  const HighlightCtor = (globalThis as { Highlight?: new () => RangeSet }).Highlight;
   if (!highlights || !HighlightCtor) return;
   let set = highlights.get(name);
   if (!set) {
@@ -1166,12 +1259,15 @@ function FindBar({
     return () => stream?.removeEventListener("toggle", toggled, true);
   }, [streamRef]);
   useEffect(() => {
-    // Only rendered matches: WebKit paints those in collapsed <details> over the text next to them.
-    const visible = (r: Range) => r.getClientRects().length > 0;
+    const stream = streamRef.current;
+    if (!stream) return;
+    // Only rendered selectable matches outside closed <details>: WebKit paints unrendered
+    // or user-select:none ranges in CSS.highlights over the next selectable row instead.
+    const visible = (r: Range) => isFindRangeShown(r, stream);
     const current = index >= 0 ? ranges[index]! : null;
     setHighlight("agent-find", ranges.filter(visible));
     setHighlight("agent-find-current", current && visible(current) ? [current] : []);
-  }, [ranges, index, shown]);
+  }, [ranges, index, shown, streamRef]);
   useEffect(
     () => () => {
       setHighlight("agent-find", []);
@@ -1430,7 +1526,7 @@ const Entry = memo(function Entry({
             <T>Task from the parent agent</T>
           </div>
           <div className={styles.user}>
-            <MessageText text={entry.text} />
+            <ReferencedText text={entry.text} cwd={task.cwd} />
           </div>
         </div>
       ) : (
@@ -1494,7 +1590,14 @@ function UserMessage({
   }
   const images = entry.images ?? [];
   // Images are listed after the files in `attachments` and shown as thumbnails instead.
-  const files = entry.attachments.slice(0, entry.attachments.length - images.length);
+  // Files mentioned in the text are chips there already.
+  const mentioned = new Set(
+    messageTokens(entry.text).flatMap((t) => {
+      const m = t.kind === "file" ? parseMention(t.value) : null;
+      return m ? [basename(m.rel.replace(/\/$/, ""))] : [];
+    }),
+  );
+  const files = entry.attachments.slice(0, entry.attachments.length - images.length).filter((a) => !mentioned.has(a));
   return (
     <div className={clsx(styles.message, styles.userMessage)}>
       {/* Actions and the time sit beside the author on hover: the reply under it has the turn's duration. */}
@@ -1541,7 +1644,7 @@ function UserMessage({
         </span>
       </div>
       <div className={styles.user}>
-        <MessageText text={entry.text} />
+        <ReferencedText text={entry.text} cwd={task.cwd} />
         <ImageStrip images={images} />
         {files.length > 0 && (
           <div className={styles.attachments}>
@@ -2231,9 +2334,7 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
             ) : (
               <span className={styles.permissionDetail}>{shortTitle(task, detail)}</span>
             )}
-            {!entry.questions?.length && (
-              <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
-            )}
+            {!asksInCard(entry) && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
           </>
         )}
       </div>
@@ -2258,12 +2359,13 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
+/** An open `AskUserQuestion` request or agent form, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
-      candidate.type === "permission" && !candidate.chosen && !!candidate.questions?.length,
+      candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
   );
+  if (entry?.form) return <FormCard key={entry.id} task={task} entry={entry} form={entry.form} />;
   return entry?.questions ? (
     <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} />
   ) : null;
@@ -2555,9 +2657,7 @@ function QuestionForm({
  */
 function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
-  const pending = entries?.find(
-    (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
-  );
+  const pending = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen && !asksInCard(e));
   const plan = entries?.findLast((e): e is Extract<AgentEntry, { type: "plan" }> => e.type === "plan");
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
@@ -2621,25 +2721,79 @@ function WorkingRow({
     return (
       <div className={styles.working} role="status">
         <Spinner size={12} />
-        <T>{subagent.status === "needsInput" ? "Waiting for your answer…" : "Working…"}</T>
+        {subagent.status === "needsInput" ? (
+          <T>Waiting for your answer…</T>
+        ) : (
+          <WorkingLabel turn={entries ?? []} seed={subagent.startedMs ?? 0} />
+        )}
         {subagent.startedMs != null && <Elapsed since={subagent.startedMs} />}
       </div>
     );
   }
   if (task.status !== "running" && task.status !== "starting") return null;
-  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
-  const lastUser = entries?.findLast((e): e is UserEntry => e.type === "user");
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !asksInCard(e))) return null;
+  const userAt = entries?.findLastIndex((e) => e.type === "user") ?? -1;
+  const lastUser = userAt >= 0 ? (entries![userAt] as UserEntry) : undefined;
   return (
     <div className={styles.working} role="status">
       <Spinner size={12} />
       {task.retry ? (
         <Retrying retry={task.retry} />
+      ) : task.status === "starting" ? (
+        <T>Starting the agent…</T>
       ) : (
-        <T>{task.status === "starting" ? "Starting the agent…" : "Working…"}</T>
+        <WorkingLabel turn={entries?.slice(userAt + 1) ?? []} seed={lastUser?.sentMs ?? 0} />
       )}
       {lastUser?.sentMs != null && !lastUser.doneMs && <Elapsed since={lastUser.sentMs} />}
     </div>
   );
+}
+
+/**
+ * What the agent is doing, said by the activity's playful words in turns (the user's own, else the
+ * built-in ones) from the start, or once it has reported nothing new for the user's quiet time;
+ * screen readers hear only the fact. A word stays its full time while it still fits what the agent
+ * does, and a little while when it no longer does, so the row never flickers.
+ */
+function WorkingLabel({ turn, seed }: { turn: AgentEntry[]; seed: number }) {
+  const tx = useTx();
+  const { playfulStatus, playfulAfterSeconds, playfulWords } = useAgentSettings();
+  const now = useNow(1000);
+  const key = progressKey(turn);
+  const [progress, setProgress] = useState({ key, at: now });
+  if (progress.key !== key) setProgress({ key, at: now });
+  // The word on screen, and how many the turn has shown, so the next one continues the order.
+  const [playful, setPlayful] = useState<{ shown: number; word: PlayfulWord | null }>({ shown: 0, word: null });
+  const activity = activityOf(turn);
+  const kind = activity ?? "working";
+  const fact = tx(ACTIVITY_STATUS[kind]);
+  const own = playfulWords[kind];
+  const words = own ?? PLAYFUL_WORDS[kind];
+  const due = words.length > 0 && (!activity || now - progress.at >= playfulAfterSeconds * 1000);
+  const current = playful.word;
+  const fits = due && current?.kind === kind;
+  const stays = current && playfulStatus && now - current.since < (fits ? PLAYFUL_WORD_MS : PLAYFUL_MIN_MS);
+  let next = playful;
+  if (!stays && playfulStatus && due) {
+    const text = words[playfulIndex(words.length, seed, playful.shown)]!;
+    next = { shown: playful.shown + 1, word: { text, kind, own: !!own, since: now } };
+  } else if (!stays && current) next = { shown: playful.shown, word: null };
+  if (next !== playful) setPlayful(next);
+  if (!next.word) return fact;
+  return (
+    <>
+      <span aria-hidden>{next.word.own ? next.word.text : tx(next.word.text)}</span>
+      <span className={styles.srOnly}>{fact}</span>
+    </>
+  );
+}
+
+/** A playful word for `kind` on screen since `since`: the user's own as written, else a built-in one to translate. */
+interface PlayfulWord {
+  text: string;
+  kind: Activity;
+  own: boolean;
+  since: number;
 }
 
 /** The approval the agent waits for, with its answers on 1, 2, 3… */
@@ -2673,7 +2827,7 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
       if (!el?.contains(document.activeElement) && document.activeElement !== document.body) return;
       requestAnimationFrame(() => {
         if (document.activeElement === document.body || !document.activeElement?.isConnected)
-          area?.querySelector<HTMLElement>("textarea")?.focus({ preventScroll: true });
+          area?.querySelector<HTMLElement>(".cm-content")?.focus({ preventScroll: true });
       });
     };
   }, []);
@@ -2686,6 +2840,8 @@ function PendingPermission({ task, entry }: { task: AgentTask; entry: Permission
 
 function SessionComposer({
   task,
+  focusRequest,
+  focusRoot,
   entries,
   head,
   changes,
@@ -2695,6 +2851,8 @@ function SessionComposer({
   onOpenSubagent,
 }: {
   task: AgentTask;
+  focusRequest: number;
+  focusRoot: RefObject<HTMLDivElement | null>;
   entries: AgentEntry[] | null;
   head: string | null;
   changes: AgentChange[] | null;
@@ -2742,6 +2900,8 @@ function SessionComposer({
         body: String(e),
       }),
     );
+  const shown = useEditorShown();
+  const effortAnnouncement = useEffortFocus(focusRoot, shown && task.status !== "archived", task.config, setOption);
   return (
     <div className={styles.composerArea}>
       <SessionStatus
@@ -2752,6 +2912,7 @@ function SessionComposer({
         commits={commits}
         changesOpen={changesOpen}
         onToggleChanges={onToggleChanges}
+        effortAnnouncement={effortAnnouncement}
       />
       {task.status === "archived" && (
         <div className={styles.banner}>
@@ -2772,6 +2933,7 @@ function SessionComposer({
       </Tray>
       <Composer
         id={task.id}
+        focusRequest={focusRequest}
         placeholder={
           !busy
             ? "Reply to the agent"
@@ -2912,15 +3074,18 @@ function useChangesOpen(
     open: docked ? false : loadChangesOpen()[task],
   }));
   const chosen = state.task === task ? state.open : docked ? false : loadChangesOpen()[task];
-  const set = (open: boolean) => {
-    setState({ task, open });
-    if (docked) return;
-    try {
-      globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
-    } catch {
-      /* storage unavailable */
-    }
-  };
+  const set = useCallback(
+    (open: boolean) => {
+      setState({ task, open });
+      if (docked) return;
+      try {
+        globalThis.localStorage?.setItem(CHANGES_OPEN_KEY, JSON.stringify({ ...loadChangesOpen(), [task]: open }));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [task, docked],
+  );
   return [chosen ?? (changes?.length ?? 0) > 0, set];
 }
 
@@ -2952,7 +3117,12 @@ function changeRows(
   commits: readonly AgentCommit[],
   grouped: boolean,
 ): ChangeRow[] {
-  if (!grouped) return uncommitted.map((change) => ({ key: change.path, type: "file" as const, change }));
+  if (!grouped)
+    return uncommitted.map((change) => ({
+      key: change.path,
+      type: "file" as const,
+      change,
+    }));
   const roots: ChangeRow[] = [];
   if (uncommitted.length) {
     roots.push({
@@ -2961,7 +3131,11 @@ function changeRows(
       label: "Uncommitted",
       count: uncommitted.length,
       ...statsOf(uncommitted),
-      children: uncommitted.map((change) => ({ key: `uncommitted:${change.path}`, type: "file", change })),
+      children: uncommitted.map((change) => ({
+        key: `uncommitted:${change.path}`,
+        type: "file",
+        change,
+      })),
     });
   }
   if (commits.length) {
@@ -3006,7 +3180,10 @@ function ChangesPane({
   onHide: () => void;
 }) {
   // The two views key their rows differently: a selection doesn't carry over.
-  const [selection, setSelection] = useState<{ grouped: boolean; keys: ReadonlySet<string> }>(() => ({
+  const [selection, setSelection] = useState<{
+    grouped: boolean;
+    keys: ReadonlySet<string>;
+  }>(() => ({
     grouped,
     keys: NO_SELECTION,
   }));
@@ -3110,7 +3287,10 @@ function ChangesPane({
           body: tx`You changed them yourself, accept them by hand: ${skippedNames}.`,
         });
       } else {
-        notifications().notify({ level: "info", title: tx("Changes accepted") });
+        notifications().notify({
+          level: "info",
+          title: tx("Changes accepted"),
+        });
       }
     } catch (e) {
       notifications().notify({
@@ -3122,6 +3302,7 @@ function ChangesPane({
   };
   return (
     <aside className={styles.changes} aria-label={tx("Changes")}>
+      {!docked && <ChangesResizer />}
       <div className={styles.changesHeader}>
         {docked && <IconButton icon="arrow-left" title="Back to conversation" onClick={onHide} />}
         <span className={styles.changesTitle}>
@@ -3307,7 +3488,10 @@ function uncommittedDiffData(task: AgentTask, change: AgentChange): DiffData {
   const right: DiffData["right"] =
     change.kind === "deleted"
       ? { type: "text", text: "", label: "(deleted)", absent: true }
-      : { type: "worktree", label: task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree" };
+      : {
+          type: "worktree",
+          label: task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree",
+        };
   return { path: change.path, left, right };
 }
 
@@ -3336,7 +3520,12 @@ async function openUncommittedDiff(task: AgentTask, path: string) {
 async function openCommitDiff(task: AgentTask, commit: AgentCommit, path: string) {
   const diffs = commit.files.map((file) =>
     commitFileDiffData(
-      { id: commit.id, shortId: commit.shortId, parents: commit.parent ? [commit.parent] : [], repo: task.cwd },
+      {
+        id: commit.id,
+        shortId: commit.shortId,
+        parents: commit.parent ? [commit.parent] : [],
+        repo: task.cwd,
+      },
       { path: file.relPath, kind: file.kind, oldPath: file.oldPath },
     ),
   );

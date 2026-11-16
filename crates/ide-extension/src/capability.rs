@@ -48,6 +48,9 @@ pub enum Capability {
     Ipc(String),
     /// Run one external program. Full code execution: never fine-grained.
     Process(String),
+    /// Send a running language server (its name in the language definition) its own
+    /// requests. The server reads and edits project files on the plugin's behalf.
+    Lsp(String),
     /// Read files outside the project under one path.
     FsRead(String),
     /// Write files outside the project under one path.
@@ -85,6 +88,7 @@ impl Capability {
             | Self::IdeCommands
             | Self::Ipc(_)
             | Self::Process(_)
+            | Self::Lsp(_)
             | Self::FsRead(_)
             | Self::FsWrite(_) => Risk::High,
         }
@@ -126,6 +130,9 @@ impl Capability {
                 format!("Connect to local socket {path} — equivalent to running arbitrary code on the project machine")
             }
             Self::Process(bin) => format!("Run {bin} — equivalent to running arbitrary code on this machine"),
+            Self::Lsp(server) => {
+                format!("Send requests to the {server} language server, which reads and changes the project's files")
+            }
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
         }
@@ -249,6 +256,7 @@ impl fmt::Display for Capability {
             Self::NetHttp(h) => write!(f, "net.http:{h}"),
             Self::Ipc(p) => write!(f, "ipc:{p}"),
             Self::Process(b) => write!(f, "process:{b}"),
+            Self::Lsp(s) => write!(f, "lsp:{s}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
         }
@@ -297,6 +305,12 @@ impl FromStr for Capability {
                         return Err(format!("{s:?}: use a program name or an absolute path"));
                     }
                     Ok(Self::Process(arg.to_owned()))
+                }
+                "lsp" => {
+                    if arg.len() > 128 || arg.chars().any(|c| c.is_whitespace() || c.is_control() || c == ':') {
+                        return Err(format!("{s:?}: use the server's name in its language definition"));
+                    }
+                    Ok(Self::Lsp(arg.to_owned()))
                 }
                 "fs.read" | "fs.write" => {
                     if !std::path::Path::new(arg).is_absolute() && !arg.starts_with('~') {
@@ -376,6 +390,8 @@ mod tests {
             "net:crates.io",
             "net:*.github.com",
             "process:cargo",
+            "lsp:phoxite",
+            "lsp:rust-analyzer",
         ] {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
@@ -392,6 +408,9 @@ mod tests {
         assert!("net:".parse::<Capability>().is_err());
         assert!("net:a b".parse::<Capability>().is_err());
         assert!("process:./evil".parse::<Capability>().is_err());
+        assert!("lsp:".parse::<Capability>().is_err());
+        assert!("lsp:a b".parse::<Capability>().is_err());
+        assert!("lsp:phoxite:phoxite/laravel".parse::<Capability>().is_err());
         assert!("fs.read:rel".parse::<Capability>().is_err());
         assert!("fs.write:rel".parse::<Capability>().is_err());
         assert!("network".parse::<Capability>().is_err());
@@ -405,6 +424,8 @@ mod tests {
         assert_eq!("clipboard".parse::<Capability>().unwrap(), Capability::Clipboard);
         assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
+        assert_eq!(Capability::Lsp("phoxite".into()).risk(), Risk::High);
+        assert!(!Capability::Lsp("phoxite".into()).covers(&Capability::Lsp("intelephense".into())));
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
     }
 

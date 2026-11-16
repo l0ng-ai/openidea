@@ -3,11 +3,13 @@
 //!
 //! Only the native providers keep transcripts on disk in a readable form: Claude Code
 //! (`<config>/projects/*/<id>.jsonl`, see `native::claude::history`) and Codex
-//! (`<home>/.codex/sessions/**`, rollout files with a `session_meta` line).
+//! (`<home>/.codex/sessions/**`, rollout files with a `session_meta` line, named in
+//! `<home>/.codex/session_index.jsonl`).
 
 use super::native::claude::history;
 use serde::Serialize;
 use specta::Type;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
@@ -206,11 +208,39 @@ fn rollout_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Codex sessions of the project at `root`: `<home>/.codex/sessions/**`.
+/// Thread names Codex keeps in `session_index.jsonl`, by thread id. A rename adds a line,
+/// so the last one wins.
+fn codex_names(codex_home: &Path) -> HashMap<String, String> {
+    let Ok(file) = std::fs::File::open(codex_home.join("session_index.jsonl")) else { return HashMap::new() };
+    let mut names = HashMap::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let id = v.get("id").and_then(serde_json::Value::as_str);
+        let name = v.get("thread_name").and_then(serde_json::Value::as_str).map(str::trim).filter(|n| !n.is_empty());
+        if let (Some(id), Some(name)) = (id, name) {
+            names.insert(id.to_owned(), name.to_owned());
+        }
+    }
+    names
+}
+
+/// Codex sessions of the project at `root`: `<home>/.codex/sessions/**`, titled by their
+/// thread names, else by their first prompts.
 pub fn codex_sessions(codex_home: &Path, root: &Path) -> Vec<ExternalSession> {
     let mut files = Vec::new();
     rollout_files(&codex_home.join("sessions"), 4, &mut files);
-    files.iter().filter_map(|p| codex_file(p)).filter(|s| in_project(s.cwd.as_deref(), root)).collect()
+    let mut sessions: Vec<ExternalSession> =
+        files.iter().filter_map(|p| codex_file(p)).filter(|s| in_project(s.cwd.as_deref(), root)).collect();
+    if !sessions.is_empty() {
+        let names = codex_names(codex_home);
+        for s in &mut sessions {
+            if let Some(name) = names.get(&s.session_id) {
+                s.title = short(name);
+            }
+        }
+    }
+    sessions
 }
 
 #[cfg(test)]
@@ -282,6 +312,16 @@ mod tests {
         assert_eq!((s.provider.as_str(), s.session_id.as_str()), ("codex", "thread-1"));
         assert_eq!(s.title, "add tests");
         assert_eq!(s.cwd.as_deref(), Some("/work/app"));
+
+        write(
+            &tmp.path().join("session_index.jsonl"),
+            &[
+                json!({"id": "thread-1", "thread_name": "Add tests", "updated_at": "t1"}),
+                json!({"id": "thread-2", "thread_name": "Other", "updated_at": "t1"}),
+                json!({"id": "thread-1", "thread_name": "Add parser tests", "updated_at": "t2"}),
+            ],
+        );
+        assert_eq!(codex_sessions(tmp.path(), Path::new("/work"))[0].title, "Add parser tests");
     }
 
     #[test]

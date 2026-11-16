@@ -34,7 +34,7 @@ import {
 import { pushHistory, readHistory, setConsoleHistoryBrowser } from "./expressionHistory";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { findOutputLinks, type OutputLink } from "@/features/run/links";
-import { openTarget, openUrl, runDirectory } from "@/features/run/navigate";
+import { debugConsoleUrl, openTarget, openUrl, runDirectory } from "@/features/run/navigate";
 import { segmentLine, type SegmentMark } from "@/features/run/segments";
 import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
@@ -59,8 +59,8 @@ const DebugLine = memo(
     const activate = (e: MouseEvent, link: OutputLink) => {
       e.preventDefault();
       if (window.getSelection()?.toString()) return;
-      if (link.kind === "url") void openUrl(link.url);
-      else void openTarget(link.target, cwd);
+      if (link.kind !== "url") void openTarget(link.target, cwd);
+      else if (!debugConsoleUrl(e, link.url)) void openUrl(link.url);
     };
     if (segments.length === 0) return <>{"\u200B"}</>;
     return (

@@ -3,6 +3,7 @@ import { commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { isRemoteWindow } from "@/platform/remote";
 import { handleFileDrop } from "@/workbench/fileDrop";
+import { dragSession, FILES_DRAG } from "@/ui";
 import { droppedPathsText, installTerminalDrop } from "./drop";
 
 vi.mock("@/platform/remote", () => ({ isRemoteWindow: vi.fn(() => false) }));
@@ -105,6 +106,25 @@ describe("terminal drop", () => {
       vi.mocked(isRemoteWindow).mockReturnValue(true);
       expect(handleFileDrop(["/local/file"], 1, 1)).toBeNull();
       expect(paste).not.toHaveBeenCalled();
+    } finally {
+      remove();
+    }
+  });
+
+  it("pastes paths dragged from the Project view, also in a remote window", () => {
+    vi.mocked(isRemoteWindow).mockReturnValue(true);
+    const host = document.createElement("div");
+    const child = document.createElement("span");
+    host.append(child);
+    document.body.replaceChildren(host);
+    document.elementFromPoint = (() => child) as typeof document.elementFromPoint;
+    const paste = vi.fn();
+    const remove = installTerminalDrop(host, paste);
+    try {
+      const drag = dragSession({ type: FILES_DRAG, payload: "/p/src/a b.ts\n/p/docs/" });
+      expect(drag.move(1, 1)).toBe(true);
+      expect(drag.drop(1, 1)).toBe(true);
+      expect(paste.mock.calls).toEqual([["'/p/src/a b.ts' /p/docs"]]);
     } finally {
       remove();
     }

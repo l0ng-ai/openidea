@@ -232,7 +232,10 @@ const lensTheme = EditorView.theme({
   // positioned inner box, the way IDEA paints line-end inlays. Nothing here takes part in the
   // line's flow: the hint can neither wrap to the next line (a soft-wrapped line has no room for
   // it) nor stretch the line's height, and it overflows past the editor edge instead.
+  // The anchor's own offset is a custom property: the blame and plugin messages step past the
+  // hint by measuring this inner box plus that offset (inlineBlame.ts, decorations.ts).
   ".cm-openidea-lensInline": {
+    "--openidea-hint-offset": "12px",
     display: "inline-block",
     width: "0",
     position: "relative",
@@ -243,7 +246,7 @@ const lensTheme = EditorView.theme({
   },
   ".cm-openidea-lensInlineInner": {
     position: "absolute",
-    left: "12px",
+    left: "var(--openidea-hint-offset)",
     bottom: "-2px",
     display: "flex",
     alignItems: "center",

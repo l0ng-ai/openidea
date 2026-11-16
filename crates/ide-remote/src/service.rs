@@ -80,6 +80,11 @@ impl RemoteService {
     }
 
     async fn fs(&self, connection: &FsConnection) -> IdeResult<RemoteFs> {
+        self.fs_with(connection, None).await
+    }
+
+    /// Like [`Self::fs`], with an FTP password typed but not saved yet (`None`: the saved one).
+    async fn fs_with(&self, connection: &FsConnection, password: Option<String>) -> IdeResult<RemoteFs> {
         match connection {
             FsConnection::Local => Ok(RemoteFs::Local),
             FsConnection::Sftp { ssh } => {
@@ -90,14 +95,24 @@ impl RemoteService {
                 Ok(RemoteFs::new(session.sftp().await?).with_shell(session))
             }
             FsConnection::Ftp { server, secure, ftp } => {
-                let password = self.ssh.password(&ide_ssh::ftp::secret_key(server));
+                let password = password.or_else(|| self.ssh.password(&ide_ssh::ftp::secret_key(server)));
                 Ok(RemoteFs::Ftp(ide_ssh::ftp::FtpFs::connect(ftp, *secure, password).await?))
             }
         }
     }
 
     pub async fn test_connection(&self, connection: &FsConnection, path: &str) -> IdeResult<()> {
-        let fs = self.fs(connection).await?;
+        self.test_connection_with(connection, path, None).await
+    }
+
+    /// Tests `connection` with an FTP password the settings have not saved yet.
+    pub async fn test_connection_with(
+        &self,
+        connection: &FsConnection,
+        path: &str,
+        password: Option<String>,
+    ) -> IdeResult<()> {
+        let fs = self.fs_with(connection, password).await?;
         let result = fs.test(path).await;
         fs.close().await;
         result

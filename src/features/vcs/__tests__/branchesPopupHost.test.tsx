@@ -32,3 +32,47 @@ it("opens Git Branches at the size it was last resized to", () => {
   fireEvent.pointerUp(window);
   expect(JSON.parse(localStorage.getItem("openidea.vcs.branchesPopup.size")!)).toEqual({ w: 560, h: 500 });
 });
+
+it("keeps the groups the user expanded per project across sessions", async () => {
+  const { useProject } = await import("@/platform/project");
+  const { useVcs } = await import("../store");
+  const branch = (name: string, remote: boolean, current = false) => ({
+    name,
+    current,
+    remote,
+    upstream: null,
+    ahead: 0,
+    behind: 0,
+    lastCommitMs: null,
+    commit: "1111111",
+  });
+  useProject.setState({ project: { root: "/work/app" } as never });
+  useVcs.setState({
+    available: true,
+    root: "/work/app",
+    repo: "/work/app",
+    roots: ["/work/app"],
+    branchesLoaded: true,
+    branches: [branch("main", false, true), branch("origin/main", true), branch("origin/release", true)],
+  });
+  // A previous session expanded Remote, which is collapsed by default.
+  localStorage.setItem(
+    "openidea.vcs.branchesPopup.expanded:/work/app",
+    JSON.stringify({ single: [["group:remote", true]], multi: [] }),
+  );
+  render(<BranchesPopupHost />);
+  act(showBranchesPopup);
+  const remote = screen.getByText("Remote").closest("[aria-expanded]")!;
+  expect(remote).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("release")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByText("Local"));
+  expect(screen.getByText("Local").closest("[aria-expanded]")).toHaveAttribute("aria-expanded", "false");
+  expect(JSON.parse(localStorage.getItem("openidea.vcs.branchesPopup.expanded:/work/app")!)).toEqual({
+    single: [
+      ["group:remote", true],
+      ["group:local", false],
+    ],
+    multi: [],
+  });
+});

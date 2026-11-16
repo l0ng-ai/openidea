@@ -142,6 +142,27 @@ describe("ownTerminalInput", () => {
     expect(reached).toEqual(["keydown", "insertText"]);
   });
 
+  it("sends a shifted character an IME commits before its keydown", () => {
+    // WeChat / Pinyin on macOS, Shift+/ for `？`: insertText arrives while only Shift is down.
+    // Its keydown armed xterm's gate, which then drops the first press.
+    const { textarea, sent, reached } = setup();
+    keydown(textarea, { key: "Shift", keyCode: 16 });
+    input(textarea, { inputType: "insertText", data: "？" });
+    keydown(textarea, { key: "？", keyCode: 229 });
+    keyup(textarea, 191);
+    expect(sent).toEqual(["？"]);
+    expect(reached).toEqual(["keydown"]);
+  });
+
+  it("leaves shifted keys xterm sent itself to xterm", () => {
+    const { textarea, sent, reached } = setup();
+    keydown(textarea, { key: "Shift", keyCode: 16 });
+    keydown(textarea, { key: "A", keyCode: 65 });
+    input(textarea, { inputType: "insertText", data: "A" });
+    expect(sent).toEqual([]);
+    expect(reached).toEqual(["keydown", "keydown", "insertText"]);
+  });
+
   it("leaves input with no keydown behind it to xterm", () => {
     // Dictation, an on-screen keyboard or the emoji picker.
     const { textarea, sent, reached } = setup();
@@ -258,6 +279,25 @@ describe("ownTerminalInput with xterm", () => {
     term.dispose();
     return sent;
   }
+
+  it("sends `？` on the first and the second press of Shift+/ with a direct-commit IME", async () => {
+    const sent = await replay([
+      ["keydown", "Shift", 16],
+      ["input", "insertText", "？", "？"],
+      ["keydown", "？", 229],
+      ["keyup", "？", 191],
+      ["input", "insertText", "？", "？？"],
+      ["keydown", "？", 229],
+      ["keyup", "？", 191],
+      ["keyup", "Shift", 16],
+      ["keydown", "Shift", 16],
+      ["keydown", "A", 65],
+      ["input", "insertText", "A", "？？A"],
+      ["keyup", "A", 65],
+      ["keyup", "Shift", 16],
+    ]);
+    expect(sent).toEqual(["？", "？", "A"]);
+  });
 
   it.each([true, false])("sends a retyped word and following plain keys once (keyup first: %s)", async (release) => {
     // Uppercase typing reaches both keypress and input; lowercase keydown is cancelled by xterm.

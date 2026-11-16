@@ -11,6 +11,8 @@ import { isImeKey } from "@/platform/ime";
 import { call, commands } from "@/platform/ipc";
 import { badgeKind, Popup, SymbolBadge } from "@/ui";
 import { isLive, type DebugSession } from "../state";
+import { importingCompletion, qualifyIn } from "../classImports";
+import { JAVA_ADAPTER } from "../java";
 import styles from "./ExpressionCompletion.module.css";
 
 type Field = HTMLInputElement | HTMLTextAreaElement;
@@ -96,8 +98,12 @@ export function useExpressionCompletion(
       return;
     }
     const mine = ++seq.current;
-    const { line, column } = position(text, at);
-    call(commands.debugCompletions(session.id, session.selectedFrame, text, line, column)).then(
+    // The adapter resolves names against the frame's file: imported classes before the word
+    // being typed go qualified (the word itself is what it completes).
+    const head = text.slice(0, at - prefix.length);
+    const before = (session.adapter === JAVA_ADAPTER ? qualifyIn(session.id, head) : head) + prefix;
+    const { line, column } = position(before, before.length);
+    call(commands.debugCompletions(session.id, session.selectedFrame, before + text.slice(at), line, column)).then(
       (result) => {
         if (mine !== seq.current) return;
         setItems(result.length ? result : null);
@@ -110,7 +116,8 @@ export function useExpressionCompletion(
   const accept = (item: DebugCompletion) => {
     const el = field.current;
     if (!el) return;
-    const next = applyCompletion(el.value, el.selectionStart ?? el.value.length, item);
+    const chosen = session?.adapter === JAVA_ADAPTER ? importingCompletion(session.id, item) : item;
+    const next = applyCompletion(el.value, el.selectionStart ?? el.value.length, chosen);
     close();
     setValue(next.text);
     requestAnimationFrame(() => {

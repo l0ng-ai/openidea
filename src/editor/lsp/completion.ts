@@ -24,8 +24,8 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { EditorSelection, Prec, type Text } from "@codemirror/state";
-import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
+import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
+import { EditorView, ViewPlugin, keymap, type Rect, type ViewUpdate } from "@codemirror/view";
 import {
   call,
   commands,
@@ -49,7 +49,7 @@ import { docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp"
 import { offsetToPos, posToOffset, textEditsToChanges } from "./positions";
 import { isEmptyMarkup, renderCode, renderMarkup } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
 import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
@@ -58,6 +58,7 @@ import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
 import { inplaceRenameActive } from "./inplaceRename";
 import { languageSemantics } from "./semantic";
+import { remoteChange } from "@/editor/api";
 
 interface RequestContext {
   doc: number;
@@ -156,6 +157,43 @@ function buildInfo(c: LspCompletion, delay: number): Promise<CompletionInfo> {
 function resetLookupDocs() {
   docsRequested = false;
   docWaiters.clear();
+}
+
+const DOC_MIN_WIDTH = 220;
+const DOC_MAX_WIDTH = 440;
+const DOC_MAX_HEIGHT = 320;
+const DOC_GAP = 6;
+
+/**
+ * Places the documentation beside the lookup, on whichever side has more room,
+ * with the two popups' top edges aligned. Room is measured to the window's
+ * edges, so a narrow editor still has space for a readable pane; when even the
+ * window is too narrow, the pane keeps a readable width rather than covering the
+ * options.
+ */
+export function positionCompletionInfo(
+  _view: EditorView,
+  list: Rect,
+  _option: Rect,
+  _info: Rect,
+  space: Rect,
+): { style: string; class: string } {
+  const windowWidth = document.documentElement.clientWidth;
+  const rightRoom = windowWidth - list.right - DOC_GAP;
+  const leftRoom = list.left - DOC_GAP;
+  const side = rightRoom >= leftRoom ? "right" : "left";
+  const room = side === "right" ? rightRoom : leftRoom;
+  const width = Math.max(DOC_MIN_WIDTH, Math.min(DOC_MAX_WIDTH, room));
+  return {
+    class: `cm-completionInfo-${side}`,
+    style: [
+      "top: 0",
+      // `left`/`right` names the side the pane sits on; the offset goes on the opposite edge.
+      `${side === "right" ? "left" : "right"}: calc(100% + ${DOC_GAP}px)`,
+      `max-width: ${width}px`,
+      `max-height: ${Math.min(DOC_MAX_HEIGHT, space.bottom - list.top)}px`,
+    ].join("; "),
+  };
 }
 
 /**
@@ -297,7 +335,9 @@ export function callParens(
   start: number,
   end: number,
 ): "inside" | "after" | null {
-  if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || /[(<[{]/.test(item.insertText)) return null;
+  // An empty text is inserted by the item's server command (kotlin-lsp), parentheses included.
+  if (item.isSnippet || !item.kind || !CALLABLE.has(item.kind) || !item.insertText || /[(<[{]/.test(item.insertText))
+    return null;
   const next = line.text.charAt(end - line.from);
   if (next && /[(\p{L}\p{N}_$'"`]/u.test(next)) return null;
   if (IMPORT_LINE.test(line.text.slice(0, start - line.from))) return null;
@@ -322,6 +362,33 @@ async function applyLateEdits(view: EditorView, c: LspCompletion, insertedAt: nu
   view.dispatch({ changes: edits, userEvent: "input.complete" });
 }
 
+/** Where the caret was when an item its server inserts was picked, until that edit lands (`null`: none). */
+const awaitServerInsert = StateEffect.define<number | null>();
+const serverInsertAt = StateField.define<number | null>({
+  create: () => null,
+  update(at, tr) {
+    for (const e of tr.effects) if (e.is(awaitServerInsert)) return e.value;
+    // The edit landed, or the caret moved on before it did.
+    if (at === null || tr.annotation(remoteChange) || tr.selection) return null;
+    return tr.changes.mapPos(at, -1);
+  },
+});
+
+/**
+ * The server's edit inserts the item at the caret: the caret goes after it, as after any other
+ * completion (a remote insertion at the caret would otherwise leave it in front).
+ */
+const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
+  const at = tr.startState.field(serverInsertAt, false);
+  const caret = tr.startState.selection.main;
+  if (at == null || !tr.docChanged || !tr.annotation(remoteChange) || !caret.empty || caret.head !== at) return tr;
+  let inserted = false;
+  tr.changes.iterChangedRanges((fromA, toA) => {
+    if (fromA <= at && toA >= at) inserted = true;
+  });
+  return inserted ? [tr, { selection: EditorSelection.cursor(tr.changes.mapPos(at, 1)), sequential: true }] : tr;
+});
+
 /** Client-side commands handled by the editor itself (VS Code ids servers commonly send). */
 const CLIENT_COMMANDS = new Set(["editor.action.triggerParameterHints", "editor.action.triggerSuggest"]);
 
@@ -329,17 +396,29 @@ function runCommand(view: EditorView, item: CompletionItem) {
   const command = item.command;
   if (!command?.command) return;
   const cmd = command.command;
+  // kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing went in here.
+  const serverInserted = !item.insertText && !CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.");
+  if (serverInserted) view.dispatch({ effects: awaitServerInsert.of(view.state.selection.main.head) });
   if (cmd === "editor.action.triggerParameterHints") setTimeout(() => triggerSignatureHelp(view), 0);
   else if (cmd === "editor.action.triggerSuggest") setTimeout(() => startCompletion(view), 0);
   else if (!CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.")) {
     const doc = docOf(view);
     // Server commands (auto-import, postfix…); resulting edits come back as workspace/applyEdit.
     if (doc)
-      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command)).catch((e: unknown) =>
-        reportLspError(view, e, false),
-      );
+      void lspRequest(() => commands.lspExecuteCommand(doc.doc, command))
+        .catch((e: unknown) => reportLspError(view, e, false))
+        .finally(() => {
+          // The edit arrives before the command's answer; allow for the document update.
+          if (serverInserted)
+            setTimeout(() => {
+              if (view.dom.isConnected && view.state.field(serverInsertAt, false) != null)
+                view.dispatch({ effects: awaitServerInsert.of(null) });
+            }, SERVER_INSERT_WAIT_MS);
+        });
   }
 }
+
+const SERVER_INSERT_WAIT_MS = 1000;
 
 // ---------------------------------------------------------------------------
 // Source
@@ -432,7 +511,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
   const trigger = triggerCharacter(ctx.state.sliceDoc(Math.max(0, ctx.pos - 2), ctx.pos));
   if (!ctx.explicit && !word && !trigger) return null;
   if (!ctx.explicit && word && !trigger && /^\d/.test(word.text)) return null;
-  if (completionBackoff.active(doc.doc)) return fallback(ctx);
+  if (!ctx.explicit && completionBackoff.active(doc.doc)) return fallback(ctx);
   cancelInflight();
   const id = nextRequestId();
   inflight = id;
@@ -445,6 +524,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       () => commands.lspCompletion(id, doc.doc, offsetToPos(ctx.state.doc, ctx.pos), trigger),
       () => inflight === id,
     );
+    completionBackoff.clear(doc.doc);
   } catch (e) {
     if (isUnavailable(e)) {
       completionBackoff.mark(doc.doc);
@@ -757,8 +837,15 @@ const completionFooter = ViewPlugin.fromClass(
             ...scope.querySelectorAll<HTMLElement>(".cm-tooltip-autocomplete"),
           ];
           for (const t of tooltips) {
-            if (t.querySelector(":scope > .cm-lsp-completion-footer")) continue;
-            const footer = document.createElement("div");
+            let footer = t.querySelector<HTMLElement>(":scope > .cm-lsp-completion-footer");
+            if (footer) {
+              // CodeMirror rebuilds the option list by appending a fresh <ul>,
+              // which would leave an existing footer above the list.
+              const list = t.querySelector(":scope > ul");
+              if (list && list.nextElementSibling !== footer) list.after(footer);
+              continue;
+            }
+            footer = document.createElement("div");
             footer.className = "cm-lsp-completion-footer";
             const tip = document.createElement("span");
             tip.textContent = tx("Press ↵ to insert, ⇥ to replace");
@@ -817,9 +904,12 @@ export function completionExtension() {
         );
       },
       tooltipClass: () => "cm-lsp-completion",
+      positionInfo: positionCompletionInfo,
     }),
     completionFooter,
     lookupTracker,
+    serverInsertAt,
+    caretAfterServerInsert,
     Prec.highest(
       keymap.of([
         // macOS: ⌃N / ⌃P are line down / up in text, so they move through the lookup as ↓ / ↑ do.

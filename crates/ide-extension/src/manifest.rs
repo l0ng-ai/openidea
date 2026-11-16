@@ -34,7 +34,7 @@ use std::path::{Component, Path, PathBuf};
 
 pub const MANIFEST_FILE: &str = "plugin.toml";
 /// The plugin API (engine) version this host implements.
-pub const ENGINE_VERSION: &str = "1.6.0";
+pub const ENGINE_VERSION: &str = "1.9.0";
 /// The 0.1 API, still accepted for contribution-only packages and 0.1 components.
 pub const LEGACY_API: &str = "0.1";
 /// Marketplace categories, in the order they are shown.
@@ -166,6 +166,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "editor-focused",
     "action-performed",
     "vcs-changed",
+    "problems-changed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -356,6 +357,9 @@ impl Manifest {
             if matches!(cap, Capability::NetAsk) {
                 self.needs_api(&format!("capability `{cap}`"), 5)?;
             }
+            if matches!(cap, Capability::Lsp(_)) {
+                self.needs_api(&format!("capability `{cap}`"), 9)?;
+            }
         }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {
@@ -371,6 +375,11 @@ impl Manifest {
             if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "document-changed" | "websocket-ready"))
             {
                 self.needs_api(&format!("`{event}`"), 6)?;
+            }
+            // Added after 1.7.0 shipped: a 1.7 host rejects the manifest, so the gate is the minor
+            // that carries it.
+            if matches!(event, ActivationEvent::Event(kind) if kind == "problems-changed") {
+                self.needs_api(&format!("`{event}`"), 8)?;
             }
             if matches!(event, ActivationEvent::Event(kind) if matches!(kind.as_str(), "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action"))
             {
@@ -704,6 +713,21 @@ mod tests {
             let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.3"))).unwrap();
             assert_eq!(m.capabilities.optional[0].to_string(), cap);
         }
+    }
+
+    #[test]
+    fn language_server_capabilities_need_api_1_9() {
+        let caps = "[capabilities]
+required = [\"lsp:phoxite\"]
+";
+        for engine in ["^1.2", "^1.8"] {
+            assert!(
+                err(&format!("{}{caps}", BASE.replace("^1.2", engine))).contains("new in plugin API 1.9"),
+                "{engine}"
+            );
+        }
+        let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.9"))).unwrap();
+        assert_eq!(m.capabilities.required, [Capability::Lsp("phoxite".into())]);
     }
 
     #[test]

@@ -27,6 +27,13 @@ pub fn ssh_set_secret(state: State<'_, AppState>, id: String, secret: Option<Str
     state.ssh.set_secret(&id, secret, save);
 }
 
+/// Whether a password is saved under `key` (an FTP deployment server's).
+#[tauri::command]
+#[specta::specta]
+pub fn ssh_password_saved(state: State<'_, AppState>, key: String) -> bool {
+    state.ssh.password_saved(&key)
+}
+
 /// Whether connecting with configuration `id` needs a password first.
 #[tauri::command]
 #[specta::specta]

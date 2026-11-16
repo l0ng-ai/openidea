@@ -341,6 +341,10 @@ pub struct ServerInfo {
     pub status: ServerStatus,
     /// OS process of the running instance (for memory attribution).
     pub pid: Option<u32>,
+    /// What the user sees as the server when another program serves in its place.
+    #[serde(default)]
+    #[specta(optional)]
+    pub label: Option<String>,
 }
 
 /// Read-only contents a language server provides for a non-`file:` URI

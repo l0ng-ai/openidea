@@ -50,7 +50,14 @@ Agents are unavailable in a project you have not marked as trusted.
     - **Local checkout**: the agent edits your files directly.
   </Step>
   <Step title="Pick the agent and its settings">
-    Choose the agent, and its model, mode and other options when it offers them. Models and modes appear after the agent's first task.
+    Choose the agent, and its model, mode and other options when it offers them. Cached models appear immediately; the selected agent's catalog refreshes in the background when it is more than 15 minutes old, without sending a prompt or attaching project MCP servers.
+
+    After changing the agent CLI or account, open the model picker and choose **Refresh models**. Refreshes share one lookup and have a 30-second cooldown after completion, including failures. Cached choices remain usable while refreshing or after a failure.
+
+    Available models depend on the installed agent and account. If a selected model is removed, choose another before starting. Refreshing does not change running tasks.
+
+    The version below the prompt is reported by a fresh agent initialization when this page is shown or the window regains focus. After updating a CLI, return to this page to refresh it. This does not restart running tasks; an already running agent process keeps its original version until it exits.
+
   </Step>
   <Step title="Send">
     The task opens as an editor tab and starts.
@@ -67,15 +74,27 @@ The task tab shows the conversation: your messages, the agent's replies, its rea
 
 On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
 
+**Focus Agent Input** defaults to `⌘L` on macOS and `Ctrl+L` on Windows / Linux in every built-in keymap. When focus is inside your writable task conversation, in either an editor tab or the tool window, it returns focus to the message input without changing your draft, caret position or selection—even when pressed repeatedly. It does not send a message or jump through message history.
+
+The shortcut does not apply to archived tasks, subagent conversations or the New Task page, and does not take focus from open popups or dialogs. Outside the task conversation, the keys keep their usual editor or terminal behavior. To change or remove the binding, open **Settings › Keymap › Agents › Focus Agent Input**.
+
+**Cycle Agent Effort** defaults to `Option+T` on macOS and `Alt+T` on Windows / Linux in every built-in keymap. With focus inside New Task or your own writable task conversation, in an editor tab or the tool window, it cycles the current model's provider-advertised effort levels in order, wrapping from the last to the first. It preserves your message, selection, caret and focus, and sends nothing. Like the effort control, it changes the provider configuration; it does not promise to change a turn already running.
+
+The shortcut is unavailable when effort is unsupported or has only one level, for archived tasks or subagent conversations, and while a popup or dialog is open. It does not take focus from the code editor or terminal. Change or remove it under **Settings › Keymap › Agents › Cycle Agent Effort**.
+
+Right-click a link and choose **Copy Link Address** to copy its URL; **Copy** copies the selected text.
+
 ### Permissions
 
 When an agent wants to run a command or call a tool that needs approval, the task shows the request and is listed as **Needs Input**. Choose one of the options the agent offers, such as **Allow Once**, **Allow for This Session**, **Always Allow**, **Decline**, **Always Decline** or **Decline and Stop**. Many agents also have a mode picker that approves edits or everything automatically; use it with care.
 
-Once an agent has run a task, new tasks start in its mode that approves everything (Claude Code's bypass permissions, Codex's Full Access), and the Command Execution Policy doesn't apply there. To start them in a mode that asks, set **Settings › Agents › Chat › New tasks start** to **Asking for approval**. Only your own settings choose this, never a project's.
+Once an agent has run a task, new tasks start in its mode that approves everything (Claude Code's bypass permissions, Codex's Full Access), and command permissions don't apply there. To start them in a mode that asks, set **Settings › Agents › Chat › New tasks start** to **Asking for approval**. Only your own settings choose this, never a project's.
 
 ### Review the changes
 
-Click **Show changes** in the task header to list the files the task changed. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
+Click **Show changes** in the task header to list the files the task changed. A task in the project's own checkout lists only the files that changed while the agent was working, not what you or another task changed while it was idle. Click a file to open a diff between the task's starting point and now. For a worktree task, the changes live on its `agent/…` branch: open a terminal there with **Open in Terminal**, and merge or cherry-pick the branch with the Git tools (see [Version control](/en/guide/vcs)) when you are happy with it.
+
+Drag the pane's left edge to resize it. The width applies to every task and is remembered across restarts.
 
 ### Context from the editor
 
@@ -101,6 +120,8 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 - **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
 
 **Settings › Tools › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
+
+While the agent works, the line under the conversation says what it is doing: thinking, reading, editing, running a command, writing its reply. **Settings › Agents › Working Status** can show playful words for what it does there instead; they are off by default. Once turned on, they take turns from the moment the work changes, or only after the agent reports nothing new for a number of seconds (0 to 600, 0 by default); screen readers still hear what the agent is doing. Each word stays eight seconds while the agent keeps at the same work, and at least three when it moves on, so the line doesn't flicker. The same page replaces the words: pick what the status says (**Reading…**, **Running a command…**…) and add or remove its words. **Restore Built-in Words** brings back OpenIDEA's; an activity left without words keeps its plain status.
 
 ## Add a custom agent
 

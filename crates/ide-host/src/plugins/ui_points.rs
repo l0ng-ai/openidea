@@ -46,6 +46,11 @@
 //! id = "conventional"
 //! title = "Conventional Commits"   # Commit Options › Before Commit; `commit-checker.check` runs it
 //!
+//! [[contributes.serverCommands]]
+//! server = "phoxite"               # the language server whose results carry the command
+//! command = "laravel.modelView"    # a command the server leaves to the client
+//! run = "model-view"               # this plugin's command; needs `lsp:phoxite`
+//!
 //! [[contributes.fileTemplates]]
 //! id = "drawing"
 //! name = "Excalidraw Drawing"
@@ -72,6 +77,7 @@ pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
 pub const COMMIT_CHECKS: &str = "commitChecks";
+pub const SERVER_COMMANDS: &str = "serverCommands";
 
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
@@ -352,6 +358,15 @@ where
     deserializer.deserialize_map(Properties)
 }
 
+/// A sample shown in a setting's own style (the Colour Scheme colours), e.g. the
+/// message an Inspection Lens severity produces.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct SettingExample {
+    pub text: String,
+    /// `error`, `warning`, `weak`, `typo`, `info` or `muted`: which sample style to draw.
+    pub style: String,
+}
+
 /// One setting of a plugin.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -370,6 +385,8 @@ pub struct SettingSchema {
     pub multiline: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<SettingExample>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<SettingSchema>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -455,6 +472,20 @@ fn setting_at(key: &str, raw: &serde_json::value::RawValue, depth: u8) -> Result
             Some(_) => Err(format!("setting {key:?}: `{name}` is a string up to {max} bytes")),
         }
     };
+    let example = match o.get("example") {
+        None => None,
+        Some(v) => {
+            let e: SettingExample = serde_json::from_value(v.clone())
+                .map_err(|e| format!("setting {key:?}: `example` is {{\"text\", \"style\"}}: {e}"))?;
+            if e.text.is_empty() || e.text.len() > 300 {
+                return Err(format!("setting {key:?}: `example.text` is 1–300 bytes"));
+            }
+            if e.style.len() > 32 || !e.style.chars().all(|c| c.is_ascii_lowercase()) {
+                return Err(format!("setting {key:?}: `example.style` is a lowercase style name"));
+            }
+            Some(e)
+        }
+    };
     let s = SettingSchema {
         key: key.to_owned(),
         kind: kind.to_owned(),
@@ -464,6 +495,7 @@ fn setting_at(key: &str, raw: &serde_json::value::RawValue, depth: u8) -> Result
         options,
         multiline: o.get("multiline").and_then(Value::as_bool).unwrap_or(false),
         group: text("group", MAX_TITLE)?,
+        example,
         items,
         properties,
     };
@@ -717,6 +749,7 @@ pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileIconDecl {
     id: String,
+    #[serde(default)]
     patterns: Vec<String>,
     icon: PathBuf,
     #[serde(default)]
@@ -728,13 +761,19 @@ pub fn file_icon_asset(id: &str, dark: bool) -> String {
     format!("fileIcon/{id}/{}", if dark { "dark" } else { "light" })
 }
 
-/// `[[contributes.fileIcons]]`: an icon for the files matching `patterns`,
-/// whatever icon theme is in use (the user's own file type icons still win).
+/// `[[contributes.fileIcons]]`: an icon for the files matching `patterns` (or
+/// assigned dynamically through `decorations.set-file-icon` when `patterns` is
+/// omitted in API 1.8), whatever icon theme is in use (the user's own file type
+/// icons still win).
 pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: FileIconDecl = decode(FILE_ICONS, decl)?;
     validate_item_id(&d.id, "file icon id")?;
     let what = format!("file icon {:?}", d.id);
-    file_patterns(&d.patterns, &what)?;
+    if d.patterns.is_empty() {
+        pkg.manifest.needs_api("contributes.fileIcons without patterns", 8)?;
+    } else {
+        file_patterns(&d.patterns, &what)?;
+    }
     let mut files = Vec::new();
     let mut assets = Vec::new();
     for (path, dark) in [(Some(&d.icon), false), (d.icon_dark.as_ref(), true)] {
@@ -743,8 +782,16 @@ pub(super) fn file_icon(pkg: &Package, decl: toml::Value) -> Result<UiDecl, Stri
         assets.push((file_icon_asset(&d.id, dark), svg));
         files.push(path.clone());
     }
-    let json = serde_json::json!({ "id": d.id, "patterns": d.patterns, "dark": d.icon_dark.is_some() });
-    let mut out = UiDecl::new(d.id.clone(), d.patterns.join(", "), json);
+    let bytes = serde_json::to_vec(&assets).map_err(|e| e.to_string())?;
+    let revision = blake3::hash(&bytes).to_hex().to_string();
+    let json = serde_json::json!({
+        "id": d.id,
+        "patterns": d.patterns,
+        "dark": d.icon_dark.is_some(),
+        "revision": revision,
+    });
+    let label = if d.patterns.is_empty() { d.id.clone() } else { d.patterns.join(", ") };
+    let mut out = UiDecl::new(d.id.clone(), label, json);
     out.files = files;
     out.assets = assets;
     Ok(out)
@@ -921,6 +968,37 @@ pub(super) fn commit_check(pkg: &Package, decl: toml::Value) -> Result<UiDecl, S
         return Err(format!("contributes.{COMMIT_CHECKS}: needs the `vcs.read` capability (checks read the commit)"));
     }
     Ok(UiDecl::new(d.id.clone(), d.title.clone(), json(&d)?))
+}
+
+/// A command a language server's code lens, code action or inlay hint carries and
+/// leaves to the client, and the plugin command that runs it.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ServerCommandDecl {
+    /// The server's name in its language definition.
+    pub(super) server: String,
+    pub(super) command: String,
+    /// The plugin's command (`[[contributes.commands]]`); it gets the arguments as JSON.
+    pub(super) run: String,
+}
+
+/// `[[contributes.serverCommands]]` (API 1.9): routes a command no server executes
+/// itself to the plugin's own command.
+pub(super) fn server_command(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: ServerCommandDecl = decode(SERVER_COMMANDS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{SERVER_COMMANDS}"), 9)?;
+    if d.command.is_empty() || d.command.len() > 256 {
+        return Err(format!("contributes.{SERVER_COMMANDS}: command names are 1–256 bytes"));
+    }
+    declared_command(pkg, SERVER_COMMANDS, &d.run)?;
+    let grant: ide_extension::Capability =
+        format!("lsp:{}", d.server).parse().map_err(|e| format!("contributes.{SERVER_COMMANDS}: {e}"))?;
+    if !pkg.manifest.capabilities.all().any(|c| *c == grant) {
+        return Err(format!(
+            "contributes.{SERVER_COMMANDS}: needs the `{grant}` capability (the command comes from that server)"
+        ));
+    }
+    Ok(UiDecl::new(format!("{}:{}", d.server, d.command), d.command.clone(), json(&d)?))
 }
 
 const MAX_CATALOG_ENTRIES: usize = 20_000;

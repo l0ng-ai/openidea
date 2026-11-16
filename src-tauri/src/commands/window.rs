@@ -6,6 +6,7 @@ use crate::windows::{self, Launch, OpenOutcome, WindowsState};
 use ide_core::{IdeError, IdeResult, RequestId};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
@@ -464,7 +465,15 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
         .map(|u| u.parse().map_err(|e| IdeError::invalid(format!("update endpoint {u}: {e}"))))
         .collect::<IdeResult<Vec<_>>>()?;
     let proxy = ide_core::proxy_settings::proxy();
-    app.updater_builder()
+    let mut builder = app.updater_builder();
+    if let Some(target) = crate::updates::portable_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        tauri::utils::platform::bundle_type(),
+    ) {
+        builder = builder.target(target);
+    }
+    builder
         .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
@@ -611,10 +620,16 @@ pub async fn app_install_update(
             _ = token.cancelled() => return Err(IdeError::cancelled()),
         };
         let _ = on_progress.send(UpdateProgress::Installing);
-        tauri::async_runtime::spawn_blocking(move || update.install(bytes))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?
-            .map_err(|e| IdeError::internal(e.to_string()))
+        tauri::async_runtime::spawn_blocking(move || {
+            #[cfg(windows)]
+            if update.target.ends_with("-portable") {
+                let exe = tauri::utils::platform::current_exe()?;
+                return ide_tools::portable_update::install(&exe, &bytes);
+            }
+            update.install(bytes).map_err(|e| IdeError::internal(e.to_string()))
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
     }
     .await;
     state.host.end_request(request);
@@ -622,12 +637,18 @@ pub async fn app_install_update(
 }
 
 /// Release notes of `version` from the update manifest (`latest.json`), read
-/// through the configured source. An install records the notes it saw, so this
-/// is only for an update installed outside the app. `Ok(None)` when the manifest
-/// covers another version or carries no notes.
+/// through the configured source: the `notes` text under `"en"` plus any
+/// `notes.<lang>` translations keyed by their base language code, so the page
+/// can show the UI's language and fall back to English. An install records the
+/// notes it saw, so this is only for an update installed outside the app.
+/// `Ok(None)` when the manifest covers another version or carries no notes.
 #[tauri::command]
 #[specta::specta]
-pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSource) -> IdeResult<Option<String>> {
+pub async fn app_release_notes(
+    app: AppHandle,
+    version: String,
+    source: UpdateSource,
+) -> IdeResult<Option<BTreeMap<String, String>>> {
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
         None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
@@ -653,14 +674,32 @@ pub async fn app_release_notes(app: AppHandle, version: String, source: UpdateSo
     Ok(None)
 }
 
-/// The notes of `version` in a manifest, when that is the entry it lists.
-fn notes_for(manifest: &str, version: &str) -> Option<String> {
+/// The notes of `version` in a manifest, when that is the entry it lists: the
+/// `notes` text as English and each `notes.<lang>` entry under its base language
+/// code (`notes.zh-CN` → `zh`), the way the UI's locales are keyed.
+fn notes_for(manifest: &str, version: &str) -> Option<BTreeMap<String, String>> {
     let value: serde_json::Value = serde_json::from_str(manifest).ok()?;
     if value.get("version")?.as_str()? != version {
         return None;
     }
-    let notes = value.get("notes")?.as_str()?.trim();
-    (!notes.is_empty()).then(|| notes.to_string())
+    let mut notes = BTreeMap::new();
+    let entry =
+        |text: &serde_json::Value| text.as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
+    if let Some(text) = value.get("notes").and_then(entry) {
+        notes.insert("en".to_owned(), text);
+    }
+    for (key, text) in value.as_object().into_iter().flatten() {
+        let Some(tag) = key.strip_prefix("notes.").and_then(|tag| tag.split(['-', '_']).next()) else {
+            continue;
+        };
+        if tag.is_empty() {
+            continue;
+        }
+        if let Some(text) = entry(text) {
+            notes.insert(tag.to_ascii_lowercase(), text);
+        }
+    }
+    (!notes.is_empty()).then_some(notes)
 }
 
 #[cfg(test)]
@@ -670,10 +709,20 @@ mod tests {
         let manifest = serde_json::json!({
             "version": "0.1.40",
             "notes": "## What's new\n\n- dev containers",
+            "notes.zh": "## 新变化\n\n- 开发容器",
+            "notes.ko-KR": "## 새 소식",
+            "notes.pl": "  ",
             "pub_date": "2026-11-01T00:00:00Z",
         })
         .to_string();
-        assert_eq!(notes_for(&manifest, "0.1.40").as_deref(), Some("## What's new\n\n- dev containers"));
+        assert_eq!(
+            notes_for(&manifest, "0.1.40"),
+            Some(BTreeMap::from([
+                ("en".to_owned(), "## What's new\n\n- dev containers".to_owned()),
+                ("zh".to_owned(), "## 新变化\n\n- 开发容器".to_owned()),
+                ("ko".to_owned(), "## 새 소식".to_owned()),
+            ]))
+        );
         // Another version, empty notes, or not JSON: nothing to show.
         assert_eq!(notes_for(&manifest, "0.1.41"), None);
         assert_eq!(notes_for(r#"{ "version": "0.1.40", "notes": "  " }"#, "0.1.40"), None);

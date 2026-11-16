@@ -3,15 +3,26 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { AgentConfigOption, AgentProvider, NewAgentTask } from "@/bindings";
 import { useProject } from "@/platform/project";
 import { HomeEditor } from "./HomeEditor";
-import { HOME, savedDraft, updateComposer, useAgents } from "./store";
+import homeStyles from "./Home.module.css";
+import { HOME, disconnect, savedDraft, updateComposer, useAgents } from "./store";
 
-const backend = vi.hoisted(() => ({ providers: [] as AgentProvider[], create: vi.fn() }));
+const backend = vi.hoisted(() => ({ providers: [] as AgentProvider[], create: vi.fn(), probe: vi.fn() }));
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok", data });
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<typeof import("@/platform/ipc")>()),
   commands: {
     agentProviders: () => ok(backend.providers),
-    agentProbe: () => ok(null),
+    agentRefreshModels: (provider: string) =>
+      ok({
+        provider,
+        config: backend.providers.find((p) => p.id === provider)?.config ?? [],
+        thoughtLevels: backend.providers.find((p) => p.id === provider)?.thoughtLevels ?? {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      }),
+    agentProbe: (provider: string, refresh: boolean) => backend.probe(provider, refresh),
     vcsBranchInfo: () => ok({ head: "main" }),
     vcsBranches: () => ok([]),
     agentCreate: (req: NewAgentTask) => backend.create(req),
@@ -34,7 +45,9 @@ const option = (id: string, category: string, values: string[], current: string)
 });
 
 beforeEach(() => {
+  disconnect();
   backend.create.mockReset().mockImplementation((req: NewAgentTask) => ok({ id: "new", config: req.config }));
+  backend.probe.mockReset().mockImplementation(() => ok(null));
   backend.providers = [
     {
       id: "fake",
@@ -75,10 +88,11 @@ it("switches model-specific levels and restores each draft effort before startin
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
   await chooseModel("small");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
-  const slider = screen.getByRole("slider", { name: "Reasoning" });
-  expect(slider).toHaveAttribute("max", "2");
-  expect(slider).toHaveAttribute("aria-valuetext", "minimal");
-  fireEvent.change(slider, { target: { value: "1" } });
+  fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
+  const group = screen.getByRole("radiogroup", { name: "Reasoning" });
+  expect(group).toBeVisible();
+  expect(screen.getByRole("radio", { name: "minimal" })).toHaveAttribute("aria-checked", "true");
+  fireEvent.click(screen.getByRole("radio", { name: "medium" }));
   fireEvent.keyDown(document, { key: "Escape" });
   await chooseModel("big");
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
@@ -95,7 +109,7 @@ it("switches model-specific levels and restores each draft effort before startin
 it.each(["plain", "unknown"])("hides effort for %s models and sends no stale effort", async (model) => {
   render(<HomeEditor />);
   await chooseModel(model);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "listbox");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveAttribute("aria-haspopup", "dialog");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([{ id: "model", value: model }]);
@@ -138,4 +152,41 @@ it.each([
   } finally {
     useProject.setState({ settings });
   }
+});
+
+it("applies fitWidth on the New Task page only when fitWindowWidth is enabled", () => {
+  const settings = useProject.getState().settings;
+  try {
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: false } } as never });
+    const { container, rerender } = render(<HomeEditor />);
+    const root = container.querySelector(`.${homeStyles.home}`)!;
+    expect(root).not.toHaveClass(homeStyles.fitWidth!);
+    useProject.setState({ settings: { ...settings, agents: { ...settings?.agents, fitWindowWidth: true } } as never });
+    rerender(<HomeEditor />);
+    expect(root).toHaveClass(homeStyles.fitWidth!);
+  } finally {
+    useProject.setState({ settings });
+  }
+});
+
+it("refreshes the displayed agent version after a CLI upgrade when the window regains focus", async () => {
+  let installed = "18.20.0";
+  let cached = installed;
+  backend.probe.mockImplementation((provider: string, refresh: boolean) => {
+    if (refresh) cached = installed;
+    return ok({ provider, name: "omp", version: cached, protocol: "ACP v1", error: null });
+  });
+  render(<HomeEditor />);
+  await screen.findByText("omp · 18.20.0 · ACP v1");
+  installed = "18.20.2";
+  fireEvent(window, new Event("focus"));
+  await screen.findByText("omp · 18.20.2 · ACP v1");
+});
+
+it("does not reuse a previous page's cached agent version when opened again", async () => {
+  backend.probe.mockImplementation((provider: string, refresh: boolean) =>
+    ok({ provider, name: "omp", version: refresh ? "18.20.2" : "18.20.0", protocol: "ACP v1", error: null }),
+  );
+  render(<HomeEditor />);
+  await screen.findByText("omp · 18.20.2 · ACP v1");
 });

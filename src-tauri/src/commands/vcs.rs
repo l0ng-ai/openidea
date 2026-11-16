@@ -16,6 +16,16 @@ use tauri::{AppHandle, Manager, State, Window};
 pub async fn vcs_status(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<FileStatus>> {
     ide_host::ops::vcs::status(&state.host, window.label()).await
 }
+/// Changes of `paths` only: the dirty-scope refresh after a watcher batch.
+#[tauri::command]
+#[specta::specta]
+pub async fn vcs_status_paths(
+    window: Window,
+    paths: Vec<PathBuf>,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<FileStatus>> {
+    ide_host::ops::vcs::status_paths(&state.host, window.label(), paths).await
+}
 /// The project's repositories, the primary one first.
 #[tauri::command]
 #[specta::specta]
@@ -231,6 +241,17 @@ pub async fn vcs_add_to_ignore(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn vcs_ignore_blame_revision(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    commit: String,
+) -> IdeResult<()> {
+    ide_host::ops::vcs::vcs_ignore_blame_revision(&state.host, window.label(), path, commit).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn vcs_unstage(window: Window, state: State<'_, AppState>, paths: Vec<PathBuf>) -> IdeResult<()> {
     ide_host::ops::vcs::vcs_unstage(&state.host, window.label(), paths).await
 }
@@ -418,8 +439,10 @@ pub async fn vcs_stash_push(
     message: Option<String>,
     include_untracked: bool,
     keep_index: bool,
+    paths: Option<Vec<PathBuf>>,
 ) -> IdeResult<()> {
-    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index).await
+    ide_host::ops::vcs::vcs_stash_push(&state.host, window.label(), repo, message, include_untracked, keep_index, paths)
+        .await
 }
 
 #[tauri::command]
@@ -493,6 +516,21 @@ pub async fn vcs_diff_hunks(app: AppHandle, old_text: String, new_text: String) 
     tauri::async_runtime::spawn_blocking(move || ide_host::ops::vcs::vcs_diff_hunks(&host, "", old_text, new_text))
         .await
         .expect("line diff panicked")
+}
+
+/// Show Diff in External Tool: starts the tool set in the global settings (never a
+/// project's, which a cloned repository could carry) on the two sides, on this machine
+/// (a remote window passes the sides as text).
+#[tauri::command]
+#[specta::specta]
+pub async fn diff_external_tool(
+    state: State<'_, AppState>,
+    left: ExternalDiffSide,
+    right: ExternalDiffSide,
+    title: String,
+) -> IdeResult<()> {
+    let settings = state.global_settings.effective().external_diff;
+    state.host.blocking(move || launch_external_diff(&settings, &left, &right, &title)).await
 }
 
 /// Stages only the selected hunks of a file's working-tree changes.

@@ -6,12 +6,14 @@ import {
   isCancelled,
   isTauri,
   nextRequestId,
+  type AttachableProcess,
   type LaunchConfig,
   type RunConfig,
   type RunId,
 } from "@/platform/ipc";
 import { downloadJdkActions } from "@/platform/jdk";
 import { useProject } from "@/platform/project";
+import { isRemoteWindow } from "@/platform/remote";
 import { activeEditor } from "@/editor/api";
 import type { EditorView } from "@codemirror/view";
 import { maybeEditorService, notifications, showStatusInfo, toolWindowService } from "@/workbench/contributions";
@@ -28,14 +30,23 @@ import {
 import { removeAllSpecial, specialAt, toggleFieldAt, toggleMethodAt } from "./breakpoints/special";
 import { fieldAt, methodAt } from "./breakpoints/symbols";
 import { toggleBreakpointSmart } from "./breakpoints/toggle";
-import { isJavaAttachTarget, isJavaDebuggable, javaAttachConfig, javaLaunchConfig } from "./java";
+import {
+  isJavaAttachTarget,
+  isJavaDebuggable,
+  javaAttachConfig,
+  javaLaunchConfig,
+  jvmAttachDebuggerReady,
+} from "./java";
 import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
+import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
+import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
 import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "./launch";
+import { attachConfig } from "./attach";
 import {
   isPythonAttachTarget,
   isRemoteConfig,
@@ -55,6 +66,7 @@ import {
   rootOf,
   sessionSupports,
   showExecutionPoint,
+  startBrowserSession,
   startSession,
   startPreparedSession,
   stopSession,
@@ -75,6 +87,14 @@ export { openAttachPopup } from "./attachPopup";
 
 function isRunConfig(arg: unknown): arg is RunConfig {
   return !!arg && typeof arg === "object" && "command" in arg && "args" in arg && "debugAdapter" in arg;
+}
+
+/** `debug.attach`'s argument for a process listed by Attach to Process (a plugin run's child). */
+function isAttachableTarget(
+  arg: unknown,
+): arg is { attachable: AttachableProcess; process?: RunId | null; runConfig?: RunConfig; show?: boolean } {
+  const a = (arg && typeof arg === "object" ? arg : {}) as { attachable?: Partial<AttachableProcess> };
+  return typeof a.attachable?.pid === "number" && typeof a.attachable.kind === "string";
 }
 
 function errorText(e: unknown) {
@@ -241,6 +261,34 @@ async function startRemote(config: RunConfig, root: string, show?: boolean) {
   if (launch) await startSession(launch, { runConfig: config, show });
 }
 
+/** The browser opens on this desktop, which a remote project's debugger can't reach. */
+function browserUnavailable(name: string): boolean {
+  if (!isRemoteWindow()) return false;
+  notifications().notify({
+    group: "run",
+    level: "warning",
+    title: `“${name}” can't be debugged`,
+    body: "JavaScript Debug isn't available in a remote project yet.",
+  });
+  return true;
+}
+
+async function startBrowser(config: RunConfig, root: string, show?: boolean) {
+  if (browserUnavailable(config.name)) return;
+  const launch = browserLaunchConfig(config, root);
+  if (launch) await startBrowserSession(launch, { runConfig: config, show });
+}
+
+/** Debugs the page at a URL without a configuration (a link in a console). */
+async function debugInBrowser(arg: unknown) {
+  const root = useProject.getState().project?.root;
+  const url = typeof arg === "string" ? browserUrl(arg) : null;
+  if (!root || !url) return;
+  const name = new URL(url).host || url;
+  if (browserUnavailable(name)) return;
+  await startBrowserSession(browserLaunch(name, url, await installedDebugBrowser(), root));
+}
+
 /** Preparation belongs to a session from the moment the action begins. */
 async function startJavaConfig(config: RunConfig, root: string, origin: RunConfig, show?: boolean) {
   await startPreparedSession(
@@ -303,6 +351,10 @@ async function startConfig(arg: unknown) {
   }
   if (isRemoteConfig(config)) {
     await startRemote(config, root, show);
+    return;
+  }
+  if (isBrowserConfig(config)) {
+    await startBrowser(config, root, show);
     return;
   }
   if (isJavaDebuggable(config)) {
@@ -428,6 +480,7 @@ export function registerDebugActions(): () => void {
       hidden: true,
       // Also debugpy to a Python program in a run target's container
       // (arg: { name, adapter: "debugpy", hostName, port, remoteRoot, process }).
+      // Also a process from Attach to Process (arg: { attachable, process, runConfig }).
       description:
         "Attach the Java debugger to a JVM listening for JDWP (arg: { name, module, hostName, port, process })",
       run: ({ arg }) =>
@@ -437,7 +490,8 @@ export function registerDebugActions(): () => void {
             const root = useProject.getState().project?.root;
             if (!root) return;
             let launch: LaunchConfig;
-            if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
+            if (isAttachableTarget(arg)) launch = await attachConfig(arg.attachable, root);
+            else if (isPythonAttachTarget(arg)) launch = pythonAttachConfig(arg, root);
             else if (isJavaAttachTarget(arg)) launch = await javaAttachConfig(arg, root);
             else return;
             const process = (arg.process ?? null) as RunId | null;
@@ -457,6 +511,20 @@ export function registerDebugActions(): () => void {
             if (session == null && process != null && !shared) await stopAssociatedProcess(process);
           })(),
         ),
+    },
+    {
+      id: "debug.jvmAttachReady",
+      title: "Check the JVM Debugger",
+      category: "Debug",
+      hidden: true,
+      description:
+        "Whether the debugger for a build tool's JVMs is installed, offering the install when not (arg: { module, retry, done(ready) })",
+      run: ({ arg }) => {
+        const a = arg as { module: string; retry: () => void; done: (ready: boolean) => void };
+        const root = useProject.getState().project?.root;
+        if (!root) return a.done(true);
+        void jvmAttachDebuggerReady(a.module, root, a.retry).then(a.done, () => a.done(true));
+      },
     },
     {
       id: "debug.stop",
@@ -508,6 +576,26 @@ export function registerDebugActions(): () => void {
         const s = activeSession();
         if (s && sessionSupports("jvmHeap", s)) void captureHeap(s.id);
       },
+    },
+    {
+      id: "debug.startPageProfile",
+      title: "Start CPU Profile",
+      description: "Record where the debugged page spends its time",
+      category: "Debug",
+      icon: "profile",
+      keywords: ["profiler", "performance", "flame graph", "browser"],
+      when: "debugHasJsPage && !debugPageProfiled",
+      run: () => startPageProfile(),
+    },
+    {
+      id: "debug.stopPageProfile",
+      title: "Stop CPU Profile",
+      description: "Stop recording the page and open the profile",
+      category: "Debug",
+      icon: "profile",
+      keywords: ["profiler", "performance", "flame graph", "browser"],
+      when: "debugPageProfiled",
+      run: () => stopPageProfile(),
     },
     {
       // The host opens dumps for a trusted project only (F21).
@@ -791,6 +879,15 @@ export function registerDebugActions(): () => void {
       hidden: true,
       when: "projectOpen && run.unityProject",
       run: () => openAttachPopup("unity"),
+    },
+    {
+      id: "debug.debugInBrowser",
+      title: "Debug in Browser",
+      category: "Debug",
+      icon: "browser-chrome",
+      description: "Opens a URL in Chrome or Edge with the debugger attached (arg: the URL).",
+      hidden: true,
+      run: ({ arg }) => void debugInBrowser(arg),
     },
     {
       id: "debug.runToCursor",

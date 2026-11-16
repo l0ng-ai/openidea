@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-const mocks = vi.hoisted(() => ({ respond: vi.fn(async () => ({ status: "ok", data: null })), open: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  respond: vi.fn(async () => ({ status: "ok", data: null })),
+  open: vi.fn(),
+  execute: vi.fn(async (_id: string, _arg?: unknown) => {}),
+}));
+vi.mock("@/platform/actions", async (original) => ({
+  ...(await original<object>()),
+  executeActionOrThrow: mocks.execute,
+}));
 vi.mock("@/platform/ipc", async (original) => ({
   ...(await original<object>()),
   commands: { mcpRespond: mocks.respond },
@@ -74,5 +82,19 @@ describe("MCP confirmations", () => {
     mocks.open.mockRejectedValueOnce(new Error("cannot open"));
     await handleMcpRequest(8, { type: "openFile", path: "/project/b.ts", line: null, column: null });
     expect(mocks.respond).toHaveBeenCalledWith(8, false, "Error: cannot open");
+  });
+  it("starts an agent command in the Run tool window and says whether it started", async () => {
+    const request = { type: "agentRun", name: "_agent_test", command: "npm test", cwd: "/project", env: {} } as const;
+    await handleMcpRequest(9, request);
+    expect(mocks.execute).toHaveBeenCalledWith("run.agentStart", {
+      name: "_agent_test",
+      command: "npm test",
+      cwd: "/project",
+      env: {},
+    });
+    expect(mocks.respond).toHaveBeenCalledWith(9, true, null);
+    mocks.execute.mockRejectedValueOnce(new Error("The command did not start"));
+    await handleMcpRequest(10, request);
+    expect(mocks.respond).toHaveBeenCalledWith(10, false, "The command did not start");
   });
 });

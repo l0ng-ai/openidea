@@ -5,9 +5,11 @@ import type { AgentStatus as Status, AgentTask } from "@/bindings";
 import { EDITOR_TAB_MIME, maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import {
   EmptyState,
+  HighlightedText,
   Icon,
   IconButton,
   Popup,
+  SearchField,
   Spinner,
   T,
   Tree,
@@ -15,6 +17,7 @@ import {
   showContextMenu,
   startPointerDrag,
   type IconName,
+  type TreeHandle,
 } from "@/ui";
 import {
   SESSION_KIND,
@@ -29,14 +32,17 @@ import {
 } from "./model";
 import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
 import {
+  externalKey,
   importExternalSession,
   moveTasksToGroup,
   openHome,
   pinTasks,
   refreshExternalSessions,
+  showImportSessions,
   useAgents,
 } from "./store";
 import { groupMenu, taskMenu } from "./taskActions";
+import { matchTask } from "./taskSearch";
 import { SessionEditor } from "./SessionEditor";
 import { HomeEditor } from "./HomeEditor";
 import styles from "./Agents.module.css";
@@ -161,6 +167,7 @@ export function AgentsView() {
   const loaded = useAgents((s) => s.loaded);
   const error = useAgents((s) => s.error);
   const tasks = useAgents((s) => s.tasks);
+  const ephemeral = useAgents((s) => s.ephemeral);
   const unread = useAgents((s) => s.unread);
   const providers = useAgents((s) => s.providers);
   const docked = useAgents((s) => s.docked);
@@ -170,23 +177,19 @@ export function AgentsView() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const external = useAgents((s) => s.external);
   const externalError = useAgents((s) => s.externalError);
-  const [importing, setImporting] = useState<string | null>(null);
+  const importing = useAgents((s) => s.importing);
   // Sessions started elsewhere (a terminal, another editor) list on demand (#312).
   useEffect(() => {
     if (historyOpen) void refreshExternalSessions();
   }, [historyOpen]);
-  const importSession = (provider: string, sessionId: string) => {
-    setImporting(`${provider}:${sessionId}`);
-    void importExternalSession(provider, sessionId)
-      .catch(() => {})
-      .finally(() => setImporting(null));
-  };
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["g:archived"]));
   const [selected, setSelected] = useState<Set<string>>(() => {
     const task = sessionTask(maybeEditorService()?.activeInput?.());
     return new Set(task ? [task] : []);
   });
   const organize = useAgents((s) => s.organize);
+  const [query, setQuery] = useState("");
+  const treeRef = useRef<TreeHandle>(null);
   // Follow the active session tab.
   useEffect(
     () =>
@@ -201,20 +204,34 @@ export function AgentsView() {
       }),
     [],
   );
+  // While searching: the matching tasks of every section, collapsed ones included; empty sections go.
+  const matches = useMemo(() => {
+    if (!query.trim()) return null;
+    const found = new Map<string, number[]>();
+    for (const task of tasks.values()) {
+      const hit = matchTask(task, query);
+      if (hit) found.set(task.id, hit);
+    }
+    return found;
+  }, [tasks, query]);
   const roots = useMemo<Node[]>(() => {
-    const all = [...tasks.values()];
+    // Side conversations live beside the conversation they forked, never in this list.
+    const listed = ephemeral.size ? new Map([...tasks].filter(([id]) => !ephemeral.has(id))) : tasks;
+    const all = [...listed.values()].filter((t) => !matches || matches.has(t.id));
     const pinned = pinnedMembers(all, organize);
     return [
       ...(pinned.length ? [{ kind: "pinned", tasks: pinned } as Node] : []),
-      ...organize.groups.map((group): Node => ({
-        kind: "custom",
-        group,
-        tasks: groupMembers(tasks.values(), organize, group.id),
-      })),
+      ...organize.groups.flatMap((group): Node[] => {
+        const members = groupMembers(all, organize, group.id);
+        return matches && !members.length ? [] : [{ kind: "custom", group, tasks: members }];
+      }),
       ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
     ];
-  }, [tasks, organize]);
-  const expanded = useMemo(() => new Set(roots.map(nodeKey).filter((k) => !collapsed.has(k))), [roots, collapsed]);
+  }, [tasks, organize, matches, ephemeral]);
+  const expanded = useMemo(
+    () => new Set(roots.map(nodeKey).filter((k) => matches || !collapsed.has(k))),
+    [roots, collapsed, matches],
+  );
   // Dropping a session editor tab anywhere on the tool window docks it.
   const viewRef = useRef<HTMLDivElement>(null);
   const [tabOver, setTabOver] = useState(false);
@@ -251,8 +268,36 @@ export function AgentsView() {
 
   const taskList = (
     <div className={styles.tasks}>
+      {tasks.size > 0 && (
+        <SearchField
+          className={styles.taskSearch}
+          variant="bare"
+          value={query}
+          onChange={setQuery}
+          clearable
+          placeholder={tx("Search tasks")}
+          aria-label={tx("Search tasks")}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              treeRef.current?.moveSelection(e.key === "ArrowDown" ? 1 : -1);
+            } else if (e.key === "Enter") {
+              const lead = treeRef.current?.leadKey();
+              if (lead && tasks.has(lead)) {
+                e.preventDefault();
+                showTask(lead);
+              }
+            } else if (e.key === "Escape" && query) {
+              e.preventDefault();
+              e.stopPropagation();
+              setQuery("");
+            }
+          }}
+        />
+      )}
       <Tree<Node>
         aria-label="Agent tasks"
+        handleRef={treeRef}
         roots={roots}
         getKey={nodeKey}
         getLabel={(n) =>
@@ -331,7 +376,11 @@ export function AgentsView() {
                 >
                   <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
                   <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
-                    {n.task.title}
+                    {matches?.get(n.task.id)?.length ? (
+                      <HighlightedText text={n.task.title} indices={matches.get(n.task.id)!} />
+                    ) : (
+                      n.task.title
+                    )}
                   </span>
                   {/* Ready tasks say so by their group; the others show what they're doing. */}
                   {n.task.status !== "ready" && <TaskStatusIcon status={n.task.status} />}
@@ -352,12 +401,24 @@ export function AgentsView() {
           }
         }}
         empty={
-          <div className={styles.empty}>
-            <T>No agent tasks yet</T>
-            <button type="button" className={styles.link} onClick={() => openHome()}>
-              <T>New Task…</T>
-            </button>
-          </div>
+          matches ? (
+            <div className={styles.empty}>
+              <T>No matching tasks</T>
+            </div>
+          ) : (
+            <div className={styles.empty}>
+              <T>No agent tasks yet</T>
+              <button type="button" className={styles.link} onClick={() => openHome()}>
+                <T>New Task…</T>
+              </button>
+              {/* Docked, the list shows in the history popup, which lists the sessions itself. */}
+              {!inline && (
+                <button type="button" className={styles.link} onClick={showImportSessions}>
+                  <T>Import Sessions from Other Apps…</T>
+                </button>
+              )}
+            </div>
+          )
         }
       />
     </div>
@@ -429,7 +490,7 @@ export function AgentsView() {
                 ) : (
                   <div className={styles.external}>
                     {external.map((s) => {
-                      const key = `${s.provider}:${s.sessionId}`;
+                      const key = externalKey(s.provider, s.sessionId);
                       return (
                         <div key={key} className={styles.row} title={s.cwd ?? s.sessionId}>
                           <Icon name={providerIcon(s.provider)} size={16} label={providerName(s.provider)} />
@@ -438,8 +499,8 @@ export function AgentsView() {
                           <button
                             type="button"
                             className={styles.link}
-                            disabled={importing === key}
-                            onClick={() => importSession(s.provider, s.sessionId)}
+                            disabled={importing.has(key)}
+                            onClick={() => void importExternalSession(s.provider, s.sessionId).catch(() => {})}
                           >
                             <T>Import</T>
                           </button>

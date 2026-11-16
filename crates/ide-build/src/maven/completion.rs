@@ -393,11 +393,13 @@ fn scan_versions(dir: &Path, typed: &str, budget: &mut u32) -> Vec<PomCompletion
     out
 }
 
-/// The repository directory of the `/`-separated `coordinates` (a group id, or
-/// a group and an artifact id), each segment validated against the layout's
-/// alphabet so POM text cannot walk outside `repo`.
+/// The repository directory of `coordinates` (a group id, or a group and an artifact
+/// id): the group's dots are directories, an artifact id is one directory whatever dots
+/// it has (`org/eclipse/platform/org.eclipse.core.runtime`). Each segment is validated
+/// against the layout's alphabet so POM text cannot walk outside `repo`.
 fn repo_dir(repo: &Path, coordinates: &[&str]) -> Option<PathBuf> {
-    let segments: Vec<&str> = coordinates.iter().flat_map(|c| c.split('.')).collect();
+    let (group, artifact) = coordinates.split_first()?;
+    let segments: Vec<&str> = group.split('.').chain(artifact.iter().copied()).collect();
     segments.iter().all(|s| segment(s)).then(|| segments.iter().fold(repo.to_path_buf(), |p, s| p.join(s)))
 }
 
@@ -460,6 +462,7 @@ mod tests {
             "org/example/lib/2.0-beta-1/lib-2.0-beta-1.jar",
             "org/example/lib/2.0/lib-2.0.pom",
             "net/nu/netty/4.1.100/netty-4.1.100.jar",
+            "org/eclipse/platform/org.eclipse.core.runtime/3.31.0/org.eclipse.core.runtime-3.31.0.jar",
             // Failed downloads (a version typed while editing): tracking files only, not installed.
             "org/example/lib/2/lib-2.jar.lastUpdated",
             "org/example/lib/3.0/lib-3.0.pom.lastUpdated",
@@ -570,9 +573,10 @@ mod tests {
         };
         // Only directories holding artifacts are group ids: `net` and `org`
         // alone never receive an install, their deeper levels do.
-        assert_eq!(options(""), ["net.nu", "org.apache.maven", "org.apache.maven.plugins", "org.example"]);
-        assert_eq!(options("org"), ["org.apache.maven", "org.apache.maven.plugins", "org.example"]);
-        assert_eq!(options("org."), ["org.apache.maven", "org.apache.maven.plugins", "org.example"]);
+        let org = ["org.apache.maven", "org.apache.maven.plugins", "org.eclipse.platform", "org.example"];
+        assert_eq!(options(""), [&["net.nu"][..], &org].concat());
+        assert_eq!(options("org"), org);
+        assert_eq!(options("org."), org);
         assert_eq!(options("org.spr"), Vec::<String>::new());
         assert_eq!(options("net."), ["net.nu"]);
     }
@@ -623,6 +627,19 @@ mod tests {
         };
         assert_eq!(options(""), ["2.0", "2.0-beta-1", "1.10", "1.9.1", "1.0"]);
         assert_eq!(options("1."), ["1.10", "1.9.1", "1.0"]);
+        // An artifact id with dots is one directory.
+        let dotted = local_options(
+            &repo,
+            &PomCompletionTarget {
+                from: 0,
+                to: 0,
+                typed: "".into(),
+                kind: PomCompletionKind::Version,
+                group: Some("org.eclipse.platform".into()),
+                artifact: Some("org.eclipse.core.runtime".into()),
+            },
+        );
+        assert_eq!(dotted.into_iter().map(|o| o.label).collect::<Vec<_>>(), ["3.31.0"]);
     }
 
     #[test]

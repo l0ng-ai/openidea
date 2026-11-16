@@ -51,6 +51,7 @@ optional = ["net:api.example.com", "secrets"]
 | `fs.read:<path>`    | 高   | 通过 `host::fs` 读取项目外、该路径下的文件                                                                                     | 1.0（`fs` interface：1.3） |
 | `fs.write:<path>`   | 高   | 通过 `host::fs` 写入项目外、该路径下的文件；不包含读权限                                                                       | 1.3                        |
 | `process:<program>` | 高   | 运行该程序：`run_process`、`run_command`、`start`、终端、语言服务器、调试适配器、运行配置                                      | 1.0                        |
+| `lsp:<server>`      | 高   | 向正在运行的该语言服务器发送它自己的请求（`language_server_request`）；仅限受信任的项目                                        | 1.9                        |
 | `ipc:<path>`        | 高   | 项目所在机器上的本地 Unix 套接字或 Windows 命名管道                                                                            | 1.4                        |
 | `ide.commands`      | 高   | 像用户亲自选择一样运行任意 IDE 操作或其他插件的命令，包括运行程序、提交和推送。插件自己的命令不受此限制。                      | 1.4                        |
 

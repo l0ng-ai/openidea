@@ -12,7 +12,6 @@ import {
   idleTargets,
   matchesPattern,
   parseSourceUrl,
-  passesTreeFilter,
   schemaSwitchable,
   shownNames,
   sourceLabel,
@@ -391,16 +390,6 @@ describe("Schemas tab", () => {
     expect(shownNames(names, true, ["billing"])).toEqual(names);
     expect(shownNames(names, false, ["app*"], "postgres")).toEqual(["app", "app_test", "postgres"]);
     expect(shownNames(names, false, [])).toEqual([]);
-  });
-
-  it("quick-filters tree objects by a case-insensitive substring", () => {
-    expect(passesTreeFilter("users", "user")).toBe(true);
-    expect(passesTreeFilter("Users", "user")).toBe(true);
-    expect(passesTreeFilter("order_items", "  IT  ")).toBe(true);
-    expect(passesTreeFilter("users", "orders")).toBe(false);
-    expect(passesTreeFilter("users", "")).toBe(true);
-    expect(passesTreeFilter("users", "   ")).toBe(true);
-    expect(passesTreeFilter("users", null)).toBe(true);
   });
 });
 

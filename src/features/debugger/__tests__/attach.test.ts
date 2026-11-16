@@ -19,9 +19,15 @@ import { attachConfig, attachDetail, attachRows, matchesFilter } from "../attach
 const proc = (p: Partial<AttachableProcess> & Pick<AttachableProcess, "pid" | "kind">): AttachableProcess => ({
   name: p.kind,
   commandLine: `${p.kind} app`,
-  adapter: { unity: "unity", java: "java-debug", node: "js-debug", python: "debugpy", go: "delve", native: "codelldb" }[
-    p.kind
-  ],
+  adapter: {
+    unity: "unity",
+    java: "java-debug",
+    node: "js-debug",
+    python: "debugpy",
+    dotnet: "netcoredbg",
+    go: "delve",
+    native: "codelldb",
+  }[p.kind],
   host: null,
   port: null,
   ...p,
@@ -40,6 +46,7 @@ const list = [
   }),
   proc({ pid: 25, kind: "node", name: "node", commandLine: "node server.js" }),
   proc({ pid: 26, kind: "go", name: "gosrv", commandLine: "./gosrv" }),
+  proc({ pid: 40, kind: "dotnet", name: "Api", commandLine: "./Api --urls http://localhost:5000" }),
 ];
 
 describe("Attach to Process popup model", () => {
@@ -57,6 +64,7 @@ describe("Attach to Process popup model", () => {
       "Java (JDWP):1",
       "Node.js:1",
       "Python (debugpy):2",
+      ".NET (netcoredbg):1",
       "Go (Delve):1",
       "Native (LLDB):1",
     ]);
@@ -93,6 +101,9 @@ describe("Attach to Process popup model", () => {
       address: "localhost",
     });
     expect(await extra(list[5]!)).toEqual({ mode: "local", processId: 26 });
+    const dotnet = await attachConfig(list[6]!, "/proj");
+    expect(dotnet).toMatchObject({ adapter: "netcoredbg", request: "attach" });
+    expect(JSON.parse(dotnet.extraJson!)).toMatchObject({ processId: 40 });
     const native = await attachConfig(list[0]!, "/proj");
     expect(native).toMatchObject({ adapter: "codelldb", request: "attach", name: "a.out (30)", cwd: "/proj" });
     expect(JSON.parse(native.extraJson!)).toEqual({ pid: 30 });

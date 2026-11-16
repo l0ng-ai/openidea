@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerFileEditorProvider } from "@/workbench/contributions";
+import { registerExternalFileOpenHandler, registerFileEditorProvider } from "@/workbench/contributions";
 import { EditorController, openFilePaths, useTabs } from "./controller";
 import { createMemoryBackend } from "./backend";
 import { storeSession } from "./model/session";
@@ -64,6 +64,17 @@ function tabFor(path: string) {
 }
 
 describe("file open order", () => {
+  it("leaves a file for another application unopened when external opens are off", async () => {
+    const open = vi.fn(() => true);
+    dispose = registerExternalFileOpenHandler({ id: "ext", matches: (p) => p === "/p/a.ts", open });
+    const controller = setup();
+    await controller.openFile("/p/a.ts", { focus: false, external: false });
+    expect(open).not.toHaveBeenCalled();
+    expect(openFilePaths(useTabs.getState())).toEqual([]);
+    await controller.openFile("/p/a.ts", { focus: false });
+    expect(open).toHaveBeenCalledWith("/p/a.ts");
+  });
+
   it("keeps the caret and activation of a file opened while the project's session restores", async () => {
     const before = setup();
     before.restoreSession("/p");

@@ -50,6 +50,7 @@ import { usePostfixSettings } from "./postfix/store";
 import { showChooser, type ChooserItem } from "./popup/store";
 import { expandEmmetAtCaret } from "./emmet/editor";
 import { hasEmmet, loadEmmet } from "./emmet/model";
+import { readClipboardPlainText } from "@/platform/clipboard";
 
 export interface TemplateDocInfo {
   path: string;
@@ -82,7 +83,7 @@ function userName(): string {
 
 async function readClipboard(): Promise<string> {
   try {
-    return (await navigator.clipboard?.readText()) ?? "";
+    return await readClipboardPlainText();
   } catch {
     return "";
   }

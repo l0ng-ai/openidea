@@ -16,7 +16,7 @@
 .digits,
 .letters {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   outline: none;
 }
 .digits {
@@ -58,7 +58,7 @@
 .legend {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
@@ -99,7 +99,7 @@
 .markRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .fileName {

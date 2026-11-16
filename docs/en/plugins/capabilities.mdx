@@ -51,6 +51,7 @@ Later:
 | `fs.read:<path>`    | High   | `host::fs` reads outside the projects, under that path                                                                                                            | 1.0 (the `fs` interface: 1.3) |
 | `fs.write:<path>`   | High   | `host::fs` writes outside the projects, under that path; does not imply reading                                                                                   | 1.3                           |
 | `process:<program>` | High   | Run that program: `run_process`, `run_command`, `start`, terminals, language servers, debug adapters, runs                                                        | 1.0                           |
+| `lsp:<server>`      | High   | Send that running language server its own requests (`language_server_request`); trusted projects only                                                             | 1.9                           |
 | `ipc:<path>`        | High   | Local Unix sockets or Windows named pipes on the project machine                                                                                                  | 1.4                           |
 | `ide.commands`      | High   | Run any IDE action or another plugin's command as if the user chose it, including running programs, committing and pushing. The plugin's own commands are exempt. | 1.4                           |
 

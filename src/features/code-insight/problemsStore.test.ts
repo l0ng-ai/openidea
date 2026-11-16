@@ -8,6 +8,7 @@ import {
   fileDiagnostics,
   filePaths,
   mergeDiagnostics,
+  problemsReport,
   profiledProblems,
   projectCounts,
   useProblems,
@@ -132,5 +133,21 @@ describe("filePaths", () => {
     expect(filePaths(map, "C:/w/b.ipynb")).toEqual(["vscode-notebook-cell:/C:/w/b.ipynb#c3"]);
     expect(filePaths(map, "/p/a.py")).toEqual(["/p/a.py"]);
     expect(filePaths(map, "/p/none.py")).toEqual([]);
+  });
+});
+
+describe("problemsReport", () => {
+  it("lists errors before warnings with their places, leaving out hints, up to a limit", () => {
+    let map = mergeDiagnostics(new Map(), "/p/src/a.ts", "tsc", [d(3, "warning", "ts"), d(0, "hint")]);
+    map = mergeDiagnostics(map, "/p/src/b.ts", "tsc", [d(9, "error"), d(1, "error")]);
+    expect(problemsReport(map, "/p")).toBe(
+      [
+        "src/b.ts:2:1: error: line 1 (tsc)",
+        "src/b.ts:10:1: error: line 9 (tsc)",
+        "src/a.ts:4:1: warning: line 3 (ts)",
+      ].join("\n"),
+    );
+    expect(problemsReport(map, "/p", 1)).toBe("src/b.ts:2:1: error: line 1 (tsc)\n… 2 more");
+    expect(problemsReport(mergeDiagnostics(new Map(), "/p/a", "x", [d(0, "info")]), "/p")).toBeNull();
   });
 });

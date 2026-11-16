@@ -10,7 +10,7 @@ import { LspPopups } from "@/editor/lsp/Popups";
 import { registerProjectActions } from "@/features/project-tree/actions";
 import { useProjectTree } from "@/features/project-tree/store";
 import { useContextMenuStore } from "@/ui";
-import { provideNotificationService } from "@/workbench/contributions";
+import { provideNotificationService, registerMenuGroup, type MenuGroupContext } from "@/workbench/contributions";
 import * as controller from "./controller";
 import { createMemoryBackend } from "./backend";
 import { registerEditorActions } from "./actions";
@@ -187,6 +187,44 @@ describe("editor Copy Path/Reference chooser", () => {
     await act(() => executeAction("editor.copyPathReference"));
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
     expect(useLspPopup.getState().popup).toBeNull();
+  });
+
+  it("lists contributed links before Reference, for the selected lines", async () => {
+    const contexts: MenuGroupContext[] = [];
+    const run = vi.fn();
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => {
+          contexts.push(ctx);
+          return [{ id: "test.copyLink", label: "Host Link", verbatim: true, preview: "https://host/a#L1", run }];
+        },
+      }),
+    );
+    const view = ctrl.activeSlot!.view!;
+    await executeAction("editor.copyPathReference");
+    expect(
+      popup()
+        .items.map((item) => item.label)
+        .slice(-2),
+    ).toEqual(["Host Link", "Reference"]);
+    expect(popup().items.at(-2)).toMatchObject({
+      preview: "https://host/a#L1",
+      shortcut: shortcutLabel("test.copyLink"),
+    });
+    await popup().items.at(-2)!.run();
+    expect(run).toHaveBeenCalledOnce();
+    // From the first line into the second; then ending at the start of the second line.
+    view.dispatch({ selection: { anchor: 0, head: documentText.indexOf("A {}") } });
+    await executeAction("editor.copyPathReference");
+    view.dispatch({ selection: { anchor: 0, head: documentText.indexOf("class") } });
+    await executeAction("editor.copyPathReference");
+    expect(contexts.map(({ paths, line, endLine }) => [paths, line, endLine])).toEqual([
+      [[path], 1, undefined],
+      [[path], 0, 1],
+      [[path], 0, undefined],
+    ]);
   });
 
   it("adds the chooser to Copy / Paste Special", () => {

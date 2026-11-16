@@ -47,7 +47,7 @@
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding-right: 8px;
   border-radius: var(--radius-selection, 5px);
   color: var(--fg-strong);
@@ -67,6 +67,17 @@
 }
 .row:hover {
   background: var(--bg-tree-hover, color-mix(in srgb, var(--fg-strong) 4%, transparent));
+}
+/* File Colors: the row's background takes its scope's colour. */
+.tinted {
+  background: color-mix(in srgb, var(--row-tint) var(--file-tint-strength, 14%), transparent);
+}
+.tinted:hover {
+  background: color-mix(
+    in srgb,
+    var(--row-tint) var(--file-tint-strength, 14%),
+    var(--bg-tree-hover, color-mix(in srgb, var(--fg-strong) 4%, transparent))
+  );
 }
 /* Tree.selectionInactiveBackground when unfocused, selectionBackground when focused. */
 .selected,
@@ -144,7 +155,7 @@
   z-index: var(--z-panel);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 26px;
   max-width: calc(100% - 16px);
   padding: 0 10px 0 8px;
@@ -155,6 +166,42 @@
   color: var(--fg-muted);
   font-size: var(--fs-ui);
   pointer-events: none;
+}
+/* The field variant sits on the 32px toolbar row above the tree, covering its first buttons. */
+.speedField {
+  top: auto;
+  bottom: calc(100% + 2px);
+  left: 6px;
+  gap: var(--space-1);
+  height: 28px;
+  min-width: 160px;
+  padding: 0 2px 0 8px;
+  box-shadow: none;
+  pointer-events: auto;
+}
+.speedField .speedQuery {
+  margin-left: 2px;
+}
+.caret {
+  flex-shrink: 0;
+  width: 1px;
+  height: 16px;
+  margin: 0 auto 0 -2px;
+  background: var(--fg-strong);
+  animation: caret-blink 1s steps(1) infinite;
+}
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+}
+.onlyMatches {
+  flex-shrink: 0;
 }
 .speedQuery {
   color: var(--fg-strong);

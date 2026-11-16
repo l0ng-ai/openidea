@@ -125,7 +125,7 @@ describe("theme tokens", () => {
  * the selection foreground, whose base default preserves syntax colours.
  */
 const INHERITED_FROM_BASE =
-  /^--(project-color-|db-color-|caption-close-|fg-caption-close-|tint-strength$|fg-editor-selection$)/;
+  /^--(project-color-|db-color-|file-color-|caption-close-|fg-caption-close-|tint-strength$|file-tint-strength$|fg-editor-selection$)/;
 
 describe("palette themes", () => {
   const ISLANDS = ["light", "dark", "dark-hc"];

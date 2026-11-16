@@ -1,6 +1,7 @@
-import { pasteClipboardFiles, readClipboardText } from "@/platform/clipboard";
+import { pasteClipboardFiles, readClipboardPlainText, readClipboardText } from "@/platform/clipboard";
 import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
 
 export interface TerminalPasteTarget {
@@ -120,6 +121,15 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
+    // WebKitGTK pastes nothing from a menu through either WebView path; the native
+    // clipboard has the text. An image-only clipboard still takes the paths below.
+    if (target && usePlatform.getState().os === "linux") {
+      const text = await readClipboardPlainText().catch(() => "");
+      if (text) {
+        if (target.current()) paste(text);
+        return;
+      }
+    }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
     if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
     const images =
@@ -130,7 +140,7 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
           )
         : null;
     const text = target?.remote
-      ? ((await navigator.clipboard?.readText().catch(() => "")) ?? "")
+      ? await readClipboardPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
     if (target && !target.current()) return;
     if (text) {

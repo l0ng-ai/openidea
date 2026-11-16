@@ -49,6 +49,8 @@ export interface ListProps<T> {
   focusable?: boolean;
   /** Move the active row with the pointer (popup choosers). */
   hoverSelects?: boolean;
+  /** The list takes the focus when its popup opens, before any button in the popup's header. */
+  autoFocus?: boolean;
   empty?: ReactNode;
   /**
    * Body of a `role="grid"`: a `rowgroup` of `row`s numbered after the grid's `headerRows`,
@@ -136,6 +138,7 @@ export function List<T>({
   sectionHeightOf,
   focusable = true,
   hoverSelects = false,
+  autoFocus = false,
   empty,
   tableBody,
   className,
@@ -206,6 +209,7 @@ export function List<T>({
           : undefined
       }
       tabIndex={focusable ? 0 : -1}
+      data-autofocus={autoFocus ? "" : undefined}
       className={clsx(styles.list, className)}
       onKeyDown={focusable ? onKeyDown : undefined}
     >

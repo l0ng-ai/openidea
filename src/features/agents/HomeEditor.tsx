@@ -1,6 +1,6 @@
 /** New Task page: one prompt box with the agent and its settings; where it works under it. */
 import clsx from "clsx";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
@@ -8,18 +8,21 @@ import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
 import { Chip, Select, T, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
-import { providerIcon } from "./model";
+import { useEffortFocus } from "./effortFocus";
+import { useAgentFontZoomSurface } from "./fontZoom";
+import { HOME_KEY, providerIcon } from "./model";
 import { ADD_AGENT, providerOptions as agentOptions } from "./providerOptions";
 import {
   HOME,
   NO_COMMANDS,
   draftConfig,
   refreshProviders,
+  refreshModels,
   setDraftOption,
   startTask,
   updateDraft,
@@ -29,7 +32,7 @@ import {
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Home.module.css";
 
-export function HomeEditor({ docked = false }: { docked?: boolean; input?: EditorInput }) {
+export function HomeEditor({ docked = false, input }: { docked?: boolean; input?: EditorInput }) {
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const draft = useAgents((s) => s.draft);
@@ -80,7 +83,29 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   }, [root, project?.workspace]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
-  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command);
+  const shown = useEditorShown();
+  const probe = useProbe(provider?.installed ? provider.id : null, provider?.command, shown);
+  const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
+  const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
+  const launch = provider && JSON.stringify([provider.program, provider.args, provider.env, provider.command]);
+  useEffect(() => {
+    if (!provider?.installed) return;
+    const refresh = () => void refreshModels(provider.id, false);
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [provider?.id, provider?.installed, launch, project?.root]);
+  const { defaults, fitWindowWidth } = useAgentSettings();
+  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const homeRoot = useRef<HTMLDivElement>(null);
+  const { zoomStyle } = useAgentFontZoomSurface(homeRoot, input?.key ?? HOME_KEY, docked);
+  const unavailableModel = config.some(
+    (o) =>
+      o.category === "model" &&
+      draft.config[o.id] !== undefined &&
+      !o.values.some((v) => v.value === draft.config[o.id]),
+  );
+  const effortAnnouncement = useEffortFocus(homeRoot, shown && !starting && !unavailableModel, config, setDraftOption);
   const agentCommands = useAgentCommands(provider?.id, null, provider?.commands ?? NO_COMMANDS);
   const providerOptions: SelectOption[] = agentOptions(providers, tx, providerIcon);
   // Without git under the project there are no worktrees: force the local checkout.
@@ -88,7 +113,11 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
   const isolation = isGit ? draft.isolation : "local";
   const base = draft.base ?? current;
   const canStart =
-    canSend(composer) && !!provider?.installed && !starting && (!project?.workspace || repoState?.root === root);
+    canSend(composer) &&
+    !!provider?.installed &&
+    !unavailableModel &&
+    !starting &&
+    (!project?.workspace || repoState?.root === root);
 
   const start = () => {
     if (!canStart) return;
@@ -98,11 +127,13 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setStarting(false));
   };
-  const defaults = useAgentSettings().defaults;
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
 
   return (
-    <div className={clsx(styles.home, docked && styles.docked)}>
+    <div
+      ref={homeRoot}
+      className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}
+      style={zoomStyle}
+    >
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>
@@ -209,7 +240,21 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
                   id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
                 }
               />
-              <ConfigPickers config={config} onChange={setDraftOption} />
+              <ConfigPickers
+                key={provider?.id}
+                config={config}
+                onChange={setDraftOption}
+                modelRefresh={
+                  provider?.installed
+                    ? {
+                        refreshing: requestingModels || (catalog?.refreshing ?? false),
+                        retryAtMs: catalog?.retryAtMs ?? null,
+                        error: catalog?.error ?? null,
+                        onRefresh: () => void executeAction("agents.refreshModels"),
+                      }
+                    : undefined
+                }
+              />
             </>
           }
           actions={
@@ -221,43 +266,62 @@ export function HomeEditor({ docked = false }: { docked?: boolean; input?: Edito
             />
           }
         />
-        {probe && (!docked || probe.error) && (
-          <p className={probe.error ? styles.warning : styles.note}>
-            {probe.error
-              ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
-              : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
-          </p>
-        )}
-        {(error || (provider && !provider.installed) || (provider && !provider.config.length)) && (
-          <p
-            className={error || !provider?.installed ? styles.warning : styles.note}
-            role={error ? "alert" : undefined}
-          >
-            {error ??
-              (provider && !provider.installed ? (
-                txTemplate(`${provider.command} was not found on PATH`)
-              ) : (
-                <T>Models and modes appear after this agent's first task.</T>
-              ))}
-          </p>
-        )}
+        {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
+        <div className={styles.notes}>
+          {effortAnnouncement && (
+            <p className={styles.note} role="status" aria-live="polite" aria-atomic="true">
+              {tx("Effort: {level}").replace("{level}", effortAnnouncement)}
+            </p>
+          )}
+          {unavailableModel && (
+            <p className={styles.warning} role="alert">
+              <T>Choose another model before starting.</T>
+            </p>
+          )}
+          {probe && (!docked || probe.error) && (
+            <p className={probe.error ? styles.warning : styles.note}>
+              {probe.error
+                ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
+                : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
+            </p>
+          )}
+          {(error || (provider && !provider.installed)) && (
+            <p
+              className={error || !provider?.installed ? styles.warning : styles.note}
+              role={error ? "alert" : undefined}
+            >
+              {error ?? txTemplate(`${provider?.command ?? ""} was not found on PATH`)}
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-/** What the agent reports about itself when it starts (no session is opened), once per agent. */
-function useProbe(provider: string | null, command?: string): AgentProbe | null {
+/** Rechecks the installed agent when this page is shown or its window regains focus; opens no session. */
+function useProbe(provider: string | null, command: string | undefined, shown: boolean): AgentProbe | null {
   const [probe, setProbe] = useState<AgentProbe | null>(null);
   useEffect(() => {
-    if (!provider) return;
+    if (!provider || !shown) return;
     let live = true;
-    call(commands.agentProbe(provider, false))
-      .then((p) => live && setProbe(p))
-      .catch(() => {});
+    let pending = false;
+    const refresh = () => {
+      if (pending) return;
+      pending = true;
+      call(commands.agentProbe(provider, true))
+        .then((p) => live && setProbe(p))
+        .catch(() => {})
+        .finally(() => {
+          pending = false;
+        });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
     return () => {
       live = false;
+      window.removeEventListener("focus", refresh);
     };
-  }, [provider, command]);
+  }, [provider, command, shown]);
   return probe?.provider === provider ? probe : null;
 }

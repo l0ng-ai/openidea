@@ -1,8 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
+import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  Menu,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Tabs,
+  type TabItem,
+  T,
+  showContextMenu,
+} from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { ConsoleModel } from "./console";
@@ -15,7 +27,6 @@ import {
   baseConfigOf,
   canRunSelectedTests,
   clearConsole,
-  closeSessionTab,
   closeStdin,
   debugSession,
   failedTests,
@@ -31,17 +42,20 @@ import {
   writeTerminal,
   type RunSession,
   isLive,
+  pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
 import { nodeOutput } from "./testing";
 import { TestTreeView, formatDuration } from "./TestTreeView";
-import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
 import { configIcon } from "./configs";
+import { agentName } from "./agentConfig";
+import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
-import { toolWindowService } from "@/workbench/contributions";
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -273,7 +287,10 @@ function sessionItems(sessions: readonly RunSession[], targets: readonly RunTarg
     text: remoteLabel(s.config, targets),
     icon: sessionIcon(s),
     color: failed(s) ? "var(--danger)" : undefined,
+    // An agent's command that ended, however it ended.
+    dimmed: agentName(s.config) !== null && !isLive(s),
     closable: true,
+    pinned: s.pinned,
     tooltip:
       s.status === "finished"
         ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
@@ -295,36 +312,85 @@ function currentTab(
   return traces.length ? { trace: traces[traces.length - 1]! } : null;
 }
 
-/** Closes a session or stack trace tab; as in IDEA, the tool window goes away with its last tab. */
-export async function closeRunTab(id: string, traces: readonly StackTraceTab[]) {
-  if (traces.some((t) => t.id === id)) closeStackTrace(id);
-  else if (!(await closeSessionTab(id))) return;
-  if (!useRun.getState().sessions.length && !useStackTraces.getState().tabs.length) toolWindowService().hide("run");
-}
-
 /** Session (and stack trace) tabs in the tool window header. */
 export function RunTabs() {
   const sessions = useRun((s) => s.sessions);
   const traces = useStackTraces((s) => s.tabs);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const active = useRun((s) => s.activeSession);
+  const { tabLimit } = useAgentRunSettings();
   const current = currentTab(sessions, traces, active);
   if (!current) return null;
+  const archived = archivedAgentSessions(sessions, tabLimit);
+  const shown = archived.length ? sessions.filter((s) => !archived.includes(s)) : sessions;
   const items: TabItem[] = [
-    ...sessionItems(sessions, runTargets),
+    ...sessionItems(shown, runTargets),
     ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true })),
   ];
+  const activeId = "session" in current ? current.session.id : current.trace.id;
   return (
     <Tabs
       variant="compact"
       className={styles.tabs}
       aria-label="Run sessions"
       items={items}
-      activeId={"session" in current ? current.session.id : current.trace.id}
+      activeId={activeId}
       onSelect={(id) => useRun.setState({ activeSession: id })}
-      onClose={(id) => void closeRunTab(id, traces)}
+      onClose={(id) => void closeRunTab(id)}
+      onTogglePin={(id) => {
+        const s = sessions.find((x) => x.id === id);
+        if (s) pinSession(s.id, !s.pinned);
+      }}
+      onContextMenu={(id, e) => {
+        e.preventDefault();
+        showContextMenu(e, runTabMenu(id), { owner: e.currentTarget });
+      }}
       panelIdPrefix="openidea-run"
+      trailing={archived.length > 0 && <AgentArchive sessions={archived} activeId={activeId} />}
     />
+  );
+}
+
+/** The folder of archived agent tabs at the end of the strip, with their number. */
+function AgentArchive({ sessions, activeId }: { sessions: RunSession[]; activeId: string }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const holdsActive = sessions.some((s) => s.id === activeId);
+  const count = sessions.length;
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className={styles.agentArchive}
+        data-active={holdsActive || undefined}
+        aria-label={tx`Archived agent tabs: ${count}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="folder" size={14} />
+        <span className={styles.agentArchiveCount}>{tx`Archived (${count})`}</span>
+      </button>
+      <Menu
+        open={open}
+        anchor={anchor}
+        onClose={() => setOpen(false)}
+        aria-label="Archived agent tabs"
+        items={[
+          ...sessions.map((s) => ({
+            id: s.id,
+            label: s.config.name,
+            verbatim: true,
+            icon: sessionIcon(s),
+            checked: s.id === activeId,
+            run: () => useRun.setState({ activeSession: s.id }),
+          })),
+          { kind: "separator" as const },
+          { label: "Close All Archived Tabs", run: () => closeAgentArchive() },
+        ]}
+      />
+    </>
   );
 }
 

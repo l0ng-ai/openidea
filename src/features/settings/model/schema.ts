@@ -4,6 +4,8 @@
  * so `validateSettings` never throws — anything unknown or malformed falls
  * back to the default (mirrors `ide-core::settings` defaults).
  */
+import { DEFAULT_FILE_COLORS, validateFileColors, type FileColorSettings } from "@/platform/fileColors";
+import { validateScopes, type NamedScope } from "@/platform/scopes";
 import { validateCMake } from "@/platform/cmakeSettings";
 import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
@@ -18,7 +20,13 @@ import {
   type ProjectStructureValid,
 } from "@/platform/languageSettings";
 import { EDITOR_EXTRA_DEFAULTS, validateEditorExtras, type EditorExtras } from "@/platform/editorSettings";
-import { DEFAULT_WORKFLOW, validateWorkflow, type WorkflowSettings } from "@/platform/workflowSettings";
+import {
+  DEFAULT_AGENT_RUNS,
+  DEFAULT_WORKFLOW,
+  validateAgentRuns,
+  validateWorkflow,
+  type WorkflowSettings,
+} from "@/platform/workflowSettings";
 import { DEFAULT_INSPECTIONS, validateInspections, type InspectionSettingsValid } from "@/platform/inspections";
 import { DEFAULT_PROXY, validateProxy, type ProxySettingsValid } from "@/platform/proxySettings";
 import {
@@ -33,6 +41,13 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+import { PLAYFUL_AFTER_LIMITS } from "@/platform/agentStatus";
+
+/** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
+export const DEFAULT_MCP_PORT = 26371;
+export const MCP_PORT_LIMITS = { min: 1, max: 65535 };
+/** Agents › IDE MCP Server › Listen address: its default (`ide-core::settings::DEFAULT_MCP_ADDRESS`). */
+export const DEFAULT_MCP_ADDRESS = "127.0.0.1";
 
 /** A built-in theme, a plugin's (`plugin:<id>/<theme>`) or the legacy `"system"`. */
 export type ThemeId = ThemeChoiceId | "system";
@@ -46,6 +61,8 @@ export interface CustomKeymapSettings {
 
 export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
+  scopes: NamedScope[];
+  fileColors: FileColorSettings;
   general: {
     reopenLastProject: boolean;
     confirmExit: boolean;
@@ -106,7 +123,19 @@ export interface ValidSettings extends WorkflowSettings {
   /** Tools › Agents › Chat: the meters in an agent task's header. */
   agents: Required<AgentSettings>;
   /** Agents › IDE MCP Server (global). */
-  mcpServer: { enabled: boolean; runWithoutConfirmation: boolean };
+  mcpServer: {
+    enabled: boolean;
+    runWithoutConfirmation: boolean;
+    agentTabLimit: number;
+    agentArchiveLimit: number;
+    /** The IP address to listen on (`127.0.0.1`: this computer only); the backend checks it. */
+    address: string;
+    /** Listen on `port` in every run rather than a free port each time. */
+    fixedPort: boolean;
+    port: number;
+    /** Keep the bearer token across runs rather than make a new one each run. */
+    fixedToken: boolean;
+  };
 }
 
 /** One `languageServers.<name>` entry; every field optional, like in settings.toml. */
@@ -134,6 +163,8 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
+  scopes: [],
+  fileColors: DEFAULT_FILE_COLORS,
   general: {
     reopenLastProject: true,
     confirmExit: true,
@@ -188,6 +219,10 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     showCost: false,
     foldTurns: true,
     smoothText: true,
+    fitWindowWidth: false,
+    playfulStatus: false,
+    playfulAfterSeconds: 0,
+    playfulWords: {},
     thinking: "auto",
     toolCalls: "grouped",
     expandToolOutput: false,
@@ -197,7 +232,16 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     defaults: {},
     mcpServers: {},
   },
-  mcpServer: { enabled: false, runWithoutConfirmation: false },
+  mcpServer: {
+    enabled: false,
+    runWithoutConfirmation: false,
+    agentTabLimit: DEFAULT_AGENT_RUNS.tabLimit,
+    agentArchiveLimit: DEFAULT_AGENT_RUNS.archiveLimit,
+    address: DEFAULT_MCP_ADDRESS,
+    fixedPort: true,
+    port: DEFAULT_MCP_PORT,
+    fixedToken: false,
+  },
   ...DEFAULT_WORKFLOW,
 };
 
@@ -223,6 +267,15 @@ const stringMap = (v: unknown): Record<string, string> =>
 /** Agent id → option id → value, keeping only string values. */
 function agentDefaults(v: unknown): Record<string, Record<string, string>> {
   return Object.fromEntries(Object.entries(obj(v)).map(([agent, options]) => [agent, stringMap(options)]));
+}
+
+/** Activity → the user's playful words; a list, even an empty one, stands for that activity. */
+function playfulWords(v: unknown): Record<string, string[]> {
+  return Object.fromEntries(
+    Object.entries(obj(v))
+      .filter(([, words]) => Array.isArray(words))
+      .map(([activity, words]) => [activity, stringList(words)]),
+  );
 }
 
 function agentMcpServers(v: unknown): Required<AgentSettings>["mcpServers"] {
@@ -285,6 +338,8 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
   }
   return {
     plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
+    scopes: validateScopes(root.scopes),
+    fileColors: validateFileColors(root.fileColors),
     general: {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),
@@ -358,6 +413,10 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       showCost: bool(agents.showCost, d.agents.showCost),
       foldTurns: bool(agents.foldTurns, d.agents.foldTurns),
       smoothText: bool(agents.smoothText, d.agents.smoothText),
+      fitWindowWidth: bool(agents.fitWindowWidth, d.agents.fitWindowWidth),
+      playfulStatus: bool(agents.playfulStatus, d.agents.playfulStatus),
+      playfulAfterSeconds: num(agents.playfulAfterSeconds, d.agents.playfulAfterSeconds, PLAYFUL_AFTER_LIMITS, true),
+      playfulWords: playfulWords(agents.playfulWords),
       thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),
       toolCalls: oneOf(agents.toolCalls, ["grouped", "each"] as const, d.agents.toolCalls),
       expandToolOutput: bool(agents.expandToolOutput, d.agents.expandToolOutput),
@@ -370,6 +429,12 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     mcpServer: {
       enabled: bool(obj(root.mcpServer).enabled, d.mcpServer.enabled),
       runWithoutConfirmation: bool(obj(root.mcpServer).runWithoutConfirmation, d.mcpServer.runWithoutConfirmation),
+      agentTabLimit: validateAgentRuns(root.mcpServer).tabLimit,
+      agentArchiveLimit: validateAgentRuns(root.mcpServer).archiveLimit,
+      address: str(obj(root.mcpServer).address, d.mcpServer.address).trim(),
+      fixedPort: bool(obj(root.mcpServer).fixedPort, d.mcpServer.fixedPort),
+      port: num(obj(root.mcpServer).port, d.mcpServer.port, MCP_PORT_LIMITS, true),
+      fixedToken: bool(obj(root.mcpServer).fixedToken, d.mcpServer.fixedToken),
     },
     ...validateWorkflow(root),
   };

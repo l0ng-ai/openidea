@@ -47,14 +47,17 @@ pub async fn spell_check(
     let syntax = host.syntax();
     let cancel = host.begin_request(request);
     let result = blocking(move || {
+        let path = project.documents.snapshot(doc)?.path.0.clone();
         let snap = project.documents.text_snapshot(doc)?;
         if snap.large {
-            return Ok(Vec::new());
+            return Ok((path, Vec::new()));
         }
         let regions = if PROSE.contains(&snap.language.as_str()) {
             ide_spell::prose_regions(&snap.text)
         } else {
-            let Some(found) = syntax.spelling_regions(&snap.language, &snap.text) else { return Ok(Vec::new()) };
+            let Some(found) = syntax.spelling_regions(&snap.language, &snap.text) else {
+                return Ok((path, Vec::new()));
+            };
             found
                 .into_iter()
                 .map(|r| Region {
@@ -72,11 +75,32 @@ pub async fn spell_check(
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        speller(&project).check(&snap.text, &regions, &|| cancel.is_cancelled()).ok_or_else(IdeError::cancelled)
+        let typos =
+            speller(&project).check(&snap.text, &regions, &|| cancel.is_cancelled()).ok_or_else(IdeError::cancelled)?;
+        Ok((path, typos))
     })
     .await;
     host.end_request(request);
-    result
+    // Record the typos in the host's diagnostics snapshot so line-end annotations
+    // see them without waiting for a UI report; the editor still draws from its
+    // own call above, unchanged.
+    if let Ok((path, typos)) = &result {
+        let items: Vec<ide_core::Diagnostic> = typos
+            .iter()
+            .map(|t| ide_core::Diagnostic {
+                range: t.range,
+                severity: ide_core::Severity::Info,
+                message: format!("Typo: In word '{}'", t.word),
+                source: Some("Spelling".into()),
+                code: None,
+                unnecessary: false,
+                deprecated: false,
+                server: None,
+            })
+            .collect();
+        host.diagnostics.replace(path, "Spelling", items);
+    }
+    result.map(|(_, typos)| typos)
 }
 
 /// Replacements for a misspelt `word`, best first (Typo › Change to…).

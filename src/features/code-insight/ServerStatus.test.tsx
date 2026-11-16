@@ -31,4 +31,18 @@ describe("Language server status popup", () => {
     expect(screen.queryByRole("button", { name: /Download JDK/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Restart jdtls" })).toBeInTheDocument();
   });
+
+  it("checks again for a missing server installed outside the IDE", () => {
+    useServers.setState({ servers: new Map([[1 as never, server("missing", "brew install marksman")]]) });
+    render(<ServerStatus />);
+    fireEvent.click(screen.getByRole("button", { name: /Language servers/ }));
+    expect(screen.getByRole("button", { name: "Check for jdtls again" })).toBeEnabled();
+  });
+
+  it("restarts a server that is still starting (an import can take minutes)", () => {
+    useServers.setState({ servers: new Map([[1 as never, server("starting", null)]]) });
+    render(<ServerStatus />);
+    fireEvent.click(screen.getByRole("button", { name: /Language servers/ }));
+    expect(screen.getByRole("button", { name: "Restart jdtls" })).toBeEnabled();
+  });
 });

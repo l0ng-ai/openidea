@@ -9,7 +9,12 @@
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
-import { SettingsFormContext, useSettingsPages, type SettingsPageContribution } from "@/workbench/contributions";
+import {
+  SettingsFormContext,
+  SettingsPageFocusContext,
+  useSettingsPages,
+  type SettingsPageContribution,
+} from "@/workbench/contributions";
 import {
   Dialog,
   DialogButtons,
@@ -28,7 +33,16 @@ import {
 } from "@/ui";
 import { PageContext, useSettingsFormFor } from "../components/context";
 import { SearchLabel } from "../components/Form";
-import { breadcrumb, buildPageTree, filterPageTree, flatten, groupKey, type PageNode } from "../model/pages";
+import {
+  breadcrumb,
+  buildPageTree,
+  filterPageTree,
+  flatten,
+  groupKey,
+  titledPage,
+  titleRank,
+  type PageNode,
+} from "../model/pages";
 import {
   applySettings,
   closeSettings,
@@ -144,54 +158,58 @@ function PageHost({
   const globalNote = newProjects || (projectScope && scope === "global" && spec?.defaultScope === "project");
   const ctx = useMemo(() => ({ pageId, scope }), [pageId, scope]);
   const form = useSettingsFormFor(pageId, scope);
+  const focus = useSettingsDialog((s) => s.focus);
+  const pageFocus = useMemo(() => ({ focus, consume: () => useSettingsDialog.setState({ focus: null }) }), [focus]);
   if (!node) return <EmptyState title="Nothing found" icon="search" />;
   const Body = page?.component;
   return (
     <PageContext.Provider value={ctx}>
       <SettingsFormContext.Provider value={form}>
-        <div className={styles.pageHeader}>
-          <div className={styles.crumbs} aria-label={tx("Breadcrumb")}>
-            {crumbs.map((c, i) => (
-              <span key={i} className={styles.crumb}>
-                {i > 0 && <Icon name="chevron-right" size={12} className={styles.crumbSep} />}
-                <span>
-                  <T>{c}</T>
+        <SettingsPageFocusContext.Provider value={pageFocus}>
+          <div className={styles.pageHeader}>
+            <div className={styles.crumbs} aria-label={tx("Breadcrumb")}>
+              {crumbs.map((c, i) => (
+                <span key={i} className={styles.crumb}>
+                  {i > 0 && <Icon name="chevron-right" size={12} className={styles.crumbSep} />}
+                  <span>
+                    <T>{c}</T>
+                  </span>
                 </span>
-              </span>
-            ))}
+              ))}
+            </div>
+            {dirty && (
+              <button type="button" className={styles.reset} onClick={onReset}>
+                <T>Reset</T>
+              </button>
+            )}
+            {projectScope && !spec?.ownScopeSwitch && <ScopeSwitch pageId={scopeKey} scope={scope} />}
+            <span className={styles.history}>
+              <IconButton icon="arrow-left" title="Back" size="small" disabled={!history.back} onClick={history.back} />
+              <IconButton
+                icon="arrow-right"
+                title="Forward"
+                size="small"
+                disabled={!history.forward}
+                onClick={history.forward}
+              />
+            </span>
           </div>
-          {dirty && (
-            <button type="button" className={styles.reset} onClick={onReset}>
-              <T>Reset</T>
-            </button>
+          {scope === "project" && (
+            <div className={styles.scopeNote}>
+              <Icon name="info" size={14} />
+              <T>Saved to .openidea/settings.toml in this project; overrides the global value.</T>
+            </div>
           )}
-          {projectScope && !spec?.ownScopeSwitch && <ScopeSwitch pageId={scopeKey} scope={scope} />}
-          <span className={styles.history}>
-            <IconButton icon="arrow-left" title="Back" size="small" disabled={!history.back} onClick={history.back} />
-            <IconButton
-              icon="arrow-right"
-              title="Forward"
-              size="small"
-              disabled={!history.forward}
-              onClick={history.forward}
-            />
-          </span>
-        </div>
-        {scope === "project" && (
-          <div className={styles.scopeNote}>
-            <Icon name="info" size={14} />
-            <T>Saved to .openidea/settings.toml in this project; overrides the global value.</T>
+          {globalNote && (
+            <div className={styles.scopeNote}>
+              <Icon name="info" size={14} />
+              <T>Saved to the global settings: used by new projects and by projects without their own value.</T>
+            </div>
+          )}
+          <div className={styles.pageBody}>
+            <PageErrorBoundary pageId={pageId}>{Body ? <Body /> : <GroupPage node={node} />}</PageErrorBoundary>
           </div>
-        )}
-        {globalNote && (
-          <div className={styles.scopeNote}>
-            <Icon name="info" size={14} />
-            <T>Saved to the global settings: used by new projects and by projects without their own value.</T>
-          </div>
-        )}
-        <div className={styles.pageBody}>
-          <PageErrorBoundary pageId={pageId}>{Body ? <Body /> : <GroupPage node={node} />}</PageErrorBoundary>
-        </div>
+        </SettingsPageFocusContext.Provider>
       </SettingsFormContext.Provider>
     </PageContext.Provider>
   );
@@ -264,7 +282,15 @@ export function SettingsLayout() {
 
   const onQuery = (q: string) => {
     setQuery(q);
-    const next = flatten(filterPageTree(tree, q, pageLabels));
+    const filtered = filterPageTree(tree, q, pageLabels);
+    const next = flatten(filtered);
+    // A page named like the query wins over pages that only mention it.
+    const titled = titledPage(filtered, q);
+    const rank = (n: PageNode | undefined) => (n ? (titleRank(n, q) ?? 2) : 2);
+    if (titled && titled.key !== current?.key && rank(titled) < rank(current)) {
+      selectPage(titled.key);
+      return;
+    }
     if (q && current && !next.some((n) => n.key === current.key && n.matched)) {
       const first = firstPage(next);
       if (first) selectPage(first);

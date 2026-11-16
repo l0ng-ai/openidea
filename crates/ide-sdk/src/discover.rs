@@ -25,6 +25,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::Jdk => jdk(),
         SdkKind::Maven => maven(),
         SdkKind::Ruby => crate::ruby::detect(root),
+        SdkKind::Zig => zig(),
     };
     if let Some(root) = root {
         pinned_first(&mut out, kind, root);
@@ -40,6 +41,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Jdk => Some(Tool::Java),
         SdkKind::Maven => Some(Tool::Maven),
         SdkKind::Ruby => Some(Tool::Ruby),
+        SdkKind::Zig => Some(Tool::Zig),
         SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
     }
 }
@@ -739,6 +741,86 @@ fn go() -> Vec<Sdk> {
     })
 }
 
+// ------------------------------------------------------------------ zig
+
+/// The directory holding the `zig` executable of the install rooted at `base`,
+/// the way the common distributions lay it out: `zig` at the root (official
+/// tarballs, mise / asdf installs), `<base>/bin/zig` (Homebrew) or one
+/// directory down (zvm's nested version folders).
+fn zig_dir(base: &Path) -> Option<PathBuf> {
+    if base.join(exe("zig")).is_file() {
+        return Some(base.to_path_buf());
+    }
+    let bin = base.join(bin_dir());
+    if bin.join(exe("zig")).is_file() {
+        return Some(bin);
+    }
+    subdirs(base).into_iter().find(|d| d.join(exe("zig")).is_file())
+}
+
+/// Zig toolchains: PATH, Homebrew, zvm and mise / asdf installs. `path` is the
+/// directory holding `zig`, which is what `languages.zig.zig` stores.
+fn zig() -> Vec<Sdk> {
+    let mut roots: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Some(bin) = which("zig").filter(|p| !version_managers::is_shim(p))
+        && let Some(dir) = bin.parent()
+    {
+        roots.push((dir.to_path_buf(), "path"));
+    }
+    for p in ["/opt/homebrew/opt/zig", "/usr/local/opt/zig"] {
+        roots.push((PathBuf::from(p), "system"));
+    }
+    if let Some(home) = home_dir() {
+        for d in subdirs(&home.join(".zvm")) {
+            roots.push((d, "zvm"));
+        }
+    }
+    for (d, manager) in version_managers::installs(Tool::Zig) {
+        roots.push((d, manager));
+    }
+    let mut dirs: Vec<(PathBuf, &'static str)> =
+        roots.into_iter().filter_map(|(base, source)| zig_dir(&base).map(|dir| (dir, source))).collect();
+    let mut seen = HashSet::new();
+    dirs.retain(|(dir, _)| seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())));
+    par_map(&dirs, |(dir, source)| {
+        let version = query(&dir.join(exe("zig")), &["version"], VERSION_TIMEOUT).map(|v| v.trim().to_owned());
+        Some(Sdk {
+            path: dir.clone().into(),
+            name: format!("Zig {}", version.as_deref().unwrap_or_default()).trim().to_owned(),
+            version,
+            source: (*source).to_owned(),
+            home: Some(dir.clone().into()),
+            extra: None,
+        })
+    })
+}
+
+#[cfg(test)]
+mod zig_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_zig_directory_of_each_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let install = |rel: &str| {
+            let dir = tmp.path().join(rel);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(exe("zig")), "").unwrap();
+            dir
+        };
+        // Official tarballs and mise / asdf installs: `zig` at the root.
+        let root = install("0.14.1");
+        assert_eq!(zig_dir(&root), Some(root));
+        // Homebrew: <opt>/bin/zig.
+        let brew = install("brew/bin");
+        assert_eq!(zig_dir(brew.parent().unwrap()), Some(brew));
+        // zvm: one directory down.
+        let zvm = install("zvm/x");
+        assert_eq!(zig_dir(&tmp.path().join("zvm")), Some(zvm));
+        assert_eq!(zig_dir(&tmp.path().join("missing")), None);
+    }
+}
+
 // ------------------------------------------------------------------ typescript
 
 /// `node_modules/typescript/lib` of the project (root or a direct workspace member).
@@ -749,14 +831,26 @@ pub(crate) fn workspace_tsdk(root: &Path) -> Option<PathBuf> {
 
 fn typescript(root: Option<&Path>) -> Vec<Sdk> {
     let mut out = Vec::new();
-    if let Some(lib) = root.and_then(workspace_tsdk) {
+    // TypeScript 7 has no `tsserver.js`; its package directory stands for it (`native_tsdk`).
+    let native = || {
+        let package = root?.join("node_modules/typescript");
+        crate::npm::native_typescript(&package).map(|_| package.join("lib"))
+    };
+    if let Some(lib) = root.and_then(workspace_tsdk).or_else(native) {
         let version = std::fs::read_to_string(lib.parent().unwrap_or(&lib).join("package.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(str::to_owned));
         out.push(Sdk {
             path: lib.clone().into(),
-            name: format!("TypeScript {}", version.clone().unwrap_or_default()).trim().to_owned(),
+            name: format!(
+                "TypeScript {}{}",
+                version.clone().unwrap_or_default(),
+                if crate::npm::has_ts_api(&lib) { "" } else { " (native)" }
+            )
+            .replace("  ", " ")
+            .trim()
+            .to_owned(),
             version,
             source: "workspace".into(),
             home: lib.parent().map(Into::into),

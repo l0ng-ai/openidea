@@ -485,6 +485,38 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "phoxite",
+        display: "Phoxite",
+        kind: LanguageServer,
+        commands: &["phoxite-lsp"],
+        // Plain binaries per platform (`phoxite-lsp-<target triple>[.exe]`), each with a
+        // `.sha256` beside it.
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "samehelhawary/phoxite" },
+            assets: &[
+                rule(Mac, Arm64, "phoxite-lsp-aarch64-apple-darwin"),
+                rule(Mac, X64, "phoxite-lsp-x86_64-apple-darwin"),
+                rule(Linux, Arm64, "phoxite-lsp-aarch64-unknown-linux-gnu"),
+                rule(Linux, X64, "phoxite-lsp-x86_64-unknown-linux-gnu"),
+                rule(Windows, Arm64, "phoxite-lsp-aarch64-pc-windows-msvc.exe"),
+                rule(Windows, X64, "phoxite-lsp-x86_64-pc-windows-msvc.exe"),
+            ],
+            locate: &[
+                "phoxite-lsp",
+                "phoxite-lsp-aarch64-apple-darwin",
+                "phoxite-lsp-x86_64-apple-darwin",
+                "phoxite-lsp-aarch64-unknown-linux-gnu",
+                "phoxite-lsp-x86_64-unknown-linux-gnu",
+                "phoxite-lsp-aarch64-pc-windows-msvc",
+                "phoxite-lsp-x86_64-pc-windows-msvc",
+            ],
+        },
+        fallback: None,
+        version: ver("phoxite-lsp"),
+        homepage: "https://github.com/samehelhawary/phoxite",
+        needs: &[],
+    },
+    ToolSpec {
         name: "gopls",
         display: "gopls",
         kind: LanguageServer,
@@ -916,6 +948,27 @@ pub static TOOLS: &[ToolSpec] = &[
         fallback: None,
         version: ver("texlab"),
         homepage: "https://github.com/latex-lsp/texlab",
+        needs: &[],
+    },
+    ToolSpec {
+        name: "slint-lsp",
+        display: "Slint LSP",
+        kind: LanguageServer,
+        commands: &["slint-lsp"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "slint-ui/slint" },
+            assets: &[
+                any_arch(Mac, "slint-lsp-universal-apple-darwin.tar.gz"),
+                rule(Linux, X64, "slint-lsp-x86_64-unknown-linux-gnu.tar.gz"),
+                rule(Linux, Arm64, "slint-lsp-aarch64-unknown-linux-gnu.tar.gz"),
+                rule(Windows, X64, "slint-lsp-x86_64-pc-windows-msvc.zip"),
+                rule(Windows, Arm64, "slint-lsp-aarch64-pc-windows-msvc.zip"),
+            ],
+            locate: &["slint-lsp"],
+        },
+        fallback: None,
+        version: ver("slint-lsp"),
+        homepage: "https://slint.dev",
         needs: &[],
     },
     ToolSpec {

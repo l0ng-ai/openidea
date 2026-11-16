@@ -63,7 +63,9 @@ impl EventSink for TauriSink {
         ) {
             flash_taskbar_unless_focused(&self.app);
         }
-        if matches!(&event, IdeEvent::McpRequest { .. })
+        // A confirmation waits for the user: bring the window up. Other requests (an agent's
+        // run, opening a file) need nothing from the user and leave the focus where it is.
+        if matches!(&event, IdeEvent::McpRequest { request: ide_core::event::McpUiRequest::Confirm { .. }, .. })
             && let Some(label) = self.window.clone()
         {
             let app = self.app.clone();
