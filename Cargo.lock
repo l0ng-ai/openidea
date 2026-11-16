@@ -4880,7 +4880,7 @@ dependencies = [
 
 [[package]]
 name = "ide-streams"
-version = "0.1.45"
+version = "0.1.46"
 dependencies = [
  "ide-core",
  "ide-language",
