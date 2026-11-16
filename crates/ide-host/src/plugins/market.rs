@@ -134,7 +134,8 @@ fn read_remote(url: &str, max: usize, deadline: Duration) -> Result<Vec<u8>, Str
     super::api::net_runtime().block_on(async move {
         let failed = |e: reqwest::Error| match e.is_timeout() {
             true => format!("{url}: no answer in time"),
-            false => format!("{url}: {e}"),
+            // With its cause: "error sending request" alone does not say what failed.
+            false => format!("{url}: {}", ide_http::client::describe(&e.without_url())),
         };
         let too_large = || format!("{url}: larger than {} MiB", max >> 20);
         let mut response = client.get(url).timeout(deadline).send().await.map_err(failed)?;
@@ -585,6 +586,16 @@ mod tests {
         }
         // A local index names what whoever put it there chose.
         assert!(reachable_from("/srv/market/index.json", "/srv/market/a.oiplugin"));
+    }
+
+    #[test]
+    fn a_failed_read_says_why() {
+        // A port nothing listens on: refused.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/a.oiplugin");
+        let err = read_url(&url, 1 << 20).unwrap_err();
+        assert_eq!(err.matches(&url).count(), 1, "{err}");
+        assert!(err.to_lowercase().contains("refused"), "{err}");
     }
 
     #[test]

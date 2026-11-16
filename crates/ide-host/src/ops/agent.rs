@@ -712,7 +712,10 @@ async fn probe_http_mcp_server(server: &ide_core::settings::AgentMcpServer) -> M
             if let Some(sid) = session_id.as_deref() {
                 req = req.header("Mcp-Session-Id", sid);
             }
-            let resp = req.send().await.map_err(|e| format!("Request to `{url}` failed: {e}"))?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("Request to `{url}` failed: {}", ide_http::client::describe(&e.without_url())))?;
             let status = resp.status();
             let next_session =
                 resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned).or(session_id);
