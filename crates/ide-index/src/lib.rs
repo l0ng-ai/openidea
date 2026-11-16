@@ -323,6 +323,11 @@ impl ProjectIndex {
         matching::symbols_named_within(&self.shared.data.read(), name, kind, roots, limit)
     }
 
+    /// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per name.
+    pub fn symbols_named_any(&self, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
+        matching::symbols_named_any(&self.shared.data.read(), names, root, limit)
+    }
+
     /// Incrementally re-indexes changed paths (called from the vfs watcher).
     /// Cheap: the work is queued for the indexing thread.
     pub fn update(&self, changed: &[PathBuf], removed: &[PathBuf]) {

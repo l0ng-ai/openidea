@@ -77,6 +77,19 @@ pub fn find_symbols(
     Ok(host.project(window)?.index.find_symbols(&query, filter, limit as usize))
 }
 
+/// Index symbols named exactly one of `names` inside `within` (an agent task's folder),
+/// at most `SYMBOLS_PER_NAME` each: every name an agent reply shows, in one lookup.
+pub async fn find_symbols_named(
+    host: &Host,
+    window: &str,
+    names: Vec<String>,
+    within: IpcPath,
+) -> IdeResult<Vec<SymbolMatch>> {
+    const SYMBOLS_PER_NAME: usize = 50;
+    let project = host.project(window)?;
+    blocking(move || Ok(project.index.symbols_named_any(&names, &PathBuf::from(within), SYMBOLS_PER_NAME))).await
+}
+
 pub fn mark_recent(host: &Host, window: &str, path: PathBuf) -> IdeResult<()> {
     host.project(window)?.index.mark_recent(&path);
     Ok(())
@@ -323,6 +336,9 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("find_dirs", |c| async move { find_dirs(&c.host, &c.window, c.arg("query")?, c.arg("limit")?) });
     d.add("find_symbols", |c| async move {
         find_symbols(&c.host, &c.window, c.arg("query")?, c.arg("filter")?, c.arg("limit")?)
+    });
+    d.add("find_symbols_named", |c| async move {
+        find_symbols_named(&c.host, &c.window, c.arg("names")?, c.arg("within")?).await
     });
     d.add("mark_recent", |c| async move { mark_recent(&c.host, &c.window, c.arg("path")?) });
     d.add("remove_recent", |c| async move { remove_recent(&c.host, &c.window, c.arg("path")?) });

@@ -17,7 +17,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
+import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
 import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
@@ -700,6 +700,15 @@ export interface EditorService {
   keepSavedTabs?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
+  /** Go to Declaration's chooser ("Choose Declaration of `name`") over `targets`, below `anchor`. */
+  chooseDeclaration?(targets: DeclarationChoice[], name: string, anchor: { x: number; y: number }): Promise<void>;
+}
+
+/** A target of {@link EditorService.chooseDeclaration}: an index symbol's place, name and container. */
+export interface DeclarationChoice extends Location {
+  name: string;
+  kind: SymbolKind;
+  container: string | null;
 }
 
 /** Custom editor documents held still for a window / project close decision. */

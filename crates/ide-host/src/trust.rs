@@ -500,6 +500,7 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
             | "find_files_named"
             | "find_dirs"
             | "find_symbols"
+            | "find_symbols_named"
             | "mark_recent"
             | "remove_recent"
             | "recent_files"

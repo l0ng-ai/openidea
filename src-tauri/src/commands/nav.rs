@@ -63,6 +63,18 @@ pub fn find_symbols(
     ide_host::ops::nav::find_symbols(&state.host, window.label(), query, filter, limit)
 }
 
+/// Index symbols named exactly one of `names` inside `within` (an agent task's folder).
+#[tauri::command]
+#[specta::specta]
+pub async fn find_symbols_named(
+    window: Window,
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    within: IpcPath,
+) -> IdeResult<Vec<SymbolMatch>> {
+    ide_host::ops::nav::find_symbols_named(&state.host, window.label(), names, within).await
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn mark_recent(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<()> {

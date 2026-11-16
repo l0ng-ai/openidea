@@ -632,6 +632,41 @@ pub(crate) fn symbols_named_within(
     out
 }
 
+/// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per
+/// name, by path then position: one walk over the index for every name an agent reply shows.
+pub(crate) fn symbols_named_any(data: &IndexData, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
+    let wanted: Vec<(u64, &str)> = names.iter().map(|name| (char_mask(name), name.as_str())).collect();
+    let syms = &data.syms;
+    let mut out: Vec<SymbolMatch> = data
+        .files
+        .iter()
+        .flatten()
+        .filter(|entry| entry.path.starts_with(root))
+        .flat_map(|entry| {
+            (entry.sym_start..entry.sym_start + entry.sym_len)
+                .filter(|&at| wanted.iter().any(|&(mask, name)| syms.mask(at) == mask && syms.name(at) == name))
+                .map(move |at| SymbolMatch {
+                    name: syms.name(at).to_string(),
+                    kind: syms.kind(at),
+                    container: syms.container(at).map(str::to_owned),
+                    path: entry.path.clone().into(),
+                    rel_path: entry.rel.to_string(),
+                    range: syms.range(at),
+                    score: 0,
+                    indices: Vec::new(),
+                })
+        })
+        .collect();
+    out.sort_by(|left, right| left.rel_path.cmp(&right.rel_path).then_with(|| left.range.cmp(&right.range)));
+    let mut kept: HashMap<String, usize> = HashMap::new();
+    out.retain(|symbol| {
+        let count = kept.entry(symbol.name.clone()).or_default();
+        *count += 1;
+        *count <= limit
+    });
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

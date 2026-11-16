@@ -550,6 +550,24 @@ fn symbols_named_within_keeps_out_of_root_matches_from_evicting_a_root() {
 }
 
 #[test]
+fn symbols_named_any_answers_every_name_inside_the_root_in_one_walk() {
+    let fixture = Fixture::new(&[
+        ("app/a.rs", "struct Config;\nfn load() {}\nfn load_all() {}\n"),
+        ("app/b.rs", "fn load() {}\nfn load() {}\n"),
+        ("other/c.rs", "struct Config;\n"),
+    ]);
+    let idx = fixture.open();
+    let names = ["Config".to_string(), "load".to_string(), "missing".to_string()];
+    let found: Vec<(String, String)> = idx
+        .symbols_named_any(&names, &fixture.root.join("app"), 2)
+        .into_iter()
+        .map(|symbol| (symbol.name, symbol.rel_path))
+        .collect();
+    let expected = [("Config", "app/a.rs"), ("load", "app/a.rs"), ("load", "app/b.rs")];
+    assert_eq!(found, expected.map(|(name, path)| (name.to_string(), path.to_string())));
+}
+
+#[test]
 fn content_roots_and_excludes_change_without_reopening() {
     let fx = Fixture::new(&[("src/main.rs", "fn alpha() {}\n"), ("src/gen/out.rs", "fn generated() {}\n")]);
     let shared = fx._dir.path().join("shared-lib");
