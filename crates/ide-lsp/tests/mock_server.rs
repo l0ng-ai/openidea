@@ -3207,7 +3207,7 @@ async fn stream_commands_send_target_then_named_fields() {
         json!({"ok": {"records": [], "dropped": 0, "terminal": {"kind": "void"}, "skippedBreakpoints": 0,
                       "sequentialized": false}}),
     );
-    tracer.collect(&target, 3).await.unwrap();
+    tracer.collect(&target, 3, 2).await.unwrap();
     s.respond("workspace/executeCommand", json!({"ok": {}}));
     tracer.release(&target, 3).await.unwrap();
 
@@ -3335,7 +3335,7 @@ async fn stream_collect_decodes() {
             "sequentialized": true,
         }}),
     );
-    let collected = tracer.collect(&target, 3).await.unwrap();
+    let collected = tracer.collect(&target, 3, 2).await.unwrap();
     assert_eq!(
         collected.records,
         vec![
@@ -3358,7 +3358,7 @@ async fn stream_collect_decodes() {
                       "skippedBreakpoints": 0, "sequentialized": false}}),
     );
     assert_eq!(
-        tracer.collect(&target, 3).await.unwrap().terminal,
+        tracer.collect(&target, 3, 2).await.unwrap().terminal,
         CollectedTerminal::Value(JvmValue::Object { id: 19, type_name: "java.util.ArrayList".into() })
     );
     s.respond(
@@ -3366,7 +3366,7 @@ async fn stream_collect_decodes() {
         json!({"ok": {"records": [], "dropped": 0, "terminal": {"kind": "void"},
                       "skippedBreakpoints": 0, "sequentialized": false}}),
     );
-    assert_eq!(tracer.collect(&target, 3).await.unwrap().terminal, CollectedTerminal::Void);
+    assert_eq!(tracer.collect(&target, 3, 2).await.unwrap().terminal, CollectedTerminal::Void);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3378,7 +3378,7 @@ async fn stream_collect_fails_cleanly_on_a_step_beyond_u16() {
         json!({"ok": {"records": [{"step": 70000, "value": {"kind": "null"}}], "dropped": 0,
                       "terminal": {"kind": "void"}, "skippedBreakpoints": 0, "sequentialized": false}}),
     );
-    let error = tracer.collect(&stream_launch_target(), 3).await.unwrap_err();
+    let error = tracer.collect(&stream_launch_target(), 3, 2).await.unwrap_err();
     assert!(matches!(error, InspectError::Failed(ref m) if m.contains("malformed")), "{error:?}");
 }
 

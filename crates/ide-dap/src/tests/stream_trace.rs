@@ -19,6 +19,8 @@ struct FakeTracer {
     arm_error: Mutex<Option<InspectError>>,
     stop_error: Mutex<Option<InspectError>>,
     collect_error: Mutex<Option<InspectError>>,
+    /// The record count each `collect` was given.
+    collect_records: Mutex<Vec<u64>>,
     calls: Mutex<Vec<(&'static str, VmTarget)>>,
     waiting: Notify,
     more: Notify,
@@ -83,8 +85,9 @@ impl StreamTracer for FakeTracer {
         Box::pin(async { Ok(AbortState::Interrupted) })
     }
 
-    fn collect<'a>(&'a self, target: &'a VmTarget, _trace: TraceId) -> InspectFuture<'a, TraceCollected> {
+    fn collect<'a>(&'a self, target: &'a VmTarget, _trace: TraceId, records: u64) -> InspectFuture<'a, TraceCollected> {
         self.record("collect", target);
+        self.collect_records.lock().push(records);
         let error = self.collect_error.lock().clone();
         Box::pin(async move { error.map_or_else(|| Ok(collected()), Err) })
     }
@@ -180,6 +183,7 @@ async fn trace_runs_continue_then_step_out() {
     assert_eq!(h.request("continue")["arguments"]["threadId"], 1);
     assert_eq!(h.request("stepOut")["arguments"]["threadId"], 1);
     assert_eq!(tracer.names(), ["arm", "wait", "wait", "collect"]);
+    assert_eq!(*tracer.collect_records.lock(), [10], "collect is told how many records the trace parked with");
     assert_eq!(tracer.target_of("arm").generation, start);
     assert_eq!(tracer.target_of("collect").generation, generation);
     assert!(h.manager.session(id).unwrap().suspended.get());

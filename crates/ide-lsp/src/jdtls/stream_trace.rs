@@ -18,8 +18,14 @@ use tokio::time::timeout;
 /// `wait` is held by the bundle for the `ms` it is given; the command times out this long after.
 const WAIT_SLACK: Duration = Duration::from_secs(10);
 const ABORT_TIMEOUT: Duration = Duration::from_secs(15);
-const COLLECT_TIMEOUT: Duration = Duration::from_secs(60);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Each record is previewed with at least one JDWP round trip (about 0.1 ms locally, far more
+/// over a remote attach).
+fn collect_timeout(records: u64) -> Duration {
+    Duration::from_secs(60)
+        .saturating_add(Duration::from_millis(5).saturating_mul(records.try_into().unwrap_or(u32::MAX)))
+}
 
 pub struct JdtStreamTracer {
     lsp: Arc<LspManager>,
@@ -199,10 +205,10 @@ impl StreamTracer for JdtStreamTracer {
         })
     }
 
-    fn collect<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, TraceCollected> {
+    fn collect<'a>(&'a self, target: &'a VmTarget, trace: TraceId, records: u64) -> InspectFuture<'a, TraceCollected> {
         Box::pin(async move {
-            let collected: WireCollected =
-                self.call("collect", target, json!({"traceId": trace}), COLLECT_TIMEOUT).await?;
+            let limit = collect_timeout(records);
+            let collected: WireCollected = self.call("collect", target, json!({"traceId": trace}), limit).await?;
             Ok(collected.into())
         })
     }
@@ -211,5 +217,17 @@ impl StreamTracer for JdtStreamTracer {
         Box::pin(async move {
             self.call::<Value>("release", target, json!({"traceId": trace}), COMMAND_TIMEOUT).await.map(drop)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_timeout_grows_with_the_records() {
+        assert_eq!(collect_timeout(0), Duration::from_secs(60));
+        assert_eq!(collect_timeout(50_000), Duration::from_secs(60 + 250));
+        assert!(collect_timeout(u64::MAX) >= collect_timeout(50_000));
     }
 }

@@ -73,7 +73,8 @@ pub trait StreamTracer: Send + Sync {
     /// Stops keeping records while the terminal keeps running; returns the records kept so far.
     fn stop<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, u64>;
     fn abort<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, AbortState>;
-    /// `target.generation` must be the stop the trace parked in.
-    fn collect<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, TraceCollected>;
+    /// `target.generation` must be a stop after the trace parked. `records`: how many it parked
+    /// with; reading each takes a round trip to the JVM, so the time allowed grows with them.
+    fn collect<'a>(&'a self, target: &'a VmTarget, trace: TraceId, records: u64) -> InspectFuture<'a, TraceCollected>;
     fn release<'a>(&'a self, target: &'a VmTarget, trace: TraceId) -> InspectFuture<'a, ()>;
 }

@@ -251,7 +251,7 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
             return Err(TraceRun::Failed { detail: step_out_timeout() });
         };
         let stopped_in = VmTarget { generation, ..vm_target(s) };
-        let collected = self.inspect(tracer.collect(&stopped_in, id)).await?;
+        let collected = self.inspect(tracer.collect(&stopped_in, id, self.last.records)).await?;
         Ok(TraceRun::Done { collected, generation })
     }
 
