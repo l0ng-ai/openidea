@@ -84,11 +84,25 @@ pub fn real_run_plan(chain: &StreamChain) -> Result<RealRunPlan, RealRunRefusal>
         local,
         steps: chain.ops.iter().map(spec).collect(),
         terminal: spec(&chain.terminal),
-        class_filters,
+        class_filters: without_overlaps(class_filters),
         step_kinds,
         sequentialize: chain.warnings.contains(&ChainWarning::Sequentialized),
         first_line: chain.first_line,
     })
+}
+
+/// Drops each filter another one covers. A method exit that two requests match arrives as two
+/// events of one held event set, and the bundle handles (and resumes) each, so the trace fails.
+fn without_overlaps(filters: Vec<String>) -> Vec<String> {
+    let covered =
+        |f: &String| filters.iter().any(|w| w != f && w.strip_suffix('*').is_some_and(|prefix| f.starts_with(prefix)));
+    let mut kept: Vec<String> = Vec::new();
+    for f in &filters {
+        if !covered(f) && !kept.contains(f) {
+            kept.push(f.clone());
+        }
+    }
+    kept
 }
 
 /// Names of the recorded steps, indexed like [`Record::step`]: the root call's name (empty for a

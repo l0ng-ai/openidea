@@ -56,7 +56,7 @@ fn plan_for_collection_chain() {
     assert_eq!(plan.local, None);
     assert_eq!(specs(&plan.steps), [("filter", 1, 0), ("map", 1, 0), ("sorted", 0, 0), ("map", 1, 0)]);
     assert_eq!(plan.terminal, spec("collect", 1, 0));
-    assert_eq!(plan.class_filters, ["java.util.stream.*", "java.util.*"]);
+    assert_eq!(plan.class_filters, ["java.util.*"]);
     assert_eq!(plan.step_kinds, [StepKind::Sync, StepKind::Sync, StepKind::Reorder, StepKind::Sync]);
     assert!(!plan.sequentialize);
 }
@@ -213,26 +213,27 @@ fn first_line_is_statement_start() {
     assert_eq!(only_chain("C_PLAN_COLLECTION").first_line, line_of("C_PLAN_COLLECTION"));
 }
 
+/// A method exit two requests match comes in one event set twice, which the bundle cannot take:
+/// `java.util.*` already covers `java.util.stream.*`.
 #[test]
 fn class_filters_follow_the_source() {
     let streams = "java.util.stream.*";
-    let lines = &["java.lang.String", "java.io.BufferedReader"][..];
+    let lines = &[streams, "java.lang.String", "java.io.BufferedReader"][..];
     let cases: [(&str, &[&str]); 12] = [
-        ("C_SRC_ARRAYS", &["java.util.Arrays"]),
-        ("C_SRC_CHARS", &["java.lang.String", "java.lang.AbstractStringBuilder", "java.lang.CharSequence"]),
+        ("C_SRC_ARRAYS", &[streams, "java.util.Arrays"]),
+        ("C_SRC_CHARS", &[streams, "java.lang.String", "java.lang.AbstractStringBuilder", "java.lang.CharSequence"]),
         ("C_LINES_LITERAL", lines),
         ("C_LINES", lines),
         ("C_SRC_LINES", lines),
-        ("C_SRC_FILES", &["java.nio.file.Files"]),
-        ("C_SRC_PATTERN", &["java.util.regex.Pattern"]),
+        ("C_SRC_FILES", &[streams, "java.nio.file.Files"]),
+        ("C_SRC_PATTERN", &[streams, "java.util.regex.Pattern"]),
         ("C_SRC_RANDOM", &["java.util.*"]),
-        ("C_GENERATE", &[]),
-        ("C_ITERATE_PURE", &[]),
-        ("C_PLAN_RANGE", &[]),
+        ("C_GENERATE", &[streams]),
+        ("C_ITERATE_PURE", &[streams]),
+        ("C_PLAN_RANGE", &[streams]),
         ("C_STATIC_INIT", &["java.util.*"]),
     ];
-    for (marker, extra) in cases {
-        let expected: Vec<_> = std::iter::once(streams).chain(extra.iter().copied()).collect();
+    for (marker, expected) in cases {
         assert_eq!(plan_of(marker).class_filters, expected, "{marker}");
     }
 }
@@ -243,10 +244,7 @@ fn nested_collect_then_stream_plans_each_chain() {
     let filters: Vec<_> = chains.iter().map(|c| real_run_plan(c).unwrap().class_filters).collect();
     assert_eq!(
         filters,
-        [
-            vec!["java.util.stream.*", "java.lang.String", "java.io.BufferedReader"],
-            vec!["java.util.stream.*", "java.util.*"]
-        ]
+        [vec!["java.util.stream.*", "java.lang.String", "java.io.BufferedReader"], vec!["java.util.*"]]
     );
 }
 
@@ -266,7 +264,7 @@ fn plan_json_shape() {
     let json = serde_json::to_value(plan_of("C_PLAN_COLLECTION")).unwrap();
     assert_eq!(json["root"], serde_json::json!({"name": "stream", "args": 0, "skip": 0}));
     assert_eq!(json["local"], serde_json::Value::Null);
-    assert_eq!(json["classFilters"], serde_json::json!(["java.util.stream.*", "java.util.*"]));
+    assert_eq!(json["classFilters"], serde_json::json!(["java.util.*"]));
     assert_eq!(json["stepKinds"], serde_json::json!(["sync", "sync", "reorder", "sync"]));
     assert_eq!(json["firstLine"], line_of("C_PLAN_COLLECTION"));
     assert_eq!(json["sequentialize"], false);
