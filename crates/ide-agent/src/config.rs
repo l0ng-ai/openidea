@@ -2,8 +2,8 @@
 //! the agent reports them over ACP.
 
 use crate::model::{
-    AgentCommand, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit,
-    AgentModelPricing, AgentUsage,
+    AgentCommand, AgentCommandSource, AgentConfigChoice, AgentConfigOption, AgentConfigValue, AgentConfigVia,
+    AgentCost, AgentLimit, AgentModelPricing, AgentUsage,
 };
 use serde_json::{Value, json};
 
@@ -52,6 +52,30 @@ pub(crate) fn bypass_approvals(config: &[AgentConfigOption]) -> bool {
     ["mode", "permissions", "approval"]
         .into_iter()
         .any(|category| selected(category).zip(bypass_value(category)).is_some_and(|(value, bypass)| bypass(value)))
+}
+
+/// Whether `value` of `option` approves everything without asking.
+pub(crate) fn approves_everything(option: &AgentConfigOption, value: &str) -> bool {
+    option.category.as_deref().and_then(bypass_value).is_some_and(|bypass| bypass(value))
+}
+
+/// The choices that keep a session asking before it changes anything: `wanted` without values
+/// that approve everything, and an asking value for each option of `options` that approves
+/// everything as it stands.
+pub(crate) fn asking_choices(options: &[AgentConfigOption], wanted: &[AgentConfigChoice]) -> Vec<AgentConfigChoice> {
+    let mut out: Vec<AgentConfigChoice> = wanted
+        .iter()
+        .filter(|c| !options.iter().any(|o| o.id == c.id && approves_everything(o, &c.value)))
+        .cloned()
+        .collect();
+    let mut asking = options.to_vec();
+    ask_for_approvals(&mut asking);
+    for (before, after) in options.iter().zip(&asking) {
+        let Some(value) = after.current.as_ref().filter(|v| before.current.as_ref() != Some(*v)) else { continue };
+        out.retain(|c| c.id != after.id);
+        out.push(AgentConfigChoice { id: after.id.clone(), value: value.clone() });
+    }
+    out
 }
 
 /// For an option of `category` that can approve everything, what tells its approving values.
@@ -462,6 +486,22 @@ mod tests {
         ]}));
         ask_for_approvals(&mut c);
         assert_eq!(ids(&c), [("allow_all", Some("off")), ("approval", Some("ask"))]);
+    }
+
+    #[test]
+    fn asking_choices_drop_and_override_values_that_approve_everything() {
+        let codex = options_of(&json!({"modes": {"currentModeId": "full-access",
+            "availableModes": [{"id": "read-only"}, {"id": "ask"}, {"id": "auto"}, {"id": "full-access"}]}}));
+        let mode = codex[0].id.clone();
+        let choice = |id: &str, value: &str| AgentConfigChoice { id: id.into(), value: value.into() };
+        // The source task's Full Access goes; the session's own Full Access is turned to Ask.
+        let wanted = asking_choices(&codex, &[choice(&mode, "full-access"), choice("model", "gpt")]);
+        assert_eq!(wanted, [choice("model", "gpt"), choice(&mode, "ask")]);
+        // A mode that already asks is left alone.
+        let mut auto = codex.clone();
+        auto[0].current = Some("auto".into());
+        assert_eq!(asking_choices(&auto, &[choice(&mode, "auto")]), [choice(&mode, "auto")]);
+        assert!(approves_everything(&codex[0], "full-access") && !approves_everything(&codex[0], "auto"));
     }
 
     #[test]
