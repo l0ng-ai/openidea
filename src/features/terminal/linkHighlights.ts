@@ -82,7 +82,7 @@ export function installLinkHighlights(term: Terminal, color: () => string): Link
       else byLine.set(y, [...(byLine.get(y) ?? []), e]);
     }
     let fg: string | undefined;
-    // ponytail: rescans every visible row per frame (~rows regex passes); cache per line if profiles show it.
+    // Rescans every visible row per pass (one regex pass per row); cache per line if profiles show the cost.
     for (let y = top; y < bottom; y++) {
       const line = buf.getLine(y);
       const want = line
