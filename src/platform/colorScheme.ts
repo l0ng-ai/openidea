@@ -771,7 +771,9 @@ export function schemeCss(
     ]
       .filter(([k, v]) => /^--[\w-]+$/.test(k) && SAFE.test(v))
       .map(([k, v]) => `  ${k}: ${v} !important;`);
-    if (languageBody.length) css += `.cm-editor[data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
+    // The editor of that language, and a block of it in another editor (a Markdown code fence).
+    if (languageBody.length)
+      css += `.cm-editor[data-language="${language}"], .cm-editor [data-language="${language}"] {\n${languageBody.join("\n")}\n}\n`;
   }
   return css;
 }

@@ -1573,8 +1573,9 @@ html {
   --bg-identifier-under-caret: #d9e6ff;
   --bg-identifier-under-caret-write: #e0e0cc;
 }
-/* PHP editors: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
-.cm-editor[data-language="PHP"] {
+/* PHP editors and PHP code blocks: variables and function calls use the PHP colours (PHP_VAR / PHP_FUNCTION_CALL). */
+.cm-editor[data-language="PHP"],
+.cm-editor [data-language="PHP"] {
   --syn-variable: var(--syn-php-variable);
   --syn-function-call: var(--syn-php-function-call);
 }
