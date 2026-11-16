@@ -1317,7 +1317,7 @@ impl DbManager {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
             }
-            _ => catalog_rows(&pool, sql::completion_columns(driver)).await?,
+            _ => pool.rows(sql::completion_columns(driver), MAX_META_ROWS).await?,
         };
         for r in rows {
             let mut it = r.into_iter().map(Option::unwrap_or_default);

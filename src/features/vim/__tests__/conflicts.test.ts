@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, registerKeyClaim, useKeymap } from "@/platform/keymap";
-import { conflictRows, handlerFor, VIM_EDITOR_ATTR, VIM_KEYS, vimKeyClaim } from "../conflicts";
+import { conflictRows, handlerFor, movedToIde, VIM_EDITOR_ATTR, VIM_KEYS, vimKeyClaim } from "../conflicts";
 import { DEFAULT_VIM_SETTINGS, parseVimSettings, type VimSettings } from "../settings";
 
 describe("vim shortcut conflicts", () => {
@@ -11,6 +11,16 @@ describe("vim shortcut conflicts", () => {
     expect(handlerFor("Ctrl+C", {})).toBe("ide");
     expect(handlerFor("Meta+R", {})).toBeNull();
     expect(handlerFor("Ctrl+R", { "Ctrl+R": "ide" })).toBe("ide");
+  });
+
+  it("treats a key as the IDE's alone only when the user moved it from Vim", () => {
+    expect(movedToIde("Ctrl+A", { "Ctrl+A": "ide" })).toBe(true);
+    expect(movedToIde("ctrl+v", { "Ctrl+V": "ide" })).toBe(true);
+    expect(movedToIde("Ctrl+A", {})).toBe(false);
+    expect(movedToIde("Ctrl+A", { "Ctrl+A": "vim" })).toBe(false);
+    // The IDE's by default: Vim still gets it when no IDE action wants it.
+    expect(movedToIde("Escape", { Escape: "ide" })).toBe(false);
+    expect(movedToIde("Meta+A", { "Ctrl+A": "ide" })).toBe(false);
   });
 
   it("lists the IDE actions bound to each Vim key", () => {

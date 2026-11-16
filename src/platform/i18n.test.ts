@@ -285,6 +285,8 @@ describe("catalogs", () => {
     "YAML",
     "XML",
     "Maven",
+    "Thymeleaf",
+    "sbt",
     "Gradle",
     "npm",
     "pnpm",

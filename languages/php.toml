@@ -24,7 +24,7 @@ fallback = true
 command = "phpactor"
 args = ["language-server"]
 root-markers = ["composer.json", ".phpactor.json"]
-install-hint = "Install phpactor (https://phpactor.readthedocs.io/en/master/usage/standalone.html)"
+install-hint = "Install Phpactor in Settings › Languages & Frameworks › Language Servers (it runs on PHP)"
 
 # Alternative with its own Laravel and Blade support. https://github.com/samehelhawary/phoxite
 [[language-servers]]

@@ -44,6 +44,8 @@ You don't need a JDK to build: the Java extension bundles in `java/` are checked
 
 `pnpm dev:app` is the same as `pnpm tauri dev`, plus the global Tauri API (`window.__TAURI__`, from `src-tauri/tauri.dev.conf.json`), which is useful when you drive the app from scripts.
 
+On macOS, `.cargo/config.toml` defaults `MACOSX_DEPLOYMENT_TARGET` to 11.0 (export your own value to override), so debug builds launch on older systems too. When the system WebKit predates Safari 15.4, `src-tauri/src/macos_webview.rs` re-execs once into the newer WebKit staged by a Safari update; set `OPENIDEA_DISABLE_STAGED_WEBKIT=1` to keep the system engine while debugging.
+
 Other everyday commands:
 
 | Command             | What it does                                                                                                   |

@@ -20,6 +20,8 @@ pub(crate) enum Driver {
     Codex,
     /// `claude` in stream-json mode.
     Claude,
+    /// `copilot --headless --no-auto-update --stdio`.
+    Copilot,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -55,7 +57,13 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
         "Run `codex login` in a terminal.",
     ),
     ("gemini", "Gemini CLI", Driver::Acp, &["gemini", "--experimental-acp"], "Run `gemini` in a terminal and sign in."),
-    ("copilot", "GitHub Copilot", Driver::Acp, &["copilot", "--acp"], "Run `copilot` in a terminal and sign in."),
+    (
+        "copilot",
+        "GitHub Copilot",
+        Driver::Copilot,
+        &["copilot", "--headless", "--no-auto-update", "--stdio"],
+        "Run `copilot` in a terminal and sign in.",
+    ),
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
     ("qwen", "Qwen Code", Driver::Acp, &["qwen", "--experimental-acp"], "Run `qwen` in a terminal and sign in."),
@@ -242,10 +250,13 @@ fn render_login_command<'a>(program: &Path, args: impl IntoIterator<Item = &'a s
 }
 
 /// Whether `id` names a built-in agent that needs no registry install (native drivers
-/// and `npx -y` adapters). CLI built-ins (`copilot`, `gemini`, …) can be installed and
-/// updated from the ACP Registry into `<config>/agents/<id>.toml`.
+/// other than `copilot`, and `npx -y` adapters). CLI built-ins (`copilot`, `gemini`, …)
+/// can be installed and updated from the ACP Registry into `<config>/agents/<id>.toml`.
 pub(crate) fn is_builtin(id: &str) -> bool {
-    BUILTIN.iter().any(|&(bid, _, driver, cmd, _)| bid == id && (driver != Driver::Acp || cmd.first() == Some(&"npx")))
+    id != "copilot"
+        && BUILTIN
+            .iter()
+            .any(|&(bid, _, driver, cmd, _)| bid == id && (driver != Driver::Acp || cmd.first() == Some(&"npx")))
 }
 
 /// Display name of a built-in agent, when `id` is one.
@@ -618,6 +629,10 @@ pub(crate) fn load(custom_dir: Option<&Path>, secrets: Option<&dyn EnvSecrets>) 
     files.sort();
     for path in files {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else { continue };
+        let explicit_driver = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
+            .is_some_and(|t| t.contains_key("driver"));
         let agent = match CustomAgent::read_with(&path, &id, secrets) {
             Ok(a) => a,
             Err(e) => {
@@ -643,6 +658,14 @@ pub(crate) fn load(custom_dir: Option<&Path>, secrets: Option<&dyn EnvSecrets>) 
         match specs.iter_mut().find(|s| s.id == spec.id) {
             Some(existing) => {
                 spec.login_hint = existing.login_hint.clone();
+                if !explicit_driver && existing.driver == Driver::Copilot && spec.driver == Driver::Acp {
+                    // Registry installs (`github-copilot-cli`) record `args = ["--acp"]` with no
+                    // `driver`; upgrade them in place to the native headless driver (which
+                    // automatically falls back to `--acp`) while keeping the installed executable
+                    // path and registry version tracking. Explicit `driver = "acp"` stays ACP.
+                    spec.driver = Driver::Copilot;
+                    spec.args = crate::native::copilot::headless_args(&spec.args);
+                }
                 if spec.source == AgentSource::Custom {
                     spec.source = AgentSource::Builtin;
                 }

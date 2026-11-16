@@ -315,9 +315,10 @@ fn concurrent_installs_of_one_tool_are_rejected() {
 
 /// A second caller mid-install joins the run (the other Settings window's
 /// duplicate install) and shares the result instead of `AlreadyExists`.
+// Slot names no real install in other tests uses: tests share the process-wide slots.
 #[test]
 fn second_install_joins_the_running_one() {
-    let slot = match install_slot("sqls", &CancellationToken::new()) {
+    let slot = match install_slot("join-test-slot", &CancellationToken::new()) {
         Ok(slot) => slot,
         Err(_) => panic!("no install is running"),
     };
@@ -328,7 +329,7 @@ fn second_install_joins_the_running_one() {
                 slot.broadcast(InstallEvent::Line { text: format!("line {i}") });
                 std::thread::sleep(Duration::from_millis(20));
             }
-            release_install_slot("sqls", &slot);
+            release_install_slot("join-test-slot", &slot);
             slot.finish(Err(IdeError::new(ErrorKind::Io, "compile failed")));
         })
     };
@@ -348,8 +349,8 @@ fn second_install_joins_the_running_one() {
     assert!(texts.contains(&"Joined the install already in progress…".to_string()), "{texts:?}");
     assert!(texts.iter().any(|l| l == "line 2"), "{texts:?}");
     // The slot is released: a fresh install can start.
-    match install_slot("sqls", &CancellationToken::new()) {
-        Ok(fresh) => release_install_slot("sqls", &fresh),
+    match install_slot("join-test-slot", &CancellationToken::new()) {
+        Ok(fresh) => release_install_slot("join-test-slot", &fresh),
         Err(_) => panic!("the finished install still holds its slot"),
     }
 }
@@ -357,7 +358,7 @@ fn second_install_joins_the_running_one() {
 /// A late caller gets the finished result without waiting.
 #[test]
 fn install_joined_after_it_finished_returns_the_result() {
-    let slot = match install_slot("marksman", &CancellationToken::new()) {
+    let slot = match install_slot("finished-test-slot", &CancellationToken::new()) {
         Ok(slot) => slot,
         Err(_) => panic!("no install is running"),
     };
@@ -382,7 +383,7 @@ fn install_joined_after_it_finished_returns_the_result() {
         alternatives: vec![],
         companion: false,
     };
-    release_install_slot("marksman", &slot);
+    release_install_slot("finished-test-slot", &slot);
     slot.finish(Ok(ok));
     let info = join_install(&slot, &CancellationToken::new(), &|_| {}).unwrap();
     assert_eq!(info.version.as_deref(), Some("1.0"));
@@ -458,6 +459,51 @@ esac"#,
     let err = env.tools().install("lua-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
     assert!(err.message.contains("checksum mismatch"), "{}", err.message);
     assert!(exe.exists());
+}
+
+/// A PHP archive release (phpactor) keeps its `.phar` name and is launched through `php`.
+#[cfg(unix)]
+#[test]
+fn phar_release_installs_with_a_php_launcher() {
+    let env = Env::new();
+    let fixtures = env.root.parent().unwrap().join("fixtures");
+    fs::create_dir_all(&fixtures).unwrap();
+    let phar = fixtures.join("phpactor.phar");
+    fs::write(&phar, b"<?php __HALT_COMPILER();").unwrap();
+    let digest = sources::sha256_file(&phar).unwrap();
+    let json = fixtures.join("release.json");
+    fs::write(
+        &json,
+        format!(
+            r#"{{"tag_name":"2026.10.07.0","assets":[{{"name":"phpactor.phar","browser_download_url":"https://example.invalid/phpactor.phar","size":{},"digest":"sha256:{digest}"}}]}}"#,
+            fs::metadata(&phar).unwrap().len()
+        ),
+    )
+    .unwrap();
+    env.script(
+        &env.sys,
+        "curl",
+        &format!(
+            r#"out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2;; -A|-H|--retry|--connect-timeout) shift 2;; -*) shift;; *) url="$1"; shift;; esac; done
+case "$url" in
+  https://api.github.com/*) /bin/cat '{json}';;
+  *) /bin/cp '{phar}' "$out";;
+esac"#,
+            json = json.display(),
+            phar = phar.display()
+        ),
+    );
+    env.script(&env.sys, "php", r#"echo "php $*""#);
+
+    let info = env.tools().install("phpactor", &langs(), &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    let launcher = env.root.join("phpactor/bin/phpactor");
+    assert_eq!(info.path.as_deref(), Some(launcher.as_path()));
+    let archive = env.root.join("phpactor/bin/phpactor.phar");
+    assert_eq!(fs::read(&archive).unwrap(), b"<?php __HALT_COMPILER();");
+    let out = Command::new(&launcher).arg("language-server").env("PATH", &env.sys).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("php {} language-server", archive.display()));
 }
 
 /// npm installs go to `<tools>/node_modules` with `--prefix`.

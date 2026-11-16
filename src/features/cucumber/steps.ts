@@ -51,8 +51,9 @@ function readLiteral(text: string, at: number): { value: string; end: number; re
       const c = text[i]!;
       if (c === "\\") {
         const next = text[i + 1] ?? "";
-        // An escaped quote is the quote; other escapes stay (a Cucumber expression's `\(`).
-        value += next === quote ? next : c + next;
+        // An escaped quote or backslash is itself (`'\\('` is the expression `\(`); other
+        // escapes stay as written.
+        value += next === quote || next === "\\" ? next : c + next;
         i++;
       } else if (c === quote) return { value, end: i + 1 };
       else if ((c === "\n" && quote !== "`") || (quote === "`" && c === "$" && text[i + 1] === "{")) return null;
@@ -203,3 +204,65 @@ export function featureSteps(text: string): FeatureStep[] {
 }
 
 export const matchesStep = (definition: StepDefinition, step: FeatureStep) => definition.regexp.test(step.matchText);
+
+/** The keyword a step's definition is written with: `And`, `But` and `*` continue the previous step's. */
+export function definingKeyword(steps: readonly FeatureStep[], step: FeatureStep): "Given" | "When" | "Then" {
+  let keyword: "Given" | "When" | "Then" = "Given";
+  for (const s of steps) {
+    if (s.keyword === "Given" || s.keyword === "When" || s.keyword === "Then") keyword = s.keyword;
+    if (s === step) break;
+  }
+  return keyword;
+}
+
+/** Strings and numbers of a step's text, as Cucumber's snippets turn them into parameters. */
+const SNIPPET_PARAMETER = /(^|[^\w.-])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+\.\d+|-?\d+)(?![\w.])/g;
+
+/** `text` as a Cucumber expression inside a single-quoted JavaScript string. */
+const expressionText = (text: string) => text.replace(/[\\(){}/]/g, "\\\\$&").replace(/'/g, "\\'");
+
+/**
+ * The step definition Cucumber suggests for an undefined step: its strings and numbers become
+ * `{string}`, `{float}` and `{int}` parameters of a pending step. `playwright-bdd` steps take
+ * the fixtures first. `body` is the line (0-based) of the snippet the caret goes to.
+ */
+export function stepSnippet(
+  keyword: string,
+  text: string,
+  style: "cucumber" | "playwright-bdd" = "cucumber",
+): { text: string; body: number } {
+  const types: string[] = [];
+  let expression = "";
+  let last = 0;
+  for (const m of text.matchAll(SNIPPET_PARAMETER)) {
+    const start = m.index + m[1]!.length;
+    const value = m[2]!;
+    const type = /^["']/.test(value) ? "string" : value.includes(".") ? "float" : "int";
+    expression += `${expressionText(text.slice(last, start))}{${type}}`;
+    types.push(type);
+    last = start + value.length;
+  }
+  expression += expressionText(text.slice(last));
+  const seen = new Map<string, number>();
+  const names = types.map((type) => {
+    const n = (seen.get(type) ?? 0) + 1;
+    seen.set(type, n);
+    return n === 1 ? type : `${type}${n}`;
+  });
+  const comment = "  // Write code here that turns the phrase above into concrete actions";
+  if (style === "playwright-bdd")
+    return {
+      text: [`${keyword}('${expression}', async (${["{}", ...names].join(", ")}) => {`, comment, "});", ""].join("\n"),
+      body: 1,
+    };
+  return {
+    text: [
+      `${keyword}('${expression}', async function (${names.join(", ")}) {`,
+      comment,
+      "  return 'pending';",
+      "});",
+      "",
+    ].join("\n"),
+    body: 2,
+  };
+}

@@ -2039,6 +2039,8 @@ export type AgentConfigValue = {
 	costCategory?: string | null,
 	/**  Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`). */
 	usageMultiplier?: string | null,
+	/**  Detailed per-tier token pricing from `_meta.pricing` when available. */
+	pricing?: AgentModelPricing | null,
 };
 
 /**  How a setting is changed. */
@@ -2224,6 +2226,16 @@ export type AgentModelCatalog = {
 	refreshedAtMs: number | null,
 	retryAtMs: number | null,
 	error: string | null,
+};
+
+/**  Pricing and context-tier metadata attached to a model [`AgentConfigValue`]. */
+export type AgentModelPricing = {
+	/**  `"low"`, `"medium"`, `"high"`, or `"very_high"`. */
+	costTier?: string | null,
+	/**  Request-based billing multiplier (e.g. `1.0`, `0.33`, `3.0`), when applicable. */
+	multiplier?: number | null,
+	/**  Token pricing keyed by context tier (`"default"`, `"long_context"`). */
+	tiers?: { [key in string]: AgentTokenPricing },
 };
 
 export type AgentPermissionOption = {
@@ -2510,6 +2522,15 @@ export type AgentTask = {
 	retry?: AgentRetry | null,
 	/**  What the agent runs in the background (shells, subagents, monitors), oldest first. */
 	background?: AgentBackgroundTask[],
+};
+
+/**  Token pricing (Credits per 1M tokens) and context window capacity for one tier. */
+export type AgentTokenPricing = {
+	input: number | null,
+	output: number | null,
+	cacheRead?: number | null,
+	cacheWrite?: number | null,
+	contextTokens?: number | null,
 };
 
 export type AgentToolDiff = {
@@ -2944,6 +2965,8 @@ export type BuildMessage = {
 export type BuildModel = {
 	maven: MavenModel | null,
 	gradle?: GradleModel[],
+	/**  sbt builds, read from their `build.sbt` (sbt is not started). */
+	sbt?: SbtBuild[],
 };
 
 /**  How a Java launch builds the project before starting (IDEA's Before launch › Build). */
@@ -9726,6 +9749,26 @@ export type RustSettings = {
 	checkCommand?: string,
 	/**  Extra arguments for rustfmt (rust-analyzer `rustfmt.extraArgs`), space-separated. */
 	rustfmtArgs?: string,
+};
+
+export type SbtBuild = {
+	/**  Folder of `build.sbt`, relative to the project root (`""` for the root itself). */
+	dir: string,
+	/**  The launcher: a `sbt` / `sbtx` script in the build folder, else `sbt` on `PATH`. */
+	command: string,
+	/**  `sbt.version` of `project/build.properties`. */
+	version: string | null,
+	/**  The root project first, then the declared projects in source order. */
+	projects: SbtProject[],
+};
+
+export type SbtProject = {
+	/**  The project id tasks are scoped with (`core/compile`). */
+	id: string,
+	/**  Base folder relative to the build folder (`""` for the build's own). */
+	dir: string,
+	/**  The build's root project: its tasks run unscoped (and aggregate when sbt does). */
+	root: boolean,
 };
 
 /**  Progress of `scaffold_create`. */

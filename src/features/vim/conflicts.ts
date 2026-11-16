@@ -3,6 +3,8 @@
  * Editor › Vim table). Each Vim key has a handler: `vim` hands the keystroke
  * to the editor even when an IDE action is bound to it; `ide` lets the IDE
  * keymap run first (Vim still gets the key when no IDE action is enabled).
+ * A key the user moves from `vim` to `ide` is never Vim's, as with IdeaVim:
+ * without an IDE action it does what the editor does with it (`movedToIde`).
  */
 import { normalizeBinding, type KeyClaim } from "@/platform/keymap";
 import type { Handler, VimSettings } from "./settings";
@@ -46,6 +48,17 @@ export function handlerFor(stroke: string, handlers: VimSettings["handlers"]): H
   const key = byStroke.get(normalizeBinding(stroke));
   if (!key) return null;
   return handlers[key.stroke] ?? key.handler;
+}
+
+/**
+ * Whether the user moved `stroke` from Vim to the IDE. Vim then leaves it alone even when no
+ * IDE action takes it: in the editor, `Ctrl+A` selects all and `Ctrl+X` / `Ctrl+V` cut and paste
+ * (IdeaVim's `$SelectAll`, `$Cut`, `$Paste`). Keys that are the IDE's by default still reach Vim
+ * when no IDE action wants them, so Escape leaves Insert mode.
+ */
+export function movedToIde(stroke: string, handlers: VimSettings["handlers"]): boolean {
+  const key = byStroke.get(normalizeBinding(stroke));
+  return key?.handler === "vim" && handlers[key.stroke] === "ide";
 }
 
 export interface ConflictRow extends VimKey {
