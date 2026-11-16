@@ -24,8 +24,13 @@ pub fn index_file_extensions(window: Window, state: State<'_, AppState>) -> IdeR
 
 #[tauri::command]
 #[specta::specta]
-pub fn find_files(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
-    ide_host::ops::nav::find_files(&state.host, window.label(), query, limit)
+pub async fn find_files(
+    window: Window,
+    state: State<'_, AppState>,
+    query: String,
+    limit: u32,
+) -> IdeResult<Vec<FileMatch>> {
+    ide_host::ops::nav::find_files(&state.host, window.label(), query, limit).await
 }
 
 #[tauri::command]
@@ -37,8 +42,13 @@ pub async fn find_files_named(window: Window, state: State<'_, AppState>, name: 
 /// Folders holding indexed files, for `@` references.
 #[tauri::command]
 #[specta::specta]
-pub fn find_dirs(window: Window, state: State<'_, AppState>, query: String, limit: u32) -> IdeResult<Vec<FileMatch>> {
-    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit)
+pub async fn find_dirs(
+    window: Window,
+    state: State<'_, AppState>,
+    query: String,
+    limit: u32,
+) -> IdeResult<Vec<FileMatch>> {
+    ide_host::ops::nav::find_dirs(&state.host, window.label(), query, limit).await
 }
 
 /// Spring Web mapping sources for the request-path index of Search Everywhere.
@@ -53,14 +63,14 @@ pub fn spring_route_sources(
 
 #[tauri::command]
 #[specta::specta]
-pub fn find_symbols(
+pub async fn find_symbols(
     window: Window,
     state: State<'_, AppState>,
     query: String,
     filter: SymbolFilter,
     limit: u32,
 ) -> IdeResult<Vec<SymbolMatch>> {
-    ide_host::ops::nav::find_symbols(&state.host, window.label(), query, filter, limit)
+    ide_host::ops::nav::find_symbols(&state.host, window.label(), query, filter, limit).await
 }
 
 /// Index symbols named exactly one of `names` inside `within` (an agent task's folder).
