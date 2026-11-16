@@ -375,7 +375,7 @@ export class TerminalSession {
     this.disposables.push(this.selectionHighlights, this.linkHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
-      { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
+      { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
     this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });

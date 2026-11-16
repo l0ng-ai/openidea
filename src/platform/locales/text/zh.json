@@ -8544,5 +8544,7 @@
   "Untitled files were not saved": "未命名文件未保存",
   "Missing blank line between subject and body": "主题和正文之间缺少空行",
   "Body line {0} is longer than {1} characters": "正文第 {0} 行超过 {1} 个字符",
-  "Add blank line": "添加空行"
+  "Add blank line": "添加空行",
+  "Cannot paste this path safely: its name contains control characters.": "无法安全粘贴此路径：名称包含控制字符。",
+  "Cannot paste the dropped files": "无法粘贴拖入的文件"
 }
