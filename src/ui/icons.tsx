@@ -383,6 +383,7 @@ const ICONS = {
   "db-sequence": "openidea/database/sequence",
   "db-plan": "openidea/database/plan",
   "db-chart": "openidea/database/chart",
+  "db-in-editor-results": "openidea/database/inEditorResults",
   "db-sort": "openidea/database/sort",
   "db-folder": "openidea/database/folder",
   "db-add": "openidea/database/addDropdown",

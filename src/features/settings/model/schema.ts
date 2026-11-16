@@ -63,6 +63,8 @@ export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
   scopes: NamedScope[];
   fileColors: FileColorSettings;
+  /** Database › Query Execution. */
+  database: { inEditorResults: boolean };
   general: {
     reopenLastProject: boolean;
     confirmExit: boolean;
@@ -165,6 +167,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
   scopes: [],
   fileColors: DEFAULT_FILE_COLORS,
+  database: { inEditorResults: false },
   general: {
     reopenLastProject: true,
     confirmExit: true,
@@ -340,6 +343,7 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
     scopes: validateScopes(root.scopes),
     fileColors: validateFileColors(root.fileColors),
+    database: { inEditorResults: bool(obj(root.database).inEditorResults, d.database.inEditorResults) },
     general: {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),

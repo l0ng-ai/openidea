@@ -71,6 +71,8 @@ pub struct Settings {
     pub scopes: Vec<NamedScope>,
     /// Appearance & Behavior › File Colors.
     pub file_colors: FileColorSettings,
+    /// Database › Query Execution.
+    pub database: DatabaseSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -508,6 +510,7 @@ impl Default for Settings {
             agent_security: AgentSecuritySettings::default(),
             scopes: Vec::new(),
             file_colors: FileColorSettings::default(),
+            database: DatabaseSettings::default(),
             plugins: BTreeMap::new(),
         }
     }
