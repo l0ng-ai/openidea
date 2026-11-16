@@ -21,6 +21,7 @@ mod matching;
 mod store;
 mod worker;
 
+pub use filter::walk_skips;
 pub use worker::MAX_SYMBOL_FILE;
 use worker::{Job, MAX_RECENT, Shared};
 

@@ -95,8 +95,12 @@ pub(crate) fn search_project(
             cancel,
             &|mut file| {
                 if dir != root {
-                    let name = dir.file_name().unwrap_or_default().to_string_lossy();
-                    file.rel_path = format!("{name}/{}", file.rel_path);
+                    // A root inside the project (one its walk skips) goes by its path there.
+                    let prefix = match dir.strip_prefix(root) {
+                        Ok(rel) if include_root => rel.to_string_lossy().replace('\\', "/"),
+                        _ => dir.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                    };
+                    file.rel_path = format!("{prefix}/{}", file.rel_path);
                 }
                 emit(file);
             },
