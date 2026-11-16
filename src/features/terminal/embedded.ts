@@ -24,14 +24,18 @@ import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { findTerminalLinks } from "./links";
 import { LINK_HANDLER, fontFor, openExternal, openFileLink } from "./session";
-import { MIN_CONTRAST_RATIO, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
+import { MIN_CONTRAST_RATIO, readLinkColor, readTerminalTheme, remeasureWhenFontsLoad } from "./theme";
+import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 
-const live = new Set<Terminal>();
+const live = new Map<Terminal, LinkHighlightController>();
 
 /** Follows a theme change (called with the terminal sessions' own update). */
 export function applyThemeToEmbedded() {
   const theme = readTerminalTheme();
-  for (const t of live) t.options.theme = theme;
+  for (const [t, links] of live) {
+    t.options.theme = theme;
+    links.refresh();
+  }
 }
 
 export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminalOptions): EmbeddedTerminal {
@@ -78,7 +82,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
-  live.add(term);
+  live.set(term, installLinkHighlights(term, readLinkColor));
   let lastSize = { cols: term.cols, rows: term.rows };
   const processResize = settledResize((cols, rows) => {
     if (cols === lastSize.cols && rows === lastSize.rows) return;
@@ -93,18 +97,15 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
         const found = line ? findTerminalLinks(line.translateToString(true)) : [];
-        if (!found.length) return callback(undefined);
+        if (!line || !found.length) return callback(undefined);
         callback(
-          found.map((l) => ({
-            text: l.text,
-            range: { start: { x: l.start + 1, y }, end: { x: l.end, y } },
-            decorations: { underline: true, pointerCursor: true },
-            activate: (event: MouseEvent) => {
+          found.map((l) =>
+            xtermLink(term, line, y, l, (event) => {
               event.preventDefault();
               if (l.kind === "url") void openExternal(l.url);
               else void openFileLink(l, opts.cwd ?? useProject.getState().project?.root ?? "");
-            },
-          })),
+            }),
+          ),
         );
       },
     }),
@@ -149,6 +150,7 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       removePaste();
       removeDrop();
       for (const d of disposables) d.dispose();
+      live.get(term)?.dispose();
       live.delete(term);
       term.dispose();
     },

@@ -167,3 +167,49 @@ test("terminal ⌘F highlights active/inactive search matches and seeds with a n
   await expect(input).toHaveValue("gamma");
   await expect(search.locator("[aria-live=polite]")).toHaveText(/\d+\/2/);
 });
+
+test("terminal shows URLs in the link colour with an underline without hovering, in light and dark themes", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const path = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(path);
+    layout.showToolWindow("terminal", true);
+  });
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await page.evaluate(async () => {
+    const path = "/src/features/terminal/runtime.ts";
+    const { activeSession } = await import(path);
+    const s = activeSession()!;
+    s.term.reset();
+    await new Promise<void>((resolve) =>
+      s.term.write(
+        "  ➜  Local:   http://localhost:5173/\r\n文档 https://example.com/docs 和 https://example.org/a\r\nno link\r\n",
+        resolve,
+      ),
+    );
+  });
+  const links = terminal.locator(".openidea-terminal-link");
+  await expect(links).toHaveCount(3);
+
+  for (const theme of ["light", "dark"]) {
+    const link = await page.evaluate(async (theme) => {
+      const path = "/src/workbench/theme.ts";
+      const { setTheme } = await import(path);
+      await setTheme(theme);
+      const probe = document.createElement("span");
+      probe.style.color = "var(--link)";
+      document.body.append(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    }, theme);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+    // The underline and the recoloured text both follow the theme's `--link`.
+    await expect(links.first()).toHaveCSS("border-bottom-color", link);
+    await expect(terminal.locator(".xterm-rows span", { hasText: /^h$/ }).first()).toHaveCSS("color", link);
+    if (process.env.OPENIDEA_TERMINAL_SHOTS)
+      await terminal.screenshot({ path: `${process.env.OPENIDEA_TERMINAL_SHOTS}/terminal-links-${theme}.png` });
+  }
+});
