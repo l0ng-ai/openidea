@@ -39,6 +39,7 @@ optional = ["net:api.example.com", "secrets"]
 | `editor.write`      | 中   | `TextEditor::apply_edits`                                                                                                      | 1.0                        |
 | `vcs.read`          | 低   | `vcs_status`、`vcs_remotes`、`vcs_log`、`vcs_blame`、`vcs_diff`、待提交的内容、提交前检查                                      | 1.0                        |
 | `vcs.write`         | 中   | `vcs_fetch`（仅受信任项目）、`host::set_commit_message`                                                                        | 1.0                        |
+| `build.read`        | 低   | `build_dependencies`：IDE 已解析的 Maven / Gradle 依赖图；仅限受信任的项目                                                     | 1.10                       |
 | `storage`           | 低   | `host::storage`，每个插件 64 MiB                                                                                               | 1.0                        |
 | `events`            | 低   | 文件打开、关闭、保存，文件变化，编辑器焦点变化，仓库变化，设置变化                                                             | 1.0                        |
 | `events.input`      | 中   | `action-performed` 和 `input-mode-changed` 事件（按键和编辑器输入）                                                            | 1.0                        |

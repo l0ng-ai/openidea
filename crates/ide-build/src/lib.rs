@@ -19,7 +19,7 @@ pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
-pub use gradle_deps::{GradleDependency, gradle_dependencies};
+pub use gradle_deps::{GradleDependency, GradleReport, gradle_dependencies, gradle_reports, save_gradle_report};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
 pub use sbt::{SbtBuild, SbtProject};
 pub use sync::{

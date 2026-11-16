@@ -355,6 +355,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                               |
 | `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                        |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                |
+| `build.read`        | low    | API 1.10: `Project::build_dependencies`, the Maven / Gradle dependency graph the IDE resolved; trusted projects only                                                    |
 | `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                            |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
 | `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
@@ -438,6 +439,10 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
 - **`[[contributes.javaAgents]]`** loads a Java agent from the package into the
   JVM of Application, Spring Boot and JAR Application configurations, behind the
   high-risk `java.agent` capability. See _Java agents_.
+- **The build dependency graph.** `Project::build_dependencies(module)` (WIT
+  `build.dependencies`) returns the Maven / Gradle graph the Dependency Analyzer
+  has, as a flat list with conflict and omission status, behind the low-risk
+  `build.read` capability. No build tool runs. See _Build dependency graph_.
 
 ### API 1.9
 
@@ -665,6 +670,7 @@ then run `openidea-plugin check`.
 | `host::problems(path)`                                                                                         | `diagnostics.problems`                       | API 1.4: project Problems reports grouped by file/source, optional file filter. Requires `project.read` and an invoking window. Empty for remote projects.                                                                                                                                                                                                |
 | `Project::vcs_log(path, limit)`                                                                                | `vcs.log`                                    | API 1.4: newest first, at most 1000 commits, optional file history. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                        |
 | `Project::vcs_blame(path)`                                                                                     | `vcs.blame`                                  | API 1.4: attribution including unsaved editor text. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                                        |
+| `Project::build_dependencies(module)`                                                                          | `build.dependencies`                         | API 1.10: the Maven / Gradle dependency graph the IDE resolved, flat, each module a root; nothing is resolved for the call. Requires `build.read` and trust.                                                                                                                                                                                              |
 | `Project::vcs_diff(path, against)`                                                                             | `vcs.diff`                                   | API 1.4: disk working tree against HEAD/revision, optionally one file. None outside Git; fails above 4 MiB. Requires `vcs.read` and trust.                                                                                                                                                                                                                |
 | `TextEditor::apply_edits(version, edits)`                                                                      | `editor.text-editor.apply-edits`             | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                                                                                                                                                           |
 | `Project::root()`, `read_file(path)`                                                                           | `workspace.project`                          | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                                                                                                                                                       |
@@ -838,6 +844,63 @@ run = "model-view"            # this plugin's command
 In tests, `MockHost::set_language_server_response(server, method, json)` makes
 a server run and answer, and `language_server_requests()` /
 `language_server_notifications()` list what the plugin sent.
+
+### Build dependency graph (API 1.10)
+
+A plugin can read the Maven / Gradle dependency graph the IDE already resolved
+for its Dependency Analyzer: resolved versions, conflicts, omitted duplicates
+and managed versions, and so "why is this artifact here". Declare `build.read`
+(low risk):
+
+```toml
+engines.openidea = "^1.10"
+
+[capabilities]
+required = ["build.read"]
+```
+
+```rust
+let project = inv.project().ok_or("no project")?;
+let graph = project.build_dependencies(Some("com.example:app"))?; // or None: every module
+for (i, node) in graph.iter().enumerate() {
+    if node.status == DependencyStatus::OmittedForConflict {
+        // Walk `parent` up to the module to see who asked for the losing version.
+        let path: Vec<_> = std::iter::successors(Some(i), |&i| graph[i].parent.map(|p| p as usize))
+            .map(|i| format!("{}:{}", graph[i].group, graph[i].artifact))
+            .collect();
+        host::log(LogLevel::Info, &path.join(" <- "));
+    }
+}
+```
+
+| SDK                                   | WIT                                   | Notes                                         |
+| ------------------------------------- | ------------------------------------- | --------------------------------------------- |
+| `Project::build_dependencies(module)` | `build.dependencies(project, module)` | A flat `list<dependency-node>`, modules first |
+
+- WIT records can't nest, so the graph is a flat list. Each module is a root
+  (`parent` none, empty `scope`) — a Maven module by its `groupId:artifactId`, a
+  Gradle project by its path (`:app`, `group` empty) — followed by its tree;
+  `parent` is the index of the occurrence that brings a node in.
+- `module` is a Maven module's `groupId:artifactId` or a Gradle project's path
+  (`:` for the root project); `None` returns every module of the project's
+  builds. An unknown module is `not-found`.
+- `status`: `resolved`; `omitted-for-conflict` (`version` is the version that
+  won, `requested-version` the one this occurrence asked for);
+  `omitted-for-duplicate` (listed with its dependencies elsewhere: Maven's
+  duplicates and cycles, Gradle's `(*)`); `version-managed` (Maven
+  `<dependencyManagement>`, a Gradle platform or constraint supplies the
+  version; `requested-version` is the declared one, if any). `scope` is the
+  Maven scope or the Gradle configuration.
+- Nothing is resolved for the call. Maven trees are those of the last Reload in
+  the Maven tool window (with the occurrences Maven omitted); before one, or
+  after a POM changed, only the declared dependencies. Gradle trees are the
+  configurations the Dependency Analyzer has read for that project, kept until a
+  build file changes; before that the module has only its own node.
+- At most 100,000 nodes per call (else `failed`: ask for one module). The
+  project must be trusted; otherwise the call is `denied`.
+
+In tests, `MockHost::set_build_dependencies(nodes)` sets the graph that
+`build_dependencies(None)` returns; a module narrows it as the IDE does.
 
 ### Database sources (API 1.4)
 

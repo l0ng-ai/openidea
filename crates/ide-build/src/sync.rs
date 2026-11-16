@@ -136,11 +136,11 @@ pub fn save_maven_profiles(cache_dir: &Path, profiles: &[String]) -> IdeResult<b
     Ok(true)
 }
 
-fn read_cache<T: DeserializeOwned>(dir: &Path, name: &str) -> Option<T> {
+pub(crate) fn read_cache<T: DeserializeOwned>(dir: &Path, name: &str) -> Option<T> {
     serde_json::from_slice(&std::fs::read(dir.join(name)).ok()?).ok()
 }
 
-fn write_cache<T: Serialize>(dir: &Path, name: &str, value: &T) -> IdeResult<()> {
+pub(crate) fn write_cache<T: Serialize>(dir: &Path, name: &str, value: &T) -> IdeResult<()> {
     std::fs::create_dir_all(dir)?;
     let json = serde_json::to_vec(value).map_err(|e| IdeError::internal(e.to_string()))?;
     let tmp = dir.join(format!("{name}.tmp"));
@@ -156,7 +156,7 @@ fn hash_files(files: &[PathBuf]) -> String {
 
 /// Like IDEA's auto-import CRC: editing a comment or reformatting a build script
 /// does not make the last sync stale.
-fn hash_gradle_files(files: &[PathBuf]) -> String {
+pub(crate) fn hash_gradle_files(files: &[PathBuf]) -> String {
     hash_contents(files, |f| {
         let text = std::fs::read_to_string(f).unwrap_or_default();
         let script = f.extension().is_some_and(|e| e == "gradle" || e == "kts");

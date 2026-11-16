@@ -117,6 +117,13 @@ pub trait HostApi: Send + Sync {
         let _ = (root, method, params, notify, cancel, timeout);
         Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
     }
+    /// The flat dependency graph of the Maven / Gradle builds of the project at `root`
+    /// (of the module `module` only, when given), as the IDE last resolved it; never runs
+    /// a build tool.
+    fn build_dependencies(&self, root: &Path, module: Option<&str>) -> Result<Vec<crate::DependencyNode>, HostError> {
+        let _ = (root, module);
+        Err(HostError::Failed("build data is unavailable on this host".into()))
+    }
     /// Stdio argv only; no URL or bearer token.
     fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
         let _ = client;

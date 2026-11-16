@@ -20,6 +20,7 @@ world plugin {
     import decorations;
     import invocation;
     import vcs;
+    import build;
     import commit;
     import events;
     import tasks;
