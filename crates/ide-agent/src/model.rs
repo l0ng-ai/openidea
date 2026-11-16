@@ -50,12 +50,13 @@ pub struct AgentCapabilities {
     pub read_only: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum Isolation {
     /// A new git worktree on its own branch.
     Worktree,
     /// The project's own checkout.
+    #[default]
     Local,
 }
 
@@ -107,6 +108,9 @@ pub struct AgentTask {
     // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
     pub background: Box<Vec<AgentBackgroundTask>>,
+    /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_overrides: BTreeMap<String, bool>,
 }
 
 /// A task the agent runs in the background while the conversation goes on.
@@ -592,7 +596,7 @@ pub struct AgentProbe {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAgentTask {
     /// Validated by the host; defaults to the window project root.
@@ -605,6 +609,9 @@ pub struct NewAgentTask {
     pub isolation: Isolation,
     /// Branch to start the worktree from; the current branch when `None`.
     pub base: Option<String>,
+    /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
+    #[serde(default)]
+    pub mcp_overrides: BTreeMap<String, bool>,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
@@ -676,7 +683,7 @@ pub struct AgentModelCatalog {
 pub enum AgentEvent {
     /// A task was created or its metadata changed.
     Task {
-        task: AgentTask,
+        task: Box<AgentTask>,
     },
     Removed {
         id: String,
@@ -756,6 +763,9 @@ pub struct McpServer {
     /// Agent provider ids this server is enabled for; empty means enabled for all agents.
     #[serde(default)]
     pub agents: Vec<String>,
+    /// True when this Workspace server was added outside OpenIDEA and has not been approved yet.
+    #[serde(default)]
+    pub unapproved: bool,
 }
 
 /// Payload for creating or updating a user or workspace MCP server.
@@ -786,6 +796,69 @@ pub struct McpServerInput {
 
 fn default_true() -> bool {
     true
+}
+
+/// An external MCP configuration file discovered on disk (user CLI config or workspace file).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpExternalSource {
+    /// Stable source identifier (e.g. `"copilot-cli"`, `"jetbrains-air"`, `"claude-code"`, `"cursor"`, `"workspace-mcp"`, `"vscode-mcp"`).
+    pub id: String,
+    /// Human-readable source label (e.g. `"GitHub Copilot CLI"`).
+    pub label: String,
+    /// Absolute path of the discovered configuration file.
+    pub path: IpcPath,
+    /// Suggested target scope when importing this source into OpenIDEA settings.
+    pub suggested_scope: McpScope,
+    /// Agent provider ID this external CLI reads natively (`Some("copilot")`, `Some("claude")`, `Some("cursor")`, or `None`).
+    pub native_provider: Option<String>,
+    /// Servers found inside this external configuration file (values omitted for safety; imported directly on the host).
+    pub servers: Vec<McpDiscoveredServer>,
+}
+
+/// Summary of one server discovered inside an external MCP configuration file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscoveredServer {
+    pub name: String,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    /// Environment variable names declared on this server (values stay on the host).
+    pub env_keys: Vec<String>,
+    /// HTTP header names declared on this server (values stay on the host).
+    pub header_keys: Vec<String>,
+}
+
+/// Selection of one server from an external MCP configuration source to import.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportSelection {
+    pub source_id: String,
+    pub name: String,
+}
+
+/// One tool advertised by an MCP server during `tools/list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolSummary {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Result of testing/probing an MCP server (`initialize` + `tools/list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProbeResult {
+    pub ok: bool,
+    pub server_name: Option<String>,
+    pub server_version: Option<String>,
+    pub protocol_version: Option<String>,
+    pub tools: Vec<McpToolSummary>,
+    pub duration_ms: u32,
+    pub error: Option<String>,
 }
 
 /// Payload for creating a custom ACP agent (always the ACP driver); the id

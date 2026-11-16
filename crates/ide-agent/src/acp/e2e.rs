@@ -155,6 +155,7 @@ async fn a_task_runs_on_a_v2_agent_and_resumes_its_session() {
             config: vec![AgentConfigChoice { id: "model".into(), value: "haiku".into() }],
             isolation: Isolation::Local,
             base: None,
+            ..Default::default()
         })
         .await
         .unwrap();

@@ -75,6 +75,8 @@ export interface Draft {
   isolationChosen?: boolean;
   /** `null`: the current branch. */
   base: string | null;
+  /** Per-session MCP server enable/disable overrides (`server_name` -> `enabled`) for the next task. */
+  mcpOverrides?: Record<string, boolean>;
 }
 
 /** Composer key of the New Task page; sessions use their task id. */
@@ -984,6 +986,7 @@ export async function startTask(
         config,
         isolation,
         base: isolation === "worktree" ? draft.base : null,
+        mcpOverrides: draft.mcpOverrides ?? {},
       }),
     );
     if (generation !== started) return;
@@ -1235,6 +1238,7 @@ export async function startSideConversation(task: string, text: string): Promise
         config: source.config.filter((o) => o.current != null).map((o) => ({ id: o.id, value: o.current as string })),
         isolation: "local" as const,
         base: null,
+        mcpOverrides: source.mcpOverrides ?? {},
       },
       task,
     ),
@@ -1412,6 +1416,23 @@ export const removeQueued = (task: string, queued: string) => call(commands.agen
 export const sendQueuedNow = (task: string, queued: string) => call(commands.agentSendQueuedNow(task, queued));
 export const setTaskConfig = (task: string, option: string, value: string) =>
   call(commands.agentSetConfig(task, option, value));
+
+export function setDraftMcpOverrides(mcpOverrides: Record<string, boolean>) {
+  updateDraft({ mcpOverrides });
+}
+
+export async function setTaskMcpOverrides(task: string, overrides: Record<string, boolean>): Promise<void> {
+  const prev = useAgents.getState().tasks.get(task);
+  if (prev) {
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set(task, { ...prev, mcpOverrides: overrides }),
+    }));
+  }
+  const updated = await call(commands.agentSetMcpOverrides(task, overrides));
+  useAgents.setState((s) => ({
+    tasks: new Map(s.tasks).set(task, updated),
+  }));
+}
 
 /** The composer the user is looking at: the Agents surface on show, else the one typed in last. */
 function activeComposerKey(): string {

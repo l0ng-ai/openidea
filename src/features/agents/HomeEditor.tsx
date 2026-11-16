@@ -13,6 +13,7 @@ import { Composer } from "./Composer";
 import { SubmitButton } from "./SubmitButton";
 import { canSend, emptyDraft } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
 import { HOME_KEY, providerIcon } from "./model";
@@ -23,6 +24,7 @@ import {
   draftConfig,
   refreshProviders,
   refreshModels,
+  setDraftMcpOverrides,
   setDraftOption,
   startTask,
   updateDraft,
@@ -57,6 +59,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const current = repoState?.root === root ? repoState.current : null;
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
 
   // Agents installed in Settings (its own window) show up when this one is back in front.
   useEffect(() => {
@@ -228,6 +231,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
           config={config}
           onConfig={setDraftOption}
           onSubmit={start}
+          onOpenMcp={() => setMcpOpenRequest((n) => n + 1)}
           disabled={!canStart}
           toolbar={
             <>
@@ -255,6 +259,14 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                     : undefined
                 }
               />
+              {provider && (
+                <McpPicker
+                  provider={provider.id}
+                  overrides={draft.mcpOverrides}
+                  onChange={setDraftMcpOverrides}
+                  openRequest={mcpOpenRequest}
+                />
+              )}
             </>
           }
           actions={

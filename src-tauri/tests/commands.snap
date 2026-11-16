@@ -17,11 +17,15 @@ agent_external_sessions                      trusted            project_host bin
 agent_fork                                   trusted            project_host bindings async
 agent_grouped_changes                        trusted            project_host bindings async
 agent_import_session                         trusted            project_host bindings async
+agent_mcp_discover_sources                   always             project_host bindings async
 agent_mcp_import                             always             project_host bindings sync
+agent_mcp_import_selected                    always             project_host bindings async
 agent_mcp_list                               always             project_host bindings sync
 agent_mcp_remove                             always             project_host bindings sync
 agent_mcp_save                               always             project_host bindings sync
+agent_mcp_save_json                          always             project_host bindings sync
 agent_mcp_set_enabled                        always             project_host bindings sync
+agent_mcp_test                               trusted            project_host bindings async
 agent_probe                                  trusted            project_host bindings async
 agent_prompt                                 trusted            project_host bindings async
 agent_providers                              trusted            project_host bindings sync
@@ -37,6 +41,7 @@ agent_send_queued_now                        trusted            project_host bin
 agent_set_command                            trusted            project_host bindings sync
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync
+agent_set_mcp_overrides                      always             project_host bindings sync
 agent_stop_background                        always             project_host bindings async
 agent_subscribe                              always             project_host bindings sync
 agent_unarchive                              always             project_host bindings sync

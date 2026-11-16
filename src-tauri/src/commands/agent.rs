@@ -5,7 +5,8 @@ use ide_agent::registry::AgentRegistry;
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCommand, AgentEntry,
     AgentEvent, AgentModelCatalog, AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentTask, CustomAgentInput,
-    ExternalSession, McpServer, McpServerInput, NewAgentTask,
+    ExternalSession, McpExternalSource, McpImportSelection, McpProbeResult, McpScope, McpServer, McpServerInput,
+    NewAgentTask,
 };
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_host::ops::agent;
@@ -172,6 +173,63 @@ pub fn agent_mcp_remove(window: Window, state: State<'_, AppState>, id: String) 
 #[specta::specta]
 pub fn agent_mcp_import(window: Window, state: State<'_, AppState>) -> IdeResult<Vec<McpServer>> {
     agent::mcp_import(&state.host, window.label())
+}
+
+/// Parses and saves one or more MCP servers from a pasted JSON snippet (`{"mcpServers": {...}}` or
+/// single server object).
+#[tauri::command]
+#[specta::specta]
+pub fn agent_mcp_save_json(
+    window: Window,
+    state: State<'_, AppState>,
+    scope: McpScope,
+    raw_json: String,
+    fallback_name: Option<String>,
+    agents: Vec<String>,
+) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_save_json(&state.host, window.label(), scope, raw_json, fallback_name, agents)
+}
+
+/// Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_mcp_discover_sources(
+    window: Window,
+    state: State<'_, AppState>,
+) -> IdeResult<Vec<McpExternalSource>> {
+    agent::mcp_discover_sources(&state.host, window.label()).await
+}
+
+/// Imports selected servers from discovered external MCP configuration files into User or Workspace scope.
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_mcp_import_selected(
+    window: Window,
+    state: State<'_, AppState>,
+    scope: McpScope,
+    selections: Vec<McpImportSelection>,
+    overwrite: bool,
+) -> IdeResult<Vec<McpServer>> {
+    agent::mcp_import_selected(&state.host, window.label(), scope, selections, overwrite).await
+}
+
+/// Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`).
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_mcp_test(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<McpProbeResult> {
+    agent::mcp_test(&state.host, window.label(), id).await
+}
+
+/// Updates per-session MCP server enable/disable overrides on `task`.
+#[tauri::command]
+#[specta::specta]
+pub fn agent_set_mcp_overrides(
+    window: Window,
+    state: State<'_, AppState>,
+    task: String,
+    overrides: std::collections::BTreeMap<String, bool>,
+) -> IdeResult<AgentTask> {
+    agent::set_mcp_overrides(&state.host, window.label(), task, overrides)
 }
 
 /// Slash commands to complete for `provider` in `task`'s directory, or in the project

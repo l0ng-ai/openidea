@@ -80,6 +80,7 @@ import {
   workTime,
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
+import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
 import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
@@ -147,6 +148,7 @@ import {
   sendMessage,
   sendQueuedNow,
   setTaskConfig,
+  setTaskMcpOverrides,
   useAgentCommands,
   useAgents,
 } from "./store";
@@ -2868,6 +2870,7 @@ function SessionComposer({
   const project = useProject((s) => s.project);
   const composer = useAgents((s) => s.composers.get(task.id)) ?? emptyDraft();
   const [sending, setSending] = useState(false);
+  const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
   const agentCommands = useAgentCommands(task.provider, task.id, task.commands);
   const busy = isBusy(task.status);
   // ↑ recalls this conversation's messages, newest first.
@@ -2955,8 +2958,29 @@ function SessionComposer({
         config={task.config}
         onConfig={setOption}
         onSubmit={send}
+        onOpenMcp={() => setMcpOpenRequest((n) => n + 1)}
         disabled={task.status === "archived"}
-        toolbar={<ConfigPickers config={task.config} onChange={setOption} />}
+        toolbar={
+          <>
+            <ConfigPickers config={task.config} onChange={setOption} />
+            <McpPicker
+              provider={task.provider}
+              overrides={task.mcpOverrides}
+              disabled={task.status === "archived"}
+              busy={busy}
+              openRequest={mcpOpenRequest}
+              onChange={(next) =>
+                void setTaskMcpOverrides(task.id, next).catch((e: unknown) =>
+                  notifications().notify({
+                    level: "error",
+                    title: "Couldn't change the setting",
+                    body: String(e),
+                  }),
+                )
+              }
+            />
+          </>
+        }
         actions={
           <>
             {busy && <IconButton icon="stop" title="Stop" onClick={() => void cancelTask(task.id)} />}
