@@ -2139,5 +2139,21 @@
   "Move {name} to another class": "Move {name} to another class",
   "(default package)": "(default package)",
   "Field": "Field",
-  "Move": "Move"
+  "Move": "Move",
+  "Extract Interface…": "Extract Interface…",
+  "Extract Interface": "Extract Interface",
+  "Extract interface from:": "Extract interface from:",
+  "Interface name:": "Interface name:",
+  "Package for new interface:": "Package for new interface:",
+  "Members to Form Interface": "Members to Form Interface",
+  "No interface name specified": "No interface name specified",
+  "Interface name is not a valid identifier": "Interface name is not a valid identifier",
+  "Interface name should differ from the class name": "Interface name should differ from the class name",
+  "Select the members to form the interface": "Select the members to form the interface",
+  "The class has no members to form an interface": "The class has no members to form an interface",
+  "Caret should be inside a class": "Caret should be inside a class",
+  "Extract Interface from '{name}'": "Extract Interface from '{name}'",
+  "The interface could not be extracted": "The interface could not be extracted",
+  "Extract Interface is not supported for {name}": "Extract Interface is not supported for {name}",
+  "Package for new interface": "Package for new interface"
 }

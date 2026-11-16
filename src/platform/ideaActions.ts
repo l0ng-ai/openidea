@@ -61,6 +61,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   IntroduceConstant: "refactor.extractConstant",
   IntroduceField: "refactor.extractField",
   IntroduceParameter: "refactor.extractParameter",
+  ExtractInterface: "refactor.extractInterface",
   Inline: "refactor.inline",
   Move: "refactor.move",
   SafeDelete: "refactor.safeDelete",

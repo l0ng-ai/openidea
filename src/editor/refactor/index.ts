@@ -4,3 +4,4 @@ export { startHierarchyRefactoring } from "./hierarchy";
 export { ChangeSignatureDialog } from "./ChangeSignatureDialog";
 export { JAVA_REFACTORING_COMMAND, runJavaRefactoringCommand } from "./javaMove";
 export { HierarchyDialog } from "./HierarchyDialog";
+export { ExtractInterfaceDialog } from "./ExtractInterfaceDialog";

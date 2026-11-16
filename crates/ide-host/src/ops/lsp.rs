@@ -550,6 +550,24 @@ pub async fn lsp_implementations(
     result
 }
 
+/// Refines the implementations `targets` of the method at `pos` to their declarations (Java
+/// dependencies' class files point at the start of the class). Cancel with
+/// `cancel_request(request)`.
+pub async fn lsp_implementation_locations(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    targets: Vec<Location>,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let (_, cancel) = begin_position_request(host, window, request, doc, pos).await?;
+    let result = lsp.implementation_locations(doc, pos, targets, cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// Go to Implementation of the symbol at `pos`. Implementations found before a slower
 /// search for the rest (Java: the project's, before the dependencies') arrive on
 /// `on_partial`; the result has them all. Cancel with `cancel_request(request)`.
@@ -1223,7 +1241,7 @@ pub async fn lsp_change_signature(
 }
 
 fn json_argument(args: &str) -> IdeResult<serde_json::Value> {
-    serde_json::from_str(args).map_err(|e| IdeError::invalid(format!("invalid move arguments: {e}")))
+    serde_json::from_str(args).map_err(|e| IdeError::invalid(format!("invalid refactoring arguments: {e}")))
 }
 
 fn json_strings(values: Vec<serde_json::Value>) -> Vec<String> {
@@ -1285,6 +1303,50 @@ pub async fn lsp_java_move(
             project.documents.prepare_workspace_edit(edit)?;
         }
         Ok(moved)
+    })
+    .await
+}
+
+/// The Java class to extract an interface from: its members and the packages for the interface.
+pub async fn lsp_extract_interface_info(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<ExtractInterfaceInfo> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.extract_interface_info(doc, pos, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks extracting a Java interface and computes its edit without applying it; `destination`
+/// is one of the info's packages.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_extract_interface(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    members: Vec<String>,
+    name: String,
+    destination: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    let destination = json_argument(&destination)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.extract_interface(doc, pos, members, name, destination, confirmation, cancel).await;
+    host.end_request(request);
+    let mut extracted = result?;
+    blocking(move || {
+        if let Some(edit) = &mut extracted.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(extracted)
     })
     .await
 }
@@ -1943,6 +2005,17 @@ pub(crate) fn register(d: &mut Dispatcher) {
         let on_partial = c.sender("onPartial")?;
         lsp_goto_implementation(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, on_partial).await
     });
+    d.add("lsp_implementation_locations", |c| async move {
+        lsp_implementation_locations(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("targets")?,
+        )
+        .await
+    });
     d.add(
         "lsp_resolve_class_file",
         |c| async move { lsp_resolve_class_file(&c.host, &c.window, c.arg("path")?).await },
@@ -2024,6 +2097,23 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("pos")?,
             c.arg("signature")?,
             c.arg("delegate")?,
+            c.arg("confirmation")?,
+        )
+        .await
+    });
+    d.add("lsp_extract_interface_info", |c| async move {
+        lsp_extract_interface_info(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
+    });
+    d.add("lsp_extract_interface", |c| async move {
+        lsp_extract_interface(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("members")?,
+            c.arg("name")?,
+            c.arg("destination")?,
             c.arg("confirmation")?,
         )
         .await

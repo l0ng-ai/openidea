@@ -48,6 +48,10 @@ export interface MarkerCandidate {
 export interface LineMarker {
   kind: MarkerKind;
   line: number;
+  /** UTF-16 column of the declaration's identifier, the position implementation requests use. */
+  col: number;
+  /** A method (not a type): its implementations are methods, not classes. */
+  method: boolean;
   /** Name of the declaration the marker is on. */
   name: string;
   targets: Location[];
@@ -249,7 +253,16 @@ export function inheritorsMarker(
       ? tx`Choose Implementation of ${c.name} (${n} found)`
       : tx`Choose Overriding Method of ${c.name} (${n} found)`;
   }
-  return { kind, line: c.line, name: c.name, targets: [...targets], tooltip, chooserTitle };
+  return {
+    kind,
+    line: c.line,
+    col: c.col,
+    method: c.method,
+    name: c.name,
+    targets: [...targets],
+    tooltip,
+    chooserTitle,
+  };
 }
 
 /** ↑ marker of a Go type or method from the interfaces (methods) it satisfies; null without any. */
@@ -264,6 +277,8 @@ export function implementsMarker(
   return {
     kind: "implementing",
     line: c.line,
+    col: c.col,
+    method: c.method,
     name: c.name,
     targets: [...targets],
     tooltip: c.method ? tx`Implements method in ${names}` : tx`Implements ${names}`,
@@ -293,6 +308,8 @@ export function supersMarker(
   return {
     kind: implementing ? "implementing" : "overriding",
     line: c.line,
+    col: c.col,
+    method: true,
     name: c.name,
     targets: supers.map((s) => s.location),
     tooltip: implementing ? tx`Implements method in ${owners}` : tx`Overrides method in ${owners}`,

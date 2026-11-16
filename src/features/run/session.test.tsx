@@ -22,6 +22,7 @@ import {
   resetRuns,
   runtime,
   startRun,
+  stopRunningInstances,
   useRun,
   runSelectedTests,
   rerunFailed,
@@ -64,7 +65,7 @@ const running = (id: string, c: RunConfig, runId: number | null = null): RunSess
 
 beforeEach(() => {
   resetRuns();
-  useDebugRunSessions.setState({ sessions: [] });
+  useDebugRunSessions.setState({ sessions: [], serviceSessions: [] });
   confirm.mockClear();
   confirm.mockResolvedValue(true);
   provideToolWindowService({ show: vi.fn(), isVisible: () => true } as unknown as ToolWindowService);
@@ -94,6 +95,37 @@ describe("single-instance runs", () => {
     await startRun(app, "run1");
     expect(confirm).not.toHaveBeenCalled();
     expect(useRun.getState().sessions.map((s) => s.id)).toEqual(["run1"]);
+  });
+
+  const debugging = (c: RunConfig) => {
+    const stop = vi.fn(async () => {});
+    useDebugRunSessions.setState({
+      serviceSessions: [
+        { id: 1, config: c, startedAt: 0, status: "running", processId: null, rerun: null, stop, show: () => {} },
+      ],
+    });
+    return stop;
+  };
+
+  it("Debug on a configuration being debugged or run asks, then stops those instances", async () => {
+    const app = config("app");
+    const stop = debugging(app);
+    useRun.setState({ sessions: [running("run1", app)] });
+    expect(await stopRunningInstances(app)).toBe(true);
+    expect(confirm).toHaveBeenCalledWith("app", 2);
+    expect(stop).toHaveBeenCalled();
+    confirm.mockResolvedValue(false);
+    expect(await stopRunningInstances(app)).toBe(false);
+    expect(await stopRunningInstances(config("other"))).toBe(true);
+    expect(await stopRunningInstances(config("app", { allowParallel: true }))).toBe(true);
+  });
+
+  it("Run on a configuration being debugged asks and stops the debug session", async () => {
+    const app = config("app");
+    const stop = debugging(app);
+    await startRun(app);
+    expect(confirm).toHaveBeenCalledWith("app", 1);
+    expect(stop).toHaveBeenCalled();
   });
 
   it("starts another instance when parallel runs are allowed", async () => {

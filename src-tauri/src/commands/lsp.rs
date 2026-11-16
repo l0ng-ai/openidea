@@ -97,6 +97,22 @@ pub async fn lsp_goto_implementation(
     ide_host::ops::lsp::lsp_goto_implementation(&state.host, window.label(), request, doc, pos, on_partial).await
 }
 
+/// Refines the implementations `targets` of the method at `pos` to their declarations (Java
+/// dependencies' class files point at the start of the class). Cancel with
+/// `cancel_request(request)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_implementation_locations(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    targets: Vec<Location>,
+) -> IdeResult<Vec<Location>> {
+    ide_host::ops::lsp::lsp_implementation_locations(&state.host, window.label(), request, doc, pos, targets).await
+}
+
 /// Implementations of the symbols at `positions`, one list per position (the
 /// editor's "is implemented / overridden" gutter markers). Cancel with
 /// `cancel_request(request)`.
@@ -393,6 +409,46 @@ pub async fn lsp_java_move(
     confirmation: Option<String>,
 ) -> IdeResult<ServerRefactored> {
     ide_host::ops::lsp::lsp_java_move(&state.host, window.label(), request, doc, kind, args, confirmation).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_extract_interface_info(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<ExtractInterfaceInfo> {
+    ide_host::ops::lsp::lsp_extract_interface_info(&state.host, window.label(), request, doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_extract_interface(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    members: Vec<String>,
+    name: String,
+    destination: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    ide_host::ops::lsp::lsp_extract_interface(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        members,
+        name,
+        destination,
+        confirmation,
+    )
+    .await
 }
 
 #[tauri::command]
