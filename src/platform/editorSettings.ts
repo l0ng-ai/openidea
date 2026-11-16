@@ -83,6 +83,8 @@ export const EDITOR_EXTRA_DEFAULTS = {
   /** Colours the rainbow bracket depth cycles through (2–5). */
   rainbowBracketColors: 3,
   ligatures: false,
+  /** Editor › Font / Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+  onlyMonospacedFonts: true,
   fallbackFont: "",
   /** Typography Settings › Main / Bold font weight (CSS weights, IDEA's Regular / Bold). */
   fontWeight: 400,

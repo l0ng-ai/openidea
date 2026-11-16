@@ -5268,6 +5268,8 @@ export type EditorSettings_Deserialize = {
 	/**  Colours the rainbow bracket depth cycles through (2–5). */
 	rainbowBracketColors?: number,
 	ligatures?: boolean,
+	/**  Editor › Font and Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+	onlyMonospacedFonts?: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont?: string,
 	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
@@ -5326,6 +5328,8 @@ export type EditorSettings_Serialize = {
 	/**  Colours the rainbow bracket depth cycles through (2–5). */
 	rainbowBracketColors: number,
 	ligatures: boolean,
+	/**  Editor › Font and Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+	onlyMonospacedFonts: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont: string,
 	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */

@@ -259,7 +259,8 @@ function TerminalFont() {
   const [columnWidth, setColumnWidth] = useSetting<number>("terminal.columnWidth");
   const matched = useLabelMatch("Use editor font");
   const monoMatched = useLabelMatch("Show only monospaced fonts");
-  const [monoOnly, setMonoOnly] = useState(true);
+  const [monoSetting, setMonoOnly] = useSetting<boolean>("editor.onlyMonospacedFonts");
+  const monoOnly = monoSetting !== false;
   return (
     <>
       <div className={clsx(styles.inlineRow, matched && styles.matched)}>
