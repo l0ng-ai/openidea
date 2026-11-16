@@ -20,6 +20,8 @@ pub struct AppInfo {
     pub data_dir: ide_core::IpcPath,
     /// Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges.
     pub wayland: bool,
+    /// Caption buttons of the frameless title bar: the desktop's layout on Linux.
+    pub window_buttons: ide_core::platform::WindowButtonLayout,
 }
 
 pub use ide_host::ops::project::ProjectInfo;
@@ -38,6 +40,12 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         wayland: crate::linux_window_state::is_wayland(),
         #[cfg(not(target_os = "linux"))]
         wayland: false,
+        #[cfg(target_os = "linux")]
+        window_buttons: crate::linux_window_state::decoration_layout()
+            .and_then(|layout| ide_core::platform::WindowButtonLayout::from_gtk_decoration_layout(&layout))
+            .unwrap_or_default(),
+        #[cfg(not(target_os = "linux"))]
+        window_buttons: Default::default(),
     }
 }
 

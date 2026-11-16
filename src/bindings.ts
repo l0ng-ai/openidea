@@ -2665,6 +2665,8 @@ export type AppInfo = {
 	dataDir: IpcPath,
 	/**  Linux on a Wayland display: GTK draws the frameless windows' shadow and resize edges. */
 	wayland: boolean,
+	/**  Caption buttons of the frameless title bar: the desktop's layout on Linux. */
+	windowButtons: WindowButtonLayout,
 };
 
 export type AppMetrics = {
@@ -11366,6 +11368,15 @@ export type WebsocketReady = {
 };
 
 export type WhileRunning = "queue" | "steer";
+
+/**  A caption button of a frameless window's title bar. */
+export type WindowButton = "minimize" | "maximize" | "close";
+
+/**  Which caption buttons the title bar shows on each side, in order from left to right. */
+export type WindowButtonLayout = {
+	left: WindowButton[],
+	right: WindowButton[],
+};
 
 /**  A request that the invoking window acknowledges through plugin_answer_command. */
 export type WindowRequest = WindowRequest_Serialize | WindowRequest_Deserialize;
