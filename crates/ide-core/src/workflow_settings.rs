@@ -43,6 +43,9 @@ impl Default for VcsSettings {
 pub struct GitSettings {
     /// Show blame after the current editor line.
     pub inline_blame: bool,
+    /// A click (or Enter / Space) on the inline blame label opens its commit; off, the
+    /// label is plain text and a click on it places the caret as past the line end.
+    pub inline_blame_clickable: bool,
     pub show_branch_in_project_view: bool,
     /// Path to the git executable; empty = auto-detect.
     pub executable: String,
@@ -54,6 +57,8 @@ pub struct GitSettings {
     pub warn_detached_head: bool,
     /// Background check for incoming commits: `auto` | `always` | `never`.
     pub incoming_check: String,
+    /// Minutes between background checks for incoming commits.
+    pub incoming_check_interval: u32,
     /// Branch name globs, `;`/`,`-separated; force push to them is prohibited.
     pub protected_branches: String,
     /// Initial state of Commit Options › Sign-off Commit.
@@ -78,6 +83,7 @@ impl Default for GitSettings {
     fn default() -> Self {
         Self {
             inline_blame: false,
+            inline_blame_clickable: true,
             show_branch_in_project_view: false,
             executable: String::new(),
             update_method: "merge".into(),
@@ -85,6 +91,7 @@ impl Default for GitSettings {
             warn_crlf: true,
             warn_detached_head: true,
             incoming_check: "auto".into(),
+            incoming_check_interval: 15,
             protected_branches: "master; main".into(),
             sign_off: false,
             warn_large_files: true,

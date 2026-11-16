@@ -92,16 +92,47 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const probe = useProbe(provider?.installed ? provider.id : null, provider?.command, shown);
   const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
+  const requestTarget = useAgents((s) => s.modelRequestTargets.get(provider?.id ?? ""));
+  const { defaults, fitWindowWidth } = useAgentSettings();
+  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const model = config.find((o) => o.category === "model");
+  const selectedModel = model?.current ?? null;
+  const selectedModelRef = useRef(selectedModel);
+  useEffect(() => {
+    selectedModelRef.current = selectedModel;
+  }, [selectedModel]);
+  const attemptedModels = useRef(new Set<string>());
   const launch = provider && JSON.stringify([provider.program, provider.args, provider.env, provider.command]);
   useEffect(() => {
     if (!provider?.installed) return;
-    const refresh = () => void refreshModels(provider.id, false);
+    const refresh = () => void refreshModels(provider.id, false, selectedModelRef.current);
     refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [provider?.id, provider?.installed, launch, project?.root]);
-  const { defaults, fitWindowWidth } = useAgentSettings();
-  const config = draftConfig(provider, draft, (provider && defaults[provider.id]) || {});
+  const unknownModelSettings =
+    !!selectedModel &&
+    !!model?.values.some((v) => v.value === selectedModel) &&
+    !Object.hasOwn((catalog ?? provider)?.thoughtLevels ?? {}, selectedModel);
+  useEffect(() => {
+    if (!provider?.installed || !selectedModel || !unknownModelSettings) return;
+    const key = JSON.stringify([provider.id, launch, project?.root, selectedModel]);
+    if (requestTarget === selectedModel) attemptedModels.current.add(key);
+    if (requestingModels || catalog?.refreshing || attemptedModels.current.has(key)) return;
+    attemptedModels.current.add(key);
+    void refreshModels(provider.id, false, selectedModel);
+  }, [
+    provider?.id,
+    provider?.installed,
+    launch,
+    project?.root,
+    selectedModel,
+    unknownModelSettings,
+    requestingModels,
+    catalog,
+    requestTarget,
+  ]);
+  const currentModelRequest = requestTarget === undefined || requestTarget === selectedModel;
   const homeRoot = useRef<HTMLDivElement>(null);
   const { zoomStyle } = useAgentFontZoomSurface(homeRoot, input?.key ?? HOME_KEY, docked);
   const unavailableModel = config.some(
@@ -194,8 +225,12 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                   provider?.installed
                     ? {
                         refreshing: requestingModels || (catalog?.refreshing ?? false),
-                        retryAtMs: catalog?.retryAtMs ?? null,
-                        error: catalog?.error ?? null,
+                        loadingSettings: unknownModelSettings && (requestingModels || (catalog?.refreshing ?? false)),
+                        retryAtMs:
+                          currentModelRequest || (!unknownModelSettings && !catalog?.error)
+                            ? (catalog?.retryAtMs ?? null)
+                            : null,
+                        error: !requestingModels && currentModelRequest ? (catalog?.error ?? null) : null,
                         onRefresh: () => void executeAction("agents.refreshModels"),
                       }
                     : undefined

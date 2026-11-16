@@ -6,9 +6,10 @@ export type TerminalLink =
 
 const URL_RE = /\b(?:https?|file):\/\/[^\s<>"'`]+/g;
 
-// `src/main.rs:10:5`, `./a/b.ts:3`, `/abs/x.py:12`, `foo.go(12,3)`, `Foo.kt:22`.
+// `src/main.rs:10:5`, `./a/b.ts:3`, `/abs/x.py:12`, `foo.go(12,3)`, `Foo.kt:22`,
+// and Windows paths: `src\main.rs:10:5`, `.\main.go:5:2`, `C:\p\Program.cs(10,5)`.
 const FILE_RE =
-  /((?:~|\.{1,2})?\/?(?:[\w.@+-]+\/)*[\w@+-][\w.@+-]*\.[A-Za-z][\w]{0,9})(?::(\d+)(?::(\d+))?|\((\d+)(?:[,:](\d+))?\))/g;
+  /((?:[A-Za-z]:[\\/]|~|\.{1,2})?[\\/]?(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.[A-Za-z][\w]{0,9})(?::(\d+)(?::(\d+))?|\((\d+)(?:[,:](\d+))?\))/g;
 
 /** Strips trailing punctuation that is almost never part of a URL (keeps balanced parens). */
 export function trimUrl(url: string): string {

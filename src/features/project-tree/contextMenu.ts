@@ -28,6 +28,7 @@ import {
   openRenameDialog,
   openSelectionInRightSplit,
   paste,
+  reformatNodes,
   reloadFromDisk,
   revealInFinder,
   vcsArg,
@@ -51,6 +52,21 @@ export const LOCAL_KEYS: Record<string, string> = {
 
 export const keyLabel = (id: string) =>
   shortcutLabel(id) ?? (LOCAL_KEYS[id] ? formatBinding(hostBinding(LOCAL_KEYS[id])) : undefined);
+
+/**
+ * The comparison for a selection, shared by the context menu and Compare With… (⌘D): two folders,
+ * two files or one node. Mixed file/folder selections cannot apply.
+ */
+export function compareTarget(nodes: ProjectNode[]): { action: string; arg: unknown; label: string } | null {
+  if (nodes.length === 2 && nodes.every((n) => n.dir && !n.placeholder))
+    return { action: "diff.compareDirectories", arg: nodes.map((n) => n.path), label: "Compare Directories" };
+  if (nodes.length === 2 && nodes.every((n) => !n.dir))
+    return { action: "diff.compareFiles", arg: nodes.map((n) => n.path), label: "Compare Files" };
+  const single = nodes.length === 1 ? nodes[0]! : null;
+  if (!single || single.placeholder) return null;
+  const arg = single.dir ? { path: single.path, directory: true } : single.path;
+  return { action: "diff.compareWith", arg, label: "Compare With…" };
+}
 
 /**
  * New › items for `parent`. `outsideTree` (⌘N in the editor): File asks for the
@@ -286,14 +302,14 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
   );
 
-  // Reformat Code / Optimize Imports / Delete…
+  // Reformat Code (one file at once, directories or several files through its dialog) / Optimize Imports / Delete…
   push(
-    singleFile &&
-      getAction("code.reformatFile") && {
+    nodes.some((n) => !n.group) &&
+      getAction(singleFile ? "code.reformatFile" : "code.reformatFiles") && {
         id: "reformat",
         label: "Reformat Code",
         shortcut: keyLabel("project.reformatCode"),
-        run: () => void delegate("code.reformatFile", { path: singleFile.path }),
+        run: () => void reformatNodes(nodes),
       },
     singleFile &&
       getAction("code.optimizeImportsFile") && {
@@ -400,29 +416,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     );
   }
 
-  // Compare selections of the same kind; mixed file/folder selections cannot apply.
-  const compareArg = single?.dir ? { path: single.path, directory: true } : single?.path;
-  if (nodes.length === 2 && nodes.every((n) => n.dir && !n.placeholder))
+  const compare = compareTarget(nodes);
+  if (compare)
     push(
-      delegated(
-        "diff.compareDirectories",
-        nodes.map((n) => n.path),
-        "Compare Directories",
-        { icon: "diff" },
-      ),
-    );
-  if (files.length === 2 && nodes.length === 2)
-    push(
-      delegated(
-        "diff.compareFiles",
-        files.map((f) => f.path),
-        "Compare Files",
-        { icon: "diff" },
-      ),
-    );
-  else if (single && !single.placeholder)
-    push(
-      delegated("diff.compareWith", compareArg, "Compare With…", {
+      delegated(compare.action, compare.arg, compare.label, {
         icon: "diff",
         shortcut: keyLabel("project.compareWith"),
       }),

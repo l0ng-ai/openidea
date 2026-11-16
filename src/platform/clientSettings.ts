@@ -90,6 +90,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "externalDiff",
   "vcs.showDirtyDirectories",
   "vcs.git.inlineBlame",
+  "vcs.git.inlineBlameClickable",
   "vcs.git.showBranchInProjectView",
   "vcs.git.showPushDialog",
   "vcs.git.pushDialogOnlyProtected",

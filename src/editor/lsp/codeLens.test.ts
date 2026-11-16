@@ -119,6 +119,26 @@ describe("author hint", () => {
   });
 });
 
+describe("Code Vision switch", () => {
+  it("hides usages and author while off and brings back the kinds still chosen", async () => {
+    ipc.vcsBlame.mockResolvedValue(ok([{ commit: "c1", author: "Ann", timeMs: 1, summary: "init" }]));
+    const inlay = (codeVision: boolean) =>
+      useProject.setState({
+        settings: { editor: { inlay: { codeVision, codeVisionUsages: true, codeVisionAuthor: true } } } as never,
+      });
+    inlay(true);
+    const view = editor();
+    await settle();
+    expect(view.state.facet(codeLenses).map((l) => l.kind)).toEqual(["author", "usages"]);
+    inlay(false);
+    await settle();
+    expect(titles(view)).toEqual([]);
+    inlay(true);
+    await settle();
+    expect(view.state.facet(codeLenses).map((l) => l.kind)).toEqual(["author", "usages"]);
+  });
+});
+
 describe("background usage counts", () => {
   it("uses the server's existing scope and leaves full searches to the explicit action", async () => {
     const view = editor();
