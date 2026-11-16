@@ -15,7 +15,7 @@ import { showHint } from "@/editor/lsp/hint";
 import { openPopup } from "@/editor/lsp/popupStore";
 import { summarizeWorkspaceEdit } from "@/editor/lsp/workspaceEdit";
 import { tx } from "@/platform/i18n";
-import { commands, isCancelled, nextRequestId, unavailableText } from "@/platform/ipc";
+import { IpcError, commands, isCancelled, nextRequestId, unavailableText } from "@/platform/ipc";
 import { ask } from "@/workbench/messages";
 import { cannotPerform } from "./catalog";
 
@@ -129,9 +129,11 @@ export async function startChangeSignature(view: EditorView): Promise<void> {
   }
 }
 
-export async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
+export async function applyEdit(view: EditorView, edit: WorkspaceEdit, signal?: AbortSignal) {
   try {
     await whenAllSynced();
+    // The dialog closed while the editors were syncing: nothing is applied.
+    if (signal?.aborted) return;
     await lspRequest(() => commands.applyWorkspaceEdit(edit));
   } catch (e) {
     reportLspError(view, e, true);
@@ -140,6 +142,8 @@ export async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
 
 /** Sends `send(id)` with a fresh request id that `signal` cancels. */
 export async function cancellable<T>(signal: AbortSignal | undefined, send: (id: number) => Promise<T>): Promise<T> {
+  // Closed before the request went out: it never does (a cancel can't reach an unsent request).
+  if (signal?.aborted) throw new IpcError({ kind: "cancelled", message: "Cancelled" });
   const id = nextRequestId();
   const abort = () => void commands.cancelRequest(id);
   signal?.addEventListener("abort", abort);
@@ -210,7 +214,7 @@ export async function changeSignature(
       onConfirm: () => void applyEdit(view, edit),
     });
   } else {
-    await applyEdit(view, edit);
+    await applyEdit(view, edit, signal);
   }
   return { status: "done" };
 }

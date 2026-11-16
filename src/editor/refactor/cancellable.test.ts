@@ -7,6 +7,7 @@ vi.mock("@/platform/ipc", async (original) => {
 });
 
 const { cancellable } = await import("./signature");
+const { isCancelled } = await import("@/platform/ipc");
 
 describe("cancellable refactoring requests", () => {
   it("cancels the request in flight when the dialog closes", async () => {
@@ -29,5 +30,14 @@ describe("cancellable refactoring requests", () => {
     await cancellable(run.signal, async () => "done");
     run.abort();
     expect(cancelRequest).not.toHaveBeenCalled();
+  });
+
+  it("never sends a request the dialog closed before", async () => {
+    const run = new AbortController();
+    run.abort();
+    const send = vi.fn(async () => "sent");
+    const err = await cancellable(run.signal, send).catch((e: unknown) => e);
+    expect(isCancelled(err)).toBe(true);
+    expect(send).not.toHaveBeenCalled();
   });
 });
