@@ -241,8 +241,37 @@ describe("project view context menu", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
     expect(l).toContain("Mark Directory as");
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
-    for (const fileOnly of ["Find Usages", "Reformat Code", "Optimize Imports", "Run 'a'", "Open in Right Split"])
+    for (const fileOnly of ["Find Usages", "Optimize Imports", "Run 'a'", "Open in Right Split"])
       expect(l).not.toContain(fileOnly);
+  });
+
+  it("offers Reformat Code for a directory and a multiple selection, through the Reformat Code dialog", () => {
+    const calls: Array<[string, unknown]> = [];
+    disposers.push(
+      registerActions(
+        ["code.reformatFile", "code.reformatFiles"].map((id) => ({
+          id,
+          title: id,
+          run: ({ arg }) => void calls.push([id, arg]),
+        })),
+      ),
+    );
+    const reformat = (nodes: ProjectNode[]) => {
+      const item = resolveMenuItems(contextMenuItems(nodes)).find((r) => r.label === "Reformat Code");
+      item?.run?.();
+      return calls.pop();
+    };
+    expect(reformat([node("/p/a.py")])).toEqual(["code.reformatFile", { path: "/p/a.py" }]);
+    expect(reformat([node("/p/bin", true)])).toEqual(["code.reformatFiles", { files: [], directories: ["/p/bin"] }]);
+    expect(reformat([node("/p/a.sh"), node("/p/b.sh")])).toEqual([
+      "code.reformatFiles",
+      { files: ["/p/a.sh", "/p/b.sh"], directories: [] },
+    ]);
+    expect(reformat([node("/p/a.sh"), node("/p/lib", true)])).toEqual([
+      "code.reformatFiles",
+      { files: ["/p/a.sh"], directories: ["/p/lib"] },
+    ]);
+    expect(reformat([node(ROOT, true, true)])).toEqual(["code.reformatFiles", { files: [], directories: [ROOT] }]);
   });
 
   it("offers Import Module from Existing Sources on the project root only", () => {

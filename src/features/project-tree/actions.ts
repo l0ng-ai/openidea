@@ -26,6 +26,7 @@ import {
   openSelection,
   openSelectionInRightSplit,
   paste,
+  reformatNodes,
   reloadFromDisk,
   revealInFinder,
   selectedFiles,
@@ -456,14 +457,11 @@ export function registerProjectActions(): () => void {
     },
     {
       id: "project.reformatCode",
-      title: "Reformat File",
+      title: "Reformat Code",
       category: "Project View",
       hidden: true,
       when: FOCUS,
-      run: ({ arg }) => {
-        const node = nodesFrom(arg)[0];
-        if (node && !node.dir) delegate("code.reformatFile", { path: node.path });
-      },
+      run: ({ arg }) => void reformatNodes(nodesFrom(arg)),
     },
     {
       id: "project.optimizeImports",
