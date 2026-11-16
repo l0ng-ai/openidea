@@ -1256,6 +1256,42 @@ impl Tools {
         Err(IdeError::new(ErrorKind::Io, format!("pip install {package} failed ({status})")))
     }
 
+    /// A command running pip, before its arguments. The interpreter's own pip when it has one;
+    /// a virtualenv made by uv has none, so then pip through `uv tool run`, or another Python
+    /// on `PATH` that has it.
+    fn pip_command(&self, python: PathBuf, emit: Emit) -> Command {
+        let has_pip = |python: &Path| {
+            let mut c = self.python_command(python);
+            c.args(["-m", "pip", "--version"]);
+            run_quiet(c, Duration::from_secs(20)).is_some_and(|(ok, _)| ok)
+        };
+        let module = |python: &Path| {
+            let mut c = self.python_command(python);
+            c.args(["-m", "pip"]);
+            c
+        };
+        if has_pip(&python) {
+            return module(&python);
+        }
+        let note = format!("{} has no pip", python.display());
+        if let Some(uv) = self.which("uv") {
+            emit(InstallEvent::Line { text: format!("{note}; running pip with uv") });
+            // pip runs in uv's own Python: the same private working directory applies.
+            let mut c = self.python_command(uv);
+            c.args(["tool", "run", "pip"]);
+            return c;
+        }
+        let other = ["python3", "python"]
+            .into_iter()
+            .filter_map(|name| ide_core::tool_path::find_command(name, &self.system_path, &self.root))
+            .find(|p| *p != python && has_pip(p));
+        if let Some(other) = other {
+            emit(InstallEvent::Line { text: format!("{note}; using {}", other.display()) });
+            return module(&other);
+        }
+        module(&python)
+    }
+
     /// The universal (`py3-none-any`) wheel, so the copy works with every interpreter
     /// version a project selects, not just the one that installed it.
     fn install_pip_target(
@@ -1269,8 +1305,8 @@ impl Tools {
         let _ = std::fs::remove_dir_all(&dir);
         let lib = python_lib_dir(&self.root, spec.name);
         std::fs::create_dir_all(&lib)?;
-        let mut c = self.python_command(self.python().expect("checked"));
-        c.args(["-m", "pip", "install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
+        let mut c = self.pip_command(self.python().expect("checked"), emit);
+        c.args(["install", "--disable-pip-version-check", "--no-deps", "--upgrade", "--target"])
             .arg(&lib)
             .args(["--only-binary=:all:", "--platform", "any", "--implementation", "py"])
             .arg(package);
