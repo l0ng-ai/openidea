@@ -159,8 +159,10 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
   const backgrounded = typeof document !== "undefined" && !document.hasFocus();
   if (balloon && prefs.sound && !n.silent && !(systemOn && backgrounded)) playSound();
   if (balloon && isTauri()) {
-    const plain = typeof n.body === "string" ? n.body : "";
-    void call(commands.showSystemNotification(n.title, plain)).catch(() => {});
+    // In the UI language, as the balloon shows it; a plugin's own text stays as written.
+    const shown = (text: string) => (n.verbatim ? text : txTemplate(text));
+    const plain = typeof n.body === "string" ? shown(n.body) : "";
+    void call(commands.showSystemNotification(shown(n.title), plain)).catch(() => {});
   }
   return id;
 }
