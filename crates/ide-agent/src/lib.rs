@@ -363,6 +363,7 @@ struct TaskState {
     session_id: Option<String>,
     conversation: Conversation,
     wanted: Vec<AgentConfigChoice>,
+    model_choice: u64,
     before: Arc<BTreeMap<String, worktree::Stamp>>,
     saved: Option<String>,
     /// See `TaskFile::touched`.
@@ -621,7 +622,7 @@ impl AgentManager {
                     .into_iter()
                     .find(|spec| spec.id == provider)
         {
-            let (_, flight) = self.shared.paths.catalogs.request(&self.shared, spec, false);
+            let (_, flight) = self.shared.paths.catalogs.request(&self.shared, spec, false, None);
             if let Some(mut ready) = flight {
                 while !*ready.borrow_and_update() {
                     if ready.changed().await.is_err() {
@@ -954,19 +955,36 @@ impl AgentManager {
     /// Changes a session setting (model, mode…): right away when the agent runs, else when it next starts.
     pub async fn set_config(&self, id: &str, option: &str, value: String) -> IdeResult<()> {
         let task = self.task(id)?;
-        let target = {
-            let s = task.state.lock();
-            let o =
-                s.task.config.iter().find(|o| o.id == option).ok_or_else(|| IdeError::not_found("no such setting"))?;
-            if !o.values.iter().any(|v| v.value == value) {
-                return Err(IdeError::invalid(format!("{} has no value {value}", o.name)));
+        let (target, model_choice, previous_levels) = {
+            let mut s = task.state.lock();
+            let target = s
+                .task
+                .config
+                .iter()
+                .find(|o| o.id == option)
+                .ok_or_else(|| IdeError::not_found("no such setting"))?
+                .clone();
+            if !target.values.iter().any(|v| v.value == value) {
+                return Err(IdeError::invalid(format!("{} has no value {value}", target.name)));
             }
-            o.clone()
+            if target.category.as_deref() == Some("model") {
+                s.model_choice += 1;
+            }
+            let previous_levels =
+                if target.category.as_deref() == Some("model") && target.current.as_deref() != Some(value.as_str()) {
+                    Some(s.task.config.extract_if(.., |o| config::is_per_model_option(o)).collect::<Vec<_>>())
+                } else {
+                    None
+                };
+            s.wanted.retain(|c| c.id != option);
+            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.clone() });
+            s.task.config.iter_mut().find(|o| o.id == option).expect("selected setting").current = Some(value.clone());
+            s.task.model = model_of(&s.task.config).or(s.task.model.take());
+            (target, s.model_choice, previous_levels)
         };
         let previous = target.current.clone();
         // Cursor's `session/set_config_option` (Fast, effort) can take seconds. Show the
         // choice first so the switch and slider move immediately.
-        apply_config_choice(&task, option, &value);
         task.persist();
         task.emit_task();
 
@@ -976,36 +994,77 @@ impl AgentManager {
         let mut model_options = (target.category.as_deref() != Some("model")
             || previous.as_deref() == Some(value.as_str()))
             && task.state.lock().task.config.iter().any(config::is_per_model_option);
+        if live.is_none()
+            && target.category.as_deref() == Some("model")
+            && (previous.as_deref() != Some(value.as_str()) || !model_options)
+        {
+            let provider = task.state.lock().task.provider.clone();
+            let mut levels = self.shared.paths.catalogs.levels(&self.shared, &provider, &value);
+            let mut error = None;
+            if levels.is_none()
+                && let Some(spec) = self.shared.spec(&provider)
+            {
+                let (catalog, flight) = self.shared.paths.catalogs.request(&self.shared, spec, false, Some(&value));
+                error = catalog.error;
+                if let Some(mut ready) = flight {
+                    while !*ready.borrow_and_update() {
+                        if ready.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                levels = self.shared.paths.catalogs.levels(&self.shared, &provider, &value);
+            }
+            // Another selection may have superseded this discovery while it was waiting.
+            if task.state.lock().model_choice != model_choice {
+                return Ok(());
+            }
+            let Some(levels) = levels else {
+                restore_config_choice(&task, &target, &value, previous.as_deref(), model_choice, previous_levels);
+                task.persist();
+                task.emit_task();
+                return Err(IdeError::unavailable(
+                    error.unwrap_or_else(|| "The agent did not report settings for the selected model".into()),
+                ));
+            };
+            let mut s = task.state.lock();
+            if s.model_choice != model_choice {
+                return Ok(());
+            }
+            s.task.config.retain(|o| !config::is_per_model_option(o));
+            s.task.config.extend(levels);
+            model_options = true;
+        }
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
             let reply: Value = match live.peer.request(method, params, None).await {
                 Ok(reply) => reply,
                 Err(e) => {
-                    {
-                        let mut s = task.state.lock();
-                        s.wanted.retain(|c| c.id != option);
-                        if let Some(prev) = previous.clone() {
-                            s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: prev });
-                        }
-                        if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
-                            o.current = previous.clone();
-                        }
-                        s.task.model = model_of(&s.task.config).or(s.task.model.take());
-                    }
+                    restore_config_choice(&task, &target, &value, previous.as_deref(), model_choice, previous_levels);
                     task.persist();
                     task.emit_task();
                     return Err(IdeError::internal(task.describe(e)));
                 }
             };
+            if target.category.as_deref() == Some("model") && task.state.lock().model_choice != model_choice {
+                return Ok(());
+            }
             if let Some(options) = reply.get("configOptions") {
                 config::merge_update(&mut task.state.lock().task.config, options);
                 model_options = true;
+            } else if target.category.as_deref() == Some("model") {
+                // Old model controls were removed above, so these came from an update
+                // that preceded the response.
+                model_options = task.state.lock().task.config.iter().any(config::is_per_model_option);
             }
         }
         {
             let mut s = task.state.lock();
-            if !model_options {
+            if target.category.as_deref() == Some("model") && s.model_choice != model_choice {
+                return Ok(());
+            }
+            if !model_options && target.category.as_deref() == Some("model") {
                 s.task.config.retain(|o| !config::is_per_model_option(o));
             }
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
@@ -1583,6 +1642,7 @@ impl Task {
                 session_id: file.session_id,
                 conversation,
                 wanted: file.wanted,
+                model_choice: 0,
                 before: Arc::new(file.before),
                 saved: file.saved,
                 touched: file.touched.map(Arc::new),
@@ -3093,12 +3153,32 @@ fn retry_of(update: &Value, now: f64) -> Option<AgentRetry> {
     })
 }
 
-fn apply_config_choice(task: &Task, option: &str, value: &str) {
+fn restore_config_choice(
+    task: &Task,
+    target: &AgentConfigOption,
+    value: &str,
+    previous: Option<&str>,
+    model_choice: u64,
+    previous_levels: Option<Vec<AgentConfigOption>>,
+) {
+    let option = target.id.as_str();
+    let is_model = target.category.as_deref() == Some("model");
     let mut s = task.state.lock();
+    if (is_model && s.model_choice != model_choice)
+        || !s.task.config.iter().any(|o| o.id == option && o.current.as_deref() == Some(value))
+    {
+        return;
+    }
     s.wanted.retain(|c| c.id != option);
-    s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: value.to_owned() });
+    if let Some(previous) = previous {
+        s.wanted.push(AgentConfigChoice { id: option.to_owned(), value: previous.to_owned() });
+    }
     if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
-        o.current = Some(value.to_owned());
+        o.current = previous.map(str::to_owned);
+    }
+    if let Some(levels) = previous_levels {
+        s.task.config.retain(|o| !config::is_per_model_option(o));
+        s.task.config.extend(levels);
     }
     s.task.model = model_of(&s.task.config).or(s.task.model.take());
 }

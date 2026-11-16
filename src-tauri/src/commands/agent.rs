@@ -46,8 +46,9 @@ pub fn agent_refresh_models(
     state: State<'_, AppState>,
     provider: String,
     force: bool,
+    model: Option<String>,
 ) -> IdeResult<AgentModelCatalog> {
-    agent::refresh_models(&state.host, window.label(), provider, force)
+    agent::refresh_models(&state.host, window.label(), provider, force, model)
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the

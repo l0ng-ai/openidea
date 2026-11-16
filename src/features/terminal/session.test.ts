@@ -216,6 +216,24 @@ describe("openFileLink", () => {
     });
   });
 
+  it("opens the file a Windows path names, not a same-named one", async () => {
+    ipc.commands.fsReadDir.mockResolvedValue([]);
+    ipc.commands.findFiles.mockImplementation(async (q: string) =>
+      q === "a/main.php"
+        ? [{ path: "C:/p/a/main.php", relPath: "a/main.php" }]
+        : [{ path: "C:/p/c/main.php", relPath: "c/main.php" }],
+    );
+    await openFileLink(fileLink("PHP Warning in a\\main.php:2"), "C:\\p");
+    expect(ipc.commands.fsReadDir).toHaveBeenCalledWith("C:/p/a");
+    expect(workbench.openFile).toHaveBeenCalledWith("C:/p/a/main.php", { selection: { line: 1, col: 0 }, focus: true });
+
+    vi.clearAllMocks();
+    ipc.commands.fsReadDir.mockResolvedValue([{ name: "index.js", kind: "file" }]);
+    await openFileLink(fileLink("at run (D:\\lib\\index.js:3:7)"), "C:\\p");
+    expect(ipc.commands.fsReadDir).toHaveBeenCalledWith("D:/lib");
+    expect(workbench.openFile).toHaveBeenCalledWith("D:/lib/index.js", { selection: { line: 2, col: 6 }, focus: true });
+  });
+
   it("falls back to the bare name for a basename-only link", async () => {
     ipc.commands.fsReadDir.mockResolvedValue([]);
     ipc.commands.findFiles.mockResolvedValue([{ path: "/p/x/main.php", relPath: "x/main.php" }]);

@@ -39,7 +39,8 @@ vi.mock("@/platform/ipc", async (original) => ({
       return ok([]);
     },
     agentProviders: async () => ok(backend.providers),
-    agentRefreshModels: (provider: string, force: boolean) => backend.refresh(provider, force),
+    agentRefreshModels: (provider: string, force: boolean, model: string | null) =>
+      backend.refresh(provider, force, model),
     agentProbe: async () => ok(null),
     agentCommands: async () => ok([]),
     vcsBranchInfo: async () => ok({ head: "main" }),
@@ -85,7 +86,7 @@ const provider = (id: string): AgentProvider => ({
   commands: [],
   source: { kind: "custom" },
   config: [option("model", "model", ["big", "small"])],
-  thoughtLevels: { big: [option("effort", "thought_level", ["low", "high"], "high")] },
+  thoughtLevels: { big: [option("effort", "thought_level", ["low", "high"], "high")], small: [] },
 });
 function catalog(id = "first", patch: Partial<AgentModelCatalog> = {}): AgentModelCatalog {
   const offered = backend.providers.find((p) => p.id === id)!;
@@ -155,6 +156,8 @@ it("keeps cached choices usable while refreshing and shares the completion/coold
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("button", { name: /Refresh in \d+s/ })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("small");
+  await act(async () => executeAction("agents.refreshModels"));
+  expect(backend.refresh).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([{ id: "model", value: "small" }]);
@@ -166,7 +169,7 @@ it("uses the same popup for model-only agents and coalesces repeated manual acti
   render(<HomeEditor />);
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   await screen.findByRole("button", { name: "Refresh models" });
-  expect(backend.refresh).toHaveBeenCalledExactlyOnceWith("first", false);
+  expect(backend.refresh).toHaveBeenCalledExactlyOnceWith("first", false, "big");
   const pending = deferred<CatalogReply>();
   backend.refresh.mockReturnValueOnce(pending.promise);
   fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
@@ -176,7 +179,7 @@ it("uses the same popup for model-only agents and coalesces repeated manual acti
     await executeAction("agents.refreshModels");
   });
   expect(backend.refresh).toHaveBeenCalledTimes(2);
-  expect(backend.refresh).toHaveBeenLastCalledWith("first", true);
+  expect(backend.refresh).toHaveBeenLastCalledWith("first", true, "big");
   await act(async () => pending.resolve(ok(catalog("first", { refreshing: true }))));
   await act(async () => executeAction("agents.refreshModels"));
   expect(backend.refresh).toHaveBeenCalledTimes(2);
@@ -201,7 +204,7 @@ it("shows initial loading and inline discovery failure/retry without blocking a 
   expect(screen.getByText("No models reported by this agent.")).toBeVisible();
   expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled();
   fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
-  expect(backend.refresh).toHaveBeenLastCalledWith("first", true);
+  expect(backend.refresh).toHaveBeenLastCalledWith("first", true, null);
   expect(screen.getByRole("button", { name: "Refreshing…" })).toBeDisabled();
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
@@ -290,7 +293,7 @@ it("ignores a delayed refresh after switching agents and preserves the new draft
   render(<HomeEditor />);
   fireEvent.click(screen.getByRole("button", { name: "Agent" }));
   fireEvent.click(screen.getByRole("option", { name: "second" }));
-  await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("second", false));
+  await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("second", false, "big"));
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: "small" }));
   await act(async () => pending.resolve(ok(catalog("first", { config: [option("model", "model", ["obsolete"])] }))));
@@ -321,7 +324,7 @@ it("does not let a delayed command snapshot replace a newer catalog event", asyn
   const pending = deferred<CatalogReply>();
   backend.refresh.mockReturnValueOnce(pending.promise);
   render(<HomeEditor />);
-  emit(catalog("first", { config: [option("model", "model", ["latest"])] }));
+  emit(catalog("first", { config: [option("model", "model", ["latest"])], thoughtLevels: { latest: [] } }));
   await act(async () => pending.resolve(ok(catalog("first", { refreshing: true }))));
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("option", { name: "latest" })).toBeVisible();
@@ -347,5 +350,159 @@ it("requests freshness on focus without a retry timer, and counts down only the 
   act(() => vi.advanceTimersByTime(1_000));
   expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled();
   act(() => vi.advanceTimersByTime(60_000));
+  expect(backend.refresh).toHaveBeenCalledTimes(2);
+});
+
+it("discovers an uncached model's own settings before its first task and restores its draft choices", async () => {
+  delete backend.providers[0]!.thoughtLevels!.small;
+  await connect();
+  render(<HomeEditor />);
+  await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
+  const pending = deferred<CatalogReply>();
+  backend.refresh.mockReturnValueOnce(pending.promise);
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  fireEvent.click(screen.getByRole("option", { name: "small" }));
+  await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("first", false, "small"));
+  expect(screen.getByText("Loading model settings…")).toHaveAttribute("role", "status");
+  expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
+  expect(backend.create).not.toHaveBeenCalled();
+  await act(async () =>
+    pending.resolve(
+      ok(
+        catalog("first", {
+          thoughtLevels: {
+            ...catalog().thoughtLevels,
+            small: [
+              option("effort", "thought_level", ["minimal", "medium", "max"], "medium"),
+              option("context_tier", "model_config", ["default", "long_context"]),
+            ],
+          },
+        }),
+      ),
+    ),
+  );
+  expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("medium");
+  fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+  fireEvent.click(screen.getByRole("option", { name: "max" }));
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.getByRole("radio", { name: "long_context" })).toBeVisible();
+  fireEvent.click(screen.getByRole("radio", { name: "long_context" }));
+  fireEvent.click(screen.getByRole("option", { name: "big" }));
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("high");
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  fireEvent.click(screen.getByRole("option", { name: "small" }));
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("max");
+  expect(backend.refresh).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([
+    { id: "model", value: "small" },
+    { id: "effort", value: "max" },
+    { id: "context_tier", value: "long_context" },
+  ]);
+});
+
+it("does not rediscover a model that explicitly reports no per-model controls", async () => {
+  backend.providers[0]!.thoughtLevels!.small = [];
+  await connect();
+  render(<HomeEditor />);
+  await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
+  for (const model of ["small", "big", "small"]) {
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: model }));
+  }
+  expect(backend.refresh).toHaveBeenCalledExactlyOnceWith("first", false, "big");
+  expect(screen.queryByText("Loading model settings…")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Reasoning" })).not.toBeInTheDocument();
+});
+
+it("waits for an unrelated lookup and discovers only the latest selected model", async () => {
+  backend.providers[0]!.config = [option("model", "model", ["big", "small", "latest"])];
+  await connect();
+  const pending = deferred<CatalogReply>();
+  backend.refresh.mockReturnValueOnce(pending.promise);
+  render(<HomeEditor />);
+  for (const model of ["small", "latest"]) {
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: model }));
+  }
+  expect(backend.refresh).toHaveBeenCalledTimes(1);
+  const latest = deferred<CatalogReply>();
+  backend.refresh.mockReturnValueOnce(latest.promise);
+  await act(async () =>
+    pending.resolve(ok(catalog("first", { retryAtMs: Date.now() + 30_000, error: "previous model failed" }))),
+  );
+  await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("first", false, "latest"));
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  fireEvent.keyDown(document, { key: "Escape" });
+  await act(async () =>
+    latest.resolve(
+      ok(catalog("first", { thoughtLevels: { latest: [option("effort", "thought_level", ["medium", "max"])] } })),
+    ),
+  );
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("medium");
+  expect(backend.refresh).toHaveBeenCalledTimes(2);
+  expect(backend.create).not.toHaveBeenCalled();
+});
+
+it("does not loop after an unknown-model failure and permits a manual retry after cooldown", async () => {
+  delete backend.providers[0]!.thoughtLevels!.small;
+  await connect();
+  render(<HomeEditor />);
+  await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
+  backend.refresh.mockResolvedValueOnce(
+    ok(catalog("first", { retryAtMs: Date.now() + 30_000, error: "settings unavailable" })),
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  fireEvent.click(screen.getByRole("option", { name: "small" }));
+  await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
+  expect(backend.refresh).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("settings unavailable");
+  expect(screen.getByRole("button", { name: /Refresh in \d+s/ })).toBeDisabled();
+  emit(catalog("first", { retryAtMs: Date.now() - 1, error: "settings unavailable" }));
+  expect(backend.refresh).toHaveBeenCalledTimes(2);
+  backend.refresh.mockResolvedValueOnce(ok(catalog("first", { thoughtLevels: { small: [] } })));
+  fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
+  await waitFor(() => expect(backend.refresh).toHaveBeenLastCalledWith("first", true, "small"));
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(backend.refresh).toHaveBeenCalledTimes(3);
+});
+
+it("does not leak a delayed model's levels or failure into a newer selection", async () => {
+  delete backend.providers[0]!.thoughtLevels!.small;
+  await connect();
+  useAgents.setState({
+    draft: savedDraft({ provider: "first", config: { model: "big" }, thoughtLevels: { big: { effort: "low" } } }),
+  });
+  render(<HomeEditor />);
+  await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
+  const pending = deferred<CatalogReply>();
+  backend.refresh.mockReturnValueOnce(pending.promise);
+  for (const model of ["small", "big"]) {
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("option", { name: model }));
+  }
+  await act(async () =>
+    pending.resolve(
+      ok(
+        catalog("first", {
+          thoughtLevels: {
+            ...catalog().thoughtLevels,
+            small: [option("effort", "thought_level", ["minimal", "max"], "max")],
+          },
+          retryAtMs: Date.now() + 30_000,
+          error: "small lookup failed",
+        }),
+      ),
+    ),
+  );
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Refresh models" })).toBeEnabled();
   expect(backend.refresh).toHaveBeenCalledTimes(2);
 });

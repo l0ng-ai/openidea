@@ -136,3 +136,41 @@ it("keeps the shown lenses while the server is busy answering empty or failing, 
   await vi.advanceTimersByTimeAsync(500);
   expect(view.state.facet(codeLenses)).toHaveLength(0);
 });
+
+it("hides language-server lenses while Code Vision is off and asks again when it is back on", async () => {
+  vi.useFakeTimers();
+  const { useProject } = await import("@/platform/project");
+  const codeVision = (on: boolean) =>
+    useProject.setState({ settings: { editor: { inlay: { codeVision: on } } } as never });
+  ipc.lspCodeLens.mockResolvedValue({
+    status: "ok",
+    data: [
+      {
+        range: { start: { line: 0, col: 0 }, end: { line: 0, col: 1 } },
+        command: { title: "Run test", command: "csharp.runTest", arguments: [] },
+      },
+    ],
+  });
+  try {
+    codeVision(false);
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "x",
+        extensions: serverCodeLenses({ doc: 1, path: "/p/a.cs", language: "csharp", uiMode: null, readOnly: false }),
+      }),
+      parent: document.body,
+    });
+    views.push(view);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(view.state.facet(codeLenses)).toHaveLength(0);
+    expect(ipc.lspCodeLens).not.toHaveBeenCalled();
+    codeVision(true);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(view.state.facet(codeLenses).map((l) => l.title)).toEqual(["Run test"]);
+    codeVision(false);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(view.state.facet(codeLenses)).toHaveLength(0);
+  } finally {
+    useProject.setState({ settings: null });
+  }
+});

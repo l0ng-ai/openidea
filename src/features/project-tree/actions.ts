@@ -7,7 +7,7 @@ import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
 import { OPTION_LABELS, SORT_LABELS } from "./HeaderActions";
-import { newMenuItems, revealLabel } from "./contextMenu";
+import { compareTarget, newMenuItems, revealLabel } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import type { ProjectNode } from "./model";
 import {
@@ -480,14 +480,11 @@ export function registerProjectActions(): () => void {
       category: "Project View",
       hidden: true,
       when: FOCUS,
+      // Show Diff claims ⌘D outside text editors by keyWhen; this claim keeps it in the project view.
+      keyWhen: FOCUS,
       run: ({ arg }) => {
-        const files = nodesFrom(arg).filter((n) => !n.dir);
-        if (files.length === 2)
-          delegate(
-            "diff.compareFiles",
-            files.map((f) => f.path),
-          );
-        else if (files[0]) delegate("diff.compareWith", files[0].path);
+        const target = compareTarget(nodesFrom(arg));
+        if (target) delegate(target.action, target.arg);
       },
     },
     {

@@ -343,6 +343,8 @@ pub struct InlayHintsSettings {
     /// Hints of other kinds (chaining, closing labels…).
     pub other: bool,
     pub disabled_languages: Vec<String>,
+    /// Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on.
+    pub code_vision: bool,
     /// Code vision: usages above declarations.
     pub code_vision_usages: bool,
     /// Code vision: last author of a declaration (VCS blame) beside its usages.
@@ -373,6 +375,7 @@ impl Default for InlayHintsSettings {
             parameters: true,
             other: true,
             disabled_languages: Vec::new(),
+            code_vision: true,
             code_vision_usages: true,
             code_vision_author: true,
             code_vision_no_usages: true,

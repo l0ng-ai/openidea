@@ -51,6 +51,7 @@ struct FakeAgent {
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
     model_options: Mutex<HashMap<String, Vec<Value>>>,
+    model_config_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     /// Advertises steering as OMP does (`_meta.steering` at the top of `initialize`)
     /// instead of `_meta.openidea.steer`.
     session_steering: bool,
@@ -231,6 +232,12 @@ impl Handler for FakeAgent {
                     std::thread::sleep(self.delay_config);
                 }
                 self.calls.lock().push(format!("{method} {}", params.get("value").or(params.get("modeId")).unwrap()));
+                if params["configId"] == "model" {
+                    let gate = self.model_config_gate.lock().take();
+                    if let Some(gate) = gate {
+                        gate.recv().unwrap();
+                    }
+                }
                 if params["configId"] == "model" && !self.model_options.lock().is_empty() {
                     return Ok(json!({"configOptions": self.options_for(params["value"].as_str().unwrap())}));
                 }
@@ -590,6 +597,7 @@ for line in sys.stdin:
             assert_eq!(names, ["compact", "clear", "model", "context", "triage"]);
             assert_eq!(first[0].hint.as_deref(), Some("[instructions]"));
             let restored = manager(root, Arc::new(FakeAgent::default()));
+            restored.set_builtin_command("claude", Some(script.to_string_lossy().into_owned())).unwrap();
             assert_eq!(first, restored.commands("claude", None).await.unwrap());
             // The same handshake lists the models, so the composer has them before any task.
             for mgr in [&mgr, &restored] {
@@ -1931,8 +1939,7 @@ async fn thinking_levels_are_remembered_per_provider_and_model() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn changing_an_idle_tasks_settings_keeps_its_models_effort_levels() {
-    // After a model switch no session reported, picking that model again or changing
-    // another setting must not record the task's effort-less copy as the model's levels.
+    // Idle selections use cached model controls or discover them before the next prompt.
     for (option, value) in [("mode", "code"), ("model", "big")] {
         let tmp = tempfile::tempdir().unwrap();
         let agent = Arc::new(FakeAgent::default());
@@ -1945,7 +1952,7 @@ async fn changing_an_idle_tasks_settings_keeps_its_models_effort_levels() {
             .create(NewAgentTask {
                 project_root: None,
                 prompt: text("again"),
-                provider: "claude".into(),
+                provider: "claude-acp".into(),
                 config: vec![],
                 isolation: Isolation::Local,
                 base: None,
@@ -1957,16 +1964,163 @@ async fn changing_an_idle_tasks_settings_keeps_its_models_effort_levels() {
         mgr.shutdown();
         let restored = manager(tmp.path(), agent);
         restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+        {
+            let small = restored.task(&task.id).unwrap();
+            let small = small.state.lock();
+            let effort = small.task.config.iter().find(|option| option.id == "effort").unwrap();
+            assert_eq!(
+                effort.values.iter().map(|value| value.value.as_str()).collect::<Vec<_>>(),
+                ["minimal", "medium"]
+            );
+        }
         restored.set_config(&task.id, "model", "big".into()).await.unwrap();
         restored.set_config(&task.id, option, value.into()).await.unwrap();
-        let p = restored.providers().into_iter().find(|p| p.id == "claude").unwrap();
+        let p = restored.providers().into_iter().find(|p| p.id == "claude-acp").unwrap();
         let big = p.thought_levels.get("big").and_then(|levels| levels.first());
         assert_eq!(big.map(|o| o.values.len()), Some(2), "{option}: {:?}", p.thought_levels);
         let saved: HashMap<String, Known> =
             serde_json::from_slice(&std::fs::read(&restored.shared.paths.models_file).unwrap()).unwrap();
-        assert_eq!(saved["claude"].thought_levels, p.thought_levels, "{option}");
+        assert_eq!(saved["claude-acp"].thought_levels, p.thought_levels, "{option}");
         restored.shutdown();
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_model_switches_discover_controls_and_no_control_models_without_another_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.model_options.lock() = HashMap::from([
+        ("big".into(), effort_options(&["low", "high"], "high")),
+        ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+        ("plain".into(), vec![]),
+    ]);
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude-acp".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent.clone());
+    assert!(
+        !restored.shared.paths.catalogs.cached(&restored.shared, "claude-acp").thought_levels.contains_key("small")
+    );
+    agent.calls.lock().clear();
+    restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+    let current = restored.task(&task.id).unwrap();
+    let config = current.state.lock().task.config.clone();
+    let effort = config.iter().find(|option| option.id == "effort").unwrap();
+    assert_eq!(effort.values.iter().map(|value| value.value.as_str()).collect::<Vec<_>>(), ["minimal", "medium"]);
+    restored.set_config(&task.id, "effort", "medium".into()).await.unwrap();
+    restored.set_config(&task.id, "model", "plain".into()).await.unwrap();
+    assert!(!current.state.lock().task.config.iter().any(config::is_per_model_option));
+    let known = restored.shared.paths.catalogs.cached(&restored.shared, "claude-acp");
+    assert!(known.thought_levels["plain"].is_empty());
+    assert_eq!(known.config.iter().find(|option| option.id == "model").unwrap().current.as_deref(), Some("big"));
+    {
+        let mut calls = agent.calls.lock();
+        assert!(!calls.iter().any(|call| call == "session/prompt" || call == "session/load"));
+        assert_eq!(calls.iter().filter(|call| *call == "session/new").count(), 2);
+        calls.clear();
+    }
+    restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+    assert!(agent.calls.lock().is_empty(), "a known model remains a cache-only selection");
+    assert!(current.live.lock().is_none(), "discovery never mutates a task's live session");
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_model_discovery_failure_restores_the_previous_choice_without_claiming_no_controls() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.extra_options.lock() = effort_options(&["low", "high"], "low");
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude-acp".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent.clone());
+    agent.calls.lock().clear();
+    assert!(restored.set_config(&task.id, "model", "small".into()).await.is_err());
+    let current = restored.task(&task.id).unwrap();
+    assert_eq!(current.state.lock().task.model.as_deref(), Some("big"));
+    assert!(current.state.lock().task.config.iter().any(|option| option.id == "effort"));
+    assert!(
+        !restored.shared.paths.catalogs.cached(&restored.shared, "claude-acp").thought_levels.contains_key("small")
+    );
+    assert!(!agent.calls.lock().iter().any(|call| call == "session/prompt"));
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rapid_idle_model_switches_share_discovery_and_never_apply_a_stale_completion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    *agent.model_options.lock() = HashMap::from([
+        ("big".into(), effort_options(&["low", "high"], "high")),
+        ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+        ("plain".into(), vec![]),
+    ]);
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            prompt: text("again"),
+            provider: "claude-acp".into(),
+            isolation: Isolation::Local,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    mgr.shutdown();
+    let restored = Arc::new(manager(tmp.path(), agent.clone()));
+    agent.calls.lock().clear();
+    let (release, gate) = std::sync::mpsc::channel();
+    *agent.model_config_gate.lock() = Some(gate);
+    let first = tokio::spawn({
+        let restored = restored.clone();
+        let id = task.id.clone();
+        async move { restored.set_config(&id, "model", "small".into()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while agent.model_config_gate.lock().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let duplicate = restored.set_config(&task.id, "model", "small".into());
+    tokio::pin!(duplicate);
+    tokio::select! {
+        biased;
+        result = &mut duplicate => panic!("duplicate selection must join the pending discovery: {result:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
+    restored.set_config(&task.id, "model", "plain".into()).await.unwrap();
+    release.send(()).unwrap();
+    first.await.unwrap().unwrap();
+    duplicate.await.unwrap();
+    let current = restored.task(&task.id).unwrap();
+    assert_eq!(current.state.lock().task.model.as_deref(), Some("plain"));
+    assert!(!current.state.lock().task.config.iter().any(config::is_per_model_option));
+    let catalog = restored.shared.paths.catalogs.cached(&restored.shared, "claude-acp");
+    assert!(catalog.thought_levels["plain"].is_empty());
+    assert!(!catalog.thought_levels.contains_key("small"), "obsolete discovery cannot populate model settings");
+    assert_eq!(agent.calls.lock().iter().filter(|call| *call == "session/new").count(), 2);
+    assert!(!agent.calls.lock().iter().any(|call| call == "session/prompt"));
+    restored.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -30,9 +30,15 @@ pub fn providers(host: &Host, window: &str) -> IdeResult<Vec<AgentProvider>> {
 }
 
 /// Refreshes the selected agent's model catalog without sending a prompt.
-pub fn refresh_models(host: &Host, window: &str, provider: String, force: bool) -> IdeResult<AgentModelCatalog> {
+pub fn refresh_models(
+    host: &Host,
+    window: &str,
+    provider: String,
+    force: bool,
+    model: Option<String>,
+) -> IdeResult<AgentModelCatalog> {
     host.require_trust(window)?;
-    host.project(window)?.agents.refresh_models(&provider, force)
+    host.project(window)?.agents.refresh_models(&provider, force, model.as_deref())
 }
 
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
@@ -832,7 +838,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("agent_subscribe", |c| async move { subscribe(&c.host, &c.window, c.channel("onEvent")?) });
     d.add("agent_providers", |c| async move { providers(&c.host, &c.window) });
     d.add("agent_refresh_models", |c| async move {
-        refresh_models(&c.host, &c.window, c.arg("provider")?, c.arg("force")?)
+        refresh_models(&c.host, &c.window, c.arg("provider")?, c.arg("force")?, c.arg("model")?)
     });
     d.add("agent_set_command", |c| async move { set_command(&c.host, &c.window, c.arg("id")?, c.arg("command")?) });
     d.add("agent_set_env", |c| async move { set_env(&c.host, &c.window, c.arg("id")?, c.arg("env")?) });

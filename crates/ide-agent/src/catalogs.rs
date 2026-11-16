@@ -45,7 +45,16 @@ struct Entry {
     error: Option<String>,
     flight: Option<watch::Receiver<bool>>,
     abort: Option<tokio::task::AbortHandle>,
+    flight_model: Option<String>,
+    requested_model: Option<String>,
+    model_failures: HashMap<String, ModelFailure>,
     catalog: Option<CatalogData>,
+}
+
+struct ModelFailure {
+    completed: Instant,
+    retry_at_ms: f64,
+    error: String,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -204,6 +213,24 @@ impl AgentCatalogs {
             .unwrap_or_else(|| Self::fallback(shared, provider))
     }
 
+    pub(crate) fn levels(&self, shared: &Shared, provider: &str, model: &str) -> Option<Vec<AgentConfigOption>> {
+        let state = self.state.lock();
+        if let Some(catalog) = state.entries.get(&Self::key(shared, provider)).and_then(|entry| entry.catalog.as_ref())
+        {
+            return catalog.thought_levels.get(model).cloned();
+        }
+        drop(state);
+        let cache = shared.known.lock();
+        let known = cache.get(provider)?;
+        known
+            .catalogs
+            .get(&shared.root_key())
+            .map(|saved| &saved.catalog.thought_levels)
+            .unwrap_or(&known.thought_levels)
+            .get(model)
+            .cloned()
+    }
+
     pub(crate) fn evict_if_idle(&self, shared: &Shared, provider: &str) {
         let key = Self::key(shared, provider);
         let mut state = self.state.lock();
@@ -214,16 +241,27 @@ impl AgentCatalogs {
 
     fn snapshot(&self, shared: &Shared, provider: &str, entry: &Entry) -> AgentModelCatalog {
         let catalog = entry.catalog.clone().unwrap_or_else(|| Self::fallback(shared, provider));
+        let model_failure = entry.requested_model.as_ref().and_then(|model| entry.model_failures.get(model));
+        let unknown_model = entry
+            .requested_model
+            .as_deref()
+            .is_some_and(|model| catalog.lists(model) && !catalog.thought_levels.contains_key(model));
         AgentModelCatalog {
             provider: provider.to_owned(),
             config: shared.config_for_new_task(catalog.config, provider),
             thought_levels: catalog.thought_levels,
             refreshing: entry.flight.is_some(),
             refreshed_at_ms: catalog.refreshed_at_ms,
-            retry_at_ms: entry
-                .retry_at_ms
-                .filter(|_| entry.completed.is_some_and(|at| self.now().duration_since(at) < COOLDOWN)),
-            error: entry.error.clone(),
+            retry_at_ms: model_failure
+                .filter(|failure| self.now().duration_since(failure.completed) < COOLDOWN)
+                .map(|failure| failure.retry_at_ms)
+                .or_else(|| {
+                    (!unknown_model)
+                        .then_some(entry.retry_at_ms)
+                        .flatten()
+                        .filter(|_| entry.completed.is_some_and(|at| self.now().duration_since(at) < COOLDOWN))
+                }),
+            error: model_failure.map(|failure| failure.error.clone()).or_else(|| entry.error.clone()),
         }
     }
 
@@ -233,6 +271,7 @@ impl AgentCatalogs {
         shared: &Arc<Shared>,
         spec: provider::ProviderSpec,
         force: bool,
+        model: Option<&str>,
     ) -> (AgentModelCatalog, Option<watch::Receiver<bool>>) {
         let key = Self::key(shared, &spec.id);
         let context = LaunchContext::new(spec.clone(), &shared.paths.project_root);
@@ -264,6 +303,7 @@ impl AgentCatalogs {
                 let mut catalog = saved.catalog;
                 if !matching {
                     catalog.refreshed_at_ms = None;
+                    catalog.thought_levels.clear();
                 }
                 catalog
             });
@@ -279,31 +319,73 @@ impl AgentCatalogs {
                     error: None,
                     flight: None,
                     abort: None,
+                    flight_model: None,
+                    requested_model: None,
+                    model_failures: HashMap::new(),
                 },
             );
         }
+        let fallback =
+            state.entries.get(&key).filter(|entry| entry.catalog.is_none()).map(|_| Self::fallback(shared, &spec.id));
+        state.generation += 1;
+        let generation = state.generation;
         let entry = state.entries.get_mut(&key).expect("catalog entry");
-        let cooling = entry.completed.is_some_and(|at| now.duration_since(at) < COOLDOWN);
+        let catalog = entry.catalog.as_ref().or(fallback.as_ref()).expect("cached catalog");
         let fresh = entry.successful.is_some_and(|at| now.duration_since(at) < FRESH_FOR);
+        let target = model
+            .filter(|model| {
+                (catalog.lists(model) && !catalog.thought_levels.contains_key(*model))
+                    || (!fresh && catalog.model_option().is_none())
+            })
+            .map(str::to_owned);
+        if model.is_some() && entry.requested_model.as_deref() != model {
+            entry.requested_model = model.map(str::to_owned);
+        }
+        let superseded = model.is_some()
+            && entry.flight.is_some()
+            && (entry.flight_model.is_some() || target.is_some())
+            && entry.flight_model.as_deref() != target.as_deref();
+        if superseded {
+            if let Some(abort) = entry.abort.take() {
+                abort.abort();
+            }
+            entry.flight = None;
+            entry.generation = generation;
+            entry.flight_model = None;
+        }
+        let cooling = match target.as_ref() {
+            Some(model) => entry.model_failures.get(model).is_some_and(|f| now.duration_since(f.completed) < COOLDOWN),
+            None => entry.completed.is_some_and(|at| now.duration_since(at) < COOLDOWN),
+        };
+        let eligible = !cooling && (target.is_some() || force || !fresh);
         let mut start = None;
-        if entry.flight.is_none() && !cooling && (force || !fresh) {
+        if entry.flight.is_none() && eligible {
             let (done, ready) = watch::channel(false);
             entry.flight = Some(ready);
+            entry.flight_model = target.clone();
             entry.error = None;
+            if let Some(model) = target.as_ref() {
+                entry.model_failures.remove(model);
+            }
             entry.retry_at_ms = None;
-            start = Some((entry.generation, done));
+            // Every flight has its own generation, including superseded model selections.
+            entry.generation = generation;
+            start = Some((entry.generation, target, done));
         }
         let snapshot = self.snapshot(shared, &spec.id, entry);
         let flight = entry.flight.clone();
         drop(state);
-        if let Some((generation, done)) = start {
+        if superseded && start.is_none() {
+            self.broadcast(shared, &snapshot);
+        }
+        if let Some((generation, model, done)) = start {
             self.broadcast(shared, &snapshot);
             let coordinator = self.clone();
             let shared = shared.clone();
             let flight_key = key.clone();
             let task = shared.runtime.clone().spawn(async move {
-                let result = discover(&shared, spec).await;
-                coordinator.complete(&shared, flight_key, generation, result);
+                let result = discover(&shared, spec, model.as_deref()).await;
+                coordinator.complete(&shared, flight_key, generation, model, result);
                 let _ = done.send(true);
             });
             // A subscriber can re-enter and change configuration during the start event.
@@ -319,7 +401,14 @@ impl AgentCatalogs {
         (snapshot, flight)
     }
 
-    fn complete(&self, shared: &Shared, key: Key, generation: u64, result: Result<Discovered, String>) {
+    fn complete(
+        &self,
+        shared: &Shared,
+        key: Key,
+        generation: u64,
+        model: Option<String>,
+        result: Result<Discovered, String>,
+    ) {
         let current = provider::load(shared.paths.custom_agents_dir.as_deref(), shared.env_secrets())
             .into_iter()
             .find(|spec| spec.id == key.2)
@@ -330,6 +419,7 @@ impl AgentCatalogs {
         if current.as_ref() != Some(&entry.context) {
             entry.flight = None;
             entry.abort = None;
+            entry.flight_model = None;
             entry.completed = None;
             entry.retry_at_ms = None;
             entry.error = None;
@@ -340,12 +430,16 @@ impl AgentCatalogs {
             return;
         }
         let now = self.now();
-        entry.completed = Some(now);
-        entry.retry_at_ms = Some(self.epoch_ms() + COOLDOWN.as_millis() as f64);
+        if model.is_none() {
+            entry.completed = Some(now);
+            entry.retry_at_ms = Some(self.epoch_ms() + COOLDOWN.as_millis() as f64);
+        }
         entry.flight = None;
         entry.abort = None;
+        entry.flight_model = None;
         let success = match result {
             Ok(found) => {
+                let previous = entry.catalog.take().unwrap_or_else(|| Self::fallback(shared, &key.2));
                 let mut cache = shared.known.lock();
                 let known = cache.entry(key.2.clone()).or_default();
                 let mut catalog = CatalogData {
@@ -354,7 +448,7 @@ impl AgentCatalogs {
                     refreshed_at_ms: Some(self.epoch_ms()),
                 };
                 // Efforts sessions reported for models discovery doesn't read stay while listed.
-                for (model, levels) in entry.catalog.take().map(|old| old.thought_levels).unwrap_or_default() {
+                for (model, levels) in previous.thought_levels {
                     if catalog.lists(&model) && !catalog.thought_levels.contains_key(&model) {
                         catalog.thought_levels.insert(model, levels);
                     }
@@ -373,11 +467,30 @@ impl AgentCatalogs {
                 entry.catalog = Some(catalog);
                 shared.persist_known(&cache);
                 entry.successful = Some(now);
+                entry.completed = Some(now);
+                entry.retry_at_ms = Some(self.epoch_ms() + COOLDOWN.as_millis() as f64);
+                entry.model_failures.retain(|model, _| {
+                    entry
+                        .catalog
+                        .as_ref()
+                        .is_some_and(|catalog| catalog.lists(model) && !catalog.thought_levels.contains_key(model))
+                });
                 entry.error = None;
                 true
             }
             Err(error) => {
-                entry.error = Some(error);
+                if let Some(model) = model {
+                    entry.model_failures.insert(
+                        model,
+                        ModelFailure {
+                            completed: now,
+                            retry_at_ms: self.epoch_ms() + COOLDOWN.as_millis() as f64,
+                            error,
+                        },
+                    );
+                } else {
+                    entry.error = Some(error);
+                }
                 false
             }
         };
@@ -448,18 +561,22 @@ impl AgentCatalogs {
 
 impl crate::AgentManager {
     /// Return cached choices immediately and schedule discovery when eligible.
-    pub fn refresh_models(&self, provider: &str, force: bool) -> IdeResult<AgentModelCatalog> {
+    pub fn refresh_models(&self, provider: &str, force: bool, model: Option<&str>) -> IdeResult<AgentModelCatalog> {
         // Settings and environment secrets can change while this window is open.
         *self.shared.providers.write() =
             provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
-        Ok(self.shared.paths.catalogs.request(&self.shared, spec, force).0)
+        Ok(self.shared.paths.catalogs.request(&self.shared, spec, force, model).0)
     }
 }
 
-async fn discover(shared: &Arc<Shared>, spec: provider::ProviderSpec) -> Result<Discovered, String> {
+async fn discover(
+    shared: &Arc<Shared>,
+    spec: provider::ProviderSpec,
+    model: Option<&str>,
+) -> Result<Discovered, String> {
     match spec.driver {
-        provider::Driver::Acp => acp::discover::run(shared, &spec).await,
+        provider::Driver::Acp => acp::discover::run(shared, &spec, model).await,
         provider::Driver::Codex => native::codex::discover(spec, shared.paths.project_root.clone()).await,
         provider::Driver::Claude => {
             let found = native::claude::discover(spec.clone(), shared.paths.project_root.clone()).await?;
@@ -484,7 +601,7 @@ async fn discover(shared: &Arc<Shared>, spec: provider::ProviderSpec) -> Result<
         provider::Driver::Copilot => {
             if shared.uses_copilot_acp_fallback(&spec) {
                 let acp_spec = native::copilot::acp_fallback_spec(&spec);
-                return acp::discover::run(shared, &acp_spec).await;
+                return acp::discover::run(shared, &acp_spec, model).await;
             }
             match native::copilot::discover(spec.clone(), shared.paths.project_root.clone()).await {
                 Ok(found) => Ok(Discovered {
@@ -513,7 +630,7 @@ async fn discover(shared: &Arc<Shared>, spec: provider::ProviderSpec) -> Result<
                     );
                     shared.mark_copilot_acp_fallback(&spec);
                     let acp_spec = native::copilot::acp_fallback_spec(&spec);
-                    acp::discover::run(shared, &acp_spec).await
+                    acp::discover::run(shared, &acp_spec, model).await
                 }
                 Err(err) => Err(err.message),
             }

@@ -820,7 +820,6 @@
   "Fallback font": "Fonte reserva",
   "Fallback font:": "Fonte reserva:",
   "Fetch": "Fetch",
-  "Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure.": "Executa fetch dos remotos em segundo plano para que commits de entrada apareçam no pop-up Branches. O modo Auto para após uma falha de autenticação.",
   "Field access": "Acesso a campo",
   "Field modification": "Modificação de campo",
   "Field watchpoints can be set on Java field declarations, or from the Variables view while suspended.": "Pontos de inspeção de campo podem ser definidos em declarações de campos Java ou a partir da visualização Variáveis quando suspenso.",

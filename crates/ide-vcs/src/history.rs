@@ -1,6 +1,6 @@
 //! Commit history (topological walk) and per-commit changed files via gitoxide.
 
-use crate::repo::{gx, resolve, to_string};
+use crate::repo::{gx, link_target, resolve, to_string};
 use crate::{ChangeKind, ChangedFile, Commit, LogOrder, LogQuery, Repo, RevisionChange};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
@@ -1258,23 +1258,45 @@ fn first_parent_changes(repo: &gix::Repository, rev: &str) -> IdeResult<CommitCh
     let mut out = Vec::new();
     for change in changes {
         use gix::object::tree::diff::ChangeDetached as C;
-        let file = match change {
-            C::Addition { location, entry_mode, .. } if !entry_mode.is_tree() => {
-                ChangedFile { path: to_string(location.as_ref()), kind: ChangeKind::Added, old_path: None }
-            }
-            C::Deletion { location, entry_mode, .. } if !entry_mode.is_tree() => {
-                ChangedFile { path: to_string(location.as_ref()), kind: ChangeKind::Deleted, old_path: None }
-            }
-            C::Modification { location, entry_mode, .. } if !entry_mode.is_tree() => {
-                ChangedFile { path: to_string(location.as_ref()), kind: ChangeKind::Modified, old_path: None }
-            }
-            C::Rewrite { source_location, location, entry_mode, copy, .. } if !entry_mode.is_tree() => ChangedFile {
-                path: to_string(location.as_ref()),
-                kind: if copy { ChangeKind::Added } else { ChangeKind::Renamed },
-                old_path: Some(to_string(source_location.as_ref())),
-            },
+        let (mut file, link) = match change {
+            C::Addition { location, entry_mode, .. } if !entry_mode.is_tree() => (
+                ChangedFile { path: to_string(location.as_ref()), kind: ChangeKind::Added, old_path: None, link: None },
+                entry_mode.is_link(),
+            ),
+            C::Deletion { location, entry_mode, .. } if !entry_mode.is_tree() => (
+                ChangedFile {
+                    path: to_string(location.as_ref()),
+                    kind: ChangeKind::Deleted,
+                    old_path: None,
+                    link: None,
+                },
+                entry_mode.is_link(),
+            ),
+            C::Modification { location, entry_mode, .. } if !entry_mode.is_tree() => (
+                ChangedFile {
+                    path: to_string(location.as_ref()),
+                    kind: ChangeKind::Modified,
+                    old_path: None,
+                    link: None,
+                },
+                entry_mode.is_link(),
+            ),
+            C::Rewrite { source_location, location, entry_mode, copy, .. } if !entry_mode.is_tree() => (
+                ChangedFile {
+                    path: to_string(location.as_ref()),
+                    kind: if copy { ChangeKind::Added } else { ChangeKind::Renamed },
+                    old_path: Some(to_string(source_location.as_ref())),
+                    link: None,
+                },
+                entry_mode.is_link(),
+            ),
             _ => continue,
         };
+        if link {
+            // A deleted link is described as it was in the parent.
+            let tree = if file.kind == ChangeKind::Deleted { old_tree.as_ref() } else { Some(&new_tree) };
+            file.link = tree.and_then(|t| link_target(repo, t, &file.path));
+        }
         out.push(file);
     }
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1288,6 +1310,8 @@ struct Merged {
     /// Commit of the last change; `None` when it was deleted.
     after: Option<String>,
     path: String,
+    /// The last change's link target, when the entry is a symbolic link.
+    link: Option<crate::LinkTarget>,
 }
 
 /// Combined changes of `commits` (oldest first), merged like IDEA merges a multi-commit Git
@@ -1318,12 +1342,13 @@ pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<Rev
                     (ChangeKind::Added, _) | (_, None) => None,
                     (_, Some(p)) => Some((p.to_string(), from.to_owned())),
                 };
-                merged.push(Merged { before, after: None, path: f.path.clone() });
+                merged.push(Merged { before, after: None, path: f.path.clone(), link: None });
                 merged.len() - 1
             });
             let entry = &mut merged[i];
             entry.after = (f.kind != ChangeKind::Deleted).then(|| id.clone());
             entry.path = f.path;
+            entry.link = f.link;
         }
     }
     let mut out: Vec<RevisionChange> = merged
@@ -1336,7 +1361,14 @@ pub(crate) fn commits_changes(r: &Repo, commits: &[String]) -> IdeResult<Vec<Rev
                 (Some((_, old)), Some(_)) if *old != m.path => (ChangeKind::Renamed, m.path, Some(old.clone())),
                 (Some(_), Some(_)) => (ChangeKind::Modified, m.path, None),
             };
-            Some(RevisionChange { path, kind, old_path, before: m.before.map(|(rev, _)| rev), after: m.after })
+            Some(RevisionChange {
+                path,
+                kind,
+                old_path,
+                before: m.before.map(|(rev, _)| rev),
+                after: m.after,
+                link: m.link,
+            })
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));

@@ -148,7 +148,7 @@ export const commands = {
 	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
-	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
+	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -3221,6 +3221,8 @@ export type ChangedFile = {
 	path: string,
 	kind: ChangeKind,
 	oldPath: string | null,
+	/**  Set when the entry is a symbolic link (git mode `120000`); only revision diffs fill it. */
+	link?: LinkTarget | null,
 };
 
 export type Changelist = {
@@ -6023,6 +6025,11 @@ export type GitOperation =
 export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
+	/**
+	 *  A click (or Enter / Space) on the inline blame label opens its commit; off, the
+	 *  label is plain text and a click on it places the caret as past the line end.
+	 */
+	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
@@ -6034,6 +6041,8 @@ export type GitSettings = {
 	warnDetachedHead?: boolean,
 	/**  Background check for incoming commits: `auto` | `always` | `never`. */
 	incomingCheck?: string,
+	/**  Minutes between background checks for incoming commits. */
+	incomingCheckInterval?: number,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
@@ -6720,6 +6729,8 @@ export type InlayHintsSettings = {
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
 	disabledLanguages?: string[],
+	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
+	codeVision?: boolean,
 	/**  Code vision: usages above declarations. */
 	codeVisionUsages?: boolean,
 	/**  Code vision: last author of a declaration (VCS blame) beside its usages. */
@@ -7554,6 +7565,11 @@ export type Link = {
 	parent: number | null,
 	ambiguous: boolean,
 };
+
+/**  What a symbolic link in a revision points to, resolved inside that revision's tree. */
+export type LinkTarget = "dir" | "file" | 
+/**  Dangling, outside the repository (absolute or above its root), or a link loop. */
+"unresolved";
 
 /**  Settings › System Settings › Caches: where the local data lives. */
 export type LocalDataInfo = {
@@ -9797,6 +9813,8 @@ export type RevisionChange = {
 	before: string | null,
 	/**  Commit holding the new content; `None` when the file was deleted. */
 	after: string | null,
+	/**  Set when the entry is a symbolic link, resolved at `after` (`before`, for a deletion). */
+	link?: LinkTarget | null,
 };
 
 /**  How a grant is presented (plan 4.2). */

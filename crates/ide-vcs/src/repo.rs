@@ -367,6 +367,65 @@ pub(crate) fn tree_of<'r>(repo: &'r gix::Repository, rev: &str) -> IdeResult<Opt
     Ok(Some(tree))
 }
 
+/// What the symbolic link at `rel` points to inside `tree`; `None` when `rel` is not a link
+/// there. Git stores only the target path, so the target is followed through this tree
+/// (links on the way included), never the working tree, which may have moved on.
+pub(crate) fn link_target(repo: &gix::Repository, tree: &gix::Tree<'_>, rel: &str) -> Option<crate::LinkTarget> {
+    use crate::LinkTarget;
+    let entry = tree.lookup_entry_by_path(Path::new(rel)).ok()??;
+    if !entry.mode().is_link() {
+        return None;
+    }
+    // Real directories resolved so far, and the components still to walk.
+    let mut dir: Vec<String> = rel.split('/').map(str::to_owned).collect();
+    dir.pop();
+    let mut pending: Vec<String> = Vec::new();
+    let mut link = entry.oid().to_owned();
+    let mut hops = 0;
+    loop {
+        let Ok(target) = blob_data(repo, link) else { return Some(LinkTarget::Unresolved) };
+        let target = target.to_str_lossy();
+        if target.is_empty() || target.starts_with('/') || target.starts_with('\\') {
+            return Some(LinkTarget::Unresolved);
+        }
+        // `pending` is a stack: the target is walked first, then whatever followed the link.
+        pending.extend(target.rsplit('/').map(str::to_owned));
+        loop {
+            let Some(component) = pending.pop() else { return Some(LinkTarget::Dir) };
+            match component.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    if dir.pop().is_none() {
+                        return Some(LinkTarget::Unresolved);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let path = if dir.is_empty() { component.clone() } else { format!("{}/{component}", dir.join("/")) };
+            let Ok(Some(entry)) = tree.lookup_entry_by_path(Path::new(&path)) else {
+                return Some(LinkTarget::Unresolved);
+            };
+            let mode = entry.mode();
+            if mode.is_link() {
+                hops += 1;
+                if hops > 40 {
+                    return Some(LinkTarget::Unresolved);
+                }
+                link = entry.oid().to_owned();
+                break;
+            }
+            if mode.is_tree() || mode.is_commit() {
+                dir.push(component);
+            } else if pending.iter().all(|c| c.is_empty() || c == ".") {
+                return Some(LinkTarget::File);
+            } else {
+                return Some(LinkTarget::Unresolved);
+            }
+        }
+    }
+}
+
 /// Resolves a revision spec to an object id.
 pub(crate) fn resolve(repo: &gix::Repository, rev: &str) -> IdeResult<gix::ObjectId> {
     repo.rev_parse_single(BStr::new(rev.as_bytes()))
