@@ -1058,11 +1058,33 @@ export class EditorController implements SlotHost {
     this.nav.update({ path: slot.model.path, ...loc }, navigation);
   }
 
+  /**
+   * The place a navigation leaves: the text editor's caret, or a tab showing no text editor
+   * (a diff) as a whole, so Back returns to it as IDEA does.
+   */
+  private recordLeaving() {
+    if (this.navSuppress > 0) return;
+    if (this.activeSlot) return this.recordNav(this.activeSlot);
+    const input = this.activeInput();
+    if (!input?.path || isTextInput(input)) return;
+    const kind = useContributions.getState().editorKinds.get(input.kind);
+    const place = kind?.navigationInput?.(input) ?? input;
+    this.nav.update({ path: input.path, line: 0, col: 0, input: place }, true);
+  }
+
+  /** Whether the active tab is the current place (a tab place, as a text editor's records itself). */
+  private showsCurrentPlace(): boolean {
+    const key = this.nav.current?.input?.key;
+    return !!key && this.activeInput()?.key === key;
+  }
+
   async navigateTo(loc: NavigationLocation | null) {
     if (!loc) return;
     this.navSuppress++;
     try {
-      await this.openFile(loc.path, { selection: { line: loc.line, col: loc.col }, focus: true });
+      // At the place recorded on leaving it (a diff at its caret): a background tab shows afresh.
+      if (loc.input) await this.openInput(loc.input, { focus: true });
+      else await this.openFile(loc.path, { selection: { line: loc.line, col: loc.col }, focus: true });
     } finally {
       this.navSuppress--;
       if (this.activeSlot) this.recordNav(this.activeSlot);
@@ -1071,10 +1093,10 @@ export class EditorController implements SlotHost {
 
   back() {
     const slot = this.activeSlot;
-    // No text editor is active (the place's last tab was closed, or another kind of tab shows):
-    // going back returns to the current place first, as in IDEA.
-    if (!slot || slot.disposed) return this.navigateTo(this.nav.current);
-    this.recordNav(slot);
+    if (slot && !slot.disposed) this.recordNav(slot);
+    // Nothing shows the current place (its last tab was closed, or another tab is active):
+    // going back returns to it first, as in IDEA.
+    else if (!this.showsCurrentPlace()) return this.navigateTo(this.nav.current);
     return this.navigateTo(this.nav.back());
   }
 
@@ -1143,7 +1165,7 @@ export class EditorController implements SlotHost {
 
   async openFile(path: string, o: OpenOptions = {}): Promise<void> {
     // The place left behind, as it is now (a preview may have scrolled since it was recorded).
-    if (this.navSuppress === 0 && this.activeSlot) this.recordNav(this.activeSlot);
+    this.recordLeaving();
     return this.openFileRequest(path, o, this.openingGeneration(o));
   }
 
@@ -1344,6 +1366,7 @@ export class EditorController implements SlotHost {
           preview,
           activate,
           preservePreview: !activate,
+          keepPreview: (t) => !isTextInput(t.input),
           ...(tabs.openAtEnd ? { index: s.panes[paneId]?.tabs.length ?? 0 } : {}),
         });
         s = r.state;

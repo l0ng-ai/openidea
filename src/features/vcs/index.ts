@@ -30,7 +30,7 @@ import { BranchWidget, BranchesPopupHost, useBranchesPopup } from "./BranchWidge
 import { SyncCommitsPopupHost } from "./SyncCommitsPopup";
 import { showConflictsDialog, takeContinueWhenResolved } from "./conflictsUi";
 import { registerCompareActions } from "./compare";
-import { DIFF_KIND, diffTitle, type DiffData } from "./diffInput";
+import { DIFF_KIND, diffInputAtCaret, diffTitle, type DiffData } from "./diffInput";
 import { installDiffEditorHost } from "./DiffWindow";
 import { VcsDialogHost } from "./dialogs";
 import { changeMarkers } from "./gutter";
@@ -166,6 +166,7 @@ export function activateDiffViewer(): () => void {
     component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
     title: (input) => diffTitle(input.data as DiffData),
     icon: () => "diff",
+    navigationInput: diffInputAtCaret,
   });
   const combined = registerEditorKind({
     kind: COMBINED_DIFF_KIND,

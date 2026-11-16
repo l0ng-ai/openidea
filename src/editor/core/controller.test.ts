@@ -4,7 +4,12 @@ import { createMemoryBackend } from "./backend";
 import { initialTabsState } from "./model/tabs";
 import { useDocMeta } from "./model/document";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
-import { registerTextEditorWrapper, setProjectViewLead, useProjectViewLead } from "@/workbench/contributions";
+import {
+  registerEditorKind,
+  registerTextEditorWrapper,
+  setProjectViewLead,
+  useProjectViewLead,
+} from "@/workbench/contributions";
 import { registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -65,6 +70,52 @@ describe("EditorController", () => {
     expect(ctrl.activeSlot!.caret()).toMatchObject({ line: 30, col: 2 });
     await ctrl.back();
     expect(ctrl.activeSlot!.model.path).toBe("/p/x.ts");
+  });
+
+  it("keeps a diff preview open when a file opens from it, and goes back to the diff", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/x.ts": "x\n", "/p/b.ts": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/x.ts", { focus: false });
+    const diff = { kind: "diff", key: "diff:/p/a.ts", path: "/p/a.ts" };
+    await ctrl.openInput(diff, { preview: true });
+    // ⌘/Ctrl-click in the diff: the declaration opens in a tab of its own.
+    await ctrl.openFile("/p/b.ts", { focus: false });
+    const keys = () => Object.values(useTabs.getState().panes).flatMap((p) => p.tabs.map((t) => t.input.key));
+    expect(keys()).toContain(diff.key);
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(diff.key);
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/x.ts");
+    await ctrl.forward();
+    expect(ctrl.activeInput()?.key).toBe(diff.key);
+    // Recent Locations lists text places only.
+    expect(ctrl.nav.snapshot().entries.map((e) => e.path)).toEqual(["/p/x.ts", "/p/b.ts"]);
+  });
+
+  it("goes back to a diff where it was left, open or closed", async () => {
+    // The diff viewer gives the input that reopens it at its caret.
+    const dispose = registerEditorKind({
+      kind: "diff",
+      title: () => "diff",
+      component: () => null,
+      navigationInput: (input) => ({ ...input, data: { line: 7 } }),
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/b.ts": "b\n" }));
+      ctrl.start();
+      const diff = { kind: "diff", key: "diff:/p/a.ts", path: "/p/a.ts", data: { line: null } };
+      await ctrl.openInput(diff, { preview: true });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      // Still open, it shows afresh when activated: at the caret too.
+      await ctrl.back();
+      expect(ctrl.activeInput()).toMatchObject({ key: diff.key, data: { line: 7 } });
+      await ctrl.forward();
+      await ctrl.closeInput(diff.key);
+      await ctrl.back();
+      expect(ctrl.activeInput()).toMatchObject({ key: diff.key, data: { line: 7 } });
+    } finally {
+      dispose();
+    }
   });
 
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
