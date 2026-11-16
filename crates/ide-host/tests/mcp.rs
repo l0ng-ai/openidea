@@ -408,6 +408,55 @@ async fn scope_limits_the_query_tools_to_a_directory() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
+    let h = Harness::new();
+    h.trust().await;
+    let git = |dir: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&h.root, &["init"]);
+    git(&h.root, &["add", "."]);
+    git(&h.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+    git(&h.root, &["worktree", "add", "-q", ".wt/feature"]);
+    let worktree = h.root.join(".wt/feature");
+    h.host.trust.decide(&worktree, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &worktree).unwrap();
+    // Hidden folders excluded by name: `.wt` is one, the worktree's own files are not.
+    ide_host::ops::project::set_settings(
+        &h.host,
+        "main",
+        ide_workspace::settings::SettingsScope::Project,
+        "projectStructure.excludeFiles",
+        "\".*\"",
+    )
+    .unwrap();
+    let found = |args: Value| {
+        let h = &h;
+        async move {
+            let v = h.json("search_text", args).await;
+            let mut out: Vec<String> = v["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|i| i["filePath"].as_str().unwrap().to_owned())
+                .collect();
+            out.dedup();
+            out
+        }
+    };
+    let everywhere = found(json!({"q":"needle"})).await;
+    assert!(everywhere.contains(&".wt/feature/src/b.txt".to_owned()), "{everywhere:?}");
+    assert_eq!(
+        found(json!({"q":"needle","scope":".wt/feature/src"})).await,
+        [".wt/feature/src/a.txt", ".wt/feature/src/b.txt"]
+    );
+    assert_eq!(found(json!({"q":"needle","paths":[".wt/feature/src/b.txt"]})).await, [".wt/feature/src/b.txt"]);
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn reformat_uses_the_formatter_chain_and_preserves_a_dirty_buffer() {
