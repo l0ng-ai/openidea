@@ -16,13 +16,13 @@
 .activity {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .after {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .seconds {
@@ -35,7 +35,7 @@
   min-height: 120px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 8px;
   overflow: auto;
   border: 1px solid var(--border-strong);
@@ -46,9 +46,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 4px 8px;
-  background: var(--bg-subtle);
+  background: var(--bg-hover);
   border-radius: var(--radius-control);
 }
 
@@ -64,7 +64,7 @@
 .add {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 
 .input {

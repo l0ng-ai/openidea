@@ -188,7 +188,7 @@ function RecentRow({
   const opening = useRecent((s) => s.opening === m.project.path);
   const when = relativeTime(m.project.openedAtMs);
   return (
-    <div className={clsx(styles.recent, compact && styles.recentCompact)}>
+    <div className={styles.recent}>
       <ProjectBadge name={m.project.name} />
       <span className={styles.recentText}>
         <span className={styles.recentTop}>

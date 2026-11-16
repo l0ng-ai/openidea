@@ -35,7 +35,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 2px;
   border-right: 1px solid var(--border);
 }
@@ -52,7 +52,7 @@
   height: 32px;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
 }
 .branchSearch {
@@ -68,14 +68,14 @@
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   line-height: 1;
   vertical-align: middle;
 }
 
 /* filters */
 .filters {
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 8px 0 6px;
   min-width: 0;
   overflow: hidden;
@@ -90,7 +90,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   overflow: hidden;
 }
 .filterHidden {
@@ -181,7 +181,7 @@
   height: 26px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 8px;
   white-space: nowrap;
   cursor: default;
@@ -255,7 +255,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
   overflow-x: clip;
   overflow-y: visible;
@@ -309,7 +309,7 @@
   min-width: 11px;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   /* May use the whole subject cell when space allows (#2447); shrinks with
      per-label ellipsis before crowding out the commit message. */
   max-width: 100%;
@@ -323,7 +323,7 @@
   --tag-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.5 1.5h4.2l4.8 4.8-4.2 4.2-4.8-4.8z' fill='none' stroke='black' stroke-width='1.1' stroke-linejoin='round'/%3E%3Ccircle cx='4' cy='4' r='.9'/%3E%3C/svg%3E");
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
   white-space: nowrap;
@@ -386,7 +386,7 @@
 .fileRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -407,7 +407,7 @@
 }
 .lineStats {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: none;
   font-variant-numeric: tabular-nums;
 }
@@ -628,7 +628,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 /* A branch inside an opened Local / Remote group. */
 .branchFilterNested {
@@ -673,7 +673,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 4px 6px;
 }
 .worktreeList {

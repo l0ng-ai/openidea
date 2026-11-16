@@ -25,6 +25,7 @@ import {
   openFile,
   openMoveDialog,
   openRenameDialog,
+  openSelectionInRightSplit,
   paste,
   reloadFromDisk,
   revealInFinder,
@@ -215,6 +216,8 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
         },
         { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
         { id: "rel", label: "Path From Content Root", run: () => void copyPaths("relative", nodes) },
+        { kind: "separator" },
+        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
       ],
     },
     {
@@ -311,8 +314,9 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   // Contributed groups (Run / Debug '…', More Run/Debug ›), each followed by a separator.
   push(...menuGroupItems("projectView", menuGroupContext(nodes)));
 
-  // Open In ›
+  // Open in Right Split / Open In ›
   push(
+    files.length > 0 && openInRightSplitItem(files),
     submenu("openIn", "Open In", [
       canRevealInFileManager() && {
         id: "finder",
@@ -455,6 +459,16 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
   return items;
 }
 
+function openInRightSplitItem(files: ProjectNode[]): MenuItem {
+  return {
+    id: "openInRightSplit",
+    label: "Open in Right Split",
+    icon: "split",
+    shortcut: keyLabel("project.openInRightSplit"),
+    run: () => void openSelectionInRightSplit(files),
+  };
+}
+
 /** Library sources (External Libraries) are read-only: copy, find and reveal only. */
 function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
   if (!nodes.length) return [];
@@ -478,6 +492,7 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
     !!folder && delegated("find.inPath", { directory: folder }, "Find in Files…", { icon: "search" }),
     !!folder && { kind: "separator" },
+    nodes.every((n) => !n.dir) && openInRightSplitItem(nodes),
     submenu("openIn", "Open In", [
       canRevealInFileManager() && {
         id: "finder",

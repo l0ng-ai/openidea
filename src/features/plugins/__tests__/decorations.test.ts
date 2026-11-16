@@ -148,3 +148,14 @@ it("describes ide.commands explicitly in consent", () => {
   });
   expect(description).toContain("including running programs, committing and pushing");
 });
+
+it("names the language server of an lsp grant in consent", () => {
+  const description = capabilityDescription({
+    id: "lsp:phoxite",
+    description: "",
+    optional: false,
+    granted: false,
+    risk: "high",
+  });
+  expect(description).toBe("Send requests to the phoxite language server, which reads and changes the project's files");
+});

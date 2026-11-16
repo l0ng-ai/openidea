@@ -100,6 +100,23 @@ pub trait HostApi: Send + Sync {
         let _ = (root, client, id, cancel, timeout);
         Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
     }
+    /// Sends `method` to the running language server named `server` of the project at
+    /// `root`: a request (the result as JSON), or with `notify` a notification (`null`).
+    /// `params` is JSON. Never starts a server.
+    #[allow(clippy::too_many_arguments)]
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError> {
+        let _ = (root, method, params, notify, cancel, timeout);
+        Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
+    }
     /// Stdio argv only; no URL or bearer token.
     fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
         let _ = client;

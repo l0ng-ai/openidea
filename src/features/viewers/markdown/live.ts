@@ -8,9 +8,9 @@ import { StateEffect, type EditorState } from "@codemirror/state";
 import { Decoration, ViewPlugin, type DecorationSet, type EditorView, type ViewUpdate } from "@codemirror/view";
 import { SearchCursor, getSearchQuery } from "@codemirror/search";
 import { create } from "zustand";
-import { registerEditorContribution } from "@/editor/api";
+import { registerEditorContribution, useEditorRegistry } from "@/editor/api";
 import { MAX_COUNT, findExcluded, findOpen, findScope } from "@/editor/core/cm/find";
-import { fontZoom } from "@/editor/core/cm/prefs";
+import { fontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "@/editor/core/cm/prefs";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { isMarkdownPath } from "../fileKinds";
@@ -67,6 +67,16 @@ function publish(path: string, patch: Partial<LiveMarkdown>) {
     };
     return { [path]: { ...prev, ...patch } };
   });
+}
+
+/** Steps or resets the Markdown preview's font zoom through its backing editor. */
+export function stepMarkdownPreviewFontZoom(path: string, previewRoot: HTMLElement | null, delta: number): void {
+  const pane = previewRoot?.closest("[data-pane-id]");
+  const editors = [...useEditorRegistry.getState().editors].filter((ed) => ed.ctx.path === path);
+  const match = (pane ? editors.find((ed) => pane.contains(ed.view.dom)) : undefined) ?? editors[0];
+  if (!match) return;
+  if (delta === 0) resetConfiguredEditorsFontZoom(match.view);
+  else stepConfiguredEditorsFontZoom(match.view, delta);
 }
 
 /** Records the preview's own scroll offset, published by the preview's scroll listener. */

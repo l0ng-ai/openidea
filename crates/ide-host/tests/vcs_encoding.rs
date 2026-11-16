@@ -111,3 +111,49 @@ async fn gbk_document_gutter_diff_stage_and_rollback_share_encoding() {
     assert_eq!(vcs::vcs_file_at(&host, "main", utf8, None).await.unwrap().as_deref(), Some(old));
     host.close_project("main");
 }
+
+/// A committed symlink to a folder (#3528): its revision is the link target, even though the
+/// working path is a directory.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_directory_symlink_revision_is_its_target() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(temp.path()).unwrap();
+    let root = base.join("project");
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    git(&root, &["config", "user.name", "Test"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    git(&root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("target/file.txt"), "example\n").unwrap();
+    std::os::unix::fs::symlink("target", root.join("dir-link")).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "Add a directory symlink"]);
+    let host = Host::new(HostConfig {
+        config_dir: base.join("config"),
+        data_dir: base.join("data"),
+        local_data_dir: base.join("data"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    });
+    host.trust.decide(&root, true, false).unwrap();
+    let project = host.open_project("main", &root).unwrap();
+    for _ in 0..500 {
+        if !project.repos().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let link = root.join("dir-link");
+    assert!(link.is_dir());
+    assert_eq!(
+        vcs::vcs_file_at(&host, "main", link.clone(), Some("HEAD".into())).await.unwrap().as_deref(),
+        Some("target")
+    );
+    assert_eq!(vcs::vcs_file_mode(&host, "main", link, Some("HEAD".into())).await.unwrap().as_deref(), Some("120000"));
+    host.close_project("main");
+}

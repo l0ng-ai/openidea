@@ -10,12 +10,14 @@ use crate::provider::ProviderSpec;
 use crate::{Shared, client_info};
 use parking_lot::Mutex;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 const DISCOVER_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(3) } else { Duration::from_secs(120) };
 
-/// Opens `session/new`, reads `configOptions`, and records per-model `thought_level` choices.
+/// Opens `session/new`, reads `configOptions`, and records the `thought_level` choices of the
+/// session's model: they describe that model only, and other models may offer different ones.
 pub(crate) async fn run(shared: &Arc<Shared>, spec: &ProviderSpec) -> Result<Discovered, String> {
     let prefer_stored = crate::provider::prefer_stored_copilot_auth();
     match run_once(shared, spec, prefer_stored).await {
@@ -62,21 +64,17 @@ async fn run_once(shared: &Arc<Shared>, spec: &ProviderSpec, strip_ambient: bool
             .map_err(|e| e.to_string())?;
         let mut options = config::options_of(&new);
         config::add_client_options(&launch.id, &mut options);
-        let model_option = options.iter().find(|o| o.category.as_deref() == Some("model"));
-        let effort = levels_for_model_from_slice(&options);
-        let levels: Vec<(String, Vec<AgentConfigOption>)> = match (model_option, effort) {
-            (Some(model), Some(effort)) if !model.values.is_empty() => {
-                model.values.iter().map(|v| (v.value.clone(), effort.clone())).collect()
-            }
-            (Some(model), Some(effort)) => model.current.clone().map(|m| vec![(m, effort)]).unwrap_or_default(),
-            _ => Vec::new(),
+        let model = options.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.clone());
+        let levels = match (model, levels_for_model_from_slice(&options)) {
+            (Some(model), Some(effort)) => BTreeMap::from([(model, effort)]),
+            _ => BTreeMap::new(),
         };
         let commands = updates
             .commands
             .lock()
             .clone()
             .or_else(|| new.get("availableCommands").map(|_| config::commands_of(&new, &launch.id)));
-        Ok::<_, String>(Discovered { config: options, commands, levels: levels.into_iter().collect() })
+        Ok::<_, String>(Discovered { config: options, commands, levels })
     };
     let result = tokio::time::timeout(DISCOVER_TIMEOUT, work).await;
     peer.kill();
@@ -108,18 +106,17 @@ impl ide_jsonrpc::Handler for DiscoveryUpdates {
     }
 }
 
-fn is_thought_level(o: &AgentConfigOption) -> bool {
-    o.category.as_deref() == Some("thought_level")
-        || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
-}
-
 fn levels_for_model_from_slice(options: &[AgentConfigOption]) -> Option<Vec<AgentConfigOption>> {
     let levels: Vec<_> = options
         .iter()
-        .filter(|o| is_thought_level(o))
+        .filter(|o| config::is_per_model_option(o))
         .cloned()
         .map(|mut o| {
-            if o.category.as_deref() != Some("thought_level") {
+            if config::is_context_option(&o.id) {
+                if o.category.is_none() {
+                    o.category = Some("model_config".into());
+                }
+            } else if o.category.as_deref() != Some("thought_level") {
                 o.category = Some("thought_level".into());
             }
             o

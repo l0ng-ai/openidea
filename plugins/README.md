@@ -157,6 +157,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
+| `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                    |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -356,6 +357,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
 | `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
+| `lsp:<server>`      | high   | API 1.9: `Project::language_server_request` / `language_server_notify` to that running language server (its name in the language definition); trusted projects only     |
 | `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
 | `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
 | `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
@@ -430,6 +432,12 @@ matching SDK. Released 1.8 plugins keep working. New in 1.9:
   language's debugger) or `Debugger::AttachChild { kind, command_contains }`
   (Debug runs the configuration and attaches to a process the run starts). See
   _Environment and debugger_ under _Runs, terminal sessions and test results_.
+
+- **`[[contributes.serverCommands]]`** routes a command a language server leaves
+  to the client (a code lens's, a code action's) to the plugin's own command.
+- **Requests to a language server.** `Project::language_server_request` and
+  `language_server_notify` send a running server its own methods, behind the
+  high-risk `lsp:<server>` capability. See _Requests to a language server_.
 
 ### API 1.8
 
@@ -736,6 +744,77 @@ adds the two ways to the bytes:
 ```rust
 let bytes = project.read_bytes(&doc.path)?;  // the PDF's exact bytes
 ```
+
+### Requests to a language server (API 1.9)
+
+A plugin can ask a language server the IDE already runs for the server's own
+data: `rust-analyzer/expandMacro`, a framework server's route list. Declare
+`lsp:<server>` (high risk: the server reads and changes the project's files on
+the plugin's behalf), where `<server>` is the `name` of the
+`[[language-servers]]` entry in the language definition:
+
+```toml
+engines.openidea = "^1.9"
+
+[capabilities]
+required = ["lsp:phoxite"]
+```
+
+```rust
+let project = inv.project().ok_or("no project")?;
+let routes = project.language_server_request("phoxite", "phoxite/laravel/routes", Some("{}"))?; // JSON
+project.language_server_notify("phoxite", "phoxite/refresh", None)?;
+```
+
+| SDK                                                        | WIT                                    | Notes                                        |
+| ---------------------------------------------------------- | -------------------------------------- | -------------------------------------------- |
+| `Project::language_server_request(server, method, params)` | `language-servers.request(project, …)` | The result as JSON; `params` is JSON or none |
+| `Project::language_server_notify(server, method, params)`  | `language-servers.notify(project, …)`  | No answer is awaited                         |
+
+- Only the server's own methods pass. `initialize`, `initialized`, `shutdown`,
+  `exit`, anything starting with `$/` and any method whose first segment is an
+  LSP namespace (`textDocument`, `workspace`, `window`, `notebookDocument`,
+  `callHierarchy`, `typeHierarchy`, `completionItem`, `codeAction`, `codeLens`,
+  `documentLink`, `inlayHint`, `workspaceSymbol`, `client`, `telemetry`) are
+  `invalid`: a plugin can't touch document sync, the features the IDE asks for
+  itself or the server's lifecycle.
+- The call never starts a server: one that is not running for the project is
+  `not-found`. The server's own error is `failed` with its message.
+- The request ends with the invocation's cancellation and time budget. A method
+  is at most 256 bytes, params at most 1 MiB.
+- The project must be trusted; otherwise the call is `denied`.
+
+#### Commands a server hands to the client
+
+A server's code lens, code action or inlay hint can carry a command the server
+does not execute itself (it is not in its `executeCommandProvider`): the client
+is meant to. A plugin claims such a command in its manifest, and the IDE runs
+the plugin's own command instead of failing with "no language server provides
+command":
+
+```toml
+[[contributes.commands]]
+id = "model-view"
+title = "Show the Eloquent Model"
+
+[[contributes.serverCommands]]
+server = "phoxite"            # the server whose results carry the command
+command = "laravel.modelView" # the command name in the server's result
+run = "model-view"            # this plugin's command
+```
+
+- `run` gets the command's `arguments` array as JSON in `arg`, in the window and
+  editor where the lens or action was activated.
+- The manifest must declare `lsp:<server>`, and the claim counts only while the
+  plugin holds that grant.
+- A command listed in the server's `executeCommandProvider` still goes to the
+  server.
+- When two installed plugins claim the same `server` and `command`, the first
+  one loaded keeps it and the conflict is logged.
+
+In tests, `MockHost::set_language_server_response(server, method, json)` makes
+a server run and answer, and `language_server_requests()` /
+`language_server_notifications()` list what the plugin sent.
 
 ### Database sources (API 1.4)
 

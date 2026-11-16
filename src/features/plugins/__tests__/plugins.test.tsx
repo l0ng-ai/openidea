@@ -34,6 +34,7 @@ import { markerIcon, placeMarkers } from "../lineMarkerGutter";
 import { SecretsDetails } from "../secrets";
 import { handleRuntimeEvent, startRuntimeUi, usePluginStatusItems } from "../runtimeUi";
 import { evaluateWhen, getContext } from "@/platform/context";
+import { SettingsPageFocusContext } from "@/workbench/contributions";
 import { useTasks } from "@/workbench/tasks";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, defineUiPoint, syncUiContributions } from "../projection";
@@ -870,6 +871,47 @@ describe("PluginsPage", () => {
     expect(within(installed).queryAllByRole("listitem")).toHaveLength(0);
     await user.click(toggle);
     expect(within(installed).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("opens on the marketplace's themes when Settings asks for `plugins#themes`", async () => {
+    const base = createMemoryPluginsBackend([], sampleCatalog());
+    const marketEntry = (id: string, name: string, categories?: string[]): MarketPlugin => ({
+      id,
+      name,
+      version: "1.0.0",
+      description: `From the marketplace: ${name}`,
+      authors: [],
+      publisher: "acme",
+      download: `${id}.oiplugin`,
+      digest: "x",
+      capabilities: [],
+      engine: "^1.0",
+      installed: null,
+      compatible: true,
+      categories,
+    });
+    setPluginsBackend({
+      ...base,
+      marketUrl: async () => "https://plugins.example/index.json",
+      market: async () => [marketEntry("dark-pro", "One Dark Pro", ["themes"]), marketEntry("toy-mkt", "Toy Tool")],
+    });
+    const consume = vi.fn();
+    const page = (focus: string | null) => (
+      <SettingsPageFocusContext.Provider value={{ focus, consume }}>
+        <PluginsPage />
+      </SettingsPageFocusContext.Provider>
+    );
+    const { rerender } = render(page(null));
+    const list = await screen.findByRole("list", { name: "Available plugins" });
+    await waitFor(() => expect(within(list).getByText("One Dark Pro")).toBeInTheDocument());
+
+    // What the Appearance link does: the page is shown as `plugins#themes`.
+    rerender(page("themes"));
+    await waitFor(() => expect(screen.getByLabelText("Category")).toHaveTextContent("Themes"));
+    expect(within(list).getByText("One Dark Pro")).toBeInTheDocument();
+    expect(within(list).queryByText("Toy Tool")).not.toBeInTheDocument();
+    // The request is consumed, so showing the page again does not filter again.
+    expect(consume).toHaveBeenCalled();
   });
 
   it("offers the IntelliJ theme imports only in a trusted project's window", async () => {

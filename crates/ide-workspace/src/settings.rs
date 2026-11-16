@@ -147,6 +147,19 @@ fn read_layer(file: &Path) -> Option<Json> {
     }
 }
 
+/// The first appearance theme key of `file` naming a removed theme, if any. Plugin themes
+/// (`plugin:<id>/<theme>`) carry their plugin's id, so a plain id can only be a built-in's.
+fn removed_theme_in(file: &Path) -> Option<String> {
+    const KEYS: [&str; 3] = ["theme", "preferredLightTheme", "preferredDarkTheme"];
+    let layer = read_layer(file)?;
+    KEYS.iter()
+        .filter_map(|key| match layer.pointer(&format!("/appearance/{key}"))? {
+            Json::String(id) => Some(id.clone()),
+            _ => None,
+        })
+        .find(|id| ide_core::settings::REMOVED_THEMES.iter().any(|(removed, _)| id.as_str() == *removed))
+}
+
 /// Merges `layer` onto `merged` if the result still deserializes.
 fn try_merge(merged: &mut Json, layer: Json) -> Result<(), String> {
     // Migrate the legacy boolean every layer carries it, before it can clobber
@@ -262,6 +275,13 @@ impl SettingsStore {
             .into_iter()
             .filter_map(|scope| Some((scope, self.file(scope)?.to_path_buf())))
             .collect()
+    }
+
+    /// The removed built-in theme id (`REMOVED_THEMES`) a settings file still names, if any.
+    /// `Settings` reports its stand-in, so this reads the files again: it is what a settings
+    /// file named, not what the theme rows show now.
+    pub fn named_removed_theme(&self) -> Option<String> {
+        self.layers().into_iter().rev().find_map(|(_, file)| removed_theme_in(&file))
     }
 
     fn compute(&self) -> Settings {
@@ -524,6 +544,30 @@ struct SettingsBundle {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn removed_theme_named_in_a_settings_file_is_reported_for_the_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("cfg");
+        let proj = tmp.path().join("proj");
+        std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::create_dir_all(proj.join(".openidea")).unwrap();
+        // Nothing to report without a removed id.
+        std::fs::write(cfg.join("settings.toml"), "[appearance]\ntheme = \"dark\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme(), None);
+        // The theme the notice is about, and the light one for good measure.
+        std::fs::write(cfg.join("settings.toml"), "[appearance]\ntheme = \"one-dark\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-dark"));
+        std::fs::write(
+            cfg.join("settings.toml"),
+            "[appearance]\npreferredDarkTheme = \"one-dark\"\ntheme = \"plugin:acme.themes/night\"\n",
+        )
+        .unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-dark"));
+        // A project layer naming it wins over the global one.
+        std::fs::write(proj.join(".openidea/settings.toml"), "[appearance]\ntheme = \"one-light\"\n").unwrap();
+        assert_eq!(SettingsStore::load(&cfg, Some(&proj)).named_removed_theme().as_deref(), Some("one-light"));
+    }
 
     #[test]
     fn compose_file_choices_are_project_settings_and_survive_reload() {

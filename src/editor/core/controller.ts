@@ -331,12 +331,20 @@ export class EditorController implements SlotHost {
     this.disposers.push(
       useTabs.subscribe((s, previous) => {
         const open = openKeys(s);
+        const live = new Set<string>();
+        for (const pane of Object.values(s.panes)) for (const tab of pane.tabs) live.add(tab.id);
         const closed = new Map<string, EditorInput>();
+        const closedTabs: Tab[] = [];
         for (const pane of Object.values(previous.panes))
-          for (const tab of pane.tabs) if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
-        if (!this.replacingProject)
-          for (const input of closed.values())
-            useContributions.getState().editorKinds.get(input.kind)?.onClose?.(input);
+          for (const tab of pane.tabs) {
+            if (!live.has(tab.id)) closedTabs.push(tab);
+            if (!open.has(tab.input.key)) closed.set(tab.input.key, tab.input);
+          }
+        if (!this.replacingProject) {
+          const kinds = useContributions.getState().editorKinds;
+          for (const tab of closedTabs) kinds.get(tab.input.kind)?.onTabClose?.(tab.id, tab.input);
+          for (const input of closed.values()) kinds.get(input.kind)?.onClose?.(input);
+        }
         const prev = prevTabs;
         prevTabs = s;
         if (

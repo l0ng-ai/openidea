@@ -149,7 +149,8 @@ export function DatabaseView() {
     if (!st.treeReveal) return;
     const path = st.treeReveal.path;
     const frame = requestAnimationFrame(() => {
-      path.toReversed().some((key) => tree.current?.reveal(key));
+      // Spread + reverse instead of toReversed(), which needs Safari 16.4 (the floor is 15.4).
+      [...path].reverse().some((key) => tree.current?.reveal(key));
       tree.current?.focus();
     });
     return () => cancelAnimationFrame(frame);

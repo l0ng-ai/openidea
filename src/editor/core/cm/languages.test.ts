@@ -270,6 +270,32 @@ describe("language modes", () => {
     }
   });
 
+  it("colours `this`, `super` and Rust's `self` as keywords", async () => {
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.self, class: "self" },
+      { tag: t.atom, class: "atom" },
+    ]);
+    for (const [mode, path, doc, expected] of [
+      ["Java", "/p/A.java", "class A extends B { A() { super(); this.a = 1; } }", ["super", "this"]],
+      ["JavaScript", "/p/a.js", "class A extends B { m() { super.m(); this.a = 1; } }", ["super", "this"]],
+      ["TypeScript", "/p/a.ts", "class A extends B { m() { super.m(); this.a = 1; } }", ["super", "this"]],
+      ["C++", "/p/a.cpp", "void A::m() { this->a = 1; }", ["this"]],
+      ["Rust", "/p/a.rs", "impl A { fn m(&self) { self.a = 1; } }", ["self", "self"]],
+    ] as const) {
+      const support = await loadSupport(findLanguageDescription(mode, path)!);
+      const found: Array<[string, string]> = [];
+      highlightTree(support!.language.parser.parse(doc), highlighter, (from, to, style) =>
+        found.push([doc.slice(from, to), style]),
+      );
+      const words = new Set<string>(expected);
+      expect(
+        found.filter(([text]) => words.has(text)),
+        mode,
+      ).toEqual(expected.map((word) => [word, "keyword"]));
+    }
+  });
+
   it("recognizes go.mod and go.work files by mode and filename", async () => {
     for (const [mode, path] of [
       ["GoMod", "/project/go.mod"],

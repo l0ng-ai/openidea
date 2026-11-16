@@ -1,0 +1,34 @@
+id = "test.lsp-requests"
+name = "Language server requests fixture"
+version = "0.1.0"
+engines.openidea = "^1.9"
+wasm = "dist/plugin.wasm"
+
+[capabilities]
+optional = ["lsp:mock"]
+
+[[contributes.commands]]
+id = "request"
+title = "Ask the mock server for its routes"
+
+[[contributes.commands]]
+id = "notify"
+title = "Tell the mock server something changed"
+
+[[contributes.commands]]
+id = "standard"
+title = "Send a method of LSP itself"
+
+[[contributes.commands]]
+id = "ungranted"
+title = "Ask a server the manifest does not name"
+
+[[contributes.commands]]
+id = "ran"
+title = "Run a command the mock server left to the client"
+
+# The mock server's code lenses carry `mock.modelView` without executing it.
+[[contributes.serverCommands]]
+server = "mock"
+command = "mock.modelView"
+run = "ran"

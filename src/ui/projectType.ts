@@ -1,5 +1,5 @@
 /** Root build/SDK markers only; no dependency parsing or tool execution. */
-import type { IconName } from "@/ui/icons";
+import type { IconName } from "./icons";
 
 type Marker = string | RegExp;
 interface ProjectTypeDefinition {

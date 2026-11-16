@@ -61,7 +61,8 @@ const TYPE_CLASS: Record<string, string> = {
   lifetime: "annotation",
   selfParameter: "self",
   clsParameter: "self",
-  selfKeyword: "self",
+  // rust-analyzer's `self`: RustRover colours the self parameter as a keyword.
+  selfKeyword: "keyword",
 };
 
 const MODIFIER_CLASS: Record<string, string> = {

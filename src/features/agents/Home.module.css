@@ -1,4 +1,7 @@
 .home {
+  --agent-fs-ui: calc(var(--fs-ui) + var(--agent-font-zoom, 0px));
+  --agent-fs-small: calc(var(--fs-small) + var(--agent-font-zoom, 0px));
+  --agent-fs-code: calc(var(--fs-code) + var(--agent-font-zoom, 0px));
   flex: 1;
   min-height: 0;
   overflow: auto;
@@ -15,14 +18,14 @@
   width: min(var(--agent-conversation-width), 100%);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .fitWidth .inner {
   width: 100%;
 }
 .heading {
   margin: 0 0 10px;
-  font-size: 18px;
+  font-size: calc(18px + var(--agent-font-zoom, 0px));
   font-weight: 600;
   text-align: center;
   color: var(--fg-strong);
@@ -35,7 +38,7 @@
   flex-wrap: wrap;
   align-items: center;
   /* The chips' own padding spaces them. */
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 2px;
   font-size: var(--fs-small);
 }
@@ -66,7 +69,7 @@
   padding: 16px 12px 12px;
 }
 .docked .inner {
-  gap: 8px;
+  gap: var(--space-2);
 }
 .docked .where {
   flex-wrap: nowrap;
@@ -95,7 +98,7 @@
 .notes {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   height: 0;
 }
 .docked .notes {

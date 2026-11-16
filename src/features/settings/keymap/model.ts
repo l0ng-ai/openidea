@@ -29,7 +29,12 @@ export function resolveBindings(draft: KeymapDraft, id: string): string[] {
 
 /** Hidden actions with shortcuts stay configurable even after their bindings are removed. */
 export function isKeymapAction(action: Action, draft: KeymapDraft): boolean {
-  return !action.hidden || action.id in draft.overrides || presetBindings(draft.preset, action.id).length > 0;
+  return (
+    !action.hidden ||
+    !!action.keymap ||
+    action.id in draft.overrides ||
+    presetBindings(draft.preset, action.id).length > 0
+  );
 }
 
 export function isModified(draft: KeymapDraft, id: string): boolean {

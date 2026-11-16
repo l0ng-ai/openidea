@@ -11,7 +11,7 @@ import { attachPanZoom } from "../panZoom";
 import { attachDiagramTools, TOOLS_ATTR } from "./mermaidTools";
 import { localSvg } from "./localSvg";
 import { reid } from "./svgIds";
-import { svgElementSize } from "./svgSize";
+import { svgElementSize } from "@/ui/svgSize";
 
 export const MERMAID_SELECTOR = "[data-mermaid]";
 const OUTPUT_CLASS = "mermaid-output";

@@ -216,10 +216,11 @@ docker_snapshot                              trusted            desktop      bin
 end_process                                  trusted            desktop      bindings async
 env_reload                                   always             project_host bindings async
 file_dialog_needs_gtk                        trusted            desktop      bindings async
-find_dirs                                    always             project_host bindings sync
-find_files                                   always             project_host bindings sync
+find_dirs                                    always             project_host bindings async
+find_files                                   always             project_host bindings async
 find_files_named                             always             project_host bindings async
-find_symbols                                 always             project_host bindings sync
+find_symbols                                 always             project_host bindings async
+find_symbols_named                           always             project_host bindings async
 fs_compare_directories                       always             project_host bindings async
 fs_copy                                      always             project_host bindings async
 fs_copy_merge                                always             project_host bindings async
@@ -532,6 +533,7 @@ settings_get_global                          always             desktop      bin
 settings_import                              always             desktop      bindings async
 settings_list_jetbrains_ides                 always             desktop      bindings async
 settings_read_jetbrains                      always             desktop      bindings async
+settings_removed_theme                       always             project_host bindings sync
 settings_set                                 always             project_host bindings sync
 spell_check                                  always             project_host bindings async
 spell_suggest                                always             project_host bindings async

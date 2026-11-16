@@ -130,6 +130,14 @@ pub struct AgentConfigValue {
     pub value: String,
     pub name: String,
     pub description: Option<String>,
+    /// Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_category: Option<String>,
+    /// Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub usage_multiplier: Option<String>,
 }
 
 /// How a setting is changed.
@@ -155,6 +163,10 @@ pub struct AgentConfigOption {
     /// ACP category: `model`, `mode`, `thought_level`, or agent-specific.
     pub category: Option<String>,
     pub current: Option<String>,
+    /// Initial default value reported by the agent, preserved across session updates for Reset.
+    #[serde(default)]
+    #[specta(optional)]
+    pub default_value: Option<String>,
     pub values: Vec<AgentConfigValue>,
     pub via: AgentConfigVia,
 }
@@ -316,6 +328,59 @@ pub struct AgentQuestionOption {
     pub preview: Option<String>,
 }
 
+/// A form the agent asks the user to fill in (ACP `elicitation/create`, form mode).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentForm {
+    pub fields: Vec<AgentFormField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFormField {
+    /// The property name the answer is keyed by.
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    pub kind: AgentFormFieldKind,
+    /// The choices of a `choice` or `choices` field.
+    #[serde(default)]
+    pub options: Vec<AgentFormOption>,
+    /// The initial answer: option values, a text, a number, or `true` / `false`.
+    #[serde(default)]
+    pub default: Vec<String>,
+    /// Bounds: the number of a `number` / `integer`, the length of a `text`, the count of `choices`.
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFormFieldKind {
+    Text,
+    Number,
+    Integer,
+    Boolean,
+    /// One of `options`.
+    Choice,
+    /// Any of `options`.
+    Choices,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFormOption {
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// One item of a task's conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -396,6 +461,10 @@ pub enum AgentEntry {
         /// of question to answer instead of an option.
         #[serde(default)]
         questions: Vec<AgentQuestion>,
+        /// Set when the agent asks for a form (ACP elicitation); answered with a JSON object of
+        /// field name to its values, `decline`, or nothing to cancel.
+        #[serde(default)]
+        form: Option<AgentForm>,
         /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
         chosen: Option<String>,
     },

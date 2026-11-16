@@ -56,6 +56,16 @@ pub(crate) struct CatalogData {
     pub refreshed_at_ms: Option<f64>,
 }
 
+impl CatalogData {
+    fn model_option(&self) -> Option<&AgentConfigOption> {
+        self.config.iter().find(|o| o.category.as_deref() == Some("model"))
+    }
+
+    fn lists(&self, model: &str) -> bool {
+        self.model_option().is_some_and(|o| o.values.iter().any(|v| v.value == model))
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SavedCatalog {
@@ -329,11 +339,17 @@ impl AgentCatalogs {
             Ok(found) => {
                 let mut cache = shared.known.lock();
                 let known = cache.entry(key.2.clone()).or_default();
-                let catalog = CatalogData {
+                let mut catalog = CatalogData {
                     config: found.config,
                     thought_levels: found.levels,
                     refreshed_at_ms: Some(self.epoch_ms()),
                 };
+                // Efforts sessions reported for models discovery doesn't read stay while listed.
+                for (model, levels) in entry.catalog.take().map(|old| old.thought_levels).unwrap_or_default() {
+                    if catalog.lists(&model) && !catalog.thought_levels.contains_key(&model) {
+                        catalog.thought_levels.insert(model, levels);
+                    }
+                }
                 known.config = catalog.config.clone();
                 known.thought_levels = catalog.thought_levels.clone();
                 if let Some(commands) = found.commands {
@@ -363,6 +379,42 @@ impl AgentCatalogs {
             for subscriber in self.subscribers(shared) {
                 subscriber.emit(AgentEvent::Providers);
             }
+        }
+    }
+
+    /// Records the efforts a session reported for a listed `model` other than the one discovery
+    /// read: ACP discovery opens one session, so it knows only that model's efforts.
+    pub(crate) fn learn_levels(&self, shared: &Shared, provider: &str, model: &str, levels: Vec<AgentConfigOption>) {
+        let lacks = |catalog: &CatalogData| {
+            catalog.lists(model)
+                && catalog.model_option().and_then(|o| o.current.as_deref()) != Some(model)
+                && catalog.thought_levels.get(model) != Some(&levels)
+        };
+        let key = Self::key(shared, provider);
+        let mut state = self.state.lock();
+        let mut learned = false;
+        if let Some(catalog) = state.entries.get_mut(&key).and_then(|e| e.catalog.as_mut()).filter(|c| lacks(c)) {
+            catalog.thought_levels.insert(model.to_owned(), levels.clone());
+            learned = true;
+        }
+        let mut cache = shared.known.lock();
+        if let Some(saved) = cache
+            .get_mut(provider)
+            .and_then(|known| known.catalogs.get_mut(&shared.root_key()))
+            .filter(|saved| lacks(&saved.catalog))
+        {
+            saved.catalog.thought_levels.insert(model.to_owned(), levels);
+            learned = true;
+        }
+        if !learned {
+            return;
+        }
+        shared.persist_known(&cache);
+        drop(cache);
+        let snapshot = state.entries.get(&key).map(|entry| self.snapshot(shared, provider, entry));
+        drop(state);
+        if let Some(snapshot) = snapshot {
+            self.broadcast(shared, &snapshot);
         }
     }
 

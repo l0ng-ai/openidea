@@ -191,6 +191,7 @@ function providePluginEndpoints(pluginId: string): () => void {
 export function defineBuiltinUiPoints(): () => void {
   const disposers = [
     defineUiPoint("mcpTools", {}),
+    defineUiPoint("serverCommands", {}),
     defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",

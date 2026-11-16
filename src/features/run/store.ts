@@ -760,16 +760,35 @@ export function sessionsOf(config: RunConfig, sessions = useRun.getState().sessi
  * Agents' commands keep to their own tabs.
  */
 function reusableTab(sessions: readonly RunSession[], active: string | null, config: RunConfig) {
-  const free = sessions.filter((s) => !isLive(s) && !s.pinned);
+  const free = sessions.filter((s) => !isLive(s) && !s.pinned && !claimedTabs.has(s.id));
   const same = free.find((s) => s.config.id === config.id);
   if (same || agentName(config) !== null) return same;
   const others = free.filter((s) => agentName(s.config) === null);
   return others.find((s) => s.id === active) ?? others[0];
 }
 
+/** Tabs a starting run is about to take: runs started together (compounds, reruns of several packages) must not take the same one. */
+const claimedTabs = new Set<string>();
+
 /** Pins or unpins a session's tab. */
 export function pinSession(id: string, pinned: boolean) {
   patchSession(id, { pinned });
+}
+
+interface StartRunOptions {
+  show?: boolean;
+  /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
+  launch?: RunConfig;
+  /** Every output line of this run. */
+  onLine?: (text: string) => void;
+  /** The process exited. */
+  onExit?: (exitCode: number | null, stopped: boolean) => void;
+  /** Before launch tasks already ran (or must not run). */
+  prepared?: boolean;
+  /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
+  chain?: readonly string[];
+  /** Runs before the stop signal when the user stops this run (run executors). */
+  beforeStop?: (runId: RunId) => Promise<void>;
 }
 
 /** Starts `config`, reusing the tab of a finished (or the given) session (see `reusableTab`). */
@@ -777,21 +796,22 @@ export async function startRun(
   config: RunConfig,
   reuse?: string,
   baseConfig?: RunConfig,
-  options: {
-    show?: boolean;
-    /** Launch this instead of `config` (e.g. with a debug agent); the tab still shows `config`. Skips before launch tasks. */
-    launch?: RunConfig;
-    /** Every output line of this run. */
-    onLine?: (text: string) => void;
-    /** The process exited. */
-    onExit?: (exitCode: number | null, stopped: boolean) => void;
-    /** Before launch tasks already ran (or must not run). */
-    prepared?: boolean;
-    /** Configurations whose launch led to this one (before launch tasks, compounds): breaks cycles. */
-    chain?: readonly string[];
-    /** Runs before the stop signal when the user stops this run (run executors). */
-    beforeStop?: (runId: RunId) => Promise<void>;
-  } = {},
+  options: StartRunOptions = {},
+): Promise<RunSession | null> {
+  if (!reuse || claimedTabs.has(reuse)) return startRunIn(config, reuse, baseConfig, options);
+  claimedTabs.add(reuse);
+  try {
+    return await startRunIn(config, reuse, baseConfig, options);
+  } finally {
+    claimedTabs.delete(reuse);
+  }
+}
+
+async function startRunIn(
+  config: RunConfig,
+  reuse: string | undefined,
+  baseConfig: RunConfig | undefined,
+  options: StartRunOptions,
 ): Promise<RunSession | null> {
   config = withRunTarget(config);
   if (!options.launch && isCMakeBuild(config)) {
@@ -841,12 +861,16 @@ export async function startRun(
   // IDEA there is no time limit: a first Stop waits for the shutdown, a second one kills it.
   await waitForExit(stopping, null);
   const now = useRun.getState();
-  session ??= reusableTab(now.sessions, now.activeSession, config);
+  const picked = session ? undefined : reusableTab(now.sessions, now.activeSession, config);
+  session ??= picked;
 
+  if (picked) claimedTabs.add(picked.id);
   try {
     await maybeEditorService()?.saveAll();
   } catch {
     /* saving is best effort */
+  } finally {
+    if (picked) claimedTabs.delete(picked.id);
   }
 
   const startedAt = Date.now();

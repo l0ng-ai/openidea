@@ -9,7 +9,7 @@
 .tabs {
   display: flex;
   flex: 1;
-  gap: 4px;
+  gap: var(--space-1);
   overflow-x: auto;
   min-width: 0;
 }

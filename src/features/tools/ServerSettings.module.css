@@ -1,7 +1,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
   min-width: 0;
 }
 
@@ -12,7 +12,7 @@
 .sectionTitle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   height: 22px;
   margin-bottom: 4px;
   color: var(--fg-strong);
@@ -46,7 +46,7 @@
 .row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .label {
@@ -61,7 +61,7 @@
 .control {
   display: flex;
   align-items: flex-start;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .hint {
@@ -115,7 +115,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   height: var(--h-control);
   padding: 0 8px;
@@ -144,14 +144,14 @@
 .pickerPopup {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 260px;
   padding: 8px;
 }
 .pickerList {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   max-height: 240px;
   overflow: auto;
 }
@@ -176,7 +176,7 @@
 .dialogBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px 16px 4px;
 }
 /* Dialogs are wide enough for "Label: [control]". */
@@ -184,7 +184,7 @@
   display: grid;
   grid-template-columns: 90px minmax(0, 1fr);
   align-items: center;
-  column-gap: 8px;
+  column-gap: var(--space-2);
 }
 .dialogBody .control {
   align-items: center;

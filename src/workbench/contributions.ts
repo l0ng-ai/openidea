@@ -17,9 +17,9 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import type { CommitSelection, FileMatches, SearchQuery, RunConfig, RunId } from "@/bindings";
+import type { CommitSelection, FileMatches, Location, SearchQuery, RunConfig, RunId, SymbolKind } from "@/bindings";
 import { notifyEach } from "@/platform/listeners";
-import type { ProjectType } from "@/platform/projectType";
+import type { ProjectType } from "@/ui/projectType";
 import type { MenuItem } from "@/ui/Menu";
 import type { DragData } from "@/ui/pointerDrag";
 import type { TreeReorder } from "@/ui/Tree";
@@ -143,6 +143,8 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
+  onTabClose?(tabId: string, input: EditorInput): void;
   /**
    * Whether the tab is busy (a process is running, like a terminal session's):
    * closing its last tab asks first, and tab-limit eviction skips it. May be
@@ -372,6 +374,11 @@ const EditorShown = createContext(true);
 export const EditorShownProvider = EditorShown.Provider;
 /** Whether this editor tab is the one its pane shows (a `keepAlive` tab stays mounted when it isn't). */
 export const useEditorShown = () => useContext(EditorShown);
+
+const EditorTabId = createContext<string | null>(null);
+export const EditorTabIdProvider = EditorTabId.Provider;
+/** Unique `Tab.id` of the enclosing custom editor tab, or `null` outside an editor pane. */
+export const useEditorTabId = () => useContext(EditorTabId);
 
 const ToolWindowShown = createContext(true);
 export const ToolWindowShownProvider = ToolWindowShown.Provider;
@@ -693,6 +700,15 @@ export interface EditorService {
   keepSavedTabs?(): void;
   /** Edit › Undo / Redo for a focused custom editor that has its own history; false when none takes it. */
   documentHistory?(command: "undo" | "redo"): boolean;
+  /** Go to Declaration's chooser ("Choose Declaration of `name`") over `targets`, below `anchor`. */
+  chooseDeclaration?(targets: DeclarationChoice[], name: string, anchor: { x: number; y: number }): Promise<void>;
+}
+
+/** A target of {@link EditorService.chooseDeclaration}: an index symbol's place, name and container. */
+export interface DeclarationChoice extends Location {
+  name: string;
+  kind: SymbolKind;
+  container: string | null;
 }
 
 /** Custom editor documents held still for a window / project close decision. */
@@ -1102,6 +1118,20 @@ export interface SettingsForm {
   };
 }
 
+/** What the settings page being shown was opened to select (`page#focus`), and how it takes it. */
+export interface SettingsPageFocus {
+  focus: string | null;
+  /** Clears `focus`, so showing the page again does not select it again. */
+  consume(): void;
+}
+
+export const SettingsPageFocusContext = createContext<SettingsPageFocus>({ focus: null, consume: () => {} });
+
+/** The `page#focus` target of the settings page being shown (provided by the Settings dialog). */
+export function useSettingsPageFocus(): SettingsPageFocus {
+  return useContext(SettingsPageFocusContext);
+}
+
 export const SettingsFormContext = createContext<SettingsForm | null>(null);
 
 /** The form of the settings page being shown (provided by the Settings dialog). */
@@ -1206,6 +1236,8 @@ export function projectViewRoots(map: ReadonlyMap<string, ProjectViewRootContrib
 // `selectIn` is the Select In chooser (⌥F1): targets for a file besides the project view.
 // `new` is the New popup / New › submenu (IDEA's NewGroup): file kinds a feature creates
 // in `paths[0]`, the target directory (features/templates: file templates, http-client: HTTP Request).
+// `copyPath` is the Copy Path/Reference… chooser: more things to copy for a file (features/vcs: its
+// link on the Git remote), each item's `preview` the copied text.
 
 export type ContextMenuId =
   | "editor"
@@ -1217,7 +1249,8 @@ export type ContextMenuId =
   | "openIn"
   | "stopProcess"
   | "selectIn"
-  | "new";
+  | "new"
+  | "copyPath";
 
 /**
  * Entries of open menu slots: the native main menu's (src-tauri/src/menu.rs
@@ -1257,6 +1290,8 @@ export interface MenuGroupContext {
   text?: string;
   /** Editor menu: 0-based caret line; gutter menu: the clicked line. */
   line?: number;
+  /** Copy Path/Reference… in the editor: the selection's last line, when it spans several. */
+  endLine?: number;
   /** Zero-based UTF-16 column for problem/search result commands. */
   column?: number;
   /** The tab's input, when the menu is for an editor tab without a path. */
@@ -1923,21 +1958,48 @@ export async function synchronizeDocumentIndexes(path: string, purpose: Document
   return complete.every((c) => c !== false);
 }
 
-/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
-const fontZoomSurfaces = new Map<Element, (delta: number) => void>();
+export interface FontZoomSurfaceOptions {
+  /** When true, `editor.resetFontSize` resets only this surface when focused, and leaves it untouched otherwise. */
+  isolated?: boolean;
+}
 
-export function registerFontZoomSurface(host: Element, step: (delta: number) => void): () => void {
-  fontZoomSurfaces.set(host, step);
+/** Font zoom for non-CodeMirror surfaces, owned and released by their features. */
+const fontZoomSurfaces = new Map<Element, { step: (delta: number) => void; isolated: boolean }>();
+
+export function registerFontZoomSurface(
+  host: Element,
+  step: (delta: number) => void,
+  options?: FontZoomSurfaceOptions,
+): () => void {
+  fontZoomSurfaces.set(host, { step, isolated: !!options?.isolated });
   return () => {
     fontZoomSurfaces.delete(host);
   };
 }
 
-export function stepFocusedSurfaceFontZoom(delta: number): boolean {
+export function stepFocusedSurfaceFontZoom(delta: number, options?: { isolatedOnly?: boolean }): boolean {
   const focused = document.activeElement;
-  for (const [host, step] of fontZoomSurfaces) {
-    if (focused && host.contains(focused)) {
-      step(delta);
+  if (!focused) return false;
+  for (const [host, entry] of fontZoomSurfaces) {
+    if (options?.isolatedOnly && !entry.isolated) continue;
+    if (host.contains(focused) || (focused.hasAttribute("data-editor-focus") && focused.contains(host))) {
+      entry.step(delta);
+      return true;
+    }
+  }
+  return false;
+}
+
+export function stepSurfaceFontZoomIn(
+  container: Element | null,
+  delta: number,
+  options?: { isolatedOnly?: boolean },
+): boolean {
+  if (!container) return false;
+  for (const [host, entry] of fontZoomSurfaces) {
+    if (options?.isolatedOnly && !entry.isolated) continue;
+    if (container.contains(host)) {
+      entry.step(delta);
       return true;
     }
   }
@@ -1945,7 +2007,9 @@ export function stepFocusedSurfaceFontZoom(delta: number): boolean {
 }
 
 export function resetSurfaceFontZoom(): void {
-  for (const step of fontZoomSurfaces.values()) step(0);
+  for (const entry of fontZoomSurfaces.values()) {
+    if (!entry.isolated) entry.step(0);
+  }
 }
 
 /** Optional plugin test parser; the Run feature keeps the existing test tree. */

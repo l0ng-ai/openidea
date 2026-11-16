@@ -13,7 +13,7 @@
 }
 .toolbar {
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px;
   border-bottom: 1px solid var(--border);
 }
@@ -54,7 +54,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 10px 14px;
   min-width: 0;
 }

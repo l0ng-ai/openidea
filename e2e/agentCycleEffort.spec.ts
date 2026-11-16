@@ -255,7 +255,8 @@ async function selectDraft(page: Page) {
 }
 async function chooseModel(page: Page, name: string) {
   await modelButton(page).click();
-  await page.getByRole("option", { name, exact: true }).click();
+  // A model row also holds its Configure button, whose label joins the option's name.
+  await page.getByRole("option", { name: new RegExp(`^${name}\\b`) }).click();
   await page.keyboard.press("Escape");
   await box(page).focus();
 }
@@ -363,9 +364,11 @@ test("Settings and model popup exclude the agent shortcut", async ({ workbench: 
   await modelButton(page).click();
   const popup = page.getByRole("dialog", { name: "Model & effort settings", exact: true });
   await expect(popup).toBeVisible();
-  await popup.getByRole("slider", { name: "Reasoning" }).focus();
+  await popup.getByRole("button", { name: "Configure model", exact: true }).click();
+  const gentle = popup.getByRole("radio", { name: "Gentle", exact: true });
+  await gentle.focus();
   await page.keyboard.press("Alt+t");
-  await expect(popup.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuetext", "Gentle");
+  await expect(gentle).toHaveAttribute("aria-checked", "true");
   expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
   await page.keyboard.press("Escape");
   await expectEffort(page, "Gentle");

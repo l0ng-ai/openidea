@@ -51,6 +51,9 @@ struct FakeAgent {
     /// Config options `session/new` reports after the model one (per-model efforts, say).
     extra_options: Mutex<Vec<Value>>,
     model_options: Mutex<HashMap<String, Vec<Value>>>,
+    /// Advertises steering as OMP does (`_meta.steering` at the top of `initialize`)
+    /// instead of `_meta.openidea.steer`.
+    session_steering: bool,
 }
 
 impl FakeAgent {
@@ -156,6 +159,10 @@ impl Handler for FakeAgent {
                 if params.pointer("/clientCapabilities/subagents").is_some_and(Value::is_object) {
                     self.calls.lock().push("subagents".into());
                 }
+                if self.session_steering {
+                    return Ok(json!({"protocolVersion": 1, "agentCapabilities": {"loadSession": true},
+                        "_meta": {"steering": {"supported": true}}}));
+                }
                 Ok(
                     json!({"protocolVersion": 1, "authMethods": self.auth_methods, "agentCapabilities": {"loadSession": !self.no_load,
                     "sessionCapabilities": {"fork": {}}, "_meta": {"openidea": {"rollback": true, "steer": true, "backgroundTasks": true}}}}),
@@ -182,6 +189,13 @@ impl Handler for FakeAgent {
                 let detail = params.get("turns").cloned().unwrap_or_else(|| params["prompt"][0]["text"].clone());
                 self.calls.lock().push(format!("{method} {detail}"));
                 Ok(json!({}))
+            }
+            "_session/steering" => {
+                let text = params["prompt"][0]["text"].clone();
+                self.calls.lock().push(format!("{method} {text}"));
+                // OMP answers whether the message joined the turn rather than failing.
+                let outcome = if text == "too late" { "promptRequired" } else { "injected" };
+                Ok(json!({"outcome": outcome, "queue": "steering"}))
             }
             "session/load" => {
                 self.say(&session, "replayed history");
@@ -280,6 +294,23 @@ impl Handler for FakeAgent {
                     let chosen = answer.pointer("/outcome/optionId").and_then(Value::as_str).unwrap_or("none");
                     self.say(&session, &format!("escalation chose {chosen}"));
                     return Ok(json!({"stopReason": "end_turn"}));
+                }
+                if text == "form" {
+                    let peer = self.latest();
+                    let answer: Value = tokio::runtime::Handle::current()
+                        .block_on(peer.request(
+                            "elicitation/create",
+                            json!({"sessionId": session, "mode": "form", "message": "How should I refactor?",
+                                "requestedSchema": {"type": "object", "required": ["strategy"], "properties": {
+                                    "strategy": {"type": "string", "title": "Strategy",
+                                        "oneOf": [{"const": "safe", "title": "Conservative"},
+                                                  {"const": "bold", "title": "Aggressive"}]},
+                                    "tests": {"type": "boolean", "title": "Run tests"}}}}),
+                            None,
+                        ))
+                        .unwrap();
+                    self.say(&session, &format!("form {answer}"));
+                    return Ok(json!({ "stopReason": "end_turn" }));
                 }
                 if text == "ask" {
                     let peer = self.latest();
@@ -1061,6 +1092,42 @@ fn text(t: &str) -> AgentPrompt {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn steers_through_session_steering() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent { session_steering: true, ..FakeAgent::default() });
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("wait"),
+            provider: "claude".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Running).await;
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.capabilities.steer);
+
+    mgr.prompt(&task.id, text("also this"), true).await.unwrap();
+    assert!(agent.calls.lock().iter().any(|c| c == "_session/steering \"also this\""));
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(matches!(entries.last(), Some(AgentEntry::User { steered: true, .. })));
+    assert!(mgr.task(&task.id).unwrap().state.lock().task.queue.is_empty());
+
+    // The agent didn't take it into the turn: the turn stops and it goes next, as without
+    // steering (the fake agent's next turn asks for permission).
+    mgr.prompt(&task.id, text("too late"), true).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    let entries = mgr.entries(&task.id, None).unwrap();
+    assert!(entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: false, .. } if text == "too late")));
+    assert!(!entries.iter().any(|e| matches!(e, AgentEntry::User { text, steered: true, .. } if text == "too late")));
+    mgr.cancel(&task.id, None).unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn messages_sent_while_busy_are_queued_and_send_now_interrupts() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
@@ -1729,6 +1796,45 @@ async fn thinking_levels_are_remembered_per_provider_and_model() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn changing_an_idle_tasks_settings_keeps_its_models_effort_levels() {
+    // After a model switch no session reported, picking that model again or changing
+    // another setting must not record the task's effort-less copy as the model's levels.
+    for (option, value) in [("mode", "code"), ("model", "big")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        *agent.model_options.lock() = HashMap::from([
+            ("big".into(), effort_options(&["low", "high"], "high")),
+            ("small".into(), effort_options(&["minimal", "medium"], "minimal")),
+        ]);
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("again"),
+                provider: "claude".into(),
+                config: vec![],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        mgr.shutdown();
+        let restored = manager(tmp.path(), agent);
+        restored.set_config(&task.id, "model", "small".into()).await.unwrap();
+        restored.set_config(&task.id, "model", "big".into()).await.unwrap();
+        restored.set_config(&task.id, option, value.into()).await.unwrap();
+        let p = restored.providers().into_iter().find(|p| p.id == "claude").unwrap();
+        let big = p.thought_levels.get("big").and_then(|levels| levels.first());
+        assert_eq!(big.map(|o| o.values.len()), Some(2), "{option}: {:?}", p.thought_levels);
+        let saved: HashMap<String, Known> =
+            serde_json::from_slice(&std::fs::read(&restored.shared.paths.models_file).unwrap()).unwrap();
+        assert_eq!(saved["claude"].thought_levels, p.thought_levels, "{option}");
+        restored.shutdown();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn upfront_effort_is_validated_after_changing_model_before_the_prompt() {
     for (effort, applied) in [("medium", true), ("high", false)] {
         let tmp = tempfile::tempdir().unwrap();
@@ -1982,6 +2088,58 @@ async fn bypass_approvals_keeps_both_question_dialects_pending_but_allows_permis
             assert!(entries.iter().any(|entry| matches!(entry, AgentEntry::Agent { text } if text == "chose yes")));
             mgr.shutdown();
         }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_form_is_answered_declined_or_cancelled_even_when_approvals_are_bypassed() {
+    let accept = json!({"strategy": ["bold"], "tests": ["true"]}).to_string();
+    for (reply, said, chosen) in [
+        (
+            Some(accept.as_str()),
+            r#"form {"action":"accept","content":{"strategy":"bold","tests":true}}"#,
+            "Strategy: Aggressive; Run tests: yes",
+        ),
+        (Some("decline"), r#"form {"action":"decline"}"#, "Decline"),
+        (None, r#"form {"action":"cancel"}"#, "Cancelled"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        let task = mgr
+            .create(NewAgentTask {
+                project_root: None,
+                prompt: text("form"),
+                provider: "cursor".into(),
+                config: vec![AgentConfigChoice { id: config::CURSOR_APPROVAL.into(), value: "bypass".into() }],
+                isolation: Isolation::Local,
+                base: None,
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+        let (id, form) = mgr
+            .entries(&task.id, None)
+            .unwrap()
+            .into_iter()
+            .find_map(|entry| match entry {
+                AgentEntry::Permission { id, title, form: Some(form), chosen: None, .. }
+                    if title == "How should I refactor?" =>
+                {
+                    Some((id, form))
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(form.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["strategy", "tests"]);
+        mgr.respond(&task.id, id, reply.map(str::to_owned)).unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        let entries = mgr.entries(&task.id, None).unwrap();
+        assert!(entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == said)), "{entries:?}");
+        assert!(
+            entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c == chosen)),
+            "{entries:?}"
+        );
+        mgr.shutdown();
     }
 }
 
@@ -2314,6 +2472,40 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
 
     let probe = mgr.probe("copilot", false).await.unwrap();
     assert!(probe.error.is_none());
+}
+
+/// A probe that fails is not remembered, so the next new-task page tries the agent again
+/// instead of showing the same startup failure until the IDE restarts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_probe_is_retried_instead_of_remembered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(Mutex::new(0usize));
+    let connector: Connector = {
+        let calls = calls.clone();
+        Arc::new(move |_spec, _cwd, _client, _stderr| {
+            *calls.lock() += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+    };
+    let mgr = AgentManager::with_connector(
+        AgentPaths {
+            project_root: tmp.path().to_path_buf(),
+            store_dir: tmp.path().join("store"),
+            worktrees_dir: tmp.path().join("worktrees"),
+            models_file: tmp.path().join("models.json"),
+            custom_agents_dir: None,
+            home_dir: None,
+            env_secrets: None,
+            catalogs: Arc::default(),
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+
+    assert!(mgr.probe("claude", false).await.unwrap().error.is_some());
+    assert!(mgr.probe("claude", false).await.unwrap().error.is_some());
+    assert_eq!(*calls.lock(), 2, "the second call must start the agent again");
+    assert!(!mgr.shared.probes.lock().contains_key("claude"));
 }
 
 /// A session report that changes the cached provider config notifies subscribers,

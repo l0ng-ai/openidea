@@ -293,9 +293,11 @@ const CSS_TAGS: Parameters<typeof styleTags>[0] = {
   "ClassName IdName PseudoClassName ColorLiteral CallTag": t.tagName,
 };
 
-// @lezer/java tags annotations as plain identifiers.
+// @lezer/java tags annotations as plain identifiers, and `this` as `self` (Python's `self` colour);
+// IntelliJ colours `this` as a keyword.
 export const JAVA_TAGS: Parameters<typeof styleTags>[0] = {
   "MarkerAnnotation/Identifier Annotation/Identifier MarkerAnnotation Annotation": t.annotation,
+  this: t.keyword,
 };
 
 /** Highlighting the stock grammars lack or colour unlike IntelliJ. */
@@ -306,6 +308,9 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   JSX: JS_TAGS,
   TSX: JS_TAGS,
   Java: JAVA_TAGS,
+  // CLion colours `this` as a keyword, RustRover `self`.
+  "C++": { this: t.keyword },
+  Rust: { self: t.keyword },
   PHP: {
     "; ,": t.separator,
     "ClassDeclaration/Name BaseClause/Name InterfaceClause/Name": t.className,

@@ -455,7 +455,6 @@ function StripeButton({
         showName && styles.stripeNamed,
         active && styles.stripeActive,
         active && focused && styles.stripeFocused,
-        side === "right" && styles.stripeRight,
         dragged && styles.stripeDragged,
       )}
       aria-label={titleOf(tw)}

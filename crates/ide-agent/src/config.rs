@@ -20,17 +20,22 @@ pub(crate) fn add_client_options(provider: &str, config: &mut Vec<AgentConfigOpt
         description: Some("Tool approvals for this Cursor conversation".into()),
         category: Some("approval".into()),
         current: Some("ask".into()),
+        default_value: Some("ask".into()),
         via: AgentConfigVia::Option,
         values: vec![
             AgentConfigValue {
                 value: "ask".into(),
                 name: "Ask for approval".into(),
                 description: Some("Show permission requests from Cursor".into()),
+                cost_category: None,
+                usage_multiplier: None,
             },
             AgentConfigValue {
                 value: "bypass".into(),
                 name: "Bypass approvals".into(),
                 description: Some("Automatically approve tool requests in this conversation".into()),
+                cost_category: None,
+                usage_multiplier: None,
             },
         ],
     });
@@ -118,6 +123,18 @@ pub(crate) fn options_of(result: &Value) -> Vec<AgentConfigOption> {
     out
 }
 
+pub(crate) fn is_context_option(id: &str) -> bool {
+    matches!(id, "context_tier" | "contextTier")
+}
+
+/// Whether an option's available values and default belong to the selected model
+/// (`thought_level` and model context-tier options) rather than the provider as a whole.
+pub(crate) fn is_per_model_option(o: &AgentConfigOption) -> bool {
+    matches!(o.category.as_deref(), Some("thought_level" | "context_tier"))
+        || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
+        || is_context_option(&o.id)
+}
+
 /// A `configOptions` array; only select options are kept (the UI shows them as dropdowns).
 pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
     let Some(list) = options.as_array() else { return Vec::new() };
@@ -133,6 +150,8 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
                     None => values.extend(value_of(v)),
                 }
             }
+            let current = str_of(o, "currentValue");
+            let default_value = str_of(o, "defaultValue").or_else(|| current.clone());
             Some(AgentConfigOption {
                 name: str_of(o, "name").unwrap_or_else(|| id.clone()),
                 description: str_of(o, "description"),
@@ -143,9 +162,10 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
                             matches!(id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
                                 .then(|| "thought_level".into())
                         })
-                        .or_else(|| matches!(id.as_str(), "fast").then(|| "model_config".into()))
+                        .or_else(|| (id == "fast" || is_context_option(&id)).then(|| "model_config".into()))
                 }),
-                current: str_of(o, "currentValue"),
+                current,
+                default_value,
                 values,
                 via: AgentConfigVia::Option,
                 id,
@@ -155,9 +175,24 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
 }
 
 /// A `config_option_update`: its options replace the config-option ones; `modes` / `models`
-/// stand-ins stay.
+/// stand-ins stay, and initial `default_value`s survive same-model option edits for Reset.
 pub(crate) fn merge_update(config: &mut Vec<AgentConfigOption>, options: &Value) {
-    let fresh = parse_options(options);
+    let mut fresh = parse_options(options);
+    let old_model = config.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.as_deref());
+    let new_model = fresh.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.as_deref());
+    let same_model = old_model == new_model;
+    for f in &mut fresh {
+        if f.default_value == f.current
+            && (same_model || !is_per_model_option(f))
+            && let Some(prev_default) = config
+                .iter()
+                .find(|p| p.id == f.id)
+                .and_then(|p| p.default_value.as_ref())
+                .filter(|def| f.values.iter().any(|v| v.value == **def))
+        {
+            f.default_value = Some(prev_default.clone());
+        }
+    }
     let covered = |o: &AgentConfigOption| fresh.iter().any(|f| f.category.is_some() && f.category == o.category);
     config.retain(|o| o.id == CURSOR_APPROVAL || (o.via != AgentConfigVia::Option && !covered(o)));
     let legacy = std::mem::take(config);
@@ -251,16 +286,20 @@ fn legacy(
             Some(AgentConfigValue {
                 name: str_of(m, "name").unwrap_or_else(|| value.clone()),
                 description: str_of(m, "description"),
+                cost_category: None,
+                usage_multiplier: None,
                 value,
             })
         })
         .collect();
+    let current = str_of(v, current);
     AgentConfigOption {
         id: id.to_owned(),
         name: name.to_owned(),
         description: None,
         category: Some(id.to_owned()),
-        current: str_of(v, current),
+        default_value: current.clone(),
+        current,
         values,
         via,
     }
@@ -268,9 +307,23 @@ fn legacy(
 
 fn value_of(v: &Value) -> Option<AgentConfigValue> {
     let value = v.get("value")?.as_str()?.to_owned();
+    let meta = v.get("_meta");
+    let cost_category = meta
+        .and_then(|m| m.get("copilotPriceCategory").or_else(|| m.get("priceCategory")))
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let usage_multiplier = meta
+        .and_then(|m| m.get("copilotUsage").or_else(|| m.get("usageMultiplier")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     Some(AgentConfigValue {
         name: str_of(v, "name").unwrap_or_else(|| value.clone()),
         description: str_of(v, "description"),
+        cost_category,
+        usage_multiplier,
         value,
     })
 }
@@ -402,17 +455,53 @@ mod tests {
 
     #[test]
     fn effort_and_fast_categories_are_inferred_from_ids() {
-        let c = options_of(&json!({
+        let mut c = options_of(&json!({
             "configOptions": [
-                {"id": "effort", "type": "select", "currentValue": "high",
-                 "options": [{"value": "low"}, {"value": "high"}]},
+                {"id": "model", "type": "select", "currentValue": "gemini-4-carbon",
+                 "options": [{"value": "gemini-4-carbon", "name": "Gemini 4 Carbon",
+                              "description": "Powerful · Medium cost",
+                              "_meta": {"copilotPriceCategory": "Medium", "copilotUsage": "1x"}}]},
+                {"id": "effort", "type": "select", "currentValue": "medium",
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+                {"id": "contextTier", "type": "select", "currentValue": "default",
+                 "options": [{"value": "default", "name": "200K"}, {"value": "long_context", "name": "1M"}]},
                 {"id": "fast", "type": "select", "currentValue": "false",
                  "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "On"}]}
             ]
         }));
-        assert_eq!(c.len(), 2);
-        assert_eq!(c[0].category.as_deref(), Some("thought_level"));
-        assert_eq!(c[1].category.as_deref(), Some("model_config"));
+        assert_eq!(c.len(), 4);
+        assert_eq!(c[0].values[0].cost_category.as_deref(), Some("medium"));
+        assert_eq!(c[0].values[0].usage_multiplier.as_deref(), Some("1x"));
+        assert_eq!(c[1].category.as_deref(), Some("thought_level"));
+        assert_eq!(c[1].default_value.as_deref(), Some("medium"));
+        assert_eq!(c[2].category.as_deref(), Some("model_config"));
+        assert!(is_per_model_option(&c[1]) && is_per_model_option(&c[2]) && !is_per_model_option(&c[3]));
+
+        // Editing effort on the same model preserves its initial `default_value` for Reset.
+        merge_update(
+            &mut c,
+            &json!([
+                {"id": "model", "type": "select", "currentValue": "gemini-4-carbon",
+                 "options": [{"value": "gemini-4-carbon"}]},
+                {"id": "effort", "type": "select", "currentValue": "high",
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]}
+            ]),
+        );
+        let effort = c.iter().find(|o| o.id == "effort").unwrap();
+        assert_eq!((effort.current.as_deref(), effort.default_value.as_deref()), (Some("high"), Some("medium")));
+
+        // Switching models refreshes per-model `default_value` to the new model's default.
+        merge_update(
+            &mut c,
+            &json!([
+                {"id": "model", "type": "select", "currentValue": "gpt-6-sol",
+                 "options": [{"value": "gemini-4-carbon"}, {"value": "gpt-6-sol"}]},
+                {"id": "effort", "type": "select", "currentValue": "low",
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]}
+            ]),
+        );
+        let effort = c.iter().find(|o| o.id == "effort").unwrap();
+        assert_eq!((effort.current.as_deref(), effort.default_value.as_deref()), (Some("low"), Some("low")));
     }
 
     #[test]

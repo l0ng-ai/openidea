@@ -16,7 +16,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 0;
   padding: 12px;
   color: var(--fg-secondary);
@@ -46,7 +46,7 @@
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   align-self: flex-start;
   max-width: 100%;
   padding: 0;
@@ -74,13 +74,13 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 16px 14px 16px 16px;
 }
 .titleRow {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .title {
   flex: 1;
@@ -110,7 +110,7 @@
   flex: none;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   padding: 0 14px 4px 16px;
 }
@@ -118,13 +118,13 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 6px 0 5px;
 }
 .branch {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   padding: 6px 0 5px;
 }
@@ -162,7 +162,7 @@
 .advertiser {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: 4px;
   padding: 5px 10px;
   border-top: 1px solid var(--border);
@@ -198,7 +198,7 @@
 .commitRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 100%;
   margin: 0 6px;
   padding: 0 8px;
@@ -226,7 +226,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -235,13 +235,13 @@
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 0 14px 12px 16px;
 }
 .commitInfoTop {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .commitInfoTitle {
   flex: 1;
@@ -279,7 +279,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   white-space: nowrap;
 }
@@ -309,7 +309,7 @@
 .counter {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--fg-secondary);
 }
 .readSlot {
@@ -365,7 +365,7 @@
 .statusRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   padding: 5px 0;
 }
@@ -404,7 +404,7 @@
 .progressText {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-secondary);
 }
 /* JBOptionButton: the main action and an arrow opening the others. */
@@ -439,7 +439,7 @@
 .submitPopup {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   width: var(--submit-width);
   min-width: 320px;
   height: var(--submit-height);
@@ -477,5 +477,5 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }

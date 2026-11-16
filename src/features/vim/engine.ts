@@ -5,8 +5,8 @@
  */
 import { EditorState, Prec, StateEffect, StateField, Transaction, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
-import { Vim, getCM, vim } from "@replit/codemirror-vim";
-import { transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
+import { CodeMirror, Vim, getCM, vim } from "@replit/codemirror-vim";
+import { externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
 import { setContext } from "@/platform/context";
 import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
@@ -16,6 +16,17 @@ import { resolveActionId, type RcCommand } from "./rc";
 import { mapFunctionTextObjects } from "./textObjects";
 
 /** Insert/Replace state as seen by transactions (mode changes are queued). */
+// Vim's `u` / `Ctrl-R` call CodeMirror's history; an editor that keeps its history elsewhere
+// (notebook cells) provides `externalHistory` and gets those keys too.
+for (const name of ["undo", "redo"] as const) {
+  const own = CodeMirror.commands[name];
+  CodeMirror.commands[name] = (cm) => {
+    const history = cm.cm6.state.facet(externalHistory);
+    if (history) history[name]();
+    else own(cm);
+  };
+}
+
 const setVimInsert = StateEffect.define<boolean>();
 
 const vimInsert = StateField.define<boolean>({

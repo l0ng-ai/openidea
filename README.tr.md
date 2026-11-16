@@ -38,14 +38,14 @@ Editör, kod analizi, hata ayıklayıcı (debugger), Git, terminal, veritabanı 
 [freqtrade](https://github.com/freqtrade/freqtrade) projesini (Python, ~770 dosya)
 önbellekler hazırken açma, 5 çalıştırmanın ortancası:
 
-|                                    | OpenIDEA              | IntelliJ IDEA 2026.2.3 |
-| ---------------------------------- | --------------------- | ---------------------- |
-| Projeyle pencerenin açılması       | **0,9 sn**            | 3,1 sn                 |
-| Hazır (CPU sakinleşti)             | **1,1 sn**            | 13,2 sn                |
-| Bellek (USS, tüm işlemler)         | **169 MB**            | 2011 MB                |
-| Hazır olana kadar CPU süresi       | **2,4 sn**            | 47,9 sn                |
-| Boştayken CPU                      | Bir çekirdeğin **%4**'ü | Bir çekirdeğin %7'si |
-| Kapanma                            | **0,3 sn**            | 5,9 sn                 |
+|                              | OpenIDEA                | IntelliJ IDEA 2026.2.3 |
+| ---------------------------- | ----------------------- | ---------------------- |
+| Projeyle pencerenin açılması | **0,9 sn**              | 3,1 sn                 |
+| Hazır (CPU sakinleşti)       | **1,1 sn**              | 13,2 sn                |
+| Bellek (USS, tüm işlemler)   | **169 MB**              | 2011 MB                |
+| Hazır olana kadar CPU süresi | **2,4 sn**              | 47,9 sn                |
+| Boştayken CPU                | Bir çekirdeğin **%4**'ü | Bir çekirdeğin %7'si   |
+| Kapanma                      | **0,3 sn**              | 5,9 sn                 |
 
 `main` dalından derlenmiş bir OpenIDEA sürümü ve varsayılan ayar ve eklentilerle IDEA;
 Windows 11, 32 çekirdekli AMD, 62 GB RAM.

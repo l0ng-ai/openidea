@@ -19,9 +19,9 @@ import {
 } from "react";
 import clsx from "clsx";
 import { call, commands, isTauri } from "@/platform/ipc";
-import { useEditorPrefs } from "@/platform/editorSettings";
+import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
 import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
 import { setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import { FloatingToolbar, selectableText } from "@/ui";
@@ -38,7 +38,7 @@ import {
   selectionMatchesInNode,
   setPreviewHighlight,
 } from "./highlight";
-import { publishPreviewSelection, publishPreviewTop, useLiveMarkdown } from "./live";
+import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
 import { modeOf, useMarkdownModes } from "./modes";
@@ -51,7 +51,7 @@ import {
   resolveLink,
   slugify,
 } from "./render";
-import { applyImageZoomWidth, svgDataUrlSize } from "./svgSize";
+import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -129,6 +129,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const seenFindMatch = useRef<number | null>(null);
   /** scrollTop set by navigation, whose scroll event isn't the user's. */
   const scrolledTo = useRef<number | null>(null);
+  /** The offset a mount restore clamped short of (content not drawn yet), retried on the next settle. */
+  const restoreRetry = useRef<number | null>(null);
   const scrollFrame = useRef(0);
   /** `<details>` the reader opened or closed, by position: each edit re-renders them as written. */
   const toggled = useRef(new Map<number, boolean>());
@@ -228,7 +230,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
-    const onScroll = () => publishPreviewTop(path, root.scrollTop);
+    const onScroll = () => {
+      // A clamped restore keeps the saved offset until it is applied in full.
+      if (restoreRetry.current !== null && Math.abs(root.scrollTop - (scrolledTo.current ?? -1)) < 1) return;
+      publishPreviewTop(path, root.scrollTop);
+    };
     root.addEventListener("scroll", onScroll, { passive: true });
     return () => root.removeEventListener("scroll", onScroll);
   }, [path]);
@@ -238,8 +244,28 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     const root = ref.current;
     if (!root || sync) return;
     const saved = useLiveMarkdown.getState()[path]?.previewTop ?? 0;
-    if (saved > 0) root.scrollTop = saved;
+    if (saved <= 0) return;
+    root.scrollTop = saved;
+    scrolledTo.current = root.scrollTop;
+    // Images and diagrams draw after this first paint; a clamped offset is
+    // applied again by the settle effect below.
+    restoreRetry.current = root.scrollTop < saved ? saved : null;
   }, [path, sync]);
+
+  // A restore that clamped to the not-yet-drawn document is applied again on
+  // each settle, until it fits or a scroll hands the position back to the reader.
+  useLayoutEffect(() => {
+    const root = ref.current;
+    const saved = restoreRetry.current;
+    if (!root || sync || saved === null) return;
+    if (scrolledTo.current === null) {
+      restoreRetry.current = null;
+      return;
+    }
+    root.scrollTop = saved;
+    scrolledTo.current = root.scrollTop;
+    if (root.scrollTop >= saved) restoreRetry.current = null;
+  }, [html, diagramsDrawn, fontZoom, fontSize, path, sync]);
 
   // Preview only: go where the hidden editor's caret was sent (Structure, Go to Symbol…).
   useLayoutEffect(() => {
@@ -253,6 +279,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
         openDetailsContaining(current, root, toggled.current);
         if (revealPreviewRange(current, root)) {
           scrolledTo.current = root.scrollTop;
+          restoreRetry.current = null;
           setShownLine(path, caretLine);
           return;
         }
@@ -263,6 +290,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     if (previewLineAtOffset(blocks, root.scrollTop) !== caretLine) {
       root.scrollTop = previewOffsetForLine(blocks, caretLine, root.scrollHeight);
       scrolledTo.current = root.scrollTop;
+      restoreRetry.current = null;
     }
     setShownLine(path, caretLine);
   }, [caretSeq, caretLine, sync, path, find]);
@@ -285,6 +313,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
           seenFindMatch.current = find.currentMatchIndex;
           if (revealPreviewRange(current, root) && !sync) {
             scrolledTo.current = root.scrollTop;
+            restoreRetry.current = null;
           }
         }
       } else {
@@ -347,6 +376,24 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     };
   }, [path]);
 
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const onWheel = (e: WheelEvent) => {
+      if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+      if ((e.target as Element | null)?.closest?.('.mermaid-output[data-zoomed="true"]')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      stepMarkdownPreviewFontZoom(path, root, e.deltaY < 0 ? 1 : -1);
+    };
+    root.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    const release = registerFontZoomSurface(root, (delta) => stepMarkdownPreviewFontZoom(path, root, delta));
+    return () => {
+      root.removeEventListener("wheel", onWheel, { capture: true });
+      release();
+    };
+  }, [path]);
+
   // Preview only: the line on screen when shown, then as the user scrolls;
   // cleared when the editor is back or the preview goes away.
   useEffect(() => {
@@ -365,6 +412,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       const own = scrolledTo.current !== null && Math.abs(root.scrollTop - scrolledTo.current) < 1;
       if (own) return;
       scrolledTo.current = null;
+      restoreRetry.current = null;
       setShownLine(path, previewLineAtOffset(blocksOf(root), root.scrollTop));
     });
   };

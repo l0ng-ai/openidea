@@ -20,6 +20,7 @@ import type {
   Isolation,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
+import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
@@ -32,6 +33,7 @@ import {
   cursorModelDefaults,
   emptyDraft,
   isMentioned,
+  isPerModelOption,
   toPrompt,
   type ComposerDraft,
   type FileRef,
@@ -125,12 +127,14 @@ interface AgentsState {
   homeOpen: boolean;
   /** Side conversations by task id: kept out of the task list, discarded when their view closes. */
   ephemeral: ReadonlySet<string>;
+  pinnedModels: string[];
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
 const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
+const PINNED_MODELS_KEY = "openidea.agents.pinnedModels.v1";
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -194,8 +198,16 @@ export const useAgents = create<AgentsState>(() => ({
   lastTask: null,
   homeOpen: false,
   ephemeral: new Set<string>(),
+  pinnedModels: load<string[]>(PINNED_MODELS_KEY, []),
   scrollPositions: new Map(),
 }));
+
+export function togglePinnedModel(modelValue: string) {
+  const current = useAgents.getState().pinnedModels;
+  const next = current.includes(modelValue) ? current.filter((m) => m !== modelValue) : [...current, modelValue];
+  useAgents.setState({ pinnedModels: next });
+  save(PINNED_MODELS_KEY, next);
+}
 
 export function updateDraft(patch: Partial<Draft>) {
   const current = useAgents.getState().draft;
@@ -230,12 +242,13 @@ export function draftConfig(
       ? [...offered, { ...priorModel, values: [] }]
       : offered;
   const config = source
-    .filter((o) => o.category !== "thought_level")
+    .filter((o) => !isPerModelOption(o))
     .map((o) => {
       const explicit = draft.config[o.id];
       const choice = explicit ?? defaults[o.id];
       return {
         ...o,
+        defaultValue: o.defaultValue ?? o.current,
         current:
           o.category === "model" && explicit !== undefined
             ? explicit
@@ -251,6 +264,7 @@ export function draftConfig(
         const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
         return {
           ...o,
+          defaultValue: o.defaultValue ?? o.current,
           current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
         };
       }),
@@ -266,7 +280,8 @@ export function setDraftOption(id: string, value: string) {
     draft,
   );
   const model = config.find((o) => o.category === "model")?.current;
-  if (model && config.find((o) => o.id === id)?.category === "thought_level") {
+  const target = config.find((o) => o.id === id);
+  if (model && target && isPerModelOption(target)) {
     updateDraft({
       thoughtLevels: {
         ...draft.thoughtLevels,
@@ -504,6 +519,7 @@ export function disconnect() {
   arrivedWhileLoading.clear();
   streamingReply.clear();
   modelFlights.clear();
+  resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
     error: null,
@@ -562,6 +578,7 @@ function onEvent(e: AgentEvent) {
         organize,
         ...(s.docked === e.id ? { docked: null } : {}),
       });
+      clearAgentTaskFontZoom(sessionKey(e.id));
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -945,9 +962,7 @@ export async function startTask(
   };
   const config = options.flatMap((o) => {
     const value =
-      o.category === "model" || o.category === "thought_level"
-        ? o.current
-        : (draft.config[o.id] ?? defaults[o.id] ?? null);
+      o.category === "model" || isPerModelOption(o) ? o.current : (draft.config[o.id] ?? defaults[o.id] ?? null);
     return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
   });
   try {
@@ -1262,6 +1277,7 @@ export async function discardEphemeral(task: string): Promise<void> {
       lastComposer: state.lastComposer === task ? HOME : state.lastComposer,
     };
   });
+  clearAgentTaskFontZoom(sessionKey(task));
   void editorService().closeInput?.(sessionKey(task));
 }
 

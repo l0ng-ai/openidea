@@ -1,5 +1,5 @@
 import { ContributedToolbar } from "@/workbench/ContributedToolbar";
-import { useFilePresentationIcons } from "@/platform/filePresentation";
+import { useFilePresentationIcons } from "@/ui/filePresentation";
 /**
  * The editor area: split layout of panes, each with IDEA-style tabs (preview
  * tab in italics, pinned tabs, modified dot, file icons coloured by file
@@ -21,6 +21,7 @@ import {
   prepareMenuGroups,
   textEditorWrapperFor,
   EditorShownProvider,
+  EditorTabIdProvider,
   useContributions,
   useFileDecorations,
   useEditorDocumentRevision,
@@ -115,7 +116,7 @@ function EmptyEditorArea() {
   return (
     <div ref={ref} className={styles.area}>
       <EmptyEditor />
-      {over && <div className={clsx(styles.dropZone, styles["drop-center"])} aria-hidden="true" />}
+      {over && <div className={styles.dropZone} aria-hidden="true" />}
     </div>
   );
 }
@@ -479,9 +480,11 @@ function KindEditor({ tab, shown, kept = false }: { tab: Tab; shown: boolean; ke
       tabIndex={-1}
       aria-hidden={shown ? undefined : true}
     >
-      <EditorShownProvider value={shown}>
-        <Component input={tab.input} />
-      </EditorShownProvider>
+      <EditorTabIdProvider value={tab.id}>
+        <EditorShownProvider value={shown}>
+          <Component input={tab.input} />
+        </EditorShownProvider>
+      </EditorTabIdProvider>
     </div>
   );
 }

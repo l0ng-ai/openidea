@@ -4,7 +4,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0 10px 0 12px;
   font-family: var(--font-ui);
   font-size: var(--fs-ui);
@@ -80,7 +80,7 @@
 .taskRowHead {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .taskRowTitle {
   flex: 1;

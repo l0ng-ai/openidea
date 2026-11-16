@@ -264,6 +264,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -2968,7 +2969,8 @@ async fn library_classes_without_sources_open_decompiled_by_a_running_jdtls() {
     zip.write_all(b"\0").unwrap();
     zip.finish().unwrap();
     let class = format!("jar://{}!/acme/Thing.class", uri_of(&jar).trim_start_matches("file://"));
-    let escaped = jar.to_string_lossy().replace('/', "%5C/");
+    // jdtls writes the portable path (forward slashes on Windows too), each `/` escaped.
+    let escaped = jar.to_string_lossy().replace('\\', "/").replace('/', "%5C/");
     let jdt = format!("jdt://contents/lib-1.0.jar/acme/Thing.class?=app/{escaped}%3Cacme%28Thing.class");
     let decompiled =
         "package acme;\n\npublic class Thing {\n   public void run() {\n      System.out.println();\n   }\n}\n";
@@ -3284,6 +3286,67 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.open("a.mk", "x");
     h.wait_status("framework", ServerStatus::Ready).await;
     h.wait_status("alt", ServerStatus::Ready).await;
+}
+
+/// A server that `replaces` another (a PHP server with its own Laravel support and
+/// `laravel-lsp`) keeps it away while it serves, and only then.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replaced_server_stays_away_while_its_replacement_serves() {
+    let servers = [("main", incremental_caps()), ("alt", incremental_caps()), ("framework", incremental_caps())];
+    let configure = |cfg: &mut LanguageServerConfig| match cfg.name.as_str() {
+        "alt" => {
+            cfg.fallback = true;
+            cfg.replaces = vec!["framework".into()];
+        }
+        "framework" => cfg.require_root_marker = true,
+        _ => {}
+    };
+    let h = harness_configured("mock", "mk", &servers, configure);
+    let disabled: Arc<Mutex<Vec<String>>> = Default::default();
+    {
+        let disabled = disabled.clone();
+        h.mgr.set_servers_hook(Box::new(move |_, defined| {
+            defined.iter().filter(|c| !disabled.lock().contains(&c.name)).cloned().collect()
+        }));
+    }
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    let (_, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+
+    // The preferred server serves: the framework's server joins it, the alternative stays away.
+    h.wait_status("main", ServerStatus::Ready).await;
+    h.wait_status("framework", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("framework").docs.lock().contains_key(&uri)).await;
+    assert!(h.statuses("alt").is_empty());
+
+    // The alternative takes over: the server it replaces closes the document and stops.
+    disabled.lock().push("main".into());
+    h.mgr.reconfigure().await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(!h.launcher.state("framework").notified("textDocument/didClose").is_empty());
+    assert_eq!(h.statuses("framework").last(), Some(&ServerStatus::Stopped));
+    assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["alt"]);
+
+    // The preferred server again: the framework's server comes back with it.
+    disabled.lock().clear();
+    h.mgr.reconfigure().await;
+    h.wait_status("main", ServerStatus::Ready).await;
+    eventually(|| h.statuses("framework").last() == Some(&ServerStatus::Ready)).await;
+    assert_eq!(h.statuses("alt").last(), Some(&ServerStatus::Stopped));
+
+    // A preferred server that is not installed: the alternative replaces the framework's
+    // server although that one attached first.
+    let servers = [("ghost", json!({})), ("alt", incremental_caps()), ("framework", incremental_caps())];
+    let h = harness_configured("mock", "mk", &servers, configure);
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    let (_, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+    h.wait_status("ghost", ServerStatus::Missing).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    eventually(|| !h.mgr.servers().iter().any(|s| s.name == "framework")).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -7309,4 +7372,148 @@ async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
     eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
         .await;
     h.mgr.shutdown_all().await;
+}
+
+/// A plugin's request (`language-servers` in the plugin API) reaches the running server
+/// named in the language definition: only the server's own methods, and never a start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_request_reaches_only_a_running_servers_own_methods() {
+    let servers = [("main", incremental_caps()), ("alt", incremental_caps())];
+    let h = harness_for("mock", "mk", &servers, &["alt"]);
+    let _ = h.open("a.mk", "x");
+    h.wait_status("main", ServerStatus::Ready).await;
+    let s = h.launcher.state("main");
+    s.respond("mock/routes", json!([{ "uri": "/users", "name": "users.index" }]));
+    let cancel = CancellationToken::new();
+    let timeout = Duration::from_secs(5);
+
+    // A request: the params arrive, the result comes back.
+    let routes = h
+        .mgr
+        .server_request(&h.root, "main", "mock/routes", Some(json!({ "method": "GET" })), &cancel, timeout)
+        .await
+        .unwrap();
+    assert_eq!(routes, json!([{ "uri": "/users", "name": "users.index" }]));
+    assert_eq!(s.requested("mock/routes"), [json!({ "method": "GET" })]);
+
+    // A notification.
+    h.mgr.server_notify(&h.root, "main", "mock/changed", Some(json!({ "what": "routes" }))).unwrap();
+    eventually(|| s.notified("mock/changed") == [json!({ "what": "routes" })]).await;
+
+    // LSP's own methods are refused before anything is sent.
+    for method in ["textDocument/hover", "workspace/executeCommand", "$/cancelRequest", "shutdown", "initialize"] {
+        let before = (s.requested(method).len(), s.notified(method).len());
+        let e = h.mgr.server_request(&h.root, "main", method, None, &cancel, timeout).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput, "{method}");
+        assert_eq!(
+            h.mgr.server_notify(&h.root, "main", method, None).unwrap_err().kind,
+            ide_core::error::ErrorKind::InvalidInput
+        );
+        assert_eq!((s.requested(method).len(), s.notified(method).len()), before, "{method}");
+    }
+
+    // A server that is defined but not running is not started; an unknown name is the same.
+    for server in ["alt", "nobody"] {
+        let e = h.mgr.server_request(&h.root, server, "mock/routes", None, &cancel, timeout).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::NotFound, "{server}");
+        assert_eq!(
+            h.mgr.server_notify(&h.root, server, "mock/changed", None).unwrap_err().kind,
+            ide_core::error::ErrorKind::NotFound
+        );
+    }
+    assert_eq!(h.launcher.state("alt").launches.load(Ordering::SeqCst), 0);
+    assert!(h.statuses("alt").is_empty());
+
+    // A cancelled invocation ends the request.
+    cancel.cancel();
+    let e = h.mgr.server_request(&h.root, "main", "mock/routes", None, &cancel, timeout).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled);
+}
+
+/// A server that advertises `experimental.phoxite.refactor` gets Pull Members Up / Push
+/// Members Down as its own `phoxite/refactor/*` requests, whatever its name.
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_refactorings_use_phoxites_requests_when_the_server_advertises_them() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({ "phoxite": { "laravel": true, "refactor": true } });
+    let h = harness_for("php", "php", &[("any-name", caps)], &[]);
+    let s = h.launcher.state("any-name");
+    *s.responder.lock() = Some(Arc::new(|_, method, params| {
+        let uri = params["uri"].clone();
+        match (method, params["position"]["line"].as_u64()) {
+            ("phoxite/refactor/hierarchyMembers", Some(0)) => Some(json!({
+                "className": "Dog",
+                "targets": [{ "id": "App\\Animal", "name": "Animal", "qualifiedName": "App\\Animal", "interface": false }],
+                "members": [
+                    { "id": "method:bark", "label": "bark(): string", "kind": "method", "selected": true, "abstractable": true },
+                    { "id": "constant:LEGS", "label": "LEGS", "kind": "field", "selected": false, "abstractable": false },
+                ],
+            })),
+            ("phoxite/refactor/hierarchy", _) => Some(json!({
+                "problems": [{ "severity": "warning", "message": "bark() uses $tail, which stays in Dog" }],
+                "edit": { "changes": { uri.as_str().unwrap(): [
+                    { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } }, "newText": "<?php" }
+                ] } },
+            })),
+            _ => None,
+        }
+    }));
+    let text =
+        format!("<?php class Dog extends Animal {{ function bark(): string {{ return ''; }} }}{}", "\n".repeat(9));
+    let (doc, path) = h.open("Dog.php", &text);
+    h.wait_status("any-name", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let info =
+        h.mgr.hierarchy_members(doc, Pos::new(0, 40), HierarchyRefactoring::PullUp, Default::default()).await.unwrap();
+    assert_eq!((info.class_name.as_str(), info.targets[0].qualified_name.as_str()), ("Dog", "App\\Animal"));
+    assert!(info.members[0].selected && info.members[0].abstractable);
+    assert_eq!(
+        info.members.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [HierarchyMemberKind::Method, HierarchyMemberKind::Field]
+    );
+    assert_eq!(
+        s.requested("phoxite/refactor/hierarchyMembers"),
+        [json!({ "uri": uri_of(&path), "position": { "line": 0, "character": 40 }, "kind": "pullUp" })]
+    );
+
+    let choices = vec![HierarchyChoice { id: "method:bark".into(), make_abstract: true }];
+    let done = h
+        .mgr
+        .hierarchy_refactor(
+            doc,
+            Pos::new(0, 40),
+            HierarchyRefactoring::PullUp,
+            Some("App\\Animal".into()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.problems[0].severity, ProblemSeverity::Warning);
+    let edit = done.edit.unwrap();
+    assert!(matches!(&edit.files[..], [FileEdit::Edit { path: p, edits, .. }] if p == &path && edits.len() == 1));
+    assert_eq!(
+        s.requested("phoxite/refactor/hierarchy"),
+        [json!({
+            "uri": uri_of(&path), "position": { "line": 0, "character": 40 }, "kind": "pullUp",
+            "target": "App\\Animal", "choices": [{ "id": "method:bark", "makeAbstract": true }],
+        })]
+    );
+    assert!(s.requested("workspace/executeCommand").is_empty(), "not the JDT extension's commands");
+
+    // The server refuses a position with `RequestFailed` and a message for the user.
+    let refusal = (-32803, "'Dog' has no parent class or interface in the project".to_owned());
+    s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), refusal);
+    let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = refused.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(e.message, "'Dog' has no parent class or interface in the project");
+
+    // Any other error is the server failing, not a reason to show as the user's mistake.
+    s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), (-32603, "index out of bounds".to_owned()));
+    let failed = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = failed.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Protocol);
+    assert_eq!(e.message, "any-name: index out of bounds");
 }

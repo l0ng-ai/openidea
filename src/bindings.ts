@@ -101,6 +101,12 @@ export const commands = {
 	 */
 	settingsGetGlobal: () => __TAURI_INVOKE<Settings_Serialize>("settings_get_global"),
 	/**
+	 *  The removed built-in theme id a settings file of this window still names, if any:
+	 *  `settings_get` reports the built-in that stands in for it, so the notice about
+	 *  a theme that moved to a plugin can address the installs it concerns.
+	 */
+	settingsRemovedTheme: () => __TAURI_INVOKE<string | null>("settings_removed_theme"),
+	/**
 	 *  `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 	 *  value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 	 *  re-reads its effective settings.
@@ -485,6 +491,8 @@ export const commands = {
 	/**  Folders holding indexed files, for `@` references. */
 	findDirs: (query: string, limit: number) => typedError<FileMatch[], IdeError>(__TAURI_INVOKE("find_dirs", { query, limit })),
 	findSymbols: (query: string, filter: SymbolFilter, limit: number) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols", { query, filter, limit })),
+	/**  Index symbols named exactly one of `names` inside `within` (an agent task's folder). */
+	findSymbolsNamed: (names: string[], within: IpcPath) => typedError<SymbolMatch[], IdeError>(__TAURI_INVOKE("find_symbols_named", { names, within })),
 	markRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("mark_recent", { path })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
@@ -1988,6 +1996,8 @@ export type AgentConfigOption = {
 	/**  ACP category: `model`, `mode`, `thought_level`, or agent-specific. */
 	category: string | null,
 	current: string | null,
+	/**  Initial default value reported by the agent, preserved across session updates for Reset. */
+	defaultValue?: string | null,
 	values: AgentConfigValue[],
 	via: AgentConfigVia,
 };
@@ -1997,6 +2007,10 @@ export type AgentConfigValue = {
 	value: string,
 	name: string,
 	description: string | null,
+	/**  Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`). */
+	costCategory?: string | null,
+	/**  Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`). */
+	usageMultiplier?: string | null,
 };
 
 /**  How a setting is changed. */
@@ -2058,6 +2072,11 @@ command?: string | null; options: AgentPermissionOption[];
  *  of question to answer instead of an option.
  */
 questions?: AgentQuestion[]; 
+/**
+ *  Set when the agent asks for a form (ACP elicitation); answered with a JSON object of
+ *  field name to its values, `decline`, or nothing to cancel.
+ */
+form?: AgentForm | null; 
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
@@ -2080,6 +2099,39 @@ export type AgentEvent =
 { type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
 { type: "providers" };
+
+/**  A form the agent asks the user to fill in (ACP `elicitation/create`, form mode). */
+export type AgentForm = {
+	fields: AgentFormField[],
+};
+
+export type AgentFormField = {
+	/**  The property name the answer is keyed by. */
+	name: string,
+	title: string,
+	description?: string,
+	required?: boolean,
+	kind: AgentFormFieldKind,
+	/**  The choices of a `choice` or `choices` field. */
+	options?: AgentFormOption[],
+	/**  The initial answer: option values, a text, a number, or `true` / `false`. */
+	default?: string[],
+	/**  Bounds: the number of a `number` / `integer`, the length of a `text`, the count of `choices`. */
+	min?: number | null,
+	max?: number | null,
+};
+
+export type AgentFormFieldKind = "text" | "number" | "integer" | "boolean" | 
+/**  One of `options`. */
+"choice" | 
+/**  Any of `options`. */
+"choices";
+
+export type AgentFormOption = {
+	value: string,
+	label: string,
+	description?: string,
+};
 
 export type AgentImage = {
 	mimeType: string,
@@ -4851,6 +4903,8 @@ export type EditorConfigProps = {
 export type EditorGeneralSettings = {
 	/**  Change font size with ⌘ + mouse wheel. */
 	wheelZoom?: boolean,
+	/**  Scope of ⌘ + mouse wheel font zoom: `active` editor | `all` editors. */
+	wheelZoomScope?: string,
 	markdownImageFolder?: string,
 	markdownImageNamePattern?: string,
 	/**  Drag-and-drop of selected text inside the editor. */
@@ -5675,6 +5729,11 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**
+	 *  The non-modal Commit tool window works on the index: Staged / Unstaged groups,
+	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
+	 */
+	stagingArea?: boolean,
 };
 
 export type GoBuildTags = {
@@ -9629,7 +9688,9 @@ export type SdkKind = "python" | "node" |
 /**  JDK homes. */
 "jdk" | 
 /**  Maven homes. */
-"maven" | "ruby";
+"maven" | "ruby" | 
+/**  Zig toolchain directories. */
+"zig";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and

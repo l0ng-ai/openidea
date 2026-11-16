@@ -1,7 +1,7 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   height: 100%;
   min-height: 420px;
@@ -33,7 +33,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   margin: 8px 8px 6px;
 }
 .toolbarSep {
@@ -64,7 +64,7 @@
 .rowMain {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   height: var(--h-row);
   padding: 0 12px;
@@ -101,7 +101,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   min-width: 0;
   padding: 12px 16px 16px;
   overflow: auto;
@@ -112,7 +112,7 @@
 .languageHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .languageTitle {
   color: var(--fg-strong);
@@ -140,7 +140,7 @@
 .tableRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding-right: 10px;
 }
 .tableRow:hover {
@@ -154,7 +154,7 @@
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   height: var(--h-row);
   padding: 0 10px;
@@ -212,13 +212,13 @@
 .detailsHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .detailsText {
   display: flex;
   flex: 1;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
 }
 .detailsTitle {
@@ -266,7 +266,7 @@
 .job {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .jobBar {
   width: 100%;
@@ -274,7 +274,7 @@
 .jobLine {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .jobMessage {
   flex: 1;

@@ -57,7 +57,7 @@ import {
 import { badgeKind } from "@/ui/symbolKind";
 import { contextMenuItems, menuGroupContext, newMenuItems } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
-import { presentationIcon, useJvmPresentation } from "@/platform/filePresentation";
+import { presentationIcon, useJvmPresentation } from "@/ui/filePresentation";
 import {
   isModuleFolder,
   moduleFolderIcon,
@@ -66,7 +66,7 @@ import {
 } from "@/platform/projectPresentation";
 import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
-import { PROJECT_TYPES } from "@/platform/projectType";
+import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
 import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
@@ -322,8 +322,10 @@ const Row = memo(function Row({
           size={16}
           className={clsx(styles.icon, node.dir && styles.folderIcon, dimIcon && styles.faded)}
         />
+        {/* IDEA's symlink arrow, on file and folder links (the entry kind comes with the listing). */}
+        {node.symlink && <Icon name="symlink-mark" size={16} className={styles.overlay} label="Symbolic link" />}
         {!!file?.runnable && icon !== "spring-boot" && icon !== "jvm-test" && (
-          <Icon name="runnable-mark" size={16} className={styles.runnable} />
+          <Icon name="runnable-mark" size={16} className={styles.overlay} />
         )}
       </span>
       {isEditing && editing ? (

@@ -4,7 +4,7 @@
  * explicit `level=`/`severity=` fields and `[warn]`/`<Info>` markers match in
  * any case, bare words only in upper case, so prose stays plain.
  */
-import { LEVELS } from "@/editor/core/cm/log";
+import { LEVELS } from "@/platform/logLevels";
 
 export type LogLevel = "error" | "warn" | "info" | "debug" | "trace";
 

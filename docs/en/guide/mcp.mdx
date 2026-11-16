@@ -94,6 +94,7 @@ While the server runs, OpenIDEA writes its port and token to `mcp/server.json` i
 | Commands      | `run_command`, `wait_for_run`, `send_run_input`, `stop_run`                 |
 | Command state | `get_run_status`, `read_run_output`, `list_runs`                            |
 | Git           | `get_repositories`, `git_status`, `git_diff`                                |
+| HTTP Client   | `http_list_requests`, `http_run_request`                                    |
 
 Notes on what they do:
 
@@ -105,6 +106,7 @@ Notes on what they do:
 - `rename_refactoring` renames through the language server, so references that a text search would miss are updated too. It can preview without writing.
 - `apply_patch` accepts the Codex `apply_patch` format and unified diffs. Paths must stay inside the project.
 - `git_diff` compares files on disk, so unsaved editor text is not included.
+- `http_list_requests` lists requests in a project `.http` / `.rest` file; `http_run_request` sends one by index (optional `env` from `http-client.env.json`), asks first, and returns status plus a truncated body — not request headers or body.
 
 ## Commands in the Run tool window
 
@@ -122,7 +124,7 @@ Plugins can add more tools; they appear in the same list. A plugin tool marked a
 ## Safety
 
 - **Untrusted projects** expose only the read-only tools. Tools that write files, rename, reformat, build or run need a project you have trusted.
-- **Running and building ask first.** `execute_run_configuration`, `build_project` and `run_command` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
+- **Running and building ask first.** `execute_run_configuration`, `build_project`, `run_command` and `http_run_request` show a dialog in OpenIDEA naming the client, the project, the tool and what will run. Choose **Allow** or **Deny**; several requests queue up.
 - Tools that write refuse paths outside the project.
 
 ## Limits

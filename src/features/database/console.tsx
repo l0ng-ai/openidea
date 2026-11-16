@@ -42,7 +42,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
-import { iconNode } from "@/editor/lsp/iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { IconButton, Select } from "@/ui";

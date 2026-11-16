@@ -10,13 +10,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .headerActions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .title {
@@ -52,7 +52,7 @@
 .error {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 8px;
   border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--danger) 12%, transparent);
@@ -63,7 +63,7 @@
 .notice {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 6px 8px;
   border-radius: var(--radius-control);
   background: var(--accent-soft);
@@ -89,13 +89,13 @@
   justify-content: space-between;
   min-height: 32px;
   padding: 2px 4px;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .sectionToggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   flex: 1;
   min-width: 0;
   padding: 4px 2px;
@@ -143,12 +143,6 @@
   padding: 2px 0 6px;
 }
 
-.emptySection {
-  padding: 6px 24px 8px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
-}
-
 .sectionNote {
   margin: 0;
   padding: 2px 24px 6px;
@@ -161,7 +155,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 6px 8px 6px 22px;
   border-radius: var(--radius-control);
 }
@@ -173,7 +167,7 @@
 .rowMain {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   flex: 1;
 }
@@ -197,7 +191,7 @@
 .rowActions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
 
@@ -206,7 +200,7 @@
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
-  gap: 10px 12px;
+  gap: 10px var(--space-3);
   padding: 12px 16px 4px;
 }
 
@@ -223,7 +217,7 @@
 .formControl {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 

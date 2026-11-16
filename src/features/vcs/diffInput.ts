@@ -1,5 +1,6 @@
 /** Diff editor inputs and helpers to open them. */
 import type { ChangedFile, RevisionChange } from "@/bindings";
+import { COMBINED_DIFF_KIND, combinedOf, type CombinedDiffData } from "./allInOneDiff";
 import { call, commands, type LineEnding } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { editorService, type EditorInput } from "@/workbench/contributions";
@@ -148,7 +149,20 @@ export function diffTitle(data: DiffData): string {
 }
 
 export async function openDiff(data: DiffData, opts: { preview?: boolean; focus?: boolean } = {}) {
-  await editorService().openInput(diffInput(data), { preview: opts.preview, focus: opts.focus ?? true });
+  const combined = combinedOf(data);
+  const input = combined ? combinedDiffInput(combined) : diffInput(data);
+  await editorService().openInput(input, { preview: opts.preview, focus: opts.focus ?? true });
+}
+
+/** An all-in-one diff tab: one per change (the same files with the same sides). */
+export function combinedDiffInput(data: CombinedDiffData): EditorInput {
+  const items = data.items.map(({ chain: _chain, reveal: _reveal, line: _line, lineSide: _side, ...item }) => item);
+  return {
+    kind: COMBINED_DIFF_KIND,
+    key: `combined-diff:${items.map(diffKey).join("\n")}`,
+    path: data.reveal ?? items[0]?.path ?? "",
+    data: { ...data, items },
+  };
 }
 
 /**

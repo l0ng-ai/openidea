@@ -81,6 +81,7 @@ import {
 } from "./composerModel";
 import { ConfigPickers } from "./ConfigPickers";
 import { useEffortFocus } from "./effortFocus";
+import { useAgentFontZoomSurface } from "./fontZoom";
 import { findRanges, formatDuration, formatSentAt, isFindRangeShown } from "./conversation";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
@@ -97,7 +98,9 @@ import {
   type Activity,
 } from "./workingStatus";
 import { AgentReply, MessageActions, ReplyActions } from "./AgentReply";
+import { FormCard } from "./FormCard";
 import {
+  asksInCard,
   commandPrefix,
   permissionDetails,
   permissionOption,
@@ -113,6 +116,7 @@ import {
   hasTaskTerminal,
   isBusy,
   providerIcon,
+  sessionKey,
   statusLabel,
   subagentStatusLabel,
   subagentTitle,
@@ -221,6 +225,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const [inputFocus, setInputFocus] = useState(0);
   const { fitWindowWidth } = useAgentSettings();
   const sessionRoot = useRef<HTMLDivElement>(null);
+  const { fontZoom, zoomStyle } = useAgentFontZoomSurface(sessionRoot, sessionKey(id), docked, !!task);
   const canFocusInput = shown && !!task && task.status !== "archived" && !view;
   const session = useMemo<FocusedSession>(
     () => ({
@@ -253,7 +258,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         changesOpen && !docked && styles.withChanges,
         fitWindowWidth && styles.fitWidth,
       )}
-      style={changesWidth}
+      style={{ ...changesWidth, ...zoomStyle }}
       onFocusCapture={() => shown && setFocusedSession(session)}
       onBlurCapture={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null) && focusedSession() === session) {
@@ -289,6 +294,7 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
             onOpenSubagent={openSubagent}
             finding={finding && shown}
             findFocus={findFocus}
+            fontZoom={fontZoom}
             onCloseFind={() => setFinding(false)}
           />
         </FoldedContent.Provider>
@@ -609,9 +615,10 @@ function useOffscreenRows(
   visible: boolean,
   enabled: boolean,
   fitWindowWidth: boolean,
+  fontZoom: number,
 ) {
-  // The container width and column mode the marked rows were laid out at.
-  const measured = useRef<{ width: number; fitWindowWidth: boolean } | null>(null);
+  // The container width, column mode and font zoom the marked rows were laid out at.
+  const measured = useRef<{ width: number; fitWindowWidth: boolean; fontZoom: number } | null>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -626,10 +633,15 @@ function useOffscreenRows(
       return;
     }
     if (!visible) return;
-    if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
-    measured.current = { width: el.clientWidth, fitWindowWidth };
+    if (
+      measured.current?.width === el.clientWidth &&
+      measured.current.fitWindowWidth === fitWindowWidth &&
+      measured.current.fontZoom === fontZoom
+    )
+      return;
+    measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
     unmark();
-  }, [ref, visible, enabled, fitWindowWidth]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled || !visible) return;
@@ -652,8 +664,13 @@ function useOffscreenRows(
       });
     };
     const remeasure = () => {
-      if (measured.current?.width === el.clientWidth && measured.current.fitWindowWidth === fitWindowWidth) return;
-      measured.current = { width: el.clientWidth, fitWindowWidth };
+      if (
+        measured.current?.width === el.clientWidth &&
+        measured.current.fitWindowWidth === fitWindowWidth &&
+        measured.current.fontZoom === fontZoom
+      )
+        return;
+      measured.current = { width: el.clientWidth, fitWindowWidth, fontZoom };
       unmark();
     };
     remeasure();
@@ -674,7 +691,7 @@ function useOffscreenRows(
       rows.disconnect();
       resize.disconnect();
     };
-  }, [ref, visible, enabled, fitWindowWidth]);
+  }, [ref, visible, enabled, fitWindowWidth, fontZoom]);
 }
 
 interface StreamProps {
@@ -687,6 +704,7 @@ interface StreamProps {
   finding: boolean;
   /** Bumped by Find in Conversation: focus the find field again. */
   findFocus: number;
+  fontZoom: number;
   onCloseFind: () => void;
 }
 
@@ -702,7 +720,17 @@ function scrollsInside(target: EventTarget | null, root: HTMLElement): boolean {
   return false;
 }
 
-function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, findFocus, onCloseFind }: StreamProps) {
+function Stream({
+  loadError,
+  task,
+  entries,
+  subagent,
+  onOpenSubagent,
+  finding,
+  findFocus,
+  fontZoom,
+  onCloseFind,
+}: StreamProps) {
   const ref = useRef<HTMLDivElement>(null);
   useSelectionBoundary(ref);
   const [openFolds] = useState(() => new Map<string, boolean>());
@@ -797,7 +825,7 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
   // Hidden behind another tab, it has no layout to scroll; shown again, it follows the end again.
   const visible = useEditorShown();
   const { foldTurns, toolCalls, fitWindowWidth } = useAgentSettings();
-  useOffscreenRows(ref, visible, !finding, fitWindowWidth);
+  useOffscreenRows(ref, visible, !finding, fitWindowWidth, fontZoom);
   /** A diagram that drew after the last streamed chunk grows the conversation: keep following. */
   const onDiagramDrawn = useCallback(() => {
     const el = ref.current;
@@ -966,9 +994,10 @@ function Stream({ loadError, task, entries, subagent, onOpenSubagent, finding, f
             className={clsx(styles.stream, selectableText)}
             tabIndex={-1}
             onWheel={(e) => {
+              if (e.defaultPrevented) return;
               markUserScroll();
-              if (e.deltaY < 0 && !e.ctrlKey && !e.defaultPrevented) stopFollowing(e.target);
-              else if (e.deltaY > 0 && !e.ctrlKey && !e.defaultPrevented) scrollingUp.current = false;
+              if (e.deltaY < 0 && !e.ctrlKey && !e.metaKey) stopFollowing(e.target);
+              else if (e.deltaY > 0 && !e.ctrlKey && !e.metaKey) scrollingUp.current = false;
             }}
             onTouchStart={(e) => {
               touchY.current = e.touches.length === 1 ? e.touches[0]!.clientY : null;
@@ -2305,9 +2334,7 @@ function PermissionLine({ task, entry }: { task: AgentTask; entry: PermissionEnt
             ) : (
               <span className={styles.permissionDetail}>{shortTitle(task, detail)}</span>
             )}
-            {!entry.questions?.length && (
-              <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />
-            )}
+            {!asksInCard(entry) && <PermissionAnswers task={task} entry={entry} className={styles.permissionAnswers} />}
           </>
         )}
       </div>
@@ -2332,12 +2359,13 @@ const isRecommended = (label: string) => label.endsWith(RECOMMENDED_SUFFIX);
 
 const plainLabel = (label: string) => (isRecommended(label) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label);
 
-/** An open `AskUserQuestion` request, as a card above the composer; one question at a time. */
+/** An open `AskUserQuestion` request or agent form, as a card above the composer; one question at a time. */
 function QuestionCard({ task, entries }: { task: AgentTask; entries: AgentEntry[] | null }) {
   const entry = entries?.find(
     (candidate): candidate is PermissionEntry =>
-      candidate.type === "permission" && !candidate.chosen && !!candidate.questions?.length,
+      candidate.type === "permission" && !candidate.chosen && asksInCard(candidate),
   );
+  if (entry?.form) return <FormCard key={entry.id} task={task} entry={entry} form={entry.form} />;
   return entry?.questions ? (
     <QuestionForm key={entry.id} task={task} entry={entry} questions={entry.questions} />
   ) : null;
@@ -2629,9 +2657,7 @@ function QuestionForm({
  */
 function Tray({ task, entries, children }: { task: AgentTask; entries: AgentEntry[] | null; children: ReactNode }) {
   const tx = useTx();
-  const pending = entries?.find(
-    (e): e is PermissionEntry => e.type === "permission" && !e.chosen && !e.questions?.length,
-  );
+  const pending = entries?.find((e): e is PermissionEntry => e.type === "permission" && !e.chosen && !asksInCard(e));
   const plan = entries?.findLast((e): e is Extract<AgentEntry, { type: "plan" }> => e.type === "plan");
   const [planOpen, setPlanOpen] = useState(false);
   const done = plan?.items.filter((i) => i.status === "completed").length ?? 0;
@@ -2705,7 +2731,7 @@ function WorkingRow({
     );
   }
   if (task.status !== "running" && task.status !== "starting") return null;
-  if (entries?.some((e) => e.type === "permission" && !e.chosen && !e.questions?.length)) return null;
+  if (entries?.some((e) => e.type === "permission" && !e.chosen && !asksInCard(e))) return null;
   const userAt = entries?.findLastIndex((e) => e.type === "user") ?? -1;
   const lastUser = userAt >= 0 ? (entries![userAt] as UserEntry) : undefined;
   return (

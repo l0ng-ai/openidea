@@ -11,6 +11,7 @@ mod acp;
 mod catalogs;
 mod config;
 mod conversation;
+mod elicitation;
 mod external;
 pub mod mcp;
 mod model;
@@ -187,7 +188,7 @@ impl Shared {
 
     fn config_for_new_task(&self, mut config: Vec<AgentConfigOption>, provider: &str) -> Vec<AgentConfigOption> {
         // Model-specific options are offered separately, never as provider-wide defaults.
-        config.retain(|o| o.category.as_deref() != Some("thought_level"));
+        config.retain(|o| !config::is_per_model_option(o));
         config::add_client_options(provider, &mut config);
         let hook = self.new_task_approvals.read().clone();
         if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
@@ -223,6 +224,7 @@ impl Shared {
         commands: Option<&[AgentCommand]>,
         model: Option<&str>,
     ) {
+        let acp = self.spec(provider).is_some_and(|spec| spec.driver == provider::Driver::Acp);
         let mut cache = self.known.lock();
         let known = cache.entry(provider.to_owned()).or_default();
         let mut changed = false;
@@ -232,8 +234,7 @@ impl Shared {
             && let Some(config) = config.filter(|c| !c.is_empty())
         {
             if let Some(model) = model {
-                let levels: Vec<_> =
-                    config.iter().filter(|o| o.category.as_deref() == Some("thought_level")).cloned().collect();
+                let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
                 if known.thought_levels.get(model) != Some(&levels) {
                     known.thought_levels.insert(model.to_owned(), levels);
                     changed = true;
@@ -244,6 +245,11 @@ impl Shared {
                 changed = true;
             }
         }
+        // Discovery reads one model's options; a session on another model reports that model's.
+        let learned = model.filter(|_| acp && known.authoritative).zip(config).map(|(model, config)| {
+            let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
+            (model, levels)
+        });
         if let Some(commands) = commands.filter(|c| !c.is_empty())
             && known.commands.get(&self.root_key()).map(Vec::as_slice) != Some(commands)
         {
@@ -254,6 +260,9 @@ impl Shared {
             self.persist_known(&cache);
         }
         drop(cache);
+        if let Some((model, levels)) = learned.filter(|(_, levels)| !levels.is_empty()) {
+            self.paths.catalogs.learn_levels(self, provider, model, levels);
+        }
         if changed {
             self.emit(AgentEvent::Providers);
         }
@@ -1000,8 +1009,11 @@ impl AgentManager {
         task.emit_task();
 
         let live = task.live.lock().clone().filter(|l| !l.peer.is_closed());
-        let mut model_options =
-            target.category.as_deref() != Some("model") || previous.as_deref() == Some(value.as_str());
+        // The task's copy holds its model's per-model options unless a model switch the agent
+        // never reported dropped them: caching that copy would erase the model's known levels.
+        let mut model_options = (target.category.as_deref() != Some("model")
+            || previous.as_deref() == Some(value.as_str()))
+            && task.state.lock().task.config.iter().any(config::is_per_model_option);
         if let Some(live) = live.filter(|_| option != config::CURSOR_APPROVAL) {
             let (method, mut params) = config::set_request(&target, &value);
             params["sessionId"] = json!(live.session);
@@ -1032,7 +1044,7 @@ impl AgentManager {
         {
             let mut s = task.state.lock();
             if !model_options {
-                s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
+                s.task.config.retain(|o| !config::is_per_model_option(o));
             }
             if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option) {
                 o.current = Some(value);
@@ -1192,7 +1204,10 @@ impl AgentManager {
     }
 
     /// What `provider` reports about itself, from `initialize` alone: no session is opened,
-    /// so no MCP server, hook or sign-in runs. Remembered until `refresh`.
+    /// so no MCP server, hook or sign-in runs. A successful answer is remembered until
+    /// `refresh`; a failed one is not, so a transient startup failure (a CLI updating itself,
+    /// a busy machine) is retried on the next call instead of being shown for the rest of
+    /// the session.
     pub async fn probe(&self, provider: &str, refresh: bool) -> IdeResult<AgentProbe> {
         if !refresh && let Some(p) = self.shared.probes.lock().get(provider) {
             return Ok(p.clone());
@@ -1254,7 +1269,9 @@ impl AgentManager {
             }
             Err(e) => probe.error = Some(e),
         }
-        self.shared.probes.lock().insert(spec.id, probe.clone());
+        if probe.error.is_none() {
+            self.shared.probes.lock().insert(spec.id, probe.clone());
+        }
         Ok(probe)
     }
 
@@ -1861,12 +1878,24 @@ impl Task {
             let s = self.state.lock();
             s.busy && s.task.status == AgentStatus::Running
         };
-        let Some(live) = live.filter(|l| running && (prompt.images.is_empty() || l.capabilities.images)) else {
+        let Some((live, method)) = live
+            .filter(|l| running && (prompt.images.is_empty() || l.capabilities.images))
+            .and_then(|l| steer_method(&l.init).map(|m| (l, m)))
+        else {
             return Err(prompt);
         };
         let content = self.content(&live, &prompt).await;
         let sent: Result<Value, RpcError> =
-            live.peer.request("_openidea/steer", json!({ "sessionId": live.session, "prompt": content }), None).await;
+            live.peer.request(method, json!({ "sessionId": live.session, "prompt": content }), None).await;
+        // `_session/steering` answers with an outcome: only `injected` joined the turn
+        // (`promptRequired`: no turn is running any more).
+        let sent = match sent {
+            Ok(reply) => match reply.get("outcome").and_then(Value::as_str) {
+                None | Some("injected") => Ok(()),
+                Some(outcome) => Err(reply.get("reason").and_then(Value::as_str).unwrap_or(outcome).to_owned()),
+            },
+            Err(e) => Err(e.to_string()),
+        };
         if let Err(e) = sent {
             // The turn ended meanwhile: the message waits for the next one instead.
             tracing::debug!("agent task {}: steering failed: {e}", self.id);
@@ -2098,10 +2127,10 @@ impl Task {
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
         config::add_client_options(&provider_id, &mut options);
-        // Changing model can replace the effort choices; validate those only afterwards.
-        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id).and_then(|o| o.category.as_deref()) {
-            Some("model") => 0,
-            Some("thought_level") => 2,
+        // Changing model can replace the effort / context-tier choices; validate those only afterwards.
+        wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id) {
+            Some(o) if o.category.as_deref() == Some("model") => 0,
+            Some(o) if config::is_per_model_option(o) => 2,
             _ => 1,
         });
         let mut model_options = known;
@@ -2114,7 +2143,7 @@ impl Task {
                 }
                 continue;
             }
-            if o.category.as_deref() == Some("thought_level") && !model_options {
+            if config::is_per_model_option(&o) && !model_options {
                 continue;
             }
             let already = known && o.current.as_deref() == Some(choice.value.as_str());
@@ -2131,7 +2160,7 @@ impl Task {
                         model_options = true;
                     } else if o.category.as_deref() == Some("model") {
                         if o.current.as_deref() != Some(choice.value.as_str()) {
-                            options.retain(|o| o.category.as_deref() != Some("thought_level"));
+                            options.retain(|o| !config::is_per_model_option(o));
                         }
                         model_options = false;
                     }
@@ -2195,14 +2224,17 @@ impl Task {
                         if let Some(fresh) = reply.get("configOptions") {
                             config::merge_update(&mut s.task.config, fresh);
                         } else if option.category.as_deref() == Some("model") {
-                            s.task.config.retain(|o| o.category.as_deref() != Some("thought_level"));
+                            s.task.config.retain(|o| !config::is_per_model_option(o));
                         }
                         if let Some(o) = s.task.config.iter_mut().find(|o| o.id == option.id) {
                             o.current = Some(value);
                         }
                         s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                        // As in `set_config`: a copy without per-model options can't vouch for them.
                         let model = s.task.model.clone().filter(|_| {
-                            reply.get("configOptions").is_some() || option.category.as_deref() != Some("model")
+                            reply.get("configOptions").is_some()
+                                || (option.category.as_deref() != Some("model")
+                                    && s.task.config.iter().any(config::is_per_model_option))
                         });
                         let (provider, options) = (s.task.provider.clone(), s.task.config.clone());
                         drop(s);
@@ -2366,12 +2398,7 @@ impl Task {
         // first question says what it wants, as the Claude Code adapter titles its own.
         let title =
             if by_index { questions.first().map(|question| question.question.clone()).unwrap_or(title) } else { title };
-        // A subagent's request is answered in the task's conversation, named after the subagent.
-        let session = params.get("sessionId").and_then(Value::as_str);
-        let title = match session.and_then(|s| self.state.lock().conversation.label(s)) {
-            Some(label) => format!("{label}: {title}"),
-            None => title,
-        };
+        let title = self.labelled(params, title);
         let options: Vec<AgentPermissionOption> = params
             .get("options")
             .and_then(Value::as_array)
@@ -2403,6 +2430,7 @@ impl Task {
                 command: None,
                 options,
                 questions: Vec::new(),
+                form: None,
                 chosen: Some("Denied: side conversations are read-only".to_owned()),
             });
             return match reject {
@@ -2429,6 +2457,7 @@ impl Task {
                         command: shown.clone(),
                         options,
                         questions: Vec::new(),
+                        form: None,
                         chosen: Some(format!("Blocked by policy ({pattern})")),
                     });
                     return match reject {
@@ -2449,6 +2478,7 @@ impl Task {
                             command: shown.clone(),
                             options,
                             questions: Vec::new(),
+                            form: None,
                             chosen: Some(format!("{} (whitelisted)", allow.name)),
                         });
                         return json!({ "outcome": { "outcome": "selected", "optionId": allow.id } });
@@ -2464,6 +2494,7 @@ impl Task {
             command: shown,
             options: options.clone(),
             questions,
+            form: None,
             chosen: None,
         });
         self.permissions.lock().insert(id, tx);
@@ -2490,17 +2521,7 @@ impl Task {
                 .and_then(|reply| options.iter().find(|option| &option.id == reply))
                 .map_or_else(|| "Cancelled".to_owned(), |option| option.name.clone()),
         };
-        {
-            let mut s = self.state.lock();
-            if let Some(AgentEntry::Permission { chosen, .. }) = s.conversation.main.entries.get_mut(entry) {
-                *chosen = Some(name);
-            }
-        }
-        self.mark_dirty([(None, entry)]);
-        let still_asking = !self.permissions.lock().is_empty();
-        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
-            self.set_status(AgentStatus::Running, None);
-        }
+        self.settle(entry, name);
         // An agent that answers by index reads the answers beside the outcome, keyed by
         // question index, with its Submit option chosen; anything less cancels the request.
         if by_index {
@@ -2529,6 +2550,57 @@ impl Task {
         match answer {
             Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option } }),
             None => json!({ "outcome": { "outcome": "cancelled" } }),
+        }
+    }
+
+    /// A request from a subagent is answered in the task's conversation, named after the subagent.
+    fn labelled(&self, params: &Value, title: String) -> String {
+        let session = params.get("sessionId").and_then(Value::as_str);
+        match session.and_then(|s| self.state.lock().conversation.label(s)) {
+            Some(label) => format!("{label}: {title}"),
+            None => title,
+        }
+    }
+
+    /// An agent's form (`elicitation/create`): asked in the conversation like a permission
+    /// request, and answered with its values, declined or cancelled. Blocks like `ask_permission`.
+    fn elicit(self: &Arc<Self>, params: &Value, raw: Option<&[u8]>) -> Result<Value, String> {
+        let mut form = elicitation::form_of(params)?;
+        if let Some(raw) = raw {
+            elicitation::in_schema_order(&mut form, raw);
+        }
+        let id = self.next_permission.fetch_add(1, Ordering::Relaxed);
+        let message = params.get("message").and_then(Value::as_str).unwrap_or_default().trim().to_owned();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let entry = self.push_entry(AgentEntry::Permission {
+            id,
+            title: self.labelled(params, message),
+            command: None,
+            options: elicitation::options(),
+            questions: Vec::new(),
+            form: Some(form.clone()),
+            chosen: None,
+        });
+        self.permissions.lock().insert(id, tx);
+        self.set_status(AgentStatus::NeedsInput, None);
+        let reply = rx.recv().ok().flatten();
+        let (response, chosen) = elicitation::answer(&form, reply.as_deref());
+        self.settle(entry, chosen);
+        Ok(response)
+    }
+
+    /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
+    fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
+        {
+            let mut s = self.state.lock();
+            if let Some(AgentEntry::Permission { chosen: answer, .. }) = s.conversation.main.entries.get_mut(entry) {
+                *answer = Some(chosen);
+            }
+        }
+        self.mark_dirty([(None, entry)]);
+        let still_asking = !self.permissions.lock().is_empty();
+        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
+            self.set_status(AgentStatus::Running, None);
         }
     }
 
@@ -2596,8 +2668,17 @@ impl Handler for Client {
         let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned()))?;
         match method {
             "session/request_permission" => Ok(task.ask_permission(&params)),
+            "elicitation/create" => task.elicit(&params, None).map_err(|e| (codes::INVALID_PARAMS, e)),
             _ => Err((codes::METHOD_NOT_FOUND, format!("unsupported method {method}"))),
         }
+    }
+
+    fn on_request_raw(&self, method: &str, params: Value, raw: &[u8]) -> Result<Value, (i64, String, Option<Value>)> {
+        if method != "elicitation/create" {
+            return self.on_request_with_data(method, params);
+        }
+        let task = self.task.upgrade().ok_or((codes::INTERNAL_ERROR, "task closed".to_owned(), None))?;
+        task.elicit(&params, Some(raw)).map_err(|e| (codes::INVALID_PARAMS, e, None))
     }
 }
 
@@ -2865,13 +2946,27 @@ fn shown_background(tasks: &[Value], known: &[AgentBackgroundTask]) -> Vec<Agent
         .collect()
 }
 
+/// The method that adds a message to the running turn: OpenIDEA's own, or the
+/// `_session/steering` extension an agent advertises in the response's top-level `_meta`
+/// (OMP).
+fn steer_method(init: &acp::Negotiated) -> Option<&'static str> {
+    let supported = |v: Option<&Value>| v.and_then(Value::as_bool) == Some(true);
+    if supported(init.meta("/openidea/steer")) {
+        Some("_openidea/steer")
+    } else if supported(init.meta.as_ref().and_then(|m| m.pointer("/steering/supported"))) {
+        Some("_session/steering")
+    } else {
+        None
+    }
+}
+
 fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
     let meta = |p: &str| init.meta(p).and_then(Value::as_bool) == Some(true);
     let capabilities = AgentCapabilities {
         images: init.prompt("image"),
         fork: init.session("fork"),
         rollback: meta("/openidea/rollback"),
-        steer: meta("/openidea/steer"),
+        steer: steer_method(init).is_some(),
         background_tasks: meta("/openidea/backgroundTasks"),
         read_only: false,
     };

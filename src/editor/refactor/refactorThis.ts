@@ -41,8 +41,8 @@ import {
 import { safeDelete } from "./safeDelete";
 import { startHierarchyRefactoring } from "./hierarchy";
 
-/** Languages whose server runs the class-hierarchy refactorings (the app-owned JDT extension). */
-const HIERARCHY_LANGUAGES = new Set(["java"]);
+/** Languages with a server that runs the class-hierarchy refactorings (the app-owned JDT extension; Phoxite for PHP). */
+const HIERARCHY_LANGUAGES = new Set(["java", "php"]);
 
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =

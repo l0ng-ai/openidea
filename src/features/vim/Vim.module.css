@@ -20,14 +20,14 @@
 .page {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
   color: var(--fg);
   font-size: var(--fs-ui);
 }
 .section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .header {
   display: flex;

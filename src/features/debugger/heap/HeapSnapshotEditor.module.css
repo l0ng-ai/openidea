@@ -16,7 +16,7 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
+  gap: var(--space-2) var(--space-4);
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -25,14 +25,14 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .title,
 .totals {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  column-gap: 12px;
+  column-gap: var(--space-3);
   min-width: 0;
 }
 .label {
@@ -56,7 +56,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .compare {
   width: 200px;
@@ -126,7 +126,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
 }
@@ -138,7 +138,7 @@
 .note {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 12px;
   color: var(--fg-subtle);
 }
@@ -177,7 +177,7 @@
   display: grid;
   grid-template-columns: var(--heap-columns);
   align-items: center;
-  column-gap: 12px;
+  column-gap: var(--space-3);
   width: 100%;
 }
 .head {
@@ -252,7 +252,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .treeRow > :first-child {
   flex: 1;
@@ -274,7 +274,7 @@
 .object {
   display: inline-flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -336,5 +336,5 @@
 .openProgress {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
