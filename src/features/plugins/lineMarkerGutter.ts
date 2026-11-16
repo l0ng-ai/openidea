@@ -6,7 +6,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { iconAreaSource, shownAgain, type EditorDocContext } from "@/editor/api";
+import { iconAreaSource, mapLineStart, shownAgain, type EditorDocContext } from "@/editor/api";
 import { navigationButton } from "./navigationButton";
 import { tx } from "@/platform/i18n";
 import { pluginsBackend } from "./backend";
@@ -64,7 +64,7 @@ const markersField = StateField.define<Placed[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setMarkers)) return e.value;
     if (!tr.docChanged || !value.length) return value;
-    return value.map((m) => ({ ...m, pos: tr.state.doc.lineAt(tr.changes.mapPos(m.pos, -1)).from }));
+    return value.map((m) => ({ ...m, pos: mapLineStart(tr, m.pos) }));
   },
 });
 

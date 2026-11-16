@@ -211,6 +211,7 @@ pub fn find_references() -> Tool {
     Tool::new("find_references", "Find references using the language service and the IDE's project index. Positions are 1-based UTF-16. Reports incomplete results when analysis is still running.", |call| async move {
         let path = call.resolve_readable(&call.str("filePath")?).await?;
         let page = super::page::Page::of(&call, REFERENCES_LIMIT)?;
+        let dir = super::scope::Scope::of(&call)?;
         let line = call.opt_i64("line")?.ok_or_else(|| IdeError::invalid("missing line"))?;
         let column = call.opt_i64("column")?.ok_or_else(|| IdeError::invalid("missing column"))?;
         let project = call.project.clone();
@@ -248,7 +249,12 @@ pub fn find_references() -> Tool {
         // `classified`, when there, goes with `locations` one to one.
         if let serde_json::Value::Object(map) = &mut value {
             let mut list = |key: &str| match map.remove(key) { Some(serde_json::Value::Array(items)) => items, _ => Vec::new() };
-            let (locations, classified) = (list("locations"), list("classified"));
+            let (mut locations, mut classified) = (list("locations"), list("classified"));
+            if dir.dir().is_some() {
+                let inside = |l: &serde_json::Value| l["path"].as_str().is_some_and(|p| dir.contains(std::path::Path::new(p)));
+                locations.retain(inside);
+                classified.retain(|c| inside(&c["location"]));
+            }
             let classified = page.take(classified, &mut serde_json::Map::new());
             let locations = page.take(locations, map);
             map.insert("locations".into(), locations.into());
@@ -260,6 +266,7 @@ pub fn find_references() -> Tool {
     .param(Param::required("line", ParamType::Integer, "1-based line"))
     .param(Param::required("column", ParamType::Integer, "1-based UTF-16 column"))
     .param(Param::optional("includeDeclaration", ParamType::Boolean, "Include declarations (default true)"))
+    .param(super::scope::param())
     .param(Param::optional("limit", ParamType::Integer, "References to return at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, super::page::OFFSET))
 }

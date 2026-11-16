@@ -1,6 +1,6 @@
 /** Open/close state of the debugger's overlays (rendered by `Overlays.tsx`). */
 import { create } from "zustand";
-import type { AttachableProcess, DebugSessionId, RunConfig, StepInTarget } from "@/platform/ipc";
+import type { AttachableProcess, DebugSessionId, RunConfig, StepInTarget, StreamChainInfo } from "@/platform/ipc";
 
 /** A Smart Step Into target placed on the paused line (UTF-16 offsets within the line). */
 export interface InlineStepTarget {
@@ -33,6 +33,13 @@ interface OverlayState {
     targets: StepInTarget[];
     inline?: { path: string; line: number; ranges: InlineStepTarget[]; index: number };
   } | null;
+  /**
+   * Trace Stream Chain: the chains on the paused line, unavailable ones listed with their reason.
+   * `frame` is the frame they were found in; chain indexes mean nothing for another one.
+   */
+  streamChooser: { session: DebugSessionId; frame: number; chains: StreamChainInfo[] } | null;
+  /** The session whose stream trace "Abort Operation…" asks about. */
+  streamAbort: DebugSessionId | null;
 }
 
 export const useOverlays = create<OverlayState>(() => ({
@@ -42,6 +49,8 @@ export const useOverlays = create<OverlayState>(() => ({
   chooser: null,
   attach: null,
   smartStep: null,
+  streamChooser: null,
+  streamAbort: null,
 }));
 
 export function openBreakpointPopover(path: string, id: string, at: { x: number; y: number }, focusLog = false) {
@@ -66,4 +75,8 @@ export function openConfigChooser(configs: RunConfig[]) {
 
 export function openSmartStepChooser(session: DebugSessionId, thread: number, targets: StepInTarget[]) {
   useOverlays.setState({ smartStep: { session, thread, targets } });
+}
+
+export function openStreamChainChooser(session: DebugSessionId, frame: number, chains: StreamChainInfo[]) {
+  useOverlays.setState({ streamChooser: { session, frame, chains } });
 }

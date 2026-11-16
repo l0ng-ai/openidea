@@ -83,28 +83,40 @@ describe("the all-in-one diff tab", () => {
     expect(screen.getAllByText("src")).toHaveLength(2);
   });
 
-  it("collapses a file and all files", () => {
+  it("collapses a file and all files, keeping their diffs (and unsaved edits) loaded", () => {
     render(<CombinedDiffTab input={input} />);
+    const shown = () => screen.queryAllByTestId("block-diff").filter((b) => !b.closest("[hidden]"));
+    const first = screen.getAllByTestId("block-diff")[0]!;
     act(() => {
       fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
     });
-    expect(screen.getAllByTestId("block-diff")).toHaveLength(2);
+    expect(shown()).toHaveLength(2);
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
     });
-    expect(screen.queryAllByTestId("block-diff")).toHaveLength(0);
+    expect(shown()).toHaveLength(0);
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Expand All Files" }));
     });
-    expect(screen.getAllByTestId("block-diff")).toHaveLength(3);
+    expect(shown()).toHaveLength(3);
+    // The same diff all along: collapsing never released its document.
+    expect(screen.getAllByTestId("block-diff")[0]).toBe(first);
   });
 
-  it("switches every block between side-by-side and unified", () => {
+  it("switches every block between side-by-side and unified, collapsed ones too, in place", () => {
     render(<CombinedDiffTab input={input} />);
+    const before = screen.getAllByTestId("block-diff");
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
+    });
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Unified Viewer" }));
     });
-    expect(screen.getAllByTestId("block-diff").every((b) => b.dataset.mode === "unified")).toBe(true);
+    const after = screen.getAllByTestId("block-diff");
+    expect(after.every((b) => b.dataset.mode === "unified")).toBe(true);
+    // The same diffs: switching never released their documents (and unsaved edits).
+    expect(after).toEqual(before);
+    after.forEach((b, i) => expect(b).toBe(before[i]));
   });
 
   it("opens a file's own diff, and goes back to one tab per file", async () => {

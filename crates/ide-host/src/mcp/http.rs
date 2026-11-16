@@ -167,7 +167,10 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
             }
             call.confirm(&subject, Some(detail)).await?;
 
-            let exchange = ide_http::run(input, &call.cancel).await?;
+            // Exactly the request the user approved: preparing it again would read the
+            // environment files again, which may name another destination by now.
+            let redact_url = prepared.url.clone();
+            let exchange = ide_http::send(prepared, Some(&path), &call.cancel).await?;
             let history = call.project().http_history.clone();
             let saved = exchange.clone();
             let _ = call.host().blocking(move || history.add(&saved)).await;
@@ -188,7 +191,7 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
                 "status": response.map(|r| r.status),
                 "statusText": response.map(|r| r.status_text.clone()),
                 "totalMs": response.map(|r| r.total_ms).or(exchange.entry.total_ms),
-                "error": redact_transport_error(exchange.entry.error.clone(), &prepared.url),
+                "error": redact_transport_error(exchange.entry.error.clone(), &redact_url),
                 "body": body,
                 "bodyTruncated": body_truncated,
             }))

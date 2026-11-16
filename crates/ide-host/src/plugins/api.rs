@@ -234,7 +234,7 @@ fn network_error(error: reqwest::Error) -> HostError {
         }
         source = e.source();
     }
-    HostError::Failed(error.to_string())
+    HostError::Failed(ide_http::client::describe(&error))
 }
 
 fn redirect_capability(from: &reqwest::Url, to: &reqwest::Url) -> Result<Capability, String> {

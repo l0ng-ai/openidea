@@ -208,41 +208,52 @@ pub async fn nav_index_definitions(
 }
 
 /// Every Python class in the project (attached dependency roots included) and its base
-/// names. The index covers content roots, so this is the whole-project answer the UI uses
-/// for inheritance gutter markers when no type-hierarchy provider exists.
+/// names, answered from the project index: its symbols already carry the bases, and it
+/// covers content roots, so this is the whole-project answer the UI uses for inheritance
+/// gutter markers when no type-hierarchy provider exists. No file is parsed here.
 pub async fn nav_inheritance(host: &Host, window: &str) -> IdeResult<Vec<ClassInheritance>> {
     let project = host.project(window)?;
     let syntax = host.syntax();
     blocking(move || {
         let python = LanguageId::new("python");
-        let files = project.index.files_with_extensions(&["py".into(), "pyi".into()], 20_000);
         let mut cache = CLASS_BASES.lock();
-        let mut out = Vec::new();
-        for path in files {
-            // The open (possibly unsaved) buffer is keyed by its text, a file on disk by its
-            // size and modification time, so only changed files are parsed again.
+        // Disk-backed classes come from the index: it already parsed every file once for
+        // symbols, so no second parse of the project is needed here.
+        let mut out: Vec<ClassInheritance> = project
+            .index
+            .inheritance()
+            .into_iter()
+            // The index holds classes of every language; the graph is Python's.
+            .filter(|c| matches!(c.path.extension().and_then(std::ffi::OsStr::to_str), Some("py" | "pyi")))
+            .map(|c| ClassInheritance {
+                path: IpcPath::from(c.path.clone()),
+                line: c.range.start.line,
+                col: c.range.start.col,
+                name: c.name.clone(),
+                bases: c.bases.clone(),
+            })
+            .collect();
+        // Open buffers may be unsaved, so their classes are parsed live (and cached per
+        // text/stamp) and replace the index's view of that file. This keeps #3359's
+        // "open buffer by its text" behaviour while the disk path is index-backed.
+        let open_files: Vec<PathBuf> = project
+            .index
+            .files_with_extensions(&["py".into(), "pyi".into()], 20_000)
+            .into_iter()
+            .filter(|path| project.documents.text_of(path).is_some())
+            .collect();
+        for path in open_files {
             let open = project.documents.text_of(&path);
             let stamp = match &open {
-                Some(text) => Stamp::Text(text_hash(text)),
-                None => match std::fs::metadata(&path) {
-                    Ok(m) => Stamp::Disk(m.len(), m.modified().ok()),
-                    Err(_) => continue,
-                },
+                Some(text) => Stamp(text_hash(text)),
+                None => continue,
             };
+            let text = open.unwrap();
             let classes = match cache.get(&path) {
                 Some((cached, classes)) if *cached == stamp => classes,
-                _ => {
-                    let text = match open {
-                        Some(text) => text,
-                        None => match project.text_of(&path) {
-                            Ok(text) => text,
-                            Err(_) => continue,
-                        },
-                    };
-                    let classes = syntax.class_bases(&python, &text);
-                    &cache.entry(path.clone()).insert_entry((stamp, classes)).into_mut().1
-                }
+                _ => &cache.entry(path.clone()).insert_entry((stamp, syntax.class_bases(&python, &text))).into_mut().1,
             };
+            out.retain(|c| c.path.0 != *path);
             out.extend(classes.iter().map(|class| ClassInheritance {
                 path: IpcPath::from(path.clone()),
                 line: class.line,
@@ -257,10 +268,7 @@ pub async fn nav_inheritance(host: &Host, window: &str) -> IdeResult<Vec<ClassIn
 }
 
 #[derive(Clone, PartialEq, Eq)]
-enum Stamp {
-    Text(u64),
-    Disk(u64, Option<std::time::SystemTime>),
-}
+struct Stamp(u64);
 
 fn text_hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};

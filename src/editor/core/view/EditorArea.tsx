@@ -230,6 +230,7 @@ function PaneView({ paneId }: { paneId: string }) {
         color: colors[i] || undefined,
         tint:
           tints[i] || (fileColors && t.input.kind === "file" && t.input.path ? fileColors(t.input.path) : undefined),
+        tintStrength: tints[i] ? undefined : "var(--file-tint-strength)",
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
         trailing:
           kindMark || pin ? (

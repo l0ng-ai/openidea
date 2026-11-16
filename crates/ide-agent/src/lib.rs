@@ -70,6 +70,8 @@ pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
 /// A native agent's own update: the background tasks its session runs
 /// (see [`TaskState::background_tasks`]).
 pub(crate) const BACKGROUND_TASKS_UPDATE: &str = "openidea_background_tasks";
+/// A native agent's diagnostic, including warnings emitted before a session exists.
+pub(crate) const WARNING_NOTIFICATION: &str = "_openidea/warning";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -208,20 +210,23 @@ impl Shared {
         }
     }
 
+    /// The MCP servers passed to a session, and the names of the ones off for it.
     fn mcp_servers_for_session(
         &self,
         provider: &str,
         init: &acp::Negotiated,
         overrides: &BTreeMap<String, bool>,
-    ) -> Vec<Value> {
-        let mut servers = if overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false) {
-            Vec::new()
-        } else {
-            mcp_servers_for(init.mcp_stdio(), &self.paths.project_root)
-        };
+    ) -> McpForSession {
+        let builtin_off = overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false);
+        let mut servers =
+            if builtin_off { Vec::new() } else { mcp_servers_for(init.mcp_stdio(), &self.paths.project_root) };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
         servers.extend(mcp::acp_mcp_servers(&configured, provider, init, overrides));
-        servers
+        let mut off = mcp::servers_off(&configured, overrides);
+        if builtin_off {
+            off.push(BUILTIN_SERVER.to_owned());
+        }
+        McpForSession { servers, off }
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
@@ -367,11 +372,6 @@ struct TaskState {
     title_renamed: bool,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
-    /// A temporary side conversation: lives in memory only, never persisted.
-    ephemeral: bool,
-    /// The conversation a temporary side conversation starts with, sent to the agent with
-    /// its first real message; the task's own entries hold only the questions.
-    ephemeral_context: Option<String>,
     /// Background tasks the agent reported as running (`run_in_background` commands and
     /// the like), as it sent them: unlike a turn they outlive it, so an idle release
     /// waits for the last one. A (re)started process runs nothing yet.
@@ -498,14 +498,8 @@ impl AgentManager {
     }
 
     /// Routes events to `sink` (replacing the previous subscriber); returns every task.
-    /// Ephemeral tasks belonged to the previous page session: a fresh one starts without them.
     pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
         *self.shared.sink.write() = Some(sink);
-        let stale: Vec<Arc<Task>> = self.tasks.read().values().filter(|t| t.state.lock().ephemeral).cloned().collect();
-        for task in &stale {
-            self.drop_in_memory(task);
-            self.shared.emit(AgentEvent::Removed { id: task.id.clone() });
-        }
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().task.clone()).collect();
         tasks.sort_by(|a, b| b.updated_ms.total_cmp(&a.updated_ms));
         tasks
@@ -637,14 +631,9 @@ impl AgentManager {
             }
             offered = self.shared.known_commands(&provider);
         }
-        for &(name, description) in builtin_commands(&provider) {
-            if !offered.iter().any(|c| c.name == name) {
-                offered.push(AgentCommand {
-                    name: name.to_owned(),
-                    description: description.to_owned(),
-                    hint: None,
-                    source: AgentCommandSource::Command,
-                });
+        for command in builtin_commands(&provider) {
+            if !offered.iter().any(|c| c.name == command.name) {
+                offered.push(command);
             }
         }
         if provider != "claude" && provider != "claude-acp" {
@@ -737,7 +726,7 @@ impl AgentManager {
             background: Box::default(),
             mcp_overrides: BTreeMap::new(),
         };
-        let handle = self.register(TaskFile {
+        let file = TaskFile {
             task: task.clone(),
             session_id: Some(session_id.to_owned()),
             entries: Vec::new(),
@@ -748,7 +737,9 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
-        });
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
         handle.emit_task();
         handle.persist();
         Ok(task)
@@ -786,8 +777,27 @@ impl AgentManager {
                 (root, None, base, commit, before)
             }
         };
-        // The session's settings: what the agent offered last time, with the choices applied.
-        let config = self.merged_config(&spec.id, &req.config);
+        // Until the session reports its own, show what the agent offered last time with the choices applied.
+        let catalog = self.shared.paths.catalogs.cached(&self.shared, &spec.id);
+        let mut levels = catalog.thought_levels;
+        let mut config = self.shared.config_for_new_task(catalog.config, &spec.id);
+        for choice in &req.config {
+            if let Some(o) = config.iter_mut().find(|o| o.id == choice.id) {
+                o.current = Some(choice.value.clone());
+            }
+        }
+        if let Some(model) = model_of(&config)
+            && let Some(levels) = levels.remove(&model)
+        {
+            config.extend(levels.into_iter().map(|mut o| {
+                if let Some(choice) =
+                    req.config.iter().find(|c| c.id == o.id && o.values.iter().any(|v| v.value == c.value))
+                {
+                    o.current = Some(choice.value.clone());
+                }
+                o
+            }));
+        }
         let now = now_ms();
         let id = uuid::Uuid::new_v4().simple().to_string();
         // Copies of the files the user had changed already, for rolling back the task's changes to them.
@@ -829,7 +839,7 @@ impl AgentManager {
             background: Box::default(),
             mcp_overrides: req.mcp_overrides,
         };
-        let handle = self.register(TaskFile {
+        let file = TaskFile {
             task: task.clone(),
             session_id: None,
             entries: Vec::new(),
@@ -840,115 +850,13 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
-        });
+        };
+        let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = true;
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
         handle.persist();
         self.shared.runtime.spawn(async move { handle.run(prompt).await });
-        Ok(task)
-    }
-
-    /// Builds the in-memory handle of a fresh task, registers it and announces it. The
-    /// caller decides what else its life starts with (a persisted file, a session, a run).
-    fn register(&self, file: TaskFile) -> Arc<Task> {
-        let handle = Task::restore(file, self.shared.clone());
-        self.tasks.write().insert(handle.id.clone(), handle.clone());
-        handle.emit_task();
-        handle
-    }
-
-    /// The session's settings: what the agent offered last time, with the request's
-    /// choices — and the chosen model's thought levels — applied.
-    fn merged_config(&self, provider: &str, req: &[AgentConfigChoice]) -> Vec<AgentConfigOption> {
-        let catalog = self.shared.paths.catalogs.cached(&self.shared, provider);
-        let mut levels = catalog.thought_levels;
-        let mut config = self.shared.config_for_new_task(catalog.config, provider);
-        for choice in req {
-            if let Some(o) = config.iter_mut().find(|o| o.id == choice.id) {
-                o.current = Some(choice.value.clone());
-            }
-        }
-        if let Some(model) = model_of(&config)
-            && let Some(levels) = levels.remove(&model)
-        {
-            config.extend(levels.into_iter().map(|mut o| {
-                if let Some(choice) = req.iter().find(|c| c.id == o.id && o.values.iter().any(|v| v.value == c.value)) {
-                    o.current = Some(choice.value.clone());
-                }
-                o
-            }));
-        }
-        config
-    }
-
-    /// Creates a temporary side conversation of `source`: an in-memory task that is never
-    /// persisted, whose session starts with its first real message (`prompt` only names
-    /// the title). `source`'s conversation rides along as the context of that message.
-    /// The task is read-only: its settings are pushed to a mode that asks before anything,
-    /// and requests that would change the project are denied regardless. Fails for an
-    /// agent that offers no way to ask.
-    pub async fn create_ephemeral(&self, req: NewAgentTask, source: &str) -> IdeResult<AgentTask> {
-        let spec = self
-            .shared
-            .spec(&req.provider)
-            .ok_or_else(|| IdeError::invalid(format!("unknown agent {}", req.provider)))?;
-        let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the topic first"))?;
-        let title = title_of(&prompt);
-        let mut config = self.merged_config(&spec.id, &req.config);
-        config::ask_for_approvals(&mut config);
-        if config::bypass_approvals(&config) {
-            return Err(IdeError::invalid(
-                "this agent has no mode that asks before changing things, so it can't run a side conversation",
-            ));
-        }
-        let read_only = !config::bypass_approvals(&config);
-        let context = context_transcript(&self.task(source)?.state.lock().conversation.main.entries);
-        let root = self.shared.paths.project_root.clone();
-        let before = blocking(move || Ok(worktree::snapshot(&root).unwrap_or_default())).await?;
-        let now = now_ms();
-        let mut capabilities = self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default();
-        capabilities.read_only = read_only;
-        let task = AgentTask {
-            project_root: Some(IpcPath(self.shared.paths.project_root.clone())),
-            id: uuid::Uuid::new_v4().simple().to_string(),
-            title,
-            provider: spec.id.clone(),
-            model: model_of(&config),
-            status: AgentStatus::Ready,
-            isolation: Isolation::Local,
-            cwd: IpcPath(self.shared.paths.project_root.clone()),
-            branch: None,
-            base: None,
-            base_commit: None,
-            error: None,
-            created_ms: now,
-            updated_ms: now,
-            commands: self.shared.known_commands(&spec.id),
-            usage: None,
-            queue: Vec::new(),
-            capabilities,
-            resets_ms: None,
-            retry: None,
-            background: Box::default(),
-            mcp_overrides: req.mcp_overrides,
-            config,
-        };
-        let handle = self.register(TaskFile {
-            task: task.clone(),
-            session_id: None,
-            entries: Vec::new(),
-            wanted: req.config,
-            before,
-            saved: None,
-            touched: None,
-            subagents: Vec::new(),
-            pending_rollback: 0,
-            title_renamed: false,
-        });
-        {
-            let mut s = handle.state.lock();
-            s.ephemeral = true;
-            s.ephemeral_context = Some(context);
-        }
         Ok(task)
     }
 
@@ -1141,7 +1049,11 @@ impl AgentManager {
             .peer
             .request(
                 "session/fork",
-                json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers }),
+                {
+                    let mut params = session_params(&cwd_s, &mcp_servers);
+                    params["sessionId"] = json!(live.session);
+                    params
+                },
                 None,
             )
             .await
@@ -1412,15 +1324,6 @@ impl AgentManager {
         Ok(())
     }
 
-    /// Removes a task from the manager's table and stops its agent. The disk (its file,
-    /// its worktree) is the caller's business.
-    fn drop_in_memory(&self, task: &Arc<Task>) {
-        task.kill();
-        self.tasks.write().remove(&task.id);
-        *task.deleted.lock() = true;
-        let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{}.json", task.id)));
-    }
-
     /// Returns an archived task to the active list without starting the agent.
     pub fn unarchive(&self, id: &str) -> IdeResult<()> {
         let task = self.task(id)?;
@@ -1686,8 +1589,6 @@ impl Task {
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
                 busy: false,
-                ephemeral: false,
-                ephemeral_context: None,
                 background_tasks: Vec::new(),
             }),
             live: Mutex::new(None),
@@ -1845,9 +1746,6 @@ impl Task {
         // Held from snapshot to rename, so saves land in order and none follows a delete.
         let deleted = self.deleted.lock();
         if *deleted {
-            return;
-        }
-        if self.state.lock().ephemeral {
             return;
         }
         let bytes = {
@@ -2119,20 +2017,7 @@ impl Task {
         if !prompt.images.is_empty() && !live.capabilities.images {
             return Err(Failure::from("This agent can't read images.".to_owned()));
         }
-        // A temporary side conversation's context rides with its first real message; the
-        // conversation itself records only the question (and whatever comes after).
-        let prompt = {
-            let context = self.state.lock().ephemeral_context.take();
-            match context {
-                Some(context) => {
-                    let mut owned = prompt.clone();
-                    owned.text = format!("{context}\n\n---\n\n{}", owned.text);
-                    owned
-                }
-                None => prompt.clone(),
-            }
-        };
-        let mut content = self.content(&live, &prompt).await;
+        let mut content = self.content(&live, prompt).await;
         let mut result: Result<Value, RpcError> =
             live.peer.request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None).await;
         if live.driver == provider::Driver::Copilot
@@ -2154,7 +2039,7 @@ impl Task {
             if !prompt.images.is_empty() && !live.capabilities.images {
                 return Err(Failure::from("This agent can't read images.".to_owned()));
             }
-            content = self.content(&live, &prompt).await;
+            content = self.content(&live, prompt).await;
             result = live
                 .peer
                 .request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None)
@@ -2314,7 +2199,8 @@ impl Task {
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let params = json!({ "sessionId": &id, "cwd": &cwd_s, "mcpServers": &mcp_servers });
+            let mut params = session_params(&cwd_s, &mcp_servers);
+            params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
@@ -2327,7 +2213,7 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = json!({ "cwd": &cwd_s, "mcpServers": &mcp_servers });
+                let params = session_params(&cwd_s, &mcp_servers);
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -2368,7 +2254,9 @@ impl Task {
         }
         let (mut options, mut wanted) = {
             let s = self.state.lock();
-            (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
+            let options = if known { reported } else { s.task.config.clone() };
+            let wanted = s.wanted.clone();
+            (options, wanted)
         };
         config::add_client_options(provider_id, &mut options);
         // Changing model can replace the effort / context-tier choices; validate those only afterwards.
@@ -2558,8 +2446,17 @@ impl Task {
             if let Some(title) = title {
                 // Check and write under one lock: a rename landing between them would be lost.
                 let mut s = self.state.lock();
-                if !s.title_renamed && s.task.title != title {
+                let user_named = update.get("userNamed").and_then(Value::as_bool) == Some(true);
+                let flag_changed = user_named && !s.title_renamed;
+                if user_named {
+                    s.title_renamed = true;
+                }
+                if (user_named || !s.title_renamed) && s.task.title != title {
                     s.task.title = title.to_owned();
+                    drop(s);
+                    self.persist();
+                    self.emit_task();
+                } else if flag_changed {
                     drop(s);
                     self.persist();
                     self.emit_task();
@@ -2667,30 +2564,6 @@ impl Task {
                     .collect()
             })
             .unwrap_or_default();
-        // A side conversation is read-only: deny anything that would change the project
-        // (its task is deleted when its pane closes, leaving nothing to review or revert).
-        if self.state.lock().ephemeral
-            && params
-                .pointer("/toolCall/kind")
-                .or_else(|| params.pointer("/subject/toolCall/kind"))
-                .and_then(Value::as_str)
-                .is_some_and(|kind| matches!(kind, "edit" | "delete" | "move" | "execute"))
-        {
-            let reject = options.iter().find(|o| o.kind.starts_with("reject")).cloned();
-            let _ = self.push_entry(AgentEntry::Permission {
-                id,
-                title,
-                command: None,
-                options,
-                questions: Vec::new(),
-                form: None,
-                chosen: Some("Denied: side conversations are read-only".to_owned()),
-            });
-            return match reject {
-                Some(option) => json!({ "outcome": { "outcome": "selected", "optionId": option.id } }),
-                None => json!({ "outcome": { "outcome": "cancelled" } }),
-            };
-        }
         let asked: Vec<String> = questions
             .iter()
             .map(|question| question.answer_key.clone().unwrap_or_else(|| question.question.clone()))
@@ -2912,6 +2785,15 @@ struct Client {
 
 impl Handler for Client {
     fn on_notification(&self, method: &str, params: Value) {
+        if method == WARNING_NOTIFICATION {
+            if let Some(task) = self.task.upgrade()
+                && let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+            {
+                task.push_entry(AgentEntry::Error { message: message.to_owned() });
+                task.persist();
+            }
+            return;
+        }
         if method == "session/update"
             && let (Some(task), Some(update)) = (self.task.upgrade(), params.get("update"))
         {
@@ -2941,72 +2823,6 @@ impl Handler for Client {
 fn clean(mut prompt: AgentPrompt) -> Option<AgentPrompt> {
     prompt.text = prompt.text.trim().to_owned();
     (!prompt.text.is_empty() || !prompt.images.is_empty() || !prompt.files.is_empty()).then_some(prompt)
-}
-
-/// The character budget of a side conversation's context: the newest entries win, the
-/// oldest are dropped first. Leaves room for the question and the agent's answer.
-const CONTEXT_BUDGET: usize = 100_000;
-
-/// A long tool output trimmed to its first and last few lines, with the elided middle noted.
-fn trimmed_output(output: &str) -> String {
-    const KEPT: usize = 4;
-    let lines: Vec<&str> = output.lines().collect();
-    if lines.len() <= KEPT * 2 + 1 {
-        return output.to_owned();
-    }
-    let omitted = lines.len() - KEPT * 2;
-    let mut out = lines[..KEPT].join("\n");
-    out.push_str(&format!("\n… {omitted} lines omitted …\n"));
-    out.push_str(&lines[lines.len() - KEPT..].join("\n"));
-    out
-}
-
-fn context_entry(e: &AgentEntry) -> Option<String> {
-    match e {
-        AgentEntry::User { text, .. } => Some(format!("User: {text}")),
-        AgentEntry::Agent { text, .. } if !text.trim().is_empty() => Some(format!("Agent: {text}")),
-        AgentEntry::Thought { text, .. } if !text.trim().is_empty() => Some(format!("Thought: {text}")),
-        AgentEntry::Tool { title, output, .. } => match output.as_deref() {
-            Some(output) if !output.trim().is_empty() => Some(format!("Tool: {title}\n{}", trimmed_output(output))),
-            _ => Some(format!("Tool: {title}")),
-        },
-        AgentEntry::Error { message, .. } => Some(format!("Error: {message}")),
-        _ => None,
-    }
-}
-
-/// The conversation as the context a temporary side conversation starts with: what was
-/// said, what was done (tool calls with trimmed output), errors and the agent's reasoning,
-/// oldest first, within [`CONTEXT_BUDGET`].
-fn context_transcript(entries: &[AgentEntry]) -> String {
-    // Newest wins: walk back until the budget is spent, dropping the oldest entries first.
-    let mut lines: Vec<String> = Vec::new();
-    let mut used = 0usize;
-    for e in entries.iter().rev() {
-        let Some(line) = context_entry(e) else { continue };
-        if used + line.len() > CONTEXT_BUDGET {
-            if lines.is_empty() {
-                // Even the newest entry alone exceeds the budget: keep its head.
-                lines.push(line.chars().take(CONTEXT_BUDGET).collect());
-            }
-            break;
-        }
-        used += line.len();
-        lines.push(line);
-    }
-    lines.reverse();
-    let dropped = entries.iter().rev().filter_map(context_entry).count() - lines.len();
-    let mut context = String::from(
-        "You are answering a side question in a temporary conversation. The conversation so far is below, \
-         for context only; answer the new question after the marker, and do not continue the main task \
-         unless asked.\n\n<conversation>\n",
-    );
-    if dropped > 0 {
-        context.push_str(&format!("(The {dropped} oldest entries are omitted.)\n\n"));
-    }
-    context.push_str(&lines.join("\n\n"));
-    context.push_str("\n</conversation>");
-    context
 }
 
 fn permission_title(params: &Value) -> String {
@@ -3227,7 +3043,6 @@ fn capabilities_of(init: &acp::Negotiated) -> (AgentCapabilities, bool) {
         rollback: meta("/openidea/rollback"),
         steer: steer_method(init).is_some(),
         background_tasks: meta("/openidea/backgroundTasks"),
-        read_only: false,
     };
     (capabilities, init.prompt("embeddedContext"))
 }
@@ -3240,6 +3055,23 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
         .filter(|(_, e)| matches!(e, AgentEntry::User { steered: false, .. }))
         .map(|(i, _)| i)
         .collect()
+}
+
+/// The MCP servers of a session, and the names of the ones off for it.
+struct McpForSession {
+    servers: Vec<Value>,
+    off: Vec<String>,
+}
+
+/// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP
+/// servers, and the ones off for this session, so an agent that also loads its own
+/// configuration (Claude Code) can keep a same-named server of it off too.
+fn session_params(cwd: &str, mcp: &McpForSession) -> Value {
+    let mut params = json!({ "cwd": cwd, "mcpServers": mcp.servers });
+    if !mcp.off.is_empty() {
+        params["_meta"] = json!({ "openidea": { "mcpServersOff": mcp.off } });
+    }
+    params
 }
 
 fn is_false(b: &bool) -> bool {
@@ -3275,13 +3107,20 @@ fn model_of(config: &[AgentConfigOption]) -> Option<String> {
     config.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.clone())
 }
 
-/// Commands the agent implements on its own and never lists in `availableCommands` —
-/// its CLI builtins, passed through as prompt text (e.g. `/compact`). `(name, description)`.
-fn builtin_commands(provider: &str) -> &'static [(&'static str, &'static str)] {
+/// Commands the agent implements on its own and never lists in `availableCommands`.
+fn builtin_commands(provider: &str) -> Vec<AgentCommand> {
     match provider {
+        // Codex app-server has no command-list API, so the native adapter supplies its
+        // stable builtins and merges the session's dynamic skills separately.
+        "codex" => native::codex::builtin_commands(),
         // OpenCode ACP handles `/compact` via session.summarize but omits it from its command list.
-        "opencode" => &[("compact", "compact the conversation")],
-        _ => &[],
+        "opencode" => vec![AgentCommand {
+            name: "compact".into(),
+            description: "compact the conversation".into(),
+            hint: None,
+            source: AgentCommandSource::Command,
+        }],
+        _ => Vec::new(),
     }
 }
 
@@ -3343,6 +3182,9 @@ mod replay_tests;
 #[cfg(test)]
 mod tests;
 
+/// The name agents know the built-in server by (its tools are `mcp__OpenIDEA__…` in Claude Code).
+const BUILTIN_SERVER: &str = "OpenIDEA";
+
 // The desktop advertises its relay only while the built-in server is listening.
 static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
 
@@ -3357,7 +3199,7 @@ fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
 fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
     let command = ide_mcp::stdio_command(executable, root);
-    vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+    vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": [] })]
 }
 
 /// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which

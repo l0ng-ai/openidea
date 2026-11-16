@@ -109,6 +109,20 @@ describe("List", () => {
     expect([...first.querySelectorAll("mark")].map((m) => m.textContent)).toEqual(["Ord", "Con"]);
   });
 
+  it("keeps the focused list when its items run out, showing the empty state inside it", () => {
+    const row = (r: string) => <span>{r}</span>;
+    const props = { "aria-label": "Results", getKey: (r: string) => r, renderItem: row, empty: <span>Nothing</span> };
+    const { rerender } = render(<List {...props} items={["a"]} />);
+    const list = screen.getByRole("listbox");
+    list.focus();
+    rerender(<List {...props} items={[]} />);
+    expect(screen.getByRole("listbox")).toBe(list);
+    expect(document.activeElement).toBe(list);
+    expect(list.textContent).toBe("Nothing");
+    rerender(<List {...props} items={["b"]} />);
+    expect(screen.getByRole("option").textContent).toBe("b");
+  });
+
   it("listNavigate skips sections and clamps at the ends", () => {
     expect(listNavigate("ArrowDown", { items, active: 2, isSection })).toBe(4);
     expect(listNavigate("ArrowUp", { items, active: 1, isSection })).toBe(1);

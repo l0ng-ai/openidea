@@ -1,6 +1,7 @@
 //! Protocol flow against an in-memory fake adapter.
 
 mod jvm_inspect;
+mod stream_trace;
 
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
@@ -132,6 +133,16 @@ struct Script {
     continue_reply: Option<Value>,
     /// Answer `continue` and stop at a breakpoint again, instead of letting the program exit.
     stop_after_continue: bool,
+    /// Answer `stepOut` and stop these threads one after the other, 100 ms apart (java-debug
+    /// stops the stepping thread right after the call returns).
+    step_out_stops: &'static [i64],
+    /// Refuse `stepOut`.
+    refuse_step_out: bool,
+    /// Refuse `continue`.
+    refuse_continue: bool,
+    /// Stop thread 1 alone at a breakpoint right after each of the first this many `continue`s
+    /// that `continue_reply` answers.
+    breakpoints_after_continue: usize,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
@@ -185,6 +196,10 @@ impl Default for Script {
             hang_up_after_stop: false,
             continue_reply: None,
             stop_after_continue: false,
+            step_out_stops: &[],
+            refuse_step_out: false,
+            refuse_continue: false,
+            breakpoints_after_continue: 0,
             step_reason: None,
             refuse_next: false,
             invalidated_after_stop: false,
@@ -248,6 +263,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut running = false;
     let mut thread_requests = 0;
     let mut unity = false;
+    let mut breakpoints_left = script.breakpoints_after_continue;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -494,7 +510,21 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     {"label": ""},
                 ]})
             ),
-            "continue" if script.continue_reply.is_some() => ok!(msg, script.continue_reply.clone().unwrap()),
+            "continue" if script.refuse_continue => send!(
+                json!({"type": "response", "request_seq": msg["seq"], "command": "continue", "success": false, "message": "Thread is not suspended"})
+            ),
+            "continue" if script.continue_reply.is_some() => {
+                ok!(msg, script.continue_reply.clone().unwrap());
+                if breakpoints_left > 0 {
+                    breakpoints_left -= 1;
+                    send!(
+                        json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}})
+                    );
+                }
+            }
+            "stepOut" if script.refuse_step_out => send!(
+                json!({"type": "response", "request_seq": msg["seq"], "command": "stepOut", "success": false, "message": "Thread is not suspended"})
+            ),
             "continue" if script.stop_after_continue => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(
@@ -507,6 +537,16 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 send!(json!({"type": "event", "event": "terminated"}));
             }
             "pause" if script.hang_up_on_pause => break,
+            "stepOut" if !script.step_out_stops.is_empty() => {
+                ok!(msg, Value::Null);
+                for (i, thread) in script.step_out_stops.iter().enumerate() {
+                    if i > 0 {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    let reason = if i + 1 == script.step_out_stops.len() { "step" } else { "breakpoint" };
+                    send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": thread}}));
+                }
+            }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "redefineClasses" => {
                 send!(

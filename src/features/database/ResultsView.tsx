@@ -18,20 +18,7 @@ import clsx from "clsx";
 import { call, commands, type DbPlanNode, type DbQueryResult } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { setContext } from "@/platform/context";
-import {
-  Button,
-  EmptyState,
-  Icon,
-  IconButton,
-  Select,
-  Spinner,
-  Tabs,
-  Tree,
-  showContextMenu,
-  T,
-  tooltipAttrs,
-  Toolbar,
-} from "@/ui";
+import { EmptyState, Icon, IconButton, Select, Spinner, Tabs, Tree, showContextMenu, T, Toolbar } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { ToolWindowContentTabs } from "@/workbench/toolwindows/ToolWindows";
 import { ChartView } from "./ChartView";
@@ -65,7 +52,6 @@ import {
   pageable,
   pinResult,
   rerunResult,
-  targetLabel,
   useDatabase,
   withConnection,
   type OutputLine,
@@ -173,6 +159,25 @@ function Pager({ tab }: { tab: ResultTab }) {
   const { first, last } = w;
   const total = w.total === null ? `${w.last + 1}+` : String(w.total);
   const sizes = PAGE_SIZES.includes(pageSize) ? PAGE_SIZES : [...PAGE_SIZES, pageSize].sort((a, b) => a - b);
+  const sizeSelect = (label?: string) => (
+    <Select
+      variant="ghost"
+      aria-label="Page size"
+      value={String(pageSize)}
+      options={sizes.map((v) => ({ value: String(v), label: String(v) }))}
+      renderValue={label ? () => label : undefined}
+      onChange={(v) => go(0, Number(v))}
+      disabled={!canPage}
+    />
+  );
+  // Everything fits on one page: only the row count, which still sets the page size.
+  const count = w.total;
+  if (!canPrevious && !canNext && count !== null)
+    return (
+      <Toolbar className={styles.resultPager} aria-label="Result pages" title={outcomeSummary(tab.outcome)}>
+        {sizeSelect(tx`${count} rows`)}
+      </Toolbar>
+    );
   return (
     <Toolbar className={styles.resultPager} aria-label="Result pages" title={outcomeSummary(tab.outcome)}>
       <IconButton
@@ -216,13 +221,7 @@ function Pager({ tab }: { tab: ResultTab }) {
         disabled={!canLast}
         onClick={() => void goLast()}
       />
-      <Select
-        aria-label="Page size"
-        value={String(pageSize)}
-        options={sizes.map((v) => ({ value: String(v), label: String(v) }))}
-        onChange={(v) => go(0, Number(v))}
-        disabled={!canPage}
-      />
+      {sizeSelect()}
     </Toolbar>
   );
 }
@@ -536,30 +535,24 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
               disabled={busy}
               onClick={addRow}
             />
-            <Button
-              size="small"
-              variant="primary"
-              disabled={!dirty || busy}
-              onClick={() => void submit()}
-              {...tooltipAttrs("Submit", shortcutLabel("db.submitChanges"))}
-            >
-              <T>Submit</T>
-            </Button>
-            <Button
-              size="small"
+            <IconButton
+              icon="revert"
+              title="Revert"
+              shortcut={shortcutLabel("db.revertChanges")}
               disabled={!dirty || busy}
               onClick={() => setEdits(() => emptyEdits())}
-              {...tooltipAttrs("Revert", shortcutLabel("db.revertChanges"))}
-            >
-              <T>Revert</T>
-            </Button>
+            />
+            <IconButton
+              icon="arrow-up"
+              title="Submit"
+              shortcut={shortcutLabel("db.submitChanges")}
+              disabled={!dirty || busy}
+              onClick={() => void submit()}
+            />
           </>
         )}
         {tab.busy && <Spinner size={12} />}
         <span className={styles.spacer} />
-        <span className={styles.resultSource} title={tab.outcome.statement.text}>
-          {targetLabel(tab.sourceId)}
-        </span>
         <ExtractorSelect value={extractor} onChange={setExtractor} />
         <IconButton
           icon="export"
@@ -680,10 +673,6 @@ function PlanResult({ tab }: { tab: ResultTab }) {
         <IconButton icon="refresh" title="Explain Again" disabled={tab.busy} onClick={() => void rerunResult(tab.id)} />
         <PinButton tab={tab} />
         {tab.busy && <Spinner size={12} />}
-        <span className={styles.spacer} />
-        <span className={styles.resultSource} title={tab.outcome.statement.text}>
-          {targetLabel(tab.sourceId)}
-        </span>
       </Toolbar>
       <div className={clsx(styles.fill, styles.planView)}>
         <div className={styles.planTree}>

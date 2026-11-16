@@ -180,24 +180,38 @@ fn settings_follow_the_thread_and_the_models() {
     let result = json!({"model": "big", "reasoningEffort": null, "approvalPolicy": "untrusted",
         "sandbox": {"type": "workspaceWrite"}});
     let mut s = Settings::of(&result, &models);
-    assert_eq!(s, Settings { model: "big".into(), effort: Some("low".into()), mode: Mode::Ask });
+    assert_eq!(
+        s,
+        Settings {
+            model: "big".into(),
+            effort: Some("low".into()),
+            mode: Mode::Ask,
+            collaboration_mode: DEFAULT_COLLABORATION_MODE.into(),
+            collaboration_mode_override: None,
+        }
+    );
 
     let options = config_options(&models, &s);
     let ids: Vec<&str> = options.as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, [MODEL, EFFORT, MODE]);
+    assert_eq!(ids, [MODEL, EFFORT, MODE, COLLABORATION_MODE]);
     assert_eq!(options[0]["options"].as_array().unwrap().len(), 2, "hidden models are left out");
     assert_eq!(options[1]["category"], "thought_level");
     assert_eq!(options[1]["options"][1]["name"], "Extra high");
     assert_eq!(options[2]["currentValue"], "ask");
+    assert_eq!(options[3]["currentValue"], "default");
 
     // A model without efforts drops the option; its slug is what codex gets.
     s.set(&models, MODEL, "plain").unwrap();
     assert_eq!((s.effort.as_deref(), s.model_slug(&models).as_str()), (None, "plain-slug"));
-    assert_eq!(config_options(&models, &s).as_array().unwrap().len(), 2);
+    assert_eq!(config_options(&models, &s).as_array().unwrap().len(), 3);
     assert!(s.set(&models, EFFORT, "low").is_err());
     assert!(s.set(&models, MODEL, "nope").is_err());
     s.set(&models, MODE, "full-access").unwrap();
     assert_eq!((s.mode.approval_policy(), s.mode.sandbox_policy()), ("never", json!({"type": "dangerFullAccess"})));
+    s.set(&models, COLLABORATION_MODE, PLAN_COLLABORATION_MODE).unwrap();
+    assert_eq!(collaboration_mode(&s, &models)["mode"], PLAN_COLLABORATION_MODE);
+    s.set(&models, COLLABORATION_MODE, DEFAULT_COLLABORATION_MODE).unwrap();
+    assert_eq!(collaboration_mode(&s, &models)["mode"], DEFAULT_COLLABORATION_MODE);
 
     // A model codex runs that it doesn't list is still offered.
     let s = Settings::of(&json!({"model": "custom", "sandbox": {"type": "readOnly"}}), &models);
@@ -224,6 +238,18 @@ fn prompts_become_user_input() {
             json!({"type": "image", "url": "data:image/jpeg;base64,AAA"}),
         ]
     );
+}
+
+#[test]
+fn compact_is_recognized_with_completion_whitespace_and_attachments() {
+    // Completion leaves trailing whitespace and images can remain in the prompt. The first
+    // text block still names the command; unknown slash-shaped text continues normally.
+    assert_eq!(commands::parse(&text("/compact")).unwrap().command, BuiltinCommand::Compact);
+    assert_eq!(commands::parse(&text("  /compact \n")).unwrap().command, BuiltinCommand::Compact);
+    assert_eq!(commands::parse(&text("/compact now")).unwrap().rest, "now");
+    let prompt = json!([{"type": "text", "text": "/compact"}, {"type": "image", "data": "AA=="}]);
+    assert_eq!(commands::parse(&prompt).unwrap().command, BuiltinCommand::Compact);
+    assert!(commands::parse(&text("x/compact")).is_none());
 }
 
 #[test]
@@ -453,6 +479,7 @@ fn history_replays_turns() {
 #[derive(Default)]
 struct Client {
     updates: Mutex<Vec<Value>>,
+    warnings: Mutex<Vec<Value>>,
     asked: Mutex<Vec<Value>>,
     /// Option ids to choose; `None` (or none left) cancels.
     answers: Mutex<VecDeque<Option<&'static str>>>,
@@ -462,6 +489,8 @@ impl Handler for Client {
     fn on_notification(&self, method: &str, params: Value) {
         if method == "session/update" {
             self.updates.lock().push(params);
+        } else if method == "_openidea/warning" {
+            self.warnings.lock().push(params);
         }
     }
 
@@ -527,6 +556,10 @@ async fn questions_share_one_card_and_keep_their_ids() {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Scenario {
     AuthFailure,
+    Command(&'static str),
+    Compact,
+    PlanThenPrompt,
+    PlanToggleThenPrompt,
     Interrupt,
     Resume,
     Steer,
@@ -541,6 +574,10 @@ impl Scenario {
     fn file(self) -> &'static str {
         match self {
             Scenario::AuthFailure => "auth_failure",
+            Scenario::Command(_) => "simple",
+            Scenario::Compact => "simple",
+            Scenario::PlanThenPrompt => "simple",
+            Scenario::PlanToggleThenPrompt => "simple",
             Scenario::Interrupt => "interrupt",
             Scenario::Resume => "resume",
             Scenario::Steer => "steer",
@@ -596,6 +633,21 @@ async fn drive(scenario: Scenario, acp: &Peer, client: &Client, cwd: &str, threa
     let set = |id: &str, value: &str| json!({ "sessionId": session, "configId": id, "value": value });
     match scenario {
         Scenario::AuthFailure | Scenario::Simple | Scenario::UsageLimit | Scenario::Subagent => {
+            out.push(("prompt", request(acp, "session/prompt", prompt("Reply with the single word: hi")).await));
+        }
+        Scenario::Compact => {
+            out.push(("prompt", request(acp, "session/prompt", prompt("/compact")).await));
+        }
+        Scenario::Command(command) => {
+            out.push(("prompt", request(acp, "session/prompt", prompt(command)).await));
+        }
+        Scenario::PlanThenPrompt => {
+            out.push(("plan", request(acp, "session/prompt", prompt("/plan")).await));
+            out.push(("prompt", request(acp, "session/prompt", prompt("Reply with the single word: hi")).await));
+        }
+        Scenario::PlanToggleThenPrompt => {
+            out.push(("plan", request(acp, "session/prompt", prompt("/plan")).await));
+            out.push(("default", request(acp, "session/prompt", prompt("/plan")).await));
             out.push(("prompt", request(acp, "session/prompt", prompt("Reply with the single word: hi")).await));
         }
         Scenario::Interrupt => {
@@ -665,6 +717,37 @@ fn load(name: &str) -> Transcript {
     Transcript { meta, frames }
 }
 
+/// The simple fixture through session setup. Local commands add only the app-server calls
+/// they need after it; turn commands keep the fixture's turn notifications.
+fn command_transcript(calls: &[(&'static str, Value)]) -> Transcript {
+    let mut transcript = load(Scenario::Simple.file());
+    let prompt = transcript
+        .frames
+        .iter()
+        .position(|(out, frame)| *out && frame["method"] == "turn/start")
+        .expect("the scenario starts a turn");
+    transcript.frames.truncate(prompt);
+    transcript.frames.push((true, json!({ "id": 4, "method": "skills/list" })));
+    transcript.frames.push((false, json!({ "id": 4, "result": { "data": [] } })));
+    for (index, (method, result)) in calls.iter().enumerate() {
+        let id = 10 + index;
+        transcript.frames.push((true, json!({ "id": id, "method": method })));
+        transcript.frames.push((false, json!({ "id": id, "result": result })));
+    }
+    transcript
+}
+
+fn turn_command_transcript(method: &str) -> Transcript {
+    let mut transcript = load(Scenario::Simple.file());
+    let start = transcript
+        .frames
+        .iter_mut()
+        .find(|(out, frame)| *out && frame["method"] == "turn/start")
+        .expect("the scenario starts a turn");
+    start.1["method"] = json!(method);
+    transcript
+}
+
 /// Plays codex: waits for each frame the shim should send, sends what codex sent.
 /// Returns the frames the shim sent.
 async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
@@ -684,10 +767,10 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     .unwrap()
                     .unwrap_or_else(|| panic!("the shim closed before {frame}"));
                 let actual: Value = serde_json::from_str(&line).unwrap();
-                // Older recordings predate skill discovery and thread naming; play an
+                // Older recordings predate config inspection, skill discovery and thread naming; play an
                 // unsupported server.
                 let method = actual["method"].as_str().unwrap_or_default();
-                if matches!(method, "skills/list" | "thread/sample") && frame["method"] != method {
+                if matches!(method, "config/read" | "skills/list" | "thread/sample") && frame["method"] != method {
                     let reply = json!({ "id": actual["id"], "error": { "code": -32601, "message": "unsupported" } });
                     write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
                     continue;
@@ -761,6 +844,149 @@ fn session_of(results: &Results, label: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn configuration_warnings_before_a_session_and_runtime_warnings_reach_the_client() {
+    let mut transcript = load(Scenario::Simple.file());
+    transcript.frames.insert(
+        0,
+        (
+            false,
+            json!({"method": "configWarning", "params": {
+                "summary": "Project-local config is disabled until the project is trusted.",
+                "details": "Update the project's trust setting.", "path": "/work/.codex/config.toml"
+            }}),
+        ),
+    );
+    let at = transcript.frames.iter().position(|(out, f)| *out && f["method"] == "turn/start").unwrap();
+    transcript
+        .frames
+        .insert(at, (false, json!({"method": "warning", "params": {"message": "MCP server unavailable"}})));
+    let (results, client, frames, _, _codex) = replay_transcript(Scenario::Simple, transcript).await;
+    assert!(result(&results, "new").is_ok());
+    assert_eq!(
+        *client.warnings.lock(),
+        [
+            json!({"message": "Project-local config is disabled until the project is trusted.\n\nUpdate the project's trust setting.\n\n/work/.codex/config.toml"}),
+            json!({"message": "MCP server unavailable"}),
+        ]
+    );
+    assert!(sent(&frames, "config/value/write").is_empty());
+    assert!(sent(&frames, "config/batchWrite").is_empty());
+}
+
+struct TrustServer {
+    cwd: String,
+    disabled: bool,
+    other_project: bool,
+    write_error: bool,
+    overridden: bool,
+    calls: Mutex<Vec<(String, Value)>>,
+}
+
+impl Handler for TrustServer {
+    fn on_notification(&self, _: &str, _: Value) {}
+
+    fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        self.calls.lock().push((method.to_owned(), params));
+        match method {
+            "initialize" => Ok(json!({})),
+            "model/list" => Ok(json!({"data": []})),
+            "config/read" => {
+                let cwd =
+                    if self.other_project { Path::new(&self.cwd).join("other") } else { PathBuf::from(&self.cwd) };
+                Ok(json!({"layers": [
+                    {"name": {"type": "user", "profile": null}, "version": "original"},
+                    {"name": {"type": "project", "dotCodexFolder": cwd.join(".codex")},
+                        "disabledReason": self.disabled.then_some("Project config is disabled until trusted.")}
+                ]}))
+            }
+            "config/value/write" if self.write_error => Err((-32001, "Config changed concurrently".into())),
+            "config/value/write" => Ok(json!({"status": if self.overridden {"okOverridden"} else {"ok"}})),
+            "thread/start" | "thread/resume" | "thread/fork" => {
+                Ok(json!({"thread": {"id": "s", "turns": []}, "cwd": self.cwd}))
+            }
+            "skills/list" => Ok(json!({"data": []})),
+            _ => Err((codes::METHOD_NOT_FOUND, method.to_owned())),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_trust_is_confirmed_before_new_resumed_and_forked_sessions() {
+    for method in ["session/new", "session/load", "session/fork"] {
+        for (answer, disabled, other_project, write_error, overridden) in [
+            (Some("codex-trust-project"), true, false, false, false),
+            (Some("codex-keep-untrusted"), true, false, false, false),
+            (None, true, false, false, false),
+            (Some("codex-trust-project"), false, false, false, false),
+            (Some("codex-trust-project"), true, true, false, false),
+            (Some("codex-trust-project"), true, false, true, false),
+            (Some("codex-trust-project"), true, false, false, true),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let cwd = tmp.path().join("project.with.dots-项目").to_string_lossy().into_owned();
+            let server = Arc::new(TrustServer {
+                cwd: cwd.clone(),
+                disabled,
+                other_project,
+                write_error,
+                overridden,
+                calls: Mutex::default(),
+            });
+            let client = Arc::new(Client::default());
+            client.answers.lock().push_back(answer);
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            let (read, write) = tokio::io::split(theirs);
+            let native = Peer::connect_framed(read, write, server.clone(), Framing::Lines);
+            let acp = attach(client.clone(), |events| {
+                let (read, write) = tokio::io::split(ours);
+                Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+            })
+            .unwrap();
+            request(&acp, "initialize", json!({})).await.unwrap();
+            let params = json!({"cwd": cwd, "sessionId": "source", "mcpServers": []});
+            request(&acp, method, params.clone()).await.unwrap();
+            // The same connection must not ask repeatedly after a decline.
+            request(&acp, method, params).await.unwrap();
+            let approved = answer == Some("codex-trust-project") && disabled && !other_project;
+            {
+                let asked = client.asked.lock();
+                assert_eq!(asked.len(), usize::from(disabled && !other_project));
+                if let Some(permission) = asked.first() {
+                    assert!(permission["toolCall"]["title"].as_str().unwrap().contains(&cwd));
+                    assert_eq!(
+                        permission["toolCall"]["kind"], "edit",
+                        "side conversations must deny persistent trust changes"
+                    );
+                    assert_eq!(
+                        permission["options"][0]["kind"], "allow_always",
+                        "task bypass must not grant permanent trust"
+                    );
+                }
+                let calls = server.calls.lock();
+                let writes: Vec<_> = calls.iter().filter(|(m, _)| m == "config/value/write").collect();
+                assert_eq!(writes.len(), usize::from(approved));
+                if let Some((_, write)) = writes.first() {
+                    assert_eq!(
+                        *write,
+                        json!({"keyPath": format!("projects.{}.trust_level", json!(cwd)), "value": "trusted", "mergeStrategy": "replace", "expectedVersion": "original"})
+                    );
+                    let written = calls.iter().position(|(m, _)| m == "config/value/write").unwrap();
+                    let started = calls.iter().position(|(m, _)| m.starts_with("thread/")).unwrap();
+                    assert!(written < started, "the session must load config after the write");
+                }
+            }
+            // Drain notifications sent before the last response.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if approved && (write_error || overridden) {
+                assert!(!client.warnings.lock().is_empty());
+            }
+            acp.kill();
+            native.kill();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn auth_failure_names_auth() {
     let (results, _client, frames, _) = replay(Scenario::AuthFailure).await;
     let init = result(&results, "initialize").as_ref().unwrap();
@@ -771,7 +997,7 @@ async fn auth_failure_names_auth() {
     let categories: Vec<&str> =
         new["configOptions"].as_array().unwrap().iter().map(|o| o["category"].as_str().unwrap()).collect();
     // The model the user's codex config names; codex doesn't list it, so its efforts are unknown.
-    assert_eq!(categories, ["model", "mode"]);
+    assert_eq!(categories, ["model", "mode", "collaboration_mode"]);
     let model = new["configOptions"][0]["currentValue"].as_str().unwrap();
     assert_eq!(model, "gpt-6-luna");
     assert!(new["configOptions"][0]["options"].as_array().unwrap().iter().any(|o| o["value"] == model));
@@ -1011,12 +1237,199 @@ async fn settings_apply_to_the_next_turn() {
         (starts[0]["params"]["model"].as_str(), starts[0]["params"]["effort"].as_str()),
         (Some("gpt-5.6-luna"), Some("medium"))
     );
+    assert!(starts[0]["params"].get("collaborationMode").is_none());
     assert_eq!(
         (starts[1]["params"]["model"].as_str(), starts[1]["params"]["effort"].as_str()),
         (Some("gpt-5.5"), Some("high"))
     );
     // Two messages of one turn are two paragraphs.
     assert_eq!(client.text(&session, "agent_message_chunk"), "oneOn it.\n\ntwo");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_is_started_through_its_app_server_method() {
+    // Play the ordinary-turn fixture with the request swapped: the notifications are the
+    // same, while this pins the user-visible command to `thread/compact/start`, not a prompt.
+    let mut transcript = load(Scenario::Simple.file());
+    let start = transcript
+        .frames
+        .iter_mut()
+        .find(|(out, frame)| *out && frame["method"] == "turn/start")
+        .expect("the scenario starts a turn");
+    start.1["method"] = json!("thread/compact/start");
+    let (results, _client, frames, _meta, _codex) = replay_transcript(Scenario::Compact, transcript).await;
+
+    assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({"stopReason": "end_turn"}));
+    assert!(sent(&frames, "turn/start").is_empty());
+    assert_eq!(sent(&frames, "thread/compact/start").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn review_commands_start_the_matching_review_target() {
+    for (prompt, target) in [
+        ("/review", json!({ "type": "uncommittedChanges" })),
+        ("/review focus on errors", json!({ "type": "custom", "instructions": "focus on errors" })),
+        ("/review-branch origin/main", json!({ "type": "baseBranch", "branch": "origin/main" })),
+        ("/review-commit abc123", json!({ "type": "commit", "sha": "abc123", "title": null })),
+    ] {
+        let (results, _client, frames, _meta, _codex) =
+            replay_transcript(Scenario::Command(prompt), turn_command_transcript("review/start")).await;
+        assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }), "{prompt}");
+        assert!(sent(&frames, "turn/start").is_empty(), "{prompt}");
+        assert_eq!(sent(&frames, "review/start")[0]["params"]["target"], target, "{prompt}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plan_toggles_collaboration_mode_and_updates_the_composer() {
+    let (results, client, _frames, _meta, _codex) =
+        replay_transcript(Scenario::Command("/plan"), command_transcript(&[])).await;
+    let session = session_of(&results, "new");
+    assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }));
+    let update = client.of(&session).into_iter().find(|u| u["sessionUpdate"] == "config_option_update").unwrap();
+    let plan =
+        update["configOptions"].as_array().unwrap().iter().find(|o| o["category"] == "collaboration_mode").unwrap();
+    assert_eq!(plan["currentValue"], "plan");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plan_applies_to_the_next_normal_turn() {
+    let (results, _client, frames, _meta, _codex) =
+        replay_transcript(Scenario::PlanThenPrompt, load(Scenario::Simple.file())).await;
+    assert_eq!(result(&results, "plan").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }));
+    assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }));
+    let start = sent(&frames, "turn/start")[0];
+    assert_eq!(start["params"]["collaborationMode"]["mode"], "plan");
+    assert_eq!(start["params"]["collaborationMode"]["settings"]["model"], "gpt-5.6-luna");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn toggling_plan_off_sends_an_explicit_default_once() {
+    let (results, _client, frames, _meta, _codex) =
+        replay_transcript(Scenario::PlanToggleThenPrompt, load(Scenario::Simple.file())).await;
+    assert_eq!(result(&results, "default").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }));
+    let start = sent(&frames, "turn/start")[0];
+    assert_eq!(start["params"]["collaborationMode"]["mode"], "default");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn informational_commands_report_skills_mcp_and_status() {
+    let skills = json!({ "data": [{ "skills": [
+        { "name": "review", "enabled": true, "description": "Review changes" },
+        { "name": "hidden", "enabled": false, "description": "Hidden" }
+    ] }] });
+    let servers = json!({ "data": [
+        { "name": "github", "runtimeStatus": "connected", "authStatus": "oAuth", "tools": { "search": {} } },
+        { "name": "docs", "runtimeStatus": "failed", "authStatus": "unknown", "tools": {} }
+    ] });
+    for (prompt, method, response, expected) in [
+        ("/skills", "skills/list", skills, "Available skills:\n- review: Review changes"),
+        (
+            "/mcp",
+            "mcpServerStatus/list",
+            servers,
+            "MCP servers:\n- github: connected, 1 tools\n- docs: failed, 0 tools",
+        ),
+        ("/status", "", Value::Null, "**Session:**"),
+    ] {
+        let calls: &[(&str, Value)] = if method.is_empty() { &[] } else { &[(method, response)] };
+        let calls: Vec<(&'static str, Value)> = calls
+            .iter()
+            .map(|(method, response)| {
+                let method = match *method {
+                    "skills/list" => "skills/list",
+                    "mcpServerStatus/list" => "mcpServerStatus/list",
+                    other => panic!("unexpected method {other}"),
+                };
+                (method, response.clone())
+            })
+            .collect();
+        let (results, client, _frames, _meta, _codex) =
+            replay_transcript(Scenario::Command(prompt), command_transcript(&calls)).await;
+        let session = session_of(&results, "new");
+        assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }));
+        assert!(client.text(&session, "agent_message_chunk").contains(expected), "{prompt}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rename_and_logout_use_their_app_server_actions() {
+    let (results, client, frames, _meta, _codex) = replay_transcript(
+        Scenario::Command("/rename Better name"),
+        command_transcript(&[("thread/name/set", json!({}))]),
+    )
+    .await;
+    let session = session_of(&results, "new");
+    assert_eq!(sent(&frames, "thread/name/set")[0]["params"], json!({ "threadId": session, "name": "Better name" }));
+    let info = client.of(&session).into_iter().find(|u| u["sessionUpdate"] == "session_info_update").unwrap();
+    assert_eq!((info["title"].as_str(), info["userNamed"].as_bool()), (Some("Better name"), Some(true)));
+
+    let (results, client, frames, _meta, _codex) =
+        replay_transcript(Scenario::Command("/logout"), command_transcript(&[("account/logout", json!({}))])).await;
+    let session = session_of(&results, "new");
+    assert_eq!(sent(&frames, "account/logout").len(), 1);
+    assert_eq!(client.text(&session, "agent_message_chunk"), "Logged out from Codex account.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn goal_commands_set_pause_resume_and_clear_through_app_server() {
+    for (prompt, method, params, result) in [
+        (
+            "/goal fix the failing tests",
+            "thread/goal/set",
+            json!({ "threadId": "s", "objective": "fix the failing tests", "status": "active", "origin": "user" }),
+            json!({ "goal": { "status": "active" } }),
+        ),
+        (
+            "/goal pause",
+            "thread/goal/set",
+            json!({ "threadId": "s", "status": "paused", "origin": "user" }),
+            json!({ "goal": { "status": "paused" } }),
+        ),
+        (
+            "/goal resume",
+            "thread/goal/set",
+            json!({ "threadId": "s", "status": "active", "origin": "user" }),
+            json!({ "goal": { "status": "active" } }),
+        ),
+        ("/goal clear", "thread/goal/clear", json!({ "threadId": "s" }), json!({ "cleared": true })),
+    ] {
+        let (results, _client, frames, _meta, _codex) =
+            replay_transcript(Scenario::Command(prompt), command_transcript(&[(method, result)])).await;
+        let session = session_of(&results, "new");
+        let sent = sent(&frames, method);
+        assert_eq!(sent.len(), 1, "{prompt}");
+        let mut expected = params;
+        expected["threadId"] = json!(session);
+        assert_eq!(sent[0]["params"], expected, "{prompt}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_review_arguments_print_usage_without_starting_a_turn() {
+    for prompt in ["/review-branch", "/review-commit", "/rename", "/goal"] {
+        let (results, client, frames, _meta, _codex) =
+            replay_transcript(Scenario::Command(prompt), command_transcript(&[])).await;
+        let session = session_of(&results, "new");
+        assert_eq!(result(&results, "prompt").as_ref().unwrap(), &json!({ "stopReason": "end_turn" }));
+        assert!(sent(&frames, "turn/start").is_empty());
+        assert!(client.text(&session, "agent_message_chunk").starts_with("Command \""), "{prompt}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_reconnect_reloads_before_reporting_status() {
+    let servers =
+        json!({ "data": [{ "name": "github", "runtimeStatus": "connected", "authStatus": "oAuth", "tools": {} }] });
+    let (results, client, frames, _meta, _codex) = replay_transcript(
+        Scenario::Command("/mcp reconnect"),
+        command_transcript(&[("config/mcpServer/reload", json!({})), ("mcpServerStatus/list", servers)]),
+    )
+    .await;
+    let session = session_of(&results, "new");
+    assert_eq!(sent(&frames, "config/mcpServer/reload").len(), 1);
+    assert_eq!(sent(&frames, "mcpServerStatus/list").len(), 1);
+    assert!(client.text(&session, "agent_message_chunk").contains("github: connected"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

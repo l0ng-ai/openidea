@@ -10,6 +10,7 @@ mod files;
 mod http;
 mod page;
 mod reports;
+mod scope;
 mod search;
 mod symbols;
 mod tool;
@@ -54,14 +55,17 @@ impl Registry {
         if self.0.mcp_reports.remote_roots().iter().any(|p| p == root) {
             return Err("not supported for remote projects yet".into());
         }
-        let mut windows: Vec<_> = self
-            .0
-            .projects
-            .read()
-            .iter()
-            .filter(|(_, p)| p.root == root && !p.light)
-            .map(|(w, p)| (w.clone(), p.clone()))
-            .collect();
+        let projects = self.0.projects.read();
+        let open = || projects.iter().filter(|(_, p)| !p.light);
+        let mut windows: Vec<_> = open().filter(|(_, p)| p.root == root).map(|(w, p)| (w.clone(), p.clone())).collect();
+        if windows.is_empty() {
+            // A project attached to an open one: the window it is attached in.
+            windows = open()
+                .filter(|(_, p)| tool::attached_projects(&p.root).iter().any(|a| a == root))
+                .map(|(w, p)| (w.clone(), p.clone()))
+                .collect();
+        }
+        drop(projects);
         let focused = self.0.mcp_reports.focused_window();
         windows.sort_by(|a, b| {
             (Some(&b.0) == focused.as_ref()).cmp(&(Some(&a.0) == focused.as_ref())).then(a.0.cmp(&b.0))
@@ -71,13 +75,10 @@ impl Registry {
 }
 impl ToolRegistry for Registry {
     fn projects(&self) -> Vec<PathBuf> {
-        self.0
-            .projects()
-            .into_iter()
-            .filter(|p| !p.light)
-            .map(|p| p.root.clone())
-            .chain(self.0.mcp_reports.remote_roots())
-            .collect()
+        let open: Vec<_> = self.0.projects().into_iter().filter(|p| !p.light).collect();
+        // Attached projects are listed too, so a `projectPath` inside one names it.
+        let attached: Vec<_> = open.iter().flat_map(|p| tool::attached_projects(&p.root)).collect();
+        open.into_iter().map(|p| p.root.clone()).chain(attached).chain(self.0.mcp_reports.remote_roots()).collect()
     }
     fn tools(&self, root: &Path) -> Result<Vec<ide_mcp::Tool>, String> {
         let (_, project) = self.target(root)?;

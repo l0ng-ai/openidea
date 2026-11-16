@@ -1,7 +1,7 @@
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { EditorState, RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin } from "@codemirror/view";
-import { iconAreaSource, type EditorDocContext } from "@/editor/api";
+import { iconAreaSource, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -78,7 +78,9 @@ const marks = StateField.define<Mark[]>({
   create: () => [],
   update: (value, tr) => {
     for (const e of tr.effects) if (e.is(setMarks)) return e.value;
-    return tr.docChanged ? [] : value;
+    // Kept on their text until the refresh, so the icon area keeps its width while typing.
+    if (!tr.docChanged || !value.length) return value;
+    return value.map((m) => ({ ...m, pos: mapLineStart(tr, m.pos) }));
   },
 });
 

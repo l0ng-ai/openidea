@@ -132,15 +132,15 @@ function pendingTool(name: string, entry: ServerEntry, languages: string[]): Too
   };
 }
 
-function JobRow({ name, job }: { name: string; job: InstallJob }) {
+function JobRow({ tool, job }: { tool: ToolInfo; job: InstallJob }) {
   return (
     <div className={styles.job}>
-      <ProgressBar value={job.fraction} aria-label={tx`Installing ${name}`} className={styles.jobBar} />
+      <ProgressBar value={job.fraction} aria-label={tx`Installing ${tool.displayName}`} className={styles.jobBar} />
       <div className={styles.jobLine}>
         <span className={styles.jobMessage} title={job.message ?? undefined}>
           {job.message ?? "Starting…"}
         </span>
-        <Button size="small" variant="ghost" onClick={() => cancelInstall(name)}>
+        <Button size="small" variant="ghost" onClick={() => cancelInstall(tool.name)}>
           <T>Cancel</T>
         </Button>
       </div>
@@ -278,7 +278,7 @@ function ToolDetails({ tool, language, pending }: { tool: ToolInfo; language: st
           {tx`Version ${update.latest} is available.`}
         </div>
       )}
-      {job && <JobRow name={tool.displayName} job={job} />}
+      {job && <JobRow tool={tool} job={job} />}
       {lastError && (
         <div className={styles.error} role="alert">
           {lastError}

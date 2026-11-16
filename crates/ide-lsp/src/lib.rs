@@ -44,6 +44,7 @@ mod vue_refs;
 pub use injections::{InjectedRange, InjectionProvider, MAX_INJECTED_DOCUMENT_BYTES};
 pub use inspect::{CheckedServer, DocumentCheck, FileInspection, InspectHost, InspectOptions};
 pub use jdtls::jvm_inspect::JdtJvmInspector;
+pub use jdtls::stream_trace::JdtStreamTracer;
 pub use kotlin_lsp::{KotlinDebugServer, KotlinDebugUnavailable};
 pub use launch::{LaunchError, Launcher, ProcessLauncher};
 pub use notebook::{NotebookCell, NotebookCellDoc, cell_uri};
@@ -434,12 +435,24 @@ async fn library_sources(snap: &DocSnap, root: &Path, pos: Pos, locs: Vec<Locati
 
 const JAVA_IMPLEMENTATIONS: &str = "openidea.java.implementations";
 
+/// jdtls' locations of the implementations of the method at a position in the classes named
+/// with it, for implementation classes in dependencies: its standard request puts those at the
+/// start of the decompiled class instead of at the method.
+const JAVA_IMPLEMENTATION_LOCATIONS: &str = "openidea.java.implementationLocations";
+
 /// The answer of [`JAVA_IMPLEMENTATIONS`]: `complete` when the type is declared in the
 /// sources, so no dependency can implement it.
 #[derive(serde::Deserialize)]
 struct SourceImplementations {
     locations: Vec<lsp::Location>,
     complete: bool,
+}
+
+/// The answer of [`JAVA_IMPLEMENTATION_LOCATIONS`]: one entry per requested class, `None` when
+/// it has no implementation of the method.
+#[derive(serde::Deserialize)]
+struct TargetImplementations {
+    locations: Vec<Option<lsp::Location>>,
 }
 
 /// Receives the implementations found so far, before a slower search for the rest.
@@ -1810,6 +1823,84 @@ impl LspManager {
         out
     }
 
+    /// jdtls: where the implementation methods of the method at `pos` are declared in the
+    /// dependency classes `locs` point at. Its standard request answers those with `0:0`, the
+    /// start of the class file's decompiled source; [`JAVA_IMPLEMENTATION_LOCATIONS`] resolves
+    /// the declaration itself.
+    async fn java_implementation_locations(
+        &self,
+        snap: &DocSnap,
+        t: &Target,
+        pos: Pos,
+        locs: Vec<Location>,
+        cancel: Option<&CancellationToken>,
+    ) -> Vec<Location> {
+        if t.server.name != "jdtls" || !t.caps().commands().iter().any(|c| c == JAVA_IMPLEMENTATION_LOCATIONS) {
+            return locs;
+        }
+        let targets: Vec<(usize, String)> = locs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, l)| {
+                let uri = l.uri.as_deref()?;
+                (virtual_doc::scheme(uri) == "jdt" && l.range.start.line == 0).then(|| (i, uri.to_owned()))
+            })
+            .collect();
+        if targets.is_empty() {
+            return locs;
+        }
+        let params = snap.pos_params(t, pos);
+        let arguments = json!([
+            params["textDocument"]["uri"],
+            params["position"]["line"],
+            params["position"]["character"],
+            targets.iter().map(|(_, uri)| uri).collect::<Vec<_>>(),
+        ]);
+        let result: IdeResult<TargetImplementations> = self
+            .call(
+                t,
+                "workspace/executeCommand",
+                json!({ "command": JAVA_IMPLEMENTATION_LOCATIONS, "arguments": arguments }),
+                cancel,
+                LONG_TIMEOUT,
+            )
+            .await;
+        let found = match result {
+            Ok(found) if found.locations.len() == targets.len() => found,
+            Ok(_) => return locs,
+            Err(e) => {
+                tracing::debug!("{JAVA_IMPLEMENTATION_LOCATIONS}: {}", e.message);
+                return locs;
+            }
+        };
+        let mut out = locs;
+        for ((i, _), loc) in targets.into_iter().zip(found.locations) {
+            if let Some(loc) = loc.as_ref().and_then(|l| self.conv(t.enc()).location(l)) {
+                out[i] = loc;
+            }
+        }
+        out
+    }
+
+    /// Refines the implementation `locs` of the method at `pos`: jdtls puts an implementation in
+    /// a dependency at the start of its decompiled class instead of at the method, which matters
+    /// when the gutter marker's targets are opened one by one.
+    pub async fn implementation_locations(
+        &self,
+        doc: DocId,
+        pos: Pos,
+        locs: Vec<Location>,
+        cancel: CancellationToken,
+    ) -> IdeResult<Vec<Location>> {
+        let (_, cap, feature) = goto_method(GotoKind::Implementation);
+        let (snap, targets) = self.doc_targets(doc, feature, |c| c.has(cap)).await?;
+        let mut out = locs;
+        for t in &targets {
+            out = self.java_implementation_locations(&snap, t, pos, out, Some(&cancel)).await;
+        }
+        Ok(out)
+    }
+
     async fn goto_in(
         &self,
         snap: &DocSnap,
@@ -1849,6 +1940,12 @@ impl LspManager {
                 Ok(Some(r)) => {
                     let locs = convert::goto_response(&self.conv(t.enc()), r);
                     let locs = library_sources(snap, &self.project_root, pos, locs).await;
+                    // Only explicit Go to Implementation: gutter markers ask for every line.
+                    let locs = if method == "textDocument/implementation" && partial.is_some() {
+                        self.java_implementation_locations(snap, t, pos, locs, cancel).await
+                    } else {
+                        locs
+                    };
                     self.note_virtual(&t.server, locs.iter().map(|l| l.uri.as_deref()));
                     self.note_arduino_sources(&t.server, &locs);
                     let locs = self.jdt_library_classes(snap, pos, locs).await;

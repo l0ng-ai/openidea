@@ -568,6 +568,29 @@ fn symbols_named_any_answers_every_name_inside_the_root_in_one_walk() {
 }
 
 #[test]
+fn inheritance_reports_python_classes_and_their_bases() {
+    let f = Fixture::new(&[(
+        "app.py",
+        "class Base:\n    pass\n\nclass Child(Base, other.Mixin):\n    pass\n\nclass Plain:\n    pass\n",
+    )]);
+    let idx = f.open();
+    let mut found: Vec<(String, u32, Vec<String>)> =
+        idx.inheritance().into_iter().map(|c| (c.name, c.range.start.line, c.bases)).collect();
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            ("Base".to_string(), 0, Vec::new()),
+            ("Child".to_string(), 3, vec!["Base".to_string(), "Mixin".to_string()]),
+            ("Plain".to_string(), 6, Vec::new()),
+        ]
+    );
+    // Every class of the project is reported, even without a superclass: the UI needs
+    // them to resolve the base names of other files.
+    assert_eq!(idx.inheritance().len(), 3);
+}
+
+#[test]
 fn content_roots_and_excludes_change_without_reopening() {
     let fx = Fixture::new(&[("src/main.rs", "fn alpha() {}\n"), ("src/gen/out.rs", "fn generated() {}\n")]);
     let shared = fx._dir.path().join("shared-lib");

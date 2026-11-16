@@ -5,6 +5,7 @@
  */
 import { writeClipboardText } from "@/platform/clipboard";
 import { pasteEditorClipboard } from "./cm/clipboard";
+import { saveOnBlur } from "./saveOnBlur";
 import type { ReactNode } from "react";
 import { EditorSelection } from "@codemirror/state";
 import { create } from "zustand";
@@ -808,19 +809,7 @@ export class EditorController implements SlotHost {
     setContext("editorTextFocus", false);
     if (!this.autoSave()) return;
     const save = () => void slot.model.save("auto").catch(() => {});
-    if (typeof document === "undefined") return save();
-    // A popup (intentions, completion, …) belongs to the editor: saving under it would change
-    // the text (save cleanup) its items were computed for. Save once focus leaves it elsewhere.
-    setTimeout(() => {
-      if (slot.view?.hasFocus) return;
-      if (!inPopup(document.activeElement)) return save();
-      const onFocusIn = (e: FocusEvent) => {
-        if (inPopup(e.target)) return;
-        document.removeEventListener("focusin", onFocusIn);
-        if (!slot.view?.hasFocus) save();
-      };
-      document.addEventListener("focusin", onFocusIn);
-    });
+    saveOnBlur(() => !!slot.view?.hasFocus, save);
   }
 
   onSelection(slot: EditorSlot, navigatedFrom?: { line: number; col: number }) {
@@ -1989,13 +1978,6 @@ export class EditorController implements SlotHost {
     return useTabs.getState().panes[paneId]?.tabs.find((t) => t.id === tabId)?.input ?? null;
   }
 
-  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
-  paneOf(key: string): string | null {
-    for (const [paneId, pane] of Object.entries(useTabs.getState().panes))
-      if (pane.tabs.some((t) => t.input.key === key)) return paneId;
-    return null;
-  }
-
   closePath(path: string): Promise<boolean> {
     return this.removeGuarded((s) => {
       const keys = new Set<string>();
@@ -2348,8 +2330,4 @@ let controller: EditorController | null = null;
 
 export function editorController(): EditorController {
   return (controller ??= new EditorController());
-}
-
-function inPopup(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest("[data-popup]");
 }

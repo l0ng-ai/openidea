@@ -16,7 +16,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { iconAreaSource } from "@/editor/core/cm/iconArea";
+import { iconAreaSource, mapLineStart } from "@/editor/core/cm/iconArea";
 import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
@@ -29,6 +29,7 @@ import {
   nextRequestId,
   onIdeEvent,
   type ClassInheritance,
+  type DocId,
   type HierarchyItem,
   type Location,
   type OutlineItem,
@@ -315,7 +316,7 @@ export async function fillMarkers(
       const c = up[i]!;
       const self = classOf(c);
       if (!self) continue;
-      const found = resolver ? await superMethodsFrom(resolver, self.name, c.symbol, deps) : [];
+      const found = resolver ? await superMethodsFrom(resolver, self, c.symbol, deps) : [];
       if (!found.length) continue;
       const known = supers[i]!;
       // Same merge rule as ↓: add the graph's super methods to what the server answered.
@@ -324,6 +325,8 @@ export async function fillMarkers(
       entry(c).supers = {
         kind: "overriding",
         line: c.line,
+        col: c.col,
+        method: c.method,
         name: c.name,
         targets: [...known.map((s) => s.location), ...extra],
         tooltip: tx`Overrides method in ${owners.join(", ")}`,
@@ -366,41 +369,37 @@ function mergeLocations(first: readonly Location[], more: readonly Location[]): 
   return [...first, ...more.filter((l) => !first.some((f) => sameDeclarationLine(f, l)))];
 }
 
-/** Identifies one class declaration in the inheritance graph. */
 /**
- * Super methods of `method` declared by a class in `byName`, walking the inheritance
- * graph's bases up to a few levels. Empty when no base declares the method.
+ * Super methods of `method` declared by a base of the class declaration `start`, walking the
+ * inheritance graph's concrete declarations up to a few levels: a base resolves from the file
+ * that names it, so an unrelated class of the same name never joins the walk. Empty when no
+ * base declares the method.
  */
 async function superMethodsFrom(
   resolver: InheritanceIndex,
-  start: string,
+  start: ClassInheritance,
   method: string,
   deps: MarkerDeps,
   depth = 3,
 ): Promise<{ location: Location; owner: string }[]> {
   const bare = method.replace(/\s*[(<].*$/, "");
-  const seen = new Set<string>([start]);
+  const key = (c: ClassInheritance) => `${c.path}:${c.line}:${c.col}`;
+  const seen = new Set<string>([key(start)]);
   let level = [start];
   for (let d = 0; d < depth && level.length; d++) {
-    const next: string[] = [];
+    const next: ClassInheritance[] = [];
     const found: { location: Location; owner: string }[] = [];
-    for (const name of level) {
-      for (const cls of resolver.byName.get(name) ?? []) {
-        for (const base of cls.bases) {
-          if (!seen.add(base)) continue;
-          // Same rule as the graph: a base the imports name, else a unique one.
-          const declarations = await resolver.resolve(base, cls.path);
-          let answered = false;
-          for (const baseCls of declarations) {
-            const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
-            const m = methodInOutline(outline, baseCls, bare);
-            if (m) {
-              found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
-              answered = true;
-            }
-          }
-          // Not found in a base that declares nothing: keep walking its own bases.
-          if (!answered) next.push(base);
+    for (const cls of level) {
+      for (const base of cls.bases) {
+        // Same rule as the graph: a base the imports name, else a unique one.
+        for (const baseCls of await resolver.resolve(base, cls.path)) {
+          if (seen.has(key(baseCls))) continue;
+          seen.add(key(baseCls));
+          const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
+          const m = methodInOutline(outline, baseCls, bare);
+          if (m) found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
+          // Not declared there: keep walking that class's own bases.
+          else next.push(baseCls);
         }
       }
     }
@@ -510,18 +509,46 @@ export function cachedMarkers(
   return out;
 }
 
+/**
+ * A dependency's implementation (Java) starts at `0:0` of the class file: the server resolves
+ * the method's declaration when the marker is opened, not for every marker in the gutter.
+ */
+async function markerTargets(marker: LineMarker, doc: DocId | null): Promise<Location[]> {
+  if (
+    doc === null ||
+    doc < 0 ||
+    !marker.method ||
+    (marker.kind !== "implemented" && marker.kind !== "overridden") ||
+    !marker.targets.some((t) => t.range.start.line === 0 && t.uri?.startsWith("jdt:"))
+  )
+    return marker.targets;
+  const request = nextRequestId();
+  try {
+    return await lspRequest(() =>
+      commands.lspImplementationLocations(request, doc, { line: marker.line, col: marker.col }, marker.targets),
+    );
+  } catch {
+    return marker.targets;
+  }
+}
+
 /** Opens the single target, or the chooser over several. */
-export async function openMarkerTargets(marker: LineMarker, anchor: { x: number; y: number }) {
-  if (marker.targets.length === 1) {
-    await navigateTo(marker.targets[0]!);
+export async function openMarkerTargets(
+  marker: LineMarker,
+  anchor: { x: number; y: number },
+  doc: DocId | null = null,
+) {
+  const targets = await markerTargets(marker, doc);
+  if (targets.length === 1) {
+    await navigateTo(targets[0]!);
     return;
   }
   openPopup({
     kind: "list",
     anchor,
     title: marker.chooserTitle,
-    items: await locationItems(marker.targets),
-    pin: pinToFind(marker.name, marker.targets),
+    items: await locationItems(targets),
+    pin: pinToFind(marker.name, targets),
   });
 }
 
@@ -541,7 +568,7 @@ const markersField = StateField.define<PlacedMarker[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setMarkers)) return e.value;
     if (!tr.docChanged || !value.length) return value;
-    return value.map((m) => ({ ...m, pos: tr.state.doc.lineAt(tr.changes.mapPos(m.pos, -1)).from }));
+    return value.map((m) => ({ ...m, pos: mapLineStart(tr, m.pos) }));
   },
 });
 
@@ -785,7 +812,7 @@ export function implementationGutter(ctx: EditorDocContext): Extension {
         if (!marker) return false;
         e.preventDefault();
         const rect = (target.closest(`.${styles.marker}`) ?? target).getBoundingClientRect();
-        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 });
+        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 }, ctx.doc);
         return true;
       },
     }),

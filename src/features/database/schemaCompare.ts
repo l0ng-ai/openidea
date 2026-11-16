@@ -36,6 +36,14 @@ export interface TableDiff extends ItemDiff<TableSnapshot> {
 
 const norm = (s: string | null | undefined) => (s ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 
+/** A column default compared as SQL: case and spacing count only inside string literals. */
+const normDefault = (s: string | null | undefined) =>
+  (s ?? "")
+    .trim()
+    .split(/('(?:[^']|'')*')/)
+    .map((part, i) => (i % 2 ? part : norm(part)))
+    .join("");
+
 /** Pairs items by name: exact first, then ignoring case. */
 function pair<T>(
   source: readonly T[],
@@ -65,12 +73,16 @@ function columnChanges(s: DbColumnInfo, t: DbColumnInfo): string[] {
   const out: string[] = [];
   if (norm(s.dataType) !== norm(t.dataType)) out.push("type");
   if (s.nullable !== t.nullable) out.push("nullable");
-  if (norm(s.default) !== norm(t.default)) out.push("default");
+  if (normDefault(s.default) !== normDefault(t.default)) out.push("default");
   if (s.primaryKey !== t.primaryKey) out.push("primary key");
   return out;
 }
 
-const fkName = (k: DbForeignKey) => `(${k.columns.join(", ")}) → ${k.refTable}(${k.refColumns.join(", ")})`;
+/** The referenced table, schema-qualified only when it lies outside the foreign key's own schema. */
+const refName = (k: DbForeignKey) =>
+  k.refSchema && k.refSchema !== k.schema ? `${k.refSchema}.${k.refTable}` : k.refTable;
+
+const fkName = (k: DbForeignKey) => `(${k.columns.join(", ")}) → ${refName(k)}(${k.refColumns.join(", ")})`;
 
 export function diffSchemas(source: readonly TableSnapshot[], target: readonly TableSnapshot[]): TableDiff[] {
   return pair(source, target, (t) => t.name)
@@ -152,7 +164,7 @@ function dropIndexSql(driver: DbDriver, schema: string, table: string, i: DbInde
 
 function addForeignKeySql(driver: DbDriver, schema: string, table: string, k: DbForeignKey): string {
   const cols = (names: string[]) => names.map((c) => ident(driver, c)).join(", ");
-  return `alter table ${qualifiedName(driver, schema, table)} add foreign key (${cols(k.columns)}) references ${qualifiedName(driver, schema, k.refTable)} (${cols(k.refColumns)});`;
+  return `alter table ${qualifiedName(driver, schema, table)} add foreign key (${cols(k.columns)}) references ${qualifiedName(driver, k.refSchema && k.refSchema !== k.schema ? k.refSchema : schema, k.refTable)} (${cols(k.refColumns)});`;
 }
 
 /**

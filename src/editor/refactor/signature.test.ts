@@ -23,6 +23,10 @@ describe("change signature", () => {
   it("tells what keeps the signature from being submitted", () => {
     expect(signatureProblem(info)).toBeNull();
     expect(signatureProblem({ ...info, methodName: "2x" })).toBe("Method name is not a valid identifier");
+    expect(signatureProblem({ ...info, methodName: "处理" })).toBeNull();
+    expect(
+      signatureProblem({ ...info, parameters: info.parameters.map((p, i) => ({ ...p, name: `数量${i}` })) }),
+    ).toBeNull();
     expect(signatureProblem({ ...info, returnType: " " })).toBe("Return type is not specified");
     const dup = { ...info, parameters: [info.parameters[0]!, { ...info.parameters[1]!, name: "a" }] };
     expect(signatureProblem(dup)).toBe("Duplicate parameter name");

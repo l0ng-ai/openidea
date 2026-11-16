@@ -385,14 +385,6 @@ export const isContextOption = (id: string) => /^(context_tier|contextTier)$/.te
 export const isPerModelOption = (o: AgentConfigOption) =>
   o.category === "thought_level" || o.category === "context_tier" || isContextOption(o.id);
 
-/** Formats a per-1M-token credit rate cleanly (`200`, `1000`, `0`, `12.5`). */
-export function formatCreditRate(rate: number | null | undefined): string {
-  if (rate == null || !Number.isFinite(rate)) return "0";
-  if (rate === 0) return "0";
-  if (rate < 0.01) return rate.toExponential(2);
-  return Number(rate.toFixed(4)).toString();
-}
-
 const matchesCategory = (o: AgentConfigOption, category: string) =>
   o.category === category ||
   (category === "model_config" &&

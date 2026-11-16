@@ -1244,6 +1244,13 @@ async fn skipped_questions_have_no_answers() {
 }
 
 #[test]
+fn servers_switched_off_become_disallowed_tools() {
+    assert!(mcp_off(&json!({})).is_empty());
+    let off = mcp_off(&json!({ "_meta": { "openidea": { "mcpServersOff": ["github", "my server.v2"] } } }));
+    assert_eq!(off, ["mcp__github", "mcp__my_server_v2"]);
+}
+
+#[test]
 fn mcp_servers_become_an_mcp_config() {
     assert_eq!(mcp_config(&json!({ "mcpServers": [] })), None);
     assert_eq!(mcp_config(&json!({})), None);

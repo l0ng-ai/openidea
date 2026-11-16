@@ -225,11 +225,6 @@ export const commands = {
 	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
-	/**
-	 *  Creates a temporary side conversation of `source`: lives in memory only, never
-	 *  persisted, not listed, and its session starts with the first message sent to it.
-	 */
-	agentCreateEphemeral: (request: NewAgentTask, source: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create_ephemeral", { request, source })),
 	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
 	agentRollback: (task: string, turns: number) => typedError<{
 	text: string,
@@ -597,6 +592,12 @@ export const commands = {
 	 *  Cancel with `cancel_request(request)`.
 	 */
 	lspGotoImplementation: (request: RequestId, doc: DocId, pos: Pos, onPartial: Channel<Location[]>) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto_implementation", { request, doc, pos, onPartial })),
+	/**
+	 *  Refines the implementations `targets` of the method at `pos` to their declarations (Java
+	 *  dependencies' class files point at the start of the class). Cancel with
+	 *  `cancel_request(request)`.
+	 */
+	lspImplementationLocations: (request: RequestId, doc: DocId, pos: Pos, targets: Location[]) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_implementation_locations", { request, doc, pos, targets })),
 	/**
 	 *  Contents of a read-only language-server document, including JDT library
 	 *  classes and disk class files. Cached per project.
@@ -1443,6 +1444,21 @@ export const commands = {
 	/**  Copies the snapshot's dump to `path`, replacing a file there. */
 	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
 	debugHeapClose: (snapshot: HeapSnapshotId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_close", { snapshot })),
+	/**  The stream chains around `frame`'s line; `top`: it is the thread's top frame. */
+	debugStreamChains: (session: DebugSessionId, frame: StackFrame, top: boolean) => typedError<StreamChainInfo_Serialize[], IdeError>(__TAURI_INVOKE("debug_stream_chains", { session, frame, top })),
+	/**
+	 *  Traces chain `chain_index` of [`debug_stream_chains`], whose `range` the UI showed, while the
+	 *  program runs it; cancelling `request` stops recording.
+	 */
+	debugStreamTrace: (session: DebugSessionId, request: RequestId, threadId: number, frame: StackFrame, chainIndex: number, range: Range, onProgress: Channel<TraceProgress>) => typedError<StreamTraceResult_Serialize, IdeError>(__TAURI_INVOKE("debug_stream_trace", { session, request, threadId, frame, chainIndex, range, onProgress })),
+	/**  Ends the running trace's terminal operation; `None` when no trace runs. */
+	debugStreamTraceAbort: (session: DebugSessionId) => typedError<{ kind: "interrupted" } | { kind: "stopped" } | 
+/**  Suspended threads that own a monitor the terminal may be waiting for: `(thread id, name)`. */
+{ kind: "stuck"; holders: ([number, string])[] } | 
+/**  The terminal had not started. */
+{ kind: "cancelled" } | 
+/**  The trace had already parked or failed. */
+{ kind: "finished" } | null, IdeError>(__TAURI_INVOKE("debug_stream_trace_abort", { session })),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent_Deserialize>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
@@ -1905,6 +1921,14 @@ export const commands = {
 };
 
 /* Types */
+export type AbortState = { kind: "interrupted" } | { kind: "stopped" } | 
+/**  Suspended threads that own a monitor the terminal may be waiting for: `(thread id, name)`. */
+{ kind: "stuck"; holders: ([number, string])[] } | 
+/**  The terminal had not started. */
+{ kind: "cancelled" } | 
+/**  The trace had already parked or failed. */
+{ kind: "finished" };
+
 /**  What importing one entry of a JetBrains `acp.json` file did. */
 export type AcpImportOutcome = {
 	/**  The `agent_servers` key the entry was imported from. */
@@ -1980,11 +2004,6 @@ export type AgentCapabilities = {
 	steer?: boolean,
 	/**  It reports its background tasks and stops them one by one. */
 	backgroundTasks?: boolean,
-	/**
-	 *  The task runs read-only: it asks before anything, and requests that would change
-	 *  the project are denied (a temporary side conversation).
-	 */
-	readOnly?: boolean,
 };
 
 /**
@@ -3182,6 +3201,10 @@ export type CatalogPlugin = {
 	/**  Why the package cannot be installed as is (e.g. its WASM is not built). */
 	problem: string | null,
 };
+
+export type ChainUnavailable = { kind: "notTopFrame" } | { kind: "notAtChainStart" } | { kind: "insideChainLambda" } | { kind: "notJavaStreamRoot"; root: string } | { kind: "lazyTerminal"; op: string } | { kind: "noTerminal" } | { kind: "unknownOperation"; op: string } | { kind: "syntaxError" } | 
+/**  The session has no stream tracer: not java-debug, or its jdtls has no inspector bundle. */
+{ kind: "noBackend" };
 
 export type ChangeKind = "added" | "modified" | "deleted" | "renamed" | "untracked" | "ignored" | "conflicted";
 
@@ -4475,6 +4498,11 @@ export type DebugCapabilities = {
 	jsPage: boolean,
 	/**  The adapter evaluates expressions while the program runs, without a stack frame. */
 	liveEvaluate: boolean,
+	/**
+	 *  A stream chain can be traced while the program runs it ([`DebugManager::stream_trace`]).
+	 *  Can change during the session, like `jvm_instances`.
+	 */
+	streamTrace: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -6475,7 +6503,12 @@ export type IdeEvent =
 /**  Project window membership or selection changed. */
 { type: "windowGroupsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
-{ type: "windowFullscreenChanged" } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+{ type: "windowFullscreenChanged" } | 
+/**
+ *  This remote window's connection to its host ended on its own (network loss, the host or
+ *  its server went away); the window's project is unreachable until it reconnects.
+ */
+{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**  Files or directories changed on disk (after debouncing, ignore rules applied). */
 { type: "fsChanged"; created: IpcPath[]; modified: IpcPath[]; removed: IpcPath[]; 
 /**  Subtrees whose ignore rules changed, after the matchers were rebuilt. */
@@ -7508,6 +7541,12 @@ export type LineMatch = {
 	textOffset: number,
 };
 
+/**  Link from an output element to the input element it came from. */
+export type Link = {
+	parent: number | null,
+	ambiguous: boolean,
+};
+
 /**  Settings › System Settings › Caches: where the local data lives. */
 export type LocalDataInfo = {
 	/**  The directory in use by this run. */
@@ -8311,6 +8350,10 @@ export type NotificationSettings = {
 	sound?: boolean,
 	/**  Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
 	systemNotifications?: boolean,
+	/**  Terminal command completions (#3712): `off` | `longRunning` | `all`. */
+	terminalCompletion?: string,
+	/**  `longRunning`: the run time a finished command must reach, in seconds. */
+	terminalThresholdSeconds?: number,
 	/**  Group id → display; groups not listed use their default. */
 	groups?: { [key in string]: NotificationGroupSettings },
 };
@@ -10655,6 +10698,72 @@ export type StepSource = {
 	feature: boolean,
 };
 
+export type StreamChainInfo = StreamChainInfo_Serialize | StreamChainInfo_Deserialize;
+
+export type StreamChainInfo_Deserialize = {
+	/**  The `chain_index` [`debug_stream_trace`] takes for the same frame. */
+	index: number,
+	range: Range,
+	text: string,
+	/**
+	 *  Intermediate operations in call order, modifiers included. Empty, like `terminal`, for a
+	 *  chain the search rejected.
+	 */
+	steps: string[],
+	terminal: string,
+	available: boolean,
+	/**  Set exactly when `available` is false. */
+	reason?: ChainUnavailable | null,
+};
+
+export type StreamChainInfo_Serialize = {
+	/**  The `chain_index` [`debug_stream_trace`] takes for the same frame. */
+	index: number,
+	range: Range,
+	text: string,
+	/**
+	 *  Intermediate operations in call order, modifiers included. Empty, like `terminal`, for a
+	 *  chain the search rejected.
+	 */
+	steps: string[],
+	terminal: string,
+	available: boolean,
+	/**  Set exactly when `available` is false. */
+	reason?: ChainUnavailable | null,
+};
+
+export type StreamTraceResult = StreamTraceResult_Serialize | StreamTraceResult_Deserialize;
+
+export type StreamTraceResult_Deserialize = ({ status: "ready"; chain: StreamChainInfo_Deserialize; 
+/**
+ *  Column titles by recorded step: `steps[0]` is the root call's name (empty for a stream
+ *  held in a local), then each operation that records, modifiers left out.
+ */
+steps: string[]; 
+/**  In recording order. */
+records: TraceRecordView[]; 
+/**  Parallel to `records`. */
+links: Link[]; terminal: TerminalView; banners: TraceBanner[]; 
+/**  The stop the values belong to, for `debug_jvm_memory_fields`. */
+generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never } | 
+/**  Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong. */
+({ status: "cancelled"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
+
+export type StreamTraceResult_Serialize = ({ status: "ready"; chain: StreamChainInfo_Serialize; 
+/**
+ *  Column titles by recorded step: `steps[0]` is the root call's name (empty for a stream
+ *  held in a local), then each operation that records, modifiers left out.
+ */
+steps: string[]; 
+/**  In recording order. */
+records: TraceRecordView[]; 
+/**  Parallel to `records`. */
+links: Link[]; terminal: TerminalView; banners: TraceBanner[]; 
+/**  The stop the values belong to, for `debug_jvm_memory_fields`. */
+generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never } | 
+/**  Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong. */
+({ status: "cancelled"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
+
 export type StructuralEvent = { type: "file"; file: StructuralFile } | { type: "done"; summary: StructuralSummary };
 
 /**  All matches in one file; streamed as files complete. */
@@ -10907,6 +11016,8 @@ export type TerminalSettings = {
 	columnWidth?: number | null,
 };
 
+export type TerminalView = { kind: "value"; value: JvmValue } | { kind: "void" } | { kind: "threw"; exception: JvmValue };
+
 export type TestCaseReport = {
 	/**  Fully qualified class (`com.acme.OrderTest`, nested: `com.acme.OrderTest$Nested`). */
 	className: string,
@@ -11138,6 +11249,40 @@ export type ToolUpdate = {
 	/**  The version installing the tool again would get. */
 	latest: string,
 };
+
+/**  Something the user must know to read the trace correctly. */
+export type TraceBanner = { kind: "truncated"; dropped: number } | 
+/**  `count()` on a sized source skips the pipeline, so nothing was recorded. */
+{ kind: "countFromSize" } | { kind: "sortedPassThrough"; step: number } | { kind: "sequentialized" } | { kind: "breakpointsSkipped"; count: number } | 
+/**  Breakpoint stops of the chain's thread while it ran, resumed without being shown. */
+{ kind: "breakpointsResumed"; count: number } | { kind: "threw" };
+
+export type TracePhase = "arming" | "running" | 
+/**  The terminal operation runs on, keeping no more records. */
+"recordingStopped" | "aborting" | 
+/**  The terminal operation finished: stepping out of it and reading the records. */
+"collecting";
+
+export type TraceProgress = {
+	phase: TracePhase,
+	records: number,
+	dropped: number,
+	/**  Since the program started running the chain, as the bundle measures it. */
+	elapsedMs: number,
+};
+
+export type TraceRecordView = {
+	step: number,
+	value: JvmValue,
+};
+
+export type TraceUnavailable = 
+/**  Not a java-debug session, or no JDT LS bundle behind it. */
+{ kind: "noBackend" } | { kind: "notSuspended" } | { kind: "notAtChainStart"; detail: string } | 
+/**  A trace already runs in this session or its JVM. */
+{ kind: "busy" } | 
+/**  java-debug has no debug session for the JVM. */
+{ kind: "noSession" } | { kind: "unsupported"; detail: string };
 
 export type TransferError = {
 	path: string,

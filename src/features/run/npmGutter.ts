@@ -5,7 +5,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { iconAreaSource, type EditorDocContext } from "@/editor/api";
+import { iconAreaSource, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import { call, commands, type RunConfig } from "@/platform/ipc";
@@ -358,7 +358,7 @@ export function entryGutter(
     update(value, tr) {
       for (const e of tr.effects) if (e.is(setEntries)) return e.value;
       if (!tr.docChanged) return value;
-      return value.map((p) => ({ ...p, pos: tr.state.doc.lineAt(tr.changes.mapPos(p.pos, -1)).from }));
+      return value.map((p) => ({ ...p, pos: mapLineStart(tr, p.pos) }));
     },
   });
   const detector = ViewPlugin.fromClass(

@@ -214,6 +214,79 @@ async fn project_path_argument_routes_to_another_open_project() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn trusted_attached_projects_are_writable_and_reach_the_window_they_are_attached_in() {
+    let h = Harness::new();
+    h.trust().await;
+    let base = dunce::canonicalize(h.tmp.path()).unwrap();
+    let (attached, untrusted, other) = (base.join("attached"), base.join("untrusted"), base.join("other"));
+    for dir in [&attached, &untrusted, &other] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(
+        &h.root,
+        "project",
+        vec![h.root.clone(), attached.clone(), untrusted.clone()],
+    )
+    .unwrap();
+    h.host.trust.decide(&attached, true, false).unwrap();
+
+    // Outside the project folder, by absolute path.
+    let file = attached.join("new.txt");
+    h.call("create_new_file", json!({"pathInProject": file, "text": "hello"})).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+    let shown = file.to_string_lossy().replace('\\', "/");
+    let patch = format!("*** Begin Patch\n*** Update File: {shown}\n@@\n-hello\n+patched\n*** End Patch");
+    let output = h.call("apply_patch", json!({ "input": patch })).await;
+    assert!(output.starts_with("1 out of 1"), "{output}");
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("patched"));
+    for dir in [&untrusted, &other] {
+        let e = h.error("create_new_file", json!({"pathInProject": dir.join("x.txt"), "text": "no"})).await;
+        assert!(e.contains("outside"), "{}: {e}", dir.display());
+        assert!(!dir.join("x.txt").exists());
+    }
+
+    // A `projectPath` naming the attached project reaches the window it is attached in.
+    let registry = Registry::new(h.host.clone());
+    assert!(registry.projects().contains(&attached));
+    let read = tokio::task::spawn_blocking(move || {
+        registry.call(&attached, "read_file", &json!({"file_path": "src/b.txt"}).to_string(), CancellationToken::new())
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(read.starts_with("L1: needle"), "{read}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_of_a_project_attached_outside_go_by_their_absolute_path_everywhere() {
+    let h = Harness::new();
+    h.trust().await;
+    let attached = dunce::canonicalize(h.tmp.path()).unwrap().join("attached");
+    std::fs::create_dir_all(attached.join("src")).unwrap();
+    std::fs::write(attached.join("src/lib.rs"), "pub fn attached_marker() {}\n").unwrap();
+    let git = std::process::Command::new("git").current_dir(&attached).args(["init", "-q"]).status().unwrap();
+    assert!(git.success());
+    h.host.trust.decide(&attached, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &attached).unwrap();
+    assert!(h.host.project("main").unwrap().index.wait_idle(std::time::Duration::from_secs(10)));
+    let shown = |rel: &str| attached.join(rel).to_string_lossy().replace('\\', "/");
+
+    let files = h.json("search_file", json!({"q":"**/lib.rs"})).await;
+    assert_eq!(files["items"], json!([{ "filePath": shown("src/lib.rs") }]));
+    let symbols = h.json("search_symbol", json!({"q":"attached_marker"})).await;
+    assert_eq!(symbols["items"][0]["filePath"], shown("src/lib.rs"), "{symbols}");
+    assert_eq!(symbols["items"][0]["lineText"], "pub fn attached_marker() {}");
+    let status = h.json("git_status", json!({})).await;
+    let repos: Vec<&str> = status["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["repositoryPathRelativeToProject"].as_str().unwrap())
+        .collect();
+    assert!(repos.contains(&shown("").trim_end_matches('/')), "{repos:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
     let h = Harness::new();
     h.trust().await;
@@ -366,6 +439,95 @@ async fn git_status_and_diff_on_a_temporary_repository() {
     assert!(h.call("git_diff", json!({})).await.contains("src/a.txt"));
     assert!(h.call("git_diff", json!({"staged":true})).await.is_empty());
     assert!(!h.tmp.path().join("executed").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_limits_the_query_tools_to_a_directory() {
+    let h = Harness::new();
+    std::fs::create_dir_all(h.root.join("lib")).unwrap();
+    std::fs::write(h.root.join("lib/c.txt"), "needle\n").unwrap();
+    let paths = |v: &Value| -> Vec<String> {
+        let mut out: Vec<String> =
+            v["items"].as_array().unwrap().iter().map(|i| i["filePath"].as_str().unwrap().to_owned()).collect();
+        out.dedup();
+        out
+    };
+    assert_eq!(paths(&h.json("search_text", json!({"q":"needle","scope":"lib"})).await), ["lib/c.txt"]);
+    assert_eq!(paths(&h.json("search_regex", json!({"q":"need.e","scope":"lib/"})).await), ["lib/c.txt"]);
+    let absolute = h.root.join("src").to_string_lossy().into_owned();
+    assert_eq!(paths(&h.json("search_file", json!({"q":"*.txt","scope":absolute})).await), ["src/a.txt", "src/b.txt"]);
+    // Within the scope, `paths` narrows further.
+    assert_eq!(
+        paths(&h.json("search_text", json!({"q":"needle","scope":"src","paths":["**/b.txt"]})).await),
+        ["src/b.txt"]
+    );
+    assert!(h.error("search_text", json!({"q":"needle","scope":"missing"})).await.contains("is not a directory"));
+    assert!(h.error("search_text", json!({"q":"needle","scope":".."})).await.contains("outside the project"));
+
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(&h.root).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join("src/a.txt"), "changed\n").unwrap();
+    std::fs::write(h.root.join("lib/c.txt"), "changed\n").unwrap();
+    let status = h.json("git_status", json!({"scope":"lib"})).await;
+    assert_eq!(status["repositories"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        status["repositories"][0]["entries"],
+        json!([{"pathRelativeToRepository":"lib/c.txt","indexStatus":" ","workTreeStatus":"M"}])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
+    let h = Harness::new();
+    h.trust().await;
+    let git = |dir: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&h.root, &["init"]);
+    git(&h.root, &["add", "."]);
+    git(&h.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+    git(&h.root, &["worktree", "add", "-q", ".wt/feature"]);
+    let worktree = h.root.join(".wt/feature");
+    h.host.trust.decide(&worktree, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &worktree).unwrap();
+    // Hidden folders excluded by name: `.wt` is one, the worktree's own files are not.
+    ide_host::ops::project::set_settings(
+        &h.host,
+        "main",
+        ide_workspace::settings::SettingsScope::Project,
+        "projectStructure.excludeFiles",
+        "\".*\"",
+    )
+    .unwrap();
+    let found = |args: Value| {
+        let h = &h;
+        async move {
+            let v = h.json("search_text", args).await;
+            let mut out: Vec<String> = v["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|i| i["filePath"].as_str().unwrap().to_owned())
+                .collect();
+            out.dedup();
+            out
+        }
+    };
+    let everywhere = found(json!({"q":"needle"})).await;
+    assert!(everywhere.contains(&".wt/feature/src/b.txt".to_owned()), "{everywhere:?}");
+    assert_eq!(
+        found(json!({"q":"needle","scope":".wt/feature/src"})).await,
+        [".wt/feature/src/a.txt", ".wt/feature/src/b.txt"]
+    );
+    assert_eq!(found(json!({"q":"needle","paths":[".wt/feature/src/b.txt"]})).await, [".wt/feature/src/b.txt"]);
 }
 
 #[cfg(unix)]

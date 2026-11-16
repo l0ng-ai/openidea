@@ -46,6 +46,7 @@ pub mod sdk;
 pub mod search;
 pub mod spell;
 pub mod ssh;
+pub mod stream_trace;
 pub mod syntax;
 pub mod term;
 pub mod tools;
@@ -155,7 +156,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_send_queued_now,
         agent::agent_set_config,
         agent::agent_fork,
-        agent::agent_create_ephemeral,
         agent::agent_rollback,
         agent::agent_probe,
         agent::agent_cancel,
@@ -287,6 +287,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_goto,
         lsp::lsp_implementations,
         lsp::lsp_goto_implementation,
+        lsp::lsp_implementation_locations,
         lsp::lsp_virtual_document,
         lsp::lsp_can_download_sources,
         lsp::lsp_library_sources,
@@ -592,6 +593,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         heap::debug_heap_compare,
         heap::debug_heap_save,
         heap::debug_heap_close,
+        stream_trace::debug_stream_chains,
+        stream_trace::debug_stream_trace,
+        stream_trace::debug_stream_trace_abort,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,
