@@ -19,6 +19,7 @@ pub mod archive;
 mod bundled;
 pub mod formatter;
 pub mod jdk;
+mod moved_venv;
 pub mod platform;
 #[cfg(any(windows, test))]
 pub mod portable_update;
@@ -46,6 +47,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
+
+pub use moved_venv::drop_moved_venvs;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
