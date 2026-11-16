@@ -862,13 +862,11 @@ async function startRunIn(
   const others = config.allowParallel
     ? []
     : state.sessions.filter((s) => s.config.id === config.id && busy(s) && s.id !== session?.id);
-  if (others.length) {
-    if (
-      workflowSettings().run.confirmRerun &&
-      !(await confirmRerun(config.name, others.length + (session && busy(session) ? 1 : 0)))
-    )
-      return null;
-    await Promise.all(others.map((s) => stopSession(s.id)));
+  const debugging = config.allowParallel ? [] : liveDebugSessions(config.id);
+  if (others.length || debugging.length) {
+    const instances = others.length + debugging.length + (session && busy(session) ? 1 : 0);
+    if (workflowSettings().run.confirmRerun && !(await confirmRerun(config.name, instances))) return null;
+    await Promise.all([...others.map((s) => stopSession(s.id)), ...debugging.map((d) => d.stop())]);
     session ??= others[0];
   }
   const stopping = others.map((s) => s.id);
@@ -1376,6 +1374,33 @@ export async function stopSession(sessionId: string): Promise<void> {
       body: e instanceof Error ? e.message : String(e),
     });
   }
+}
+
+/** The debugger's live sessions of the configuration `configId`. */
+function liveDebugSessions(configId: string) {
+  return useDebugRunSessions
+    .getState()
+    .serviceSessions.filter((d) => d.config.id === configId && d.status !== "terminated");
+}
+
+/**
+ * Before a configuration that doesn't allow parallel runs is debugged: as in IDEA, asks before
+ * stopping its running and debugged instances, then waits for their processes to exit.
+ * False when the user keeps them.
+ */
+export async function stopRunningInstances(config: RunConfig): Promise<boolean> {
+  if (config.allowParallel) return true;
+  const runs = useRun.getState().sessions.filter((s) => s.config.id === config.id && isLive(s));
+  const debugging = liveDebugSessions(config.id);
+  if (!runs.length && !debugging.length) return true;
+  if (workflowSettings().run.confirmRerun && !(await confirmRerun(config.name, runs.length + debugging.length)))
+    return false;
+  await Promise.all([...runs.map((s) => stopSession(s.id)), ...debugging.map((d) => d.stop())]);
+  await waitForExit(
+    runs.map((s) => s.id),
+    null,
+  );
+  return true;
 }
 
 /** Resolves once the given sessions' processes exited (or after `timeoutMs`, unless `null`). */
