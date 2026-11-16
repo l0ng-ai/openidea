@@ -8570,6 +8570,7 @@
   "count() was computed from the source size; the pipeline did not run": "count() 由源的大小算出；流水线未运行",
   "sorted() kept the order: the source was already sorted": "sorted() 保持了原顺序：源已经有序",
   "The parallel chain ran sequentially so it could be traced": "并行链已按顺序运行，以便跟踪",
+  "{count} breakpoint was off while the chain ran": "链运行期间有 {count} 个断点处于关闭状态",
   "{count} breakpoints were off while the chain ran": "链运行期间有 {count} 个断点处于关闭状态",
   "The chain threw {exception}": "链抛出了 {exception}",
   "The program is not stopped": "程序未处于停止状态",

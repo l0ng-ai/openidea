@@ -244,6 +244,7 @@ describe("StreamTraceEditor", () => {
     [{ kind: "countFromSize" }, "count() was computed from the source size; the pipeline did not run"],
     [{ kind: "sortedPassThrough", step: 3 }, "sorted() kept the order: the source was already sorted"],
     [{ kind: "sequentialized" }, "The parallel chain ran sequentially so it could be traced"],
+    [{ kind: "breakpointsSkipped", count: 1 }, "1 breakpoint was off while the chain ran"],
     [{ kind: "breakpointsSkipped", count: 2 }, "2 breakpoints were off while the chain ran"],
   ])("banner %j", (banner, text) => {
     ready(chainA({ banners: [banner] }));

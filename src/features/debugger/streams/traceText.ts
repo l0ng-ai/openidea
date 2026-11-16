@@ -38,7 +38,9 @@ export function bannerText(banner: TraceBanner, result: Ready, tx: Tx = catalogT
       return tx("The parallel chain ran sequentially so it could be traced");
     case "breakpointsSkipped": {
       const count = formatCount(banner.count);
-      return tx`${count} breakpoints were off while the chain ran`;
+      return banner.count === 1
+        ? tx`${count} breakpoint was off while the chain ran`
+        : tx`${count} breakpoints were off while the chain ran`;
     }
     case "threw": {
       const exception = result.terminal.kind === "threw" ? formatJvmValue(result.terminal.exception) : "";

@@ -2187,6 +2187,7 @@
   "count() was computed from the source size; the pipeline did not run": "count() was computed from the source size; the pipeline did not run",
   "sorted() kept the order: the source was already sorted": "sorted() kept the order: the source was already sorted",
   "The parallel chain ran sequentially so it could be traced": "The parallel chain ran sequentially so it could be traced",
+  "{count} breakpoint was off while the chain ran": "{count} breakpoint was off while the chain ran",
   "{count} breakpoints were off while the chain ran": "{count} breakpoints were off while the chain ran",
   "The chain threw {exception}": "The chain threw {exception}",
   "The program is not stopped": "The program is not stopped",
