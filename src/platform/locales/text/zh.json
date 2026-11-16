@@ -8401,5 +8401,14 @@
   "{rel} is added to your request": "{rel} 会添加到你的请求中",
   "IDE Context Enabled: the current file and selection are added to your request": "IDE 上下文已启用：当前文件和所选内容会添加到你的请求中",
   "IDE Context Disabled: the current file and selection are not added to your request": "IDE 上下文已禁用：当前文件和所选内容不会添加到你的请求中",
-  "Thymeleaf": "Thymeleaf"
+  "Thymeleaf": "Thymeleaf",
+  "sbt": "sbt",
+  "sbt actions": "sbt 操作",
+  "sbt projects": "sbt 项目",
+  "No sbt projects": "没有 sbt 项目",
+  "Reload sbt Projects": "重新加载 sbt 项目",
+  "Re-reads the projects of build.sbt": "重新读取 build.sbt 中的项目",
+  "Run sbt Task": "运行 sbt 任务",
+  "sbt Task": "sbt 任务",
+  "Open build.sbt": "打开 build.sbt"
 }

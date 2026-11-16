@@ -2944,6 +2944,8 @@ export type BuildMessage = {
 export type BuildModel = {
 	maven: MavenModel | null,
 	gradle?: GradleModel[],
+	/**  sbt builds, read from their `build.sbt` (sbt is not started). */
+	sbt?: SbtBuild[],
 };
 
 /**  How a Java launch builds the project before starting (IDEA's Before launch › Build). */
@@ -9726,6 +9728,26 @@ export type RustSettings = {
 	checkCommand?: string,
 	/**  Extra arguments for rustfmt (rust-analyzer `rustfmt.extraArgs`), space-separated. */
 	rustfmtArgs?: string,
+};
+
+export type SbtBuild = {
+	/**  Folder of `build.sbt`, relative to the project root (`""` for the root itself). */
+	dir: string,
+	/**  The launcher: a `sbt` / `sbtx` script in the build folder, else `sbt` on `PATH`. */
+	command: string,
+	/**  `sbt.version` of `project/build.properties`. */
+	version: string | null,
+	/**  The root project first, then the declared projects in source order. */
+	projects: SbtProject[],
+};
+
+export type SbtProject = {
+	/**  The project id tasks are scoped with (`core/compile`). */
+	id: string,
+	/**  Base folder relative to the build folder (`""` for the build's own). */
+	dir: string,
+	/**  The build's root project: its tasks run unscoped (and aggregate when sbt does). */
+	root: boolean,
 };
 
 /**  Progress of `scaffold_create`. */

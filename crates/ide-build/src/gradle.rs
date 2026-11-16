@@ -1463,7 +1463,7 @@ dependencies {
             model.projects.push(project);
         }
         assert!(build_files(root, &model).contains(&root.join("included/deps.gradle")));
-        let model = crate::BuildModel { maven: None, gradle: vec![model] };
+        let model = crate::BuildModel { maven: None, gradle: vec![model], sbt: Vec::new() };
         assert_eq!(crate::dependency_coordinates(root, &model)[0].artifact_id, "included");
     }
 
