@@ -75,6 +75,7 @@ import {
   setGroupByDir,
   setGroupByRepo,
   setGroupByStaging,
+  setShowUnversionedSeparately,
   useCommit,
   type CommitTab,
 } from "./commitStore";
@@ -613,6 +614,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const staging = useStagingArea() && mode === "commit";
   const groupByStaging = useCommit((s) => s.groupByStaging) || staging;
   const groupByRepo = useCommit((s) => s.groupByRepo);
+  const showUnversionedSeparately = useCommit((s) => s.showUnversionedSeparately);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
   const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
@@ -631,8 +633,19 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo),
-    [status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo],
+    () =>
+      buildChangeTree(
+        status,
+        root,
+        groupByDir,
+        lists,
+        repos,
+        groupByStaging,
+        heads,
+        groupByRepo,
+        showUnversionedSeparately,
+      ),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo, showUnversionedSeparately],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -757,6 +770,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               ...(staging
                 ? []
                 : [{ label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) }]),
+              { kind: "separator" },
+              {
+                label: "Show Unversioned Files Separately",
+                checked: showUnversionedSeparately,
+                run: () => setShowUnversionedSeparately(!showUnversionedSeparately),
+              },
               ...(mode === "local"
                 ? [
                     { kind: "separator" } as const,

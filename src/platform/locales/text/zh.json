@@ -8383,6 +8383,7 @@
   "Different": "不同",
   "Foreign Keys": "外键",
   "Indexes": "索引",
+  "Show Unversioned Files Separately": "单独显示未跟踪文件",
   "Add JDK from Disk…": "从磁盘添加 JDK…",
   "Select Home Directory for JDK": "选择 JDK 主目录",
   "The selected directory is not a valid home for JDK: {path}": "所选目录不是有效的 JDK 主目录：{path}",

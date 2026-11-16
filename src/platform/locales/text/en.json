@@ -1998,6 +1998,7 @@
   "Foreign Keys": "Foreign Keys",
   "Indexes": "Indexes",
   "Columns": "Columns",
+  "Show Unversioned Files Separately": "Show Unversioned Files Separately",
   "Add JDK from Disk…": "Add JDK from Disk…",
   "Select Home Directory for JDK": "Select Home Directory for JDK",
   "The selected directory is not a valid home for JDK: {path}": "The selected directory is not a valid home for JDK: {path}",
