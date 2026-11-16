@@ -1273,6 +1273,7 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "changes"
   | "problems"
   | "searchResults"
   | "editorGutter"
