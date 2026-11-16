@@ -603,11 +603,19 @@ pub async fn remote_connect(
     let peer = connection.peer.clone();
     let auth_plugins = state.plugins.clone();
     let auth_window = label.clone();
+    let app = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         peer.closed().await;
         auth_plugins.forget_remote_loopbacks(&auth_window);
-        if let Some(connection) = weak.upgrade() {
-            connection.forwards.lock().clear();
+        let Some(connection) = weak.upgrade() else { return };
+        connection.forwards.lock().clear();
+        // Still the window's connection: not a disconnect or a replacement, so the window learns
+        // its project is unreachable instead of failing every command with "connection closed".
+        let current = app.state::<AppState>().remote_dev.get(&auth_window);
+        if current.is_some_and(|c| Arc::ptr_eq(&c, &connection)) {
+            tracing::warn!("{}: the connection to openidea-server was lost", connection.host);
+            TauriSink { app, window: Some(auth_window) }
+                .emit(ide_core::IdeEvent::RemoteConnectionLost { host: connection.host.clone() });
         }
     });
     let plugins = state.plugins.clone();
@@ -957,7 +965,7 @@ pub async fn remote_invoke(
     let call = Invoke { window: label, cmd, args };
     let mut result = invoke_reply(&c.peer, call, std::time::Duration::from_secs(30))
         .await
-        .map_err(|e| older_server_error(e, &c.server_version, &c.host))?;
+        .map_err(|e| lost_connection_error(older_server_error(e, &c.server_version, &c.host), &c))?;
     if web_url && let Some(url) = result.as_str() {
         result = Value::String(forward_web_url(&c, url).await?);
     }
@@ -1016,6 +1024,12 @@ fn older_server_error(e: IdeError, server_version: &str, host: &str) -> IdeError
          install the matching server",
         e.message
     ))
+}
+
+/// A request that failed because the transport is gone says so, instead of the bare JSON-RPC
+/// "connection closed".
+fn lost_connection_error(e: IdeError, c: &Connection) -> IdeError {
+    if c.peer.is_closed() { IdeError::unavailable(format!("Lost the connection to {}", c.host)) } else { e }
 }
 
 // Conversation reads are snapshots; a silent host must not leave them pending forever.
