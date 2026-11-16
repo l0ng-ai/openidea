@@ -14,6 +14,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
+import { OutputActivity } from "./activity";
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
@@ -72,6 +73,13 @@ export interface SessionSnapshot {
    * view, so only its own report separates working from waiting for input.
    */
   progress: "active" | "cleared" | null;
+  /**
+   * The running command is at work (#3831): as its progress report says; without
+   * one, always for a plain command, and for an interactive program (an agent
+   * CLI, a REPL, an editor) only while it keeps producing output, not while it
+   * waits for input.
+   */
+  working: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
   /**
@@ -257,6 +265,8 @@ export class TerminalSession {
   private commandStartedAt: number | null = null;
   /** Ctrl-C was typed while the current command ran: it was stopped, not finished. */
   private commandInterrupted = false;
+  private readonly activity = new OutputActivity();
+  private activityTimer: ReturnType<typeof setTimeout> | null = null;
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -283,6 +293,7 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       progress: null,
+      working: false,
       cwd: opts.cwd,
       unseenDone: false,
     };
@@ -357,6 +368,10 @@ export class TerminalSession {
       }),
       this.term.onData((data) => this.fromTerminal(data)),
       this.term.onBinary((data) => this.input(data)),
+      this.term.onWriteParsed(() => {
+        this.activity.output(Date.now());
+        this.syncWorking();
+      }),
       this.term.onTitleChange((title) => this.update({ appTitle: title.trim() || null })),
       // OSC 7: `file://host/path` — shells report their cwd so relative links resolve correctly.
       this.term.parser.registerOscHandler(7, (data) => {
@@ -376,6 +391,7 @@ export class TerminalSession {
           this.commandInterrupted = false;
           // A new command in the tab: the previous completion has been seen, and
           // the new program has not reported progress yet.
+          this.activity.reset();
           this.update({ commandRunning: true, unseenDone: false, progress: null });
         } else if (data === "D" || data.startsWith("D;")) {
           const status = data.length > 2 ? Number.parseInt(data.slice(2), 10) : Number.NaN;
@@ -543,7 +559,35 @@ export class TerminalSession {
 
   private update(patch: Partial<SessionSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
+    this.snapshot.working = this.isWorking();
     this.opts.onChange(this.key, this.snapshot);
+  }
+
+  /**
+   * The running program takes input itself: it asked for bracketed paste or the
+   * alternate screen. Shells turn bracketed paste off before they run a command.
+   */
+  private get interactive(): boolean {
+    return this.term.modes.bracketedPasteMode || this.term.buffer.active.type === "alternate";
+  }
+
+  private isWorking(): boolean {
+    const { status, commandRunning, progress } = this.snapshot;
+    if (!commandRunning || status === "exited" || status === "error") return false;
+    if (progress) return progress === "active";
+    return !this.interactive || this.activity.active(Date.now());
+  }
+
+  /** Re-judges `working` after output, and again once the output has been quiet long enough. */
+  private syncWorking() {
+    if (this.disposed) return;
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
+    this.activityTimer = null;
+    const working = this.isWorking();
+    if (working !== this.snapshot.working) this.update({});
+    if (!this.snapshot.commandRunning) return;
+    const wait = this.activity.quietAt - Date.now();
+    if (wait >= 0) this.activityTimer = setTimeout(() => this.syncWorking(), wait + 1);
   }
 
   private linksAt(y: number): ILink[] | undefined {
@@ -841,6 +885,7 @@ export class TerminalSession {
     }
     // Ctrl-C stops the running command: its D mark must not count as a completion (#3712).
     if (this.snapshot.commandRunning && data.includes("\x03")) this.commandInterrupted = true;
+    this.activity.input(Date.now());
     void call(commands.termWrite(this.ptyId, data)).catch((error) => {
       notifications().notify({
         level: "error",
@@ -971,6 +1016,7 @@ export class TerminalSession {
       this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);
