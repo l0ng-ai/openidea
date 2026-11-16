@@ -48,7 +48,9 @@ pub fn ensure_modern_webkit() {
     if std::env::var_os(DISABLE).is_some() {
         return;
     }
-    if !needs_staged_webkit(system_webkit_bundle_version(), Path::new(STAGED_WEBKIT).is_dir()) {
+    // Check for the staged copy first: it is a stat, while reading the system
+    // version spawns `defaults`, which every launch on a current macOS would pay.
+    if !Path::new(STAGED_WEBKIT).is_dir() || !needs_staged_webkit(system_webkit_bundle_version(), true) {
         return;
     }
     relaunch();

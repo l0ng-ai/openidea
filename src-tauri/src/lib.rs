@@ -59,7 +59,7 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
     // Debug builds can end up on machines other than the one that built them
     // (packaged test builds). Without the checkout there is nothing to sync,
     // and `CARGO_MANIFEST_DIR` points at the build machine anyway.
-    if !target.parent().map_or(false, |dir| dir.is_dir()) {
+    if !target.parent().is_some_and(Path::is_dir) {
         return;
     }
     // Rewritten only when it changes: every debug launch exports, also a second instance that just
