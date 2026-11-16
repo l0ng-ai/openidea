@@ -8,7 +8,7 @@ import { notifications, registerStatusItem } from "@/workbench/contributions";
 import { useEditorRegistry } from "@/editor/api";
 import { BarButton, Menu, type MenuItem } from "@/ui";
 import { Icon } from "@/ui/icons";
-import { effectivePython, interpreterTarget, targetChoices, type Sdk } from "./api";
+import { effectivePython, interpreterTarget, targetChoices, useSdks, type Sdk } from "./api";
 import { tildify } from "./components";
 import { validateRunTargets } from "@/platform/remoteSettings";
 import { interpreterIcon, interpreterPathKey } from "./interpreters";
@@ -117,7 +117,10 @@ function PythonStatus() {
           visible || configured
             ? await Promise.all([
                 effectivePython(nearMember(members, active)),
-                (detected ??= call(commands.sdkDetect("python"))),
+                (detected ??= call(commands.sdkDetect("python"))).then((found) => [
+                  ...(useSdks.getState().byKind.python ?? []),
+                  ...found,
+                ]),
               ])
             : [null, [] as Sdk[]];
         if (live && sequence === request) usePopup.setState({ status: { root, configured, visible, python, sdks } });
@@ -144,6 +147,13 @@ function PythonStatus() {
           schedule();
       }),
       onIdeEvent("settingsChanged", () => {
+        detected = undefined;
+        schedule();
+      }),
+      // An environment created or added in Settings may live outside the project (conda's
+      // envs directory), so no file event announces it; the configured path may not change.
+      useSdks.subscribe((s, prev) => {
+        if (s.byKind.python === prev.byKind.python) return;
         detected = undefined;
         schedule();
       }),
