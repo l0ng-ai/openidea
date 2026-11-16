@@ -398,7 +398,7 @@
   }
 }
 /* A narrow docked session: rather than cut every fact to a letter or two, the bar keeps the
-     agent's icon and its state; where it works is in the task's tooltip and Changes. */
+   agent's icon and its state; where it works is in the task's tooltip and Changes. */
 @container (max-width: 420px) {
   .where,
   .agentName {
