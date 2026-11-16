@@ -176,7 +176,7 @@ struct State {
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
-    diffs: Vec<(crate::ContentDiff, Option<String>)>,
+    diffs: Vec<(crate::FileDiff, Option<String>)>,
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
@@ -672,6 +672,11 @@ impl MockHost {
                 .unwrap(),
         })
     }
+    /// Diffs the plugin opened (`open_diff` sides are always `Some`), with their file names.
+    pub fn opened_diffs(&self) -> Vec<(crate::FileDiff, Option<String>)> {
+        self.state.borrow().diffs.clone()
+    }
+
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
@@ -2441,7 +2446,11 @@ pub mod current {
         Ok(())
     }
     pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
-        if diff.left.contains('\0') || diff.right.contains('\0') {
+        open_file_diff(&diff.clone().into(), file_name)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        let sides = [&diff.left, &diff.right];
+        if sides.iter().all(|s| s.is_none()) || sides.into_iter().flatten().any(|s| s.contains('\0')) {
             return Err(Error::Invalid("invalid diff".into()));
         }
         with(|s| s.diffs.push((diff.clone(), file_name.map(Into::into))));
@@ -3107,6 +3116,20 @@ mod tests {
         assert_eq!(mock.log_tabs().len(), 1);
         assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
         assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn a_file_diff_may_miss_one_side() {
+        let mock = MockHost::install();
+        let added = crate::FileDiff { right: Some("new\n".into()), ..Default::default() };
+        host::open_file_diff(&added, Some("src/new.rs")).unwrap();
+        host::open_diff(&crate::ContentDiff { left: "a".into(), right: "b".into(), ..Default::default() }, None)
+            .unwrap();
+        assert!(matches!(host::open_file_diff(&crate::FileDiff::default(), None), Err(Error::Invalid(_))));
+        let diffs = mock.opened_diffs();
+        assert_eq!(diffs[0], (added, Some("src/new.rs".into())));
+        assert_eq!((diffs[1].0.left.as_deref(), diffs[1].0.right.as_deref()), (Some("a"), Some("b")));
+        assert_eq!(diffs.len(), 2);
     }
 
     #[test]

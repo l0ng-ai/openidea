@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.8.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.10.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -421,9 +421,21 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.10
+
+API 1.10.0 is in development on `main`. Use `engines.openidea = "^1.10"` and the
+matching SDK. Released 1.9 plugins keep working. New in 1.10:
+
+- `host::open_file_diff(&FileDiff { .. }, file_name)` (`views.open-file-diff`) is
+  `open_diff` for a file that doesn't exist on one side: a `None` side (`left` of
+  an added file, `right` of a deleted one) makes the diff viewer show the other
+  side alone, as for the IDE's own added and deleted files, instead of next to an
+  empty text. Both `None` is `Invalid`. Web views send `null` for that side in
+  `{ op: "open-diff", ... }`.
+
 ### API 1.9
 
-API 1.9.0 is in development on `main`. Use `engines.openidea = "^1.9"` and the
+API 1.9.0 shipped with OpenIDEA 0.1.46. Use `engines.openidea = "^1.9"` and the
 matching SDK. Released 1.8 plugins keep working. New in 1.9:
 
 - The `launch-configurations` export (`LaunchConfigurations`, registration
@@ -695,6 +707,7 @@ then run `openidea-plugin check`.
 | `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                     | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                    | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
 | `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                            | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 8 MiB (earlier hosts: 1 MiB), a larger side fails with `Invalid("diff too large: …")`.                                                                                                      |
+| `host::open_file_diff(diff, file_name)`                                                                        | `views.open-file-diff`                       | API 1.10: `open_diff` where a side may be `None` (the file doesn't exist there: added or deleted); the viewer shows the other side alone. Both `None` fails with `Invalid`.                                                                                                                                                                               |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `LaunchConfigurations::launch_configurations(root)`                                                            | export `launch-configurations`               | API 1.9: optional `plugin-launch-configurations` world; SDK registration `launch_configurations`. The same list with `env` and `debugger`; preferred over `run-configurations`.                                                                                                                                                                           |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
@@ -2642,7 +2655,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45; API 1.9.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46; API 1.10.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

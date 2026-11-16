@@ -274,6 +274,36 @@ describe("plugin-backed content editor tabs", () => {
     }
   });
 
+  it("opens a plugin diff with a missing side as the IDE's one-sided added or deleted file", () => {
+    const diffs: unknown[] = [];
+    const unregisterDiff = registerActions([
+      { id: "vcs.openDiff", title: "Open Diff", run: ({ arg }) => void diffs.push(arg) },
+    ]);
+    try {
+      openPluginDiffRequest({ left: null, right: "added\n", fileName: "src/new.ts" }, 10);
+      openPluginDiffRequest({ left: "deleted\n", right: null, rightLabel: "MR !12", fileName: "old.ts" }, 10);
+      // `absent` is what the diff viewer shows alone (oneSided), as for the IDE's own added / deleted files.
+      expect(diffs).toEqual([
+        {
+          path: "plugin-diff:/new.ts",
+          title: "src/new.ts",
+          left: { type: "text", text: "", label: "Before", absent: true },
+          right: { type: "text", text: "added\n", label: "After" },
+        },
+        {
+          path: "plugin-diff:/old.ts",
+          title: "old.ts",
+          left: { type: "text", text: "deleted\n", label: "Before" },
+          right: { type: "text", text: "", label: "MR !12", absent: true },
+        },
+      ]);
+      expect(() => openPluginDiffRequest({ left: null, right: null }, 10)).toThrow();
+      expect(diffs).toHaveLength(2);
+    } finally {
+      unregisterDiff();
+    }
+  });
+
   it.each([undefined, "normalized = true\n"])("keeps later edits dirty when a save returns %j", async (replacement) => {
     const f = setup();
     try {

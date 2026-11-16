@@ -1785,6 +1785,13 @@ impl views::Host for StoreData {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
+        let diff = crate::FileDiff::from(crate::ContentDiff::from(diff));
+        Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff, file_name).map_err(to_wit))
+    }
+    fn open_file_diff(&mut self, diff: views::FileDiff, file_name: Option<String>) -> Fallible<()> {
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
         Ok(self.host.open_diff(self.invocation.client.as_deref().unwrap(), diff.into(), file_name).map_err(to_wit))
     }
     fn reply_content_tab(&mut self, request_id: String, reply: views::ContentTabReply) -> Fallible<()> {
@@ -2142,6 +2149,12 @@ impl From<bindings::openidea::plugin::views::ContentTab> for crate::ContentTab {
 
 impl From<bindings::openidea::plugin::views::ContentDiff> for crate::ContentDiff {
     fn from(v: bindings::openidea::plugin::views::ContentDiff) -> Self {
+        Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
+    }
+}
+
+impl From<bindings::openidea::plugin::views::FileDiff> for crate::FileDiff {
+    fn from(v: bindings::openidea::plugin::views::FileDiff) -> Self {
         Self { left: v.left, right: v.right, left_label: v.left_label, right_label: v.right_label, title: v.title }
     }
 }

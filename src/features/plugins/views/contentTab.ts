@@ -32,8 +32,9 @@ export interface PluginContentEditorData {
 }
 
 export interface ContentTabDiff {
-  left: string;
-  right: string;
+  /** `null`: the file doesn't exist on this side (added or deleted). */
+  left: string | null;
+  right: string | null;
   leftLabel?: string;
   rightLabel?: string;
   title?: string;
@@ -165,9 +166,11 @@ function validDiff(v: unknown): ContentTabDiff | undefined {
       throw new Error(tx`Diff too large: a side is over ${MAX_DIFF_SIDE >> 20} MiB`);
     }
   }
+  const validSide = (v: unknown): v is string | null => v === null || bodyText(v, MAX_DIFF_SIDE);
   if (
-    !bodyText(d.left, MAX_DIFF_SIDE) ||
-    !bodyText(d.right, MAX_DIFF_SIDE) ||
+    !validSide(d.left) ||
+    !validSide(d.right) ||
+    (d.left === null && d.right === null) ||
     (d.leftLabel !== undefined && !text(d.leftLabel, 128)) ||
     (d.rightLabel !== undefined && !text(d.rightLabel, 128)) ||
     (d.title !== undefined && !text(d.title, 256))
@@ -198,11 +201,14 @@ export function pluginDiffPath(name: string): string {
 }
 
 export function openPluginDiff(diff: ContentTabDiff, name: string, title: string) {
+  // A missing side is the IDE's own added / deleted file side: the diff viewer shows the other one alone.
+  const side = (text: string | null, label: string) =>
+    text === null ? { type: "text", text: "", label, absent: true } : { type: "text", text, label };
   void executeAction("vcs.openDiff", {
     path: pluginDiffPath(name),
     title: diff.title ?? title,
-    left: { type: "text", text: diff.left, label: diff.leftLabel ?? tx("Before") },
-    right: { type: "text", text: diff.right, label: diff.rightLabel ?? tx("After") },
+    left: side(diff.left, diff.leftLabel ?? tx("Before")),
+    right: side(diff.right, diff.rightLabel ?? tx("After")),
   });
 }
 
