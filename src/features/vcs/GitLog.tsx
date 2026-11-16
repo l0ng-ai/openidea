@@ -127,6 +127,7 @@ import { LogIdContext } from "./logContext";
 import { LogScope } from "./LogScope";
 import { browseRepositoryAt, openExternalLog } from "./RevisionBrowser";
 import { invalidateLogDetails, loadLogDetails, useCommitDetails } from "./logDetails";
+import type { FileHistoryCommitsArg, FileHistoryCommitArg } from "./historyActions";
 
 const ROW = 26;
 const LANE = 14;
@@ -1146,7 +1147,10 @@ export function viewOptionsMenu(o: LogOptions): MenuItem[] {
 }
 
 /** IDEA's Git Log commit context menu (Git.Log.ContextMenu); `selection` = all selected commits, newest first. */
-export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
+export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarget?: string | null): MenuItem[] {
+  const actionCommit: Commit | FileHistoryCommitArg = fileHistoryTarget
+    ? { kind: "file-history-commit", commit: c, target: fileHistoryTarget }
+    : c;
   if ((c as RepoCommit).readOnly)
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: c },
@@ -1162,6 +1166,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { kind: "action", action: "vcs.log.goToParent", arg: c },
       { kind: "action", action: "vcs.log.goToChild", arg: c },
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
+      ...(fileHistoryTarget
+        ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
+        : []),
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
   const repo = commitRepo(c);
@@ -1169,12 +1176,15 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
   const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
   if (many) {
+    const compareArg: Commit[] | FileHistoryCommitsArg = fileHistoryTarget
+      ? { kind: "file-history-commits", commits: selection, target: fileHistoryTarget }
+      : selection;
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       ...(selection.length === 2
-        ? [{ kind: "action", action: "vcs.log.compareVersions", arg: selection } satisfies MenuItem]
+        ? [{ kind: "action", action: "vcs.log.compareVersions", arg: compareArg } satisfies MenuItem]
         : []),
       { kind: "separator" },
       { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
@@ -1217,7 +1227,10 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "separator" },
     { kind: "action", action: "vcs.log.checkoutRevision", arg: c },
     { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
-    { kind: "action", action: "vcs.log.compareWithLocal", arg: c },
+    ...(fileHistoryTarget
+      ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
+      : []),
+    { kind: "action", action: "vcs.log.compareWithLocal", arg: actionCommit },
     { kind: "separator" },
     { kind: "action", action: "vcs.log.resetToHere", arg: c },
     { kind: "action", action: "vcs.log.revert", arg: c },
@@ -1256,6 +1269,11 @@ function CommitList() {
   const active = !scope || scope === shown;
   const all = useGitLog((s) => s.commits);
   const selection = useGitLog((s) => s.selection);
+  const fileHistoryTarget = useGitLog((s) => {
+    const id = scope ?? s.shownLog;
+    const tab = s.logTabs.find((t) => t.id === id);
+    return tab?.kind === "history" ? tab.target : null;
+  });
   const earlier = useMemo(() => {
     const seen = new Set<string | null | undefined>();
     return all.some((c) => {
@@ -1277,6 +1295,7 @@ function CommitList() {
   const speedGeneration = useRef(0);
   const speedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(speedTimer.current), []);
+  useEffect(() => () => setContext("vcsLogRevisionFocus", false), []);
   const columns = useMemo(() => {
     const builtins: LogColumn[] = [
       ...(opts.showAuthor ? [{ id: "author", title: "Author", width: 130, render: (c: Commit) => c.author }] : []),
@@ -1728,6 +1747,10 @@ function CommitList() {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
+        onFocusCapture={() => setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget)}
+        onBlurCapture={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogRevisionFocus", false);
+        }}
         onScroll={(e) => {
           if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";
           setHoverColor(null);
@@ -1789,6 +1812,7 @@ function CommitList() {
                 key={v.index % items.length}
                 id={`commit-${scope ?? "log"}-${v.index}`}
                 commit={c}
+                fileHistoryTarget={fileHistoryTarget}
                 graph={rows[v.index]}
                 top={v.start - ROW}
                 selected={selectedSet.has(commitKey(c))}
@@ -2076,6 +2100,7 @@ function rowRemoteNames(own: readonly string[] | undefined, shared: ReadonlySet<
 function CommitRowView({
   id,
   commit: c,
+  fileHistoryTarget,
   graph,
   top,
   selected,
@@ -2098,6 +2123,7 @@ function CommitRowView({
 }: {
   id: string;
   commit: Commit;
+  fileHistoryTarget: string | null;
   graph: GraphRow | undefined;
   top: number;
   selected: boolean;
@@ -2217,7 +2243,7 @@ function CommitRowView({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        showContextMenu(e, commitMenu(c, selectedCommits()));
+        showContextMenu(e, commitMenu(c, selectedCommits(), fileHistoryTarget));
       }}
     >
       {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (

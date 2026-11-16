@@ -411,7 +411,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
