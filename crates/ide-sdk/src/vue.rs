@@ -11,7 +11,11 @@ use std::time::Duration;
 
 pub(crate) const SERVER: &str = "vue-language-server";
 const PACKAGE: &str = "@vue/language-server";
-const PLUGIN: &str = "@vue/typescript-plugin";
+pub(crate) const PLUGIN: &str = "@vue/typescript-plugin";
+/// The companion plugin's package name under the IDE's data dir.
+pub(crate) const MODULE_RESOLUTION_PLUGIN: &str = "openidea-vue-module-resolution";
+/// The TS plugin shipped as an asset: retries extension-less relative imports with `.vue`.
+const MODULE_RESOLUTION_JS: &str = include_str!("vue-module-resolution.js");
 /// The file extension the plugin adds to tsserver.
 pub(crate) const EXTENSION: &str = "vue";
 const CLI_SERVICE: &str = "@vue/cli-service";
@@ -47,6 +51,25 @@ pub(crate) fn tsserver_plugin(package: &Path) -> serde_json::Value {
         "configNamespace": "typescript",
         "enableForWorkspaceTypeScriptVersions": true,
     })
+}
+
+/// The companion module-resolution plugin (`vue-module-resolution.js`) written under
+/// `<data_dir>/tsplugins`, as one more tsserver global plugin. `location` is the directory
+/// holding its `node_modules`, the layout a plugin probe path resolves. Idempotent: the file
+/// is only rewritten when its content changed. `None` when the data dir cannot be written.
+pub(crate) fn module_resolution_plugin(data_dir: &Path) -> Option<serde_json::Value> {
+    let root = data_dir.join("tsplugins");
+    let dir = root.join("node_modules").join(MODULE_RESOLUTION_PLUGIN);
+    if std::fs::read(dir.join("index.js")).ok().as_deref() != Some(MODULE_RESOLUTION_JS.as_bytes()) {
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::write(dir.join("index.js"), MODULE_RESOLUTION_JS).ok()?;
+    }
+    Some(serde_json::json!({
+        "name": MODULE_RESOLUTION_PLUGIN,
+        "location": root.to_string_lossy(),
+        "languages": ["vue"],
+        "enableForWorkspaceTypeScriptVersions": true,
+    }))
 }
 
 /// `compilerOptions.paths` for the webpack aliases of a Vue project at `root` (`@/*` →
@@ -279,5 +302,42 @@ module.exports = { resolve: { alias: {
         assert_eq!(own_typescript(&pkg), None);
         touch(&tmp.path().join("node_modules/typescript/lib/typescript.js"));
         assert_eq!(own_typescript(&pkg), Some(tmp.path().join("node_modules/typescript/lib")));
+    }
+
+    #[test]
+    fn the_module_resolution_plugin_is_written_where_a_probe_path_finds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let t = tmp.path();
+        let plugin = module_resolution_plugin(t).unwrap();
+        assert_eq!(plugin["name"], MODULE_RESOLUTION_PLUGIN);
+        assert_eq!(plugin["location"], t.join("tsplugins").to_string_lossy().as_ref());
+        assert_eq!(plugin["enableForWorkspaceTypeScriptVersions"], true);
+        let index = t.join("tsplugins/node_modules").join(MODULE_RESOLUTION_PLUGIN).join("index.js");
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), MODULE_RESOLUTION_JS);
+        // A stale file from an older release is replaced.
+        std::fs::write(&index, "outdated").unwrap();
+        module_resolution_plugin(t).unwrap();
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), MODULE_RESOLUTION_JS);
+    }
+
+    #[test]
+    fn the_module_resolution_plugin_loads_as_a_tsserver_plugin() {
+        let Some(node) = crate::exec::which("node") else { return };
+        let tmp = tempfile::tempdir().unwrap();
+        module_resolution_plugin(tmp.path()).unwrap();
+        let index = tmp.path().join("tsplugins/node_modules").join(MODULE_RESOLUTION_PLUGIN).join("index.js");
+        // tsserver requires the package and calls the factory with `{ typescript }`.
+        let out = crate::exec::query_in(
+            &node,
+            &[
+                "-e",
+                "const p = require(process.argv[1]); if (typeof p !== 'function') process.exit(1); process.stdout.write('factory');",
+                &index.to_string_lossy(),
+            ],
+            None,
+            &[],
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(out.as_deref(), Some("factory"));
     }
 }
