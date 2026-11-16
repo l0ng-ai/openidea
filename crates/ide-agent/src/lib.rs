@@ -1143,7 +1143,11 @@ impl AgentManager {
             .peer
             .request(
                 "session/fork",
-                json!({ "sessionId": live.session, "cwd": cwd_s, "mcpServers": mcp_servers }),
+                {
+                    let mut params = session_params(&cwd_s, &mcp_servers, &mcp_overrides);
+                    params["sessionId"] = json!(live.session);
+                    params
+                },
                 None,
             )
             .await
@@ -2316,7 +2320,8 @@ impl Task {
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let params = json!({ "sessionId": &id, "cwd": &cwd_s, "mcpServers": &mcp_servers });
+            let mut params = session_params(&cwd_s, &mcp_servers, &mcp_overrides);
+            params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
             self.replaying.store(false, Ordering::Release);
@@ -2329,7 +2334,7 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = json!({ "cwd": &cwd_s, "mcpServers": &mcp_servers });
+                let params = session_params(&cwd_s, &mcp_servers, &mcp_overrides);
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -3263,6 +3268,22 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
         .filter(|(_, e)| matches!(e, AgentEntry::User { steered: false, .. }))
         .map(|(i, _)| i)
         .collect()
+}
+
+/// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP
+/// servers, and the ones switched off for this session, so an agent that also loads its own
+/// configuration (Claude Code) can keep a same-named server of it off too.
+fn session_params(cwd: &str, servers: &[Value], overrides: &BTreeMap<String, bool>) -> Value {
+    let off: Vec<&str> = overrides
+        .iter()
+        .filter(|(name, on)| !**on && name.as_str() != mcp::BUILTIN_MCP_NAME)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let mut params = json!({ "cwd": cwd, "mcpServers": servers });
+    if !off.is_empty() {
+        params["_meta"] = json!({ "openidea": { "mcpServersOff": off } });
+    }
+    params
 }
 
 fn is_false(b: &bool) -> bool {
