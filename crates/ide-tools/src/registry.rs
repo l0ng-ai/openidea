@@ -323,6 +323,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "djlsp",
+        display: "Django Template LSP",
+        kind: LanguageServer,
+        commands: &["djlsp"],
+        method: Method::PipVenv { package: "django-template-lsp" },
+        fallback: None,
+        version: ver("djlsp"),
+        homepage: "https://github.com/fourdigits/django-template-lsp",
+        needs: &[],
+    },
+    ToolSpec {
         name: "bash-language-server",
         display: "Bash Language Server",
         kind: LanguageServer,

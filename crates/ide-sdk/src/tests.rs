@@ -191,6 +191,18 @@ fn pyright_gets_python_path_and_venv_env() {
 }
 
 #[test]
+fn djlsp_reads_django_from_the_project_environment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let python = fake_venv(tmp.path(), "venvs/web");
+    let mut s = Settings::default();
+    s.languages.python.interpreter = python.to_string_lossy().into_owned();
+    let mut cfg = server("djlsp");
+    configure_server(&mut cfg, tmp.path(), tmp.path(), &s);
+    let opts = serde_json::to_value(cfg.initialization_options.unwrap()).unwrap();
+    assert_eq!(opts["env_directories"], serde_json::json!([tmp.path().join("venvs/web").to_string_lossy()]));
+}
+
+#[test]
 fn a_run_target_interpreter_hides_local_pythons() {
     let tmp = tempfile::tempdir().unwrap();
     fake_venv(tmp.path(), ".venv");

@@ -140,6 +140,8 @@ Python 调试使用 debugpy。开始调试时如果缺少 debugpy，OpenIDEA 会
 
 Django 项目（上层目录有 `manage.py`）中 `templates` 目录里的 HTML 和文本文件以 **Django Template** 打开：模板标签、变量、过滤器和注释在 HTML 之上高亮，块标签（`{% block %}`、`{% if %}`、`{% for %}`、`{% with %}` 以及 Django 和其 contrib 库的其他块标签）可以折叠、缩进内容并高亮对应的结束标签。输入 `{%`、`{{` 或 `{#` 会自动补全成对符号，写完块标签会自动添加结束标签，输入 `{% end` 会补全当前打开块的结束标签。**使用行注释** 会把每一行放进各自的 `{# … #}`，多行的 **使用块注释** 则用 `{% comment %}`。HTML 语言服务器和 Emmet 在标签之间的标记中照常工作。
 
+安装 **Django Template LSP**（`djlsp`，在 **设置 › 语言和框架 › 语言服务器** 中安装）后，项目的模板标签、过滤器、模板名（`{% extends %}`、`{% include %}`）、静态文件和 URL 名可以补全、悬停查看文档，**转到声明** 会打开对应模板或标签的 Python 源码。它通过项目解释器运行 Django 读取这些信息，因此解释器中需要装有 Django。
+
 其他位置含有 Django 标签的 HTML 文件会显示一个横幅，可以切换为 Django Template 或保留为 HTML；两种选择都会成为该文件的 **覆盖文件类型**。
 
 ## 限制
