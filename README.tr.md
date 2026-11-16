@@ -68,7 +68,7 @@ Eklentileri Ayarlar › Eklentiler (Settings › Plugins) bölümünden kur ya d
 - [Discord](https://discord.gg/2Zy4yn7gP): sorular, geri bildirim ve sürüm haberleri.
 - WeChat grubu, katılmak için kodu okut:
 
-  <img src=".github/assets/wechat-group.png" alt="WeChat grubu QR kodu" width="200">
+  <img src=".github/assets/wechat-group-3.png" alt="WeChat grubu QR kodu" width="200">
 
 - Katkıda bulunmak için: [CONTRIBUTING.md](CONTRIBUTING.md) ve [katkıcı belgeleri](https://openidea.sh/en/contribute/setup).
 
