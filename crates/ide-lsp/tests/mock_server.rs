@@ -7502,11 +7502,18 @@ async fn hierarchy_refactorings_use_phoxites_requests_when_the_server_advertises
     );
     assert!(s.requested("workspace/executeCommand").is_empty(), "not the JDT extension's commands");
 
-    // The server refuses a position with an error whose message is for the user.
-    let refusal = (-32603, "'Dog' has no parent class or interface in the project".to_owned());
+    // The server refuses a position with `RequestFailed` and a message for the user.
+    let refusal = (-32803, "'Dog' has no parent class or interface in the project".to_owned());
     s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), refusal);
     let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
     let e = refused.unwrap_err();
     assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
     assert_eq!(e.message, "'Dog' has no parent class or interface in the project");
+
+    // Any other error is the server failing, not a reason to show as the user's mistake.
+    s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), (-32603, "index out of bounds".to_owned()));
+    let failed = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = failed.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Protocol);
+    assert_eq!(e.message, "any-name: index out of bounds");
 }

@@ -37,8 +37,8 @@ impl LspManager {
     }
 
     /// Sends one of the hierarchy requests. The server refuses a position it can't
-    /// refactor with an error whose message is for the user: that is invalid input,
-    /// as the JDT extension's `refused` is.
+    /// refactor with LSP's `RequestFailed` and a message for the user: that is invalid
+    /// input, as the JDT extension's `refused` is. Any other error is the server failing.
     async fn phoxite_hierarchy<R: DeserializeOwned>(
         &self,
         (snap, t): &(DocSnap, Target),
@@ -55,7 +55,7 @@ impl LspManager {
         let request = t.run.peer.request::<Value, Value>(method, params, Some(cancel.clone()));
         let answer = match tokio::time::timeout(TIMEOUT, request).await {
             Ok(Ok(value)) => value,
-            Ok(Err(RpcError::Server { code, message, .. })) if code != ide_jsonrpc::codes::CONTENT_MODIFIED => {
+            Ok(Err(RpcError::Server { code, message, .. })) if code == ide_jsonrpc::codes::REQUEST_FAILED => {
                 return Err(IdeError::invalid(message));
             }
             Ok(Err(e)) => return Err(rpc_err(&t.server.name, method, e)),
