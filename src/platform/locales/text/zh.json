@@ -8318,5 +8318,15 @@
   "Open in Right Split": "在右侧拆分中打开",
   "Enable staging area": "启用暂存区",
   "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.": "提交基于 Git 索引：通过暂存和取消暂存选择要提交的更改，而不是勾选。不使用更改列表。仅适用于非模态提交界面。",
-  "Commit All": "全部提交"
+  "Commit All": "全部提交",
+  "Expand File": "展开文件",
+  "Collapse File": "折叠文件",
+  "Open in Separate Tab": "在单独标签页中打开",
+  "Combined Changes Diff": "合并的更改差异",
+  "Previous File": "上一个文件",
+  "Next File": "下一个文件",
+  "Expand All Files": "展开所有文件",
+  "Collapse All Files": "折叠所有文件",
+  "Show Files in Separate Diff Tabs": "在单独的差异标签页中显示文件",
+  "Show All Files in One Diff View": "在一个差异视图中显示所有文件"
 }

@@ -1916,5 +1916,16 @@
   "Open in Right Split": "Open in Right Split",
   "Enable staging area": "Enable staging area",
   "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.": "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.",
-  "Commit All": "Commit All"
+  "Commit All": "Commit All",
+  "Expand File": "Expand File",
+  "Collapse File": "Collapse File",
+  "Open in Separate Tab": "Open in Separate Tab",
+  "Combined Changes Diff": "Combined Changes Diff",
+  "Previous File": "Previous File",
+  "Next File": "Next File",
+  "Expand All Files": "Expand All Files",
+  "Collapse All Files": "Collapse All Files",
+  "Show Files in Separate Diff Tabs": "Show Files in Separate Diff Tabs",
+  "Show All Files in One Diff View": "Show All Files in One Diff View",
+  "No changes": "No changes"
 }
