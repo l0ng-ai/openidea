@@ -1,4 +1,5 @@
 import type { Commit } from "@/bindings";
+import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { Scrollbar, Spinner, T, hideNativeScrollbar } from "@/ui";
@@ -60,6 +61,11 @@ export function CommitList() {
   const active = !scope || scope === shown;
   const all = useGitLog((s) => s.commits);
   const selection = useGitLog((s) => s.selection);
+  const fileHistoryTarget = useGitLog((s) => {
+    const id = scope ?? s.shownLog;
+    const tab = s.logTabs.find((t) => t.id === id);
+    return tab?.kind === "history" ? tab.target : null;
+  });
   const earlier = useMemo(() => {
     const seen = new Set<string | null | undefined>();
     return all.some((c) => {
@@ -81,6 +87,7 @@ export function CommitList() {
   const speedGeneration = useRef(0);
   const speedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(speedTimer.current), []);
+  useEffect(() => () => setContext("vcsLogRevisionFocus", false), []);
   const columns = useMemo(() => {
     const builtins: LogColumn[] = [
       ...(opts.showAuthor ? [{ id: "author", title: "Author", width: 130, render: (c: Commit) => c.author }] : []),
@@ -532,6 +539,10 @@ export function CommitList() {
         aria-multiselectable
         aria-activedescendant={selectedIndex >= 0 ? `commit-${scope ?? "log"}-${selectedIndex}` : undefined}
         tabIndex={0}
+        onFocusCapture={() => setContext("vcsLogRevisionFocus", !!active && !!fileHistoryTarget)}
+        onBlurCapture={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setContext("vcsLogRevisionFocus", false);
+        }}
         onScroll={(e) => {
           if (!e.currentTarget.hasAttribute("data-hover-paused")) e.currentTarget.dataset.hoverPaused = "";
           setHoverColor(null);
@@ -593,6 +604,7 @@ export function CommitList() {
                 key={v.index % items.length}
                 id={`commit-${scope ?? "log"}-${v.index}`}
                 commit={c}
+                fileHistoryTarget={fileHistoryTarget}
                 graph={rows[v.index]}
                 top={v.start - ROW}
                 selected={selectedSet.has(commitKey(c))}

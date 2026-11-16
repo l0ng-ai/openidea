@@ -17,6 +17,7 @@ import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
 function CommitRowView({
   id,
   commit: c,
+  fileHistoryTarget,
   graph,
   top,
   selected,
@@ -39,6 +40,7 @@ function CommitRowView({
 }: {
   id: string;
   commit: Commit;
+  fileHistoryTarget: string | null;
   graph: GraphRow | undefined;
   top: number;
   selected: boolean;
@@ -158,7 +160,7 @@ function CommitRowView({
       }}
       onContextMenu={(e) => {
         e.preventDefault();
-        showContextMenu(e, commitMenu(c, selectedCommits()));
+        showContextMenu(e, commitMenu(c, selectedCommits(), fileHistoryTarget));
       }}
     >
       {opts.showRepository && commitRepo(c) && useVcs.getState().roots.length > 1 && (

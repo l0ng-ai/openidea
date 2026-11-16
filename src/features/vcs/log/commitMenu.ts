@@ -9,9 +9,13 @@ import { toggleCommitBookmark, useGitLog } from "../logStore";
 import { commitKey, commitRepo, type RepoCommit } from "../multiRoot";
 import { browseRepositoryAt } from "../RevisionBrowser";
 import { useVcs } from "../store";
+import type { FileHistoryCommitArg, FileHistoryCommitsArg } from "../historyActions";
 
 /** IDEA's Git Log commit context menu (Git.Log.ContextMenu); `selection` = all selected commits, newest first. */
-export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
+export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarget?: string | null): MenuItem[] {
+  const actionCommit: Commit | FileHistoryCommitArg = fileHistoryTarget
+    ? { kind: "file-history-commit", commit: c, target: fileHistoryTarget }
+    : c;
   if ((c as RepoCommit).readOnly)
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: c },
@@ -27,6 +31,9 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
       { kind: "action", action: "vcs.log.goToParent", arg: c },
       { kind: "action", action: "vcs.log.goToChild", arg: c },
       { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
+      ...(fileHistoryTarget
+        ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
+        : []),
     ];
   const many = selection.length > 1 && selection.some((x) => commitKey(x) === commitKey(c));
   const repo = commitRepo(c);
@@ -34,12 +41,15 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
   const head = (repo ? vcs.heads[repo]?.head : vcs.branch?.head) ?? null;
   const { outgoing } = useGitLog.getState();
   if (many) {
+    const compareArg: Commit[] | FileHistoryCommitsArg = fileHistoryTarget
+      ? { kind: "file-history-commits", commits: selection, target: fileHistoryTarget }
+      : selection;
     return [
       { kind: "action", action: "vcs.log.copyRevision", arg: selection, label: "Copy Revision Numbers" },
       { kind: "action", action: "vcs.log.createPatch", arg: selection },
       { kind: "action", action: "vcs.log.cherryPick", arg: selection },
       ...(selection.length === 2
-        ? [{ kind: "action", action: "vcs.log.compareVersions", arg: selection } satisfies MenuItem]
+        ? [{ kind: "action", action: "vcs.log.compareVersions", arg: compareArg } satisfies MenuItem]
         : []),
       { kind: "separator" },
       { kind: "action", action: "vcs.log.revert", arg: selection, label: "Revert Commits" },
@@ -82,7 +92,10 @@ export function commitMenu(c: Commit, selection: Commit[] = [c]): MenuItem[] {
     { kind: "separator" },
     { kind: "action", action: "vcs.log.checkoutRevision", arg: c },
     { label: "Browse Repository at Revision", run: () => browseRepositoryAt(c) },
-    { kind: "action", action: "vcs.log.compareWithLocal", arg: c },
+    ...(fileHistoryTarget
+      ? [{ kind: "action" as const, action: "vcs.log.showFileAtRevision", arg: actionCommit }]
+      : []),
+    { kind: "action", action: "vcs.log.compareWithLocal", arg: actionCommit },
     { kind: "separator" },
     { kind: "action", action: "vcs.log.resetToHere", arg: c },
     { kind: "action", action: "vcs.log.revert", arg: c },
