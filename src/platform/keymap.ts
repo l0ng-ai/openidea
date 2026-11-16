@@ -497,6 +497,92 @@ export function dispatchMouseShortcut(e: MouseEvent, prepare?: (id: string) => b
 }
 
 /**
+ * Actions a shortcut passed on by a plugin's frame may run (`dispatchForwardedKey`) when the plugin
+ * does not hold `ide.commands`: saving, closing the editor tab, settings, and those that only move
+ * the caret or focus, or show a popup or tool window. The frame's page may send any key at any time,
+ * so nothing that runs, changes or sends something is listed: not themes, schemes, zoom or
+ * bookmarks, nor opening, merging or closing windows and tabs, nor the terminal (showing it starts
+ * a shell). Exact ids, never prefixes; a test checks that each one is still registered.
+ */
+export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
+  "file.save",
+  "file.settings",
+  "editor.closeTab",
+  "navigate.back",
+  "navigate.forward",
+  "navigate.lastEditLocation",
+  "navigate.nextEditLocation",
+  "navigate.gotoLine",
+  "navigate.gotoClass",
+  "navigate.gotoFile",
+  "navigate.gotoSymbol",
+  "navigate.searchEverywhere",
+  "navigate.findAction",
+  "navigate.searchText",
+  "navigate.recentFiles",
+  "navigate.recentLocations",
+  "navigate.switcher",
+  "navigate.switcherBack",
+  "navigate.fileStructure",
+  "navigate.navigationBar",
+  "navigate.selectIn",
+  "navigate.selectInProjectView",
+  "navigate.showFilePath",
+  "navigate.showBookmarks",
+  ...Array.from({ length: 10 }, (_, d) => `navigate.gotoBookmark${d}`),
+  "navigate.declaration",
+  "navigate.typeDeclaration",
+  "navigate.implementation",
+  "navigate.superMethod",
+  "navigate.callHierarchy",
+  "navigate.typeHierarchy",
+  "navigate.nextError",
+  "navigate.prevError",
+  "navigate.nextMethod",
+  "navigate.previousMethod",
+  "navigate.nextOccurrence",
+  "navigate.prevOccurrence",
+  "navigate.nextHighlightedUsage",
+  "navigate.prevHighlightedUsage",
+  "toolwindow.project",
+  "toolwindow.structure",
+  "toolwindow.problems",
+  "toolwindow.find",
+  "toolwindow.bookmarks",
+  "toolwindow.git",
+  "toolwindow.commit",
+  "toolwindow.run",
+  "toolwindow.debug",
+  "toolwindow.hideActive",
+  "toolwindow.hideAll",
+  "toolwindow.jumpToLast",
+  "toolwindow.focusEditor",
+  "toolwindow.maximize",
+  "toolwindow.resizeUp",
+  "toolwindow.resizeDown",
+  "toolwindow.resizeLeft",
+  "toolwindow.resizeRight",
+  "window.next",
+  "window.previous",
+  "window.nextTab",
+  "window.previousTab",
+]);
+
+const restrictedKeys = new WeakSet<Event>();
+
+/**
+ * Dispatches on `target` a shortcut that a plugin's sandboxed frame says was pressed in it and left
+ * alone, for the keymap. The page can post one at any time, so unless the plugin may run any IDE
+ * action (`anyAction`: it holds `ide.commands`), the keymap runs only `FORWARDABLE_ACTIONS` from it,
+ * and it neither starts nor finishes a chord and takes no part in a double-modifier gesture.
+ */
+export function dispatchForwardedKey(target: EventTarget, init: KeyboardEventInit, anyAction = false): void {
+  const e = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+  if (!anyAction) restrictedKeys.add(e);
+  target.dispatchEvent(e);
+}
+
+/**
  * Installs the global keydown dispatcher (capture phase, so IDE shortcuts win
  * over CodeMirror defaults). Returns an uninstall function. `now` is the clock
  * for the double-modifier gestures.
@@ -561,9 +647,11 @@ export function installKeyboardDispatcher(
       resetTap();
       return;
     }
+    const restricted = restrictedKeys.has(e);
+    if (restricted) reset();
     const modifier = KEY_MODIFIER[e.key];
-    if (modifier) return onModifierDown(e, modifier);
-    if (runHeldGesture(e)) return reset();
+    if (modifier) return restricted ? undefined : onModifierDown(e, modifier);
+    if (!restricted && runHeldGesture(e)) return reset();
     resetTap();
     otherKeyAt = e.key === "Escape" || e.key === "Tab" ? -Infinity : now();
     if (isImeKey(e)) return;
@@ -616,7 +704,7 @@ export function installKeyboardDispatcher(
     }
     for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
-      if (action && isActionKeyEnabled(action, ctx)) {
+      if (action && isActionKeyEnabled(action, ctx) && (!restricted || FORWARDABLE_ACTIONS.has(id))) {
         e.preventDefault();
         e.stopPropagation();
         reset();
@@ -624,7 +712,7 @@ export function installKeyboardDispatcher(
         return;
       }
     }
-    if (bindings.some(([b]) => b.startsWith(seq + " "))) {
+    if (!restricted && bindings.some(([b]) => b.startsWith(seq + " "))) {
       e.preventDefault();
       e.stopPropagation();
       pending.push(stroke);
