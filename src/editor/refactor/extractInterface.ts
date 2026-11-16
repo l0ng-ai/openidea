@@ -158,9 +158,9 @@ export async function extractInterface(
   const summary = summarizeWorkspaceEdit(edit);
   if (!summary.files) return { status: "stay", error: "Nothing to change" };
   const created = edit.files.find((f) => f.kind === "create")?.path;
-  const apply = async () => {
-    await applyEdit(view, edit);
-    if (created) await editorService().openFile(created, { focus: true });
+  const apply = async (cancel?: AbortSignal) => {
+    await applyEdit(view, edit, cancel);
+    if (created && !cancel?.aborted) await editorService().openFile(created, { focus: true });
   };
   if (preview) {
     openPopup({
@@ -171,7 +171,7 @@ export async function extractInterface(
       onConfirm: () => void apply(),
     });
   } else {
-    await apply();
+    await apply(signal);
   }
   return { status: "done" };
 }
