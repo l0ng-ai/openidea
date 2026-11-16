@@ -35,6 +35,7 @@ import {
 import {
   clearStepIndex,
   definitionFileFor,
+  dialectOf,
   definitionsOf,
   isCucumberSource,
   undefinedSteps,
@@ -124,7 +125,8 @@ const undefinedStepCheck = (path: string) =>
     let generation = 0;
     const check = async () => {
       const gen = ++generation;
-      const all = featureSteps(view.state.doc.toString());
+      const text = view.state.doc.toString();
+      const all = featureSteps(text, await dialectOf(text));
       const steps = await undefinedSteps(all).catch(() => null);
       if (gen !== generation) return;
       undefinedByView.set(view, { steps: steps ?? [], all });
@@ -160,7 +162,7 @@ export function activate(): () => void {
     if (!doc || doc.virtual) return null;
     const text = view.state.doc.toString();
     if (FEATURE.test(doc.path)) {
-      const step = featureSteps(text).find((s) => s.from <= offset && offset < s.to);
+      const step = featureSteps(text, await dialectOf(text)).find((s) => s.from <= offset && offset < s.to);
       if (!step) return null;
       const targets = await definitionsOf(step);
       return targets.length ? { from: step.from, to: step.to, targets } : null;

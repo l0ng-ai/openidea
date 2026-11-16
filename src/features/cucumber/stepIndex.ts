@@ -1,7 +1,16 @@
 /** The project's Cucumber steps and step definitions, scanned once and kept until a source changes. */
 import { call, commands, type Location } from "@/platform/ipc";
 import { ipcPath } from "@/platform/paths";
-import { featureSteps, matchesStep, stepDefinitions, type FeatureStep, type StepDefinition } from "./steps";
+import {
+  ENGLISH,
+  featureSteps,
+  gherkinLanguage,
+  matchesStep,
+  stepDefinitions,
+  type FeatureStep,
+  type GherkinDialect,
+  type StepDefinition,
+} from "./steps";
 
 interface Indexed<T> {
   path: string;
@@ -16,6 +25,14 @@ interface StepIndex {
 
 let cached: Promise<StepIndex> | null = null;
 
+/** The keywords of a feature file's `# language:` (English when it names none or an unknown one). */
+export async function dialectOf(text: string): Promise<GherkinDialect> {
+  const code = gherkinLanguage(text);
+  if (!code || code === "en") return ENGLISH;
+  const { GHERKIN_DIALECTS } = await import("./gherkinDialects");
+  return GHERKIN_DIALECTS[code] ?? ENGLISH;
+}
+
 /** Whether a change to `path` can change the index: a feature or script file. */
 export function isCucumberSource(path: string): boolean {
   return /\.(feature|[cm]?[jt]sx?|java|kt)$/i.test(path);
@@ -28,11 +45,11 @@ export function clearStepIndex() {
 
 function stepIndex(): Promise<StepIndex> {
   cached ??= call(commands.cucumberSources()).then(
-    (sources) => {
+    async (sources) => {
       const index: StepIndex = { definitions: [], steps: [] };
       for (const s of sources) {
         const path = ipcPath(s.path);
-        if (s.feature) index.steps.push({ path, text: s.text, items: featureSteps(s.text) });
+        if (s.feature) index.steps.push({ path, text: s.text, items: featureSteps(s.text, await dialectOf(s.text)) });
         else {
           const items = stepDefinitions(s.text);
           if (items.length) index.definitions.push({ path, text: s.text, items });
