@@ -1570,6 +1570,7 @@
   "file formats": "file formats",
   "Introspecting {name}": "Introspecting {name}",
   "{database} ({position} of {count})": "{database} ({position} of {count})",
+  "{count} rows": "{count} rows",
   "Introspection of {name} stopped": "Introspection of {name} stopped",
   "Introspected {name}": "Introspected {name}",
   "{total} tables and views in {read} databases are ready for completion.": "{total} tables and views in {read} databases are ready for completion.",
