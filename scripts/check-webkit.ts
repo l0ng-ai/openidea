@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 
-// Safari 15.4 is the bundle's floor, macOS 12's engine (the app's minimum). Keep this floor in sync with vite.config.ts.
+// Safari 15.4 is the bundle's floor, macOS 12's engine (the app's minimum). On macOS 11 the app loads the newer WebKit staged by a Safari update (src-tauri/src/macos_webview.rs). Keep this floor in sync with vite.config.ts.
 // Syntax lowering does not replace newer runtime APIs in dependencies.
 const newerStatics = new Set([
   "Promise.withResolvers",
