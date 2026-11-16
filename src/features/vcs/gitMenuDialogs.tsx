@@ -20,6 +20,9 @@ import {
 } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
+import { localBranchFor, mergeRequestUrl, parseTarget, targetOptions } from "./mergeRequest";
+import { mergeIntoTarget, remoteUrlOf } from "./mergeInto";
+import { openUrl } from "./issueLinks";
 import { cleanUpBranchNameOnTyping } from "@/platform/gitRefName";
 import { confirmDialog, openDialog } from "./dialogs";
 import { errorMessage, runOp, runRemote, saveAll } from "./ops";
@@ -290,37 +293,45 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
   const head = useBranchInfo(repo)?.head ?? null;
   const branches = useBranches(repo);
   const [branch, setBranch] = useState<string | null>(null);
+  const [targetRef, setTargetRef] = useState("");
   const [flags, setFlags] = useState<Set<MergeFlag>>(() => new Set());
   const [withMessage, setWithMessage] = useState(false);
   const [message, setMessage] = useState("");
+  const [openRequest, setOpenRequest] = useState(true);
   const options = useMemo(
     () => [...branchOptions(sortLocal(branches).filter((b) => !b.current)), ...branchOptions(sortRemote(branches))],
     [branches],
   );
+  const target = useMemo(() => parseTarget(targetRef, branches), [targetRef, branches]);
+  const targetLabel = localBranchFor(target) ?? head ?? "HEAD";
+  const intoRemote = target.kind === "remote";
 
   const chooseRepo = (root: string) => {
     if (root === repo) return;
     setRepo(root);
     setBranch(null);
+    setTargetRef("");
   };
 
   const run = async () => {
     if (!branch) return;
     onClose();
-    await saveAll();
-    const target = head ?? "HEAD";
-    await runOp(
-      tx`Merge ${branch} into ${target}`,
-      () => call(commands.vcsMergeWith(repo, [branch], mergeOptionsOf(flags, withMessage ? message : null))),
-      { success: tx`Merged ${branch} into ${target}`, errorActions: conflictActions, onError: openConflictsInstead },
-    );
-    await refreshNow();
+    const merged = await mergeIntoTarget({
+      repo,
+      source: branch,
+      target,
+      options: mergeOptionsOf(flags, withMessage ? message : null),
+      branches,
+    });
+    if (!merged || !intoRemote || !openRequest || target.kind !== "remote") return;
+    const url = mergeRequestUrl(await remoteUrlOf(repo, target.remote), branch, target.branch);
+    if (url) await openUrl(url);
   };
 
   return (
     <Dialog
       open
-      title={tx`Merge into ${head ?? "HEAD"}`}
+      title={tx`Merge into ${targetLabel}`}
       onClose={onClose}
       width={460}
       buttons={[
@@ -339,7 +350,26 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
           placeholder="Select branch"
           options={options}
           onChange={setBranch}
+          searchable
         />
+        <div className={styles.fieldLabel}>
+          <T>Merge into:</T>
+        </div>
+        <Select
+          aria-label="Merge into"
+          value={targetRef}
+          placeholder={head ? `Current branch (${head})` : "Current branch"}
+          options={targetOptions(branches, head, branch)}
+          onChange={setTargetRef}
+          searchable
+        />
+        {intoRemote && (
+          <Checkbox
+            label={tx`Open merge request page after the merge`}
+            checked={openRequest}
+            onChange={setOpenRequest}
+          />
+        )}
         <div className={styles.fieldLabel}>
           <T>Options:</T>
         </div>
