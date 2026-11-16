@@ -8,7 +8,7 @@
  * equivalent while the JS keymap stays the only dispatcher (see src-tauri/src/menu.rs).
  */
 import { executeActionFrom, getAction, isActionEnabled, useActions } from "@/platform/actions";
-import { useContextKeys } from "@/platform/context";
+import { getContext, useContextKeys } from "@/platform/context";
 import { keysWithPrefix, t, tx, useI18n } from "@/platform/i18n";
 import { commands, isTauri, type DynamicItem, type MenuConfig, type MenuNode } from "@/platform/ipc";
 import {
@@ -32,6 +32,8 @@ export const MENU_EVENT = "openidea://menu";
 export interface MenuRoute {
   action: string;
   arg?: string | null;
+  /** The window in front when the item was chosen, if it is not this one (this window's Settings). */
+  returnTo?: string;
 }
 
 export function isMenuRoute(v: unknown): v is MenuRoute {
@@ -45,6 +47,36 @@ export function routeMenuEvent(
 ): Promise<boolean> {
   if (!isMenuRoute(payload) || !payload.action) return Promise.resolve(false);
   return run(payload.action, payload.arg ?? undefined);
+}
+
+/** How long an action chosen from the menu may take to open its dialog or popup. */
+const OPEN_DELAY_MS = 300;
+
+const layersClosed = () =>
+  new Promise<void>((resolve) => {
+    if (!getContext().popupOpen) return resolve();
+    const off = useContextKeys.subscribe((ctx) => {
+      if (ctx.popupOpen) return;
+      off();
+      resolve();
+    });
+  });
+
+/**
+ * After an item chosen in this window's Settings window ran here (the backend brought this window
+ * forward): once the dialog or popup it opened closes, or right away if it opened none, Settings comes
+ * back to the front, as IDEA's Settings dialog stays under the dialogs opened from the menu. Not when
+ * focus has moved on (a new window, a native dialog).
+ */
+export async function returnFocusAfterMenu(
+  ran: Promise<boolean>,
+  focusWindow: () => Promise<void>,
+  delay = OPEN_DELAY_MS,
+): Promise<void> {
+  await ran;
+  await new Promise((r) => setTimeout(r, delay));
+  await layersClosed();
+  if (document.hasFocus()) await focusWindow();
 }
 
 /**
@@ -167,22 +199,36 @@ export function installMenuBridge(): () => void {
 
   void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
     // Window-scoped: a global `listen` would also receive other windows' menu events.
-    const off = await getCurrentWebviewWindow().listen(MENU_EVENT, ({ payload }) => void routeMenuEvent(payload));
+    const off = await getCurrentWebviewWindow().listen(MENU_EVENT, ({ payload }) => {
+      const ran = routeMenuEvent(payload);
+      const returnTo = isMenuRoute(payload) ? payload.returnTo : undefined;
+      if (returnTo)
+        void returnFocusAfterMenu(ran, async () => {
+          const { Window } = await import("@tauri-apps/api/window");
+          await (await Window.getByLabel(returnTo))?.setFocus();
+        }).catch(() => {});
+    });
     if (disposed) off();
     else unlisten = off;
   });
 
   // Enablement of the native items follows this window's context (IDEA greys out
   // what cannot run). Recomputed shortly after context changes, sent only when it changed.
+  // Also once on blur: the menu still runs here while this window's Settings window is focused,
+  // with nothing focused here (editor actions disabled). The backend ignores it for other windows.
   let ids: Set<string> | null = null;
   let lastDisabled = "";
   let forceEnablement = false;
+  let afterBlur = false;
   let enableTimer: ReturnType<typeof setTimeout> | undefined;
-  const pushEnablement = (force = false) => {
+  const pushEnablement = (force = false, blurred = false) => {
     forceEnablement ||= force;
+    afterBlur ||= blurred;
     clearTimeout(enableTimer);
     enableTimer = setTimeout(() => {
-      if (!ids || disposed || !document.hasFocus()) return;
+      const unfocused = !document.hasFocus();
+      if (!ids || disposed || (unfocused && !afterBlur)) return;
+      afterBlur = false;
       const dynamic = Object.values(dynamicMenuItems()).flatMap((items) => items.map((d) => d.action));
       const disabled = disabledMenuActions(new Set([...ids, ...dynamic]));
       const key = disabled.join(",");
@@ -209,6 +255,8 @@ export function installMenuBridge(): () => void {
   // The backend edits only submenus whose visible items changed, so switching project
   // tabs does not redraw the macOS menu bar.
   window.addEventListener("focus", onFocus);
+  const onBlur = () => pushEnablement(true, true);
+  window.addEventListener("blur", onBlur);
   const unsubs = [
     useI18n.subscribe((s, prev) => {
       if (s.messages !== prev.messages) push();
@@ -237,6 +285,7 @@ export function installMenuBridge(): () => void {
     clearTimeout(timer);
     clearTimeout(enableTimer);
     window.removeEventListener("focus", onFocus);
+    window.removeEventListener("blur", onBlur);
     unlisten?.();
     unsubs.forEach((u) => u());
   };
