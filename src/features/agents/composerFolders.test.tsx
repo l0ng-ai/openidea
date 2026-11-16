@@ -14,6 +14,7 @@ const pathCompletions = vi.fn();
 const fsProbe = vi.fn();
 const fsEntryKind = vi.fn();
 const findSymbols = vi.fn();
+const agentPrompt = vi.fn((..._args: unknown[]) => Promise.resolve({ status: "ok", data: null }));
 
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
@@ -28,6 +29,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       fsProbe: (path: string) => fsProbe(path),
       fsEntryKind: (path: string) => fsEntryKind(path),
       findSymbols: (query: string, filter: string, limit: number) => findSymbols(query, filter, limit),
+      agentPrompt: (...args: unknown[]) => agentPrompt(...args),
     },
   };
 });
@@ -35,7 +37,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
 import { Composer } from "./Composer";
 import { registerAgentContextSource } from "@/workbench/contributions";
 import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
-import { composerDraft, updateComposer } from "./store";
+import { composerDraft, sendMessage, setIdeContext, updateComposer, useAgents } from "./store";
 import { emptyDraft, toPrompt } from "./composerModel";
 
 const ID = "folders-test";
@@ -318,6 +320,7 @@ describe("Composer editing", () => {
 describe("Composer current file", () => {
   it("offers the focused editor's file until the draft references it", () => {
     const view = {} as TextEditorHandle["view"];
+    act(() => setIdeContext(false));
     act(() =>
       useEditorRegistry.setState({ active: { view, ctx: { path: "/p/src/main.ts" } as TextEditorHandle["ctx"] } }),
     );
@@ -332,6 +335,47 @@ describe("Composer current file", () => {
       expect(document.querySelector("[data-ref-path]")).toHaveAttribute("data-ref-path", "/p/src/main.ts");
     } finally {
       act(() => useEditorRegistry.setState({ active: null }));
+    }
+  });
+});
+
+describe("Composer IDE context", () => {
+  it("sends the focused editor's file, or its selected lines, while IDE context is on", async () => {
+    const view = new EditorView({ doc: "a\nb\nc\nd\n" });
+    act(() => setIdeContext(true));
+    act(() =>
+      useEditorRegistry.setState({ active: { view, ctx: { path: "/p/src/main.ts" } as TextEditorHandle["ctx"] } }),
+    );
+    try {
+      renderComposer();
+      const toggle = screen.getByRole("button", { name: /IDE Context Enabled/ });
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+      expect(screen.queryByRole("button", { name: /main\.ts/ })).toBeNull();
+      expect(screen.getByTitle("src/main.ts is added to your request")).toHaveTextContent("Current File");
+
+      const send = async (text: string) => {
+        updateComposer(ID, { text });
+        await sendMessage(ID, false);
+        return agentPrompt.mock.lastCall?.[1];
+      };
+      expect(await send("explain")).toEqual({ text: "explain", files: ["/p/src/main.ts"], images: [] });
+      // Lines 2–3: the selection ends at the start of line 4.
+      view.dispatch({ selection: { anchor: 2, head: 6 } });
+      expect(await send("explain")).toEqual({
+        text: "explain\n\n@src/main.ts:2-3",
+        files: ["/p/src/main.ts"],
+        images: [],
+      });
+      // A draft that already references the file is sent as written.
+      expect(await send("see @src/main.ts:1")).toEqual({ text: "see @src/main.ts:1", files: [], images: [] });
+
+      fireEvent.click(toggle);
+      expect(useAgents.getState().ideContext).toBe(false);
+      expect(screen.getByRole("button", { name: /IDE Context Disabled/ })).toHaveAttribute("aria-pressed", "false");
+      expect(await send("explain")).toEqual({ text: "explain", files: [], images: [] });
+    } finally {
+      act(() => useEditorRegistry.setState({ active: null }));
+      view.destroy();
     }
   });
 });

@@ -2009,5 +2009,8 @@
   "Select Home Directory for JDK": "Select Home Directory for JDK",
   "The selected directory is not a valid home for JDK: {path}": "The selected directory is not a valid home for JDK: {path}",
   "Add SDK": "Add SDK",
-  "Remove SDK": "Remove SDK"
+  "Remove SDK": "Remove SDK",
+  "{rel} is added to your request": "{rel} is added to your request",
+  "IDE Context Enabled: the current file and selection are added to your request": "IDE Context Enabled: the current file and selection are added to your request",
+  "IDE Context Disabled: the current file and selection are not added to your request": "IDE Context Disabled: the current file and selection are not added to your request"
 }
