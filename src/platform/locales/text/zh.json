@@ -1364,6 +1364,7 @@
   "Files to include": "要包括的文件",
   "Files to roll back": "要回滚的文件",
   "Files to shelve": "要搁置的文件",
+  "Files to unshelve": "要取消搁置的文件",
   "Files will be reverted to the state of the selected commit, but local changes will be kept intact.": "文件将还原到所选提交的状态，但本地更改将保持不变。",
   "Files will be reverted to the state of the selected commit. Warning: any local changes will be lost.": "文件将还原到所选提交的状态。警告：所有本地更改都将丢失。",
   "Files won't change, differences will be staged for commit.": "文件不会更改，差异将被暂存以供提交。",
