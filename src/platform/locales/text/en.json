@@ -2013,5 +2013,14 @@
   "{rel} is added to your request": "{rel} is added to your request",
   "IDE Context Enabled: the current file and selection are added to your request": "IDE Context Enabled: the current file and selection are added to your request",
   "IDE Context Disabled: the current file and selection are not added to your request": "IDE Context Disabled: the current file and selection are not added to your request",
-  "Thymeleaf": "Thymeleaf"
+  "Thymeleaf": "Thymeleaf",
+  "sbt": "sbt",
+  "sbt actions": "sbt actions",
+  "sbt projects": "sbt projects",
+  "No sbt projects": "No sbt projects",
+  "Reload sbt Projects": "Reload sbt Projects",
+  "Re-reads the projects of build.sbt": "Re-reads the projects of build.sbt",
+  "Run sbt Task": "Run sbt Task",
+  "sbt Task": "sbt Task",
+  "Open build.sbt": "Open build.sbt"
 }
