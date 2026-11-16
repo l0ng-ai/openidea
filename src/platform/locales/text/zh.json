@@ -8535,5 +8535,11 @@
   "Describe a task. @ for files, / for commands": "描述一个任务。@ 引用文件，/ 运行命令",
   "Effort": "推理",
   "Don't Add the Current File": "不附带当前文件",
-  "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区"
+  "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区",
+  "Notify when a terminal command finishes": "终端命令结束时的通知",
+  "Long-running commands": "长时间运行的命令",
+  "All commands": "所有命令",
+  "Minimum run time of a long-running command": "长时间运行命令的最短运行时间",
+  "Exited with code {code}": "退出代码 {code}",
+  "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.": "仅当标签页不可见时通知。用 Ctrl-C 停止的命令、shell 启动和短命令保持安静；非零退出始终报告退出代码。"
 }

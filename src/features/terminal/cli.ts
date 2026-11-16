@@ -5,9 +5,12 @@
  * xterm-free part: the input kind and the session snapshot store the tab strip reads.
  * The sessions themselves live in `cliSessions.ts`, behind the terminal runtime.
  */
+import { createElement } from "react";
 import { create } from "zustand";
 import { editorService, toolWindowService, type EditorInput } from "@/workbench/contributions";
+import { useTx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
+import { Badge } from "@/ui";
 import { loadTerminalRuntime } from "./loader";
 import type { SessionSnapshot } from "./session";
 
@@ -47,6 +50,14 @@ export function cliInput(name: string, command: string, cwd?: string): EditorInp
 
 /** Snapshots of the live editor sessions, by editor input key (an empty record: no live tab). */
 export const useClis = create<{ sessions: Record<string, SessionSnapshot> }>(() => ({ sessions: {} }));
+
+/** The editor tab's unseen-completion dot (#3712): a finished command, not seen yet. */
+export function CliDoneMark({ inputKey }: { inputKey: string }) {
+  const unseen = useClis((s) => !!s.sessions[inputKey]?.unseenDone);
+  const tx = useTx();
+  if (!unseen) return null;
+  return createElement(Badge, { dot: true, tone: "accent", children: tx("Finished") });
+}
 
 /**
  * Move to Editor: tab `id` of the Terminal tool window (the active one when omitted)

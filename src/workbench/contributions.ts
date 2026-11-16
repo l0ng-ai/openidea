@@ -776,7 +776,7 @@ export interface NotificationService {
     verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
-     * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
+     * `vcs`, `run`, `tools`, `plugins`, `search`, `terminal`, `updates`.
      */
     group?: string;
     /**

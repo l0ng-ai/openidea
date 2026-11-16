@@ -2148,5 +2148,12 @@
   "Untitled files were not saved": "Untitled files were not saved",
   "Missing blank line between subject and body": "Missing blank line between subject and body",
   "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
-  "Add blank line": "Add blank line"
+  "Add blank line": "Add blank line",
+  "Notify when a terminal command finishes": "Notify when a terminal command finishes",
+  "Long-running commands": "Long-running commands",
+  "All commands": "All commands",
+  "Minimum run time of a long-running command": "Minimum run time of a long-running command",
+  "Exited with code {code}": "Exited with code {code}",
+  "Finished": "Finished",
+  "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.": "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code."
 }
