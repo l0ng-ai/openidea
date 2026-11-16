@@ -210,20 +210,23 @@ impl Shared {
         }
     }
 
+    /// The MCP servers passed to a session, and the names of the ones off for it.
     fn mcp_servers_for_session(
         &self,
         provider: &str,
         init: &acp::Negotiated,
         overrides: &BTreeMap<String, bool>,
-    ) -> Vec<Value> {
-        let mut servers = if overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false) {
-            Vec::new()
-        } else {
-            mcp_servers_for(init.mcp_stdio(), &self.paths.project_root)
-        };
+    ) -> McpForSession {
+        let builtin_off = overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false);
+        let mut servers =
+            if builtin_off { Vec::new() } else { mcp_servers_for(init.mcp_stdio(), &self.paths.project_root) };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
         servers.extend(mcp::acp_mcp_servers(&configured, provider, init, overrides));
-        servers
+        let mut off = mcp::servers_off(&configured, overrides);
+        if builtin_off {
+            off.push(BUILTIN_SERVER.to_owned());
+        }
+        McpForSession { servers, off }
     }
 
     fn known_config(&self, provider: &str) -> Vec<AgentConfigOption> {
@@ -1150,7 +1153,7 @@ impl AgentManager {
             .request(
                 "session/fork",
                 {
-                    let mut params = session_params(&cwd_s, &mcp_servers, &mcp_overrides);
+                    let mut params = session_params(&cwd_s, &mcp_servers);
                     params["sessionId"] = json!(live.session);
                     params
                 },
@@ -2326,7 +2329,7 @@ impl Task {
         let mut session = None;
         if let (Some(id), true) = (saved, can_load) {
             self.replaying.store(true, Ordering::Release);
-            let mut params = session_params(&cwd_s, &mcp_servers, &mcp_overrides);
+            let mut params = session_params(&cwd_s, &mcp_servers);
             params["sessionId"] = json!(&id);
             let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
             tokio::time::sleep(REPLAY_GRACE).await;
@@ -2340,7 +2343,7 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers, &mcp_overrides);
+                let params = session_params(&cwd_s, &mcp_servers);
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -3284,18 +3287,19 @@ fn turn_starts(entries: &[AgentEntry]) -> Vec<usize> {
         .collect()
 }
 
+/// The MCP servers of a session, and the names of the ones off for it.
+struct McpForSession {
+    servers: Vec<Value>,
+    off: Vec<String>,
+}
+
 /// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP
-/// servers, and the ones switched off for this session, so an agent that also loads its own
+/// servers, and the ones off for this session, so an agent that also loads its own
 /// configuration (Claude Code) can keep a same-named server of it off too.
-fn session_params(cwd: &str, servers: &[Value], overrides: &BTreeMap<String, bool>) -> Value {
-    let off: Vec<&str> = overrides
-        .iter()
-        .filter(|(name, on)| !**on && name.as_str() != mcp::BUILTIN_MCP_NAME)
-        .map(|(name, _)| name.as_str())
-        .collect();
-    let mut params = json!({ "cwd": cwd, "mcpServers": servers });
-    if !off.is_empty() {
-        params["_meta"] = json!({ "openidea": { "mcpServersOff": off } });
+fn session_params(cwd: &str, mcp: &McpForSession) -> Value {
+    let mut params = json!({ "cwd": cwd, "mcpServers": mcp.servers });
+    if !mcp.off.is_empty() {
+        params["_meta"] = json!({ "openidea": { "mcpServersOff": mcp.off } });
     }
     params
 }
@@ -3408,6 +3412,9 @@ mod replay_tests;
 #[cfg(test)]
 mod tests;
 
+/// The name agents know the built-in server by (its tools are `mcp__OpenIDEA__…` in Claude Code).
+const BUILTIN_SERVER: &str = "OpenIDEA";
+
 // The desktop advertises its relay only while the built-in server is listening.
 static MCP_EXECUTABLE: parking_lot::RwLock<Option<std::path::PathBuf>> = parking_lot::RwLock::new(None);
 
@@ -3422,7 +3429,7 @@ fn mcp_servers_for(supported: bool, root: &std::path::Path) -> Vec<Value> {
 fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root: &std::path::Path) -> Vec<Value> {
     let Some(executable) = executable.filter(|_| supported) else { return Vec::new() };
     let command = ide_mcp::stdio_command(executable, root);
-    vec![json!({ "name": "OpenIDEA", "command": command[0], "args": command[1..], "env": [] })]
+    vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": [] })]
 }
 
 /// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
