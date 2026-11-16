@@ -659,9 +659,16 @@
 
 .markdown :global(ul),
 .markdown :global(ol) {
+  --md-list-indent: 1.55em;
   margin: 0 0 8px;
-  padding-left: 20px;
+  padding-left: var(--md-list-indent);
   list-style: none;
+}
+.markdown :global(ol) {
+  --md-list-indent: 2.1em;
+}
+.markdown :global(ol:has(> li:nth-child(100))) {
+  --md-list-indent: 2.75em;
 }
 /* Markers are drawn as pseudo-elements: WebKit paints a selection box around a native marker,
    leaving a broken stripe down the gutter when a list is selected. */
@@ -670,7 +677,8 @@
 }
 .markdown :global(li)::before {
   position: absolute;
-  right: calc(100% + 6px);
+  right: calc(100% + 0.45em);
+  white-space: nowrap;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -751,7 +759,7 @@
   background: var(--bg-hover);
 }
 .markdown :global(li:has(> input[type="checkbox"])) {
-  margin-left: -20px;
+  margin-left: calc(-1 * var(--md-list-indent));
 }
 .markdown :global(li:has(> input[type="checkbox"]))::before {
   content: none;
