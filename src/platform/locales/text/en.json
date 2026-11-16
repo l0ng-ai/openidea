@@ -448,6 +448,7 @@
   "PTY input limit exceeded": "PTY input limit exceeded",
   "Cannot start PTY: process:{program} capability not granted.": "Cannot start PTY: process:{program} capability not granted.",
   "Marker Icons": "Marker Icons",
+  "Editor Panels": "Editor Panels",
   "this data source does not list databases": "this data source does not list databases",
   "commit or roll back before clearing the selected database": "commit or roll back before clearing the selected database",
   "connect_timeout must be greater than zero": "connect_timeout must be greater than zero",

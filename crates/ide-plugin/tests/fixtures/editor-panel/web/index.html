@@ -1,0 +1,196 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Minimap probe</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="map"></canvas>
+    <script>
+      // A minimal minimap over `openidea.editor`: each line 2px high, each character 1px wide,
+      // in its highlight colour; the visible area as a frame that can be dragged; the wheel
+      // scrolls the editor.
+      const editor = window.openidea.editor;
+      const canvas = document.getElementById("map");
+      const ctx = canvas.getContext("2d");
+      const LINE = 2;
+      const CHUNK = 2000;
+      let text = [];
+      let colors = new Map();
+      let loading = new Set();
+      let view = null;
+      let drag = null;
+      let queued = false;
+
+      const grey = (color) => {
+        const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(color);
+        return !!m && Math.max(m[1], m[2], m[3]) - Math.min(m[1], m[2], m[3]) < 24;
+      };
+      const cssVar = (name) => (window.openidea.theme && window.openidea.theme.vars[name]) || "";
+
+      function layout() {
+        const H = canvas.clientHeight;
+        if (!view) return { H, offset: 0, top: 0, height: 0, range: 1, visible: 0 };
+        const L = Math.max(1, view.lineCount);
+        const visible = Math.max(0, view.lastLine - view.firstLine);
+        const scrollable = Math.max(1, view.scrollHeight - view.clientHeight);
+        const p = Math.min(1, Math.max(0, view.scrollTop / scrollable));
+        const mapH = L * LINE;
+        const offset = p * Math.max(0, mapH - H);
+        const range = Math.max(1, Math.min(H, mapH) - visible * LINE);
+        return { H, offset, top: view.firstLine * LINE - offset, height: visible * LINE, range, visible, L };
+      }
+
+      function redraw() {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(draw);
+      }
+
+      function draw() {
+        queued = false;
+        const dpr = window.devicePixelRatio || 1;
+        const W = canvas.clientWidth;
+        const { H, offset, top, height } = layout();
+        if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+          canvas.width = Math.round(W * dpr);
+          canvas.height = Math.round(H * dpr);
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, W, H);
+        if (!view) return;
+        const first = Math.floor(offset / LINE);
+        const last = Math.min(text.length, Math.ceil((offset + H) / LINE));
+        const missing = [];
+        const muted = cssVar("--openidea-fg-muted");
+        for (let i = first; i < last; i++) {
+          const y = i * LINE - offset;
+          const line = text[i] || "";
+          // Text without a syntax colour: faint, so the coloured spans stand out.
+          ctx.globalAlpha = 0.2;
+          ctx.fillStyle = muted;
+          for (const m of line.matchAll(/\S+/g)) ctx.fillRect(m.index, y, m[0].length, LINE - 0.5);
+          ctx.globalAlpha = 1;
+          const spans = colors.get(i);
+          if (!spans) missing.push(i);
+          else
+            for (const s of spans) {
+              // Greys (the plain text colour, comments) stay as faint as uncoloured text.
+              if (grey(s.color)) continue;
+              ctx.fillStyle = s.color;
+              ctx.fillRect(s.from, y, s.to - s.from, LINE - 0.5);
+            }
+        }
+        // The visible area: a light accent tint and a 1px border, stronger while dragged.
+        const frameH = Math.max(height, 4);
+        ctx.fillStyle = cssVar("--openidea-accent");
+        ctx.globalAlpha = drag ? 0.16 : 0.08;
+        ctx.fillRect(0, top, W, frameH);
+        ctx.strokeStyle = ctx.fillStyle;
+        ctx.globalAlpha = drag ? 0.9 : 0.5;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(0.5, top + 0.5, W - 1, frameH - 1);
+        ctx.globalAlpha = 1;
+        if (missing.length) load(missing[0], missing[missing.length - 1] + 1);
+      }
+
+      async function load(from, to) {
+        const key = `${from}:${to}`;
+        if (loading.has(key)) return;
+        loading.add(key);
+        const target = view && view.version;
+        try {
+          for (let at = from; at < to; at += CHUNK) {
+            const lines = await editor.highlights(at, Math.min(to, at + CHUNK));
+            lines.forEach((spans, i) => colors.set(at + i, spans));
+          }
+        } finally {
+          loading.delete(key);
+        }
+        if (view && view.version === target) redraw();
+      }
+
+      async function reload() {
+        const target = await editor.get();
+        colors = new Map();
+        text = [];
+        if (!target) {
+          view = null;
+          return redraw();
+        }
+        const doc = await editor.document.get();
+        text = doc.text.split("\n");
+        view = Object.assign(await editor.viewport(), { version: target.version });
+        redraw();
+      }
+
+      editor.onTarget(() => void reload());
+      editor.document.onChange((doc) => {
+        text = doc.text.split("\n");
+        redraw();
+      });
+      editor.onViewport((v) => {
+        view = Object.assign(v, { version: view ? view.version : 0 });
+        redraw();
+      });
+      editor.onHighlights(({ fromLine, toLine }) => {
+        for (const k of [...colors.keys()]) if (k >= fromLine && k < toLine) colors.delete(k);
+        redraw();
+      });
+      window.openidea.onThemeChange(redraw);
+      new ResizeObserver(redraw).observe(canvas);
+
+      // Dragging the frame (or pressing beside it, which centres it there) scrolls the editor.
+      const scrollToFrameTop = (frameTop) => {
+        const { range, visible, L } = layout();
+        const p = Math.min(1, Math.max(0, frameTop / range));
+        void editor.scrollTo(p * Math.max(0, L - visible));
+      };
+      canvas.addEventListener("pointerdown", (e) => {
+        if (!view) return;
+        const { top, height } = layout();
+        const grab = e.offsetY >= top && e.offsetY <= top + height ? e.offsetY - top : height / 2;
+        drag = { grab };
+        try {
+          canvas.setPointerCapture(e.pointerId);
+        } catch {
+          // A pointer that isn't down (an event a test dispatched).
+        }
+        scrollToFrameTop(e.offsetY - grab);
+      });
+      canvas.addEventListener("pointermove", (e) => {
+        if (drag) scrollToFrameTop(e.offsetY - drag.grab);
+      });
+      const stop = () => {
+        drag = null;
+        redraw();
+      };
+      canvas.addEventListener("pointerup", stop);
+      canvas.addEventListener("pointercancel", stop);
+      canvas.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          void editor.scrollBy(e.deltaY);
+        },
+        { passive: false },
+      );
+
+      void reload();
+    </script>
+  </body>
+</html>

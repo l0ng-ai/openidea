@@ -154,6 +154,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -438,6 +439,9 @@ matching SDK. Released 1.8 plugins keep working. New in 1.9:
 - **Requests to a language server.** `Project::language_server_request` and
   `language_server_notify` send a running server its own methods, behind the
   high-risk `lsp:<server>` capability. See _Requests to a language server_.
+- **`[[contributes.editorPanels]]`** puts a web page at the right edge of every
+  editor group, following its text editor through `openidea.editor` (a minimap,
+  say). See _Editor panels_.
 
 ### API 1.8
 
@@ -1794,6 +1798,50 @@ For example, a page can reserve the corner in its own toolbar:
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
 checked in (it is tens of MB): run `plugins/build.sh official/graphviz`
 before installing the plugin from the repository.
+
+#### Editor panels
+
+With API 1.9 (`engines.openidea = "^1.9"`), a web page can sit at the right edge
+of every editor group, beside the text editor and its marker bar — a minimap,
+say. It needs no code:
+
+```toml
+[capabilities]
+required = ["editor.read"]   # the page sees every file the editors show; shown at install
+
+[[contributes.editorPanels]]
+id = "minimap"
+web = "web/index.html"       # the same rules as a web view's page
+width = 110                  # pixels, 40–400
+when = "plugin.<id>.enabled" # optional: the plugin's own setting through `host::set_context`
+```
+
+Each editor group (each side of a split) has one frame, shown and hidden with
+the group. When the group switches to another file the page stays loaded and
+hears `onTarget`; while the group shows something other than a text editor (a
+diff, an image, a custom editor) the panel is hidden. Without the `editor.read`
+grant, or while `when` is false, there is no panel. Panels of several plugins
+sit side by side.
+
+The page gets `openidea.editor` (only an editor panel's page has it). Lines are
+0-based, columns UTF-16:
+
+| `openidea.editor`                      | What it does                                                                                                                                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get()`                                | `{ path, language, version, lineCount }` of the group's file, or `null`                                                                                                                  |
+| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none                                                                                                                           |
+| `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                |
+| `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame |
+| `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                              |
+| `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                 |
+| `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the syntax colour in the current scheme (a CSS colour)               |
+| `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed                                                                |
+
+Colours come from syntax highlighting only (no semantic highlighting yet); the
+panel's other colours are the frame's theme variables (`openidea.theme`,
+`onThemeChange`). Not there yet: the caret and selections, and the marker bar's
+problems and changes. `crates/ide-plugin/tests/fixtures/editor-panel` is a
+minimal minimap (each line 2 px, its frame draggable) to install and try.
 
 ### Web frame PTYs (API 1.3)
 

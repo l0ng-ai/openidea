@@ -10,6 +10,7 @@
  * - exchanges messages with the plugin's code, when it has any;
  * - reads and edits the document of the custom editor it is (versioned edits
  *   that join the document's undo history, Save and dirty state);
+ * - as an editor panel, follows and scrolls its group's text editor (`openidea.editor`);
  * - asks the user to save or open a file (the IDE's dialogs: the user picks
  *   the path, the page never names one);
  * - uses the clipboard, when the plugin was granted `clipboard`;
@@ -64,6 +65,56 @@ export interface FrameDocument {
   /** Changes made other than through `edit` (the text editor, Undo, other windows). */
   subscribe(listener: (state: DocumentState) => void): () => void;
 }
+
+/** What `openidea.editor.get()` returns. */
+export interface EditorTarget {
+  path: string;
+  language: string;
+  version: number;
+  lineCount: number;
+}
+
+/** What `openidea.editor.viewport()` returns: 0-based lines, fractional within a line. */
+export interface EditorViewport {
+  firstLine: number;
+  lastLine: number;
+  lineCount: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+export interface HighlightSpan {
+  from: number;
+  to: number;
+  color: string;
+}
+
+export type FrameEditorEvent =
+  | { editor: "target"; value: EditorTarget | null }
+  | { editor: "viewport"; value: EditorViewport }
+  | { editor: "highlights"; value: { fromLine: number; toLine: number } };
+
+/** The text editor an editor panel's frame follows (`openidea.editor`). */
+export interface FrameEditor {
+  get(): EditorTarget | null;
+  viewport(): EditorViewport | null;
+  scrollTo(line: number): void;
+  scrollBy(pixels: number): void;
+  /** Lines `fromLine` up to `toLine` (exclusive); throws over {@link MAX_HIGHLIGHT_LINES}. */
+  highlights(fromLine: number, toLine: number): HighlightSpan[][];
+  subscribe(listener: (event: FrameEditorEvent) => void): () => void;
+}
+
+export const MAX_HIGHLIGHT_LINES = 2000;
+
+/** The query that gives an editor panel's page `openidea.editor` (frame-bridge.js). */
+export const EDITOR_PANEL_QUERY = "openidea=editor-panel";
+
+const finite = (v: unknown, what: string) => {
+  if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${what} must be a number`);
+  return v;
+};
 
 /** Largest text a frame may write in one edit. */
 const MAX_EDIT = 64 << 20;
@@ -151,9 +202,19 @@ export interface WebViewProps {
   document?: FrameDocument | null;
   /** The backend document, for messages to the plugin's code. */
   doc?: number | null;
+  /** The text editor an editor panel follows; none elsewhere. */
+  editor?: FrameEditor | null;
 }
 
-export function WebView({ pluginId, view, label, header = "default", document = null, doc = null }: WebViewProps) {
+export function WebView({
+  pluginId,
+  view,
+  label,
+  header = "default",
+  document = null,
+  doc = null,
+  editor = null,
+}: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
   const [loadedPage, setLoadedPage] = useState<PageState | null>(null);
@@ -184,6 +245,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
 
   // The document's changes made elsewhere.
   useEffect(() => document?.subscribe((state) => post({ document: state })), [document, post]);
+  useEffect(() => editor?.subscribe((event) => post(event)), [editor, post]);
 
   useEffect(() => {
     let dialog = false;
@@ -300,6 +362,23 @@ export function WebView({ pluginId, view, label, header = "default", document = 
           } else changes = validChanges(args.edits, current.text.length);
           return [{ version: changes.length ? document.edit(current.version, changes) : current.version }];
         }
+        case "editor.get":
+        case "editor.viewport":
+        case "editor.scrollTo":
+        case "editor.scrollBy":
+        case "editor.highlights": {
+          if (!editor) throw new Error("this view is not an editor panel");
+          if (op === "editor.get") return [editor.get()];
+          if (op === "editor.viewport") return [editor.viewport()];
+          if (op === "editor.scrollTo") return [editor.scrollTo(finite(args.line, "line"))];
+          if (op === "editor.scrollBy") return [editor.scrollBy(finite(args.pixels, "pixels"))];
+          const from = finite(args.fromLine, "fromLine");
+          const to = finite(args.toLine, "toLine");
+          if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from)
+            throw new Error("lines are 0 ≤ fromLine ≤ toLine, whole numbers");
+          if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
+          return [editor.highlights(from, to)];
+        }
         case "saveFile":
         case "openFile": {
           // One dialog at a time per frame.
@@ -370,7 +449,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, hasCode, post, page]);
+  }, [pluginId, view, document, doc, editor, hasCode, post, page]);
 
   if (!page)
     return (
@@ -393,7 +472,7 @@ export function WebView({ pluginId, view, label, header = "default", document = 
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
-      src={page.url}
+      src={editor ? `${page.url}${page.url.includes("?") ? "&" : "?"}${EDITOR_PANEL_QUERY}` : page.url}
       onLoad={() => {
         postTheme();
         setLoadedPage(page);

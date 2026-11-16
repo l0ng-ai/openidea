@@ -23,6 +23,7 @@ import {
   EditorShownProvider,
   EditorTabIdProvider,
   useContributions,
+  useEditorGroupPanels,
   useFileDecorations,
   useEditorDocumentRevision,
   useEditorTabTitles,
@@ -392,24 +393,45 @@ function PaneView({ paneId }: { paneId: string }) {
         strip(items, dnd.all, actions)
       )}
       {vertical && !hidden && <SideTabsResizer side={tabPrefs.placement === "left" ? "left" : "right"} />}
-      <div
-        className={styles.content}
-        role="tabpanel"
-        id={active ? `editor-${paneId}-panel-${active.id}` : undefined}
-        aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
-        ref={contentRef}
-      >
-        {kept.map((tab) => (
-          <KindEditor key={tab.id} tab={tab} shown={tab === active} kept />
-        ))}
-        {!active ? (
-          <EmptyEditor />
-        ) : (
-          !kept.includes(active) && <PaneContent paneId={paneId} tab={active} tabsVisible={!hidden} />
-        )}
-        {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} aria-hidden="true" />}
+      <div className={styles.body}>
+        <div
+          className={styles.content}
+          role="tabpanel"
+          id={active ? `editor-${paneId}-panel-${active.id}` : undefined}
+          aria-labelledby={active ? `editor-${paneId}-tab-${active.id}` : undefined}
+          ref={contentRef}
+        >
+          {kept.map((tab) => (
+            <KindEditor key={tab.id} tab={tab} shown={tab === active} kept />
+          ))}
+          {!active ? (
+            <EmptyEditor />
+          ) : (
+            !kept.includes(active) && <PaneContent paneId={paneId} tab={active} tabsVisible={!hidden} />
+          )}
+          {dropZone && <div className={clsx(styles.dropZone, styles[`drop-${dropZone}`])} aria-hidden="true" />}
+        </div>
+        <GroupPanels paneId={paneId} tabId={active && isTextInput(active.input) ? active.id : null} />
       </div>
     </section>
+  );
+}
+
+/**
+ * The group's contributed panels (plugin minimaps) at its right edge. Mounted once per group,
+ * kept while it switches tabs; hidden while the group shows something other than a text editor.
+ */
+function GroupPanels({ paneId, tabId }: { paneId: string; tabId: string | null }) {
+  const panels = useEditorGroupPanels((s) => s.panels);
+  if (!panels.size) return null;
+  return (
+    <div className={styles.groupPanels} hidden={!tabId}>
+      {[...panels.values()].map((p) => (
+        <div key={p.id} className={styles.groupPanel} style={{ width: p.width }}>
+          <p.component paneId={paneId} tabId={tabId} />
+        </div>
+      ))}
+    </div>
   );
 }
 
