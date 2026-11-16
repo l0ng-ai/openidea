@@ -25,14 +25,17 @@ pub(crate) fn save(r: &Repo, message: &str) -> IdeResult<()> {
     if run(r.root(), &["status", "--porcelain", "--untracked-files=no"], None)?.stdout_str().trim().is_empty() {
         return Ok(());
     }
-    let before = run(r.root(), &["rev-parse", "-q", "--verify", "refs/stash"], None).map(|o| o.stdout_str()).ok();
+    let before = stash_top(r);
     run(r.root(), &["stash", "push", "-q", "-m", message], None)?;
-    let id = run(r.root(), &["rev-parse", "refs/stash"], None)?.stdout_str();
-    if before.as_deref().map(str::trim) == Some(id.trim()) {
-        return Err(IdeError::invalid("could not save the local changes"));
-    }
-    std::fs::write(marker, id.trim())?;
+    // A stash that succeeds without a new entry found nothing it saves: the status above also
+    // lists submodules at another commit or with changes inside, which a stash leaves in place.
+    let Some(id) = stash_top(r).filter(|id| Some(id) != before.as_ref()) else { return Ok(()) };
+    std::fs::write(marker, id)?;
     Ok(())
+}
+
+fn stash_top(r: &Repo) -> Option<String> {
+    run(r.root(), &["rev-parse", "-q", "--verify", "refs/stash"], None).ok().map(|o| o.stdout_str().trim().to_owned())
 }
 
 /// Brings the saved changes back once no operation is in progress. Fails when they come

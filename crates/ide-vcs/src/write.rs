@@ -391,18 +391,24 @@ pub(crate) fn discard(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
     let rel = r.rel_paths(paths)?;
     // `git restore --worktree` refuses unmerged paths: roll those back to HEAD first.
     discard_unmerged(r, &rel)?;
-    let (mut tracked, mut untracked) = (Vec::new(), Vec::new());
+    let (mut tracked, mut untracked, mut submodules) = (Vec::new(), Vec::new(), Vec::new());
     {
         let repo = r.gix()?;
         let index = repo.index_or_empty().map_err(gx)?;
         for p in rel {
-            let exact = index.entry_index_by_path(BStr::new(p.as_bytes())).is_ok();
+            let exact = index.entry_index_by_path(BStr::new(p.as_bytes())).ok().map(|i| &index.entries()[i]);
             let dir_prefix = if p == "." { String::new() } else { format!("{}/", p.trim_end_matches('/')) };
-            let has_tracked_children = index.prefixed_entries(BStr::new(dir_prefix.as_bytes())).is_some();
-            if exact {
-                tracked.push(p);
+            let children = index.prefixed_entries(BStr::new(dir_prefix.as_bytes()));
+            if let Some(entry) = exact {
+                if entry.mode.is_submodule() {
+                    submodules.push(p);
+                } else {
+                    tracked.push(p);
+                }
             } else if r.abs_path(&p).is_dir() {
-                if has_tracked_children {
+                if let Some(children) = children {
+                    submodules
+                        .extend(children.iter().filter(|e| e.mode.is_submodule()).map(|e| e.path(&index).to_string()));
                     tracked.push(p.clone());
                 }
                 untracked.push(p);
@@ -412,6 +418,11 @@ pub(crate) fn discard(r: &Repo, paths: &[PathBuf]) -> IdeResult<()> {
         }
     }
     run_paths(r, &["restore", "--worktree"], &tracked)?;
+    // A plain restore leaves a submodule alone. This one checks out the commit the index
+    // records there and restores its tracked files, keeping its untracked ones.
+    if crate::execution_allowed() {
+        run_paths(r, &["restore", "--recurse-submodules", "--worktree"], &submodules)?;
+    }
     if !untracked.is_empty() {
         // `git clean` keeps ignored files and refuses paths outside the worktree.
         run_paths(r, &["clean", "-f", "-d", "-q"], &untracked)?;

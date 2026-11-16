@@ -69,7 +69,8 @@ impl Fixture {
     fn push_from_other(&self, bare: &Path, rel: &str, content: &str) {
         let other = self.tmp.path().join(format!("other-{}", rel.replace('/', "_")));
         if !other.exists() {
-            git_in(self.tmp.path(), &["clone", "-q", bare.to_str().unwrap(), other.to_str().unwrap()]);
+            let (bare, other_dir) = (bare.to_str().unwrap(), other.to_str().unwrap());
+            git_in(self.tmp.path(), &["clone", "-q", "-c", "core.autocrlf=false", bare, other_dir]);
             configure(&other);
         }
         git_in(&other, &["pull", "-q", "--rebase"]);
@@ -634,6 +635,73 @@ fn update_with_rebase_keeps_a_file_added_then_deleted_added_to_the_index() {
     fx.repo().pull(true, &cancel, &out).unwrap();
     assert!(fx.exists("remote.txt"));
     assert!(fx.git(&["status", "--porcelain", "--", "ad.txt"]).starts_with('A'), "still added");
+}
+
+/// Submodules `dirty` and `moved` (each with commits "one" and "two", at "two") committed in
+/// the clone of [`Fixture::with_origin`] and pushed; then `dirty` gets an uncommitted edit of a
+/// tracked file plus an untracked file, and `moved` is checked out at "one". Returns the commit
+/// the superproject records for `moved`.
+fn with_changed_submodules(fx: &Fixture) -> String {
+    for name in ["dirty", "moved"] {
+        let lib = fx.tmp.path().join(format!("lib-{name}"));
+        std::fs::create_dir(&lib).unwrap();
+        git_in(&lib, &["init", "-q"]);
+        configure(&lib);
+        std::fs::write(lib.join("f.txt"), "one\n").unwrap();
+        git_in(&lib, &["add", "-A"]);
+        git_in(&lib, &["commit", "-q", "-m", "one"]);
+        std::fs::write(lib.join("f.txt"), "two\n").unwrap();
+        git_in(&lib, &["commit", "-q", "-am", "two"]);
+        let url = lib.to_str().unwrap();
+        fx.git(&["-c", "protocol.file.allow=always", "-c", "core.autocrlf=false", "submodule", "add", "-q", url, name]);
+        configure(&fx.path(name));
+    }
+    fx.commit_all("submodules");
+    fx.git(&["push", "-q", "origin", "main"]);
+    let recorded = git_in(&fx.path("moved"), &["rev-parse", "HEAD"]);
+    fx.write("dirty/f.txt", "edited\n");
+    fx.write("dirty/untracked.txt", "u\n");
+    git_in(&fx.path("moved"), &["checkout", "-q", "HEAD~1"]);
+    recorded
+}
+
+/// git lists submodules at another commit or with changes inside among the superproject's
+/// changes, but its stash leaves them in place, so Update Project has nothing to put aside (#3632).
+#[test]
+fn update_with_changed_submodules_and_no_other_local_changes() {
+    for (rebase, earlier_stash) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (fx, bare) = Fixture::with_origin();
+        let recorded = with_changed_submodules(&fx);
+        if earlier_stash {
+            fx.write("a.txt", "stashed\n");
+            fx.git(&["stash", "push", "-q", "-m", "earlier"]);
+        }
+        fx.push_from_other(&bare, "remote.txt", "r\n");
+        let repo = fx.repo();
+        let (cancel, out) = quiet();
+        repo.pull(rebase, &cancel, &out).unwrap_or_else(|e| panic!("rebase={rebase} stash={earlier_stash}: {e}"));
+        assert!(fx.exists("remote.txt"));
+        assert_eq!(fx.read("dirty/f.txt"), "edited\n");
+        assert_ne!(git_in(&fx.path("moved"), &["rev-parse", "HEAD"]), recorded);
+        let stashes = fx.git(&["stash", "list"]);
+        assert_eq!(stashes.lines().count(), usize::from(earlier_stash), "{stashes}");
+        assert!(!fx.dir.join(".git/openidea-saved-changes").exists());
+    }
+}
+
+#[test]
+fn rollback_changed_submodules_restores_the_recorded_commit_and_tracked_files() {
+    for whole_root in [false, true] {
+        let (fx, _bare) = Fixture::with_origin();
+        let recorded = with_changed_submodules(&fx);
+        let repo = fx.repo();
+        let paths = if whole_root { vec![fx.dir.clone()] } else { vec![fx.path("dirty"), fx.path("moved")] };
+        repo.discard(&paths).unwrap();
+        assert_eq!(fx.read("dirty/f.txt"), "two\n", "whole_root={whole_root}");
+        assert_eq!(git_in(&fx.path("moved"), &["rev-parse", "HEAD"]), recorded);
+        assert_eq!(fx.read("dirty/untracked.txt"), "u\n", "untracked files of a submodule are kept");
+        assert_eq!(fx.git(&["status", "--porcelain", "--ignore-submodules=untracked"]), "");
+    }
 }
 
 #[test]
