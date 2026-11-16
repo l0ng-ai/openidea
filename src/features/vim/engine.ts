@@ -8,11 +8,13 @@ import { EditorView, ViewPlugin, runScopeHandlers } from "@codemirror/view";
 import { CodeMirror, Vim, getCM, vim } from "@replit/codemirror-vim";
 import { externalHistory, transientChange, reportInputMode, type EditorDocContext } from "@/editor/api";
 import { setContext } from "@/platform/context";
+import { strokeOf } from "@/platform/keymap";
 import { executeAction, getAction } from "@/platform/actions";
 import { showStatusInfo } from "@/workbench/contributions";
-import { VIM_EDITOR_ATTR } from "./conflicts";
+import { movedToIde, VIM_EDITOR_ATTR } from "./conflicts";
 import { useVimMode, type VimModeState } from "./mode";
 import { resolveActionId, type RcCommand } from "./rc";
+import { useVimSettings } from "./settings";
 import { mapFunctionTextObjects } from "./textObjects";
 
 /** Insert/Replace state as seen by transactions (mode changes are queued). */
@@ -249,6 +251,26 @@ const escapeClosesPopupsFirst = EditorView.domEventHandlers({
   },
 });
 
+/**
+ * Keys the user gave to the IDE in the conflicts table never reach Vim. An IDE action bound
+ * to one has already run (the keyboard dispatcher, before the editor); otherwise the editor's
+ * own key bindings run (Select All), else the browser default (cut, paste).
+ */
+const ideHandledKeys = EditorView.domEventHandlers({
+  keydown(e, view) {
+    const stroke = strokeOf(e);
+    if (!stroke || !movedToIde(stroke, useVimSettings.getState().handlers)) return false;
+    if (runScopeHandlers(view, e, "editor")) return true;
+    // Returning true would cancel the browser's cut or paste: skip Vim's handler for this event only.
+    const plugin = getCM(view)?.state.vimPlugin as { handleKey?: unknown } | undefined;
+    if (plugin) {
+      plugin.handleKey = () => undefined;
+      queueMicrotask(() => delete plugin.handleKey);
+    }
+    return false;
+  },
+});
+
 const modeTracker = (ctx?: EditorDocContext) =>
   ViewPlugin.define((view) => {
     const cm = getCM(view);
@@ -319,6 +341,7 @@ export function vimExtension(ctx?: EditorDocContext): Extension {
       imeTracker,
       imeTransactions,
       escapeClosesPopupsFirst,
+      ideHandledKeys,
       vim(),
       modeTracker(ctx),
     ]),
