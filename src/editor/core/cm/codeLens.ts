@@ -134,7 +134,8 @@ class LensWidget extends WidgetType {
     const guides = this.inline
       ? null
       : guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
-    if (!this.inline) dom.style.paddingLeft = `${Math.round(this.indent * view.defaultCharacterWidth) + LINE_INSET}px`;
+    if (!this.inline)
+      dom.style.paddingLeft = `calc(${LINE_INSET}px + ${this.indent} * var(--openidea-space, ${view.defaultCharacterWidth}px))`;
     if (guides) {
       dom.style.setProperty("--openidea-guide-images", guides.images);
       dom.style.setProperty("--openidea-guide-positions", guides.positions);
