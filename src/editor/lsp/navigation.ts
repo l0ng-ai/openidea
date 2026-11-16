@@ -209,7 +209,7 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
       };
     return {
       id: `${i}`,
-      label: names[i] ?? basename(l.path),
+      label: l.name ?? names[i] ?? basename(l.path),
       detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
       icon: fileIconName(basename(l.path), l.path),
       location: { path: l.path, line: l.range.start.line },

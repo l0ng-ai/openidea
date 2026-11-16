@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod analysis;
+pub mod bdd;
 pub mod build;
 pub mod bytes;
 pub mod coverage;
