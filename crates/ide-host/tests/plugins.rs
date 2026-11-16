@@ -6572,8 +6572,8 @@ fn a_plugin_command_opens_a_diff_in_its_window() {
             client.as_deref() == Some("main")
                 && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
                     if plugin_id == "execution"
-                        && diff.left == "before\n"
-                        && diff.right == "after\n"
+                        && diff.left.as_deref() == Some("before\n")
+                        && diff.right.as_deref() == Some("after\n")
                         && diff.title.as_deref() == Some("Review")
                         && file_name.as_deref() == Some("src/review.rs"))
         })

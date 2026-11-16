@@ -245,9 +245,17 @@ impl crate::Host {
     pub async fn refresh_project_trust(&self) -> IdeResult<()> {
         for project in self.projects().into_iter().filter(|p| !p.light) {
             let trusted = self.trust.window_trusted(&project.root).unwrap_or(false);
+            let roots = project.content_roots();
             let previous = project.trusted.swap(trusted, std::sync::atomic::Ordering::AcqRel);
             if previous == trusted {
                 continue;
+            }
+            // Maven reactor modules outside the project are content roots of a trusted project only.
+            if project.content_roots() != roots {
+                project.refresh_index_scope();
+                let p = project.clone();
+                tokio::task::spawn_blocking(move || p.refresh_repositories());
+                project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
             }
             if let Some(bridge) = &project.kotlin_bridge {
                 bridge.schedule();

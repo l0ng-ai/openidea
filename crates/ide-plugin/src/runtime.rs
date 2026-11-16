@@ -188,8 +188,8 @@ pub trait HostApi: Send + Sync {
         let _ = (client, tab, cancel, timeout);
         Err(HostError::Failed("content tabs unavailable".into()))
     }
-    /// Opens a diff of two texts in the invoking window.
-    fn open_diff(&self, client: &str, diff: crate::ContentDiff, file_name: Option<String>) -> Result<(), HostError> {
+    /// Opens a diff of two texts in the invoking window; a `None` side doesn't exist.
+    fn open_diff(&self, client: &str, diff: crate::FileDiff, file_name: Option<String>) -> Result<(), HostError> {
         let _ = (client, diff, file_name);
         Err(HostError::Failed("diffs unavailable".into()))
     }

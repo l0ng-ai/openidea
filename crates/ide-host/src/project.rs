@@ -112,7 +112,7 @@ impl Host {
         let detected_roots = Arc::new(RwLock::new(ide_workspace::roots::detect(&root)));
         let excludes = exclude_globs(&root, &settings.effective(), &detected_roots.read());
         let build_cache = self.local_data_dir.join("cache").join(project_key(&root)).join("build");
-        let extra_roots = content_roots(&settings.effective(), &root, &build_cache);
+        let extra_roots = content_roots(&settings.effective(), &root, &build_cache, trusted.load(Ordering::Acquire));
         mark("roots");
 
         // The project's own registry: File Types associations may be project-scoped.
@@ -147,7 +147,9 @@ impl Host {
         lsp.set_content_roots(language_server_roots(&root, extra_roots.clone()));
         lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
             &root,
-            &settings.effective().languages.java.maven.linked_projects,
+            &build_cache,
+            &settings.effective().languages.java.maven,
+            trusted.load(Ordering::Acquire),
         ));
         let settings = Arc::new(settings);
         {
@@ -415,7 +417,10 @@ impl Host {
                             // Detected excluded folders (`target`, `build`) leave the index too.
                             let effective = settings.effective();
                             index.set_scope(
-                                index_roots(&root, content_roots(&effective, &root, &build_cache)),
+                                index_roots(
+                                    &root,
+                                    content_roots(&effective, &root, &build_cache, trusted.load(Ordering::Acquire)),
+                                ),
                                 exclude_globs(&root, &effective, &fresh),
                             );
                             *detected_roots.write() = fresh;
@@ -458,7 +463,14 @@ impl Host {
                     // through the `.git` paths above; this covers the whole tree being brought in.
                     git_dirs |= batch.created.iter().any(|p| p.join(".git").exists());
                     if git_dirs {
-                        scan_repositories(&root, &repos, &settings, &sink, &build_cache);
+                        scan_repositories(
+                            &root,
+                            &repos,
+                            &settings,
+                            &sink,
+                            &build_cache,
+                            trusted.load(Ordering::Acquire),
+                        );
                     }
                     let vcs_moved = batch.vcs.iter().any(|p| vcs_path_changed(p));
                     if git_dirs || vcs_moved {
@@ -544,9 +556,10 @@ impl Host {
         {
             let (root, repos, settings, sink) = (root.clone(), repos.clone(), settings.clone(), sink.clone());
             let build_cache = build_cache.clone();
+            let trusted = trusted.load(Ordering::Acquire);
             std::thread::Builder::new()
                 .name("openidea-vcs-roots".into())
-                .spawn(move || scan_repositories(&root, &repos, &settings, &sink, &build_cache))?;
+                .spawn(move || scan_repositories(&root, &repos, &settings, &sink, &build_cache, trusted))?;
         }
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
@@ -907,8 +920,9 @@ fn scan_repositories(
     settings: &SettingsStore,
     sink: &SharedSink,
     build_cache: &Path,
+    trusted: bool,
 ) {
-    match discover_repositories(root, settings, build_cache) {
+    match discover_repositories(root, settings, build_cache, trusted) {
         Ok(found) => {
             if found.roots() != repos.read().roots() {
                 *repos.write() = found;
@@ -921,7 +935,7 @@ fn scan_repositories(
 
 /// The repository containing `root` and those nested below it or below a content root.
 /// The project-open scan and the watcher's rescan share these skip rules.
-fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path) -> IdeResult<Repos> {
+fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Path, trusted: bool) -> IdeResult<Repos> {
     let ignored = settings.effective().ignored_names();
     let skip = |p: &Path| {
         p.file_name().is_some_and(|n| {
@@ -932,13 +946,20 @@ fn discover_repositories(root: &Path, settings: &SettingsStore, build_cache: &Pa
         })
     };
     let mut roots = vec![root.to_path_buf()];
-    roots.extend(content_roots(&settings.effective(), root, build_cache));
+    roots.extend(content_roots(&settings.effective(), root, build_cache, trusted));
     Repos::discover_roots(&roots, &skip)
 }
 
 impl Project {
     pub fn refresh_repositories(&self) {
-        scan_repositories(&self.root, &self.repos, &self.settings, &self.sink, &self.build_cache_dir());
+        scan_repositories(
+            &self.root,
+            &self.repos,
+            &self.settings,
+            &self.sink,
+            &self.build_cache_dir(),
+            self.is_trusted(),
+        );
     }
 
     /// The project's git repositories.
@@ -1204,7 +1225,7 @@ impl Project {
 
     /// Project Structure content roots besides the project folder (existing directories).
     pub fn content_roots(&self) -> Vec<PathBuf> {
-        content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir())
+        content_roots(&self.settings.effective(), &self.root, &self.build_cache_dir(), self.is_trusted())
     }
 
     /// Applies Settings › File Types; open documents whose language changed are
@@ -1228,7 +1249,9 @@ impl Project {
         self.lsp.set_content_roots(language_server_roots(&self.root, roots.clone()));
         self.lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
             &self.root,
-            &self.settings.effective().languages.java.maven.linked_projects,
+            &self.build_cache_dir(),
+            &self.settings.effective().languages.java.maven,
+            self.is_trusted(),
         ));
         self.index.set_scope(index_roots(&self.root, roots.clone()), excludes.clone());
         self.watcher.set_excludes(&excludes);
@@ -1354,8 +1377,14 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
 /// Workspace members in manifest order, or the attached projects outside the project and
 /// those inside it that its walk skips as ignored (a git worktree under an ignored folder),
 /// extra Project Structure directories, Gradle project folders outside the project, and
-/// directories of Maven POMs linked from outside it (`build_cache` is the Gradle sync cache).
-fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
+/// directories of Maven POMs linked from outside it and, when `trusted`, of the Maven reactor's
+/// modules there (`build_cache` holds the Gradle and Maven sync results).
+fn content_roots(
+    settings: &ide_core::settings::Settings,
+    root: &Path,
+    build_cache: &Path,
+    trusted: bool,
+) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
             return workspace.projects;
@@ -1365,14 +1394,14 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
             .into_iter()
             .filter(|p| !p.starts_with(root) || ide_index::walk_skips(root, p))
             .collect::<Vec<_>>();
-        for path in extra_content_roots(settings, root, build_cache) {
+        for path in extra_content_roots(settings, root, build_cache, trusted) {
             if !roots.contains(&path) {
                 roots.push(path);
             }
         }
         return roots;
     }
-    extra_content_roots(settings, root, build_cache)
+    extra_content_roots(settings, root, build_cache, trusted)
 }
 
 /// The content roots plus the projects attached inside this one. The index covers those
@@ -1439,7 +1468,7 @@ fn navigation_roots_uncached(project: &Project, from: &Path) -> Vec<PathBuf> {
         }
     }
     if workspace.is_none() {
-        for root in content_roots(&settings, &project.root, &project.build_cache_dir()) {
+        for root in content_roots(&settings, &project.root, &project.build_cache_dir(), project.is_trusted()) {
             if !roots.contains(&root) {
                 roots.push(root);
             }
@@ -1458,7 +1487,12 @@ fn member_dependencies_for<'a>(map: &'a BTreeMap<String, Vec<String>>, own_key: 
     map.iter().find(|(key, _)| ide_core::ipc_path::to_ipc(&PathBuf::from(key)) == own_key).map(|(_, deps)| deps)
 }
 
-fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
+fn extra_content_roots(
+    settings: &ide_core::settings::Settings,
+    root: &Path,
+    build_cache: &Path,
+    trusted: bool,
+) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let user = settings
         .project_structure
@@ -1468,7 +1502,7 @@ fn extra_content_roots(settings: &ide_core::settings::Settings, root: &Path, bui
         .map(|r| PathBuf::from(r.trim()));
     for p in user
         .chain(ide_build::gradle_external_roots(root, build_cache, &settings.languages.java.gradle))
-        .chain(ide_build::maven_external_roots(root, &settings.languages.java.maven.linked_projects))
+        .chain(ide_build::maven_external_roots(root, build_cache, &settings.languages.java.maven, trusted))
     {
         if p.is_absolute() && p.is_dir() && !p.starts_with(root) && !out.contains(&p) {
             out.push(p);
@@ -1954,11 +1988,11 @@ mod maven_linkage_tests {
         }
         let mut settings = ide_core::settings::Settings::default();
         settings.languages.java.maven.linked_projects = vec!["../B/pom.xml".into()];
-        assert_eq!(super::content_roots(&settings, &a, &base.join("cache")), vec![b]);
+        assert_eq!(super::content_roots(&settings, &a, &base.join("cache"), false), vec![b]);
         // External links must not replace jdtls's scan of the opened root with a build-file list.
         assert_eq!(super::jdtls_maven_import(&a, &settings), (Vec::new(), None));
         settings.languages.java.maven.linked_projects.clear();
-        assert!(super::content_roots(&settings, &a, &base.join("cache")).is_empty());
+        assert!(super::content_roots(&settings, &a, &base.join("cache"), false).is_empty());
     }
 
     #[test]
@@ -2182,7 +2216,7 @@ mod content_roots_tests {
         settings.project_structure.content_roots = vec![shared.to_string_lossy().into_owned()];
         settings.project_structure.dependencies =
             vec![dep.to_string_lossy().into_owned(), root.to_string_lossy().into_owned()];
-        let roots = content_roots(&settings, &root, &tmp.path().join("build"));
+        let roots = content_roots(&settings, &root, &tmp.path().join("build"), false);
         assert_eq!(roots, vec![shared, dep]);
     }
 
@@ -2196,12 +2230,12 @@ mod content_roots_tests {
         }
         let settings = ide_core::settings::Settings::default();
         let build = ws.join("build");
-        assert!(super::language_server_roots(&root, content_roots(&settings, &root, &build)).is_empty());
+        assert!(super::language_server_roots(&root, content_roots(&settings, &root, &build, false)).is_empty());
 
         ide_workspace::workspace::Workspace::attach(&root, "app", vec![root.clone(), nested.clone(), other.clone()])
             .unwrap();
         // The index walks the nested project as part of the root ...
-        let roots = content_roots(&settings, &root, &build);
+        let roots = content_roots(&settings, &root, &build, false);
         assert_eq!(roots, vec![other.clone()]);
         // ... while its files go to a language server of its own.
         assert_eq!(super::language_server_roots(&root, roots), vec![other, nested]);

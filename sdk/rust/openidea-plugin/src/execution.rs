@@ -37,6 +37,30 @@ pub struct ContentDiff {
     pub title: Option<String>,
 }
 
+/// A file's before and after for `host::open_file_diff` (API 1.10): `None` is a side where the
+/// file doesn't exist (an added file has no left side, a deleted one no right side).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub left_label: Option<String>,
+    pub right_label: Option<String>,
+    pub title: Option<String>,
+}
+
+impl From<ContentDiff> for FileDiff {
+    fn from(v: ContentDiff) -> Self {
+        Self {
+            left: Some(v.left),
+            right: Some(v.right),
+            left_label: v.left_label,
+            right_label: v.right_label,
+            title: v.title,
+        }
+    }
+}
+
 /// ContentTabReply data exchanged with the IDE.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,7 +179,7 @@ pub enum PluginTestEvent {
 pub trait RunConfigurations {
     fn configurations(&mut self, project_root: &str) -> Vec<PluginRunConfiguration>;
 }
-/// How Debug starts a launch configuration (API 1.9).
+/// How Debug starts a launch configuration (API 1.10).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum Debugger {
@@ -169,7 +193,7 @@ pub enum Debugger {
     AttachChild { kind: String, command_contains: Option<String> },
 }
 
-/// A run configuration with an environment and a debugger (API 1.9).
+/// A run configuration with an environment and a debugger (API 1.10).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginLaunchConfiguration {
@@ -180,7 +204,7 @@ pub struct PluginLaunchConfiguration {
     pub debugger: Option<Debugger>,
 }
 
-/// Supplies complete project configurations with environments and debuggers (API 1.9);
+/// Supplies complete project configurations with environments and debuggers (API 1.10);
 /// register with launch_configurations instead of run_configurations.
 pub trait LaunchConfigurations {
     fn launch_configurations(&mut self, project_root: &str) -> Vec<PluginLaunchConfiguration>;
