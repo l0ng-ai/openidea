@@ -2942,7 +2942,9 @@ export type BuildResult = {
 	messages: BuildMessage[],
 };
 
-export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet";
+export type BuildSystem = "maven" | "gradle" | "cargo" | "go" | "typescript" | "cmake" | "dotnet" | 
+/**  A Java project without a build tool, compiled from its Project Structure. */
+"javac";
 
 export type BuildTool = "maven" | "gradle";
 
