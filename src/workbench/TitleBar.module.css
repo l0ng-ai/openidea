@@ -131,6 +131,14 @@
      stripe's own padding does and the two share a centre line. */
   padding-left: var(--stripe-outer-padding);
 }
+/* The desktop puts caption buttons on the left (GTK decoration layout): they take the left
+   edge, and the right keeps the bar's own padding when no buttons are left there. */
+.frameless.captionsAtLeft {
+  padding-left: 0;
+}
+.frameless.noCaptionsAtRight {
+  padding-right: 8px;
+}
 /* The button heads the tool window stripe below it, so it takes the stripe's
    size: both shrink in compact mode. */
 .mainMenuButton {
@@ -218,6 +226,10 @@
   display: flex;
   margin-left: 8px;
 }
+.captionsLeft {
+  margin-left: 0;
+  margin-right: 8px;
+}
 .caption {
   width: 46px;
   height: 100%;
@@ -260,6 +272,9 @@
   }
   .captions {
     margin-left: 0;
+  }
+  .captionsLeft {
+    margin-right: 0;
   }
   .caption {
     width: 28px;
