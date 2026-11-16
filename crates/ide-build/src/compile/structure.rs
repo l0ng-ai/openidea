@@ -310,6 +310,8 @@ fn artifact_steps(
         .find(|f| f.module == artifact.module || f.module.is_empty() && artifact.module == ".")
         .or_else(|| ps.facets.iter().find(|f| f.kind == "web"));
     let staging = cache.join("artifacts").join(file_name(&artifact.name));
+    // What the last build laid out in a folder the user chose, so the next one replaces only that.
+    let record = cache.join("artifacts").join(format!("{}.files", file_name(&artifact.name)));
     let mut steps = Vec::new();
     match (artifact.kind, war) {
         (ArtifactKind::Jar, None) => {
@@ -324,7 +326,11 @@ fn artifact_steps(
                 manifest.push_str(&format!("Class-Path: {}\r\n", names.join(" ")));
             }
             steps.push(BuildStep::action(
-                Action::Layout { into: staging.clone(), entries: vec![(classes.to_path_buf(), PathBuf::new())] },
+                Action::Layout {
+                    into: staging.clone(),
+                    entries: vec![(classes.to_path_buf(), PathBuf::new())],
+                    record: None,
+                },
                 root,
             ));
             // The jar's Class-Path names the libraries next to it.
@@ -332,6 +338,7 @@ fn artifact_steps(
                 Action::Layout {
                     into: out.clone(),
                     entries: libraries.iter().map(|l| (l.clone(), file_of(l))).collect(),
+                    record: Some(record),
                 },
                 root,
             ));
@@ -353,7 +360,9 @@ fn artifact_steps(
             for lib in &libraries {
                 entries.push((lib.clone(), Path::new("WEB-INF/lib").join(file_of(lib))));
             }
-            steps.push(BuildStep::action(Action::Layout { into: exploded.clone(), entries }, root));
+            // The exploded output may be a folder the user chose; the staging folder is the IDE's own.
+            let record = (exploded != staging).then_some(record);
+            steps.push(BuildStep::action(Action::Layout { into: exploded.clone(), entries, record }, root));
             let archive = war
                 .map(Path::to_path_buf)
                 .or_else(|| (kind != ArtifactKind::WarExploded).then(|| artifact_file(root, artifact)));
@@ -407,8 +416,10 @@ pub(crate) enum Action {
     /// relative paths; files that are already up to date are left alone.
     CopyResources { from: Vec<PathBuf>, to: PathBuf },
     /// Lays out an artifact in `into`: each folder's content or file goes to its relative
-    /// place (`""` = the top). What is no longer laid out is removed.
-    Layout { into: PathBuf, entries: Vec<(PathBuf, PathBuf)> },
+    /// place (`""` = the top). What is no longer laid out is removed: without `record`, `into`
+    /// is the IDE's own folder and is laid out afresh; with it, `into` is a folder the user chose
+    /// and only the files the previous layout recorded there are removed, never anything else.
+    Layout { into: PathBuf, entries: Vec<(PathBuf, PathBuf)>, record: Option<PathBuf> },
     /// Zips the folder `from` into the archive `to`, with this manifest first.
     Archive { from: PathBuf, to: PathBuf, manifest: Option<String> },
 }
@@ -441,29 +452,31 @@ impl Action {
                 }
                 Ok(format!("{copied} resource file(s) copied"))
             }
-            Action::Layout { into, entries } => {
-                // A fresh layout: files dropped from the sources must not linger in the artifact.
+            Action::Layout { into, entries, record } => {
                 if entries.iter().any(|(from, _)| from.starts_with(into)) {
                     return Err(IdeError::invalid(format!(
                         "The artifact output folder {} holds files the artifact is made of",
                         into.display()
                     )));
                 }
-                if into.exists() {
+                if record.is_none() && into.exists() {
                     fs::remove_dir_all(into)
                         .map_err(|e| IdeError::internal(format!("cannot delete {} ({e})", into.display())))?;
                 }
-                let mut copied = 0;
+                let mut written = Vec::new();
                 for (from, to) in entries {
                     let target = into.join(to);
                     if from.is_dir() {
-                        copied += copy_tree(from, &target, cancel)?;
+                        copy_tree(from, &target, &mut written, cancel)?;
                     } else if from.is_file() {
                         copy_file(from, &target)?;
-                        copied += 1;
+                        written.push(target);
                     }
                 }
-                Ok(format!("{copied} file(s) laid out"))
+                if let Some(record) = record {
+                    replace_recorded(into, record, &written)?;
+                }
+                Ok(format!("{} file(s) laid out", written.len()))
             }
             Action::Archive { from, to, manifest } => {
                 archive(from, to, manifest.as_deref(), cancel)?;
@@ -482,23 +495,62 @@ fn copy_file(from: &Path, to: &Path) -> IdeResult<()> {
     Ok(())
 }
 
-fn copy_tree(from: &Path, to: &Path, cancel: &CancellationToken) -> IdeResult<usize> {
+fn copy_tree(from: &Path, to: &Path, written: &mut Vec<PathBuf>, cancel: &CancellationToken) -> IdeResult<()> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    let Ok(entries) = fs::read_dir(from) else { return Ok(0) };
-    let mut copied = 0;
+    let Ok(entries) = fs::read_dir(from) else { return Ok(()) };
     for e in entries.flatten() {
         let Ok(t) = e.file_type() else { continue };
         let target = to.join(e.file_name());
         if t.is_dir() {
-            copied += copy_tree(&e.path(), &target, cancel)?;
+            copy_tree(&e.path(), &target, written, cancel)?;
         } else if t.is_file() {
             copy_file(&e.path(), &target)?;
-            copied += 1;
+            written.push(target);
         }
     }
-    Ok(copied)
+    Ok(())
+}
+
+/// Removes the files the previous layout recorded in `into` that this one didn't write
+/// (and the folders that leaves empty), then records `written` for the next layout.
+fn replace_recorded(into: &Path, record: &Path, written: &[PathBuf]) -> IdeResult<()> {
+    let now: std::collections::HashSet<PathBuf> =
+        written.iter().filter_map(|p| p.strip_prefix(into).ok().map(Path::to_path_buf)).collect();
+    let before = fs::read_to_string(record).unwrap_or_default();
+    let mut lines = before.lines();
+    // The record names its folder first: one made for another output folder removes nothing.
+    let same = lines.next().is_some_and(|dir| Path::new(dir) == into);
+    for rel in lines.filter(|_| same).map(PathBuf::from) {
+        // Only plain relative paths inside `into`: a damaged record must not reach elsewhere.
+        if rel.as_os_str().is_empty()
+            || now.contains(&rel)
+            || rel.components().any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            continue;
+        }
+        let file = into.join(&rel);
+        if file.is_file() {
+            let _ = fs::remove_file(&file);
+            let mut dir = file.parent();
+            while let Some(d) = dir.filter(|d| *d != into && d.starts_with(into)) {
+                if fs::remove_dir(d).is_err() {
+                    break;
+                }
+                dir = d.parent();
+            }
+        }
+    }
+    let mut list: Vec<String> = now.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    list.sort();
+    list.insert(0, into.to_string_lossy().into_owned());
+    if let Some(parent) = record.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| IdeError::internal(format!("cannot create {} ({e})", parent.display())))?;
+    }
+    fs::write(record, list.join("\n"))
+        .map_err(|e| IdeError::internal(format!("cannot write {} ({e})", record.display())))
 }
 
 fn archive(from: &Path, to: &Path, manifest: Option<&str>, cancel: &CancellationToken) -> IdeResult<()> {
@@ -812,8 +864,45 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let web = tmp.path().join("WebRoot");
         write(&web.join("a.jsp"), "");
-        let action = Action::Layout { into: tmp.path().to_path_buf(), entries: vec![(web.clone(), PathBuf::new())] };
+        let action = Action::Layout {
+            into: tmp.path().to_path_buf(),
+            entries: vec![(web.clone(), PathBuf::new())],
+            record: None,
+        };
         assert!(action.run(&CancellationToken::new()).is_err());
         assert!(web.join("a.jsp").is_file());
+    }
+
+    #[test]
+    fn a_chosen_output_folder_keeps_what_the_artifact_did_not_put_there() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        write(&project.join("src/A.java"), "class A {}");
+        write(&project.join(".git/HEAD"), "ref: refs/heads/main");
+        let libs = tmp.path().join("libs");
+        write(&libs.join("a.jar"), "a");
+        write(&libs.join("b.jar"), "b");
+        let record = tmp.path().join("cache/artifacts/app.files");
+        let layout = |names: &[&str]| Action::Layout {
+            into: project.clone(),
+            entries: names.iter().map(|n| (libs.join(n), PathBuf::from(n))).collect(),
+            record: Some(record.clone()),
+        };
+        layout(&["a.jar", "b.jar"]).run(&CancellationToken::new()).unwrap();
+        assert!(project.join("a.jar").is_file() && project.join("b.jar").is_file());
+        // A library dropped from the artifact goes; the project's own files stay.
+        layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
+        assert!(project.join("a.jar").is_file() && !project.join("b.jar").exists());
+        assert!(project.join("src/A.java").is_file() && project.join(".git/HEAD").is_file());
+        // A damaged record never reaches outside the folder.
+        write(&record, &format!("{}\n../outside.txt", project.display()));
+        write(&tmp.path().join("outside.txt"), "x");
+        layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
+        assert!(tmp.path().join("outside.txt").is_file());
+        // Nor does one made for another output folder.
+        write(&project.join("c.jar"), "mine");
+        write(&record, "/elsewhere\nc.jar");
+        layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
+        assert!(project.join("c.jar").is_file());
     }
 }
