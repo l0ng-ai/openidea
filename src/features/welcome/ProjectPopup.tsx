@@ -8,6 +8,7 @@ import { askRemoveRecent, ProjectBadge, recentMenu } from "./RecentList";
 import { filterRecent, loadRecent, openRecent, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
+import { parseRemoteLocation, remoteLocation } from "@/platform/remote";
 
 type Entry =
   | { kind: "action"; id: string; label: string; icon: IconName }
@@ -47,9 +48,13 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
   useEffect(() => void loadRecent(), []);
 
   const entries = useMemo<Entry[]>(() => {
-    const openPaths = new Set(openProjects.map((p) => p.root));
-    const asRecent = (p: OpenProject): RecentProject =>
-      recent.find((r) => r.path === p.root) ?? { path: p.root, name: p.name, openedAtMs: null, branch: null };
+    // A remote window's project is keyed like its recent entry (`wsl://…`, `ssh://…`).
+    const location = (p: OpenProject) => (p.remote ? remoteLocation(p.remote, p.root) : p.root);
+    const openPaths = new Set(openProjects.map(location));
+    const asRecent = (p: OpenProject): RecentProject => {
+      const path = location(p);
+      return recent.find((r) => r.path === path) ?? { path, name: p.name, openedAtMs: null, branch: null };
+    };
     const open = filterRecent(openProjects.map(asRecent), query, home).map((m) => ({
       kind: "project" as const,
       open: true,
@@ -73,7 +78,9 @@ export function ProjectPopup({ anchor, onClose }: ProjectPopupProps) {
     if (!e) return;
     onClose();
     if (e.kind === "action") void executeAction(e.id);
-    else if (e.open) void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+    else if (e.open && !parseRemoteLocation(e.m.project.path))
+      void call(commands.windowOpenProject(e.m.project.path, false, [])).catch(() => undefined);
+    // Opening a remote location focuses the window already connected to it.
     else void openRecent(e.m.project);
   };
 

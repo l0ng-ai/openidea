@@ -8426,6 +8426,8 @@ export type OpenProject = {
 	root: string,
 	/**  Open in the calling window. */
 	current: boolean,
+	/**  Where the project lives when the window is connected to a remote host (`root` is then a path there). */
+	remote: RemoteTarget | null,
 };
 
 /**  A node of a document outline (Structure tool window, breadcrumbs). */
