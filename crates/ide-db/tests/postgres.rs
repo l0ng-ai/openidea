@@ -228,3 +228,78 @@ async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
     db.execute("p", "DROP SCHEMA oi_keys CASCADE", 10, &c).await?;
     Ok(())
 }
+
+/// Runs `job` with the newest installed copy of its tool, the way the dialogs do.
+async fn run_tool(db: &DbManager, target: &str, job: ide_db::tools::DbToolJob) -> IdeResult<()> {
+    let install = ide_db::tools::find_installs(job.tool()).into_iter().next().expect("installed");
+    let mut lines = Vec::new();
+    let code = db.run_tool(target, install.path.as_ref(), &job, &CancellationToken::new(), |b| lines.extend(b)).await?;
+    assert_eq!(code, Some(0), "{} failed: {lines:?}", job.tool().program());
+    Ok(())
+}
+
+#[tokio::test]
+async fn dumps_and_restores_with_the_client_tools() -> IdeResult<()> {
+    use ide_db::tools::{
+        DbDumpContent, DbDumpFormat, DbDumpStatements, DbPgDumpOptions, DbPgRestoreOptions, DbPsqlOptions, DbTool,
+        DbToolJob, find_installs,
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let server = db.server_version("p").await? / 10000;
+    let major = |t: DbTool| {
+        find_installs(t).first().and_then(|i| i.version.split(' ').nth(2)?.split('.').next()?.parse::<u32>().ok())
+    };
+    // Other major versions write or refuse what this server needs; the dialogs warn about that instead.
+    if [DbTool::PgDump, DbTool::PgRestore, DbTool::Psql].into_iter().any(|t| major(t) != Some(server)) {
+        return Ok(());
+    }
+    create_schemas(&db).await;
+    let c = CancellationToken::new();
+    db.execute("p", "DROP DATABASE IF EXISTS oi_restore", 1, &c).await?;
+    db.execute("p", "CREATE DATABASE oi_restore", 1, &c).await?;
+    let file = |name: &str| tmp.path().join(name).to_string_lossy().into_owned();
+
+    let dump = |format, file: String, schema: &str| DbToolJob::PgDump {
+        file,
+        options: DbPgDumpOptions {
+            format,
+            statements: DbDumpStatements::Copy,
+            content: DbDumpContent::All,
+            schemas: vec![schema.into()],
+            tables: vec![],
+            exclude_tables: vec![],
+            clean: false,
+            if_exists: false,
+            create: false,
+            no_owner: false,
+            no_privileges: false,
+            jobs: 1,
+        },
+    };
+    let archive = file("a.dump");
+    run_tool(&db, "p", dump(DbDumpFormat::Custom, archive.clone(), "oi_a")).await?;
+    let restore = DbPgRestoreOptions {
+        content: DbDumpContent::All,
+        schemas: vec![],
+        clean: false,
+        if_exists: false,
+        no_owner: false,
+        no_privileges: false,
+        single_transaction: false,
+        exit_on_error: true,
+        jobs: 1,
+    };
+    run_tool(&db, "p:oi_restore", DbToolJob::PgRestore { file: archive, options: restore }).await?;
+
+    let script = file("b.sql");
+    run_tool(&db, "p", dump(DbDumpFormat::Plain, script.clone(), "oi_b")).await?;
+    let psql = DbPsqlOptions { single_transaction: true, stop_on_error: true };
+    run_tool(&db, "p:oi_restore", DbToolJob::Psql { file: script, options: psql }).await?;
+
+    let r = db.execute("p:oi_restore", "SELECT a.tag || ', ' || b.tag FROM oi_a.items a, oi_b.items b", 1, &c).await?;
+    assert_eq!(r.rows[0][0].as_deref(), Some("from a, from b"));
+    db.disconnect("p:oi_restore").await;
+    db.execute("p", "DROP DATABASE oi_restore", 1, &c).await?;
+    Ok(())
+}

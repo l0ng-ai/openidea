@@ -165,6 +165,8 @@ export interface OpenTabOptions {
   index?: number;
   activate?: boolean;
   preservePreview?: boolean;
+  /** Previews the new regular tab leaves open (a diff, which a file opened from it must not close). */
+  keepPreview?: (tab: Tab) => boolean;
 }
 
 export function openTab(
@@ -204,9 +206,9 @@ export function openTab(
     tabs.splice(index, 0, tab);
   }
   let active = pane.active;
-  if (!tab.preview && !opts.preservePreview && tabs.some((t) => t.preview)) {
+  if (!tab.preview && !opts.preservePreview && tabs.some((t) => t.preview && !opts.keepPreview?.(t))) {
     // A new regular editor closes the preview tab (IDEA trims previews on every open).
-    const previews = new Set(tabs.filter((t) => t.preview).map((t) => t.id));
+    const previews = new Set(tabs.filter((t) => t.preview && !opts.keepPreview?.(t)).map((t) => t.id));
     tabs.splice(0, tabs.length, ...tabs.filter((t) => !previews.has(t.id)));
     mru = mru.filter((id) => !previews.has(id));
     if (active && previews.has(active)) active = null;

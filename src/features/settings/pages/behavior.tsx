@@ -1086,7 +1086,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "Notifications",
     group: APPEARANCE_GROUP,
     order: 2,
-    keywords: ["balloon", "popup", "sound", "alerts", "system", "os"],
+    keywords: ["balloon", "popup", "sound", "alerts", "system", "os", "terminal", "command"],
     sections: [
       {
         options: [
@@ -1096,6 +1096,31 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "notifications.systemNotifications",
             label: "Enable system notifications",
+          },
+        ],
+      },
+      {
+        title: "Terminal",
+        options: [
+          {
+            kind: "select",
+            key: "notifications.terminalCompletion",
+            label: "Notify when a terminal command finishes",
+            hint: "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.",
+            options: [
+              { value: "off", label: "Off" },
+              { value: "longRunning", label: "Long-running commands" },
+              { value: "all", label: "All commands" },
+            ],
+          },
+          {
+            kind: "number",
+            key: "notifications.terminalThresholdSeconds",
+            label: "Minimum run time of a long-running command",
+            min: 1,
+            max: 86_400,
+            integer: true,
+            unit: "seconds",
           },
         ],
       },

@@ -335,7 +335,16 @@ function setUnread(task: string, value: boolean) {
 
 function markUnread(task: string) {
   const current = useAgents.getState().tasks.get(task);
-  if (current && current.status !== "archived" && !viewing(task)) setUnread(task, true);
+  if (current && current.status !== "archived" && !viewing(task) && !quietTasks.has(task)) setUnread(task, true);
+}
+
+/** Tasks the IDE runs on its own account (a generated commit message): no notifications, no unread mark. */
+const quietTasks = new Set<string>();
+
+export function runQuietly(task: string): () => void {
+  quietTasks.add(task);
+  setUnread(task, false);
+  return () => void quietTasks.delete(task);
 }
 
 export function markVisible(task: string): () => void {
@@ -642,7 +651,7 @@ function onEvent(e: AgentEvent) {
 
 /** In-app balloon for an Attention event; OS delivery goes through the general balloon path. */
 function notifyAttention(taskId: string, reason: "finished" | "input" | "failed") {
-  if (viewing(taskId)) return;
+  if (viewing(taskId) || quietTasks.has(taskId)) return;
   const task = useAgents.getState().tasks.get(taskId);
   const title = task?.title ?? "Agent";
   const body =

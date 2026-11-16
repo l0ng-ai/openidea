@@ -4,7 +4,7 @@ import { Decoration, EditorView } from "@codemirror/view";
 import { Chunk } from "@codemirror/merge";
 import { call, commands } from "@/platform/ipc";
 import type { EditorInput } from "@/workbench/contributions";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
 import { repositoryPath } from "./repositoryPaths";
 import styles from "./GitLog.module.css";
 import { syncMergeScroll } from "./mergeScroll";
@@ -24,10 +24,9 @@ export function GitMergeDiff({ input }: { input: EditorInput }) {
     const views: EditorView[] = [];
     let stopScroll: (() => void) | undefined;
     const sides = [data.parents[0]!, { rev: data.revision, path: data.path }, data.parents[1]!];
-    void Promise.all([
-      Promise.all(sides.map((s) => call(commands.vcsFileAt(repositoryPath(data.repo, s.path), s.rev)))),
-      languageFor(data.path),
-    ])
+    const path = repositoryPath(data.repo, data.path);
+    void Promise.all(sides.map((s) => call(commands.vcsFileAt(repositoryPath(data.repo, s.path), s.rev))))
+      .then(async (texts) => [texts, await languageFor(path, texts[1] == null ? null : firstLineOf(texts[1]))] as const)
       .then(([texts, language]) => {
         if (!alive || !host.current) return;
         const docs = texts.map((text) => Text.of((text ?? "").split("\n")));

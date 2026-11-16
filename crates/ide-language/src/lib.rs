@@ -347,6 +347,10 @@ pub struct SymbolTag {
     /// Enclosing symbol, e.g. class name for a method.
     pub container: Option<String>,
     pub range: Range,
+    /// Bare base names written in a class definition (`class X(A, B)`); empty for
+    /// every other symbol, and for languages whose classes carry none.
+    #[serde(default)]
+    pub bases: Vec<String>,
 }
 
 /// One inline TS/JS `<script>` block of a Vue SFC / HTML document.

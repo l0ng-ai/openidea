@@ -377,10 +377,11 @@ export const commands = {
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
-	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
-	 *  without opening it: previews of closed files.
+	 *  The language and CodeMirror mode `path` is shown with in an editor, without opening
+	 *  it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
+	 *  for hashbang detection; without it the file's on disk counts.
 	 */
-	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
+	docLanguage: (path: string, firstLine: string | null) => typedError<DocumentLanguage, IdeError>(__TAURI_INVOKE("doc_language", { path, firstLine })),
 	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state. */
 	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
 	docSetBom: (doc: DocId, hasBom: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_bom", { doc, hasBom })),
@@ -1444,6 +1445,21 @@ export const commands = {
 	/**  Copies the snapshot's dump to `path`, replacing a file there. */
 	debugHeapSave: (snapshot: HeapSnapshotId, path: IpcPath) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_save", { snapshot, path })),
 	debugHeapClose: (snapshot: HeapSnapshotId) => typedError<null, IdeError>(__TAURI_INVOKE("debug_heap_close", { snapshot })),
+	/**  The stream chains around `frame`'s line; `top`: it is the thread's top frame. */
+	debugStreamChains: (session: DebugSessionId, frame: StackFrame, top: boolean) => typedError<StreamChainInfo_Serialize[], IdeError>(__TAURI_INVOKE("debug_stream_chains", { session, frame, top })),
+	/**
+	 *  Traces chain `chain_index` of [`debug_stream_chains`], whose `range` the UI showed, while the
+	 *  program runs it; cancelling `request` stops recording.
+	 */
+	debugStreamTrace: (session: DebugSessionId, request: RequestId, threadId: number, frame: StackFrame, chainIndex: number, range: Range, onProgress: Channel<TraceProgress>) => typedError<StreamTraceResult_Serialize, IdeError>(__TAURI_INVOKE("debug_stream_trace", { session, request, threadId, frame, chainIndex, range, onProgress })),
+	/**  Ends the running trace's terminal operation; `None` when no trace runs. */
+	debugStreamTraceAbort: (session: DebugSessionId) => typedError<{ kind: "interrupted" } | { kind: "stopped" } | 
+/**  Suspended threads that own a monitor the terminal may be waiting for: `(thread id, name)`. */
+{ kind: "stuck"; holders: ([number, string])[] } | 
+/**  The terminal had not started. */
+{ kind: "cancelled" } | 
+/**  The trace had already parked or failed. */
+{ kind: "finished" } | null, IdeError>(__TAURI_INVOKE("debug_stream_trace_abort", { session })),
 	/**  Routes this window's plugin events to `on_event` (replaces an earlier subscription). */
 	pluginSubscribe: (onEvent: Channel<PluginEvent_Deserialize>) => __TAURI_INVOKE<void>("plugin_subscribe", { onEvent }),
 	/**
@@ -1888,9 +1904,32 @@ export const commands = {
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
+	/**  Installed copies of `tool`, newest first. */
+	dbToolInstalls: (tool: DbTool) => typedError<DbToolInstall[], IdeError>(__TAURI_INVOKE("db_tool_installs", { tool })),
+	/**  The version line of the executable at `path`. */
+	dbToolVersion: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_tool_version", { path })),
+	/**  The command line `db_run_tool` would run, without the password. */
+	dbToolPreview: (id: string, executable: string, job: DbToolJob) => typedError<string, IdeError>(__TAURI_INVOKE("db_tool_preview", { id, executable, job })),
+	/**  What made the dump at `path` (from its first bytes), so a restore picks the right tool. */
+	dbDumpKind: (path: string) => typedError<DbDumpKind, IdeError>(__TAURI_INVOKE("db_dump_kind", { path })),
+	/**
+	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
+	 *  in the desktop shell like [`db_export_file`]: the paths in `job` are local.
+	 */
+	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
+	/**  `server_version_num` of the PostgreSQL server of target `id` (connects first). */
+	dbServerVersion: (id: string) => typedError<number, IdeError>(__TAURI_INVOKE("db_server_version", { id })),
 };
 
 /* Types */
+export type AbortState = { kind: "interrupted" } | { kind: "stopped" } | 
+/**  Suspended threads that own a monitor the terminal may be waiting for: `(thread id, name)`. */
+{ kind: "stuck"; holders: ([number, string])[] } | 
+/**  The terminal had not started. */
+{ kind: "cancelled" } | 
+/**  The trace had already parked or failed. */
+{ kind: "finished" };
+
 /**  What importing one entry of a JetBrains `acp.json` file did. */
 export type AcpImportOutcome = {
 	/**  The `agent_servers` key the entry was imported from. */
@@ -3164,6 +3203,10 @@ export type CatalogPlugin = {
 	problem: string | null,
 };
 
+export type ChainUnavailable = { kind: "notTopFrame" } | { kind: "notAtChainStart" } | { kind: "insideChainLambda" } | { kind: "notJavaStreamRoot"; root: string } | { kind: "lazyTerminal"; op: string } | { kind: "noTerminal" } | { kind: "unknownOperation"; op: string } | { kind: "syntaxError" } | 
+/**  The session has no stream tracer: not java-debug, or its jdtls has no inspector bundle. */
+{ kind: "noBackend" };
+
 export type ChangeKind = "added" | "modified" | "deleted" | "renamed" | "untracked" | "ignored" | "conflicted";
 
 /**
@@ -4095,6 +4138,25 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  Oracle Database (pure-Rust thin driver, no client library). */
 "oracle" | "snowflake";
 
+export type DbDumpContent = "all" | "schemaOnly" | "dataOnly";
+
+export type DbDumpFormat = 
+/**  SQL text, restored with `psql`. */
+"plain" | "custom" | 
+/**  A directory of files; the only format `pg_dump` writes in parallel. */
+"directory" | "tar";
+
+/**  What made a dump, read from its first bytes (a directory: its `toc.dat`). */
+export type DbDumpKind = 
+/**  `pg_dump` custom or tar archive, or a directory archive: `pg_restore`. */
+"postgresArchive" | 
+/**  Plain SQL from `pg_dump`: `psql`. */
+"postgresSql" | 
+/**  `mysqldump` / `mariadb-dump`: not for the PostgreSQL tools. */
+"mysqlSql" | "unknown";
+
+export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
 	schema: string,
@@ -4159,6 +4221,37 @@ export type DbPackageInfo = {
 	name: string,
 };
 
+/**  Name lists hold `pg_dump` patterns (`*`, `?`, quoted names). */
+export type DbPgDumpOptions = {
+	format: DbDumpFormat,
+	statements: DbDumpStatements,
+	content: DbDumpContent,
+	schemas: string[],
+	tables: string[],
+	excludeTables: string[],
+	/**  Plain format only: archives get DROP / CREATE at restore. */
+	clean: boolean,
+	ifExists: boolean,
+	create: boolean,
+	noOwner: boolean,
+	noPrivileges: boolean,
+	/**  Directory format only. */
+	jobs: number,
+};
+
+export type DbPgRestoreOptions = {
+	content: DbDumpContent,
+	schemas: string[],
+	clean: boolean,
+	ifExists: boolean,
+	noOwner: boolean,
+	noPrivileges: boolean,
+	singleTransaction: boolean,
+	exitOnError: boolean,
+	/**  Ignored with a single transaction, which `pg_restore` cannot split. */
+	jobs: number,
+};
+
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
 export type DbPlanNode = {
 	parent: number | null,
@@ -4182,6 +4275,11 @@ export type DbPlanProperty = {
 export type DbProperty = {
 	name?: string,
 	value?: string,
+};
+
+export type DbPsqlOptions = {
+	singleTransaction: boolean,
+	stopOnError: boolean,
 };
 
 export type DbQueryResult = {
@@ -4340,6 +4438,26 @@ export type DbTablePage = {
 	offset: number | null,
 };
 
+export type DbTool = "pgDump" | "pgRestore" | "psql";
+
+/**  An installed copy of a tool. */
+export type DbToolInstall = {
+	path: string,
+	/**  First line of `--version`, e.g. `pg_dump (PostgreSQL) 17.2`. */
+	version: string,
+};
+
+/**  A run of a client tool: which one, the file it writes or reads, and its options. */
+export type DbToolJob = { tool: "pgDump"; file: string; options: DbPgDumpOptions } | 
+/**  `file`: an archive, or a directory archive. */
+{ tool: "pgRestore"; file: string; options: DbPgRestoreOptions } | { tool: "psql"; file: string; options: DbPsqlOptions };
+
+/**  A line the tool wrote. */
+export type DbToolLine = {
+	stderr: boolean,
+	text: string,
+};
+
 export type DbTriggerInfo = {
 	name: string,
 	/**  `before`, `after`, `instead of`. */
@@ -4383,6 +4501,11 @@ export type DebugCapabilities = {
 	jsPage: boolean,
 	/**  The adapter evaluates expressions while the program runs, without a stack frame. */
 	liveEvaluate: boolean,
+	/**
+	 *  A stream chain can be traced while the program runs it ([`DebugManager::stream_trace`]).
+	 *  Can change during the session, like `jvm_instances`.
+	 */
+	streamTrace: boolean,
 };
 
 /**  A completion the adapter offers for an expression (DAP `completions`). */
@@ -4948,6 +5071,13 @@ export type DocumentInfo = {
 	 *  CodeMirror mode replacing the language's own one (an Angular project's
 	 *  HTML templates).
 	 */
+	uiMode?: string | null,
+};
+
+/**  The language and CodeMirror mode a file is shown with, like `DocumentInfo`. */
+export type DocumentLanguage = {
+	language: LanguageId,
+	/**  CodeMirror mode replacing the language's own one (`DocumentInfo::ui_mode`). */
 	uiMode?: string | null,
 };
 
@@ -7421,6 +7551,12 @@ export type LineMatch = {
 	textOffset: number,
 };
 
+/**  Link from an output element to the input element it came from. */
+export type Link = {
+	parent: number | null,
+	ambiguous: boolean,
+};
+
 /**  What a symbolic link in a revision points to, resolved inside that revision's tree. */
 export type LinkTarget = "dir" | "file" | 
 /**  Dangling, outside the repository (absolute or above its root), or a link loop. */
@@ -8229,6 +8365,10 @@ export type NotificationSettings = {
 	sound?: boolean,
 	/**  Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
 	systemNotifications?: boolean,
+	/**  Terminal command completions (#3712): `off` | `longRunning` | `all`. */
+	terminalCompletion?: string,
+	/**  `longRunning`: the run time a finished command must reach, in seconds. */
+	terminalThresholdSeconds?: number,
 	/**  Group id → display; groups not listed use their default. */
 	groups?: { [key in string]: NotificationGroupSettings },
 };
@@ -10575,6 +10715,72 @@ export type StepSource = {
 	feature: boolean,
 };
 
+export type StreamChainInfo = StreamChainInfo_Serialize | StreamChainInfo_Deserialize;
+
+export type StreamChainInfo_Deserialize = {
+	/**  The `chain_index` [`debug_stream_trace`] takes for the same frame. */
+	index: number,
+	range: Range,
+	text: string,
+	/**
+	 *  Intermediate operations in call order, modifiers included. Empty, like `terminal`, for a
+	 *  chain the search rejected.
+	 */
+	steps: string[],
+	terminal: string,
+	available: boolean,
+	/**  Set exactly when `available` is false. */
+	reason?: ChainUnavailable | null,
+};
+
+export type StreamChainInfo_Serialize = {
+	/**  The `chain_index` [`debug_stream_trace`] takes for the same frame. */
+	index: number,
+	range: Range,
+	text: string,
+	/**
+	 *  Intermediate operations in call order, modifiers included. Empty, like `terminal`, for a
+	 *  chain the search rejected.
+	 */
+	steps: string[],
+	terminal: string,
+	available: boolean,
+	/**  Set exactly when `available` is false. */
+	reason?: ChainUnavailable | null,
+};
+
+export type StreamTraceResult = StreamTraceResult_Serialize | StreamTraceResult_Deserialize;
+
+export type StreamTraceResult_Deserialize = ({ status: "ready"; chain: StreamChainInfo_Deserialize; 
+/**
+ *  Column titles by recorded step: `steps[0]` is the root call's name (empty for a stream
+ *  held in a local), then each operation that records, modifiers left out.
+ */
+steps: string[]; 
+/**  In recording order. */
+records: TraceRecordView[]; 
+/**  Parallel to `records`. */
+links: Link[]; terminal: TerminalView; banners: TraceBanner[]; 
+/**  The stop the values belong to, for `debug_jvm_memory_fields`. */
+generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never } | 
+/**  Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong. */
+({ status: "cancelled"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
+
+export type StreamTraceResult_Serialize = ({ status: "ready"; chain: StreamChainInfo_Serialize; 
+/**
+ *  Column titles by recorded step: `steps[0]` is the root call's name (empty for a stream
+ *  held in a local), then each operation that records, modifiers left out.
+ */
+steps: string[]; 
+/**  In recording order. */
+records: TraceRecordView[]; 
+/**  Parallel to `records`. */
+links: Link[]; terminal: TerminalView; banners: TraceBanner[]; 
+/**  The stop the values belong to, for `debug_jvm_memory_fields`. */
+generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never } | 
+/**  Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong. */
+({ status: "cancelled"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
+
 export type StructuralEvent = { type: "file"; file: StructuralFile } | { type: "done"; summary: StructuralSummary };
 
 /**  All matches in one file; streamed as files complete. */
@@ -10827,6 +11033,8 @@ export type TerminalSettings = {
 	columnWidth?: number | null,
 };
 
+export type TerminalView = { kind: "value"; value: JvmValue } | { kind: "void" } | { kind: "threw"; exception: JvmValue };
+
 export type TestCaseReport = {
 	/**  Fully qualified class (`com.acme.OrderTest`, nested: `com.acme.OrderTest$Nested`). */
 	className: string,
@@ -11058,6 +11266,40 @@ export type ToolUpdate = {
 	/**  The version installing the tool again would get. */
 	latest: string,
 };
+
+/**  Something the user must know to read the trace correctly. */
+export type TraceBanner = { kind: "truncated"; dropped: number } | 
+/**  `count()` on a sized source skips the pipeline, so nothing was recorded. */
+{ kind: "countFromSize" } | { kind: "sortedPassThrough"; step: number } | { kind: "sequentialized" } | { kind: "breakpointsSkipped"; count: number } | 
+/**  Breakpoint stops of the chain's thread while it ran, resumed without being shown. */
+{ kind: "breakpointsResumed"; count: number } | { kind: "threw" };
+
+export type TracePhase = "arming" | "running" | 
+/**  The terminal operation runs on, keeping no more records. */
+"recordingStopped" | "aborting" | 
+/**  The terminal operation finished: stepping out of it and reading the records. */
+"collecting";
+
+export type TraceProgress = {
+	phase: TracePhase,
+	records: number,
+	dropped: number,
+	/**  Since the program started running the chain, as the bundle measures it. */
+	elapsedMs: number,
+};
+
+export type TraceRecordView = {
+	step: number,
+	value: JvmValue,
+};
+
+export type TraceUnavailable = 
+/**  Not a java-debug session, or no JDT LS bundle behind it. */
+{ kind: "noBackend" } | { kind: "notSuspended" } | { kind: "notAtChainStart"; detail: string } | 
+/**  A trace already runs in this session or its JVM. */
+{ kind: "busy" } | 
+/**  java-debug has no debug session for the JVM. */
+{ kind: "noSession" } | { kind: "unsupported"; detail: string };
 
 export type TransferError = {
 	path: string,

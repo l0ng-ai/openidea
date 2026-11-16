@@ -2,7 +2,9 @@
 //! shell reports its working directory (OSC 7) at every prompt, so links and
 //! new splits resolve against the directory the user `cd`-ed into, and marks
 //! where a command starts and ends (OSC 133 C / D), so the tab shows the
-//! running program's title only while one runs.
+//! running program's title only while one runs. The end mark carries the
+//! command's exit status (`OSC 133;D;<status>`), so a finished long-running
+//! command can be reported as finished or failed.
 //!
 //! zsh starts with `ZDOTDIR` pointing at generated startup files that source
 //! the user's own ones first; bash gets an `--init-file` that replays the
@@ -34,7 +36,7 @@ ZDOTDIR=$OPENIDEA_USER_ZDOTDIR
 [[ -f $ZDOTDIR/.zshrc ]] && . $ZDOTDIR/.zshrc
 OPENIDEA_USER_ZDOTDIR=$ZDOTDIR
 ZDOTDIR=$_openidea_dir
-_openidea_osc7() { printf '\e]133;D\a\e]7;file://%s%s\a' "${HOST}" "${PWD}" }
+_openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$?" "${HOST}" "${PWD}" }
 _openidea_preexec() { printf '\e]133;C\a' }
 # First, so the command counts as finished before other hooks set the prompt's title.
 precmd_functions=(_openidea_osc7 ${precmd_functions:#_openidea_osc7})
@@ -68,7 +70,7 @@ if [ "${OPENIDEA_LOGIN:-}" = 1 ]; then
 else
   [ -f ~/.bashrc ] && . ~/.bashrc
 fi
-__openidea_osc7() { printf '\e]133;D\a\e]7;file://%s%s\a' "${HOSTNAME}" "${PWD}"; }
+__openidea_osc7() { printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$?" "${HOSTNAME}" "${PWD}"; }
 case ";${PROMPT_COMMAND:-};" in
   *";__openidea_osc7;"*) ;;
   *) PROMPT_COMMAND="__openidea_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}" ;;
@@ -81,7 +83,7 @@ esac
 "#;
 
 const FISH_INIT: &str = concat!(
-    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D\a\e]7;file://%s%s\a' (hostname) $PWD; end; "#,
+    r#"function __openidea_osc7 --on-event fish_prompt; printf '\e]133;D;%s\a\e]7;file://%s%s\a' "$status" (hostname) $PWD; end; "#,
     r#"function __openidea_preexec --on-event fish_preexec; printf '\e]133;C\a'; end"#,
 );
 
@@ -165,6 +167,17 @@ pub(crate) fn apply(shell_name: &str, args: &mut Vec<String>, env: &mut BTreeMap
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_end_reports_the_exit_status() {
+        // The D mark carries the shell's exit status (`OSC 133;D;<status>`), so
+        // a finished long-running command can be told from a failed one.
+        // zsh and bash read `$?`, fish `$status`, each at hook entry before any
+        // other command runs.
+        assert!(ZSHRC.contains(r"\e]133;D;%s\a") && ZSHRC.contains("\"$?\""));
+        assert!(BASHRC.contains(r"\e]133;D;%s\a") && BASHRC.contains("\"$?\""));
+        assert!(FISH_INIT.contains(r"\e]133;D;%s\a") && FISH_INIT.contains("\"$status\""));
+    }
 
     #[test]
     fn powershell_clear_integration_only_changes_plain_windows_starts() {

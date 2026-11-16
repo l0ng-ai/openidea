@@ -154,9 +154,14 @@ fn debug_server_port(config: &LaunchConfig) -> Option<u16> {
 fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port: u16) {
     let Ok(project) = host.project(window) else { return };
     let Some(module) = project.lsp.java_debug_server_module(port) else { return };
-    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module));
+    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module.clone()));
     if let Err(e) = host.debugger.set_jvm_inspector(session, inspector) {
         tracing::debug!("jvm inspector for session {session:?}: {e}");
+        return;
+    }
+    let tracer = std::sync::Arc::new(ide_lsp::JdtStreamTracer::new(project.lsp.clone(), module));
+    if let Err(e) = host.debugger.set_stream_tracer(session, tracer) {
+        tracing::debug!("stream tracer for session {session:?}: {e}");
     }
 }
 

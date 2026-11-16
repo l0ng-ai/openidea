@@ -36,7 +36,7 @@ import { defaultKeymap } from "@codemirror/commands";
 import { search, searchKeymap } from "@codemirror/search";
 import { scrollbarMarks, type ScrollbarMark } from "@/editor/api";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
-import { findLanguageDescription, loadSupport, uiModeForPath } from "@/editor/core/cm/languages";
+import { languageDescriptionFor, loadSupport } from "@/editor/core/cm/languages";
 import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
@@ -533,23 +533,18 @@ export const documentTooltips: Extension = tooltips({
   tooltipSpace: tooltipBounds,
 });
 
-const cache = new Map<string, Promise<LanguageSupport | null>>();
+/** The first line of a side's text, which decides hashbang-only scripts' language. */
+export const firstLineOf = (text: string): string => text.slice(0, text.search(/\r?\n|$/));
 
 /**
- * Loads the language for `fileName` through the editor's pipeline
- * (`findLanguageDescription` + `loadSupport`): the same modes, tag patches and
- * `data-language` attribute as the editor, so colours match. Unknown
- * extensions resolve like the editor's (null once the backend languages are
- * loaded, file-name match before that).
+ * Loads the language `path` is shown with in the editor (`languageDescriptionFor`: Override
+ * File Type, File Types patterns, hashbangs, framework modes, then the extension) through
+ * the editor's pipeline (`loadSupport`): the same modes, tag patches and `data-language`
+ * attribute, so colours match. `firstLine` is the shown text's (`firstLineOf`); without it
+ * the file's own counts.
  */
-export function languageFor(fileName: string): Promise<LanguageSupport | null> {
-  const name = fileName.slice(fileName.lastIndexOf("/") + 1);
-  const hit = cache.get(name);
-  if (hit) return hit;
-  const p = Promise.resolve(uiModeForPath(fileName))
-    .then((uiMode) => findLanguageDescription(uiMode ?? null, fileName))
+export function languageFor(path: string, firstLine?: string | null): Promise<LanguageSupport | null> {
+  return languageDescriptionFor(path, firstLine ?? undefined)
     .then((desc) => (desc ? loadSupport(desc) : null))
     .catch(() => null);
-  cache.set(name, p);
-  return p;
 }
