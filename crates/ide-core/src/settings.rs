@@ -760,6 +760,9 @@ pub struct AppearanceSettings {
     pub main_menu_style: String,
     /// A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`).
     pub main_menu_alt: bool,
+    /// Settings open in a native window of their own (IDEA parity); off opens them
+    /// as a dialog inside the project window, which needs no new webview.
+    pub settings_in_separate_window: bool,
     /// `subpixel` | `greyscale` | `none`
     pub ide_antialiasing: String,
     pub editor_antialiasing: String,
@@ -859,6 +862,7 @@ impl Default for AppearanceSettings {
             menu_icons: true,
             main_menu_style: "hamburger".into(),
             main_menu_alt: true,
+            settings_in_separate_window: true,
             ide_antialiasing: "greyscale".into(),
             editor_antialiasing: "greyscale".into(),
             show_tool_window_bars: true,
@@ -1866,6 +1870,15 @@ mod tests {
         let off: Settings = serde_json::from_str(r#"{"appearance":{"mainMenuAlt":false}}"#).unwrap();
         assert!(!off.appearance.main_menu_alt);
         assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["mainMenuAlt"], false);
+    }
+
+    #[test]
+    fn settings_open_in_a_separate_window_unless_turned_off() {
+        let old: Settings = serde_json::from_str(r#"{"appearance":{"compactMode":true}}"#).unwrap();
+        assert!(old.appearance.settings_in_separate_window);
+        let off: Settings = serde_json::from_str(r#"{"appearance":{"settingsInSeparateWindow":false}}"#).unwrap();
+        assert!(!off.appearance.settings_in_separate_window);
+        assert_eq!(serde_json::to_value(off).unwrap()["appearance"]["settingsInSeparateWindow"], false);
     }
 
     #[test]

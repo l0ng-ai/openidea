@@ -8567,5 +8567,7 @@
   "The agent asked for permission to continue": "智能体请求许可以继续",
   "The agent task was archived": "智能体任务已归档",
   "The agent did not answer in time": "智能体未在限定时间内回复",
-  "The agent did not reply with a commit message": "智能体没有返回提交消息"
+  "The agent did not reply with a commit message": "智能体没有返回提交消息",
+  "Open Settings in a separate window": "在单独的窗口中打开设置",
+  "When off, Settings opens as a dialog in the project window, which is faster": "关闭时，设置以对话框形式在项目窗口中打开，速度更快"
 }

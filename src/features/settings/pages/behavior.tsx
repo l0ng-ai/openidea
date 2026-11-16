@@ -375,6 +375,18 @@ function UiOptionsGrid() {
   );
 }
 
+/** Desktop only: the browser build always shows Settings in the page. */
+function SettingsWindowRow() {
+  if (!isTauri()) return null;
+  return (
+    <BoundToggle
+      k="appearance.settingsInSeparateWindow"
+      label="Open Settings in a separate window"
+      hint="When off, Settings opens as a dialog in the project window, which is faster"
+    />
+  );
+}
+
 const AA_OPTIONS: SelectOption<Antialiasing>[] = [
   { value: "subpixel", label: "Subpixel" },
   { value: "greyscale", label: "Greyscale" },
@@ -925,6 +937,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
               "tree indent",
             ],
             component: UiOptionsGrid,
+          },
+          {
+            kind: "custom",
+            label: "Open Settings in a separate window",
+            keywords: ["settings window", "settings dialog"],
+            component: SettingsWindowRow,
           },
         ],
       },

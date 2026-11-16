@@ -2180,5 +2180,7 @@
   "The agent asked for permission to continue": "The agent asked for permission to continue",
   "The agent task was archived": "The agent task was archived",
   "The agent did not answer in time": "The agent did not answer in time",
-  "The agent did not reply with a commit message": "The agent did not reply with a commit message"
+  "The agent did not reply with a commit message": "The agent did not reply with a commit message",
+  "Open Settings in a separate window": "Open Settings in a separate window",
+  "When off, Settings opens as a dialog in the project window, which is faster": "When off, Settings opens as a dialog in the project window, which is faster"
 }

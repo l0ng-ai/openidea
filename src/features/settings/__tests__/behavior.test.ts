@@ -120,6 +120,12 @@ describe("appearance & behavior settings", () => {
     expect(root.style.getPropertyValue("--tree-indent")).toBe("");
   });
 
+  it("opens Settings in a separate window unless turned off", () => {
+    expect(validateAppearanceExtras({}).settingsInSeparateWindow).toBe(true);
+    expect(validateAppearanceExtras({ settingsInSeparateWindow: false }).settingsInSeparateWindow).toBe(false);
+    expect(validateAppearanceExtras({ settingsInSeparateWindow: "off" }).settingsInSeparateWindow).toBe(true);
+  });
+
   it("keeps the UI fallback font empty by default and trims a stored one", () => {
     expect(validateAppearanceExtras({}).uiFontFallback).toBe("");
     expect(validateAppearanceExtras({ uiFontFallback: " 思源黑体 " }).uiFontFallback).toBe("思源黑体");
