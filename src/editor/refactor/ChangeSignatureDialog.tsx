@@ -1,5 +1,5 @@
 /** IDEA's Change Signature dialog for Java methods (`signature.ts`). */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MethodSignature } from "@/bindings";
 import { Checkbox, Dialog, IconButton, Input, Select, Spinner, T, Toolbar } from "@/ui";
 import { useTx } from "@/platform/i18n";
@@ -46,7 +46,11 @@ function ChangeSignatureDialogInner({ request }: { request: SignatureRequest }) 
   const ready = !busy && !problem && signatureChanged(info, signature);
   const current = Math.min(selected, rows.length - 1);
 
+  // Closing the dialog cancels a refactoring still being checked: it applies nothing.
+  const running = useRef<AbortController | null>(null);
+  useEffect(() => () => running.current?.abort(), []);
   const close = () => {
+    running.current?.abort();
     useSignatureDialog.setState({ request: null });
     request.view.focus();
   };
@@ -72,9 +76,10 @@ function ChangeSignatureDialogInner({ request }: { request: SignatureRequest }) 
   };
   const submit = async (preview: boolean) => {
     if (!ready) return;
+    const run = (running.current = new AbortController());
     setBusy(true);
     setError(null);
-    const outcome = await changeSignature(request, signature, delegate, preview);
+    const outcome = await changeSignature(request, signature, delegate, preview, run.signal);
     if (useSignatureDialog.getState().request !== request) return;
     setBusy(false);
     if (outcome.status === "done") close();
