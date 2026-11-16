@@ -144,6 +144,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                          | no            |
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
+| `javaAgents`        | `path` (a jar in the package), `args?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; _Java agents_)                                                                                                       | no            |
 | `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
 | `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
@@ -359,6 +360,7 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
 | `lsp:<server>`      | high   | API 1.9: `Project::language_server_request` / `language_server_notify` to that running language server (its name in the language definition); trusted projects only     |
+| `java.agent`        | high   | API 1.10: the `[[contributes.javaAgents]]` jar runs inside the Java applications you start; derived from that declaration, never listed                                 |
 | `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
 | `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
 | `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
@@ -368,7 +370,8 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
-`command`. Those are optional — refusing one keeps the rest of the plugin
+`command`. A `[[contributes.javaAgents]]` declaration derives `java.agent` the
+same way (see _Java agents_). Those are optional — refusing one keeps the rest of the plugin
 working. On grant the program is resolved to an absolute path and its content
 hash is recorded; it is checked again right before every start, and a replaced
 file is refused until the user approves it again. In a remote project the
@@ -432,6 +435,9 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
   side alone, as for the IDE's own added and deleted files, instead of next to an
   empty text. Both `None` is `Invalid`. Web views send `null` for that side in
   `{ op: "open-diff", ... }`.
+- **`[[contributes.javaAgents]]`** loads a Java agent from the package into the
+  JVM of Application, Spring Boot and JAR Application configurations, behind the
+  high-risk `java.agent` capability. See _Java agents_.
 
 ### API 1.9
 
@@ -2083,6 +2089,45 @@ as `content-tab-action`; answer with `host::reply_content_tab(request_id, reply)
 The host accepts replies only from that plugin and window. Content is limited to
 1 Mi UTF-16 units and each side of a diff to 8 Mi, with at most 16 actions and one
 Save action.
+
+### Java agents (API 1.10)
+
+A plugin that observes or instruments the user's application (request
+mappings, traces, SQL) can have the IDE load a Java agent into the JVMs it
+starts. Declare the agent; no code is needed:
+
+```toml
+engines.openidea = "^1.10"
+
+[[contributes.javaAgents]]
+path = "agent/openidea-spring-agent.jar"   # inside the package, like every manifest path
+args = "optional-arguments"                # optional
+```
+
+- One agent per plugin. A second declaration, a `path` that leaves the package
+  (`..`, an absolute path, a symlink pointing outside) or a missing file is
+  refused when the manifest is read, so a bad path fails at install, not at
+  launch. `args` is one line.
+- The declaration derives the optional high-risk capability `java.agent`, "Run
+  code inside the Java applications you start". It is not listed under
+  `[capabilities]` (a manifest that lists it is refused). On grant the IDE
+  records the jar's content hash and checks it again before every launch; a
+  changed jar is left out, with a line in the console, until the user approves
+  `java.agent` again in Settings › Plugins, which shows the agent's file name
+  and arguments next to the permission. Refusing or revoking it keeps the rest
+  of the plugin working, and the next launch has no agent.
+- The IDE adds one `-javaagent:<absolute path>[=<args>]` argument to the Java
+  command line of **Application**, **Spring Boot** and **JAR Application**
+  configurations, for Run and Debug alike, after the configuration's VM
+  options. Arguments are separate argv items (no shell), so a path with spaces
+  needs no quoting; a shortened command line moves only the classpath into its
+  argument file. The same `-javaagent:` already among the VM options is not
+  added again.
+- Not in this version: tests (JUnit), Maven and Gradle goals (an Application
+  set to _Build and run using: Gradle_ runs as a Gradle task), application
+  servers (Tomcat), remote JVM debug, configurations on a run target, and
+  remote projects. In a remote project the JVM runs on the server, so the
+  agent is skipped and the run console says so in one line.
 
 ### Plugin-backed content editor tabs (API 1.3)
 

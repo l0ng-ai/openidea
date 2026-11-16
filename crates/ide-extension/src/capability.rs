@@ -55,6 +55,9 @@ pub enum Capability {
     FsRead(String),
     /// Write files outside the project under one path.
     FsWrite(String),
+    /// Load the plugin's Java agent into the JVMs of Java run configurations. Never
+    /// declared: it comes from `[[contributes.javaAgents]]`.
+    JavaAgent,
 }
 
 /// How a grant is presented (plan 4.2).
@@ -90,7 +93,8 @@ impl Capability {
             | Self::Process(_)
             | Self::Lsp(_)
             | Self::FsRead(_)
-            | Self::FsWrite(_) => Risk::High,
+            | Self::FsWrite(_)
+            | Self::JavaAgent => Risk::High,
         }
     }
 
@@ -135,6 +139,7 @@ impl Capability {
             }
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
+            Self::JavaAgent => "Run code inside the Java applications you start".into(),
         }
     }
 
@@ -259,6 +264,7 @@ impl fmt::Display for Capability {
             Self::Lsp(s) => write!(f, "lsp:{s}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
+            Self::JavaAgent => f.write_str("java.agent"),
         }
     }
 }
@@ -335,6 +341,7 @@ impl FromStr for Capability {
             "events" => Self::Events,
             "events.input" => Self::InputEvents,
             "clipboard" => Self::Clipboard,
+            "java.agent" => Self::JavaAgent,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
@@ -392,6 +399,7 @@ mod tests {
             "process:cargo",
             "lsp:phoxite",
             "lsp:rust-analyzer",
+            "java.agent",
         ] {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
@@ -427,6 +435,8 @@ mod tests {
         assert_eq!(Capability::Lsp("phoxite".into()).risk(), Risk::High);
         assert!(!Capability::Lsp("phoxite".into()).covers(&Capability::Lsp("intelephense".into())));
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
+        assert_eq!(Capability::JavaAgent.risk(), Risk::High);
+        assert!(!Capability::JavaAgent.auto_migrates());
     }
 
     /// A trusted project's files name programs the IDE starts by itself: the git and language

@@ -360,6 +360,11 @@ impl Manifest {
             if matches!(cap, Capability::Lsp(_)) {
                 self.needs_api(&format!("capability `{cap}`"), 9)?;
             }
+            if matches!(cap, Capability::JavaAgent) {
+                return Err(
+                    "`java.agent` comes from `[[contributes.javaAgents]]`: remove it from [capabilities]".into()
+                );
+            }
         }
         if let Some(dark) = &self.icon_dark {
             if self.icon.is_none() {
@@ -728,6 +733,14 @@ required = [\"lsp:phoxite\"]
         }
         let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.9"))).unwrap();
         assert_eq!(m.capabilities.required, [Capability::Lsp("phoxite".into())]);
+    }
+
+    #[test]
+    fn java_agent_capability_is_not_declared() {
+        for list in ["required", "optional"] {
+            let caps = format!("[capabilities]\n{list} = [\"java.agent\"]\n");
+            assert!(err(&format!("{}{caps}", BASE.replace("^1.2", "^1.10"))).contains("contributes.javaAgents"));
+        }
     }
 
     #[test]

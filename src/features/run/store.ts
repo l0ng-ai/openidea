@@ -25,6 +25,7 @@ import {
   JavaBuildFailedError,
   parseJavaArgs,
   prepareJavaLaunch,
+  remoteJavaAgentNote,
 } from "@/platform/javaLaunch";
 import { downloadJdkActions } from "@/platform/jdk";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
@@ -1015,6 +1016,8 @@ async function startRunIn(
       started = rt.dotnetReports.launch(started);
     }
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+    const agentNote = await remoteJavaAgentNote(started);
+    if (agentNote) enqueue(sessionId, { kind: "system", text: agentNote });
     const processStarted = performance.now();
     const request = { id: nextRequestId(), controller: new AbortController() };
     rt.resolveRequest = request;

@@ -140,6 +140,20 @@ fn path_options(args: &[String]) -> (Option<usize>, Option<usize>) {
     (cp, mp)
 }
 
+/// Where the VM options of `java` arguments end: the index of the main class, `-jar` or
+/// `-m` / `--module` (the arguments' length when there is none).
+pub fn vm_options_end(args: &[String]) -> usize {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if matches!(a, "-jar" | "-m" | "--module") || a.starts_with("--module=") || !a.starts_with(['-', '@']) {
+            return i;
+        }
+        i += if WITH_VALUE.contains(&a) { 2 } else { 1 };
+    }
+    args.len()
+}
+
 /// A shortened command line and the temporary file it refers to (delete it once the process exits).
 #[derive(Debug)]
 pub struct Shortened {
@@ -376,6 +390,15 @@ mod tests {
         assert_eq!(path_options(&a), (Some(3), Some(1)));
         assert_eq!(path_options(&strings(&["-jar", "app.jar", "-cp", "x"])), (None, None));
         assert_eq!(path_options(&strings(&["Main", "-cp", "x"])), (None, None));
+    }
+
+    #[test]
+    fn vm_options_end_before_the_main_class_or_jar() {
+        assert_eq!(vm_options_end(&strings(&["-Xmx1g", "-cp", "x.jar", "Main", "-v"])), 3);
+        assert_eq!(vm_options_end(&strings(&["--add-opens", "a/b=ALL", "-jar", "app.jar"])), 2);
+        assert_eq!(vm_options_end(&strings(&["@opts", "-m", "mod/app.Main"])), 1);
+        assert_eq!(vm_options_end(&strings(&["--module=mod/app.Main"])), 0);
+        assert_eq!(vm_options_end(&strings(&["-Xmx1g"])), 1);
     }
 
     #[test]
