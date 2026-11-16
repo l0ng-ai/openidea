@@ -891,6 +891,8 @@ impl AgentManager {
         let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the topic first"))?;
         let title = title_of(&prompt);
         let mut config = self.merged_config(&spec.id, &req.config);
+        // The source task's choices may approve everything; the side conversation asks.
+        let wanted = config::asking_choices(&config, &req.config);
         config::ask_for_approvals(&mut config);
         if config::bypass_approvals(&config) {
             return Err(IdeError::invalid(
@@ -933,7 +935,7 @@ impl AgentManager {
             task: task.clone(),
             session_id: None,
             entries: Vec::new(),
-            wanted: req.config,
+            wanted,
             before,
             saved: None,
             touched: None,
@@ -1049,6 +1051,9 @@ impl AgentManager {
                 s.task.config.iter().find(|o| o.id == option).ok_or_else(|| IdeError::not_found("no such setting"))?;
             if !o.values.iter().any(|v| v.value == value) {
                 return Err(IdeError::invalid(format!("{} has no value {value}", o.name)));
+            }
+            if s.ephemeral && config::approves_everything(o, &value) {
+                return Err(IdeError::invalid("a side conversation asks before changing anything"));
             }
             o.clone()
         };
@@ -2365,7 +2370,10 @@ impl Task {
         }
         let (mut options, mut wanted) = {
             let s = self.state.lock();
-            (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
+            let options = if known { reported } else { s.task.config.clone() };
+            // A side conversation asks before anything, whatever mode the agent starts in.
+            let wanted = if s.ephemeral { config::asking_choices(&options, &s.wanted) } else { s.wanted.clone() };
+            (options, wanted)
         };
         config::add_client_options(provider_id, &mut options);
         // Changing model can replace the effort / context-tier choices; validate those only afterwards.
