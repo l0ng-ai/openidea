@@ -109,8 +109,8 @@ const lensField = StateField.define<CodeLens[]>({
   provide: (f) => codeLenses.from(f),
 });
 
-const usagesEnabled = () => editorPrefs().inlay.codeVisionUsages;
-const authorEnabled = () => editorPrefs().inlay.codeVisionAuthor;
+const usagesEnabled = () => editorPrefs().inlay.codeVision && editorPrefs().inlay.codeVisionUsages;
+const authorEnabled = () => editorPrefs().inlay.codeVision && editorPrefs().inlay.codeVisionAuthor;
 
 /** The author hint runs Annotate with Git Blame: it shows the file's annotations, or closes them when shown. */
 function toggleAnnotations(view: EditorView) {
