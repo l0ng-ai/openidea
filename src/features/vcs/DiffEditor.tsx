@@ -77,6 +77,7 @@ import {
   type DiffSide,
 } from "./diffInput";
 import { diffAnnotations } from "./diffAnnotations";
+import { setAllInOneDiff } from "./allInOneDiff";
 import { annotationsShown, blameSlot, toggleAnnotations } from "./blame";
 import { diffBlameTarget } from "./diffBlame";
 import { changedChainNeighbour } from "./diffNavigation";
@@ -254,6 +255,7 @@ export function DiffEditor({
   onNeighbour,
   onJumpToSource,
   onClose,
+  fit = false,
 }: {
   input: EditorInput;
   toolbarActions?: ReactNode;
@@ -267,6 +269,11 @@ export function DiffEditor({
   onJumpToSource?: () => void;
   /** Closes the diff's editor tab (Esc, IDEA's Close Diff Editor); hosts that aren't tabs leave it out. */
   onClose?: () => void;
+  /**
+   * A block of the all-in-one diff: as tall as its content (the host scrolls), without the
+   * toolbar, side-by-side panes always aligned, and not taking the editor tab's focus.
+   */
+  fit?: boolean;
 }) {
   const input_ = input.data as DiffData;
   // Swap Sides shows the request's sides the other way round; another request starts unswapped.
@@ -296,6 +303,8 @@ export function DiffEditor({
   // the unified layout of an empty side is exactly that. The saved mode stays as it is.
   const single = oneSided(data);
   const viewMode: DiffMode = single ? "unified" : opts.mode;
+  /** Side-by-side panes padded to line up; a fitted block always is (its host scrolls, not the panes). */
+  const aligned = fit || opts.alignChanges;
   const [lang, setLang] = useState<Extension | null>(null);
   const [chunkInfo, setChunkInfo] = useState({ count: 0, current: -1, moves: 0, whitespaceOnly: false });
   const [busy, setBusy] = useState(false);
@@ -527,7 +536,7 @@ export function DiffEditor({
     let views: Views;
     if (viewMode === "split") {
       let merge: MergeView | null = null;
-      const panes = opts.alignChanges
+      const panes = aligned
         ? null
         : new UnalignedPanes({
             sync: syncScroll.current,
@@ -685,7 +694,7 @@ export function DiffEditor({
     lang,
     viewMode,
     single,
-    opts.alignChanges,
+    aligned,
     opts.collapse,
     opts.ignore,
     opts.highlight,
@@ -705,7 +714,8 @@ export function DiffEditor({
     const views = viewsRef.current;
     if (!views) return;
     // Aligned panes scroll in MergeView's outer element, which scrollSnapshot does not cover.
-    const outer = views.merge && !views.panes ? views.merge.dom : null;
+    // A fitted block has no scroller of its own: anchoring would scroll the all-in-one diff.
+    const outer = !fit && views.merge && !views.panes ? views.merge.dom : null;
     const top = outer?.getBoundingClientRect().top;
     const block = top == null ? null : views.b.lineBlockAtHeight(Math.max(0, top - views.b.documentTop));
     const anchor =
@@ -730,14 +740,15 @@ export function DiffEditor({
       });
       return () => cancelAnimationFrame(frame);
     }
-  }, [softWrap, wrapSlot]);
+  }, [softWrap, wrapSlot, fit]);
 
   useEffect(() => viewsRef.current?.panes?.setSync(opts.syncScroll), [opts.syncScroll]);
 
   // The editor area focuses the tab's host (`[data-editor-focus]`), e.g. after F7 opened the next
   // file: hand that focus on to the diff, so its keymap and Jump to Source apply right away.
   useEffect(() => {
-    const host = rootRef.current?.closest<HTMLElement>("[data-editor-focus]");
+    // The blocks of an all-in-one diff share one tab: none takes its focus.
+    const host = fit ? null : rootRef.current?.closest<HTMLElement>("[data-editor-focus]");
     const views = viewsRef.current;
     if (!host || !views) return;
     const forward = () => (focusedSide.current === "a" && views.a ? views.a : views.b).focus();
@@ -747,7 +758,7 @@ export function DiffEditor({
     host.addEventListener("focus", onFocus);
     if (document.activeElement === host) forward();
     return () => host.removeEventListener("focus", onFocus);
-  }, [viewsGen]);
+  }, [viewsGen, fit]);
 
   useEffect(
     () => () => {
@@ -1178,10 +1189,25 @@ export function DiffEditor({
       {
         id: "align",
         label: "Align Changes",
-        checked: opts.alignChanges,
-        disabled: viewMode !== "split",
+        checked: aligned,
+        disabled: viewMode !== "split" || fit,
         run: () => setOpts({ alignChanges: !opts.alignChanges }),
       },
+      // A tab of one file of a change: show every file of it in one scrollable tab instead.
+      ...(input_.chain && input_.chain.length > 1 && !input_.embedded && onClose
+        ? [
+            { kind: "separator" } as const,
+            {
+              id: "allInOne",
+              label: "Show All Files in One Diff View",
+              checked: false,
+              run: () => {
+                setAllInOneDiff(true);
+                void openDiff(input_).then(() => onClose());
+              },
+            },
+          ]
+        : []),
       ...contribs.flatMap((c) => {
         const items = c.settingsItems?.() ?? [];
         return items.length ? [{ kind: "separator" } as const, ...items] : [];
@@ -1306,7 +1332,7 @@ export function DiffEditor({
   return (
     <div
       ref={rootRef}
-      className={styles.root}
+      className={clsx(styles.root, fit && styles.fit)}
       onKeyDown={onKeyDown}
       onFocusCapture={() => {
         setFocusedDiffNavigator(nav.current);
@@ -1319,7 +1345,7 @@ export function DiffEditor({
         }
       }}
     >
-      <div ref={toolbarRef} className={styles.toolbar} role="toolbar" aria-label={tx("Diff")}>
+      <div ref={toolbarRef} className={styles.toolbar} role="toolbar" aria-label={tx("Diff")} hidden={fit}>
         <IconButton
           icon="arrow-up"
           title="Previous Difference"
@@ -1559,7 +1585,7 @@ export function DiffEditor({
         className={clsx(
           styles.host,
           opts.highlight === "none" && styles.noHighlight,
-          viewMode === "split" && !opts.alignChanges && styles.unaligned,
+          viewMode === "split" && !aligned && styles.unaligned,
         )}
         hidden={!!binary || !!error || !ready}
         aria-label={diffTitle(data)}
