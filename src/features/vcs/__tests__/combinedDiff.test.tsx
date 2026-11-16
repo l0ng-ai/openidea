@@ -83,20 +83,24 @@ describe("the all-in-one diff tab", () => {
     expect(screen.getAllByText("src")).toHaveLength(2);
   });
 
-  it("collapses a file and all files", () => {
+  it("collapses a file and all files, keeping their diffs (and unsaved edits) loaded", () => {
     render(<CombinedDiffTab input={input} />);
+    const shown = () => screen.queryAllByTestId("block-diff").filter((b) => !b.closest("[hidden]"));
+    const first = screen.getAllByTestId("block-diff")[0]!;
     act(() => {
       fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
     });
-    expect(screen.getAllByTestId("block-diff")).toHaveLength(2);
+    expect(shown()).toHaveLength(2);
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Collapse All Files" }));
     });
-    expect(screen.queryAllByTestId("block-diff")).toHaveLength(0);
+    expect(shown()).toHaveLength(0);
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Expand All Files" }));
     });
-    expect(screen.getAllByTestId("block-diff")).toHaveLength(3);
+    expect(shown()).toHaveLength(3);
+    // The same diff all along: collapsing never released its document.
+    expect(screen.getAllByTestId("block-diff")[0]).toBe(first);
   });
 
   it("switches every block between side-by-side and unified", () => {

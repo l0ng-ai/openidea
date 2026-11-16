@@ -98,14 +98,15 @@ function Block({
           />
         )}
       </div>
-      {!collapsed &&
-        (near ? (
-          <div className={styles.body}>
-            <DiffEditor input={input} fit />
-          </div>
-        ) : (
-          <div className={styles.placeholder} />
-        ))}
+      {/* A collapsed block keeps its loaded diff, hidden: unmounting it would release the
+          working-tree document and, with autosave off, drop its unsaved edits. */}
+      {near ? (
+        <div className={styles.body} hidden={collapsed}>
+          <DiffEditor input={input} fit />
+        </div>
+      ) : (
+        !collapsed && <div className={styles.placeholder} />
+      )}
     </section>
   );
 }
