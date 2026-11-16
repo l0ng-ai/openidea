@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentUnit } from "@codemirror/language";
@@ -46,23 +46,25 @@ describe("indent guides", () => {
     expect(guideVars(1, 4)).toBeNull();
     expect(guideVars(3, 4)).toEqual({
       images: "var(--openidea-guide), var(--openidea-guide)",
-      positions: "calc(0.5px + 4ch) 0, calc(0.5px + 8ch) 0",
+      positions: "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0, calc(0.5px + 8 * var(--openidea-space, 1ch)) 0",
     });
   });
 
   it("positions each guide the same way on lines of different depth", () => {
     const v = mount(SOURCE);
     expect(line(v, 1).classList.contains("cm-openidea-guides")).toBe(false);
-    expect(line(v, 2).style.getPropertyValue("--openidea-guide-positions")).toBe("calc(0.5px + 4ch) 0");
+    expect(line(v, 2).style.getPropertyValue("--openidea-guide-positions")).toBe(
+      "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0",
+    );
     expect(line(v, 3).style.getPropertyValue("--openidea-guide-positions")).toBe(
-      "calc(0.5px + 4ch) 0, calc(0.5px + 8ch) 0",
+      "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0, calc(0.5px + 8 * var(--openidea-space, 1ch)) 0",
     );
   });
 
   it("keeps guides through blank lines inside a block", () => {
     const v = mount(SOURCE);
     expect(line(v, 4).style.getPropertyValue("--openidea-guide-positions")).toBe(
-      "calc(0.5px + 4ch) 0, calc(0.5px + 8ch) 0",
+      "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0, calc(0.5px + 8 * var(--openidea-space, 1ch)) 0",
     );
   });
 
@@ -77,7 +79,9 @@ describe("indent guides", () => {
     ]);
     const [implLens, fnLens] = [...v.contentDOM.querySelectorAll<HTMLElement>(".cm-openidea-lens")];
     expect(v.contentDOM.classList.contains("cm-openidea-guidesOn")).toBe(true);
-    expect(fnLens!.style.getPropertyValue("--openidea-guide-positions")).toBe("calc(0.5px + 4ch) 0");
+    expect(fnLens!.style.getPropertyValue("--openidea-guide-positions")).toBe(
+      "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0",
+    );
     expect(implLens!.style.getPropertyValue("--openidea-guide-positions")).toBe("");
   });
 });
@@ -136,7 +140,7 @@ describe("rainbow indent guides", () => {
     expect(guideVars(1, 4, true)).toBeNull();
     expect(guideVars(3, 4, true)).toEqual({
       images: "var(--openidea-guide-1), var(--openidea-guide-2)",
-      positions: "calc(0.5px + 4ch) 0, calc(0.5px + 8ch) 0",
+      positions: "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0, calc(0.5px + 8 * var(--openidea-space, 1ch)) 0",
     });
     const deep = guideVars(8, 2, true)!;
     expect(deep.images.split(", ")).toEqual([1, 2, 3, 4, 5, 1, 2].map((n) => `var(--openidea-guide-${n})`));
@@ -156,7 +160,9 @@ describe("rainbow indent guides", () => {
     expect(images(line(v, 2))).toBe("var(--openidea-guide-1)");
     expect(images(line(v, 3))).toBe("var(--openidea-guide-1), var(--openidea-guide-2)");
     expect(images(line(v, 4))).toBe("var(--openidea-guide-1), var(--openidea-guide-2)");
-    expect(positions(line(v, 4))).toBe("calc(0.5px + 4ch) 0, calc(0.5px + 8ch) 0");
+    expect(positions(line(v, 4))).toBe(
+      "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0, calc(0.5px + 8 * var(--openidea-space, 1ch)) 0",
+    );
     expect(images(line(v, 6))).toBe("var(--openidea-guide-1)");
   });
 
@@ -170,7 +176,27 @@ describe("rainbow indent guides", () => {
     spaces.destroy();
     const tabs = mount(body("\t"), [EditorState.tabSize.of(4)], rainbowIndentGuides, "\t");
     expect(images(deepest(tabs))).toBe(expected);
-    expect(positions(deepest(tabs)).split(", ")[1]).toBe("calc(0.5px + 8ch) 0");
+    expect(positions(deepest(tabs)).split(/, (?=calc)/)[1]).toBe("calc(0.5px + 8 * var(--openidea-space, 1ch)) 0");
+  });
+
+  it("measures a column as the font's space width, so a proportional font keeps guides in the indentation", () => {
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      const sample = this.textContent ?? "";
+      const width = /^ +$/.test(sample) ? sample.length * 3.5 : 0;
+      return { width, height: 0, top: 0, left: 0, right: width, bottom: 0, x: 0, y: 0, toJSON: () => ({}) };
+    });
+    try {
+      const v = mount(SOURCE);
+      (v as unknown as { measure(): void }).measure();
+      expect(v.scrollDOM.style.getPropertyValue("--openidea-space")).toBe("3.5px");
+      v.destroy();
+      expect(v.scrollDOM.style.getPropertyValue("--openidea-space")).toBe("");
+      view = undefined;
+    } finally {
+      rect.mockRestore();
+    }
   });
 
   it("does not count a partial indent unit as a level", () => {
@@ -211,7 +237,9 @@ describe("rainbow indent guides", () => {
     });
     const lens = () => view!.contentDOM.querySelector<HTMLElement>(".cm-openidea-lens")!;
     expect(images(lens())).toBe("var(--openidea-guide-1), var(--openidea-guide-2)");
-    expect(positions(lens())).toBe("calc(0.5px + 4ch) 0, calc(0.5px + 8ch) 0");
+    expect(positions(lens())).toBe(
+      "calc(0.5px + 4 * var(--openidea-space, 1ch)) 0, calc(0.5px + 8 * var(--openidea-space, 1ch)) 0",
+    );
     view.dispatch({ effects: guides.reconfigure(indentGuides) });
     expect(images(lens())).toBe("var(--openidea-guide), var(--openidea-guide)");
   });
