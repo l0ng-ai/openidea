@@ -1070,7 +1070,11 @@ export class EditorController implements SlotHost {
   }
 
   back() {
-    if (this.activeSlot) this.recordNav(this.activeSlot);
+    const slot = this.activeSlot;
+    // No text editor is active (the place's last tab was closed, or another kind of tab shows):
+    // going back returns to the current place first, as in IDEA.
+    if (!slot || slot.disposed) return this.navigateTo(this.nav.current);
+    this.recordNav(slot);
     return this.navigateTo(this.nav.back());
   }
 

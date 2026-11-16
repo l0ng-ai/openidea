@@ -52,6 +52,21 @@ describe("EditorController", () => {
     }
   });
 
+  it("goes back to the file whose last tab was just closed, then to the place before it", async () => {
+    const text = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+    ctrl = new EditorController(createMemoryBackend({ "/p/x.ts": "x\n", "/p/a.ts": text }));
+    ctrl.start();
+    await ctrl.openFile("/p/x.ts", { focus: false });
+    await ctrl.openFile("/p/a.ts", { selection: { line: 30, col: 2 }, focus: false });
+    await ctrl.closeEverything();
+    expect(ctrl.activeSlot).toBeNull();
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/a.ts");
+    expect(ctrl.activeSlot!.caret()).toMatchObject({ line: 30, col: 2 });
+    await ctrl.back();
+    expect(ctrl.activeSlot!.model.path).toBe("/p/x.ts");
+  });
+
   it("autosaves on blur, but not while focus is in a popup over the editor", async () => {
     const backend = createMemoryBackend({ "/p/a.c": "int main() {\n    \n}\n" });
     const save = vi.spyOn(backend, "save");
