@@ -11,7 +11,10 @@ const component = (name: string, options: Record<string, string>) =>
     .map(([k, v]) => `<option name="${k}" value="${v}" />`)
     .join("")}</component></application>`;
 
-const editor = { fontSize: 13, customSchemes: {}, colorOverrides: {} };
+const editor = { fontFamily: "JetBrains Mono", fontSize: 13, customSchemes: {}, colorOverrides: {} };
+
+/** JetBrains Maple Mono's metrics (ascent 1.02em, descent 0.3em), for any family. */
+const fontHeight = (_family: string, size: number) => Math.ceil(size * 1.02) + Math.ceil(size * 0.3);
 
 /** A WebStorm export, trimmed to what the import reads. */
 const webstorm = {
@@ -51,8 +54,8 @@ const webstorm = {
 };
 
 describe("planJetBrainsImport", () => {
-  it("maps a WebStorm export to the settings it has, and lists what is left out", () => {
-    const plan = planJetBrainsImport(webstorm, editor);
+  it("maps a WebStorm export to the settings it has, and lists what is left out", async () => {
+    const plan = await planJetBrainsImport(webstorm, editor, fontHeight);
     const writes = Object.fromEntries(plan.writes);
     const schemes = writes["editor.customSchemes"] as Record<string, { name: string; parent: string }>;
     const [id, scheme] = Object.entries(schemes)[0]!;
@@ -62,6 +65,8 @@ describe("planJetBrainsImport", () => {
       "editor.colorScheme": id,
       "editor.fontFamily": "JetBrains Maple Mono",
       "editor.fontSize": 17,
+      // (18 + 6) × the default spacing 1.2, rounded up, as WebStorm draws it.
+      "editor.lineHeight": 29,
       "editor.ligatures": true,
       "files.trimTrailingWhitespace": true,
       "editor.general.stripTrailingScope": "all",
@@ -83,8 +88,8 @@ describe("planJetBrainsImport", () => {
     expect(plan.invalid).toEqual([]);
   });
 
-  it("writes only the keys present, and derives the line height from IDEA's spacing", () => {
-    const plan = planJetBrainsImport(
+  it("writes only the keys present, and derives the line height from IDEA's spacing", async () => {
+    const plan = await planJetBrainsImport(
       {
         entries: [],
         files: {
@@ -98,32 +103,50 @@ describe("planJetBrainsImport", () => {
         },
       },
       editor,
+      fontHeight,
     );
     expect(plan.writes).toEqual([
-      ["editor.lineHeight", 20],
+      // (14 + 4) × 1.5
+      ["editor.lineHeight", 27],
       ["files.trimTrailingWhitespace", false],
       ["editor.softWrap", true],
     ]);
     expect(plan.skipped).toEqual([]);
   });
 
-  it("re-importing replaces the earlier copy of a scheme and drops its edits", () => {
-    const first = Object.fromEntries(planJetBrainsImport(webstorm, editor).writes);
+  it("re-importing replaces the earlier copy of a scheme and drops its edits", async () => {
+    const first = Object.fromEntries((await planJetBrainsImport(webstorm, editor, fontHeight)).writes);
     const customs = first["editor.customSchemes"] as typeof editor.customSchemes;
     const [id] = Object.keys(customs);
-    const again = planJetBrainsImport(webstorm, {
-      ...editor,
-      customSchemes: customs,
-      colorOverrides: { [id!]: { keyword: { bold: true } }, other: {} },
-    });
+    const again = await planJetBrainsImport(
+      webstorm,
+      {
+        ...editor,
+        customSchemes: customs,
+        colorOverrides: { [id!]: { keyword: { bold: true } }, other: {} },
+      },
+      fontHeight,
+    );
     const writes = Object.fromEntries(again.writes);
     expect(Object.keys(writes["editor.customSchemes"] as object)).toEqual([id]);
     expect(writes["editor.colorOverrides"]).toEqual({ other: {} });
     expect(writes["editor.colorScheme"]).toBe(id);
   });
 
-  it("skips colour schemes that cannot be read", () => {
-    const plan = planJetBrainsImport({ entries: [], files: { "colors/broken.icls": "<nope" } }, editor);
+  it("falls back to the font size when the font cannot be measured", async () => {
+    const plan = await planJetBrainsImport(
+      { entries: [], files: { "options/editor-font.xml": component("DefaultFont", { FONT_SIZE: "20" }) } },
+      editor,
+      () => undefined,
+    );
+    expect(plan.writes).toEqual([
+      ["editor.fontSize", 20],
+      ["editor.lineHeight", 29],
+    ]);
+  });
+
+  it("skips colour schemes that cannot be read", async () => {
+    const plan = await planJetBrainsImport({ entries: [], files: { "colors/broken.icls": "<nope" } }, editor);
     expect(plan.invalid).toEqual(["broken.icls"]);
     expect(plan.writes).toEqual([]);
   });

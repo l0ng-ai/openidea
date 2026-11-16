@@ -8,6 +8,7 @@
 import { Fragment } from "react";
 import type { JetBrainsSettings } from "@/bindings";
 import { customSchemes } from "@/platform/colorScheme";
+import { createFontProbeCanvas, fontsLoaded, monoFontFamily } from "@/platform/fonts";
 import { tx } from "@/platform/i18n";
 import { importScheme, parseIcls } from "@/platform/icls";
 import { call, commands } from "@/platform/ipc";
@@ -28,6 +29,7 @@ export interface JetBrainsImportPlan {
 }
 
 interface EditorState {
+  fontFamily: string;
   fontSize: number | null;
   customSchemes: unknown;
   colorOverrides: Record<string, unknown>;
@@ -63,7 +65,39 @@ const num = (v: string | undefined) => {
 
 const onOff = (v: boolean) => (v ? tx("On") : tx("Off"));
 
-export function planJetBrainsImport(bundle: JetBrainsSettings, editor: EditorState): JetBrainsImportPlan {
+/** IDEA's `LINE_SPACING` when the export leaves it out. */
+const DEFAULT_LINE_SPACING = 1.2;
+
+/** The font's own line height in px, as IDEA's editor takes it from Java's FontMetrics. */
+export type FontHeight = (family: string, size: number) => Promise<number | undefined> | number | undefined;
+
+/** WebKit reports whole-pixel metrics; measured this large, they keep the font's fractions. */
+const PROBE_SIZE = 1000;
+
+async function measuredFontHeight(family: string, size: number): Promise<number | undefined> {
+  // The editor's own stack: WKWebView draws an installed font only through its loaded alias.
+  const stack = monoFontFamily(family);
+  await fontsLoaded(stack, size);
+  const canvas = createFontProbeCanvas();
+  try {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+    ctx.font = `${PROBE_SIZE}px ${stack}`;
+    const m = ctx.measureText("M");
+    // Java rounds the ascent and the descent up separately (anything past .05 of a pixel).
+    const px = (v: number) => Math.floor((v / PROBE_SIZE) * size + 0.95);
+    const h = px(m.fontBoundingBoxAscent) + px(m.fontBoundingBoxDescent);
+    return Number.isFinite(h) && h > 0 ? h : undefined;
+  } finally {
+    canvas.remove();
+  }
+}
+
+export async function planJetBrainsImport(
+  bundle: JetBrainsSettings,
+  editor: EditorState,
+  fontHeight: FontHeight = measuredFontHeight,
+): Promise<JetBrainsImportPlan> {
   const plan: JetBrainsImportPlan = { writes: [], rows: [], skipped: [], invalid: [] };
   const add = (key: string, value: string | number | boolean | undefined, label: string, shown?: string) => {
     if (value === undefined) return;
@@ -101,12 +135,18 @@ export function planJetBrainsImport(bundle: JetBrainsSettings, editor: EditorSta
   }
 
   const font = options(bundle.files["options/editor-font.xml"], "DefaultFont");
-  add("editor.fontFamily", font.get("FONT_FAMILY")?.trim() || undefined, tx("Font"));
+  const family = font.get("FONT_FAMILY")?.trim() || undefined;
+  add("editor.fontFamily", family, tx("Font"));
   const size = num(font.get("FONT_SIZE"));
   add("editor.fontSize", size, tx("Size"));
   const spacing = num(font.get("LINE_SPACING"));
+  // IDEA spaces lines by the font's own height, not its size, so a tall font keeps its
+  // spacing; and the default spacing still applies when only the font changed.
   const base = size ?? editor.fontSize;
-  add("editor.lineHeight", spacing && base ? Math.round(base * spacing) : undefined, tx("Line height"));
+  if (base && (family || size || spacing)) {
+    const natural = (await fontHeight(family ?? editor.fontFamily, base)) ?? base * DEFAULT_LINE_SPACING;
+    add("editor.lineHeight", Math.ceil(natural * (spacing ?? DEFAULT_LINE_SPACING)), tx("Line height"));
+  }
   add("editor.ligatures", bool(font.get("USE_LIGATURES")), tx("Enable ligatures"));
 
   const ed = options(bundle.files["options/editor.xml"], "EditorSettings");
@@ -174,7 +214,7 @@ function Summary({ plan }: { plan: JetBrainsImportPlan }) {
 export async function importJetBrainsSettings(path: string) {
   const bundle = await call(commands.settingsReadJetbrains(path));
   const { editor } = await commands.settingsGetGlobal();
-  const plan = planJetBrainsImport(bundle, editor);
+  const plan = await planJetBrainsImport(bundle, editor);
   if (!plan.writes.length) {
     notifications().notify({
       level: "warning",
