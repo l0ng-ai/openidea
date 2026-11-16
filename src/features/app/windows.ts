@@ -131,6 +131,17 @@ export async function openPaths(
 }
 
 /**
+ * `window_open_project`. When that may create a window, the trust question is asked here
+ * first (IntelliJ IDEA asks before the project frame opens): the new window would otherwise
+ * show its Welcome screen under the question. A WSL folder opens as a remote project, whose
+ * window asks about the distribution's folder itself.
+ */
+async function openProjectWindow(path: string, newWindow: boolean, files: readonly string[] = []) {
+  if (newWindow && !(await commands.wslResolve(path).catch(() => null))) await confirmProjectTrust(path, "local");
+  return call(commands.windowOpenProject(path, newWindow, [...files]));
+}
+
+/**
  * Opens `path`, focusing the window that already has it. `newWindow`: always a
  * new window; otherwise this window unless it already has a project or LightEdit
  * session. `files` then open in the project's editor.
@@ -140,7 +151,7 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
   const s = useProject.getState();
   const inNew = newWindow || s.project !== null || s.lightEdit;
   try {
-    const outcome = await call(commands.windowOpenProject(path, inNew, [...files]));
+    const outcome = await openProjectWindow(path, inNew, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
   } catch (e) {
     openFailed(path, e);
@@ -535,7 +546,7 @@ export function windowActions(): Action[] {
         const arg = c.arg as { path?: unknown; newWindow?: unknown } | null;
         if (!arg || typeof arg.path !== "string" || typeof arg.newWindow !== "boolean") return;
         try {
-          const outcome = await call(commands.windowOpenProject(arg.path, arg.newWindow, []));
+          const outcome = await openProjectWindow(arg.path, arg.newWindow);
           if (outcome.kind === "current") await openHere(arg.path);
         } catch (error) {
           openFailed(arg.path, error);

@@ -44,6 +44,8 @@ sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librs
 
 `pnpm dev:app` 与 `pnpm tauri dev` 相同，只是额外开启全局 Tauri API（`window.__TAURI__`，来自 `src-tauri/tauri.dev.conf.json`），用脚本驱动应用时比较方便。
 
+在 macOS 上，`.cargo/config.toml` 默认把 `MACOSX_DEPLOYMENT_TARGET` 设为 11.0（自己导出该变量即可覆盖），让 debug 构建也能在旧系统启动。当系统 WebKit 低于 Safari 15.4 时，`src-tauri/src/macos_webview.rs` 会重新 exec 到 Safari 更新暂存的新版 WebKit；调试时可设 `OPENIDEA_DISABLE_STAGED_WEBKIT=1` 继续用系统引擎。
+
 其他常用命令：
 
 | 命令                | 作用                                                                              |

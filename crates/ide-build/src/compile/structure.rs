@@ -415,7 +415,7 @@ pub(crate) enum Action {
 
 impl Action {
     pub(crate) fn display(&self, root: &Path) -> String {
-        let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().into_owned();
+        let rel = |p: &Path| p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/");
         match self {
             Action::Clean(dirs) => format!("Clean {}", dirs.iter().map(|d| rel(d)).collect::<Vec<_>>().join(", ")),
             Action::CopyResources { to, .. } => format!("Copy resources to {}", rel(to)),
@@ -646,15 +646,15 @@ mod tests {
         let main_cp = cp(javac);
         let entries: Vec<&str> = main_cp.split(sep).collect();
         assert_eq!(entries.len(), 2, "{main_cp}");
-        assert!(entries[0].ends_with("lib/*"));
-        assert!(entries[1].ends_with("WEB-INF/lib/*"));
+        assert!(Path::new(entries[0]).ends_with("lib/*"));
+        assert!(Path::new(entries[1]).ends_with("WEB-INF/lib/*"));
         assert!(javac.args.windows(2).any(|w| w == ["--release", "17"]));
         let args = fs::read_to_string(tmp.path().join("cache/javac/production.args")).unwrap();
         assert!(args.contains("A.java") && !args.contains("ATest.java"));
         assert_eq!(shown[2], "Copy resources to out/production/shop");
         let test = &plan.steps[3];
         let test_cp = cp(test);
-        assert!(test_cp.starts_with(&root.join("out/production/shop").to_string_lossy().into_owned()));
+        assert_eq!(Path::new(test_cp.split(sep).next().unwrap()), root.join("out/production/shop"));
         assert!(test_cp.contains("junit.jar"));
     }
 
@@ -693,7 +693,9 @@ mod tests {
         let javac = &plan.steps[0];
         assert!(!javac.args.iter().any(|a| a == "-cp"), "{:?}", javac.args);
         assert!(javac.args.windows(4).any(|w| w == ["-source", "1.8", "-target", "1.8"]));
-        assert!(javac.args.windows(2).any(|w| w[0] == "-d" && w[1].ends_with("build/classes/production/p")));
+        assert!(
+            javac.args.windows(2).any(|w| w[0] == "-d" && Path::new(&w[1]).ends_with("build/classes/production/p"))
+        );
     }
 
     #[test]

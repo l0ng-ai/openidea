@@ -20,6 +20,21 @@ function completeBar(el: HTMLElement): boolean {
   return true;
 }
 
+const questions = new Set<Promise<unknown>>();
+
+/**
+ * Keeps the splash up, past its time limit, until the user answers `question` in a dialog
+ * shown over it: a window launched for an untrusted project (`openidea <path>`) asks
+ * before anything of the window shows, never over its Welcome screen.
+ */
+export function askOverSplash(question: Promise<unknown>): void {
+  const el = document.getElementById("splash");
+  if (!el || el.classList.contains("splash-out")) return;
+  el.classList.add("splash-under-dialogs");
+  const answered: Promise<unknown> = question.catch(() => {}).finally(() => questions.delete(answered));
+  questions.add(answered);
+}
+
 /** Keeps the splash up until `work` settles. Call before `hideSplash()`. */
 export function holdSplash(work: Promise<unknown>): void {
   holds.push(work.catch(() => {}));
@@ -30,7 +45,8 @@ export function hideSplash(): void {
   const el = document.getElementById("splash");
   if (!el) return;
   const timeout = new Promise((resolve) => setTimeout(resolve, MAX_WAIT_MS));
-  void Promise.race([Promise.all(holds), timeout]).then(() =>
+  void Promise.race([Promise.all(holds), timeout]).then(async () => {
+    while (questions.size) await Promise.all(questions);
     // Two frames: let React commit the state the holds produced before uncovering it.
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
@@ -47,6 +63,6 @@ export function hideSplash(): void {
           completeBar(el) ? FILL_MS : 0,
         );
       }),
-    ),
-  );
+    );
+  });
 }

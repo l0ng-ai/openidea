@@ -8404,5 +8404,6 @@
   "Remove SDK": "移除 SDK",
   "{rel} is added to your request": "{rel} 会添加到你的请求中",
   "IDE Context Enabled: the current file and selection are added to your request": "IDE 上下文已启用：当前文件和所选内容会添加到你的请求中",
-  "IDE Context Disabled: the current file and selection are not added to your request": "IDE 上下文已禁用：当前文件和所选内容不会添加到你的请求中"
+  "IDE Context Disabled: the current file and selection are not added to your request": "IDE 上下文已禁用：当前文件和所选内容不会添加到你的请求中",
+  "Thymeleaf": "Thymeleaf"
 }

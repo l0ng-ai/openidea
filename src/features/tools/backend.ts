@@ -72,6 +72,7 @@ function tool(partial: Partial<ToolInfo> & Pick<ToolInfo, "name" | "languages">)
     defaultArgs: [],
     defaultInitializationOptions: null,
     alternatives: [],
+    companion: false,
     ...partial,
   };
 }
