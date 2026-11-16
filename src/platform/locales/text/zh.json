@@ -1,4 +1,6 @@
 {
+  "Trust Project in Codex": "在 Codex 中信任项目",
+  "Keep Untrusted": "保持不信任",
   "Unity Editor": "Unity 编辑器",
   "Attach to Unity Process": "附加到 Unity 进程",
   "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.": "在 Unity 编辑器中打开项目，启用 Editor Attaching 并切换到 Debug Mode，然后在下方选择对应进程。停止调试会断开连接，Unity 编辑器会继续运行。",
