@@ -16,7 +16,7 @@
  */
 import { RangeSet, StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { iconAreaSource } from "@/editor/core/cm/iconArea";
+import { iconAreaSource, mapLineStart } from "@/editor/core/cm/iconArea";
 import { shownAgain, type EditorDocContext } from "@/editor/api";
 import { docOf, debounce, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
 import { featureBackoff, onServerSettled } from "@/editor/lsp/availability";
@@ -572,7 +572,7 @@ const markersField = StateField.define<PlacedMarker[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setMarkers)) return e.value;
     if (!tr.docChanged || !value.length) return value;
-    return value.map((m) => ({ ...m, pos: tr.state.doc.lineAt(tr.changes.mapPos(m.pos, -1)).from }));
+    return value.map((m) => ({ ...m, pos: mapLineStart(tr, m.pos) }));
   },
 });
 

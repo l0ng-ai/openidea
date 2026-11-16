@@ -10,7 +10,7 @@ import {
 } from "@codemirror/view";
 import { highlightingFor } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
-import { iconAreaSource, shownAgain, type EditorDocContext } from "@/editor/api";
+import { iconAreaSource, mapLineStart, shownAgain, type EditorDocContext } from "@/editor/api";
 import { rangeToOffsets } from "@/editor/lsp/positions";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { findLanguageDescription, languageInfo, loadSupport } from "@/editor/core/cm/languages";
@@ -94,7 +94,7 @@ const actions = StateField.define<{ pos: number; marker: ActionMarker }[]>({
   update(v, tr) {
     for (const e of tr.effects) if (e.is(setActions)) return e.value;
     if (!tr.docChanged) return v;
-    return v.map((a) => ({ ...a, pos: tr.state.doc.lineAt(tr.changes.mapPos(a.pos, 1)).from }));
+    return v.map((a) => ({ ...a, pos: mapLineStart(tr, a.pos) }));
   },
 });
 /** In the shared icon area, beside the plugins' line markers. */

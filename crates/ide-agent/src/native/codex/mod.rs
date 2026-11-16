@@ -4,6 +4,7 @@
 
 mod commands;
 mod translate;
+mod trust;
 
 pub(crate) use commands::BUILTIN_COMMANDS;
 
@@ -201,6 +202,8 @@ struct State {
     threads: HashMap<String, Thread>,
     /// The last `account/rateLimits/updated` snapshot.
     rate_limits: Option<Value>,
+    /// Project trust has been checked (and, when needed, asked about) on this connection.
+    trust_checked: HashSet<String>,
     /// Codex exited.
     gone: bool,
 }
@@ -340,6 +343,12 @@ impl CodexShim {
         self.codex().request(method, params, None).await.map_err(from_codex)
     }
 
+    fn warning(&self, message: impl Into<String>) {
+        if let Some(client) = self.client.get() {
+            let _ = client.notify(crate::WARNING_NOTIFICATION, json!({ "message": message.into() }));
+        }
+    }
+
     async fn handle(&self, method: &str, params: Value) -> Result<Value, ResponseError> {
         match method {
             "initialize" => self.initialize().await,
@@ -423,6 +432,7 @@ impl CodexShim {
 
     async fn new_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let models = self.models().await?;
+        self.prepare_project_trust(params).await;
         let mut request = json!({ "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
             request["config"] = config;
@@ -440,6 +450,7 @@ impl CodexShim {
     async fn load_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let id = str_param(params, "sessionId")?;
         let models = self.models().await?;
+        self.prepare_project_trust(params).await;
         let mut request = json!({ "threadId": id, "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
             request["config"] = config;
@@ -458,6 +469,7 @@ impl CodexShim {
     async fn fork_session(&self, params: &Value) -> Result<Value, ResponseError> {
         let source = str_param(params, "sessionId")?;
         let models = self.models().await?;
+        self.prepare_project_trust(params).await;
         let settings = self.state.lock().threads.get(source).and_then(|t| t.settings.clone());
         let mut request = json!({ "threadId": source, "cwd": params.get("cwd") });
         if let Some(config) = translate::mcp_config(params) {
@@ -850,6 +862,25 @@ impl CodexShim {
     fn on_codex_notification(self: &Arc<Self>, method: &str, params: &Value) {
         let thread = params.get("threadId").and_then(Value::as_str).unwrap_or_default();
         match method {
+            "configWarning" => {
+                let Some(summary) = params.get("summary").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+                else {
+                    return;
+                };
+                let mut message = summary.trim().to_owned();
+                for key in ["details", "path"] {
+                    if let Some(value) = params.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                        message.push_str("\n\n");
+                        message.push_str(value.trim());
+                    }
+                }
+                self.warning(message);
+            }
+            "warning" => {
+                if let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
+                    self.warning(message);
+                }
+            }
             "skills/changed" => {
                 let shim = self.clone();
                 let sessions: Vec<String> = self

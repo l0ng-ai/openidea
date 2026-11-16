@@ -70,6 +70,8 @@ pub(crate) const LIMITS_UPDATE: &str = "openidea_limits";
 /// A native agent's own update: the background tasks its session runs
 /// (see [`TaskState::background_tasks`]).
 pub(crate) const BACKGROUND_TASKS_UPDATE: &str = "openidea_background_tasks";
+/// A native agent's diagnostic, including warnings emitted before a session exists.
+pub(crate) const WARNING_NOTIFICATION: &str = "_openidea/warning";
 /// Referenced files up to this size are embedded in the prompt (when the agent takes it).
 const MAX_EMBED: u64 = 256 * 1024;
 /// How long a probe waits for the agent to answer `initialize`.
@@ -2916,6 +2918,15 @@ struct Client {
 
 impl Handler for Client {
     fn on_notification(&self, method: &str, params: Value) {
+        if method == WARNING_NOTIFICATION {
+            if let Some(task) = self.task.upgrade()
+                && let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
+            {
+                task.push_entry(AgentEntry::Error { message: message.to_owned() });
+                task.persist();
+            }
+            return;
+        }
         if method == "session/update"
             && let (Some(task), Some(update)) = (self.task.upgrade(), params.get("update"))
         {

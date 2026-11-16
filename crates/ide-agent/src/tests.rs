@@ -1663,6 +1663,67 @@ async fn renamed_titles_survive_updates_forks_and_restart() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("again"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    handle.replaying.store(true, Ordering::Release);
+    handle.turn_started.store(false, Ordering::Release);
+    let client = Client { task: Arc::downgrade(&handle) };
+    client.on_notification(WARNING_NOTIFICATION, json!({"message": "Project MCP config is disabled until trusted."}));
+    client.on_notification(WARNING_NOTIFICATION, json!({"message": "  "}));
+    client.on_notification(WARNING_NOTIFICATION, json!({}));
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Ready);
+    assert!(!handle.turn_started.load(Ordering::Acquire));
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent);
+    let handle = restored.task(&task.id).unwrap();
+    assert_eq!(handle.state.lock().conversation.main.entries.iter().filter(|entry| matches!(entry, AgentEntry::Error {message} if message == "Project MCP config is disabled until trusted.")).count(), 1);
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn persistent_project_trust_needs_confirmation_even_with_bypass_and_is_denied_in_side_chats() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("again"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    handle.state.lock().task.config = config::options_of(&json!({"configOptions": [{
+        "id": "mode", "category": "mode", "type": "select", "currentValue": "full-access",
+        "options": [{"value": "full-access", "name": "Full Access"}]
+    }]}));
+    assert!(config::bypass_approvals(&handle.state.lock().task.config));
+    let params = json!({"toolCall": {"toolCallId": "trust", "kind": "edit", "title": "Trust Project in Codex"},
+    "options": [
+        {"optionId": "codex-trust-project", "name": "Trust Project in Codex", "kind": "allow_always"},
+        {"optionId": "codex-keep-untrusted", "name": "Keep Untrusted", "kind": "reject_once"}
+    ]});
+    let asking = {
+        let handle = handle.clone();
+        let params = params.clone();
+        tokio::task::spawn_blocking(move || handle.ask_permission(&params))
+    };
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    assert!(!asking.is_finished());
+    let id = *handle.permissions.lock().keys().next().unwrap();
+    mgr.respond(&task.id, id, Some("codex-keep-untrusted".into())).unwrap();
+    assert_eq!(asking.await.unwrap()["outcome"]["optionId"], "codex-keep-untrusted");
+    handle.state.lock().ephemeral = true;
+    assert_eq!(handle.ask_permission(&params)["outcome"]["optionId"], "codex-keep-untrusted");
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn forks_rollbacks_and_steering() {
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
