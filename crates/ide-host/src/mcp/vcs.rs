@@ -29,7 +29,7 @@ fn relative_to(root: &Path, path: &Path) -> String {
     };
     match rel {
         Some(rel) => rel.to_string_lossy().replace('\\', "/"),
-        None => path.to_string_lossy().into_owned(),
+        None => path.to_string_lossy().replace('\\', "/"),
     }
 }
 
