@@ -121,6 +121,13 @@ type Connector = Arc<
 /// Returns the configured MCP servers (User and Workspace) for this project.
 pub type McpServersFn = dyn Fn() -> Vec<McpServer> + Send + Sync;
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CopilotBinaryKey {
+    command: String,
+    modified: Option<std::time::SystemTime>,
+    len: Option<u64>,
+}
+
 struct Shared {
     paths: AgentPaths,
     runtime: tokio::runtime::Handle,
@@ -132,6 +139,8 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// Copilot CLI installs where `--headless` failed and fell back to `--acp`.
+    copilot_acp_fallback: Mutex<HashSet<CopilotBinaryKey>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
     mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
@@ -167,6 +176,29 @@ impl Shared {
 
     fn env_secrets(&self) -> Option<&dyn EnvSecrets> {
         self.paths.env_secrets.as_deref()
+    }
+
+    fn copilot_binary_key(&self, spec: &provider::ProviderSpec) -> CopilotBinaryKey {
+        let resolved = spec.clone().resolve_for_launch(&self.paths.project_root);
+        let executable = dunce::canonicalize(&resolved.command).unwrap_or_else(|_| PathBuf::from(&resolved.command));
+        let metadata = std::fs::metadata(&executable).ok();
+        CopilotBinaryKey {
+            command: executable.to_string_lossy().into_owned(),
+            modified: metadata.as_ref().and_then(|m| m.modified().ok()),
+            len: metadata.as_ref().map(std::fs::Metadata::len),
+        }
+    }
+
+    pub(crate) fn uses_copilot_acp_fallback(&self, spec: &provider::ProviderSpec) -> bool {
+        let key = self.copilot_binary_key(spec);
+        self.copilot_acp_fallback.lock().contains(&key)
+    }
+
+    pub(crate) fn mark_copilot_acp_fallback(&self, spec: &provider::ProviderSpec) {
+        let key = self.copilot_binary_key(spec);
+        if self.copilot_acp_fallback.lock().insert(key) {
+            self.paths.catalogs.evict_if_idle(self, &spec.id);
+        }
     }
 
     fn emit(&self, event: AgentEvent) {
@@ -340,6 +372,8 @@ struct TaskState {
 /// A running agent and its session.
 #[derive(Clone)]
 struct Live {
+    provider: String,
+    driver: provider::Driver,
     sign_in_message: String,
     peer: acp::Conn,
     session: String,
@@ -400,6 +434,7 @@ impl AgentManager {
             }
             provider::Driver::Codex => native::codex::connect(spec, cwd, client, on_stderr),
             provider::Driver::Claude => native::claude::connect(spec, cwd, client, on_stderr),
+            provider::Driver::Copilot => native::copilot::connect(spec, cwd, client, on_stderr),
         });
         Self::with_connector(paths, runtime, connector)
     }
@@ -417,6 +452,7 @@ impl AgentManager {
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
+            copilot_acp_fallback: Mutex::new(HashSet::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
             attention_seq: AtomicU64::new(0),
@@ -550,6 +586,7 @@ impl AgentManager {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         *self.shared.providers.write() = specs;
         self.shared.probes.lock().clear();
+        self.shared.copilot_acp_fallback.lock().clear();
         self.shared.emit(AgentEvent::Providers);
     }
 
@@ -1053,6 +1090,7 @@ impl AgentManager {
                 o.current = Some(value);
             }
             s.task.model = model_of(&s.task.config).or(s.task.model.take());
+            sync_usage_context_size(&mut s.task);
             let provider = s.task.provider.clone();
             let config = s.task.config.clone();
             let model = s.task.model.clone().filter(|_| model_options);
@@ -1215,43 +1253,36 @@ impl AgentManager {
         if !refresh && let Some(p) = self.shared.probes.lock().get(provider) {
             return Ok(p.clone());
         }
-        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        let raw_spec =
+            self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        let can_fallback =
+            raw_spec.driver == provider::Driver::Copilot && !self.shared.uses_copilot_acp_fallback(&raw_spec);
+        let mut active_spec = if raw_spec.driver == provider::Driver::Copilot && !can_fallback {
+            native::copilot::acp_fallback_spec(&raw_spec)
+        } else {
+            raw_spec.clone()
+        };
+        let reply = match self.probe_once(&active_spec).await {
+            Ok(reply) => Ok(reply),
+            Err((err, allow_fallback)) if can_fallback && allow_fallback => {
+                tracing::warn!("Copilot headless probe failed ({err}); falling back to `copilot --acp`");
+                self.shared.mark_copilot_acp_fallback(&raw_spec);
+                active_spec = native::copilot::acp_fallback_spec(&raw_spec);
+                self.probe_once(&active_spec).await.map_err(|(e, _)| e)
+            }
+            Err((err, _)) => Err(err),
+        };
         let mut probe = AgentProbe {
-            provider: spec.id.clone(),
+            provider: active_spec.id.clone(),
             name: None,
             version: None,
-            protocol: match spec.driver {
+            protocol: match active_spec.driver {
                 provider::Driver::Acp => "ACP".into(),
                 _ => "native".into(),
             },
             capabilities: AgentCapabilities::default(),
             auth_methods: Vec::new(),
             error: None,
-        };
-        let stderr: Arc<Mutex<Vec<String>>> = Arc::default();
-        let lines = stderr.clone();
-        let on_stderr: Box<dyn Fn(String) + Send + Sync> = Box::new(move |l| lines.lock().push(l));
-        let started = (self.shared.connector)(
-            &spec,
-            &self.shared.paths.project_root,
-            Arc::new(ide_jsonrpc::NoopHandler),
-            on_stderr,
-        );
-        let reply = match started {
-            Err(e) => Err(format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command)),
-            Ok(peer) => {
-                let params = acp::initialize_params(&client_info());
-                let r = tokio::time::timeout(PROBE_TIMEOUT, peer.request::<_, Value>("initialize", params, None)).await;
-                peer.kill();
-                match r {
-                    Ok(Ok(v)) => Ok(v),
-                    Ok(Err(e)) => Err(match stderr.lock().last() {
-                        Some(line) => format!("{e}: {line}"),
-                        None => e.to_string(),
-                    }),
-                    Err(_) => Err("the agent did not answer".into()),
-                }
-            }
         };
         match reply {
             Ok(reply) => {
@@ -1260,7 +1291,7 @@ impl AgentManager {
                 let text = |k: &str| info.get(k).and_then(Value::as_str).map(str::to_owned);
                 probe.name = text("title").or_else(|| text("name"));
                 probe.version = text("version");
-                if spec.driver == provider::Driver::Acp {
+                if active_spec.driver == provider::Driver::Acp {
                     probe.protocol = format!("ACP v{}", init.generation);
                 }
                 probe.capabilities = capabilities_of(&init).0;
@@ -1273,9 +1304,45 @@ impl AgentManager {
             Err(e) => probe.error = Some(e),
         }
         if probe.error.is_none() {
-            self.shared.probes.lock().insert(spec.id, probe.clone());
+            self.shared.probes.lock().insert(active_spec.id, probe.clone());
         }
         Ok(probe)
+    }
+
+    async fn probe_once(&self, spec: &provider::ProviderSpec) -> Result<Value, (String, bool)> {
+        let stderr: Arc<Mutex<Vec<String>>> = Arc::default();
+        let lines = stderr.clone();
+        let on_stderr: Box<dyn Fn(String) + Send + Sync> = Box::new(move |l| lines.lock().push(l));
+        let started = (self.shared.connector)(
+            spec,
+            &self.shared.paths.project_root,
+            Arc::new(ide_jsonrpc::NoopHandler),
+            on_stderr,
+        );
+        match started {
+            Err(e) => Err((
+                format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command),
+                !native::copilot::is_missing_binary_error(&e),
+            )),
+            Ok(peer) => {
+                let params = acp::initialize_params(&client_info());
+                let r = tokio::time::timeout(PROBE_TIMEOUT, peer.request::<_, Value>("initialize", params, None)).await;
+                peer.kill();
+                match r {
+                    Ok(Ok(v)) => Ok(v),
+                    Ok(Err(e)) => {
+                        let is_auth =
+                            matches!(&e, RpcError::Server { code, message, .. } if acp::auth_required(*code, message));
+                        let msg = match stderr.lock().last() {
+                            Some(line) => format!("{e}: {line}"),
+                            None => e.to_string(),
+                        };
+                        Err((msg, !is_auth))
+                    }
+                    Err(_) => Err(("the agent did not answer".into(), true)),
+                }
+            }
+        }
     }
 
     /// Stops the current turn (`session/cancel`); pending permission requests are cancelled.
@@ -1969,7 +2036,7 @@ impl Task {
         // Launching the agent can take a while (`npx` fetches its adapter on first use).
         let starting = self.live.lock().as_ref().is_none_or(|l| l.peer.is_closed());
         self.set_status(if starting { AgentStatus::Starting } else { AgentStatus::Running }, None);
-        let live = self.ensure_session().await.map_err(Failure::from)?;
+        let mut live = self.ensure_session().await.map_err(Failure::from)?;
         // Stopped while the agent started: the prompt is never sent.
         if self.cancel_pending.load(Ordering::Acquire) {
             return Ok("cancelled".into());
@@ -1991,9 +2058,34 @@ impl Task {
                 None => prompt.clone(),
             }
         };
-        let content = self.content(&live, &prompt).await;
-        let result: Result<Value, RpcError> =
+        let mut content = self.content(&live, &prompt).await;
+        let mut result: Result<Value, RpcError> =
             live.peer.request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None).await;
+        if live.driver == provider::Driver::Copilot
+            && !self.turn_started.load(Ordering::Acquire)
+            && let Err(RpcError::Server { code, ref message, .. }) = result
+            && is_headless_protocol_error(code)
+            && !acp::auth_required(code, message)
+        {
+            tracing::warn!(
+                "agent task {}: Copilot headless prompt failed ({message}); falling back to `copilot --acp`",
+                self.id
+            );
+            if let Some(raw_spec) = self.shared.spec(&live.provider) {
+                self.shared.mark_copilot_acp_fallback(&raw_spec);
+            }
+            live.peer.kill();
+            *self.live.lock() = None;
+            live = self.ensure_session().await.map_err(Failure::from)?;
+            if !prompt.images.is_empty() && !live.capabilities.images {
+                return Err(Failure::from("This agent can't read images.".to_owned()));
+            }
+            content = self.content(&live, &prompt).await;
+            result = live
+                .peer
+                .request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None)
+                .await;
+        }
         match result {
             Ok(v) => Ok(v.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn").to_owned()),
             Err(e) => Err(self.failure(e)),
@@ -2073,11 +2165,43 @@ impl Task {
             let s = self.state.lock();
             (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone())
         };
-        let spec = self.shared.spec(&provider_id).ok_or_else(|| format!("unknown agent {provider_id}"))?;
-        let launch_cwd = cwd.clone();
+        let raw_spec = self.shared.spec(&provider_id).ok_or_else(|| format!("unknown agent {provider_id}"))?;
+        let can_fallback =
+            raw_spec.driver == provider::Driver::Copilot && !self.shared.uses_copilot_acp_fallback(&raw_spec);
+        let primary_spec = if raw_spec.driver == provider::Driver::Copilot && !can_fallback {
+            native::copilot::acp_fallback_spec(&raw_spec)
+        } else {
+            raw_spec.clone()
+        };
+        let live = match self.open_session(&provider_id, primary_spec, &cwd, saved.clone()).await {
+            Ok(live) => live,
+            Err(err) if can_fallback && err.allow_acp_fallback => {
+                tracing::warn!(
+                    "agent task {}: Copilot headless session setup failed ({}); falling back to `copilot --acp`",
+                    self.id,
+                    err.message
+                );
+                self.shared.mark_copilot_acp_fallback(&raw_spec);
+                let acp_spec = native::copilot::acp_fallback_spec(&raw_spec);
+                self.open_session(&provider_id, acp_spec, &cwd, saved).await.map_err(|e| e.message)?
+            }
+            Err(err) => return Err(err.message),
+        };
+        *self.live.lock() = Some(live.clone());
+        Ok(live)
+    }
+
+    async fn open_session(
+        self: &Arc<Self>,
+        provider_id: &str,
+        spec: provider::ProviderSpec,
+        cwd: &Path,
+        saved: Option<String>,
+    ) -> Result<Live, SessionOpenError> {
+        let launch_cwd = cwd.to_path_buf();
         let spec = tokio::task::spawn_blocking(move || spec.resolve_for_launch(&launch_cwd))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| SessionOpenError { message: e.to_string(), allow_acp_fallback: false })?;
         self.stderr.lock().clear();
         self.config_sent.lock().clear();
         let weak = Arc::downgrade(self);
@@ -2092,17 +2216,24 @@ impl Task {
         });
         // Speaks ACP v1 or v2, whichever the agent chooses; the task sees v1 either way.
         let client = acp::Dialect::wrap(Arc::new(Client { task: Arc::downgrade(self) }));
-        let peer = (self.shared.connector)(&spec, &cwd, client.clone(), on_stderr)
-            .map(|peer| acp::Conn::new(peer, client))
-            .map_err(|e| format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command))?;
+        let raw_peer =
+            (self.shared.connector)(&spec, cwd, client.clone(), on_stderr).map_err(|e| SessionOpenError {
+                message: format!("Couldn't start {} (`{}`): {e}", spec.name, spec.command),
+                allow_acp_fallback: !native::copilot::is_missing_binary_error(&e),
+            })?;
+        let mut stop_on_err = KillOnDrop(Some(raw_peer.clone()));
+        let peer = acp::Conn::new(raw_peer, client);
 
-        let init = peer.initialize(&client_info()).await.map_err(|e| self.describe(e))?;
+        let init = peer.initialize(&client_info()).await.map_err(|e| {
+            let is_auth = matches!(&e, RpcError::Server { code, message, .. } if acp::auth_required(*code, message));
+            SessionOpenError { message: self.describe(e), allow_acp_fallback: !is_auth }
+        })?;
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
-        let mcp_servers = self.shared.mcp_servers_for_session(&provider_id, &init);
+        let mcp_servers = self.shared.mcp_servers_for_session(provider_id, &init);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
-        let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
+        let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
 
         let mut tried_auth = false;
         let mut session = None;
@@ -2122,11 +2253,20 @@ impl Task {
             Some(s) => s,
             None => {
                 let params = json!({ "cwd": &cwd_s, "mcpServers": &mcp_servers });
-                let v = self
-                    .request_with_auth(&peer, &init, &mut tried_auth, "session/new", params)
-                    .await
-                    .map_err(|e| self.sign_in_error(&e, Some(&sign_in_message)).unwrap_or_else(|| self.describe(e)))?;
-                let id = v.get("sessionId").and_then(Value::as_str).ok_or("the agent returned no session")?.to_owned();
+                let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
+                    |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
+                        Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
+                        None => SessionOpenError { message: self.describe(e), allow_acp_fallback: true },
+                    },
+                )?;
+                let id = v
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| SessionOpenError {
+                        message: "the agent returned no session".into(),
+                        allow_acp_fallback: true,
+                    })?
+                    .to_owned();
                 (id, v)
             }
         };
@@ -2149,13 +2289,13 @@ impl Task {
         let reported = config::options_of(&result);
         let known = !reported.is_empty();
         if known {
-            self.shared.remember(&provider_id, Some(&reported), None, model_of(&reported).as_deref());
+            self.shared.remember(provider_id, Some(&reported), None, model_of(&reported).as_deref());
         }
         let (mut options, mut wanted) = {
             let s = self.state.lock();
             (if known { reported } else { s.task.config.clone() }, s.wanted.clone())
         };
-        config::add_client_options(&provider_id, &mut options);
+        config::add_client_options(provider_id, &mut options);
         // Changing model can replace the effort / context-tier choices; validate those only afterwards.
         wanted.sort_by_key(|c| match options.iter().find(|o| o.id == c.id) {
             Some(o) if o.category.as_deref() == Some("model") => 0,
@@ -2201,7 +2341,7 @@ impl Task {
             }
         }
         let model = model_of(&options).filter(|_| model_options);
-        self.shared.remember(&provider_id, Some(&options), None, model.as_deref());
+        self.shared.remember(provider_id, Some(&options), None, model.as_deref());
         {
             let mut s = self.state.lock();
             s.task.model = model_of(&options).or(s.task.model.take());
@@ -2214,10 +2354,18 @@ impl Task {
         }
         self.persist();
         self.emit_task();
-        let live =
-            Live { sign_in_message, peer, session: session_id, capabilities, embedded, resumable: can_load, init };
-        *self.live.lock() = Some(live.clone());
-        Ok(live)
+        stop_on_err.0 = None;
+        Ok(Live {
+            provider: provider_id.to_owned(),
+            driver: spec.driver,
+            sign_in_message,
+            peer,
+            session: session_id,
+            capabilities,
+            embedded,
+            resumable: can_load,
+            init,
+        })
     }
 
     /// Sends the user's choices that the session offers only now: an option advertised
@@ -2259,6 +2407,7 @@ impl Task {
                             o.current = Some(value);
                         }
                         s.task.model = model_of(&s.task.config).or(s.task.model.take());
+                        sync_usage_context_size(&mut s.task);
                         // As in `set_config`: a copy without per-model options can't vouch for them.
                         let model = s.task.model.clone().filter(|_| {
                             reply.get("configOptions").is_some()
@@ -3203,5 +3352,57 @@ fn entry_event(
             streamed.insert(subagent.clone(), Sent::new(i, text));
             AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
         }
+    }
+}
+
+struct SessionOpenError {
+    message: String,
+    allow_acp_fallback: bool,
+}
+
+struct KillOnDrop(Option<Peer>);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(peer) = self.0.take() {
+            peer.kill();
+        }
+    }
+}
+
+fn is_headless_protocol_error(code: i64) -> bool {
+    matches!(
+        code,
+        ide_jsonrpc::codes::PARSE_ERROR
+            | ide_jsonrpc::codes::INVALID_REQUEST
+            | ide_jsonrpc::codes::METHOD_NOT_FOUND
+            | ide_jsonrpc::codes::INVALID_PARAMS
+    )
+}
+
+/// Keeps `task.usage.size` aligned with the active model and `context_tier` when pricing
+/// metadata reports the selected tier's token limit.
+fn sync_usage_context_size(task: &mut AgentTask) {
+    let Some(usage) = task.usage.as_mut() else { return };
+    let Some(model_opt) = task.config.iter().find(|o| o.category.as_deref() == Some("model")) else { return };
+    let Some(model_id) = model_opt.current.as_deref() else { return };
+    let Some(pricing) = model_opt.values.iter().find(|v| v.value == model_id).and_then(|v| v.pricing.as_deref()) else {
+        return;
+    };
+    let tier = task
+        .config
+        .iter()
+        .find(|o| config::is_context_option(&o.id))
+        .and_then(|o| o.current.as_deref())
+        .unwrap_or("default");
+    if let Some(tokens) = pricing
+        .tiers
+        .get(tier)
+        .or_else(|| pricing.tiers.get("default"))
+        .or_else(|| pricing.tiers.get("long_context"))
+        .and_then(|t| t.context_tokens)
+        .filter(|&n| n > 0)
+    {
+        usage.size = tokens;
     }
 }

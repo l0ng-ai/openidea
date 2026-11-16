@@ -13,6 +13,7 @@
 
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod copilot;
 
 use ide_jsonrpc::{Framing, Handler, Peer};
 use std::path::{Path, PathBuf};

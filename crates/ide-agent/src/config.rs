@@ -3,7 +3,7 @@
 
 use crate::model::{
     AgentCommand, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit,
-    AgentUsage,
+    AgentModelPricing, AgentUsage,
 };
 use serde_json::{Value, json};
 
@@ -29,6 +29,7 @@ pub(crate) fn add_client_options(provider: &str, config: &mut Vec<AgentConfigOpt
                 description: Some("Show permission requests from Cursor".into()),
                 cost_category: None,
                 usage_multiplier: None,
+                pricing: None,
             },
             AgentConfigValue {
                 value: "bypass".into(),
@@ -36,6 +37,7 @@ pub(crate) fn add_client_options(provider: &str, config: &mut Vec<AgentConfigOpt
                 description: Some("Automatically approve tool requests in this conversation".into()),
                 cost_category: None,
                 usage_multiplier: None,
+                pricing: None,
             },
         ],
     });
@@ -288,6 +290,7 @@ fn legacy(
                 description: str_of(m, "description"),
                 cost_category: None,
                 usage_multiplier: None,
+                pricing: pricing_of(m),
                 value,
             })
         })
@@ -324,8 +327,16 @@ fn value_of(v: &Value) -> Option<AgentConfigValue> {
         description: str_of(v, "description"),
         cost_category,
         usage_multiplier,
+        pricing: pricing_of(v),
         value,
     })
+}
+
+fn pricing_of(v: &Value) -> Option<Box<AgentModelPricing>> {
+    v.pointer("/_meta/pricing")
+        .or_else(|| v.get("pricing"))
+        .and_then(|p| serde_json::from_value(p.clone()).ok())
+        .map(Box::new)
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
