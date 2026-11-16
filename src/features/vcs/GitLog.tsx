@@ -11,7 +11,6 @@ import {
   EmptyState,
   Icon,
   IconButton,
-  Menu,
   Popup,
   Scrollbar,
   SearchField,
@@ -72,6 +71,7 @@ import { WorktreesPanel } from "./gitMenuDialogs";
 import { gitTabs, shownTab } from "./gitTabs";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
 import { IssueText } from "./issueLinks";
+import { useDropdownMenu, useLogRepositories, useReadOnlyLog } from "./log/logHooks";
 import { LANE, ROW, SUBJECT_COLUMN, columnSequence, toggle, type LogColumn, type RowEvents } from "./log/shared";
 import { commitBookmarkPath } from "./logBookmarks";
 import {
@@ -131,22 +131,6 @@ import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./
 const LogMergePreview = lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff));
 
 const LogDiffPreview = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
-
-function useLogRepositories() {
-  const scope = useContext(LogIdContext);
-  const tab = useGitLog((s) => s.logTabs.find((t) => t.id === (scope ?? s.shownLog)));
-  const roots = useVcs((s) => s.roots);
-  const repo = tab?.repo;
-  const repositories = tab?.repositories;
-  const key = (repositories?.length ? repositories : repo ? [repo] : roots).join("\0");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(() => (repositories?.length ? repositories : repo ? [repo] : roots), [key]);
-}
-
-function useReadOnlyLog() {
-  const scope = useContext(LogIdContext);
-  return useGitLog((s) => s.logTabs.find((t) => t.id === (scope ?? s.shownLog))?.readOnly === true);
-}
 
 /** The Git window's tabs (they depend on the commit interface) and the one shown. */
 function useGitTabs() {
@@ -659,20 +643,6 @@ const DATE_OPTIONS: { label: string; days: number }[] = [
   { label: "Last 30 Days", days: 30 },
   { label: "Last Year", days: 365 },
 ];
-
-/**
- * A toolbar button's dropdown, anchored to the button: a second click on it closes the menu
- * instead of reopening it, as in IDEA. Returns the opener and the element to render.
- */
-function useDropdownMenu() {
-  const [menu, setMenu] = useState<{ anchor: HTMLElement; items: MenuItem[] } | null>(null);
-  const open = (anchor: HTMLElement | ReactMouseEvent<HTMLElement>, items: MenuItem[]) => {
-    const el = "currentTarget" in anchor ? anchor.currentTarget : anchor;
-    setMenu((m) => (m?.anchor === el ? null : { anchor: el, items }));
-  };
-  const dropdown = menu && <Menu open anchor={menu.anchor} items={menu.items} onClose={() => setMenu(null)} />;
-  return [open, dropdown] as const;
-}
 
 interface LogFilter {
   label: string;
