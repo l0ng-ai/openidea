@@ -165,6 +165,7 @@ debug_step_in_target                         trusted            project_host bin
 debug_step_in_targets                        trusted            project_host bindings async
 debug_stop                                   always             project_host bindings async
 debug_threads                                trusted            project_host bindings async
+debug_unity_processes                        trusted            project_host bindings async
 debug_variables                              trusted            project_host bindings async
 dependency_versions                          trusted            project_host bindings async
 deploy_compare                               trusted            project_host bindings async
