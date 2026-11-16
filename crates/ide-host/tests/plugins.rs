@@ -196,6 +196,41 @@ impl PluginWorkspace for TestWorkspace {
         self.server_messages.lock().push((method.into(), params.clone(), notify));
         Ok(if notify { serde_json::Value::Null } else { serde_json::json!({ "method": method, "params": params }) })
     }
+    /// A Maven module with a lost version conflict, and a Gradle project with one report.
+    fn build_graph(&self, _root: &Path) -> Result<BuildGraph, HostError> {
+        let dep = |artifact: &str, version: &str| ide_build::MavenDependency {
+            group_id: "org.apache.commons".into(),
+            artifact_id: artifact.into(),
+            version: Some(version.into()),
+            scope: "compile".into(),
+            ..Default::default()
+        };
+        let mut text = dep("commons-text", "1.11.0");
+        text.children = vec![ide_build::MavenDependency {
+            omitted: Some(ide_build::Omission::Conflict),
+            conflict_with: Some("3.14.0".into()),
+            ..dep("commons-lang3", "3.12.0")
+        }];
+        let app = ide_build::MavenProject {
+            group_id: "com.example".into(),
+            artifact_id: "app".into(),
+            version: "1.0".into(),
+            dependencies: vec![text],
+            ..Default::default()
+        };
+        let snakeyaml = ide_build::GradleDependency {
+            group: "org.yaml".into(),
+            name: "snakeyaml".into(),
+            requested: Some("2.2".into()),
+            ..Default::default()
+        };
+        let report = ide_build::GradleReport {
+            project: ":web".into(),
+            configuration: "runtimeClasspath".into(),
+            dependencies: vec![snakeyaml],
+        };
+        Ok(BuildGraph { maven: vec![app], gradle: vec![GradleModule { path: ":web".into(), reports: vec![report] }] })
+    }
     fn project_windows(&self, root: &Path) -> Vec<String> {
         // `main` shows the fixture project; other open roots have no window left.
         if root == self.root { vec!["closing".into(), "main".into()] } else { Vec::new() }
@@ -2149,6 +2184,60 @@ fn run_detectors_offer_granted_commands_in_marked_projects() {
     f.host.set_enabled("acme.forge", false).unwrap();
     assert!(detection.detect(&project).is_empty());
     assert!(detection.launch(config).unwrap_err().contains("no longer enabled"));
+}
+
+/// A plugin's Java agent (`[[contributes.javaAgents]]`, the `java-agent` fixture): an optional
+/// high-risk `java.agent` capability; refusing or revoking it keeps the plugin working and the
+/// launch gets no agent; granting it pins the jar, which may not change afterwards.
+#[test]
+fn java_agent_loads_only_while_granted_and_unchanged() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("java-agent");
+    copy_dir(&sample("java-agent"), &pkg);
+    let preview = f.host.preview_install(&pkg).unwrap();
+    let cap = preview.capabilities.iter().find(|c| c.id == "java.agent").expect("derived from the declaration");
+    assert!(cap.optional && cap.risk == ide_extension::Risk::High && !cap.granted);
+    assert_eq!(cap.description, "Run code inside the Java applications you start");
+
+    // Refused on install: the plugin is on, Java launches get no agent.
+    let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let source = f.host.java_agents();
+    let launch = || {
+        let agents = ide_run::java_agent::approved(&source.agents());
+        let mut args: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+        ide_run::java_agent::add_to_args(&mut args, &agents.options);
+        (args, agents.notes)
+    };
+    let plain: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+    assert_eq!(launch(), (plain.clone(), vec![]));
+
+    // Granted: the installed jar with its arguments, one argument after the VM options.
+    let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
+    let option = format!("-javaagent:{}=mode=test", jar.display());
+    let mut with_agent = plain.clone();
+    with_agent.insert(3, option.clone());
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // The jar changed since it was granted: left out, with a reason, until approved again.
+    std::fs::write(&jar, "swapped").unwrap();
+    let (args, notes) = launch();
+    assert_eq!(args, plain);
+    assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // Revoked, then the plugin disabled: no agent either way.
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
+    assert_eq!(f.status("java-agent"), PluginStatus::Static);
+    assert_eq!(launch(), (plain.clone(), vec![]));
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    f.host.set_enabled("java-agent", false).unwrap();
+    assert_eq!(launch(), (plain, vec![]));
 }
 
 /// Compiled components are cached across runs (keyed by module and
@@ -6518,8 +6607,8 @@ fn a_plugin_command_opens_a_diff_in_its_window() {
             client.as_deref() == Some("main")
                 && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
                     if plugin_id == "execution"
-                        && diff.left == "before\n"
-                        && diff.right == "after\n"
+                        && diff.left.as_deref() == Some("before\n")
+                        && diff.right.as_deref() == Some("after\n")
                         && diff.title.as_deref() == Some("Review")
                         && file_name.as_deref() == Some("src/review.rs"))
         })
@@ -7020,6 +7109,59 @@ fn the_language_server_grant_needs_api_1_9() {
     std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.9\"", "\"^1.8\"")).unwrap();
     let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
     assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
+}
+
+/// `build.dependencies` hands a plugin the resolved Maven / Gradle graph as a flat list, each
+/// module a root, with `build.read` in a trusted project (API 1.10).
+#[test]
+fn build_dependencies_need_the_grant_and_a_trusted_project() {
+    let f = fixture(Limits::default());
+    let id = "test.build-graph";
+    let info = f.install(&sample("build-graph"));
+    assert!(info.capabilities.iter().any(|c| c.id == "build.read" && c.granted && c.risk == ide_extension::Risk::Low));
+
+    // `parent group:artifact:version scope status requested`, as the fixture prints them.
+    assert_eq!(
+        f.run(id, "dependencies", None).unwrap().unwrap(),
+        "- com.example:app:1.0  resolved -\n\
+         0 org.apache.commons:commons-text:1.11.0 compile resolved -\n\
+         1 org.apache.commons:commons-lang3:3.14.0 compile conflict 3.12.0\n\
+         - ::web:  resolved -\n\
+         3 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    assert_eq!(
+        f.run(id, "dependencies", Some(":web")).unwrap().unwrap(),
+        "- ::web:  resolved -\n0 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    let err = f.host.run_command(id, "dependencies", Some("app"), f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+
+    f.host.set_capability(id, "build.read", false).unwrap();
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("build.read"), "{err:?}");
+    f.host.set_capability(id, "build.read", true).unwrap();
+
+    // The graph comes from running the project's build: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.10: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_build_grant_needs_api_1_10() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("build-graph");
+    copy_dir(&sample("build-graph"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.10\"", "\"^1.9\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.10"), "{err:?}");
 }
 
 /// The UI's synthetic post-install `SettingsChanged([])` reaches a plugin that

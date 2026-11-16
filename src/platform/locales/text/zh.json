@@ -7350,6 +7350,7 @@
   "Connect to {host} over unencrypted HTTP (from the machine the project is on)": "通过未加密的 HTTP 连接到 {host}（从项目所在的计算机）",
   "Connect to local socket {path} — equivalent to running arbitrary code on the project machine": "连接到本地套接字 {path} — 等同于在项目所在的计算机上运行任意代码",
   "Send requests to the {server} language server, which reads and changes the project's files": "向 {server} 语言服务器发送请求，该服务器会读取和修改项目文件",
+  "Read the project's resolved Maven and Gradle dependencies": "读取项目已解析的 Maven 和 Gradle 依赖",
   "Output: {channel}": "输出：{channel}",
   "You can close this tab.": "你可以关闭此标签页。",
   "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing": "如同您亲自选择一样运行任意 IDE 操作或其他插件的命令，包括运行程序、提交和推送",
@@ -8707,5 +8708,8 @@
   "Reformatted {formatted} of {length} files": "已重新格式化 {formatted}/{length} 个文件",
   "Skipped {count} files without a formatter: {names}": "已跳过 {count} 个没有格式化程序的文件：{names}",
   "Open Settings in a separate window": "在单独的窗口中打开设置",
-  "When off, Settings opens as a dialog in the project window, which is faster": "关闭时，设置以对话框形式在项目窗口中打开，速度更快"
+  "When off, Settings opens as a dialog in the project window, which is faster": "关闭时，设置以对话框形式在项目窗口中打开，速度更快",
+  "Run code inside the Java applications you start": "在你启动的 Java 应用中运行代码",
+  "Java agents of {list} were not added: they load only in local projects.": "未添加 {list} 的 Java 代理：Java 代理只加载到本地项目中。",
+  "Java agent": "Java 代理"
 }

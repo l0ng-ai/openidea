@@ -311,12 +311,11 @@ pub async fn build_sync(
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    if tool == BuildTool::Gradle {
-        // The sync may report project folders outside the project (`includeFlat`): index and list them.
-        project.refresh_index_scope();
-        let p = project.clone();
-        tokio::task::spawn_blocking(move || p.refresh_repositories());
-    }
+    // Gradle may report project folders outside the project (`includeFlat`), and a Maven
+    // reactor may have gained or dropped modules beside it: index and list them.
+    project.refresh_index_scope();
+    let p = project.clone();
+    tokio::task::spawn_blocking(move || p.refresh_repositories());
     // New source folders and dependency versions: the Project view and External Libraries reload.
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
     if tool == BuildTool::Maven
@@ -468,12 +467,54 @@ pub async fn gradle_dependencies(
             gradle_command: Some(gradle.command.clone()),
             ..Default::default()
         };
-        ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)
+        let dependencies =
+            ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)?;
+        // What plugins read of the build (`build.dependencies`) instead of running Gradle.
+        let report = ide_build::GradleReport { project: gradle_path, configuration, dependencies };
+        let cache = ide_build::gradle::cache_dir(&scope.cache, &gradle.dir);
+        if let Err(e) = ide_build::save_gradle_report(&scope.root, &cache, gradle, &report) {
+            tracing::debug!("keeping the dependencies report of {}: {e}", report.project);
+        }
+        Ok(report.dependencies)
     })
     .await
     .map_err(join_err);
     host.end_request(request);
     result?
+}
+
+/// What the Dependency Analyzer has of the builds of `project` at `root` (the project, or one
+/// of its workspace members), without running a build tool: the Maven modules as last synced
+/// and the Gradle reports read since the build files last changed.
+pub(crate) fn analyzed_dependencies(
+    project: &Project,
+    config: &Path,
+    root: &Path,
+) -> IdeResult<crate::plugins::BuildGraph> {
+    let mut graph = crate::plugins::BuildGraph::default();
+    for scope in workspace::scopes(project, config)?.iter().filter(|s| root == project.root || s.root == root) {
+        let settings = &scope.settings;
+        let model = ide_build::load_linked(
+            &scope.root,
+            &scope.cache,
+            ide_sdk::apply::maven_local_repository(&scope.root, settings),
+            &settings.languages.java.maven,
+            &settings.languages.java.gradle,
+        );
+        graph.maven.extend(model.maven.into_iter().flat_map(|m| m.projects));
+        for build in &model.gradle {
+            let reports =
+                ide_build::gradle_reports(&scope.root, &ide_build::gradle::cache_dir(&scope.cache, &build.dir), build);
+            // buildSrc can't be analyzed from the build, as in the Dependency Analyzer.
+            for p in build.projects.iter().filter(|p| !p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc"))) {
+                graph.gradle.push(crate::plugins::GradleModule {
+                    path: p.path.clone(),
+                    reports: reports.iter().filter(|r| r.project == p.path).cloned().collect(),
+                });
+            }
+        }
+    }
+    Ok(graph)
 }
 
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.

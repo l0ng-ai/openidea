@@ -38,6 +38,29 @@ pub struct ContentDiff {
     pub title: Option<String>,
 }
 
+/// A diff opened by a plugin (API 1.10): `None` is a side where the file doesn't exist.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub left_label: Option<String>,
+    pub right_label: Option<String>,
+    pub title: Option<String>,
+}
+
+impl From<ContentDiff> for FileDiff {
+    fn from(v: ContentDiff) -> Self {
+        Self {
+            left: Some(v.left),
+            right: Some(v.right),
+            left_label: v.left_label,
+            right_label: v.right_label,
+            title: v.title,
+        }
+    }
+}
+
 /// ContentTabReply data exchanged with the IDE.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

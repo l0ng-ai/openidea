@@ -1,0 +1,1 @@
+Not a real agent: the tests check the grant and the command line, not the JVM.

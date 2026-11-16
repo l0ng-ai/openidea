@@ -19,7 +19,7 @@ pub mod web;
 mod xml;
 
 pub use gradle::{GradleModel, GradleProject, GradleTask};
-pub use gradle_deps::{GradleDependency, gradle_dependencies};
+pub use gradle_deps::{GradleDependency, GradleReport, gradle_dependencies, gradle_reports, save_gradle_report};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
 pub use sbt::{SbtBuild, SbtProject};
 pub use sync::{
@@ -127,10 +127,22 @@ pub fn gradle_external_roots(
     gradle::external_roots(root, dirs.iter().map(String::as_str))
 }
 
-/// Directories of Maven POMs linked from outside `root`, outermost only.
-/// Reads just those explicit paths (no POM parse and no directory walk).
-pub fn maven_external_roots(root: &Path, linked: &[String]) -> Vec<PathBuf> {
-    let dirs = maven::external_pom_dirs(root, linked);
+/// Directories outside `root`, outermost only, of Maven POMs linked from there and, in a
+/// trusted project, of the modules its reactor lists there (`<module>../service-a</module>`):
+/// extra content roots, as IDEA imports such modules with content roots of their own.
+/// Linked POMs are read as explicit paths; the reactor's POMs are parsed, but not their
+/// parents, and nothing walks directories. `cache_dir` holds the profiles chosen at the last sync.
+pub fn maven_external_roots(
+    root: &Path,
+    cache_dir: &Path,
+    settings: &ide_core::settings::MavenSettings,
+    trusted: bool,
+) -> Vec<PathBuf> {
+    let mut dirs = maven::external_pom_dirs(root, &settings.linked_projects);
+    if trusted {
+        let profiles = settings.profiles(&sync::maven_profiles(cache_dir));
+        dirs.extend(maven::reactor_external_dirs(root, &profiles, &settings.unlinked_projects));
+    }
     let owned: Vec<String> = dirs.iter().map(|dir| dir.to_string_lossy().into_owned()).collect();
     gradle::external_roots(root, owned.iter().map(String::as_str))
 }
@@ -249,6 +261,59 @@ mod tests {
         );
         settings.linked_projects = Some(vec![]);
         assert!(gradle_external_roots(&root, &temp.path().join("cache"), &settings).is_empty());
+    }
+
+    #[test]
+    fn reactor_modules_outside_the_root_are_content_roots_of_a_trusted_project() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("workspace");
+        let cache = base.join("cache");
+        let write = |rel: &str, text: &str| {
+            let path = base.join(rel).join("pom.xml");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("<project><artifactId>{rel}</artifactId>{text}</project>")).unwrap();
+        };
+        let reactor = |modules: &str| {
+            format!(
+                "<packaging>pom</packaging><modules>{modules}</modules>\
+                 <profiles><profile><id>extra</id><modules><module>../service-c</module></modules></profile></profiles>"
+            )
+        };
+        let all = "<module>core</module><module>../service-a</module><module>..</module>";
+        write("workspace", &reactor(all));
+        write("workspace/core", "<modules><module>../../service-d</module></modules>");
+        write("service-a", "<modules><module>impl</module><module>../service-e</module></modules>");
+        for module in ["service-a/impl", "service-c", "service-d", "service-e", "unrelated"] {
+            write(module, "");
+        }
+        // The folder holding the project is not a module beside it, nor are its other modules.
+        write("", "<modules><module>workspace</module><module>unrelated</module></modules>");
+
+        let mut settings = ide_core::settings::MavenSettings::default();
+        let roots = |settings: &ide_core::settings::MavenSettings, trusted| {
+            maven_external_roots(&root, &cache, settings, trusted)
+        };
+        let (a, c, d, e) =
+            (base.join("service-a"), base.join("service-c"), base.join("service-d"), base.join("service-e"));
+        assert_eq!(roots(&settings, true), [a.clone(), d.clone(), e.clone()]);
+        assert!(roots(&settings, false).is_empty(), "Restricted Mode does not widen the index");
+
+        settings.active_profiles = "extra".into();
+        assert_eq!(roots(&settings, true), [a.clone(), c.clone(), d.clone(), e.clone()]);
+        save_maven_profiles(&cache, &["!extra".into()]).unwrap();
+        assert_eq!(roots(&settings, true), [a.clone(), d.clone(), e.clone()]);
+
+        settings.unlinked_projects = vec![a.join("pom.xml").to_string_lossy().replace('\\', "/")];
+        assert_eq!(roots(&settings, true), std::slice::from_ref(&d));
+        settings.unlinked_projects.clear();
+
+        write("workspace", &reactor("<module>core</module>"));
+        assert_eq!(roots(&settings, true), std::slice::from_ref(&d));
+        write("workspace/core", "");
+        assert!(roots(&settings, true).is_empty());
+        write("workspace", &reactor(all));
+        assert_eq!(roots(&settings, true), [a, e]);
     }
 
     #[test]

@@ -39,6 +39,7 @@ Later:
 | `editor.write`      | Medium | `TextEditor::apply_edits`                                                                                                                                         | 1.0                           |
 | `vcs.read`          | Low    | `vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff`, the pending commit, before-commit checks                                                         | 1.0                           |
 | `vcs.write`         | Medium | `vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                   | 1.0                           |
+| `build.read`        | Low    | `build_dependencies`: the Maven / Gradle dependency graph the IDE resolved; trusted projects only                                                                 | 1.10                          |
 | `storage`           | Low    | `host::storage`, 64 MiB per plugin                                                                                                                                | 1.0                           |
 | `events`            | Low    | File opened, closed and saved, files changed, editor focused, repository changed, settings changed                                                                | 1.0                           |
 | `events.input`      | Medium | `action-performed` and `input-mode-changed` events (keystrokes and editor input)                                                                                  | 1.0                           |
@@ -52,6 +53,7 @@ Later:
 | `fs.write:<path>`   | High   | `host::fs` writes outside the projects, under that path; does not imply reading                                                                                   | 1.3                           |
 | `process:<program>` | High   | Run that program: `run_process`, `run_command`, `start`, terminals, language servers, debug adapters, runs                                                        | 1.0                           |
 | `lsp:<server>`      | High   | Send that running language server its own requests (`language_server_request`); trusted projects only                                                             | 1.9                           |
+| `java.agent`        | High   | Run the plugin's Java agent inside the Java applications you start (see [Java agents](#java-agents))                                                              | 1.10                          |
 | `ipc:<path>`        | High   | Local Unix sockets or Windows named pipes on the project machine                                                                                                  | 1.4                           |
 | `ide.commands`      | High   | Run any IDE action or another plugin's command as if the user chose it, including running programs, committing and pushing. The plugin's own commands are exempt. | 1.4                           |
 
@@ -65,6 +67,14 @@ The **API** column is the oldest plugin API the manifest may admit when it decla
 - In **Settings › Plugins** the user can choose a different executable for a `process:` grant, globally or for the current project. The new choice is approved and pinned the same way. The plugin keeps calling its declared program name.
 - `process:` grants are also derived from what a contribution starts: a language's `language-servers` and `debugger`, and a run detector's `command`. These are optional: refusing one keeps the rest of the plugin working.
 - Processes run in the project root of a trusted project. Plugins can only add environment variables, never replace or remove them.
+
+## Java agents
+
+`java.agent` lets a plugin's Java agent run inside the Java applications the user starts. It comes from a `[[contributes.javaAgents]]` declaration (one per plugin, a jar inside the package), is never listed under `[capabilities]`, and is optional: refusing or revoking it keeps the rest of the plugin working, and the next launch has no agent.
+
+- On grant, the IDE records the jar's content hash and checks it again before every launch. A changed jar is left out, with a line in the run console, until the user approves `java.agent` again. **Settings › Plugins** shows the agent's file name and arguments next to the permission.
+- The IDE adds one `-javaagent:<absolute path>[=<args>]` argument after the VM options of **Application**, **Spring Boot** and **JAR Application** configurations, for Run and Debug alike, and only for projects on this machine.
+- Tests, Maven and Gradle goals, application servers, remote JVM debug, run targets and remote projects get no agent in this version. See [README: Java agents](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#java-agents-api-110).
 
 ## Files outside the project
 

@@ -56,7 +56,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.9";
+pub const API_VERSION: &str = "1.10";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
@@ -116,6 +116,13 @@ pub trait HostApi: Send + Sync {
     ) -> Result<String, HostError> {
         let _ = (root, method, params, notify, cancel, timeout);
         Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
+    }
+    /// The flat dependency graph of the Maven / Gradle builds of the project at `root`
+    /// (of the module `module` only, when given), as the IDE last resolved it; never runs
+    /// a build tool.
+    fn build_dependencies(&self, root: &Path, module: Option<&str>) -> Result<Vec<crate::DependencyNode>, HostError> {
+        let _ = (root, module);
+        Err(HostError::Failed("build data is unavailable on this host".into()))
     }
     /// Stdio argv only; no URL or bearer token.
     fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
@@ -188,8 +195,8 @@ pub trait HostApi: Send + Sync {
         let _ = (client, tab, cancel, timeout);
         Err(HostError::Failed("content tabs unavailable".into()))
     }
-    /// Opens a diff of two texts in the invoking window.
-    fn open_diff(&self, client: &str, diff: crate::ContentDiff, file_name: Option<String>) -> Result<(), HostError> {
+    /// Opens a diff of two texts in the invoking window; a `None` side doesn't exist.
+    fn open_diff(&self, client: &str, diff: crate::FileDiff, file_name: Option<String>) -> Result<(), HostError> {
         let _ = (client, diff, file_name);
         Err(HostError::Failed("diffs unavailable".into()))
     }

@@ -91,12 +91,31 @@ fn diff_side(value: &str, side: &str) -> Result<(), HostError> {
 }
 
 pub(super) fn validate_diff(diff: &ide_plugin::ContentDiff) -> Result<(), HostError> {
-    diff_side(&diff.left, "left")?;
-    diff_side(&diff.right, "right")?;
-    for value in [&diff.left_label, &diff.right_label].into_iter().flatten() {
+    validate_diff_parts([Some(&diff.left), Some(&diff.right)], [&diff.left_label, &diff.right_label], &diff.title)
+}
+
+/// A `None` side doesn't exist (an added or deleted file); at least one side does.
+pub(super) fn validate_file_diff(diff: &ide_plugin::FileDiff) -> Result<(), HostError> {
+    validate_diff_parts([diff.left.as_ref(), diff.right.as_ref()], [&diff.left_label, &diff.right_label], &diff.title)
+}
+
+fn validate_diff_parts(
+    sides: [Option<&String>; 2],
+    labels: [&Option<String>; 2],
+    title: &Option<String>,
+) -> Result<(), HostError> {
+    if sides.iter().all(Option::is_none) {
+        return Err(HostError::Invalid("a diff needs at least one side".into()));
+    }
+    for (value, side) in sides.into_iter().zip(["left", "right"]) {
+        if let Some(value) = value {
+            diff_side(value, side)?;
+        }
+    }
+    for value in labels.into_iter().flatten() {
         label(value, 128)?;
     }
-    if let Some(title) = &diff.title {
+    if let Some(title) = title {
         label(title, 256)?;
     }
     Ok(())
@@ -710,6 +729,28 @@ mod tests {
         );
         assert!(
             matches!(validate_diff(&diff("a\0".into(), String::new())), Err(HostError::Invalid(m)) if m.contains("NUL"))
+        );
+    }
+
+    #[test]
+    fn a_file_diff_may_miss_one_side_but_not_both() {
+        let side = |left: Option<&str>, right: Option<&str>| ide_plugin::FileDiff {
+            left: left.map(Into::into),
+            right: right.map(Into::into),
+            ..Default::default()
+        };
+        assert!(validate_file_diff(&side(None, Some("added\n"))).is_ok());
+        assert!(validate_file_diff(&side(Some("deleted\n"), None)).is_ok());
+        assert!(validate_file_diff(&side(Some(""), Some(""))).is_ok());
+        assert!(
+            matches!(validate_file_diff(&side(None, None)), Err(HostError::Invalid(m)) if m == "a diff needs at least one side")
+        );
+        let huge = "y".repeat(MAX_DIFF_SIDE + 1);
+        assert!(
+            matches!(validate_file_diff(&side(None, Some(&huge))), Err(HostError::Invalid(m)) if m == "diff too large: the right side is over 8 MiB")
+        );
+        assert!(
+            matches!(validate_file_diff(&side(Some("a\0"), None)), Err(HostError::Invalid(m)) if m.contains("NUL"))
         );
     }
 

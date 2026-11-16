@@ -26,6 +26,8 @@ pub enum Capability {
     DatabaseSources,
     VcsRead,
     VcsWrite,
+    /// The Maven / Gradle dependency graph the IDE resolved.
+    BuildRead,
     /// The plugin's own key-value store and data directory.
     Storage,
     /// The plugin's own secrets (kept in the client's OS keychain).
@@ -55,6 +57,9 @@ pub enum Capability {
     FsRead(String),
     /// Write files outside the project under one path.
     FsWrite(String),
+    /// Load the plugin's Java agent into the JVMs of Java run configurations. Never
+    /// declared: it comes from `[[contributes.javaAgents]]`.
+    JavaAgent,
 }
 
 /// How a grant is presented (plan 4.2).
@@ -72,7 +77,9 @@ pub enum Risk {
 impl Capability {
     pub fn risk(&self) -> Risk {
         match self {
-            Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead => Risk::Low,
+            Self::ProjectRead | Self::EditorRead | Self::Storage | Self::Events | Self::VcsRead | Self::BuildRead => {
+                Risk::Low
+            }
             Self::EditorWrite
             | Self::DatabaseSources
             | Self::VcsWrite
@@ -90,7 +97,8 @@ impl Capability {
             | Self::Process(_)
             | Self::Lsp(_)
             | Self::FsRead(_)
-            | Self::FsWrite(_) => Risk::High,
+            | Self::FsWrite(_)
+            | Self::JavaAgent => Risk::High,
         }
     }
 
@@ -111,6 +119,7 @@ impl Capability {
             Self::IdeCommands => "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing".into(),
             Self::VcsRead => "Read version control state".into(),
             Self::VcsWrite => "Change version control state (commit, fetch, checkout)".into(),
+            Self::BuildRead => "Read the project's resolved Maven and Gradle dependencies".into(),
             Self::Storage => "Store its own data".into(),
             Self::Secrets => "Store secrets in the system keychain".into(),
             Self::Events => "Observe editor, filesystem and version control events".into(),
@@ -135,6 +144,7 @@ impl Capability {
             }
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
+            Self::JavaAgent => "Run code inside the Java applications you start".into(),
         }
     }
 
@@ -246,6 +256,7 @@ impl fmt::Display for Capability {
             Self::DatabaseSources => f.write_str("database.sources"),
             Self::VcsRead => f.write_str("vcs.read"),
             Self::VcsWrite => f.write_str("vcs.write"),
+            Self::BuildRead => f.write_str("build.read"),
             Self::Storage => f.write_str("storage"),
             Self::Secrets => f.write_str("secrets"),
             Self::Events => f.write_str("events"),
@@ -259,6 +270,7 @@ impl fmt::Display for Capability {
             Self::Lsp(s) => write!(f, "lsp:{s}"),
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
+            Self::JavaAgent => f.write_str("java.agent"),
         }
     }
 }
@@ -330,11 +342,13 @@ impl FromStr for Capability {
             "database.sources" => Self::DatabaseSources,
             "vcs.read" => Self::VcsRead,
             "vcs.write" => Self::VcsWrite,
+            "build.read" => Self::BuildRead,
             "storage" => Self::Storage,
             "secrets" => Self::Secrets,
             "events" => Self::Events,
             "events.input" => Self::InputEvents,
             "clipboard" => Self::Clipboard,
+            "java.agent" => Self::JavaAgent,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
@@ -383,6 +397,7 @@ mod tests {
             "editor.write",
             "project.write",
             "vcs.write",
+            "build.read",
             "storage",
             "secrets",
             "events",
@@ -392,6 +407,7 @@ mod tests {
             "process:cargo",
             "lsp:phoxite",
             "lsp:rust-analyzer",
+            "java.agent",
         ] {
             assert_eq!(s.parse::<Capability>().unwrap().to_string(), s);
         }
@@ -425,8 +441,11 @@ mod tests {
         assert_eq!(Capability::Clipboard.risk(), Risk::Medium);
         assert_eq!(Capability::Process("cargo".into()).risk(), Risk::High);
         assert_eq!(Capability::Lsp("phoxite".into()).risk(), Risk::High);
+        assert_eq!(Capability::BuildRead.risk(), Risk::Low);
         assert!(!Capability::Lsp("phoxite".into()).covers(&Capability::Lsp("intelephense".into())));
         assert!(Capability::Storage.auto_migrates() && !Capability::EditorWrite.auto_migrates());
+        assert_eq!(Capability::JavaAgent.risk(), Risk::High);
+        assert!(!Capability::JavaAgent.auto_migrates());
     }
 
     /// A trusted project's files name programs the IDE starts by itself: the git and language
