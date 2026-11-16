@@ -53,7 +53,6 @@ import {
   SESSION_KIND,
   TOOL_WINDOW,
   appendEntry,
-  attentionChange,
   entriesKey,
   isBusy,
   sessionKey,
@@ -553,12 +552,15 @@ function onEvent(e: AgentEvent) {
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
       if (prev && (prev.title !== e.task.title || prev.status !== e.task.status)) notifyTabTitlesChanged();
       if (e.task.status === "archived") setUnread(e.task.id, false);
-      else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
-      notifyChange(prev, e.task);
       if (prev?.status !== e.task.status && !isBusy(e.task.status)) {
         void refreshChanges(e.task.id);
         void refreshProviders();
       }
+      break;
+    }
+    case "attention": {
+      markUnread(e.task);
+      notifyAttention(e.task, e.reason);
       break;
     }
     case "removed": {
@@ -633,27 +635,28 @@ function onEvent(e: AgentEvent) {
   }
 }
 
-function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
-  const change = attentionChange(prev?.status, task.status);
-  if (!change) return;
-  if (viewing(task.id)) return;
+/** In-app balloon for an Attention event; OS delivery goes through the general balloon path. */
+function notifyAttention(taskId: string, reason: "finished" | "input" | "failed") {
+  if (viewing(taskId)) return;
+  const task = useAgents.getState().tasks.get(taskId);
+  const title = task?.title ?? "Agent";
   const body =
-    change === "input"
+    reason === "input"
       ? "Waiting for your answer"
-      : change === "failed"
-        ? (task.error ?? "The agent stopped")
+      : reason === "failed"
+        ? (task?.error ?? "The agent stopped")
         : "Finished";
   notifications().notify({
-    level: change === "failed" ? "error" : "info",
-    title: task.title,
+    level: reason === "failed" ? "error" : "info",
+    title,
     body,
-    key: `agent:${task.id}`,
+    key: `agent:${taskId}`,
     group: "tools",
-    sticky: change !== "finished",
+    sticky: reason !== "finished",
     actions: [
       {
-        label: change === "finished" ? "Review" : "Open",
-        run: () => openTask(task.id),
+        label: reason === "finished" ? "Review" : "Open",
+        run: () => openTask(taskId),
       },
     ],
   });

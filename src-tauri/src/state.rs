@@ -179,6 +179,7 @@ impl AppState {
     /// Called on the event-loop thread (window destruction, the `close_project`
     /// command), so it must not wait for the project's workers to shut down.
     pub fn close_project(&self, window: &str) {
+        crate::system_notifications::clear_window(window);
         self.remote_dev.disconnect(window);
         self.host.close_project_detached(window);
     }

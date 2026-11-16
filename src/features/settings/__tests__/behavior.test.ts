@@ -156,8 +156,10 @@ describe("appearance & behavior settings", () => {
     expect(validateNotifications({ groups: { vcs: { display: "weird", log: false } }, sound: 1 })).toEqual({
       balloons: true,
       sound: false,
+      systemNotifications: true,
       groups: { vcs: { display: "balloon", log: false } },
     });
+    expect(validateNotifications({ systemNotifications: false }).systemNotifications).toBe(false);
   });
 });
 

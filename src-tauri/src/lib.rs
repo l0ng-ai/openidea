@@ -26,6 +26,7 @@ mod relaunch;
 mod remote_container;
 mod remote_dev;
 mod remote_wsl;
+mod system_notifications;
 
 mod state;
 mod theme_frame;
@@ -121,7 +122,10 @@ pub fn run() {
     // Install before window-state restores maximized geometry during window creation.
     #[cfg(windows)]
     let app = app.plugin(window_work_area::init());
-    let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    let app = app
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
     #[cfg(not(target_os = "linux"))]
@@ -220,6 +224,7 @@ pub fn run() {
             windows::report_cli_error(app.handle(), error);
         }
         app.manage(application_focus::ApplicationFocus::default());
+        system_notifications::init(app.handle());
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]

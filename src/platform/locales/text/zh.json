@@ -8360,5 +8360,6 @@
   "Non-Project Files": "非项目文件",
   "file:src//*.ts && !file:*.test.ts — paths are relative to the project; // is any folders, * any characters. file[module]:pattern limits a pattern to a module.": "file:src//*.ts && !file:*.test.ts —— 路径相对于项目；// 表示任意层文件夹，* 表示任意字符。file[module]:pattern 将模式限定在某个模块内。",
   "Clear File Color": "清除文件颜色",
-  "Edit File Colors…": "编辑文件颜色…"
+  "Edit File Colors…": "编辑文件颜色…",
+  "Enable system notifications": "启用系统通知"
 }

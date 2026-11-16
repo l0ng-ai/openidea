@@ -135,6 +135,8 @@ struct Shared {
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
     idle_release_ms: AtomicU64,
     mcp_servers_hook: RwLock<Option<Arc<McpServersFn>>>,
+    /// Monotonic id for [`AgentEvent::Attention`] episodes.
+    attention_seq: AtomicU64,
 }
 
 /// What an agent offered in its last session, for the New Task page.
@@ -417,6 +419,7 @@ impl AgentManager {
             probes: Mutex::new(HashMap::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
+            attention_seq: AtomicU64::new(0),
         });
         shared.paths.catalogs.subscribe(&shared);
         let mut tasks = HashMap::new();
@@ -1695,6 +1698,28 @@ impl Task {
         self.emit_task();
     }
 
+    fn emit_attention(&self, reason: AgentAttentionReason) {
+        let n = self.shared.attention_seq.fetch_add(1, Ordering::Relaxed);
+        let tag = match reason {
+            AgentAttentionReason::Finished => "finished",
+            AgentAttentionReason::Input => "input",
+            AgentAttentionReason::Failed => "failed",
+        };
+        self.shared.emit(AgentEvent::Attention {
+            task: self.id.clone(),
+            event_id: format!("{}:{tag}:{n}", self.id),
+            reason,
+        });
+    }
+
+    /// After NeedsInput + optional auto-approve: notify only when the user must still answer.
+    fn emit_attention_if_input_pending(&self) {
+        let waiting = !self.permissions.lock().is_empty() && self.state.lock().task.status == AgentStatus::NeedsInput;
+        if waiting {
+            self.emit_attention(AgentAttentionReason::Input);
+        }
+    }
+
     fn persist(&self) {
         // Held from snapshot to rename, so saves land in order and none follows a delete.
         let deleted = self.deleted.lock();
@@ -1797,8 +1822,11 @@ impl Task {
             }
             match (next, result) {
                 (Some(queued), _) => prompt = queued.prompt,
-                (None, Ok(_)) => {
+                (None, Ok(stop)) => {
                     self.set_status(AgentStatus::Ready, None);
+                    if stop != "cancelled" {
+                        self.emit_attention(AgentAttentionReason::Finished);
+                    }
                     return self.release_when_idle();
                 }
                 (None, Err(failure)) => return self.fail(failure),
@@ -1869,6 +1897,7 @@ impl Task {
             }
             None => self.set_status(AgentStatus::Failed, Some(failure.message)),
         }
+        self.emit_attention(AgentAttentionReason::Failed);
     }
 
     /// Adds `prompt` to the running turn when the agent takes that; gives it back otherwise.
@@ -2500,6 +2529,7 @@ impl Task {
         self.permissions.lock().insert(id, tx);
         self.set_status(AgentStatus::NeedsInput, None);
         self.approve_pending();
+        self.emit_attention_if_input_pending();
 
         let answer = rx.recv().ok().flatten();
         let answers = answer
@@ -2583,6 +2613,7 @@ impl Task {
         });
         self.permissions.lock().insert(id, tx);
         self.set_status(AgentStatus::NeedsInput, None);
+        self.emit_attention_if_input_pending();
         let reply = rx.recv().ok().flatten();
         let (response, chosen) = elicitation::answer(&form, reply.as_deref());
         self.settle(entry, chosen);

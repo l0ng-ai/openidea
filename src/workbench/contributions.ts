@@ -758,6 +758,8 @@ export interface NotificationService {
      * silence what the IDE reports on its own, not the answer to a request.
      */
     userInitiated?: boolean;
+    /** Skip the chime even when "Play sound" is on (e.g. native OS sound already played). */
+    silent?: boolean;
   }): void;
   /** Hides the balloon of the notification with `key` (it stays in the log), e.g. once its cause is gone. */
   expire?(key: string): void;
