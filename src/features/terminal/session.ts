@@ -65,6 +65,13 @@ export interface SessionSnapshot {
   appTitle: string | null;
   /** A command is running (shell integration's OSC 133 C … D), or the session runs a non-shell program. */
   commandRunning: boolean;
+  /**
+   * The running program's own progress report (OSC 9;4, #3831): "active" while it
+   * shows itself as working, "cleared" once it reports being done, null while it
+   * has said nothing. An interactive CLI is one command from OSC 133's point of
+   * view, so only its own report separates working from waiting for input.
+   */
+  progress: "active" | "cleared" | null;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
   /**
@@ -275,6 +282,7 @@ export class TerminalSession {
       title: "Local",
       appTitle: null,
       commandRunning: false,
+      progress: null,
       cwd: opts.cwd,
       unseenDone: false,
     };
@@ -366,15 +374,16 @@ export class TerminalSession {
         if (data === "C") {
           this.commandStartedAt = Date.now();
           this.commandInterrupted = false;
-          // A new command in the tab: the previous completion has been seen.
-          this.update({ commandRunning: true, unseenDone: false });
+          // A new command in the tab: the previous completion has been seen, and
+          // the new program has not reported progress yet.
+          this.update({ commandRunning: true, unseenDone: false, progress: null });
         } else if (data === "D" || data.startsWith("D;")) {
           const status = data.length > 2 ? Number.parseInt(data.slice(2), 10) : Number.NaN;
           const startedAt = this.commandStartedAt;
           this.commandStartedAt = null;
           const interrupted = this.commandInterrupted;
           this.commandInterrupted = false;
-          this.update({ commandRunning: false });
+          this.update({ commandRunning: false, progress: null });
           // A D without a C (shell startup, a restored tab's first prompt) is
           // not a command finishing.
           if (startedAt !== null) {
@@ -385,6 +394,17 @@ export class TerminalSession {
             });
           }
         }
+        return true;
+      }),
+      // OSC 9;4 (ConEmu-style progress): agent CLIs (Claude Code, Gemini CLI, …)
+      // and long jobs report their own working state — state 0 removes it, 1–4
+      // report work in flight. A program that reports progress decides the tab's
+      // spinner itself (#3831): it clears the report when it waits for input,
+      // while OSC 133 still sees one command running from launch to exit.
+      this.term.parser.registerOscHandler(9, (data) => {
+        if (!data.startsWith("4;")) return false;
+        const state = Number.parseInt(data.slice(2), 10);
+        if (Number.isFinite(state)) this.update({ progress: state === 0 ? "cleared" : "active" });
         return true;
       }),
       this.term.registerLinkProvider({
@@ -695,10 +715,16 @@ export class TerminalSession {
     const generation = ++this.generation;
     this.outputTail = "";
     const custom = this.opts.command;
-    this.update({ status: "starting", exitCode: null, appTitle: null, commandRunning: !!custom && !custom.shell });
+    this.update({
+      status: "starting",
+      exitCode: null,
+      appTitle: null,
+      commandRunning: !!custom && !custom.shell,
+      progress: null,
+    });
     if (!isTauri()) {
       this.term.writeln("\x1b[2mTerminal is unavailable outside the desktop app.\x1b[0m");
-      this.update({ status: "error" });
+      this.update({ status: "error", commandRunning: false, progress: null });
       return;
     }
     const cols = Math.max(2, this.term.cols);
@@ -742,7 +768,8 @@ export class TerminalSession {
       this.pendingInput = "";
       this.term.writeln(`\x1b[31mFailed to start terminal: ${e instanceof Error ? e.message : String(e)}\x1b[0m`);
       if (!custom?.onExit) this.term.writeln(RESTART_HINT);
-      this.update({ status: "error" });
+      // Nothing runs: a non-shell command tab must not keep its running marker.
+      this.update({ status: "error", commandRunning: false, progress: null });
     }
   }
 
@@ -772,7 +799,9 @@ export class TerminalSession {
     this.ptyId = null;
     this.opts.command?.onExit?.(code, false);
     this.pendingInput = "";
-    this.update({ status: "exited", exitCode: code });
+    // The process is gone: a non-shell command tab never sees OSC 133's D, so
+    // the running marker stops here rather than spinning over the dead tab.
+    this.update({ status: "exited", exitCode: code, commandRunning: false, progress: null });
     // Let output still in flight on the channel land first.
     setTimeout(() => {
       if (this.disposed || this.snapshot.status !== "exited") return;
