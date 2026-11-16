@@ -536,15 +536,16 @@ mod tests {
         let dest = tmp.path().join("install with spaces");
         extract(&archive, ArchiveKind::Zip, &dest, "unity-debug", &CancellationToken::new()).unwrap();
         let target = locate(&dest, &["UnityDebug.exe".into()]).unwrap();
-        let wrapper =
-            link_executable_with_runtime(&dest.join("bin"), "unity-debug", &target, cfg!(unix).then_some("mono"))
-                .unwrap();
+        let bin = dest.join("bin");
+        let wrapper = link_executable_with_runtime(&bin, "unity-debug", &target, cfg!(unix).then_some("mono")).unwrap();
         let script = fs::read_to_string(wrapper).unwrap();
+        #[cfg(unix)]
         assert!(script.contains(&*target.to_string_lossy()));
         #[cfg(unix)]
         assert!(script.contains("exec mono '") && script.contains("\"$@\""));
+        // The shim names the adapter relative to itself (see `cmd_path`).
         #[cfg(windows)]
-        assert!(script.contains("\" %*") && !script.contains("mono "));
+        assert!(script.contains(&format!("\"{}\" %*", cmd_path(&bin, &target))) && !script.contains("mono "));
         assert_eq!(fs::read(target.with_extension("exe.config")).unwrap(), b"runtime config");
         assert_eq!(fs::read(target.parent().unwrap().join("Mono.Debugger.Soft.dll")).unwrap(), b"dependency");
     }
