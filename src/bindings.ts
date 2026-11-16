@@ -145,7 +145,7 @@ export const commands = {
 	/**  Routes frontend logs into the backend `tracing` pipeline. */
 	logFrontend: (level: LogLevel, message: string) => __TAURI_INVOKE<void>("log_frontend", { level, message }),
 	/**  Streams the project's agent events to this window; returns every task. */
-	agentSubscribe: (onEvent: Channel<AgentEvent>) => typedError<AgentTask[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
+	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
@@ -184,12 +184,25 @@ export const commands = {
 	agentMcpList: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_list")),
 	/**  Creates or updates a User or Workspace MCP server and returns the updated list. */
 	agentMcpSave: (input: McpServerInput) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_save", { input })),
+	/**
+	 *  Parses and saves one or more MCP servers from a pasted JSON snippet (`{"mcpServers": {...}}` or
+	 *  single server object).
+	 */
+	agentMcpSaveJson: (scope: McpScope, rawJson: string, fallbackName: string | null, agents: string[]) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_save_json", { scope, rawJson, fallbackName, agents })),
 	/**  Enables or disables an MCP server and returns the updated list. */
 	agentMcpSetEnabled: (id: string, enabled: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_set_enabled", { id, enabled })),
 	/**  Removes a User or Workspace MCP server and returns the updated list. */
 	agentMcpRemove: (id: string) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_remove", { id })),
 	/**  Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once. */
 	agentMcpImport: () => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_import")),
+	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
+	agentMcpDiscoverSources: () => typedError<McpExternalSource[], IdeError>(__TAURI_INVOKE("agent_mcp_discover_sources")),
+	/**  Imports selected servers from discovered external MCP configuration files into User or Workspace scope. */
+	agentMcpImportSelected: (scope: McpScope, selections: McpImportSelection[], overwrite: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_import_selected", { scope, selections, overwrite })),
+	/**  Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`). */
+	agentMcpTest: (id: string) => typedError<McpProbeResult, IdeError>(__TAURI_INVOKE("agent_mcp_test", { id })),
+	/**  Updates per-session MCP server enable/disable overrides on `task`. */
+	agentSetMcpOverrides: (task: string, overrides: { [key in string]: boolean }) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_set_mcp_overrides", { task, overrides })),
 	/**
 	 *  Slash commands to complete for `provider` in `task`'s directory, or in the project
 	 *  before a task exists (skills and custom commands on disk included).
@@ -197,11 +210,11 @@ export const commands = {
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
 	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
-	agentCreate: (request: NewAgentTask) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create", { request })),
+	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
-	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
+	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
 	/**  Drops a queued message and returns it (to edit it). */
@@ -211,12 +224,12 @@ export const commands = {
 	/**  Changes a session setting (model, mode, thinking effort…). */
 	agentSetConfig: (task: string, option: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_config", { task, option, value })),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
-	agentFork: (task: string, turns: number | null) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
 	/**
 	 *  Creates a temporary side conversation of `source`: lives in memory only, never
 	 *  persisted, not listed, and its session starts with the first message sent to it.
 	 */
-	agentCreateEphemeral: (request: NewAgentTask, source: string) => typedError<AgentTask, IdeError>(__TAURI_INVOKE("agent_create_ephemeral", { request, source })),
+	agentCreateEphemeral: (request: NewAgentTask, source: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create_ephemeral", { request, source })),
 	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
 	agentRollback: (task: string, turns: number) => typedError<{
 	text: string,
@@ -2109,26 +2122,51 @@ form?: AgentForm | null;
 chosen: string | null } | { type: "error"; message: string };
 
 /**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
-export type AgentEvent = 
+export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
+
+/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
-{ type: "task"; task: AgentTask } | { type: "removed"; id: string } | 
+({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  The task's conversation was cut to its first `length` entries (turns rolled back). */
-{ type: "truncated"; task: string; length: number } | 
+({ type: "truncated"; task: string; length: number }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | 
 /**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
-{ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry } | 
+({ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry }) & { catalog?: never; eventId?: never; from?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never; text?: never } | 
 /**
  *  Text was appended to entry `index` (an agent message or a thought): it read the first
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
-{ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string } | 
+({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
-{ type: "limits"; provider: string; limits: AgentLimit[] } | 
+({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
-{ type: "modelCatalog"; catalog: AgentModelCatalog } | 
+({ type: "modelCatalog"; catalog: AgentModelCatalog }) & { entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  The installed or configured agent providers changed. */
-{ type: "providers" } | 
+({ type: "providers" }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  The task needs attention once (finished turn, explicit input, or failure). */
-{ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason };
+({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
+
+/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+export type AgentEvent_Serialize = 
+/**  A task was created or its metadata changed. */
+({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
+/**  The task's conversation was cut to its first `length` entries (turns rolled back). */
+({ type: "truncated"; task: string; length: number }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | 
+/**  Entry `index` of `task` (of its subagent `subagent`) was added or replaced. */
+({ type: "entry"; task: string; subagent: string | null; index: number; entry: AgentEntry }) & { catalog?: never; eventId?: never; from?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never; text?: never } | 
+/**
+ *  Text was appended to entry `index` (an agent message or a thought): it read the first
+ *  `from` UTF-16 units of its text when the previous event for it was sent.
+ */
+({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**  An agent reported the usage limits of its account (shared by every task of `provider`). */
+({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
+/**  A model lookup started or completed, including unsuccessful lookups. */
+({ type: "modelCatalog"; catalog: AgentModelCatalog }) & { entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
+/**  The installed or configured agent providers changed. */
+({ type: "providers" }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
+/**  The task needs attention once (finished turn, explicit input, or failure). */
+({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
 /**  A form the agent asks the user to fill in (ACP `elicitation/create`, form mode). */
 export type AgentForm = {
@@ -2466,7 +2504,9 @@ export type AgentSubagentStatus = "running" |
 /**  One of its requests (a permission) waits for an answer. */
 "needsInput" | "done" | "cancelled" | "failed";
 
-export type AgentTask = {
+export type AgentTask = AgentTask_Serialize | AgentTask_Deserialize;
+
+export type AgentTask_Deserialize = {
 	/**  Original project folder; absent in tasks saved before per-task roots. */
 	projectRoot?: IpcPath | null,
 	id: string,
@@ -2510,6 +2550,56 @@ export type AgentTask = {
 	retry?: AgentRetry | null,
 	/**  What the agent runs in the background (shells, subagents, monitors), oldest first. */
 	background?: AgentBackgroundTask[],
+	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
+	mcpOverrides?: { [key in string]: boolean },
+};
+
+export type AgentTask_Serialize = {
+	/**  Original project folder; absent in tasks saved before per-task roots. */
+	projectRoot: IpcPath | null,
+	id: string,
+	title: string,
+	/**  [`AgentProvider::id`]. */
+	provider: string,
+	/**  Model the task runs on (its `model` setting), when known. */
+	model: string | null,
+	status: AgentStatus,
+	isolation: Isolation,
+	/**  Directory the agent works in (the worktree, or the project root). */
+	cwd: IpcPath,
+	/**  Branch of the task's worktree. */
+	branch: string | null,
+	/**  Branch (or revision) the worktree was created from. */
+	base: string | null,
+	/**  Commit the task's changes are compared against (worktree tasks; local ones use `HEAD`). */
+	baseCommit: string | null,
+	/**  Why the task failed, when it did. */
+	error: string | null,
+	createdMs: number | null,
+	updatedMs: number | null,
+	/**
+	 *  The session's settings (model, mode, thinking effort…) as last reported, with the
+	 *  user's choices applied.
+	 */
+	config: AgentConfigOption[],
+	/**  Slash commands the agent offers. */
+	commands: AgentCommand[],
+	/**  Context window use, when the agent reports it. */
+	usage: AgentUsage | null,
+	/**  Messages waiting for the current turn to end, oldest first. */
+	queue: AgentQueued[],
+	capabilities: AgentCapabilities,
+	/**  When a [`AgentStatus::Limited`] task's limit resets (ms since the epoch), if the agent said. */
+	resetsMs: number | null,
+	/**
+	 *  The agent is retrying a failed API request (connection lost, overloaded…); cleared
+	 *  by its next output or any status change.
+	 */
+	retry: AgentRetry | null,
+	/**  What the agent runs in the background (shells, subagents, monitors), oldest first. */
+	background: AgentBackgroundTask[],
+	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`. */
+	mcpOverrides?: { [key in string]: boolean },
 };
 
 export type AgentToolDiff = {
@@ -7623,10 +7713,57 @@ export type MavenSettings = {
 	delegateBuild?: boolean,
 };
 
+/**  Summary of one server discovered inside an external MCP configuration file. */
+export type McpDiscoveredServer = {
+	name: string,
+	transport: McpTransport,
+	enabled: boolean,
+	command: string | null,
+	args: string[],
+	url: string | null,
+	/**  Environment variable names declared on this server (values stay on the host). */
+	envKeys: string[],
+	/**  HTTP header names declared on this server (values stay on the host). */
+	headerKeys: string[],
+};
+
+/**  An external MCP configuration file discovered on disk (user CLI config or workspace file). */
+export type McpExternalSource = {
+	/**  Stable source identifier (e.g. `"copilot-cli"`, `"jetbrains-air"`, `"claude-code"`, `"cursor"`, `"workspace-mcp"`, `"vscode-mcp"`). */
+	id: string,
+	/**  Human-readable source label (e.g. `"GitHub Copilot CLI"`). */
+	label: string,
+	/**  Absolute path of the discovered configuration file. */
+	path: IpcPath,
+	/**  Suggested target scope when importing this source into OpenIDEA settings. */
+	suggestedScope: McpScope,
+	/**  Agent provider ID this external CLI reads natively (`Some("copilot")`, `Some("claude")`, `Some("cursor")`, or `None`). */
+	nativeProvider: string | null,
+	/**  Servers found inside this external configuration file (values omitted for safety; imported directly on the host). */
+	servers: McpDiscoveredServer[],
+};
+
+/**  Selection of one server from an external MCP configuration source to import. */
+export type McpImportSelection = {
+	sourceId: string,
+	name: string,
+};
+
 /**  A named environment variable or HTTP header for an MCP server. */
 export type McpKeyValue = {
 	name: string,
 	value: string,
+};
+
+/**  Result of testing/probing an MCP server (`initialize` + `tools/list`). */
+export type McpProbeResult = {
+	ok: boolean,
+	serverName: string | null,
+	serverVersion: string | null,
+	protocolVersion: string | null,
+	tools: McpToolSummary[],
+	durationMs: number,
+	error: string | null,
 };
 
 /**  Where an MCP server configuration is stored (`settings.toml` vs `.openidea/settings.toml`). */
@@ -7646,6 +7783,8 @@ export type McpServer = {
 	headers: McpKeyValue[],
 	/**  Agent provider ids this server is enabled for; empty means enabled for all agents. */
 	agents?: string[],
+	/**  True when this Workspace server was added outside OpenIDEA and has not been approved yet. */
+	unapproved?: boolean,
 };
 
 /**  Payload for creating or updating a user or workspace MCP server. */
@@ -7717,6 +7856,12 @@ export type McpServerStatus = {
 	token: string | null,
 	/**  The stdio bridge: this executable and its arguments. */
 	stdioCommand: string[],
+};
+
+/**  One tool advertised by an MCP server during `tools/list`. */
+export type McpToolSummary = {
+	name: string,
+	description: string | null,
 };
 
 /**  Transport of an MCP server configured in Settings › Agents › MCP Servers. */
@@ -7899,6 +8044,8 @@ export type NewAgentTask = {
 	isolation: Isolation,
 	/**  Branch to start the worktree from; the current branch when `None`. */
 	base: string | null,
+	/**  Per-session MCP server enable/disable overrides (`server_name` -> `enabled`). */
+	mcpOverrides?: { [key in string]: boolean },
 };
 
 /**  The approvals new agent tasks start with. */

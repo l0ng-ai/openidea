@@ -176,10 +176,19 @@ impl Shared {
         }
     }
 
-    fn mcp_servers_for_session(&self, provider: &str, init: &acp::Negotiated) -> Vec<Value> {
-        let mut servers = mcp_servers_for(init.mcp_stdio(), &self.paths.project_root);
+    fn mcp_servers_for_session(
+        &self,
+        provider: &str,
+        init: &acp::Negotiated,
+        overrides: &BTreeMap<String, bool>,
+    ) -> Vec<Value> {
+        let mut servers = if overrides.get(mcp::BUILTIN_MCP_NAME) == Some(&false) {
+            Vec::new()
+        } else {
+            mcp_servers_for(init.mcp_stdio(), &self.paths.project_root)
+        };
         let configured = self.mcp_servers_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
-        servers.extend(mcp::acp_mcp_servers(&configured, provider, init));
+        servers.extend(mcp::acp_mcp_servers(&configured, provider, init, overrides));
         servers
     }
 
@@ -375,6 +384,8 @@ struct Task {
     /// Bumped when the agent's last background task finishes: an idle release scheduled
     /// before that is void, the usual delay starts over from the report.
     idle_epoch: AtomicU64,
+    /// Turned on when per-session MCP overrides changed while a turn was busy; dropped once idle.
+    mcp_reload_pending: AtomicBool,
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
@@ -687,6 +698,7 @@ impl AgentManager {
             resets_ms: None,
             retry: None,
             background: Box::default(),
+            mcp_overrides: BTreeMap::new(),
         };
         let handle = self.register(TaskFile {
             task: task.clone(),
@@ -778,6 +790,7 @@ impl AgentManager {
             resets_ms: None,
             retry: None,
             background: Box::default(),
+            mcp_overrides: req.mcp_overrides,
         };
         let handle = self.register(TaskFile {
             task: task.clone(),
@@ -879,6 +892,7 @@ impl AgentManager {
             resets_ms: None,
             retry: None,
             background: Box::default(),
+            mcp_overrides: req.mcp_overrides,
             config,
         };
         let handle = self.register(TaskFile {
@@ -1079,9 +1093,11 @@ impl AgentManager {
         if !live.capabilities.fork || (keep < total && !live.capabilities.rollback) {
             return Err(IdeError::invalid("this agent can't copy a conversation from there"));
         }
-        let cwd = source.state.lock().task.cwd.0.clone();
-        let provider_id = source.state.lock().task.provider.clone();
-        let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init);
+        let (cwd, provider_id, mcp_overrides) = {
+            let s = source.state.lock();
+            (s.task.cwd.0.clone(), s.task.provider.clone(), s.task.mcp_overrides.clone())
+        };
+        let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init, &mcp_overrides);
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
             .peer
@@ -1536,6 +1552,43 @@ impl AgentManager {
         .await
     }
 
+    /// Updates per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
+    /// When the task is idle and holds a resumable live session without running background tasks,
+    /// stops the idle process so the next turn reloads the session with the updated MCP servers;
+    /// when busy, schedules the reload for as soon as the turn finishes.
+    pub fn set_mcp_overrides(&self, id: &str, overrides: BTreeMap<String, bool>) -> IdeResult<AgentTask> {
+        let task = self.task(id)?;
+        let cleaned: BTreeMap<String, bool> = overrides
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let k = k.trim();
+                (!k.is_empty()).then(|| (k.to_owned(), v))
+            })
+            .collect();
+        let (changed, busy, has_bg, out) = {
+            let mut s = task.state.lock();
+            if s.task.status == AgentStatus::Archived {
+                return Err(IdeError::invalid("the task is archived"));
+            }
+            let changed = s.task.mcp_overrides != cleaned;
+            if changed {
+                s.task.mcp_overrides = cleaned;
+                s.task.updated_ms = now_ms();
+            }
+            (changed, s.busy, !s.background_tasks.is_empty(), s.task.clone())
+        };
+        if changed {
+            task.persist();
+            task.emit_task();
+            if busy || has_bg || !task.permissions.lock().is_empty() {
+                task.mcp_reload_pending.store(true, Ordering::Release);
+            } else {
+                task.recycle_resumable_session();
+            }
+        }
+        Ok(out)
+    }
+
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
         for task in self.tasks.read().values() {
@@ -1580,6 +1633,7 @@ impl Task {
             turn_started: AtomicBool::new(false),
             turns: AtomicU64::new(0),
             idle_epoch: AtomicU64::new(0),
+            mcp_reload_pending: AtomicBool::new(false),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
             streamed: Mutex::new(HashMap::new()),
@@ -1637,7 +1691,7 @@ impl Task {
 
     fn emit_task(&self) {
         let task = self.state.lock().task.clone();
-        self.shared.emit(AgentEvent::Task { task });
+        self.shared.emit(AgentEvent::Task { task: Box::new(task) });
     }
 
     /// Shows (or clears) the agent's pending retry; emitted only when it changes.
@@ -1827,10 +1881,30 @@ impl Task {
                     if stop != "cancelled" {
                         self.emit_attention(AgentAttentionReason::Finished);
                     }
+                    if self.mcp_reload_pending.swap(false, Ordering::AcqRel)
+                        && self.state.lock().background_tasks.is_empty()
+                    {
+                        self.recycle_resumable_session();
+                        return;
+                    }
                     return self.release_when_idle();
                 }
                 (None, Err(failure)) => return self.fail(failure),
             }
+        }
+    }
+
+    /// Drops an idle resumable live session so the next turn reloads it with fresh MCP servers.
+    fn recycle_resumable_session(&self) {
+        self.mcp_reload_pending.store(false, Ordering::Release);
+        let live = {
+            let mut live = self.live.lock();
+            if live.as_ref().is_some_and(|l| l.resumable && !l.peer.is_closed()) { live.take() } else { None }
+        };
+        if let Some(live) = live {
+            tracing::debug!("agent task {}: restarting idle resumable session for MCP override update", self.id);
+            live.peer.kill();
+            self.clear_shown_background();
         }
     }
 
@@ -2069,9 +2143,9 @@ impl Task {
         {
             return Ok(live);
         }
-        let (provider_id, cwd, saved) = {
+        let (provider_id, cwd, saved, mcp_overrides) = {
             let s = self.state.lock();
-            (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone())
+            (s.task.provider.clone(), s.task.cwd.0.clone(), s.session_id.clone(), s.task.mcp_overrides.clone())
         };
         let spec = self.shared.spec(&provider_id).ok_or_else(|| format!("unknown agent {provider_id}"))?;
         let launch_cwd = cwd.clone();
@@ -2100,7 +2174,7 @@ impl Task {
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
-        let mcp_servers = self.shared.mcp_servers_for_session(&provider_id, &init);
+        let mcp_servers = self.shared.mcp_servers_for_session(&provider_id, &init, &mcp_overrides);
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
 
@@ -2898,9 +2972,13 @@ fn embeddable(path: &Path) -> Option<String> {
 /// A task file from before a field existed, with that field's empty value.
 fn upgrade(mut file: Value) -> Value {
     if let Some(task) = file.get_mut("task").and_then(Value::as_object_mut) {
-        for (key, empty) in
-            [("config", json!([])), ("commands", json!([])), ("usage", Value::Null), ("queue", json!([]))]
-        {
+        for (key, empty) in [
+            ("config", json!([])),
+            ("commands", json!([])),
+            ("usage", Value::Null),
+            ("queue", json!([])),
+            ("mcpOverrides", json!({})),
+        ] {
             task.entry(key).or_insert(empty);
         }
     }

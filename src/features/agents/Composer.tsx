@@ -131,6 +131,8 @@ export interface ComposerProps {
   onConfig?: (option: string, value: string) => void;
   /** `now`: send even while the agent works, into its turn (by default ⌘↵). */
   onSubmit: (now: boolean) => void;
+  /** Opens the per-session MCP servers picker when `/mcp` is run. */
+  onOpenMcp?: () => void;
   disabled?: boolean;
   autoFocus?: boolean;
   /** A request from this host to focus its input without changing the selection. */
@@ -468,9 +470,21 @@ export function Composer(props: ComposerProps) {
         ...rest,
       ];
     }
+    const availableCommands =
+      props.onOpenMcp && completion.query.length > 0 && !props.commands.some((c) => c.name === "mcp")
+        ? [
+            {
+              name: "mcp",
+              description: tx("Configure MCP servers for this session"),
+              hint: null,
+              source: "command" as const,
+            },
+            ...props.commands,
+          ]
+        : props.commands;
     const out: Item[] = [];
     let source: "command" | "skill" | undefined;
-    for (const command of matchCommands(props.commands, completion.query)) {
+    for (const command of matchCommands(availableCommands, completion.query)) {
       const next = command.source ?? "command";
       if (source !== next) {
         source = next;
@@ -479,7 +493,7 @@ export function Composer(props: ComposerProps) {
       out.push({ kind: "command", command });
     }
     return out;
-  }, [completion, files, props.commands]);
+  }, [completion, files, props.commands, props.onOpenMcp, tx]);
   const activeIndex = items[active] && !isSection(items[active]!) ? active : firstSelectable(items, isSection);
   const open = !!completion && items.some((item) => !isSection(item));
   const anchorAt = open ? completion.to : null;
@@ -552,6 +566,11 @@ export function Composer(props: ComposerProps) {
       }
       const next = applyCompletion(current, completion, mentionOf(rel));
       setText(next.text, next.caret);
+    } else if (item.command.name === "mcp" && props.onOpenMcp) {
+      replace(completion.from, completion.to, "");
+      setCompletion(null);
+      props.onOpenMcp();
+      return;
     } else {
       const next = applyCompletion(current, completion, `/${item.command.name}`);
       setText(next.text, next.caret);
@@ -886,6 +905,12 @@ export function Composer(props: ComposerProps) {
     }
     const send = sendKeyAction(e, sendWith, whileRunning);
     if (send) {
+      if (props.onOpenMcp && view.state.doc.toString().trim() === "/mcp") {
+        setText("");
+        setCompletion(null);
+        props.onOpenMcp();
+        return handled();
+      }
       if (!props.disabled) props.onSubmit(send === "now");
       recalled.current = { index: -1, stash: "" };
       return handled();
