@@ -985,3 +985,85 @@ fn warm_start_sees_edits_deletions_and_renames_made_while_closed() {
     assert_eq!(idx.status().files, 3);
     assert_eq!(symbols(&idx, "zzzz", SymbolFilter::All), ["zzzz"]);
 }
+
+#[test]
+fn queries_during_streaming_scan_do_not_deadlock() {
+    // More than `2 * SCAN_BATCH` (4,096) files so a scan both flushes mid-pass
+    // (`publish` -> `data.write()`) and fills the bounded parse channel while
+    // concurrent queries hold `data.read()` and dispatch onto Rayon.
+    const FILES: usize = 4_600;
+    let f = Fixture::new(&[]);
+    for m in 0..32 {
+        std::fs::create_dir_all(f.root.join(format!("mod{m}"))).unwrap();
+    }
+    for i in 0..FILES {
+        std::fs::write(
+            f.root.join(format!("mod{}/File{i}.rs", i % 32)),
+            format!("pub struct Type{i};\npub fn sym{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let languages = Arc::new(LanguageRegistry::load(None).unwrap());
+        let syntax = Arc::new(Syntax::new());
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let idx =
+            ProjectIndex::open(&f.root, &f.cache, Vec::new(), vec![], languages, syntax, Arc::new(NullSink)).unwrap();
+
+        let readers: Vec<_> = (0..4usize)
+            .map(|r| {
+                let idx = idx.clone();
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut n = r;
+                    while !stop.load(Ordering::Relaxed) {
+                        match n % 3 {
+                            0 => {
+                                let _ = idx.find_files("File1", 20);
+                            }
+                            1 => {
+                                let _ = idx.find_dirs("mod", 20);
+                            }
+                            _ => {
+                                let _ = idx.find_symbols("sym1", SymbolFilter::All, 20);
+                            }
+                        }
+                        n = n.wrapping_add(1);
+                    }
+                })
+            })
+            .collect();
+
+        assert!(idx.wait_idle(WAIT), "initial streaming scan did not finish");
+        let parsed_before = idx.shared.parsed.load(Ordering::SeqCst);
+        assert_eq!(parsed_before, FILES);
+
+        // Touch every file without changing its contents so `parse_found` takes
+        // the `Extracted::Unchanged` path across multiple `SCAN_BATCH` flushes.
+        let bumped = std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() + Duration::from_secs(10));
+        for i in 0..FILES {
+            let path = f.root.join(format!("mod{}/File{i}.rs", i % 32));
+            std::fs::File::options().write(true).open(path).unwrap().set_times(bumped).unwrap();
+        }
+        idx.shared.enqueue(Job::Rescan);
+        assert!(idx.wait_idle(WAIT), "rescan of unchanged-content files did not finish");
+        assert_eq!(idx.shared.parsed.load(Ordering::SeqCst), parsed_before, "unchanged content is not re-parsed");
+        assert_eq!(symbols(&idx, "sym4599", SymbolFilter::All), ["sym4599"]);
+
+        stop.store(true, Ordering::Relaxed);
+        for h in readers {
+            h.join().unwrap();
+        }
+        assert_eq!(idx.status().files, FILES as u32);
+        drop(idx);
+
+        let reopened = f.open();
+        assert_eq!(reopened.shared.parsed.load(Ordering::SeqCst), 0);
+        assert_eq!(symbols(&reopened, "sym4599", SymbolFilter::All), ["sym4599"]);
+        let _ = done_tx.send(());
+    });
+
+    done_rx.recv_timeout(Duration::from_secs(60)).expect("concurrent index queries deadlocked with streaming scan");
+}
