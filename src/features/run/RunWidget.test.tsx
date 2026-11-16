@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { executeAction, executeActionFrom, getAction, registerAction } from "@/platform/actions";
+import { executeAction, executeActionFrom, getAction, isActionEnabled, registerAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
-import type { RunConfig } from "@/platform/ipc";
+import type { ProjectInfo, RunConfig } from "@/platform/ipc";
 import {
   registerMenuGroup,
   registerRunConfigType,
@@ -10,6 +10,7 @@ import {
   type DebugRunSession,
 } from "@/workbench/contributions";
 import { useContextMenuStore } from "@/ui";
+import { useProject } from "@/platform/project";
 import { applicationConfig } from "./application";
 import { activate } from "./index";
 import { RunWidget } from "./RunWidget";
@@ -52,6 +53,7 @@ const debug = (c: RunConfig, startedAt = 2): DebugRunSession => ({
 });
 let dispose: () => void;
 beforeEach(() => {
+  useProject.setState({ project: null });
   resetRuns();
   useRun.setState({ configs: [app, npm], selectedId: app.id, loaded: true });
   useDebugRunSessions.setState({ sessions: [] });
@@ -61,7 +63,49 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   dispose();
+  useProject.setState({ project: null });
   useDebugRunSessions.setState({ sessions: [] });
+});
+
+function openUnity() {
+  useProject.setState({
+    project: {
+      root: "/game",
+      name: "Game",
+      trusted: true,
+      isGit: false,
+      settings: {} as ProjectInfo["settings"],
+      unity: { editorVersion: "6000.0.1f1", projects: [], solutions: [] },
+    },
+  });
+}
+
+it("keeps other configurations available in a Unity project", () => {
+  openUnity();
+  useRun.setState({ configs: [app, npm], selectedId: app.id, loaded: true });
+  render(<RunWidget />);
+  expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeEnabled();
+  expect(isActionEnabled(getAction("run.run")!)).toBe(true);
+  expect(isActionEnabled(getAction("run.chooseConfig")!)).toBe(true);
+});
+
+it("attaches when the Unity configuration is debugged", async () => {
+  openUnity();
+  const unity = { ...config("unity-editor"), name: "Unity Editor", kind: "unity-editor", command: "" };
+  useRun.setState({ configs: [unity, app], selectedId: unity.id, loaded: true });
+  const attach = vi.fn();
+  const unregister = registerAction({ id: "debug.attachUnity", title: "Attach", run: attach });
+  try {
+    render(<RunWidget />);
+    expect(screen.getByRole("button", { name: `'${unity.name}' can only be debugged` })).toBeDisabled();
+    await act(async () => {
+      await executeAction("run.debug");
+    });
+    expect(attach).toHaveBeenCalledOnce();
+    expect(useRun.getState().configs).toContain(app);
+  } finally {
+    unregister();
+  }
 });
 
 it("reruns and stops the selected configuration among several running sessions", () => {

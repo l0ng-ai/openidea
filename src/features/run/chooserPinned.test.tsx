@@ -67,6 +67,32 @@ it("lists pinned configurations first, in pin order, and not again in their grou
   expect(names(buildRows(configs, "s", null, [], ["serve"]))).toEqual(["[Pinned]", "serve", "---", "edit"]);
 });
 
+it("adds and selects a Unity attach configuration without hiding other configurations", async () => {
+  useProject.setState({ project: { root: "/pinned", unity: {} } as never });
+  await loadConfigs();
+  expect(useRun.getState().configs.map((c) => c.id)).toEqual(["build", "serve", "App", "unity-editor"]);
+  expect(useRun.getState().selectedId).toBe("unity-editor");
+  await loadConfigs();
+  expect(useRun.getState().configs.filter((c) => c.kind === "unity-editor")).toHaveLength(1);
+});
+
+it("keeps a configuration whose id collides with the Unity default", async () => {
+  useProject.setState({ project: { root: "/pinned", unity: {} } as never });
+  ipc.runConfigs.mockResolvedValue({ status: "ok", data: [config("unity-editor")] });
+  await loadConfigs();
+  expect(useRun.getState().configs.map((c) => c.id)).toEqual(["unity-editor", "unity-editor-attach"]);
+  expect(useRun.getState().selectedId).toBe("unity-editor-attach");
+});
+
+it("retains a saved Unity configuration and selected configuration", async () => {
+  useProject.setState({ project: { root: "/pinned", unity: {} } as never });
+  ipc.runConfigs.mockResolvedValue({ status: "ok", data: [...configs, config("my-unity", "unity-editor")] });
+  useRun.setState({ selectedId: "serve" });
+  await loadConfigs();
+  expect(useRun.getState().configs.filter((c) => c.kind === "unity-editor")).toHaveLength(1);
+  expect(useRun.getState().selectedId).toBe("serve");
+});
+
 it("keeps pins per project across reloads", async () => {
   await loadConfigs();
   togglePinned("serve");
