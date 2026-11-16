@@ -316,7 +316,9 @@ export async function ancestryResolution(
           continue;
         }
         for (const parent of found) {
-          if (!seen.add(declarationKey(parent))) continue;
+          const key = declarationKey(parent);
+          if (seen.has(key)) continue;
+          seen.add(key);
           out.push({ decl: parent, depth: d });
           next.push(parent);
         }
