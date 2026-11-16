@@ -33,7 +33,9 @@ import {
   Icon,
   IconButton,
   List,
+  Menu,
   Popup,
+  type MenuItem,
   firstSelectable,
   listNavigate,
   fileIconName,
@@ -141,6 +143,8 @@ export interface ComposerProps {
   toolbar?: ReactNode;
   /** Right of the bottom row: send / stop buttons. */
   actions?: ReactNode;
+  /** Extra items for the Add Context menu, after the file and image items. */
+  addMenu?: MenuItem[];
   className?: string;
 }
 
@@ -979,6 +983,18 @@ export function Composer(props: ComposerProps) {
     [id, projectRoot, root],
   );
 
+  const [addOpen, setAddOpen] = useState(false);
+  const addAnchor = useRef<HTMLButtonElement>(null);
+  const insertMention = () => {
+    const view = viewRef.current;
+    if (!view) return;
+    // At the caret while typing, else after the text.
+    const end = view.state.doc.length;
+    const { from, to } = view.hasFocus ? view.state.selection.main : { from: end, to: end };
+    const before = view.state.sliceDoc(Math.max(0, from - 1), from);
+    replace(from, to, before && !/\s/.test(before) ? " @" : "@");
+    view.focus();
+  };
   const showContext = images.length > 0 || attached.length > 0 || !!suggested;
 
   return (
@@ -1107,14 +1123,23 @@ export function Composer(props: ComposerProps) {
               <Icon name={fileIconName(basename(suggested.rel), suggested.rel)} size={14} />
               <span className={styles.attachmentName}>{basename(suggested.rel)}</span>
               <span className={styles.suggestionHint}>{tx("Current File")}</span>
+              {/* The chip is the IDE context switch: off here, back on from the dashed chip. */}
+              <button
+                type="button"
+                className={styles.removeChip}
+                aria-label={tx("Don't Add the Current File")}
+                onClick={() => setIdeContext(false)}
+              >
+                <Icon name="close" size={10} />
+              </button>
             </span>
           )}
           {suggested && !ideContext && (
             <button
               type="button"
               className={styles.suggestion}
-              title={tx`Reference ${suggested.rel}`}
-              onClick={() => addPaths([suggested.path])}
+              title={tx`Add ${suggested.rel} and the selection to your requests`}
+              onClick={() => setIdeContext(true)}
             >
               <Icon name="plus" size={12} />
               <Icon name={fileIconName(basename(suggested.rel), suggested.rel)} size={14} />
@@ -1167,35 +1192,25 @@ export function Composer(props: ComposerProps) {
         <div className={styles.toolbar}>{props.toolbar}</div>
         <div className={styles.actions}>
           <IconButton
-            icon="paperclip"
-            title="Reference a File (@)"
+            ref={addAnchor}
+            icon="plus"
+            title="Add Context"
+            aria-haspopup="menu"
+            aria-expanded={addOpen}
             className={styles.composerButton}
-            onClick={() => {
-              const view = viewRef.current;
-              if (!view) return;
-              // At the caret while typing, else after the text.
-              const end = view.state.doc.length;
-              const { from, to } = view.hasFocus ? view.state.selection.main : { from: end, to: end };
-              const before = view.state.sliceDoc(Math.max(0, from - 1), from);
-              replace(from, to, before && !/\s/.test(before) ? " @" : "@");
-            }}
+            onClick={() => setAddOpen((v) => !v)}
           />
-          <IconButton
-            icon="file-code"
-            title={
-              ideContext
-                ? "IDE Context Enabled: the current file and selection are added to your request"
-                : "IDE Context Disabled: the current file and selection are not added to your request"
-            }
-            pressed={ideContext}
-            className={styles.composerButton}
-            onClick={() => setIdeContext(!ideContext)}
-          />
-          <IconButton
-            icon="image"
-            title="Attach Image…"
-            className={styles.composerButton}
-            onClick={() => imageInput.current?.click()}
+          <Menu
+            open={addOpen}
+            anchor={addAnchor}
+            placement="bottom-end"
+            onClose={() => setAddOpen(false)}
+            aria-label="Add Context"
+            items={[
+              { id: "reference", label: "Reference a File (@)", icon: "paperclip", run: insertMention },
+              { id: "image", label: "Attach Image…", icon: "image", run: () => imageInput.current?.click() },
+              ...(props.addMenu ?? []),
+            ]}
           />
           <input
             ref={imageInput}

@@ -57,6 +57,7 @@ export function exportMenu(data: ExportData, source: string, format?: ExportForm
 export function ExtractorSelect({ value, onChange }: { value: ExportFormat; onChange: (f: ExportFormat) => void }) {
   return (
     <Select
+      variant="ghost"
       aria-label="Data extractor"
       value={value}
       options={EXPORT_FORMATS.map((f) => ({ value: f.id, label: f.label }))}
