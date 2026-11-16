@@ -1,4 +1,6 @@
 {
+  "Trust Project in Codex": "Trust Project in Codex",
+  "Keep Untrusted": "Keep Untrusted",
   "Unity Editor": "Unity Editor",
   "Attach to Unity Process": "Attach to Unity Process",
   "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.": "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.",
