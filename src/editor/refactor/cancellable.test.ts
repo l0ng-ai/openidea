@@ -40,4 +40,17 @@ describe("cancellable refactoring requests", () => {
     expect(isCancelled(err)).toBe(true);
     expect(send).not.toHaveBeenCalled();
   });
+
+  it("tells the sender once the dialog closed after the request was handed over", async () => {
+    const run = new AbortController();
+    let wanted!: () => boolean;
+    const reply = cancellable(run.signal, async (_id, w) => {
+      wanted = w;
+      return "sent";
+    });
+    expect(wanted()).toBe(true);
+    run.abort();
+    expect(wanted()).toBe(false);
+    await reply;
+  });
 });

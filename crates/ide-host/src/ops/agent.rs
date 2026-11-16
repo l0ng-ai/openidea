@@ -262,18 +262,6 @@ pub async fn fork(host: &Host, window: &str, task: String, turns: Option<u32>) -
     host.project(window)?.agents.fork(&task, turns).await
 }
 
-/// Creates a temporary side conversation of `source`: lives in memory only, never
-/// persisted, not listed.
-pub async fn create_ephemeral(
-    host: &Host,
-    window: &str,
-    request: NewAgentTask,
-    source: String,
-) -> IdeResult<AgentTask> {
-    host.require_trust(window)?;
-    host.project(window)?.agents.create_ephemeral(request, &source).await
-}
-
 /// Drops the task's turns after its first `turns`; returns the message of the first dropped one.
 pub async fn rollback(host: &Host, window: &str, task: String, turns: u32) -> IdeResult<Option<AgentPrompt>> {
     host.require_trust(window)?;
@@ -724,7 +712,10 @@ async fn probe_http_mcp_server(server: &ide_core::settings::AgentMcpServer) -> M
             if let Some(sid) = session_id.as_deref() {
                 req = req.header("Mcp-Session-Id", sid);
             }
-            let resp = req.send().await.map_err(|e| format!("Request to `{url}` failed: {e}"))?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("Request to `{url}` failed: {}", ide_http::client::describe(&e.without_url())))?;
             let status = resp.status();
             let next_session =
                 resp.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()).map(str::to_owned).or(session_id);

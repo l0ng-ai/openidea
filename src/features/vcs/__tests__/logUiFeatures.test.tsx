@@ -1,7 +1,7 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
 import { ContextMenuHost, hideContextMenu } from "@/ui";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ commits: [] as Commit[], details: vi.fn(), diff: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -28,12 +28,13 @@ vi.mock("@/platform/ipc", async (original) => {
   };
 });
 
-import { CommitDetails, LogView } from "../GitLog";
-import { useVcs } from "../store";
-import { commitKey } from "../multiRoot";
-import { emptyFilters, openLogTab, reloadLog, selectGitTab, useGitLog } from "../logStore";
+import { LogView } from "../GitLog";
 import { LogScope } from "../LogScope";
+import { CommitDetails } from "../log/CommitDetails";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
+import { emptyFilters, openLogTab, reloadLog, selectGitTab, useGitLog } from "../logStore";
+import { commitKey } from "../multiRoot";
+import { useVcs } from "../store";
 
 const c = (id: string, parents: string[] = [], refs: string[] = []): Commit => ({
   id,

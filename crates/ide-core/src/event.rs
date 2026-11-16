@@ -38,6 +38,11 @@ pub enum IdeEvent {
     WindowGroupsChanged,
     /// A window entered or left full screen, itself or as a member of a full-screen window group.
     WindowFullscreenChanged,
+    /// This remote window's connection to its host ended on its own (network loss, the host or
+    /// its server went away); the window's project is unreachable until it reconnects.
+    RemoteConnectionLost {
+        host: String,
+    },
     ProjectTrustChanged {
         root: crate::IpcPath,
         trusted: bool,

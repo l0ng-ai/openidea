@@ -309,13 +309,14 @@ pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core
 
 /// Whether a desktop shows an `event` notification of its server in the window. A server reports
 /// on its project; what this machine answers or owns itself (MCP approvals, app updates, window
-/// groups) never comes from it.
+/// groups, its own connection to the server) never comes from it.
 pub fn client_accepts(event: &IdeEvent) -> bool {
     match event {
         IdeEvent::McpRequest { .. }
         | IdeEvent::McpRequestClosed { .. }
         | IdeEvent::WindowGroupsChanged
         | IdeEvent::WindowFullscreenChanged
+        | IdeEvent::RemoteConnectionLost { .. }
         | IdeEvent::UpdateStatusChanged { .. }
         | IdeEvent::UpdateAvailable { .. } => false,
         IdeEvent::DbSourcesChanged

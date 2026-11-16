@@ -281,6 +281,8 @@ const ICONS = {
   "chevron-up": "general/chevronUp",
   "chevron-left": "general/chevronLeft",
   close: "general/close",
+  "project-tab-close": "general/windowClose",
+  "project-tab-close-hovered": "general/windowCloseHovered",
   plus: "general/add",
   minus: "general/remove",
   check: "actions/checked",

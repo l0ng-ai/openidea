@@ -20,7 +20,7 @@ import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
-import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
+import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
@@ -375,7 +375,7 @@ export class TerminalSession {
     this.disposables.push(this.selectionHighlights, this.linkHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
-      { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
+      { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
     this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });
@@ -783,7 +783,7 @@ export class TerminalSession {
 
   paste(text: string) {
     if (this.disposed) return;
-    this.term.paste(text);
+    pasteIntoTerminal(this.term, text);
   }
 
   clearSelection() {

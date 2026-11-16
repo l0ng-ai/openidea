@@ -219,8 +219,11 @@ function history(page: Page) {
 function modelButton(page: Page) {
   return page.getByRole("button", { name: "Model", exact: true }).filter({ visible: true });
 }
+function effortButton(page: Page) {
+  return page.getByRole("button", { name: "Reasoning", exact: true }).filter({ visible: true });
+}
 async function expectEffort(page: Page, name: string) {
-  await expect(modelButton(page)).toHaveAttribute("title", new RegExp(`Reasoning: ${name}(?: ·|$)`));
+  await expect(effortButton(page)).toHaveText(name);
 }
 async function selected(box: Locator) {
   return box.evaluate((element) => {
@@ -255,7 +258,7 @@ async function selectDraft(page: Page) {
 }
 async function chooseModel(page: Page, name: string) {
   await modelButton(page).click();
-  // A model row also holds its Configure button, whose label joins the option's name.
+  // A model row also holds its Pin button, whose label joins the option's name.
   await page.getByRole("option", { name: new RegExp(`^${name}\\b`) }).click();
   await page.keyboard.press("Escape");
   await box(page).focus();
@@ -292,7 +295,7 @@ for (const placement of ["editor", "toolWindow"] as const) {
         option: effortId,
         value,
       });
-      await expect(page.getByRole("dialog", { name: "Model & effort settings", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("listbox", { name: "Reasoning", exact: true })).toHaveCount(0);
     }
     await expectNoSubmission(page);
     await stream.click({ position: { x: 12, y: 20 } });
@@ -350,7 +353,7 @@ test("subagent conversation never changes its hidden parent's effort", async ({ 
   await expectEffort(page, "Gentle");
 });
 
-test("Settings and model popup exclude the agent shortcut", async ({ workbench: page }) => {
+test("Settings and effort popup exclude the agent shortcut", async ({ workbench: page }) => {
   await seed(page, "editor");
   await box(page).fill(draft);
   await page.keyboard.press("Meta+,");
@@ -361,14 +364,10 @@ test("Settings and model popup exclude the agent shortcut", async ({ workbench: 
   await expect(search).toBeFocused();
   await expect(search).toHaveValue("keymap");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await modelButton(page).click();
-  const popup = page.getByRole("dialog", { name: "Model & effort settings", exact: true });
+  await effortButton(page).click();
+  const popup = page.getByRole("listbox", { name: "Reasoning", exact: true });
   await expect(popup).toBeVisible();
-  await popup.getByRole("button", { name: "Configure model", exact: true }).click();
-  const gentle = popup.getByRole("radio", { name: "Gentle", exact: true });
-  await gentle.focus();
   await page.keyboard.press("Alt+t");
-  await expect(gentle).toHaveAttribute("aria-checked", "true");
   expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
   await page.keyboard.press("Escape");
   await expectEffort(page, "Gentle");

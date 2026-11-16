@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Branch, Commit } from "@/bindings";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const vcsCommitFiles = vi.fn();
 const vcsDiffNumstat = vi.fn();
@@ -27,9 +27,13 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
+import { LogSettingsPage } from "../LogSettingsPage";
 import { canDeleteBranch } from "../branchOps";
 import { buildBranchTree, filterBranchTree } from "../branches";
 import { buildFileTree } from "../fileTree";
+import { BranchesPanel } from "../log/BranchesPanel";
+import { CommitDetails, changesMenu } from "../log/CommitDetails";
+import { graphOptionsMenu } from "../log/FilterBar";
 import {
   EMPTY_TREE,
   assignLineStats,
@@ -40,12 +44,10 @@ import {
   toLogChanges,
   useLogChanges,
 } from "../logChanges";
-import { canUpdateBranch, useBranchesPane } from "../logPaneActions";
-import { BranchesPanel, CommitDetails, changesMenu, graphOptionsMenu } from "../GitLog";
-import { LogSettingsPage } from "../LogSettingsPage";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
-import { renameFrom } from "../model";
+import { canUpdateBranch, useBranchesPane } from "../logPaneActions";
 import { emptyFilters, useGitLog } from "../logStore";
+import { renameFrom } from "../model";
 import { useVcs } from "../store";
 
 const b = (name: string, opts: Partial<Branch> = {}): Branch => ({
