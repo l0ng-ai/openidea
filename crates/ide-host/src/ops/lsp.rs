@@ -1199,7 +1199,7 @@ pub async fn lsp_change_signature(
     signature: MethodSignature,
     delegate: bool,
     confirmation: Option<String>,
-) -> IdeResult<SignatureChanged> {
+) -> IdeResult<ServerRefactored> {
     let project = host.project(window)?;
     let documents = project.documents.clone();
     let version = blocking(move || documents.version(doc)).await?;
@@ -1218,6 +1218,73 @@ pub async fn lsp_change_signature(
             project.documents.prepare_workspace_edit(edit)?;
         }
         Ok(changed)
+    })
+    .await
+}
+
+fn json_argument(args: &str) -> IdeResult<serde_json::Value> {
+    serde_json::from_str(args).map_err(|e| IdeError::invalid(format!("invalid move arguments: {e}")))
+}
+
+fn json_strings(values: Vec<serde_json::Value>) -> Vec<String> {
+    values.iter().map(serde_json::Value::to_string).collect()
+}
+
+/// Where a Java Move code action of `kind` can go; `args` (JSON) carries the code action's own
+/// arguments back unchanged, and each destination comes back as JSON.
+pub async fn lsp_java_move_destinations(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+) -> IdeResult<Vec<String>> {
+    let args = json_argument(&args)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.java_move_destinations(doc, kind, args, cancel).await;
+    host.end_request(request);
+    result.map(json_strings)
+}
+
+/// The project's Java source types, for moving a member or type into a class.
+pub async fn lsp_java_source_types(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    project_name: Option<String>,
+) -> IdeResult<Vec<String>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.java_source_types(doc, project_name, cancel).await;
+    host.end_request(request);
+    result.map(json_strings)
+}
+
+/// Checks a Java move and computes its edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_java_move(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    let args = json_argument(&args)?;
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.java_move(doc, kind, args, confirmation, cancel).await;
+    host.end_request(request);
+    let mut moved = result?;
+    blocking(move || {
+        if let Some(edit) = &mut moved.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(moved)
     })
     .await
 }
@@ -1957,6 +2024,25 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("pos")?,
             c.arg("signature")?,
             c.arg("delegate")?,
+            c.arg("confirmation")?,
+        )
+        .await
+    });
+    d.add("lsp_java_move_destinations", |c| async move {
+        lsp_java_move_destinations(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("kind")?, c.arg("args")?)
+            .await
+    });
+    d.add("lsp_java_source_types", |c| async move {
+        lsp_java_source_types(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("projectName")?).await
+    });
+    d.add("lsp_java_move", |c| async move {
+        lsp_java_move(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("kind")?,
+            c.arg("args")?,
             c.arg("confirmation")?,
         )
         .await

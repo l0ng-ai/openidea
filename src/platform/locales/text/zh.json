@@ -8511,5 +8511,16 @@
   "Duplicate parameter name": "形参名重复",
   "Default value is not specified for a new parameter": "未给新形参指定默认值",
   "Visibility": "可见性",
-  "Change Signature of '{name}'": "更改 '{name}' 的签名"
+  "Change Signature of '{name}'": "更改 '{name}' 的签名",
+  "Move {name} to Package": "将 {name} 移动到包",
+  "Current package": "当前包",
+  "No packages to move the file to": "没有可移动到的包",
+  "No fields or parameters to move the method to": "没有可移动到的字段或形参",
+  "Move Instance Method {name}": "移动实例方法 {name}",
+  "Move {name} to Class": "将 {name} 移动到类",
+  "No classes to move to": "没有可移动到的类",
+  "Move {name} to a new file": "将 {name} 移动到新文件",
+  "Move {name} to another class": "将 {name} 移动到其他类",
+  "(default package)": "(默认包)",
+  "Field": "字段"
 }

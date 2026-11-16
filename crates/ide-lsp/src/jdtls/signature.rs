@@ -2,7 +2,7 @@
 //! a position, `java/getRefactorEdit` (`changeSignature`) checks the new signature and computes the
 //! edit. The UI edits the signature and applies the edit itself.
 use super::{COMMAND_TIMEOUT, SERVER};
-use crate::types::{MethodSignature, ProblemSeverity, RefactoringProblem, SignatureChanged};
+use crate::types::{MethodSignature, ProblemSeverity, RefactoringProblem, ServerRefactored};
 use crate::{DocSnap, LspManager, Target, convert};
 use ide_core::{CancellationToken, DocId, IdeError, IdeResult, Pos};
 use serde::Deserialize;
@@ -18,20 +18,20 @@ struct Info {
     error_message: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RefactorEdit {
+pub(super) struct RefactorEdit {
     edit: Option<lsp_types::WorkspaceEdit>,
     error_message: Option<String>,
     confirmation_token: Option<String>,
 }
 
-/// `java/getRefactorEdit`'s answer as Change Signature's result: an error message alone is fatal;
+/// A `java/getRefactorEdit` or `java/move` answer as the result: an error message alone is fatal;
 /// with a confirmation token it lists warnings to accept before the edit is computed.
-fn changed(
+pub(super) fn changed(
     answer: RefactorEdit,
     convert_edit: impl FnOnce(lsp_types::WorkspaceEdit) -> ide_core::WorkspaceEdit,
-) -> SignatureChanged {
+) -> ServerRefactored {
     let problem = |severity| {
         answer
             .error_message
@@ -40,7 +40,7 @@ fn changed(
             .map(|message| RefactoringProblem { severity, message: message.trim().to_owned() })
     };
     if let Some(token) = answer.confirmation_token {
-        return SignatureChanged {
+        return ServerRefactored {
             problems: problem(ProblemSeverity::Warning).into_iter().collect(),
             edit: None,
             confirmation: Some(token),
@@ -48,9 +48,9 @@ fn changed(
     }
     match answer.edit {
         Some(edit) if answer.error_message.is_none() => {
-            SignatureChanged { problems: Vec::new(), edit: Some(convert_edit(edit)), confirmation: None }
+            ServerRefactored { problems: Vec::new(), edit: Some(convert_edit(edit)), confirmation: None }
         }
-        _ => SignatureChanged {
+        _ => ServerRefactored {
             problems: problem(ProblemSeverity::Fatal).into_iter().collect(),
             edit: None,
             confirmation: None,
@@ -59,12 +59,12 @@ fn changed(
 }
 
 impl LspManager {
-    async fn signature_target(&self, doc: DocId) -> IdeResult<(DocSnap, Target)> {
-        let (snap, targets) = self.doc_targets(doc, FEATURE, |_| true).await?;
+    pub(super) async fn jdtls_target(&self, doc: DocId, feature: &str) -> IdeResult<(DocSnap, Target)> {
+        let (snap, targets) = self.doc_targets(doc, feature, |_| true).await?;
         let t = targets
             .into_iter()
             .find(|t| t.server.name == SERVER)
-            .ok_or_else(|| IdeError::unavailable(format!("{FEATURE} needs the Java language server (jdtls)")))?;
+            .ok_or_else(|| IdeError::unavailable(format!("{feature} needs the Java language server (jdtls)")))?;
         Ok((snap, t))
     }
 
@@ -84,7 +84,7 @@ impl LspManager {
         pos: Pos,
         cancel: CancellationToken,
     ) -> IdeResult<MethodSignature> {
-        let (snap, t) = self.signature_target(doc).await?;
+        let (snap, t) = self.jdtls_target(doc, FEATURE).await?;
         let params = Self::signature_context(&snap, &t, pos);
         let info: Option<Info> =
             self.call(&t, "java/getChangeSignatureInfo", params, Some(&cancel), COMMAND_TIMEOUT).await?;
@@ -108,8 +108,8 @@ impl LspManager {
         delegate: bool,
         confirmation: Option<String>,
         cancel: CancellationToken,
-    ) -> IdeResult<SignatureChanged> {
-        let (snap, t) = self.signature_target(doc).await?;
+    ) -> IdeResult<ServerRefactored> {
+        let (snap, t) = self.jdtls_target(doc, FEATURE).await?;
         let MethodSignature { method_identifier, modifier, return_type, method_name, parameters, exceptions } =
             signature;
         let mut params = json!({
@@ -128,7 +128,7 @@ impl LspManager {
         if cancel.is_cancelled() {
             return Err(IdeError::cancelled());
         }
-        let answer = answer.unwrap_or(RefactorEdit { edit: None, error_message: None, confirmation_token: None });
+        let answer = answer.unwrap_or_default();
         let conv = self.conv(t.enc());
         Ok(changed(answer, |e| convert::workspace_edit(&conv, e)))
     }

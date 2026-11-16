@@ -7,7 +7,7 @@
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { create } from "zustand";
-import type { MethodSignature, Pos, SignatureChanged, SignatureParameter, WorkspaceEdit } from "@/bindings";
+import type { MethodSignature, Pos, ServerRefactored, SignatureParameter, WorkspaceEdit } from "@/bindings";
 import { whenAllSynced, whenSynced } from "@/editor/api";
 import { docOf, isUnavailable, lspRequest, reportLspError } from "@/editor/lsp/lsp";
 import { offsetToPos } from "@/editor/lsp/positions";
@@ -128,7 +128,7 @@ export async function startChangeSignature(view: EditorView): Promise<void> {
   }
 }
 
-async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
+export async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   try {
     await whenAllSynced();
     await lspRequest(() => commands.applyWorkspaceEdit(edit));
@@ -137,7 +137,7 @@ async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   }
 }
 
-async function confirmProblems(messages: readonly string[]): Promise<boolean> {
+export async function confirmProblems(messages: readonly string[]): Promise<boolean> {
   const { button } = await ask({
     title: "Problems Detected",
     icon: "warning",
@@ -162,7 +162,7 @@ export async function changeSignature(
   const { view } = request;
   if (view.state.doc !== request.text) return { status: "stay", error: "The file changed; open the dialog again" };
   let confirmation: string | null = null;
-  let changed: SignatureChanged;
+  let changed: ServerRefactored;
   try {
     for (;;) {
       await whenSynced(view);

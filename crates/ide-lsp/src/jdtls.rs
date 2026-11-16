@@ -22,6 +22,7 @@ pub(crate) mod configuration;
 mod formatter;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
+mod move_refactoring;
 pub(crate) mod reserved_names;
 mod signature;
 pub use formatter::configure_formatter;

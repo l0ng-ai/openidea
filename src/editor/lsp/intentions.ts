@@ -202,6 +202,28 @@ export async function applyQuickFix(view: EditorView) {
   showHint(view, "No quick fixes available");
 }
 
+/**
+ * Commands a server leaves to the client (jdtls' `java.action.applyRefactoringCommand`, which
+ * opens a dialog or asks for a destination). A handler returns false for arguments it doesn't take.
+ */
+type ClientCommand = (view: EditorView, args: readonly unknown[]) => Promise<boolean>;
+const clientCommands = new Map<string, ClientCommand>();
+
+export function registerClientCommand(name: string, run: ClientCommand): () => void {
+  clientCommands.set(name, run);
+  return () => {
+    if (clientCommands.get(name) === run) clientCommands.delete(name);
+  };
+}
+
+function parseArgument(arg: string): unknown {
+  try {
+    return JSON.parse(arg);
+  } catch {
+    return arg;
+  }
+}
+
 export async function applyCodeAction(view: EditorView, action: EditorQuickFix) {
   if ("run" in action) return action.run();
   const doc = docOf(view);
@@ -210,6 +232,8 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
     showHint(view, action.disabledReason);
     return;
   }
+  const client = !action.edit && action.command ? clientCommands.get(action.command.command) : undefined;
+  if (client && (await client(view, action.command!.arguments.map(parseArgument)))) return;
   const before = view.state.doc;
   try {
     if (!(await runInteractiveCodeAction(doc.doc, action))) return;

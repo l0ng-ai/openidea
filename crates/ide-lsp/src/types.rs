@@ -539,11 +539,11 @@ pub struct MethodSignature {
     pub exceptions: Vec<SignatureException>,
 }
 
-/// Change Signature's check: problems to show, the edit when none is fatal, and the token that
-/// confirms going on despite warnings.
+/// A refactoring checked by the server (Change Signature, Move): problems to show, the edit when
+/// none is fatal, and the token that confirms going on despite warnings.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
-pub struct SignatureChanged {
+pub struct ServerRefactored {
     pub problems: Vec<RefactoringProblem>,
     pub edit: Option<WorkspaceEdit>,
     pub confirmation: Option<String>,
