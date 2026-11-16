@@ -32,7 +32,7 @@ import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@cod
 import type { LanguageDescription } from "@codemirror/language";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
-import { maybeEditorService } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
 export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
 
@@ -527,6 +527,8 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
+  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  input?: EditorInput;
 }
 
 export interface NavigationHistorySnapshot {
