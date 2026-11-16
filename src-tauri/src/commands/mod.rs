@@ -787,5 +787,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_apply_edits,
         db::db_console_path,
         db::db_consoles,
+        db::db_tool_installs,
+        db::db_tool_version,
+        db::db_tool_preview,
+        db::db_dump_kind,
+        db::db_run_tool,
+        db::db_server_version,
     ])
 }

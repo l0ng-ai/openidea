@@ -96,6 +96,7 @@ db_database_catalog                          trusted            project_host bin
 db_databases                                 trusted            project_host bindings async
 db_ddl                                       trusted            project_host bindings async
 db_disconnect                                trusted            project_host bindings async
+db_dump_kind                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
 db_export_file                               always             desktop      bindings async
@@ -104,10 +105,12 @@ db_history                                   trusted            project_host bin
 db_object_ddl                                trusted            project_host bindings async
 db_remove_history                            trusted            project_host bindings async
 db_retain_catalog                            trusted            project_host bindings async
+db_run_tool                                  trusted            desktop      bindings async
 db_save_sources                              trusted            project_host bindings async
 db_saved_catalog                             trusted            project_host bindings async
 db_schema_objects                            trusted            project_host bindings async
 db_schemas                                   trusted            project_host bindings async
+db_server_version                            trusted            desktop      bindings async
 db_session_context                           trusted            project_host bindings async
 db_set_manual_commit                         trusted            project_host bindings async
 db_set_password                              trusted            project_host bindings async
@@ -119,6 +122,9 @@ db_table_page                                trusted            project_host bin
 db_tables                                    trusted            project_host bindings async
 db_test                                      trusted            project_host bindings async
 db_test_tunnel                               trusted            project_host bindings async
+db_tool_installs                             trusted            desktop      bindings async
+db_tool_preview                              trusted            desktop      bindings sync
+db_tool_version                              trusted            desktop      bindings async
 db_trust_ssh_host                            trusted            project_host bindings async
 debug_attachable_processes                   always             project_host bindings async
 debug_breakpoint_states                      trusted            project_host bindings sync

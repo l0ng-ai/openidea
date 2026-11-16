@@ -1903,6 +1903,21 @@ export const commands = {
 	dbConsolePath: (id: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("db_console_path", { id })),
 	/**  The query consoles of data source `id`; `create` adds the next one first. */
 	dbConsoles: (id: string, create: boolean) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("db_consoles", { id, create })),
+	/**  Installed copies of `tool`, newest first. */
+	dbToolInstalls: (tool: DbTool) => typedError<DbToolInstall[], IdeError>(__TAURI_INVOKE("db_tool_installs", { tool })),
+	/**  The version line of the executable at `path`. */
+	dbToolVersion: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_tool_version", { path })),
+	/**  The command line `db_run_tool` would run, without the password. */
+	dbToolPreview: (id: string, executable: string, job: DbToolJob) => typedError<string, IdeError>(__TAURI_INVOKE("db_tool_preview", { id, executable, job })),
+	/**  What made the dump at `path` (from its first bytes), so a restore picks the right tool. */
+	dbDumpKind: (path: string) => typedError<DbDumpKind, IdeError>(__TAURI_INVOKE("db_dump_kind", { path })),
+	/**
+	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
+	 *  in the desktop shell like [`db_export_file`]: the paths in `job` are local.
+	 */
+	dbRunTool: (request: RequestId, id: string, executable: string, job: DbToolJob, onOutput: Channel<DbToolLine[]>) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_run_tool", { request, id, executable, job, onOutput })),
+	/**  `server_version_num` of the PostgreSQL server of target `id` (connects first). */
+	dbServerVersion: (id: string) => typedError<number, IdeError>(__TAURI_INVOKE("db_server_version", { id })),
 };
 
 /* Types */
@@ -4120,6 +4135,25 @@ export type DbDriver = "sqlite" | "postgres" |
 /**  Oracle Database (pure-Rust thin driver, no client library). */
 "oracle" | "snowflake";
 
+export type DbDumpContent = "all" | "schemaOnly" | "dataOnly";
+
+export type DbDumpFormat = 
+/**  SQL text, restored with `psql`. */
+"plain" | "custom" | 
+/**  A directory of files; the only format `pg_dump` writes in parallel. */
+"directory" | "tar";
+
+/**  What made a dump, read from its first bytes (a directory: its `toc.dat`). */
+export type DbDumpKind = 
+/**  `pg_dump` custom or tar archive, or a directory archive: `pg_restore`. */
+"postgresArchive" | 
+/**  Plain SQL from `pg_dump`: `psql`. */
+"postgresSql" | 
+/**  `mysqldump` / `mariadb-dump`: not for the PostgreSQL tools. */
+"mysqlSql" | "unknown";
+
+export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
 	schema: string,
@@ -4184,6 +4218,37 @@ export type DbPackageInfo = {
 	name: string,
 };
 
+/**  Name lists hold `pg_dump` patterns (`*`, `?`, quoted names). */
+export type DbPgDumpOptions = {
+	format: DbDumpFormat,
+	statements: DbDumpStatements,
+	content: DbDumpContent,
+	schemas: string[],
+	tables: string[],
+	excludeTables: string[],
+	/**  Plain format only: archives get DROP / CREATE at restore. */
+	clean: boolean,
+	ifExists: boolean,
+	create: boolean,
+	noOwner: boolean,
+	noPrivileges: boolean,
+	/**  Directory format only. */
+	jobs: number,
+};
+
+export type DbPgRestoreOptions = {
+	content: DbDumpContent,
+	schemas: string[],
+	clean: boolean,
+	ifExists: boolean,
+	noOwner: boolean,
+	noPrivileges: boolean,
+	singleTransaction: boolean,
+	exitOnError: boolean,
+	/**  Ignored with a single transaction, which `pg_restore` cannot split. */
+	jobs: number,
+};
+
 /**  One operation of a plan; `parent` indexes the plan's node list (roots: `None`). */
 export type DbPlanNode = {
 	parent: number | null,
@@ -4207,6 +4272,11 @@ export type DbPlanProperty = {
 export type DbProperty = {
 	name?: string,
 	value?: string,
+};
+
+export type DbPsqlOptions = {
+	singleTransaction: boolean,
+	stopOnError: boolean,
 };
 
 export type DbQueryResult = {
@@ -4363,6 +4433,26 @@ export type DbTablePage = {
 	result: DbQueryResult,
 	details: DbTableDetails,
 	offset: number | null,
+};
+
+export type DbTool = "pgDump" | "pgRestore" | "psql";
+
+/**  An installed copy of a tool. */
+export type DbToolInstall = {
+	path: string,
+	/**  First line of `--version`, e.g. `pg_dump (PostgreSQL) 17.2`. */
+	version: string,
+};
+
+/**  A run of a client tool: which one, the file it writes or reads, and its options. */
+export type DbToolJob = { tool: "pgDump"; file: string; options: DbPgDumpOptions } | 
+/**  `file`: an archive, or a directory archive. */
+{ tool: "pgRestore"; file: string; options: DbPgRestoreOptions } | { tool: "psql"; file: string; options: DbPsqlOptions };
+
+/**  A line the tool wrote. */
+export type DbToolLine = {
+	stderr: boolean,
+	text: string,
 };
 
 export type DbTriggerInfo = {
