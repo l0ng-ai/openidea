@@ -1,4 +1,13 @@
 {
+  "Unity Editor": "Unity Editor",
+  "Attach to Unity Process": "Attach to Unity Process",
+  "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.": "Open the project in Unity Editor, enable Editor Attaching and switch to Debug Mode. Select its process below. Stopping debugging disconnects without closing Unity.",
+  "No Unity Editor processes found. Open Unity Editor, then refresh.": "No Unity Editor processes found. Open Unity Editor, then refresh.",
+  "Install Unity Debugger": "Install Unity Debugger",
+  "Unity Debugger is not installed": "Unity Debugger is not installed",
+  "Debugger is not available": "Debugger is not available",
+  "Attach": "Attach",
+  "Installing…": "Installing…",
   "moved from {oldPath}": "moved from {oldPath}",
   "Symbolic link": "Symbolic link",
   "Copy as TSV": "Copy as TSV",

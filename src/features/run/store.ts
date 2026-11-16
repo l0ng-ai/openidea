@@ -65,6 +65,7 @@ import { tomcatBrowserUrl } from "./tomcat";
 import { gradleBootLaunch, gradleDelegation, gradleTestLaunch } from "./gradleRun";
 import { openUrl } from "./navigate";
 import { tx } from "@/platform/i18n";
+import { UNITY_CONFIG_KIND } from "./unity";
 
 /** The permanent "Current File" pseudo-configuration of the chooser (runs the active file's context). */
 export const CURRENT_FILE = "current-file";
@@ -240,11 +241,29 @@ export async function loadConfigs(): Promise<void> {
     const temps = kept.length ? await call(commands.runApplySettings(kept)).catch(() => kept) : kept;
     if (useProject.getState().project?.root !== root) return;
     const configs = [...saved, ...temps];
+    if (useProject.getState().project?.unity && !configs.some((config) => config.kind === UNITY_CONFIG_KIND)) {
+      let id = "unity-editor";
+      while (configs.some((config) => config.id === id)) id += "-attach";
+      configs.push({
+        id,
+        name: "Unity Editor",
+        kind: UNITY_CONFIG_KIND,
+        command: "",
+        args: [],
+        cwd: null,
+        env: {},
+        detected: true,
+        isTest: false,
+        debugAdapter: null,
+      });
+    }
     const stored = useRun.getState().selectedId ?? readSelected(root);
     const selectedId =
       stored === CURRENT_FILE || configs.some((c) => c.id === stored)
         ? stored
-        : (defaultSelection(saved)?.id ?? CURRENT_FILE);
+        : (configs.find((config) => config.kind === UNITY_CONFIG_KIND)?.id ??
+          defaultSelection(saved)?.id ??
+          CURRENT_FILE);
     useRun.setState({
       configs,
       temporary: temps.map((t) => t.id),

@@ -104,6 +104,7 @@ import { TEST_TREE_FOCUS, testTree } from "./testTree";
 import { startAgentRun, trimAgentArchive, type AgentRunRequest } from "./agentRuns";
 import { compoundTargets, selectedTarget } from "./sessionTargets";
 import { tx } from "@/platform/i18n";
+import { UNITY_CONFIG_KIND, showUnityAttach } from "./unity";
 
 function trackFailedTestSelection(): () => void {
   let signature = "";
@@ -171,6 +172,7 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
   }
   if (remoteDebugBlocked(config)) return;
   if (!(await prepareLaunch(config, chain, show))) return;
+  if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
   if (containerDebuggable(config) && getAction("debug.attach")) {
     await debugInContainer(config);
@@ -487,6 +489,14 @@ export function activate(): () => void {
         icon: "debug",
         when: "projectOpen",
         run: () => debugSelected(),
+      },
+      {
+        id: "run.attachUnity",
+        title: "Attach to Unity Process",
+        category: "Run",
+        icon: "debug",
+        when: "projectOpen",
+        run: () => showUnityAttach(),
       },
       {
         id: "run.runContext",
