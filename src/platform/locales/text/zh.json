@@ -8565,6 +8565,7 @@
   "Breakpoints stay off until {terminal} finishes": "{terminal} 完成之前断点保持关闭",
   "The operation is stuck: {threads} hold locks it needs": "操作被阻塞：{threads} 持有它所需的锁",
   "Recording stopped before the trace started": "跟踪开始前已停止记录",
+  "The trace was cancelled before the chain ran": "链运行前跟踪已取消",
   "{records} records · {seconds} s": "{records} 条记录 · {seconds} 秒",
   "Recording stopped after {n} records ({dropped} more not recorded)": "记录 {n} 条后已停止（另有 {dropped} 条未记录）",
   "count() was computed from the source size; the pipeline did not run": "count() 由源的大小算出；流水线未运行",

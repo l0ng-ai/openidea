@@ -56,7 +56,7 @@ lambda runs twice. They take `target` first, like the commands above, then one o
 
 `plan` is the JSON of `ide_streams::RealRunPlan`; `budget`, a whole number from 1 to 2³¹ − 1
 (default 50 000), caps the records kept, past which they are only counted in `dropped`. `wait`'s
-`state` is `running`, `parked` or `failed` (with `detail`). `abort`'s is `interrupted`, `stopped` or
+`state` is `running`, `parked`, `failed` or `cancelled` (both with `detail`). `abort`'s is `interrupted`, `stopped` or
 `stuck` while the terminal runs, `cancelled` before it started and `finished` once the trace parked
 or failed. `collect` takes the new stop's `target.generation`; a record's `step` counts the wrapped
 ops from 0 (the source), modifiers left out, and `value`, like the `terminal`'s, is a `JvmValue`
@@ -119,8 +119,8 @@ ordinary `executeCommand` error.
 - `stop` lowers the log's budget to the records so far by a field write: the program keeps running
   untouched. `abort` interrupts the thread, waits 2 s for the terminal to return, then throws the
   cancel exception into it, waits 2 s more, and else lists the suspended threads that own a monitor.
-  Before the terminal started, either takes the trace down (`failed`, `cancelled before the terminal
-  ran`) and the program runs on untouched.
+  Before the terminal started, either takes the trace down (`cancelled`, `cancelled before the
+  terminal ran`) and the program runs on untouched.
 - `collect` reads the log 16 384 elements per JDWP request and previews every value into the handle
   table of the inspect commands, so the UI can expand them; the log keeps them alive until the trace
   is released. `skippedBreakpoints` counts the breakpoint requests silenced (exception breakpoints
@@ -187,7 +187,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-aad4c7913b45d19d6c1f374b15d4b1a698e0b4f0b989ca018c0ef46ca0dbd3d3  openidea-jvm-inspect.jar
+4683ff9c80bce37ea60970e4ada568b6db8aefd5ba1a8c39672c78c38f98315e  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.

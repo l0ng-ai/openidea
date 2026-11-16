@@ -345,6 +345,17 @@ async fn failed_wait_passes_its_detail_through() {
 }
 
 #[tokio::test]
+async fn a_trace_cancelled_before_its_terminal_says_so() {
+    let detail = "cancelled before the terminal ran";
+    let tracer = FakeTracer::scripted([TraceState::Cancelled { detail: detail.into() }]);
+    let h = harness(java_debug());
+    let id = stopped_java(&h, &tracer).await;
+
+    assert_eq!(trace(&h, id).await.unwrap(), TraceRun::Cancelled { detail: detail.into() });
+    assert!(!h.commands().iter().any(|c| c == "stepOut"));
+}
+
+#[tokio::test]
 async fn a_wait_that_errs_releases_the_trace() {
     let h = harness(java_debug());
     let tracer = FakeTracer::answering([Ok(running(1)), Err(InspectError::TimedOut)]);

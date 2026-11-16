@@ -10656,7 +10656,9 @@ records: TraceRecordView[];
 /**  Parallel to `records`. */
 links: Link[]; terminal: TerminalView; banners: TraceBanner[]; 
 /**  The stop the values belong to, for `debug_jvm_memory_fields`. */
-generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
+generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never } | 
+/**  Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong. */
+({ status: "cancelled"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
 
 export type StreamTraceResult_Serialize = ({ status: "ready"; chain: StreamChainInfo_Serialize; 
 /**
@@ -10669,7 +10671,9 @@ records: TraceRecordView[];
 /**  Parallel to `records`. */
 links: Link[]; terminal: TerminalView; banners: TraceBanner[]; 
 /**  The stop the values belong to, for `debug_jvm_memory_fields`. */
-generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
+generation: number }) & { detail?: never; reason?: never } | ({ status: "unavailable"; reason: TraceUnavailable }) & { banners?: never; chain?: never; detail?: never; generation?: never; links?: never; records?: never; steps?: never; terminal?: never } | ({ status: "failed"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never } | 
+/**  Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong. */
+({ status: "cancelled"; detail: string }) & { banners?: never; chain?: never; generation?: never; links?: never; reason?: never; records?: never; steps?: never; terminal?: never };
 
 export type StructuralEvent = { type: "file"; file: StructuralFile } | { type: "done"; summary: StructuralSummary };
 

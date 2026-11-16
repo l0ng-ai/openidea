@@ -371,7 +371,11 @@ async fn trace_cancelled_before_it_starts_does_not_run() {
     f.host.cancel_request(RequestId(7));
     assert_eq!(
         f.trace(7, at, listed.index, listed.range).await,
-        StreamTraceResult::Failed { detail: "cancelled before the trace started".into() }
+        StreamTraceResult::Cancelled { detail: "cancelled before the trace started".into() }
+    );
+    assert_eq!(
+        serde_json::to_value(StreamTraceResult::Cancelled { detail: "x".into() }).unwrap(),
+        json!({"status": "cancelled", "detail": "x"})
     );
 }
 

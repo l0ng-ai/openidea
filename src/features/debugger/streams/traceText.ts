@@ -61,6 +61,3 @@ export function abortText(abort: AbortState | null, tx: Tx = catalogTx): string 
   const threads = abort.holders.map(([, name]) => name).join(", ");
   return tx`The operation is stuck: ${threads} hold locks it needs`;
 }
-
-/** The host's detail for a Stop Recording that came before the trace ran: nothing went wrong. */
-export const CANCELLED_BEFORE_START = "cancelled before the trace started";

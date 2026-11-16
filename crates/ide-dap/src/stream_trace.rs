@@ -64,6 +64,10 @@ pub enum TraceRun {
     Failed {
         detail: String,
     },
+    /// Stop Recording or Abort Operation came before the terminal operation ran.
+    Cancelled {
+        detail: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -280,6 +284,7 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
                     break;
                 }
                 TraceState::Failed { detail } => return Err(TraceRun::Failed { detail }),
+                TraceState::Cancelled { detail } => return Err(TraceRun::Cancelled { detail }),
             }
         }
         self.report(TracePhase::Collecting);

@@ -415,10 +415,20 @@ describe("StreamTraceEditor", () => {
     expect(screen.getByRole("alert").textContent).toBe("the debug session ended");
   });
 
-  it("a recording stopped before the trace started is a note, not an error", () => {
-    ready({ status: "failed", detail: "cancelled before the trace started" }, { stoppedRecording: true });
+  it.each(["cancelled before the trace started", "cancelled before the terminal ran"])(
+    "a recording stopped before the chain ran (%s) is a note, not an error",
+    (detail) => {
+      ready({ status: "cancelled", detail }, { stoppedRecording: true });
+      show();
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText("Recording stopped before the trace started")).toBeTruthy();
+    },
+  );
+
+  it("an operation aborted before the chain ran is a note, not an error", () => {
+    ready({ status: "cancelled", detail: "cancelled before the terminal ran" });
     show();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByText("Recording stopped before the trace started")).toBeTruthy();
+    expect(screen.getByText("The trace was cancelled before the chain ran")).toBeTruthy();
   });
 });

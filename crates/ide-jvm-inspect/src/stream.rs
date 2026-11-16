@@ -23,6 +23,10 @@ pub enum TraceState {
     Failed {
         detail: String,
     },
+    /// Stopped or aborted before the terminal operation ran: taken down, the program untouched.
+    Cancelled {
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

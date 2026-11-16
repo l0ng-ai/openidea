@@ -3241,9 +3241,13 @@ async fn stream_wait_decodes_states() {
             TraceState::Parked { records: 50000, dropped: 950000 },
         ),
         (
-            json!({"state": "failed", "records": 0, "dropped": 0, "elapsedMs": 12,
+            json!({"state": "failed", "records": 4, "dropped": 0, "elapsedMs": 12, "detail": "missed map"}),
+            TraceState::Failed { detail: "missed map".into() },
+        ),
+        (
+            json!({"state": "cancelled", "records": 0, "dropped": 0, "elapsedMs": 12,
                    "detail": "cancelled before the terminal ran"}),
-            TraceState::Failed { detail: "cancelled before the terminal ran".into() },
+            TraceState::Cancelled { detail: "cancelled before the terminal ran".into() },
         ),
     ];
     for (ok, expected) in cases {

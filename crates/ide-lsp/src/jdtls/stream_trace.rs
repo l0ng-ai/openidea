@@ -79,6 +79,10 @@ enum WireState {
         #[serde(default)]
         detail: String,
     },
+    Cancelled {
+        #[serde(default)]
+        detail: String,
+    },
 }
 
 impl From<WireState> for TraceState {
@@ -87,6 +91,7 @@ impl From<WireState> for TraceState {
             WireState::Running { records, dropped, elapsed_ms } => Self::Running { records, dropped, elapsed_ms },
             WireState::Parked { records, dropped } => Self::Parked { records, dropped },
             WireState::Failed { detail } => Self::Failed { detail },
+            WireState::Cancelled { detail } => Self::Cancelled { detail },
         }
     }
 }

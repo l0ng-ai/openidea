@@ -81,6 +81,10 @@ pub enum StreamTraceResult {
     Failed {
         detail: String,
     },
+    /// Recording was stopped, or the operation aborted, before the chain ran: nothing went wrong.
+    Cancelled {
+        detail: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -174,7 +178,7 @@ async fn trace(
     let plan_json = serde_json::to_value(&plan).map_err(|e| IdeError::internal(e.to_string()))?;
     // `stream_trace` resumes the program before it looks at `cancel`.
     if cancel.is_cancelled() {
-        return Ok(StreamTraceResult::Failed { detail: "cancelled before the trace started".into() });
+        return Ok(StreamTraceResult::Cancelled { detail: "cancelled before the trace started".into() });
     }
     let progress = |p| {
         let _ = on_progress.send(p);
@@ -187,6 +191,7 @@ async fn trace(
         }
         TraceRun::Unavailable { reason } => StreamTraceResult::Unavailable { reason },
         TraceRun::Failed { detail } => StreamTraceResult::Failed { detail },
+        TraceRun::Cancelled { detail } => StreamTraceResult::Cancelled { detail },
     })
 }
 

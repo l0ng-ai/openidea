@@ -854,8 +854,10 @@ def real_run_cancel_before_terminal():
         trace = ok(arm(dbg, at='H', **PLAN_H))['traceId']
         check('cancel: stop while armed answers the records', ok(stream('stop', dbg, traceId=trace)) == {'records': 0})
         state = ok(stream('wait', dbg, traceId=trace, ms=0))
-        check('cancel: stop before the terminal fails the trace', state['state'] == 'failed'
+        check('cancel: stop before the terminal cancels the trace', state['state'] == 'cancelled'
               and state.get('detail') == 'cancelled before the terminal ran', state)
+        r = stream('collect', dbg, traceId=trace)
+        check('cancel: collect on a cancelled trace is failed', error(r) == 'failed', r)
         trace = ok(arm(dbg, at='H', **PLAN_H))['traceId']
         r = ok(stream('abort', dbg, traceId=trace))
         check('cancel: abort before the terminal is cancelled', r == {'state': 'cancelled'}, r)

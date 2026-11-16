@@ -9,7 +9,7 @@ import { useDebug } from "../state";
 import { useActionEnabled } from "../ui/useActionEnabled";
 import { traceValuesOutdated, useStreamTrace, type TraceEntry } from "./streamStore";
 import { traceSessionOf } from "./streamTraceInput";
-import { abortText, bannerText, CANCELLED_BEFORE_START, unavailableText } from "./traceText";
+import { abortText, bannerText, unavailableText } from "./traceText";
 import { TraceResultView } from "./TraceResultView";
 import styles from "./StreamTraceEditor.module.css";
 
@@ -65,16 +65,20 @@ function TraceView({ session, entry }: { session: DebugSessionId; entry: TraceEn
           {unavailableText(result.reason, tx)}
         </div>
       )}
-      {result?.status === "failed" &&
-        (entry.stoppedRecording && result.detail === CANCELLED_BEFORE_START ? (
-          <div className={styles.note}>
+      {result?.status === "failed" && (
+        <div className={styles.error} role="alert">
+          {result.detail}
+        </div>
+      )}
+      {result?.status === "cancelled" && (
+        <div className={styles.note}>
+          {entry.stoppedRecording ? (
             <T>Recording stopped before the trace started</T>
-          </div>
-        ) : (
-          <div className={styles.error} role="alert">
-            {result.detail}
-          </div>
-        ))}
+          ) : (
+            <T>The trace was cancelled before the chain ran</T>
+          )}
+        </div>
+      )}
       {result?.status === "ready" && (
         <>
           {result.banners.map((b, i) => (

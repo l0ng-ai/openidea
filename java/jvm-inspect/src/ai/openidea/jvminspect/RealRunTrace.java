@@ -88,7 +88,9 @@ final class RealRunTrace {
         TERMINAL_RUNNING("running"),
         /** The terminal returned or threw; the thread is held until the client steps out. */
         PARKED("parked"),
-        FAILED("failed");
+        FAILED("failed"),
+        /** Stopped or aborted before the terminal ran: taken down, the program untouched. */
+        CANCELLED("cancelled");
 
         final String wire;
 
@@ -698,7 +700,7 @@ final class RealRunTrace {
     private boolean cancelBeforeTerminal() {
         synchronized (stateLock) {
             if (state != State.ARMED && state != State.BUILDING) return false;
-            state = State.FAILED;
+            state = State.CANCELLED;
             detail = CANCELLED;
             stateLock.notifyAll();
         }
@@ -859,7 +861,7 @@ final class RealRunTrace {
         String kind;
         Value outcome;
         synchronized (stateLock) {
-            if (state == State.FAILED) throw new Failure("failed", detail);
+            if (state == State.FAILED || state == State.CANCELLED) throw new Failure("failed", detail);
             if (state != State.PARKED) throw new Failure("busy", "trace " + id + " is running");
             kind = terminalKind;
             outcome = terminalValue;

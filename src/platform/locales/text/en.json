@@ -2182,6 +2182,7 @@
   "Breakpoints stay off until {terminal} finishes": "Breakpoints stay off until {terminal} finishes",
   "The operation is stuck: {threads} hold locks it needs": "The operation is stuck: {threads} hold locks it needs",
   "Recording stopped before the trace started": "Recording stopped before the trace started",
+  "The trace was cancelled before the chain ran": "The trace was cancelled before the chain ran",
   "{records} records · {seconds} s": "{records} records · {seconds} s",
   "Recording stopped after {n} records ({dropped} more not recorded)": "Recording stopped after {n} records ({dropped} more not recorded)",
   "count() was computed from the source size; the pipeline did not run": "count() was computed from the source size; the pipeline did not run",
