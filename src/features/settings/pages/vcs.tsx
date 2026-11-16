@@ -600,9 +600,17 @@ export const VCS_PAGES: PageSpec[] = [
                 k="vcs.git.incomingCheck"
                 label="Explicitly check for incoming commits on remotes"
                 options={INCOMING}
-                hint="Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure."
+                hint="Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure."
               />
             ),
+          },
+          {
+            kind: "number",
+            key: "vcs.git.incomingCheckInterval",
+            label: "Check for incoming commits every",
+            ...L.incomingCheckInterval,
+            integer: true,
+            unit: "min",
           },
         ],
       },

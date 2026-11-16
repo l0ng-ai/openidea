@@ -820,7 +820,6 @@
   "Fallback font": "Czcionka zastępcza",
   "Fallback font:": "Czcionka zastępcza:",
   "Fetch": "Pobierz dane (Fetch)",
-  "Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure.": "Pobiera dane z repozytoriów zdalnych w tle, aby przychodzące zatwierdzenia pojawiały się w oknie wyskakującym Gałęzie. Tryb Auto zatrzymuje się po niepowodzeniu uwierzytelniania.",
   "Field access": "Dostęp do pola",
   "Field modification": "Modyfikacja pola",
   "Field watchpoints can be set on Java field declarations, or from the Variables view while suspended.": "Punkty obserwacji pola można ustawiać na deklaracjach pól Java lub w widoku Zmienne podczas wstrzymania.",

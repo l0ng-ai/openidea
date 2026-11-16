@@ -32,7 +32,7 @@ describe("validateWorkflow", () => {
     const v = validateWorkflow({
       vcs: {
         historyLimit: -5,
-        git: { updateMethod: "squash", incomingCheck: "never", largeFileMb: 0 },
+        git: { updateMethod: "squash", incomingCheck: "never", incomingCheckInterval: 0, largeFileMb: 0 },
         confirmation: { onPatchCreated: "always" },
         issueNavigation: [{ pattern: "" }, { pattern: "#(\\d+)", link: "x/$1" }],
       },
@@ -47,6 +47,7 @@ describe("validateWorkflow", () => {
     expect(v.vcs.historyLimit).toBe(10);
     expect(v.vcs.git.updateMethod).toBe("merge");
     expect(v.vcs.git.incomingCheck).toBe("never");
+    expect(v.vcs.git.incomingCheckInterval).toBe(1);
     expect(v.vcs.git.largeFileMb).toBe(1);
     expect(v.vcs.issueNavigation).toEqual([{ pattern: "#(\\d+)", link: "x/$1" }]);
     expect(v.vcs.commit.nonModal).toBe(true);
