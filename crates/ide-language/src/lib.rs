@@ -73,6 +73,21 @@ pub struct LanguageConfig {
     /// Content of a new scratch file; `$END$` marks where the caret goes.
     #[serde(default)]
     pub scratch_template: Option<String>,
+    /// Syntax nodes of the editor's grammar whose `<` `>` rainbow brackets colour.
+    #[serde(default)]
+    pub rainbow_brackets: RainbowBracketNodes,
+}
+
+/// `[rainbow-brackets]` of a language definition: node names of its editor (Lezer)
+/// grammar, so angle brackets are coloured only where the syntax tree says they
+/// delimit something, never in comparisons or shifts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct RainbowBracketNodes {
+    /// Nodes spanning `<` … `>` whose delimiters pair up: type argument and parameter lists.
+    pub angle: Vec<String>,
+    /// Markup tags (`<a>`, `</a>`, `<a/>`); an element's start and end tags pair up.
+    pub tags: Vec<String>,
 }
 
 /// An external formatting tool and its language-specific parser.
@@ -302,6 +317,10 @@ pub struct LanguageInfo {
     #[serde(default)]
     #[specta(optional)]
     pub scratch_template: Option<String>,
+    /// Syntax nodes whose `<` `>` rainbow brackets colour (Color Scheme › Rainbow brackets).
+    #[serde(default)]
+    #[specta(optional)]
+    pub rainbow_brackets: RainbowBracketNodes,
 }
 
 impl From<&LanguageConfig> for LanguageInfo {
@@ -319,6 +338,7 @@ impl From<&LanguageConfig> for LanguageInfo {
             filenames: c.filenames.clone(),
             first_line: c.first_line.clone(),
             scratch_template: c.scratch_template.clone(),
+            rainbow_brackets: c.rainbow_brackets.clone(),
         }
     }
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { languages } from "@codemirror/language-data";
 import { completedSyntaxState } from "@/test/syntax";
-import { BracketScanner } from "./rainbowBrackets";
+import { BracketScanner, DEFAULT_RAINBOW_OPTIONS } from "./rainbowBrackets";
 import { renderLineContent, selectedSpans } from "./stickyScroll";
 
 describe("selectedSpans", () => {
@@ -62,6 +62,14 @@ describe("sticky line content", () => {
     expect(el.textContent).toBe("    fn b(c: [u8]) {");
     expect(brackets(el)).toEqual(["(2", "[3", "]3", ")2", "{2"]);
     expect(brackets(render(state, 2, false))).toEqual([]);
+  });
+
+  it("follows the rainbow bracket palette length", () => {
+    const state = EditorState.create({ doc: "a(b(c(d(e())))) {" });
+    const el = document.createElement("span");
+    const scanner = new BracketScanner({ ...DEFAULT_RAINBOW_OPTIONS, colors: 4 });
+    renderLineContent(state, 1, el, scanner.marks(state, 0, state.doc.length), scanner.colors);
+    expect(brackets(el).slice(0, 6)).toEqual(["(1", "(2", "(3", "(4", "(1", ")1"]);
   });
 
   it("wraps the token's highlight inside the bracket colour, as the editor does", async () => {

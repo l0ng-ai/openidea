@@ -324,6 +324,7 @@ fn harness_languages(languages: &[MockLanguage<'_>], adjust: impl Fn(&mut Langua
             framework_files: Vec::new(),
             formatter: None,
             scratch_template: None,
+            rainbow_brackets: Default::default(),
             tree_sitter: None,
             language_servers: servers
                 .iter()

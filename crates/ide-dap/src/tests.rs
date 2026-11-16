@@ -1911,6 +1911,7 @@ fn godot_registry(port: u16, command: &str, args: &[&str]) -> Arc<LanguageRegist
         framework_files: Vec::new(),
         formatter: None,
         scratch_template: None,
+        rainbow_brackets: Default::default(),
         tree_sitter: None,
         language_servers: vec![],
         debugger: Some(ide_language::DebuggerConfig {

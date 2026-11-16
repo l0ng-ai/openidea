@@ -45,7 +45,7 @@ import { codeLensExtension } from "./codeLens";
 import { iconAreaExtension } from "./iconArea";
 import { renderedDocsExtension } from "./renderedDocs";
 import { caretExtension, fontZoom, methodLinesField, prefsExtension, softWrapActive } from "./prefs";
-import { commentTokens } from "./languages";
+import { bracketSyntax, commentTokens } from "./languages";
 import { multiCaretMouse } from "./multiCaret";
 import { columnModeExtension } from "./columnMode";
 import { bracketBlockSelect } from "./bracketBlockSelect";
@@ -240,7 +240,9 @@ export function heavyExtension(docLength: number, settings?: EditorSettings): Ex
   return [
     prefs.codeEditing.highlightBraces ? bracketMatching({ renderMatch }) : [],
     prefs.appearance.indentGuides ? (prefs.appearance.rainbowIndentGuides ? rainbowIndentGuides : indentGuides) : [],
-    prefs.rainbowBrackets ? rainbowBrackets() : [],
+    prefs.rainbowBrackets
+      ? rainbowBrackets({ ...prefs.rainbowBracketKinds, colors: prefs.rainbowBracketColors, syntax: bracketSyntax() })
+      : [],
     prefs.codeEditing.highlightSelection ? highlightSelectionMatches({ minSelectionLength: 2, maxMatches: 500 }) : [],
   ];
 }

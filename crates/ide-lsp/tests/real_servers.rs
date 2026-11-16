@@ -58,6 +58,7 @@ fn lang(id: &str, ext: &str, server: LanguageServerConfig) -> LanguageConfig {
         framework_files: Vec::new(),
         formatter: None,
         scratch_template: None,
+        rainbow_brackets: Default::default(),
         tree_sitter: None,
         language_servers: vec![server],
         debugger: None,

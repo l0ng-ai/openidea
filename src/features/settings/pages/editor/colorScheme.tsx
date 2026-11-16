@@ -1758,6 +1758,18 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
             key: "editor.rainbowBrackets",
             label: "Rainbow brackets",
             hint: "Color (), [] and {} by nesting depth; unmatched brackets use the error color.",
+            children: [
+              { t: "check", key: "editor.rainbowBracketKinds.round", label: "Round brackets ( )" },
+              { t: "check", key: "editor.rainbowBracketKinds.square", label: "Square brackets [ ]" },
+              { t: "check", key: "editor.rainbowBracketKinds.curly", label: "Curly braces { }" },
+              {
+                t: "check",
+                key: "editor.rainbowBracketKinds.angle",
+                label: "Angle brackets and tags < >",
+                hint: "Type arguments and parameters, and HTML, XML and JSX tags, where the syntax tree marks them; comparisons stay uncolored. They count toward the depth of what they enclose: an element's tags take one level, its content the next.",
+              },
+              { t: "number", key: "editor.rainbowBracketColors", label: "Number of colors", min: 2, max: 5 },
+            ],
           },
         ],
       },

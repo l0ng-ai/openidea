@@ -75,6 +75,8 @@
     "--syn-bracket-1": "#f2d07a",
     "--syn-bracket-2": "#d7a0e0",
     "--syn-bracket-3": "#6fc3df",
+    "--syn-bracket-4": "#93d48a",
+    "--syn-bracket-5": "#ef9f7f",
 
     // Editor
     "--fg-editor": "#d9dfe8",

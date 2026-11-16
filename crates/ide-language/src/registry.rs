@@ -668,6 +668,20 @@ mod tests {
     }
 
     #[test]
+    fn rainbow_bracket_nodes_reach_the_ui() {
+        let reg = reg();
+        let tsx = reg.get(&LanguageId::new("typescriptreact")).unwrap();
+        assert_eq!(tsx.rainbow_brackets.angle, ["TypeArgList", "TypeParamList"]);
+        assert!(tsx.rainbow_brackets.tags.iter().any(|t| t == "JSXOpenTag"));
+        let info = crate::LanguageInfo::from(&reg.get(&LanguageId::new("html")).unwrap());
+        assert_eq!(info.rainbow_brackets.tags, ["OpenTag", "CloseTag", "SelfClosingTag"]);
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["rainbowBrackets"]["tags"][0], "OpenTag");
+        // Definitions without the table, as most are, get none.
+        assert_eq!(reg.get(&LanguageId::new("python")).unwrap().rainbow_brackets, Default::default());
+    }
+
+    #[test]
     fn alternative_servers_are_fallbacks() {
         let reg = reg();
         for (lang, servers) in [

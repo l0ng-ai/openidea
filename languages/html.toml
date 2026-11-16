@@ -8,6 +8,10 @@ indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "HTML"
 tree-sitter = "html"
 
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["OpenTag", "CloseTag", "SelfClosingTag"]
+
 # Angular projects: component templates, with bindings and interpolations
 # highlighted as expressions.
 [[framework-ui-modes]]
