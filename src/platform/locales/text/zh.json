@@ -8535,5 +8535,22 @@
   "Describe a task. @ for files, / for commands": "描述一个任务。@ 引用文件，/ 运行命令",
   "Effort": "推理",
   "Don't Add the Current File": "不附带当前文件",
-  "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区"
+  "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区",
+  "Generate Commit Message with Agent": "使用智能体生成提交消息",
+  "Has the coding agent you work with review the changes about to be committed and write the commit message.": "让您正在使用的编程智能体审查即将提交的更改并撰写提交消息。",
+  "No changes to describe": "没有可描述的更改",
+  "Include changes in the commit first.": "请先在提交中包含更改。",
+  "No coding agent available": "没有可用的编程智能体",
+  "Set one up in Settings › Agents. Agents don't run in projects you haven't trusted.": "请在“设置 › 智能体”中配置一个。智能体不会在未受信任的项目中运行。",
+  "Open Settings": "打开设置",
+  "Commit message not replaced": "提交消息未被替换",
+  "The message or the included changes were edited meanwhile.": "在此期间，消息或包含的更改已被修改。",
+  "Couldn't generate the commit message": "无法生成提交消息",
+  "Couldn't read the changes": "无法读取更改",
+  "The agent task was removed": "智能体任务已被移除",
+  "The agent's usage limit was reached": "智能体已达到使用上限",
+  "The agent asked for permission to continue": "智能体请求许可以继续",
+  "The agent task was archived": "智能体任务已归档",
+  "The agent did not answer in time": "智能体未在限定时间内回复",
+  "The agent did not reply with a commit message": "智能体没有返回提交消息"
 }

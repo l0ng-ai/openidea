@@ -2148,5 +2148,22 @@
   "Untitled files were not saved": "Untitled files were not saved",
   "Missing blank line between subject and body": "Missing blank line between subject and body",
   "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
-  "Add blank line": "Add blank line"
+  "Add blank line": "Add blank line",
+  "Generate Commit Message with Agent": "Generate Commit Message with Agent",
+  "Has the coding agent you work with review the changes about to be committed and write the commit message.": "Has the coding agent you work with review the changes about to be committed and write the commit message.",
+  "No changes to describe": "No changes to describe",
+  "Include changes in the commit first.": "Include changes in the commit first.",
+  "No coding agent available": "No coding agent available",
+  "Set one up in Settings › Agents. Agents don't run in projects you haven't trusted.": "Set one up in Settings › Agents. Agents don't run in projects you haven't trusted.",
+  "Open Settings": "Open Settings",
+  "Commit message not replaced": "Commit message not replaced",
+  "The message or the included changes were edited meanwhile.": "The message or the included changes were edited meanwhile.",
+  "Couldn't generate the commit message": "Couldn't generate the commit message",
+  "Couldn't read the changes": "Couldn't read the changes",
+  "The agent task was removed": "The agent task was removed",
+  "The agent's usage limit was reached": "The agent's usage limit was reached",
+  "The agent asked for permission to continue": "The agent asked for permission to continue",
+  "The agent task was archived": "The agent task was archived",
+  "The agent did not answer in time": "The agent did not answer in time",
+  "The agent did not reply with a commit message": "The agent did not reply with a commit message"
 }
