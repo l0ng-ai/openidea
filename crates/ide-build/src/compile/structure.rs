@@ -487,6 +487,10 @@ impl Action {
 }
 
 fn copy_file(from: &Path, to: &Path) -> IdeResult<()> {
+    // A link in the artifact's place is replaced, not written through.
+    if fs::symlink_metadata(to).is_ok_and(|m| m.file_type().is_symlink()) {
+        fs::remove_file(to).map_err(|e| IdeError::internal(format!("cannot replace {} ({e})", to.display())))?;
+    }
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| IdeError::internal(format!("cannot create {} ({e})", parent.display())))?;
@@ -504,6 +508,12 @@ fn copy_tree(from: &Path, to: &Path, written: &mut Vec<PathBuf>, cancel: &Cancel
         let Ok(t) = e.file_type() else { continue };
         let target = to.join(e.file_name());
         if t.is_dir() {
+            if fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
+                return Err(IdeError::invalid(format!(
+                    "{} links to another folder; the artifact is not laid out through it",
+                    target.display()
+                )));
+            }
             copy_tree(&e.path(), &target, written, cancel)?;
         } else if t.is_file() {
             copy_file(&e.path(), &target)?;
@@ -531,7 +541,14 @@ fn replace_recorded(into: &Path, record: &Path, written: &[PathBuf]) -> IdeResul
             continue;
         }
         let file = into.join(&rel);
-        if file.is_file() {
+        // Never through a link: a folder of the output that now links elsewhere (or a file that
+        // is a link) leads out of what the layout wrote.
+        let mut at = into.to_path_buf();
+        let linked = rel.components().any(|c| {
+            at.push(c);
+            fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink())
+        });
+        if !linked && file.is_file() {
             let _ = fs::remove_file(&file);
             let mut dir = file.parent();
             while let Some(d) = dir.filter(|d| *d != into && d.starts_with(into)) {
@@ -899,6 +916,17 @@ mod tests {
         write(&tmp.path().join("outside.txt"), "x");
         layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
         assert!(tmp.path().join("outside.txt").is_file());
+        // Nor through a folder of the output that now links elsewhere.
+        #[cfg(unix)]
+        {
+            write(&project.join("assets/x.txt"), "laid out");
+            write(&record, &format!("{}\nassets/x.txt", project.display()));
+            fs::remove_dir_all(project.join("assets")).unwrap();
+            std::os::unix::fs::symlink(project.join("src"), project.join("assets")).unwrap();
+            write(&project.join("src/x.txt"), "source");
+            layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
+            assert!(project.join("src/x.txt").is_file());
+        }
         // Nor does one made for another output folder.
         write(&project.join("c.jar"), "mine");
         write(&record, "/elsewhere\nc.jar");
