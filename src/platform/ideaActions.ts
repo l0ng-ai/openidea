@@ -8,6 +8,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   GotoTypeDeclaration: "navigate.typeDeclaration",
   GotoSuperMethod: "navigate.superMethod",
   GotoTest: "navigate.gotoTest",
+  GotoRelated: "navigate.relatedSymbol",
   GotoClass: "navigate.gotoClass",
   GotoFile: "navigate.gotoFile",
   GotoSymbol: "navigate.gotoSymbol",

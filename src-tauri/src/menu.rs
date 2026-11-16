@@ -466,6 +466,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("navigate.typeDeclaration", "Type Declaration"),
             act("navigate.superMethod", "Super Method"),
             act("navigate.gotoTest", "Test"),
+            act("navigate.relatedSymbol", "Related Symbol…"),
             SEP,
             act("navigate.fileStructure", "File Structure"),
             act("navigate.showFilePath", "File Path"),
