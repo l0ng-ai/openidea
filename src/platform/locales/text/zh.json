@@ -8687,5 +8687,17 @@
   "Hide Code Author": "隐藏代码作者",
   "Hide Code Vision": "隐藏 Code Vision",
   "Code Vision Settings…": "Code Vision 设置…",
-  "Code Vision": "Code Vision"
+  "Code Vision": "Code Vision",
+  "Reformat Code…": "重新格式化代码…",
+  "Reformat Code dialog for `{ files?, directories? }`, as for a project view selection.": "为 `{ files?, directories? }` 打开“重新格式化代码”对话框，与在项目视图中选择时相同。",
+  "{length} selected items": "已选择 {length} 项",
+  "Include subdirectories": "包含子目录",
+  "Only VCS changed text": "仅 VCS 更改的文本",
+  "Files are reformatted by their language's formatter and saved; files without one are skipped.": "文件由各自语言的格式化程序重新格式化并保存；没有格式化程序的文件将被跳过。",
+  "No changed files to reformat": "没有需要重新格式化的已更改文件",
+  "No files to reformat": "没有需要重新格式化的文件",
+  "Reformat {length} files?": "是否重新格式化 {length} 个文件？",
+  "Reformat Code cancelled after {done} of {length} files": "重新格式化代码已在处理 {done}/{length} 个文件后取消",
+  "Reformatted {formatted} of {length} files": "已重新格式化 {formatted}/{length} 个文件",
+  "Skipped {count} files without a formatter: {names}": "已跳过 {count} 个没有格式化程序的文件：{names}"
 }

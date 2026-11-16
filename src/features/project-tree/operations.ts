@@ -916,6 +916,20 @@ export function delegate(id: string, arg: unknown): boolean {
   return true;
 }
 
+/**
+ * Reformat Code (⌥⌘L) for project view nodes: a single file is reformatted at once,
+ * a directory or several nodes open the Reformat Code dialog. False when nothing applies.
+ */
+export function reformatNodes(nodes: readonly ProjectNode[]): boolean {
+  const targets = nodes.filter((n) => !n.group && !n.readOnly);
+  if (!targets.length) return false;
+  if (targets.length === 1 && !targets[0]!.dir) return delegate("code.reformatFile", { path: targets[0]!.path });
+  return delegate("code.reformatFiles", {
+    files: targets.filter((n) => !n.dir).map((n) => n.path),
+    directories: targets.filter((n) => n.dir).map((n) => n.path),
+  });
+}
+
 /** Argument for VCS actions: one path or several. */
 export function vcsArg(nodes: ProjectNode[] = selectedNodes()): string | string[] {
   const paths = nodes.map((n) => n.path);

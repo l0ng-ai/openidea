@@ -28,6 +28,7 @@ import {
   openRenameDialog,
   openSelectionInRightSplit,
   paste,
+  reformatNodes,
   reloadFromDisk,
   revealInFinder,
   vcsArg,
@@ -301,14 +302,14 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
     { kind: "separator" },
   );
 
-  // Reformat Code / Optimize Imports / Delete…
+  // Reformat Code (one file at once, directories or several files through its dialog) / Optimize Imports / Delete…
   push(
-    singleFile &&
-      getAction("code.reformatFile") && {
+    nodes.some((n) => !n.group) &&
+      getAction(singleFile ? "code.reformatFile" : "code.reformatFiles") && {
         id: "reformat",
         label: "Reformat Code",
         shortcut: keyLabel("project.reformatCode"),
-        run: () => void delegate("code.reformatFile", { path: singleFile.path }),
+        run: () => void reformatNodes(nodes),
       },
     singleFile &&
       getAction("code.optimizeImportsFile") && {
