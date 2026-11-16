@@ -52,6 +52,29 @@ fn root_ignores(root: &Path) -> Gitignore {
     gi.build().unwrap_or_else(|_| Gitignore::empty())
 }
 
+/// Whether walking `root` leaves out `dir`, a folder below it: `dir` or a folder between
+/// them is ignored (`.gitignore`, `.ignore`, `info/exclude`, the global excludes). Such a
+/// folder can be a root of its own, with its own rules, without its files being walked twice.
+pub fn walk_skips(root: &Path, dir: &Path) -> bool {
+    if dir == root || !dir.starts_with(root) || !dir.is_dir() {
+        return false;
+    }
+    let target = dir.to_path_buf();
+    let walker = WalkBuilder::new(root)
+        .hidden(false)
+        .parents(true)
+        .ignore(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .require_git(ide_core::ignored::inside_git_repo(root))
+        .follow_links(false)
+        // Only the folders on the way down to `dir`.
+        .filter_entry(move |e| target.starts_with(e.path()))
+        .build();
+    !walker.flatten().any(|e| e.path() == dir)
+}
+
 fn rel_string(rel: &Path) -> String {
     let mut out = String::new();
     for c in rel.components() {
@@ -115,12 +138,18 @@ impl PathFilter {
         let mut extra: Vec<ExtraRoot> = Vec::new();
         for r in &extra_roots.folders {
             let path = dunce::canonicalize(r).unwrap_or_else(|_| r.clone());
-            let nested = (extra_roots.include_root && (path.starts_with(root) || root.starts_with(&path)))
+            // A folder inside the root is a root of its own only when the root's walk skips it.
+            let inside = path.starts_with(root) && !walk_skips(root, &path);
+            let nested = (extra_roots.include_root && (inside || root.starts_with(&path)))
                 || extra.iter().any(|e| path.starts_with(&e.path) || e.path.starts_with(&path));
             if nested || !path.is_dir() {
                 continue;
             }
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // Inside the root it goes by its path there, elsewhere by its folder name.
+            let name = match path.strip_prefix(root) {
+                Ok(rel) if extra_roots.include_root => rel_string(rel),
+                _ => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            };
             extra.push(ExtraRoot { gitignore: root_ignores(&path), name, path });
         }
         Self {
@@ -176,13 +205,11 @@ impl PathFilter {
 
     /// The root containing `path`, its display prefix (`None` for the project root) and ignore rules.
     fn base_of(&self, path: &Path) -> Option<(&Path, Option<&str>, &Gitignore)> {
-        if self.include_root && path.starts_with(&self.root) {
-            return Some((&self.root, None, &self.gitignore));
+        // An extra root inside the project root wins: its own rules apply below it.
+        if let Some(e) = self.extra.iter().find(|e| path.starts_with(&e.path)) {
+            return Some((e.path.as_path(), Some(e.name.as_str()), &e.gitignore));
         }
-        self.extra
-            .iter()
-            .find(|e| path.starts_with(&e.path))
-            .map(|e| (e.path.as_path(), Some(e.name.as_str()), &e.gitignore))
+        (self.include_root && path.starts_with(&self.root)).then_some((self.root.as_path(), None, &self.gitignore))
     }
 
     /// Whether `path` is (at or) below one of the roots.
@@ -207,7 +234,7 @@ impl PathFilter {
     /// Key of `path` in the persistent store: only files below the project root
     /// are persisted (extra content roots are rescanned when the project opens).
     pub(crate) fn store_key(&self, path: &Path) -> Option<String> {
-        if !self.include_root {
+        if !self.include_root || self.extra.iter().any(|e| path.starts_with(&e.path)) {
             return None;
         }
         let rel = rel_string(path.strip_prefix(&self.root).ok()?);
@@ -536,5 +563,36 @@ src/local/
         assert!(filter.is_excluded(&shared.join("out/y.rs"), false));
         assert!(filter.same_config(&vec![shared.clone(), root.join("src")].into(), &["target".into()]));
         assert!(!filter.same_config(&vec![shared].into(), &["target".into()]));
+    }
+
+    #[test]
+    fn an_ignored_folder_inside_the_root_is_a_root_with_its_own_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        let nested = root.join(".wt/feature");
+        for f in ["src/a.rs", "lib/d.rs", ".wt/feature/src/b.rs", ".wt/feature/out/c.rs"] {
+            touch(&root, f);
+        }
+        // A git worktree kept inside the repository it belongs to, which ignores it.
+        std::fs::create_dir_all(root.join(".git/info")).unwrap();
+        std::fs::write(root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+        std::fs::write(nested.join(".git"), "gitdir: ../../.git/worktrees/feature\n").unwrap();
+        std::fs::write(nested.join(".gitignore"), "out/\n").unwrap();
+        assert!(walk_skips(&root, &nested));
+        assert!(!walk_skips(&root, &root.join("lib")));
+
+        let filter = PathFilter::new(&root, &vec![nested.clone(), root.join("lib")].into(), &[]);
+        assert_eq!(filter.roots().count(), 2, "a folder the root's walk covers is not a root of its own");
+        let mut found: Vec<String> = filter
+            .roots()
+            .flat_map(|r| filter.walk(r, &AtomicBool::new(false)))
+            .filter_map(|f| filter.rel(&f.path))
+            .collect();
+        found.sort();
+        assert_eq!(found, [".wt/feature/.gitignore", ".wt/feature/src/b.rs", "lib/d.rs", "src/a.rs"]);
+        assert_eq!(filter.store_key(&nested.join("src/b.rs")), None, "extra roots are not persisted");
+        assert!(!filter.is_excluded(&nested.join("src/new.rs"), false));
+        assert!(filter.is_excluded(&nested.join("out/new.rs"), false));
+        assert!(filter.is_excluded(&root.join(".wt/other/x.rs"), false));
     }
 }

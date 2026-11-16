@@ -748,9 +748,15 @@ async fn file_search(call: Call) -> IdeResult<Output> {
     // Ignored names and "Exclude files" patterns, which `read_dir` does not flag.
     let excludes = if include_excluded { None } else { Some(FileMask::new(&[], &call.project().search_excludes())?) };
     let root = call.root().to_path_buf();
-    // The project folder and the content roots outside it.
+    // The project folder and the content roots its walk does not cover: those outside it and
+    // those inside it that it skips as ignored.
     let roots: Vec<PathBuf> = std::iter::once(root.clone())
-        .chain(call.project().content_roots().into_iter().filter(|r| relative_to_root(&root, r).is_none()))
+        .chain(
+            call.project()
+                .content_roots()
+                .into_iter()
+                .filter(|r| relative_to_root(&root, r).is_none() || ide_index::walk_skips(&root, r)),
+        )
         .collect();
     let host = call.host();
     let walk = Walk {
