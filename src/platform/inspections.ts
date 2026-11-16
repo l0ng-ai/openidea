@@ -330,7 +330,7 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
     name: "Undefined step",
     group: "Gherkin",
     description:
-      "Reports steps of a .feature file that no step definition of the project's JavaScript or TypeScript files matches (Cucumber expressions and regular expressions). Projects without step definitions in those files are not checked. Alt+Enter creates the definition.",
+      "Reports steps of a .feature file that no step definition of the project matches (Cucumber expressions and regular expressions, in JavaScript, TypeScript, Java and Kotlin files). Projects without step definitions in those files are not checked. Alt+Enter creates the definition.",
     defaultLevel: "warning",
   },
   {

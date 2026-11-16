@@ -18,7 +18,7 @@ let cached: Promise<StepIndex> | null = null;
 
 /** Whether a change to `path` can change the index: a feature or script file. */
 export function isCucumberSource(path: string): boolean {
-  return /\.(feature|[cm]?[jt]sx?)$/i.test(path);
+  return /\.(feature|[cm]?[jt]sx?|java|kt)$/i.test(path);
 }
 
 /** Forgets the index, so the next lookup rescans the project. */
@@ -93,7 +93,13 @@ export async function undefinedSteps(steps: readonly FeatureStep[]): Promise<Fea
 /** The file a new definition for a step of `featurePath` goes to: the step file named like the feature, else the one with the most definitions. */
 export async function definitionFileFor(featurePath: string): Promise<string | null> {
   const { definitions } = await stepIndex();
-  const stem = (path: string) => (path.split("/").pop() ?? "").split(".")[0]!.toLowerCase();
+  // `cart.steps.ts`, `CartSteps.java` and `cart_stepdefs.kt` all name the `cart` feature's steps.
+  const stem = (path: string) =>
+    (path.split("/").pop() ?? "")
+      .split(".")[0]!
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .replace(/(?:stepdefinitions|stepdefs|steps)$/, "");
   const feature = stem(featurePath);
   const named = definitions.find((file) => stem(file.path) === feature);
   if (named) return named.path;
