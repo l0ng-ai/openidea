@@ -819,3 +819,86 @@ test("keeps ordered, bulleted and task list markers unclipped inside measured ro
     expect(cb.offsetFromRowLeft).toBeGreaterThanOrEqual(0);
   }
 });
+
+test("indents process-run thoughts and tool calls clearly and aligns output-less tool icons", async ({ page }) => {
+  await openReply(page, "All checks passed.");
+  await page.evaluate(async (task) => {
+    const storePath = "/src/features/agents/store.ts";
+    const store = await import(storePath);
+    store.useAgents.setState({
+      tasks: new Map([[task.id, { ...task, status: "running" as const }]]),
+      entries: new Map([
+        [
+          task.id,
+          [
+            { type: "thought", text: "**Checking CI Status**\n\nInspecting workflow runs." },
+            {
+              type: "tool",
+              id: "t1",
+              title: "gh pr checks 3631 --repo l0ng-ai/openidea",
+              kind: "execute",
+              status: "completed",
+              locations: [],
+              output: "All checks pending",
+              diffs: [],
+            },
+            { type: "thought", text: "**Tracking Continuous Integration**\n\nWaiting for E2E." },
+            {
+              type: "tool",
+              id: "t2",
+              title: "read_bash",
+              kind: "other",
+              status: "completed",
+              locations: [],
+              output: "E2E pass",
+              diffs: [],
+            },
+            {
+              type: "tool",
+              id: "t3",
+              title: "read_bash",
+              kind: "other",
+              status: "running",
+              locations: [],
+              output: "",
+              diffs: [],
+            },
+          ],
+        ],
+      ]),
+    });
+    store.openTaskInEditorLocation(task.id);
+  }, TASK);
+
+  const stream = page.locator("[class*='_stream_']:visible");
+  const summary = stream.locator("[class*='_processSummary_']").first();
+  await summary.click();
+  await expect(stream.getByText("Checking CI Status")).toBeVisible();
+
+  const layout = await stream.evaluate((root) => {
+    const summaryChevron = root.querySelector<SVGElement>("[class*='_processChevron_']")!.getBoundingClientRect();
+    const processBody = root.querySelector<HTMLElement>("[class*='_processBody_']")!.getBoundingClientRect();
+    const thoughtChevron = root.querySelector<SVGElement>("[class*='_thoughtChevron_']")!.getBoundingClientRect();
+    const toolRows = [...root.querySelectorAll<HTMLElement>("[class*='_tool_']")];
+    const expandableToolChevron = toolRows[0]!
+      .querySelector<SVGElement>("[class*='_toolChevron_']")!
+      .getBoundingClientRect();
+    const completedReadIcon = [...toolRows[1]!.querySelectorAll("svg")].at(-1)!.getBoundingClientRect();
+    const runningReadIcon = toolRows[2]!.querySelector("svg")!.getBoundingClientRect();
+    return {
+      summaryChevronCenter: summaryChevron.left + summaryChevron.width / 2,
+      guideLeft: processBody.left,
+      summaryToThoughtIndent: thoughtChevron.left - summaryChevron.left,
+      thoughtToToolIndent: expandableToolChevron.left - thoughtChevron.left,
+      iconLeftDiff: Math.abs(completedReadIcon.left - runningReadIcon.left),
+    };
+  });
+
+  // Guide line drops from the center of the process summary chevron.
+  expect(Math.abs(layout.guideLeft - layout.summaryChevronCenter)).toBeLessThanOrEqual(1.5);
+  // Thoughts indent clearly inside the process run, and tool calls indent under their thought step.
+  expect(layout.summaryToThoughtIndent).toBeGreaterThanOrEqual(20);
+  expect(layout.thoughtToToolIndent).toBeGreaterThanOrEqual(14);
+  // Output-less running tool rows align their kind icon with expandable tool rows.
+  expect(layout.iconLeftDiff).toBeLessThanOrEqual(1);
+});
