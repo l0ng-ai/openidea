@@ -5,6 +5,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+/// Why a task needs the user's attention (native / in-app notify).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentAttentionReason {
+    Finished,
+    Input,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentStatus {
@@ -666,6 +675,12 @@ pub enum AgentEvent {
     },
     /// The installed or configured agent providers changed.
     Providers,
+    /// The task needs attention once (finished turn, explicit input, or failure).
+    Attention {
+        task: String,
+        event_id: String,
+        reason: AgentAttentionReason,
+    },
 }
 
 pub use ide_core::settings::{AgentMcpServer, McpTransport};

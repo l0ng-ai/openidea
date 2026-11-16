@@ -35,6 +35,7 @@ pub mod lsp;
 pub mod mcp;
 pub mod nav;
 pub mod notebook;
+pub mod notification;
 pub mod perf;
 pub mod plugin;
 pub mod profiler;
@@ -199,6 +200,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         clipboard::clipboard_has_image,
         clipboard::clipboard_image,
         clipboard::clipboard_set_file_list,
+        notification::show_system_notification,
         fonts::system_font_families,
         doc::doc_open,
         doc::doc_open_virtual,

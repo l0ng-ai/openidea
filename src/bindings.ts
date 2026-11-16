@@ -331,6 +331,8 @@ export const commands = {
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
 	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
+	/**  When a balloon is shown and OpenIDEA is unfocused, mirror it to the OS. */
+	showSystemNotification: (title: string, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("show_system_notification", { title, body })),
 	/**
 	 *  Every installed family, sorted, each flagged monospaced or not. Read on
 	 *  first use (off the command threads), cached, and re-queried on `refresh`.
@@ -1892,6 +1894,9 @@ export type AgentAcceptSkipped = {
 	reason: string,
 };
 
+/**  Why a task needs the user's attention (native / in-app notify). */
+export type AgentAttentionReason = "finished" | "input" | "failed";
+
 /**  A task the agent runs in the background while the conversation goes on. */
 export type AgentBackgroundTask = {
 	id: string,
@@ -2098,7 +2103,9 @@ export type AgentEvent =
 /**  A model lookup started or completed, including unsuccessful lookups. */
 { type: "modelCatalog"; catalog: AgentModelCatalog } | 
 /**  The installed or configured agent providers changed. */
-{ type: "providers" };
+{ type: "providers" } | 
+/**  The task needs attention once (finished turn, explicit input, or failure). */
+{ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason };
 
 /**  A form the agent asks the user to fill in (ACP `elicitation/create`, form mode). */
 export type AgentForm = {
@@ -7957,6 +7964,8 @@ export type NotificationLevel = "info" | "warning" | "error";
 export type NotificationSettings = {
 	balloons?: boolean,
 	sound?: boolean,
+	/**  Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
+	systemNotifications?: boolean,
 	/**  Group id → display; groups not listed use their default. */
 	groups?: { [key in string]: NotificationGroupSettings },
 };

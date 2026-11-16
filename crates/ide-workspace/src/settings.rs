@@ -30,12 +30,14 @@ pub enum SettingsScope {
 /// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
 /// what agents may do without asking (commands run without asking, the modes new tasks start in,
 /// whether new tasks ask for approvals).
-const USER_ONLY: [&[&str]; 5] = [
+const USER_ONLY: [&[&str]; 6] = [
     &["mcpServer"],
     &["editor", "customSchemes"],
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
     &["agents", "newTaskApprovals"],
+    // OS notification centre: machine-local; projects must not enable/disable.
+    &["notifications", "systemNotifications"],
 ];
 
 /// The [`USER_ONLY`] setting that writing `value` at `key` would set, as a dotted key.
@@ -1218,5 +1220,23 @@ mod tests {
         assert_eq!(s.agents.new_task_approvals, NewTaskApprovals::Ask);
         std::fs::write(project.join(".openidea/settings.toml"), "[agents]\nnewTaskApprovals = \"bypass\"\n").unwrap();
         assert_eq!(settings.reload().agents.new_task_approvals, NewTaskApprovals::Ask);
+    }
+
+    #[test]
+    fn system_notifications_are_a_user_setting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = tmp.path().join("config");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".openidea")).unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = false\n")
+            .unwrap();
+        let settings = SettingsStore::load(&config, Some(&project));
+        assert!(settings.effective().notifications.system_notifications);
+        assert!(settings.set(SettingsScope::Project, "notifications.systemNotifications", json!(false)).is_err());
+        let s = settings.set(SettingsScope::Global, "notifications.systemNotifications", json!(false)).unwrap();
+        assert!(!s.notifications.system_notifications);
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = true\n")
+            .unwrap();
+        assert!(!settings.reload().notifications.system_notifications);
     }
 }

@@ -1959,5 +1959,6 @@
   "Non-Project Files": "Non-Project Files",
   "file:src//*.ts && !file:*.test.ts — paths are relative to the project; // is any folders, * any characters. file[module]:pattern limits a pattern to a module.": "file:src//*.ts && !file:*.test.ts — paths are relative to the project; // is any folders, * any characters. file[module]:pattern limits a pattern to a module.",
   "Clear File Color": "Clear File Color",
-  "Edit File Colors…": "Edit File Colors…"
+  "Edit File Colors…": "Edit File Colors…",
+  "Enable system notifications": "Enable system notifications"
 }
