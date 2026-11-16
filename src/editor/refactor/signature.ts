@@ -50,7 +50,8 @@ export function signatureText(sig: {
   return head + throws;
 }
 
-const JAVA_NAME = /^[A-Za-z_$][\w$]*$/;
+/** A Java identifier: letters of any script, `$` and `_`, then digits and combining marks too. */
+export const JAVA_NAME = /^[\p{L}\p{Nl}\p{Sc}\p{Pc}][\p{L}\p{Nl}\p{Sc}\p{Pc}\p{Nd}\p{Mn}\p{Mc}]*$/u;
 
 /** Why the edited signature can't be submitted yet, or null. */
 export function signatureProblem(sig: MethodSignature): string | null {
@@ -137,6 +138,18 @@ export async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
   }
 }
 
+/** Sends `send(id)` with a fresh request id that `signal` cancels. */
+export async function cancellable<T>(signal: AbortSignal | undefined, send: (id: number) => Promise<T>): Promise<T> {
+  const id = nextRequestId();
+  const abort = () => void commands.cancelRequest(id);
+  signal?.addEventListener("abort", abort);
+  try {
+    return await send(id);
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
 export async function confirmProblems(messages: readonly string[]): Promise<boolean> {
   const { button } = await ask({
     title: "Problems Detected",
@@ -158,6 +171,8 @@ export async function changeSignature(
   signature: MethodSignature,
   delegate: boolean,
   preview: boolean,
+  /** The dialog closed: nothing is confirmed, previewed or applied any more. */
+  signal?: AbortSignal,
 ): Promise<SignatureOutcome> {
   const { view } = request;
   if (view.state.doc !== request.text) return { status: "stay", error: "The file changed; open the dialog again" };
@@ -167,18 +182,20 @@ export async function changeSignature(
     for (;;) {
       await whenSynced(view);
       const token: string | null = confirmation;
-      changed = await lspRequest(() =>
-        commands.lspChangeSignature(nextRequestId(), request.doc, request.pos, signature, delegate, token),
+      changed = await cancellable(signal, (id) =>
+        lspRequest(() => commands.lspChangeSignature(id, request.doc, request.pos, signature, delegate, token)),
       );
+      if (signal?.aborted) return { status: "stay" };
       const fatal = changed.problems.find((p) => p.severity === "fatal");
       if (fatal || (!changed.edit && !changed.confirmation))
         return { status: "stay", error: fatal?.message ?? "Nothing to change" };
       if (!changed.confirmation) break;
-      if (!(await confirmProblems(changed.problems.map((p) => p.message)))) return { status: "stay" };
+      if (!(await confirmProblems(changed.problems.map((p) => p.message))) || signal?.aborted)
+        return { status: "stay" };
       confirmation = changed.confirmation;
     }
   } catch (e) {
-    if (isCancelled(e)) return { status: "stay" };
+    if (isCancelled(e) || signal?.aborted) return { status: "stay" };
     return { status: "stay", error: errorText(e) };
   }
   const edit = changed.edit!;
