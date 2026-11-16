@@ -122,6 +122,15 @@ export function buildSearchDecorations(read: TokenReader) {
   };
 }
 
+/** Terminal URL colour (`#rrggbb` for xterm decorations): the theme's `--link`, else the accent. */
+export function buildLinkColor(read: TokenReader): string {
+  return toHex(parseColor(read("--link")) ?? parseColor(read("--accent")) ?? parseColor(FALLBACK["--accent"]!)!);
+}
+
+export function readLinkColor() {
+  return buildLinkColor(documentTokenReader());
+}
+
 export function readSearchDecorations() {
   return buildSearchDecorations(documentTokenReader());
 }

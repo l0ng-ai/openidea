@@ -65,6 +65,7 @@ const PROVIDER_ICONS = new Set([
   "kiro",
   "vibe",
   "omp",
+  "deepseek-harness",
 ]);
 
 /** The agent's logo; custom agents get the generic agents icon. */

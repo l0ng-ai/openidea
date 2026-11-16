@@ -3,7 +3,7 @@ import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { completedSyntaxState } from "@/test/syntax";
 import { languages } from "@codemirror/language-data";
-import { BracketScanner, bracketClass } from "./rainbowBrackets";
+import { BracketScanner, bracketClass, rainbowBrackets } from "./rainbowBrackets";
 import { heavyExtension } from "./setup";
 import type { EditorSettings } from "@/platform/ipc";
 
@@ -17,7 +17,18 @@ function marks(doc: string, ext: Extension = [], from = 0, to = doc.length, scan
   return scanner.marks(state, from, to).map((m) => `${doc[m.from]}${m.depth < 0 ? "!" : m.depth}`);
 }
 
-const javascript = () => languages.find((l) => l.name === "JavaScript")!.load();
+const load = (name: string) => languages.find((l) => l.name === name)!.load();
+const javascript = () => load("JavaScript");
+
+/** Classes of the coloured brackets an editor renders with `extensions`. */
+function rendered(doc: string, extensions: Extension) {
+  const view = new EditorView({ state: EditorState.create({ doc, extensions }), parent: document.body });
+  const classes = [...view.contentDOM.querySelectorAll("[class*=cm-rainbow-bracket]")].map(
+    (e) => `${e.textContent}${e.className.replace("cm-rainbow-bracket-", "")}`,
+  );
+  view.destroy();
+  return classes;
+}
 
 describe("rainbow brackets", () => {
   it("colours brackets by nesting depth, cycling through the palette", () => {
@@ -49,6 +60,125 @@ describe("rainbow brackets", () => {
   it("skips strings, comments and regexps with the syntax tree", async () => {
     const doc = 'f("(", /[(]/, `{`) // )\n/* ] */ g([1, {a: 2}])';
     expect(marks(doc, await javascript())).toEqual(["(0", ")0", "(0", "[1", "{2", "}2", "]1", ")0"]);
+  });
+
+  it.each(["JavaScript", "TypeScript"])("colours %s template expressions but skips literal text", async (name) => {
+    const doc = 'f(`literal ([ ${g(["}", /[)]/]) /* ] */} tail ) ${h()}`)';
+    expect(marks(doc, await load(name))).toEqual([
+      "(0",
+      "{1",
+      "(2",
+      "[3",
+      "]3",
+      ")2",
+      "}1",
+      "{1",
+      "(2",
+      ")2",
+      "}1",
+      ")0",
+    ]);
+  });
+
+  it("handles nested templates and escaped interpolation delimiters", async () => {
+    const doc = "f(`\\${literal(} ${g(`text ) ${h([1])}`)} tail [`); after()";
+    expect(marks(doc, await javascript())).toEqual([
+      "(0",
+      "{1",
+      "(2",
+      "{3",
+      "(4",
+      "[5",
+      "]5",
+      ")4",
+      "}3",
+      ")2",
+      "}1",
+      ")0",
+      "(0",
+      ")0",
+    ]);
+  });
+
+  it("colours Python replacements and nested format expressions but skips literal braces", async () => {
+    const doc = "s = f\"literal ([ {{escaped}} {f([')']):)>{width()}} tail ]\"; g()";
+    expect(marks(doc, await load("Python"))).toEqual([
+      "{0",
+      "(1",
+      "[2",
+      "]2",
+      ")1",
+      "{1",
+      "(2",
+      ")2",
+      "}1",
+      "}0",
+      "(0",
+      ")0",
+    ]);
+  });
+
+  it("colours PHP interpolation without colouring its enclosing string", async () => {
+    expect(marks('<?php $s = "literal ( {$a[0]} tail ]"; f();', await load("PHP"))).toEqual([
+      "{0",
+      "[1",
+      "]1",
+      "}0",
+      "(0",
+      ")0",
+    ]);
+  });
+
+  it.each([
+    ["JavaScript", 'f("(\\\"[", \'{\', `)`)'],
+    ["Python", 'f("(", \']\', r"{", """multi\n)""")'],
+    ["Rust", 'f(\'(\', "[", r#"}"#)'],
+    ["Java", 'f(\'(\', "[", """\n}\n""")'],
+  ])("keeps %s string and character contents uncoloured", async (name, doc) => {
+    expect(marks(doc, await load(name))).toEqual(["(0", ")0"]);
+  });
+
+  it.each(["HTML", "JSX"])("skips %s attribute values and keeps embedded code", async (name) => {
+    const doc =
+      name === "HTML"
+        ? '<div a="(" b=] c=\'{\'><!-- ) --><script>f("(", [1])</script></div>'
+        : 'const x = <div a="(" b=\']\' c={f("}", [1])}>{g()}</div>';
+    expect(marks(doc, await load(name))).toEqual(
+      name === "HTML" ? ["(0", "[1", "]1", ")0"] : ["{0", "(1", "[2", "]2", ")1", "}0", "{0", "(1", ")1", "}0"],
+    );
+  });
+
+  it("keeps interpolation depth across chunks, viewports and edits", async () => {
+    const doc = "f(`" + "literal ([ ".repeat(500) + "${g([1])}" + " tail ) ".repeat(700) + "`); h()";
+    const ext = await javascript();
+    const scanner = new BracketScanner();
+    const from = doc.indexOf("[1]");
+    expect(marks(doc, ext, from, doc.length, scanner)).toEqual(["[3", "]3", ")2", "}1", ")0", "(0", ")0"]);
+    expect(marks(doc, ext, from + 2, doc.length, scanner)).toEqual(["]3", ")2", "}1", ")0", "(0", ")0"]);
+    let state = completedSyntaxState(EditorState.create({ doc, extensions: ext }));
+    const edit = doc.indexOf("${");
+    state = completedSyntaxState(state.update({ changes: { from: edit, insert: "\\" } }).state);
+    scanner.invalidate(edit);
+    expect(
+      scanner.marks(state, from + 1, state.doc.length).map((m) => `${state.sliceDoc(m.from, m.from + 1)}${m.depth}`),
+    ).toEqual([")0", "(0", ")0"]);
+  });
+
+  it("renders only interpolation code and leaves HTML attributes undecorated", async () => {
+    expect(rendered('`text ( ${f("}", [1])} tail ]`', [await javascript(), rainbowBrackets()])).toEqual([
+      "{1",
+      "(2",
+      "[3",
+      "]3",
+      ")2",
+      "}1",
+    ]);
+    expect(rendered('<div title="("><script>f([1])</script></div>', [await load("HTML"), rainbowBrackets()])).toEqual([
+      "(1",
+      "[2",
+      "]2",
+      ")1",
+    ]);
   });
 
   it("knows the depth at a viewport far into the document and after edits", () => {

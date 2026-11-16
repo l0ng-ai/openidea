@@ -653,6 +653,10 @@ pub struct NotificationSettings {
     /// Mirror balloon notifications to the OS when no OpenIDEA window is focused.
     #[serde(default = "default_true")]
     pub system_notifications: bool,
+    /// Terminal command completions (#3712): `off` | `longRunning` | `all`.
+    pub terminal_completion: String,
+    /// `longRunning`: the run time a finished command must reach, in seconds.
+    pub terminal_threshold_seconds: u32,
     /// Group id → display; groups not listed use their default.
     pub groups: BTreeMap<String, NotificationGroupSettings>,
 }
@@ -661,9 +665,24 @@ fn default_true() -> bool {
     true
 }
 
+fn default_terminal_completion() -> String {
+    "longRunning".to_owned()
+}
+
+fn default_terminal_threshold_seconds() -> u32 {
+    10
+}
+
 impl Default for NotificationSettings {
     fn default() -> Self {
-        Self { balloons: true, sound: false, system_notifications: true, groups: BTreeMap::new() }
+        Self {
+            balloons: true,
+            sound: false,
+            system_notifications: true,
+            terminal_completion: default_terminal_completion(),
+            terminal_threshold_seconds: default_terminal_threshold_seconds(),
+            groups: BTreeMap::new(),
+        }
     }
 }
 

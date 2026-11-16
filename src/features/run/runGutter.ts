@@ -6,7 +6,7 @@
  */
 import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { iconAreaSource, type EditorDocContext } from "@/editor/api";
+import { iconAreaSource, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { isVirtualUri } from "@/platform/virtualDocs";
@@ -54,8 +54,7 @@ const targetsField = StateField.define<PlacedTarget[]>({
     if (!tr.docChanged || !value.length) return value;
     const out: PlacedTarget[] = [];
     for (const t of value) {
-      const pos = tr.changes.mapPos(t.pos, -1);
-      const line = tr.state.doc.lineAt(pos);
+      const line = tr.state.doc.lineAt(mapLineStart(tr, t.pos));
       if (out.some((o) => o.pos === line.from)) continue;
       out.push({ ...t, pos: line.from, line: line.number - 1 });
     }

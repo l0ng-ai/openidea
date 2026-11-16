@@ -77,6 +77,8 @@ beforeEach(() => {
   updateComposer(HOME, { text: "Check the project" });
 });
 
+const effortButton = () => screen.getByRole("button", { name: "Reasoning" });
+
 async function chooseModel(model: string) {
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: model }));
@@ -85,19 +87,16 @@ async function chooseModel(model: string) {
 
 it("switches model-specific levels and restores each draft effort before starting", async () => {
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
+  expect(effortButton()).toHaveTextContent("high");
   await chooseModel("small");
-  fireEvent.click(screen.getByRole("button", { name: "Model" }));
-  fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
-  const group = screen.getByRole("radiogroup", { name: "Reasoning" });
-  expect(group).toBeVisible();
-  expect(screen.getByRole("radio", { name: "minimal" })).toHaveAttribute("aria-checked", "true");
-  fireEvent.click(screen.getByRole("radio", { name: "medium" }));
-  fireEvent.keyDown(document, { key: "Escape" });
+  expect(effortButton()).toHaveTextContent("minimal");
+  fireEvent.click(effortButton());
+  fireEvent.click(screen.getByRole("option", { name: "medium" }));
   await chooseModel("big");
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
+  expect(effortButton()).toHaveTextContent("high");
   await chooseModel("small");
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("smallmedium");
+  expect(effortButton()).toHaveTextContent("medium");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([
@@ -125,9 +124,11 @@ it("uses GitHub Copilot's own defaults and preserves per-model context tier and 
   };
   useAgents.setState({ providers: [copilot], draft: savedDraft({ provider: "copilot", config: {} }) });
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gemini-4-carbonmedium · default");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gemini-4-carbondefault");
+  expect(effortButton()).toHaveTextContent("medium");
   await chooseModel("gpt-5.6-sol");
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gpt-5.6-solmedium · default");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gpt-5.6-soldefault");
+  expect(effortButton()).toHaveTextContent("medium");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([
@@ -161,7 +162,7 @@ it("ignores old provider-wide effort choices and refreshes unsupported per-model
     draft: savedDraft({ provider: "fake", config: { effort: "low" }, thoughtLevels: { big: { effort: "removed" } } }),
   });
   render(<HomeEditor />);
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("bighigh");
+  expect(effortButton()).toHaveTextContent("high");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toContainEqual({ id: "effort", value: "high" });
@@ -208,10 +209,10 @@ it("refreshes the displayed agent version after a CLI upgrade when the window re
     return ok({ provider, name: "omp", version: cached, protocol: "ACP v1", error: null });
   });
   render(<HomeEditor />);
-  await screen.findByText("omp · 18.20.0 · ACP v1");
+  await waitFor(() => expect(agentTooltip()).toMatch(/ 18\.20\.0$/));
   installed = "18.20.2";
   fireEvent(window, new Event("focus"));
-  await screen.findByText("omp · 18.20.2 · ACP v1");
+  await waitFor(() => expect(agentTooltip()).toMatch(/ 18\.20\.2$/));
 });
 
 it("does not reuse a previous page's cached agent version when opened again", async () => {
@@ -219,5 +220,10 @@ it("does not reuse a previous page's cached agent version when opened again", as
     ok({ provider, name: "omp", version: refresh ? "18.20.2" : "18.20.0", protocol: "ACP v1", error: null }),
   );
   render(<HomeEditor />);
-  await screen.findByText("omp · 18.20.2 · ACP v1");
+  await waitFor(() => expect(agentTooltip()).toMatch(/ 18\.20\.2$/));
 });
+
+/** The agent picker shows its icon; the name and version are in its tooltip. */
+function agentTooltip() {
+  return screen.getByRole("button", { name: "Agent" }).parentElement?.getAttribute("data-tooltip");
+}

@@ -479,6 +479,7 @@ fn history_replays_turns() {
 #[derive(Default)]
 struct Client {
     updates: Mutex<Vec<Value>>,
+    warnings: Mutex<Vec<Value>>,
     asked: Mutex<Vec<Value>>,
     /// Option ids to choose; `None` (or none left) cancels.
     answers: Mutex<VecDeque<Option<&'static str>>>,
@@ -488,6 +489,8 @@ impl Handler for Client {
     fn on_notification(&self, method: &str, params: Value) {
         if method == "session/update" {
             self.updates.lock().push(params);
+        } else if method == "_openidea/warning" {
+            self.warnings.lock().push(params);
         }
     }
 
@@ -764,10 +767,10 @@ async fn play<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                     .unwrap()
                     .unwrap_or_else(|| panic!("the shim closed before {frame}"));
                 let actual: Value = serde_json::from_str(&line).unwrap();
-                // Older recordings predate skill discovery and thread naming; play an
+                // Older recordings predate config inspection, skill discovery and thread naming; play an
                 // unsupported server.
                 let method = actual["method"].as_str().unwrap_or_default();
-                if matches!(method, "skills/list" | "thread/sample") && frame["method"] != method {
+                if matches!(method, "config/read" | "skills/list" | "thread/sample") && frame["method"] != method {
                     let reply = json!({ "id": actual["id"], "error": { "code": -32601, "message": "unsupported" } });
                     write.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
                     continue;
@@ -838,6 +841,149 @@ fn sent<'a>(frames: &'a [Value], method: &str) -> Vec<&'a Value> {
 
 fn session_of(results: &Results, label: &str) -> String {
     result(results, label).as_ref().unwrap()["sessionId"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configuration_warnings_before_a_session_and_runtime_warnings_reach_the_client() {
+    let mut transcript = load(Scenario::Simple.file());
+    transcript.frames.insert(
+        0,
+        (
+            false,
+            json!({"method": "configWarning", "params": {
+                "summary": "Project-local config is disabled until the project is trusted.",
+                "details": "Update the project's trust setting.", "path": "/work/.codex/config.toml"
+            }}),
+        ),
+    );
+    let at = transcript.frames.iter().position(|(out, f)| *out && f["method"] == "turn/start").unwrap();
+    transcript
+        .frames
+        .insert(at, (false, json!({"method": "warning", "params": {"message": "MCP server unavailable"}})));
+    let (results, client, frames, _, _codex) = replay_transcript(Scenario::Simple, transcript).await;
+    assert!(result(&results, "new").is_ok());
+    assert_eq!(
+        *client.warnings.lock(),
+        [
+            json!({"message": "Project-local config is disabled until the project is trusted.\n\nUpdate the project's trust setting.\n\n/work/.codex/config.toml"}),
+            json!({"message": "MCP server unavailable"}),
+        ]
+    );
+    assert!(sent(&frames, "config/value/write").is_empty());
+    assert!(sent(&frames, "config/batchWrite").is_empty());
+}
+
+struct TrustServer {
+    cwd: String,
+    disabled: bool,
+    other_project: bool,
+    write_error: bool,
+    overridden: bool,
+    calls: Mutex<Vec<(String, Value)>>,
+}
+
+impl Handler for TrustServer {
+    fn on_notification(&self, _: &str, _: Value) {}
+
+    fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        self.calls.lock().push((method.to_owned(), params));
+        match method {
+            "initialize" => Ok(json!({})),
+            "model/list" => Ok(json!({"data": []})),
+            "config/read" => {
+                let cwd =
+                    if self.other_project { Path::new(&self.cwd).join("other") } else { PathBuf::from(&self.cwd) };
+                Ok(json!({"layers": [
+                    {"name": {"type": "user", "profile": null}, "version": "original"},
+                    {"name": {"type": "project", "dotCodexFolder": cwd.join(".codex")},
+                        "disabledReason": self.disabled.then_some("Project config is disabled until trusted.")}
+                ]}))
+            }
+            "config/value/write" if self.write_error => Err((-32001, "Config changed concurrently".into())),
+            "config/value/write" => Ok(json!({"status": if self.overridden {"okOverridden"} else {"ok"}})),
+            "thread/start" | "thread/resume" | "thread/fork" => {
+                Ok(json!({"thread": {"id": "s", "turns": []}, "cwd": self.cwd}))
+            }
+            "skills/list" => Ok(json!({"data": []})),
+            _ => Err((codes::METHOD_NOT_FOUND, method.to_owned())),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_trust_is_confirmed_before_new_resumed_and_forked_sessions() {
+    for method in ["session/new", "session/load", "session/fork"] {
+        for (answer, disabled, other_project, write_error, overridden) in [
+            (Some("codex-trust-project"), true, false, false, false),
+            (Some("codex-keep-untrusted"), true, false, false, false),
+            (None, true, false, false, false),
+            (Some("codex-trust-project"), false, false, false, false),
+            (Some("codex-trust-project"), true, true, false, false),
+            (Some("codex-trust-project"), true, false, true, false),
+            (Some("codex-trust-project"), true, false, false, true),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let cwd = tmp.path().join("project.with.dots-项目").to_string_lossy().into_owned();
+            let server = Arc::new(TrustServer {
+                cwd: cwd.clone(),
+                disabled,
+                other_project,
+                write_error,
+                overridden,
+                calls: Mutex::default(),
+            });
+            let client = Arc::new(Client::default());
+            client.answers.lock().push_back(answer);
+            let (ours, theirs) = tokio::io::duplex(1 << 16);
+            let (read, write) = tokio::io::split(theirs);
+            let native = Peer::connect_framed(read, write, server.clone(), Framing::Lines);
+            let acp = attach(client.clone(), |events| {
+                let (read, write) = tokio::io::split(ours);
+                Ok(Peer::connect_framed(read, write, events, Framing::Lines))
+            })
+            .unwrap();
+            request(&acp, "initialize", json!({})).await.unwrap();
+            let params = json!({"cwd": cwd, "sessionId": "source", "mcpServers": []});
+            request(&acp, method, params.clone()).await.unwrap();
+            // The same connection must not ask repeatedly after a decline.
+            request(&acp, method, params).await.unwrap();
+            let approved = answer == Some("codex-trust-project") && disabled && !other_project;
+            {
+                let asked = client.asked.lock();
+                assert_eq!(asked.len(), usize::from(disabled && !other_project));
+                if let Some(permission) = asked.first() {
+                    assert!(permission["toolCall"]["title"].as_str().unwrap().contains(&cwd));
+                    assert_eq!(
+                        permission["toolCall"]["kind"], "edit",
+                        "side conversations must deny persistent trust changes"
+                    );
+                    assert_eq!(
+                        permission["options"][0]["kind"], "allow_always",
+                        "task bypass must not grant permanent trust"
+                    );
+                }
+                let calls = server.calls.lock();
+                let writes: Vec<_> = calls.iter().filter(|(m, _)| m == "config/value/write").collect();
+                assert_eq!(writes.len(), usize::from(approved));
+                if let Some((_, write)) = writes.first() {
+                    assert_eq!(
+                        *write,
+                        json!({"keyPath": format!("projects.{}.trust_level", json!(cwd)), "value": "trusted", "mergeStrategy": "replace", "expectedVersion": "original"})
+                    );
+                    let written = calls.iter().position(|(m, _)| m == "config/value/write").unwrap();
+                    let started = calls.iter().position(|(m, _)| m.starts_with("thread/")).unwrap();
+                    assert!(written < started, "the session must load config after the write");
+                }
+            }
+            // Drain notifications sent before the last response.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if approved && (write_error || overridden) {
+                assert!(!client.warnings.lock().is_empty());
+            }
+            acp.kill();
+            native.kill();
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

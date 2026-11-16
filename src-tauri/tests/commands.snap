@@ -7,7 +7,6 @@ agent_cancel                                 always             project_host bin
 agent_changes                                trusted            project_host bindings async
 agent_commands                               always             project_host bindings async
 agent_create                                 trusted            project_host bindings async
-agent_create_ephemeral                       trusted            desktop      bindings async
 agent_custom_import                          trusted            desktop      bindings sync
 agent_custom_remove                          trusted            desktop      bindings sync
 agent_custom_save                            trusted            desktop      bindings sync

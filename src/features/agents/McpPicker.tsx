@@ -34,6 +34,8 @@ export interface McpPickerProps {
   busy?: boolean;
   /** Bumped when `/mcp` is invoked from the composer to open this popover. */
   openRequest?: number;
+  /** No button of its own: opened only through `openRequest`, above the composer. */
+  hideTrigger?: boolean;
   /** Optional overrides for unit tests. */
   backend?: McpBackend;
   testData?: {
@@ -50,6 +52,7 @@ export function McpPicker({
   disabled = false,
   busy = false,
   openRequest = 0,
+  hideTrigger = false,
   backend = defaultMcpBackend,
   testData,
 }: McpPickerProps) {
@@ -67,7 +70,10 @@ export function McpPicker({
   const [seenOpenRequest, setSeenOpenRequest] = useState(openRequest);
   const [query, setQuery] = useState("");
   const [importingKey, setImportingKey] = useState<string | null>(null);
-  const anchor = useRef<HTMLButtonElement>(null);
+  const anchor = useRef<HTMLElement | null>(null);
+  const setAnchor = (el: HTMLElement | null) => {
+    anchor.current = el;
+  };
 
   if (openRequest !== seenOpenRequest) {
     setSeenOpenRequest(openRequest);
@@ -134,38 +140,43 @@ export function McpPicker({
 
   return (
     <>
-      <button
-        ref={anchor}
-        type="button"
-        disabled={disabled}
-        className={styles.trigger}
-        title={
-          resolved.overrideCount > 0
-            ? formatMessage(tx("MCP servers ({active}/{total} active · {overrides} session overrides)"), {
-                active: resolved.activeCount,
-                total: resolved.totalCount,
-                overrides: resolved.overrideCount,
-              })
-            : formatMessage(tx("MCP servers ({active}/{total} active)"), {
-                active: resolved.activeCount,
-                total: resolved.totalCount,
-              })
-        }
-        aria-label={tx("MCP servers")}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        onClick={toggleOpen}
-      >
-        <Icon name="plugin" size={13} />
-        <span className={styles.triggerLabel}>MCP</span>
-        <span className={styles.triggerCount}>{countLabel}</span>
-        {resolved.overrideCount > 0 && <span className={styles.overrideDot} aria-hidden />}
-      </button>
+      {hideTrigger ? (
+        // Pinned to the composer's bottom-right corner: the popover opens under the box, like its other pickers.
+        <span ref={setAnchor} className={styles.hiddenAnchor} aria-hidden />
+      ) : (
+        <button
+          ref={setAnchor}
+          type="button"
+          disabled={disabled}
+          className={styles.trigger}
+          title={
+            resolved.overrideCount > 0
+              ? formatMessage(tx("MCP servers ({active}/{total} active · {overrides} session overrides)"), {
+                  active: resolved.activeCount,
+                  total: resolved.totalCount,
+                  overrides: resolved.overrideCount,
+                })
+              : formatMessage(tx("MCP servers ({active}/{total} active)"), {
+                  active: resolved.activeCount,
+                  total: resolved.totalCount,
+                })
+          }
+          aria-label={tx("MCP servers")}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          onClick={toggleOpen}
+        >
+          <Icon name="plugin" size={13} />
+          <span className={styles.triggerLabel}>MCP</span>
+          <span className={styles.triggerCount}>{countLabel}</span>
+          {resolved.overrideCount > 0 && <span className={styles.overrideDot} aria-hidden />}
+        </button>
+      )}
 
       <Popup
         open={open}
         anchor={anchor}
-        placement="top-start"
+        placement={hideTrigger ? "bottom-end" : "top-start"}
         offset={6}
         onClose={() => {
           setOpen(false);

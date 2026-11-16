@@ -25,20 +25,26 @@ export const useProject = create<ProjectState>(() => ({
 
 useProject.subscribe((s) => setContext("projectOpening", s.openingPath !== null));
 
-let leaveGuard: (() => Promise<boolean>) | null = null;
+/** `keepUntitled`: the window opens another project in place and keeps its untitled buffers. */
+type LeaveGuard = (keepUntitled: boolean) => Promise<boolean>;
+let leaveGuard: LeaveGuard | null = null;
 
 /** Installs the check run before this window leaves its project (unsaved changes). */
-export function provideLeaveProjectGuard(guard: () => Promise<boolean>): () => void {
+export function provideLeaveProjectGuard(guard: LeaveGuard): () => void {
   leaveGuard = guard;
   return () => {
     if (leaveGuard === guard) leaveGuard = null;
   };
 }
 
-/** False when the user chose to stay (another project in place, Close Project). */
-export function confirmLeaveProject(): Promise<boolean> {
+/**
+ * False when the user chose to stay (another project in place, Close Project). Untitled buffers
+ * follow the window only into another local project (`keepUntitled`); leaving for Welcome or a
+ * remote host asks about them too.
+ */
+export function confirmLeaveProject(keepUntitled = true): Promise<boolean> {
   const s = useProject.getState();
-  return (s.project || s.lightEdit) && leaveGuard ? leaveGuard() : Promise.resolve(true);
+  return (s.project || s.lightEdit) && leaveGuard ? leaveGuard(keepUntitled) : Promise.resolve(true);
 }
 
 let startupLaunch: Promise<void> | null = null;

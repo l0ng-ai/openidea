@@ -14,8 +14,8 @@
   color: var(--fg);
 }
 .inner {
-  /* The same width as a running session's composer and conversation. */
-  width: min(var(--agent-conversation-width), 100%);
+  /* A compact block in the middle of the page: narrower than a session's conversation. */
+  width: min(680px, 100%);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -24,31 +24,58 @@
   width: 100%;
 }
 .heading {
-  margin: 0 0 10px;
-  font-size: calc(18px + var(--agent-font-zoom, 0px));
-  font-weight: 600;
+  margin: 0 0 14px;
+  font-size: calc(22px + var(--agent-font-zoom, 0px));
+  font-weight: 500;
+  letter-spacing: -0.01em;
   text-align: center;
   color: var(--fg-strong);
   text-wrap: balance;
 }
 
-/* Under the box: the project and where the agent works. */
+/* A box to write in, not a search bar: room for a few lines before it grows. */
+.composer :global(.cm-content) {
+  min-height: calc(4.5em + 12px);
+}
+
+/* Under the box: one quiet group, the project, checkout and branch side by side. */
 .where {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  /* The chips' own padding spaces them. */
-  gap: var(--space-0-5);
-  padding: 0 2px;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: 0 6px;
+  color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
-/* The current branch, read-only: same height and colour as the pickers beside it. */
-.branch {
+.where > button {
+  flex: 0 1 auto;
   min-width: 0;
+  color: inherit;
+  font-size: inherit;
 }
-/* The row's own gaps space "on" and "from"; the note's padding is for the lines below. */
-.where .note {
-  padding: 0;
+.project {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+  height: var(--h-control);
+  padding: 0 4px;
+}
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.projectPicker {
+  max-width: 40%;
+}
+
+/* The agent shows as its icon only. */
+.agentPicker {
+  display: flex;
+  flex: none;
 }
 
 .note,
@@ -68,31 +95,20 @@
   justify-content: flex-end;
   padding: 16px 12px 12px;
 }
-.docked .inner {
-  gap: var(--space-2);
+.dockedIntro {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  padding-bottom: 8vh;
 }
-.docked .where {
-  flex-wrap: nowrap;
-  min-width: 0;
-}
-.docked .projectPicker,
-.docked .projectChip {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 30%;
-}
-.docked .branch,
-.docked .basePicker {
-  order: 1;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.docked .isolation {
-  order: 2;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 45%;
-  margin-left: auto;
+.docked .heading {
+  margin: 0;
+  font-size: calc(15px + var(--agent-font-zoom, 0px));
+  font-weight: 500;
+  color: var(--fg-muted);
 }
 
 .notes {

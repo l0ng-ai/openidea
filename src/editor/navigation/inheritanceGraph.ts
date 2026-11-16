@@ -302,7 +302,8 @@ export async function ancestryResolution(
   cls: ClassInheritance,
   depth = 8,
 ): Promise<AncestryResolution> {
-  const seen = new Set<string>([declarationKey(cls)]);
+  // `cls` itself is not pre-seen: a cycle lists it once as its own ancestor.
+  const seen = new Set<string>();
   const out: AncestorNode[] = [];
   let firstUnresolvedDepth = Infinity;
   let level: ClassInheritance[] = [cls];
@@ -316,7 +317,9 @@ export async function ancestryResolution(
           continue;
         }
         for (const parent of found) {
-          if (!seen.add(declarationKey(parent))) continue;
+          const key = declarationKey(parent);
+          if (seen.has(key)) continue;
+          seen.add(key);
           out.push({ decl: parent, depth: d });
           next.push(parent);
         }

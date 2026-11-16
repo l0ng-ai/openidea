@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
 test.beforeEach(async ({ workbench: page }) => {
@@ -52,7 +53,7 @@ test.beforeEach(async ({ workbench: page }) => {
   });
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   await page.getByRole("button", { name: "New Agent Task", exact: true }).click();
-  await expect(page.getByText("omp · 18.20.0 · ACP v1", { exact: true })).toBeVisible();
+  await expectVersion(page, "18.20.0");
 });
 
 test("refreshes an upgraded agent's version on window focus without losing the draft", async ({ workbench: page }) => {
@@ -63,7 +64,7 @@ test("refreshes an upgraded agent's version on window focus without losing the d
     window.dispatchEvent(new Event("test:agent-upgraded"));
     window.dispatchEvent(new Event("focus"));
   });
-  await expect(page.getByText("omp · 18.20.2 · ACP v1", { exact: true })).toBeVisible();
+  await expectVersion(page, "18.20.2");
   await expect(message).toHaveText("Keep this unsent draft");
 });
 
@@ -71,5 +72,10 @@ test("refreshes an upgraded agent's version when New Task is reopened", async ({
   await page.getByRole("button", { name: "Close Tab", exact: true }).click();
   await page.evaluate(() => window.dispatchEvent(new Event("test:agent-upgraded")));
   await page.getByRole("button", { name: "New Agent Task", exact: true }).click();
-  await expect(page.getByText("omp · 18.20.2 · ACP v1", { exact: true })).toBeVisible();
+  await expectVersion(page, "18.20.2");
 });
+
+/** The agent picker shows its icon; its name and version are in its tooltip. */
+async function expectVersion(page: Page, version: string) {
+  await expect(page.locator(`[data-tooltip$=" ${version}"]`).filter({ visible: true })).toHaveCount(1);
+}

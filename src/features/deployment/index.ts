@@ -87,7 +87,7 @@ export function activate(): () => void {
     registerOverlay({ id: "deployment.dialogs", component: DeploymentDialogs }),
     registerMenuGroup({
       id: "deployment",
-      menus: ["projectView", "editor", "editorTab"],
+      menus: ["projectView", "editor", "editorTab", "changes"],
       order: 60,
       items: (_menu, { paths }) => deploymentMenu(paths),
       prepare: async (_menu, { paths }) => {

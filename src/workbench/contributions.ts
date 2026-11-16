@@ -699,8 +699,6 @@ export interface EditorService {
   openTabs?(): OpenEditorTab[];
   /** Input of the tab `tabId` in pane `paneId` (dragging tabs between views), null if there is none. */
   tabInput?(paneId: string, tabId: string): EditorInput | null;
-  /** The pane showing a tab with this input key, if any (for anchoring "open beside it"). */
-  paneOf?(key: string): string | null;
   /** Input of the active tab (any kind), if any. */
   activeInput?(): EditorInput | null;
   /** Calls `fn` whenever the active tab changes; returns the unsubscribe. */
@@ -776,7 +774,7 @@ export interface NotificationService {
     verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
-     * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
+     * `vcs`, `run`, `tools`, `plugins`, `search`, `terminal`, `updates`.
      */
     group?: string;
     /**
@@ -875,8 +873,22 @@ export interface CommitService {
    * Commit does); `null` without a repository.
    */
   selection(): Promise<CommitSelection | null>;
+  /**
+   * The included changes as a unified diff against HEAD (unsaved editors saved first);
+   * `null` without a repository.
+   */
+  changes(): Promise<CommitChanges | null>;
   /** Replaces the message if the draft is still at `revision`; false when it changed. */
   setMessage(revision: number, message: string): boolean;
+}
+
+export interface CommitChanges {
+  /** The draft's revision the diff was read at, for `CommitService.setMessage`. */
+  revision: number;
+  /** Repositories the commit goes to. */
+  roots: string[];
+  /** Untracked files included; empty when nothing is included. */
+  patch: string;
 }
 
 let commitServiceImpl: CommitService | undefined;
@@ -1275,6 +1287,7 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "changes"
   | "problems"
   | "searchResults"
   | "editorGutter"
