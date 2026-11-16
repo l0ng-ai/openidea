@@ -21,3 +21,12 @@ command = "vscode-html-language-server"
 args = ["--stdio"]
 initialization-options = { embeddedLanguages = { css = true, javascript = true } }
 install-hint = "npm i -g vscode-langservers-extracted"
+
+# Template tags, filters, template names and URL names of the project: completion,
+# hover and go to definition. It reads them by running Django with the project
+# interpreter.
+[[language-servers]]
+name = "djlsp"
+command = "djlsp"
+root-markers = ["manage.py"]
+install-hint = "uv tool install django-template-lsp (or: pip install django-template-lsp)"

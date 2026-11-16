@@ -745,7 +745,8 @@ pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
     }
 }
 
-const PYTHON_SERVERS: [&str; 7] = ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff"];
+const PYTHON_SERVERS: [&str; 8] =
+    ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff", "djlsp"];
 
 pub(crate) fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
@@ -979,6 +980,16 @@ pub fn resolve_run_command(config: &mut RunConfig, root: &Path, s: &Settings) {
     }
 }
 
+/// The environment folder holding `python` (`<env>/bin/python`, `<env>/Scripts/python.exe`):
+/// a virtualenv, or a conda or pixi environment.
+fn environment_of(python: &Path) -> Option<PathBuf> {
+    venv_of(python).or_else(|| {
+        let bin = python.parent()?;
+        let env = bin.parent()?;
+        matches!(bin.file_name()?.to_str()?, "bin" | "Scripts").then(|| env.to_path_buf())
+    })
+}
+
 pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root: &Path, s: &Settings) {
     let mut path_dirs: Vec<PathBuf> = Vec::new();
     if let Some(custom) = tool_command(root, s, &cfg.command) {
@@ -1002,6 +1013,13 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
                 "basedpyright" | "pyright" => merge_init_options(cfg, json!({ "python": { "pythonPath": p } })),
                 "pylsp" => merge_init_options(cfg, json!({ "pylsp": { "plugins": { "jedi": { "environment": p } } } })),
                 "jedi-language-server" => merge_init_options(cfg, json!({ "workspace": { "environmentPath": p } })),
+                // Django's template tags, filters and template folders are read by running a script
+                // with the interpreter in one of these environment folders.
+                "djlsp" => {
+                    if let Some(env) = environment_of(&python) {
+                        merge_init_options(cfg, json!({ "env_directories": [env.to_string_lossy()] }));
+                    }
+                }
                 _ => {}
             }
             if let Some(venv) = venv_of(&python) {
