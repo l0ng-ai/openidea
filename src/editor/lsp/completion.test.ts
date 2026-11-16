@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState, StateEffect, type Extension } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect, type Extension } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import type { CompletionItem } from "@/bindings";
 import { remoteChange, type EditorDocContext } from "@/editor/api";
@@ -315,6 +315,53 @@ describe("applying completions", () => {
       expect(view.state.selection.main.head).toBe(15);
       // Later edits from elsewhere leave the caret alone.
       view.dispatch({ changes: { from: 15, insert: " " }, annotations: remoteChange.of(true) });
+      expect(view.state.selection.main.head).toBe(15);
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
+  it("completes at every caret whose typed prefix matches the main caret's", () => {
+    const { view, req } = setup("a.cr|\nb.cr\nc.xy", "", [EditorState.allowMultipleSelections.of(true)]);
+    // Carets after both `cr`s (the main one first) and after `xy`.
+    view.dispatch({
+      selection: EditorSelection.create(
+        [EditorSelection.cursor(4), EditorSelection.cursor(9), EditorSelection.cursor(14)],
+        0,
+      ),
+    });
+    applyLspCompletion(view, makeCompletion(item({ insertText: "create", kind: "property" }), req), 2, 4, "insert");
+    expect(view.state.doc.toString()).toBe("a.create\nb.create\nc.xy");
+    expect(view.state.selection.ranges.map((r) => r.head)).toEqual([8, 17]);
+    expect(view.state.selection.main.head).toBe(8);
+  });
+
+  it("inserts a snippet at several carets as text, each caret at its first stop", () => {
+    const { view, req } = setup("x = ma|\ny = ma", "", [EditorState.allowMultipleSelections.of(true)]);
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(6), EditorSelection.cursor(13)], 0) });
+    const snippet = item({ label: "max", kind: "function", insertText: "max(${1:a}, ${2:b})", isSnippet: true });
+    applyLspCompletion(view, makeCompletion(snippet, req), 4, 6, "insert");
+    expect(view.state.doc.toString()).toBe("x = max(a, b)\ny = max(a, b)");
+    expect(view.state.selection.ranges.map((r) => r.head)).toEqual([8, 22]);
+    expect(view.state.selection.mainIndex).toBe(0);
+  });
+
+  it("repeats an item its server inserts at the other carets when the edit lands", async () => {
+    setInvokeRoute(() => Promise.resolve(null));
+    try {
+      const { view, req } = setup("p.ref|\nq.ref\n", "", [
+        completionExtension(),
+        EditorState.allowMultipleSelections.of(true),
+      ]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(5), EditorSelection.cursor(11)], 0) });
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "refreshName", labelDetail: "()", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
+      expect(view.state.selection.ranges).toHaveLength(2);
+      view.dispatch({ changes: { from: 5, insert: "reshName()" }, annotations: remoteChange.of(true) });
+      expect(view.state.doc.toString()).toBe("p.refreshName()\nq.refreshName()\n");
+      expect(view.state.selection.ranges.map((r) => r.head)).toEqual([15, 31]);
       expect(view.state.selection.main.head).toBe(15);
     } finally {
       setInvokeRoute(null);
