@@ -915,6 +915,10 @@ pub struct EditorSettings {
     pub docstring_format: String,
     /// Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth.
     pub rainbow_brackets: bool,
+    /// The bracket kinds rainbow brackets colour.
+    pub rainbow_bracket_kinds: RainbowBracketKinds,
+    /// Colours the rainbow bracket depth cycles through (2–5).
+    pub rainbow_bracket_colors: u32,
     pub ligatures: bool,
     /// Fallback font for glyphs the main font lacks; empty = none.
     pub fallback_font: String,
@@ -959,6 +963,8 @@ impl Default for EditorSettings {
             semantic_highlighting: false,
             docstring_format: "rest".into(),
             rainbow_brackets: false,
+            rainbow_bracket_kinds: RainbowBracketKinds::default(),
+            rainbow_bracket_colors: 3,
             ligatures: false,
             fallback_font: String::new(),
             font_weight: 400,
@@ -979,6 +985,23 @@ impl Default for EditorSettings {
             code_style: CodeStyleSettings::default(),
             encodings: EncodingSettings::default(),
         }
+    }
+}
+
+/// Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RainbowBracketKinds {
+    pub round: bool,
+    pub square: bool,
+    pub curly: bool,
+    /// Type argument / parameter delimiters and markup tags, where the syntax tree marks them.
+    pub angle: bool,
+}
+
+impl Default for RainbowBracketKinds {
+    fn default() -> Self {
+        Self { round: true, square: true, curly: true, angle: false }
     }
 }
 
@@ -1772,6 +1795,29 @@ mod tests {
             let restored: Settings = serde_json::from_value(json).unwrap();
             assert_eq!(restored.appearance.ui_font_fallback, family);
         }
+    }
+
+    #[test]
+    fn rainbow_bracket_options_default_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"rainbowBrackets":true}}"#).unwrap();
+        assert!(old.editor.rainbow_brackets);
+        assert_eq!(old.editor.rainbow_bracket_kinds, RainbowBracketKinds::default());
+        assert_eq!(old.editor.rainbow_bracket_colors, 3);
+        let defaults = Settings::default().editor;
+        assert!(!defaults.rainbow_brackets);
+        let kinds = defaults.rainbow_bracket_kinds;
+        assert!(kinds.round && kinds.square && kinds.curly && !kinds.angle);
+
+        let mut settings = Settings::default();
+        settings.editor.rainbow_bracket_kinds =
+            RainbowBracketKinds { round: false, square: true, curly: true, angle: true };
+        settings.editor.rainbow_bracket_colors = 5;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["editor"]["rainbowBracketKinds"]["angle"], true);
+        assert_eq!(json["editor"]["rainbowBracketColors"], 5);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.editor.rainbow_bracket_kinds, settings.editor.rainbow_bracket_kinds);
+        assert_eq!(restored.editor.rainbow_bracket_colors, 5);
     }
 
     #[test]

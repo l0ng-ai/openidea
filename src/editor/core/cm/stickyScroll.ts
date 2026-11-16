@@ -12,7 +12,7 @@ import { highlightTree } from "@lezer/highlight";
 import { backendFolds } from "./folding";
 import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
-import { bracketClass, bracketScanner, type BracketMark } from "./rainbowBrackets";
+import { bracketClass, bracketScanner, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -64,6 +64,7 @@ export function renderLineContent(
   lineNo: number,
   target: HTMLElement,
   brackets: readonly BracketMark[] = [],
+  colors = DEFAULT_BRACKET_COLORS,
 ) {
   const line = state.doc.line(lineNo);
   const text = line.text.length > MAX_TEXT ? line.text.slice(0, MAX_TEXT) : line.text;
@@ -90,7 +91,7 @@ export function renderLineContent(
       }
       if (bracket.from > pos) target.appendChild(node(bracket.from, cls));
       const wrap = document.createElement("span");
-      wrap.className = bracketClass(bracket.depth);
+      wrap.className = bracketClass(bracket.depth, colors);
       wrap.appendChild(node(bracket.from + 1, cls));
       target.appendChild(wrap);
     }
@@ -170,7 +171,7 @@ class StickyScroll {
    * Text and syntax tree the rows were rendered from (re-render when either changes), and
    * the document while bracket colours are on (an edit above may change their depth).
    */
-  private renderedFrom: { texts: string[]; tree: unknown; doc: unknown } | null = null;
+  private renderedFrom: { texts: string[]; tree: unknown; doc: unknown; scanner: unknown } | null = null;
   private gutterWidth = 0;
   private numberLeft = 0;
   private scheduled = false;
@@ -253,6 +254,7 @@ class StickyScroll {
           !!prev &&
           prev.tree === tree &&
           prev.doc === (scanner ? state.doc : null) &&
+          prev.scanner === scanner &&
           texts.every((t, i) => t === prev.texts[i]);
         if (!lines.length) {
           this.dom.style.display = "none";
@@ -264,7 +266,7 @@ class StickyScroll {
         const rebuild = !same || gutterWidth !== this.gutterWidth || numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, tree, doc: scanner ? state.doc : null };
+          this.renderedFrom = { texts, tree, doc: scanner ? state.doc : null, scanner };
           this.gutterWidth = gutterWidth;
           this.numberLeft = numberLeft;
           const frag = document.createDocumentFragment();
@@ -290,6 +292,7 @@ class StickyScroll {
               n,
               inner,
               scanner?.marks(state, line.from, line.from + Math.min(MAX_TEXT, line.length)),
+              scanner?.colors,
             );
             text.appendChild(inner);
             row.append(num, text);

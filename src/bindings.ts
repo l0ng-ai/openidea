@@ -5261,6 +5261,10 @@ export type EditorSettings_Deserialize = {
 	docstringFormat?: string,
 	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
 	rainbowBrackets?: boolean,
+	/**  The bracket kinds rainbow brackets colour. */
+	rainbowBracketKinds?: RainbowBracketKinds,
+	/**  Colours the rainbow bracket depth cycles through (2–5). */
+	rainbowBracketColors?: number,
 	ligatures?: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont?: string,
@@ -5315,6 +5319,10 @@ export type EditorSettings_Serialize = {
 	docstringFormat: string,
 	/**  Color Scheme › Language Defaults › Rainbow brackets: `()`, `[]`, `{}` coloured by depth. */
 	rainbowBrackets: boolean,
+	/**  The bracket kinds rainbow brackets colour. */
+	rainbowBracketKinds: RainbowBracketKinds,
+	/**  Colours the rainbow bracket depth cycles through (2–5). */
+	rainbowBracketColors: number,
 	ligatures: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont: string,
@@ -7302,6 +7310,8 @@ export type LanguageInfo_Deserialize = {
 	firstLine?: string | null,
 	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
 	scratchTemplate?: string | null,
+	/**  Syntax nodes whose `<` `>` rainbow brackets colour (Color Scheme › Rainbow brackets). */
+	rainbowBrackets?: RainbowBracketNodes,
 };
 
 /**  The UI-facing view of a language. */
@@ -7323,6 +7333,8 @@ export type LanguageInfo_Serialize = {
 	firstLine?: string | null,
 	/**  Content of a new scratch file; `$END$` marks where the caret goes. */
 	scratchTemplate?: string | null,
+	/**  Syntax nodes whose `<` `>` rainbow brackets colour (Color Scheme › Rainbow brackets). */
+	rainbowBrackets?: RainbowBracketNodes,
 };
 
 export type LanguageServerSettings = LanguageServerSettings_Serialize | LanguageServerSettings_Deserialize;
@@ -9493,6 +9505,27 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+};
+
+/**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
+export type RainbowBracketKinds = {
+	round?: boolean,
+	square?: boolean,
+	curly?: boolean,
+	/**  Type argument / parameter delimiters and markup tags, where the syntax tree marks them. */
+	angle?: boolean,
+};
+
+/**
+ *  `[rainbow-brackets]` of a language definition: node names of its editor (Lezer)
+ *  grammar, so angle brackets are coloured only where the syntax tree says they
+ *  delimit something, never in comparisons or shifts.
+ */
+export type RainbowBracketNodes = {
+	/**  Nodes spanning `<` … `>` whose delimiters pair up: type argument and parameter lists. */
+	angle?: string[],
+	/**  Markup tags (`<a>`, `</a>`, `<a/>`); an element's start and end tags pair up. */
+	tags?: string[],
 };
 
 /**  Half-open range `[start, end)`. */

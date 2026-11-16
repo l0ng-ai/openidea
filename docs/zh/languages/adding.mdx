@@ -66,6 +66,7 @@ install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Lang
 | `debugger`           | 表             | 调试适配器，见下文。                                                                                                                                                                                                   |
 | `formatter`          | 表             | 外部格式化工具，见下文。                                                                                                                                                                                               |
 | `scratch-template`   | 字符串         | 新建该语言草稿文件时的内容，`$END$` 表示光标位置。                                                                                                                                                                     |
+| `rainbow-brackets`   | 表             | 彩虹括号为其尖括号着色的语法节点，见下文。                                                                                                                                                                             |
 
 内置的 tree-sitter 语法：`bash`、`c`、`cmake`、`cpp`、`csharp`、`css`、`dart`、`elixir`、`gdscript`、`go`、`graphql`、`haskell`、`hcl`、`html`、`java`、`javascript`、`json`、`kotlin`、`lua`、`make`、`markdown`、`nix`、`ocaml`、`ocaml_interface`、`php`、`prisma`、`proto`、`python`、`ruby`、`rust`、`scala`、`swift`、`toml`、`tsx`、`typescript`、`xml`、`yaml`、`zig`。新的语法需要编译进 IDE；没有语法的语言可以改由插件提供高亮和结构（见 [语言功能](/zh/plugins/guides/language-features)）。
 
@@ -82,6 +83,21 @@ install-hint = "Install CodeLLDB in Settings › Languages & Frameworks › Lang
 [[framework-ui-modes]]
 ui-mode = "Angular Template"
 root-markers = ["angular.json", "node_modules/@angular/core"]
+```
+
+### `[rainbow-brackets]`
+
+打开**尖括号和标签**（配色方案 › 语言默认值 › 彩虹括号）后，编辑器只为这里列出的节点中的 `<` 和 `>` 着色，比较运算符和移位运算符永远不会被着色。名称是 `ui-mode` 语法中的节点名。所有语言的名称在每个编辑器中都生效，因此嵌入的代码（Vue 文件中的 TypeScript、Markdown 中的 HTML）也能着色。
+
+| 字段    | 类型       | 说明                                                                                           |
+| ------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `angle` | 字符串数组 | 以 `<` 开头、以 `>` 结尾的节点，例如类型实参和类型形参列表。它们的 `<` 和 `>` 像括号一样配对。 |
+| `tags`  | 字符串数组 | 标记语言的标签节点（`<a>`、`</a>`、`<a/>`）。元素的开始和结束标签占一层深度，其内容占下一层。  |
+
+```toml
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+tags = ["JSXOpenTag", "JSXCloseTag", "JSXSelfClosingTag", "JSXFragmentTag"]
 ```
 
 ## `[[language-servers]]`

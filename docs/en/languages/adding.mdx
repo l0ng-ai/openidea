@@ -66,6 +66,7 @@ All keys are kebab-case. Only `id` and `name` are required; a definition with no
 | `debugger`           | table           | Debug adapter; see below.                                                                                                                                                                                                                            |
 | `formatter`          | table           | External formatter; see below.                                                                                                                                                                                                                       |
 | `scratch-template`   | string          | Content of a new scratch file of this language. `$END$` marks where the caret goes.                                                                                                                                                                  |
+| `rainbow-brackets`   | table           | Syntax nodes whose angle brackets rainbow brackets colour; see below.                                                                                                                                                                                |
 
 Bundled tree-sitter grammars: `bash`, `c`, `cmake`, `cpp`, `csharp`, `css`, `dart`, `elixir`, `gdscript`, `go`, `graphql`, `haskell`, `hcl`, `html`, `java`, `javascript`, `json`, `kotlin`, `lua`, `make`, `markdown`, `nix`, `ocaml`, `ocaml_interface`, `php`, `prisma`, `proto`, `python`, `ruby`, `rust`, `scala`, `swift`, `toml`, `tsx`, `typescript`, `xml`, `yaml`, `zig`. A new grammar has to be compiled into the IDE; a plugin can provide highlighting and structure for a language without a grammar instead (see [Language features](/en/plugins/guides/language-features)).
 
@@ -82,6 +83,21 @@ The first entry whose marker is found wins. HTML uses this for Angular templates
 [[framework-ui-modes]]
 ui-mode = "Angular Template"
 root-markers = ["angular.json", "node_modules/@angular/core"]
+```
+
+### `[rainbow-brackets]`
+
+With **Angle brackets and tags** on (Color Scheme › Language Defaults › Rainbow brackets), the editor colours `<` and `>` only inside the nodes named here, so comparisons and shifts are never coloured. The names are node names of the `ui-mode` grammar. The names of every language apply in every editor, so embedded code (TypeScript in a Vue file, HTML in Markdown) is covered too.
+
+| Field   | Type         | Description                                                                                                                     |
+| ------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `angle` | string array | Nodes that start with `<` and end with `>`, such as type argument and parameter lists. Their `<` and `>` pair up like brackets. |
+| `tags`  | string array | Markup tag nodes (`<a>`, `</a>`, `<a/>`). An element's start and end tags take one depth, and its content the next.             |
+
+```toml
+[rainbow-brackets]
+angle = ["TypeArgList", "TypeParamList"]
+tags = ["JSXOpenTag", "JSXCloseTag", "JSXSelfClosingTag", "JSXFragmentTag"]
 ```
 
 ## `[[language-servers]]`

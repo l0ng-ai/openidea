@@ -18,6 +18,7 @@ import {
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
+import type { BracketSyntax } from "./rainbowBrackets";
 import { _languageMode, editorsFor } from "@/editor/api";
 import { JS_TAGS } from "./jsTags";
 import { docCommentTags } from "./docCommentTags";
@@ -41,6 +42,24 @@ export function loadLanguageInfos(backend: DocBackend): Promise<Map<string, Lang
 
 export function languageInfo(id: string): LanguageInfo | undefined {
   return infos?.get(id);
+}
+
+let syntaxOf: { infos: Map<string, LanguageInfo> | null; syntax: BracketSyntax } | null = null;
+
+/**
+ * Rainbow brackets' angle syntax: the `[rainbow-brackets]` node names of every language
+ * definition, so embedded code (TypeScript in Vue, HTML in Markdown) is covered too.
+ */
+export function bracketSyntax(): BracketSyntax {
+  if (syntaxOf && syntaxOf.infos === infos) return syntaxOf.syntax;
+  const angle = new Set<string>();
+  const tags = new Set<string>();
+  for (const info of infos?.values() ?? []) {
+    for (const name of info.rainbowBrackets?.angle ?? []) angle.add(name);
+    for (const name of info.rainbowBrackets?.tags ?? []) tags.add(name);
+  }
+  syntaxOf = { infos, syntax: { angle: [...angle].sort(), tags: [...tags].sort() } };
+  return syntaxOf.syntax;
 }
 
 /**

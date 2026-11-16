@@ -128,6 +128,8 @@ exclude = ["**/.git", "**/node_modules", "**/target", "**/dist"]
 | `colorScheme`                            | `"theme-default"`                | 编辑器配色方案；`theme-default` 跟随界面主题，也可以是主题 id 或导入的方案。       |
 | `semanticHighlighting`                   | `false`                          | **语义高亮**（配色方案 › 语言默认值）。                                            |
 | `rainbowBrackets`                        | `false`                          | **彩虹括号**（配色方案 › 语言默认值）。                                            |
+| `rainbowBracketKinds`                    | 除 `angle` 外全部                | 着色的括号：`round`、`square`、`curly` 和 `angle`（类型实参和标记语言标签）。      |
+| `rainbowBracketColors`                   | `3`                              | 括号深度循环使用的颜色数（2–5）。                                                  |
 | `tabSize` / `insertSpaces`               | `4` / `true`                     | 默认制表符宽度，以及是否用空格缩进。                                               |
 | `softWrap`                               | `true`                           | 对匹配 `general.softWrapFiles` 的文件软换行（默认 `*.md; *.txt; *.rst; *.adoc`）。 |
 | `showWhitespace`                         | `false`                          | **显示空白**。                                                                     |

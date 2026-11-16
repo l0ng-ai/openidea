@@ -6,6 +6,10 @@ block-comment = ["<!--", "-->"]
 indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "Vue"
 
+# Rainbow brackets › angle: editor syntax nodes of markup tags, whose `<` `>` pair up.
+[rainbow-brackets]
+tags = ["OpenTag", "CloseTag", "SelfClosingTag"]
+
 [[language-servers]]
 name = "vue-language-server"
 command = "vue-language-server"

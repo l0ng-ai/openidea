@@ -41,7 +41,8 @@ export const rainbowGuides = Facet.define<boolean, boolean>({ combine: (values) 
  * indentation `levels` deep (in units of `step` columns), or null when it has
  * no guides; the guide at level `active` takes the selected colour, the one at
  * level `brace` the matched brace one. With `rainbow`, `brackets[level]` is the
- * bracket depth of the block a guide belongs to (its bracket colour), if any.
+ * bracket colour of the block a guide belongs to (its depth within the rainbow
+ * bracket palette), if any.
  * `.cm-openidea-guides` lines and code lens rows turn them into backgrounds (theme.ts).
  */
 export function guideVars(
@@ -191,7 +192,7 @@ export function braceGuide(state: EditorState, step: number): Guide | null {
 const LONG_LINE = 10_000;
 
 /**
- * Bracket depth per guide level on each of the lines `first`..`last` (index `n - first`).
+ * Bracket colour (depth within the palette) per guide level on each of the lines `first`..`last` (index `n - first`).
  * The guide at `level` belongs to the block opened by the nearest line above indented
  * exactly `level` units (none when the nearest line indented at most that much is indented
  * less, as for `blockGuide`); its depth is that of the bracket the opening line leaves open
@@ -200,7 +201,7 @@ const LONG_LINE = 10_000;
  */
 export function bracketGuideDepths(
   state: EditorState,
-  scanner: Pick<BracketScanner, "openAt">,
+  scanner: Pick<BracketScanner, "openAt" | "colors">,
   step: number,
   first: number,
   last: number,
@@ -238,7 +239,7 @@ export function bracketGuideDepths(
   const depthOf = new Map<number, number>();
   lines.forEach((n, i) => {
     const bracket = open[i];
-    if (bracket && bracket.from >= doc.line(n).from) depthOf.set(n, bracket.depth);
+    if (bracket && bracket.from >= doc.line(n).from) depthOf.set(n, bracket.depth % scanner.colors);
   });
   const out: (number | undefined)[][] = [];
   let current: (number | undefined)[] = [];
@@ -334,7 +335,7 @@ export const indentGuides: Extension = [
       private brackets: BracketCache[] = [];
       /** Guide variables of each decorated line, by its start: code lens rows above it repeat them. */
       private lineVars = new Map<number, { images: string; positions: string }>();
-      private bracketsOn: boolean;
+      private scanner: BracketScanner | null;
       constructor(readonly view: EditorView) {
         // Inherits the editor font from the scroller, outside the content CodeMirror observes;
         // the measured width goes on the scroller, where lines and code lens rows pick it up.
@@ -344,7 +345,7 @@ export const indentGuides: Extension = [
         this.probe.textContent = " ".repeat(SPACE_SAMPLE);
         view.scrollDOM.appendChild(this.probe);
         const scanner = bracketScanner(view);
-        this.bracketsOn = !!scanner;
+        this.scanner = scanner;
         this.decorations = build(view, scanner, this.brackets, this.lineVars);
         this.measure();
         this.syncLenses();
@@ -391,8 +392,10 @@ export const indentGuides: Extension = [
       update(u: ViewUpdate) {
         if (u.geometryChanged) this.measure();
         const scanner = bracketScanner(u.view);
-        const bracketsChanged = !!scanner !== this.bracketsOn;
-        this.bracketsOn = !!scanner;
+        // A new scanner (rainbow brackets toggled or reconfigured) may colour blocks differently.
+        const bracketsChanged = scanner !== this.scanner;
+        if (bracketsChanged) this.brackets.length = 0;
+        this.scanner = scanner;
         const rainbow = u.state.facet(rainbowGuides);
         if (
           u.docChanged ||

@@ -31,6 +31,8 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.semanticHighlighting",
   "editor.docstringFormat",
   "editor.rainbowBrackets",
+  "editor.rainbowBracketKinds",
+  "editor.rainbowBracketColors",
   "editor.softWrap",
   "editor.showWhitespace",
   "editor.inlayHints",

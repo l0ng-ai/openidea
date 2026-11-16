@@ -280,7 +280,7 @@ describe("rainbow guides of bracket blocks", () => {
   const depth = (n: number) => `var(--openidea-guide-${n})`;
 
   it("takes the bracket colour for a level with a bracket block, the depth colour otherwise", () => {
-    expect(guideVars(4, 4, true, 0, 0, [undefined, 4, undefined])!.images).toBe(
+    expect(guideVars(4, 4, true, 0, 0, [undefined, 1, undefined])!.images).toBe(
       [bracket(2), depth(2), depth(3)].join(", "),
     );
     // Plain guides stay plain; the caret's and the brace guide still win.
@@ -337,6 +337,16 @@ describe("rainbow guides of bracket blocks", () => {
     expect(images(line(v, 3))).toBe([bracket(2), bracket(3)].join(", "));
     v.dispatch({ effects: brackets.reconfigure([]) });
     expect(images(line(v, 3))).toBe([depth(1), depth(2)].join(", "));
+  });
+
+  it("follows the rainbow bracket palette length, also when it changes", () => {
+    const doc = ["x {", "    foo(bar(() => {", "        body", "    }))", "}"].join("\n");
+    const brackets = new Compartment();
+    const v = mount(doc, [brackets.of(rainbowBrackets({ colors: 5 }))], rainbowIndentGuides);
+    // `{` after `x {`, `foo(`, `bar(`: depth 3, the fourth of five colours; of two, the second.
+    expect(images(line(v, 2))).toBe(bracket(4));
+    v.dispatch({ effects: brackets.reconfigure(rainbowBrackets({ colors: 2 })) });
+    expect(images(line(v, 2))).toBe(bracket(2));
   });
 
   it("updates after an edit that changes the nesting", () => {
