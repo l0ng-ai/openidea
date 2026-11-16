@@ -539,7 +539,30 @@ pub struct MethodSignature {
     pub exceptions: Vec<SignatureException>,
 }
 
-/// A refactoring checked by the server (Change Signature, Move): problems to show, the edit when
+/// A member Extract Interface can declare in the new interface.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct InterfaceMember {
+    pub name: String,
+    /// The method's return type or the field's type.
+    pub type_name: String,
+    /// The method's parameter types; `None` for a field.
+    pub parameters: Option<Vec<String>>,
+    /// The server's handle of the member, passed back unchanged.
+    pub handle_identifier: String,
+}
+
+/// What Extract Interface starts from: the file's class, the members the interface can declare and
+/// the packages it can go to (as JSON, passed back unchanged).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtractInterfaceInfo {
+    pub class_name: String,
+    pub members: Vec<InterfaceMember>,
+    pub packages: Vec<String>,
+}
+
+/// A refactoring checked by the server (Change Signature, Move, Extract Interface): problems to show, the edit when
 /// none is fatal, and the token that confirms going on despite warnings.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

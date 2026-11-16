@@ -397,6 +397,46 @@ pub async fn lsp_java_move(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_extract_interface_info(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<ExtractInterfaceInfo> {
+    ide_host::ops::lsp::lsp_extract_interface_info(&state.host, window.label(), request, doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_extract_interface(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    members: Vec<String>,
+    name: String,
+    destination: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    ide_host::ops::lsp::lsp_extract_interface(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        members,
+        name,
+        destination,
+        confirmation,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_format(
     window: Window,
     state: State<'_, AppState>,

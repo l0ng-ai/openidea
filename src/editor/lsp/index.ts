@@ -44,6 +44,7 @@ import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
 import {
   ChangeSignatureDialog,
+  ExtractInterfaceDialog,
   HierarchyDialog,
   JAVA_REFACTORING_COMMAND,
   runJavaRefactoringCommand,
@@ -122,6 +123,7 @@ export function activate(): () => void {
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
     registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
+    registerOverlay({ id: "editor-lsp.extractInterfaceDialog", component: ExtractInterfaceDialog }),
     registerClientCommand(JAVA_REFACTORING_COMMAND, runJavaRefactoringCommand),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),

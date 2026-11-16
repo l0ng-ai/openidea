@@ -68,7 +68,7 @@ impl LspManager {
         Ok((snap, t))
     }
 
-    fn signature_context(snap: &DocSnap, t: &Target, pos: Pos) -> Value {
+    pub(super) fn signature_context(snap: &DocSnap, t: &Target, pos: Pos) -> Value {
         let at = snap.position(t, pos);
         json!({
             "textDocument": { "uri": snap.uri },

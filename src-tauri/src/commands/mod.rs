@@ -304,6 +304,8 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         lsp::lsp_hierarchy_refactor,
         lsp::lsp_signature_info,
         lsp::lsp_change_signature,
+        lsp::lsp_extract_interface_info,
+        lsp::lsp_extract_interface,
         lsp::lsp_java_move_destinations,
         lsp::lsp_java_source_types,
         lsp::lsp_java_move,

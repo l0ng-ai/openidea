@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 pub(crate) const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
+mod extract_interface;
 mod formatter;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
