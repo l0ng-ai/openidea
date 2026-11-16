@@ -8489,5 +8489,13 @@
   "Editor mode": "编辑模式",
   "JSON:": "JSON：",
   "Accepts mcpServers, servers, or a single server JSON object.": "支持 mcpServers、servers 或单个服务器 JSON 对象。",
-  "Leave empty to enable for all agents, or pick specific coding agents.": "留空则对所有智能体启用，也可选择特定的编码智能体。"
+  "Leave empty to enable for all agents, or pick specific coding agents.": "留空则对所有智能体启用，也可选择特定的编码智能体。",
+  "Related Symbol…": "相关符号…",
+  "Choose Target": "选择目标",
+  "No related symbols": "没有相关符号",
+  "Header": "头文件",
+  "Controller": "控制器",
+  "Helper": "辅助模块",
+  "Model": "模型",
+  "Migration": "迁移"
 }
