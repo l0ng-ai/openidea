@@ -412,6 +412,10 @@ export function publishContext() {
   setContext("debugHasJvmMemory", !!s && isLive(s) && sessionSupports("jvmMemory", s));
   setContext("debugHasJsPage", !!s && isLive(s) && sessionSupports("jsPage", s));
   setContext("debugStreamTracing", !!s && isTracing(s.id));
+  setContext(
+    "debugAnyStreamTracing",
+    Object.values(useDebug.getState().sessions).some((x) => isTracing(x.id)),
+  );
   setContext("debugCanTraceStream", canTraceStream(s));
 }
 

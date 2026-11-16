@@ -7,6 +7,7 @@ import {
   isTauri,
   nextRequestId,
   type AttachableProcess,
+  type DebugSessionId,
   type LaunchConfig,
   type RunConfig,
   type RunId,
@@ -43,7 +44,7 @@ import { closeInstances, instancesOutdated, showInstances, showReferrers, useIns
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
 import { stopRecording, traceStreamChain } from "./streams/streamState";
-import { useStreamTrace } from "./streams/streamStore";
+import { isTracing, useStreamTrace } from "./streams/streamStore";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
@@ -126,6 +127,11 @@ function pausedTarget(): { s: DebugSession; thread: number } | null {
   if (!s || s.status !== "paused") return null;
   const thread = pausedThread(s);
   return thread == null ? null : { s, thread };
+}
+
+/** The trace tab passes its own session; from elsewhere, the active session's trace. */
+function traceTarget(arg: unknown): DebugSessionId | undefined {
+  return typeof arg === "number" ? arg : activeSession()?.id;
 }
 
 function breakpointPathAllowed(path: string): boolean {
@@ -1069,13 +1075,13 @@ export function registerDebugActions(): () => void {
       title: "Stop Recording",
       category: "Debug",
       keywords: ["stream", "trace"],
-      when: "debugStreamTracing",
+      when: "debugAnyStreamTracing",
       enabled: ({ arg }) => {
-        const id = typeof arg === "number" ? arg : activeSession()?.id;
-        return id != null && !useStreamTrace.getState().bySession[id]?.stoppedRecording;
+        const id = traceTarget(arg);
+        return id != null && isTracing(id) && !useStreamTrace.getState().bySession[id]?.stoppedRecording;
       },
       run: ({ arg }) => {
-        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        const id = traceTarget(arg);
         if (id != null) stopRecording(id);
       },
     },
@@ -1084,9 +1090,13 @@ export function registerDebugActions(): () => void {
       title: "Abort Operation…",
       category: "Debug",
       keywords: ["stream", "trace", "cancel"],
-      when: "debugStreamTracing",
+      when: "debugAnyStreamTracing",
+      enabled: ({ arg }) => {
+        const id = traceTarget(arg);
+        return id != null && isTracing(id);
+      },
       run: ({ arg }) => {
-        const id = typeof arg === "number" ? arg : activeSession()?.id;
+        const id = traceTarget(arg);
         if (id != null) useOverlays.setState({ streamAbort: id });
       },
     },

@@ -95,8 +95,9 @@ function TraceView({ session, entry }: { session: DebugSessionId; entry: TraceEn
 
 function RunningTools({ session, entry }: { session: DebugSessionId; entry: TraceEntry }) {
   const tx = useTx();
-  const canStop = useActionEnabled("debug.streamTrace.stopRecording");
-  const canAbort = useActionEnabled("debug.streamTrace.abort");
+  // The tab's own session: another one may be the active session.
+  const canStop = useActionEnabled("debug.streamTrace.stopRecording", session);
+  const canAbort = useActionEnabled("debug.streamTrace.abort", session);
   const records = formatCount(entry.progress?.records ?? 0);
   const seconds = Math.floor((entry.progress?.elapsedMs ?? 0) / 1000);
   return (

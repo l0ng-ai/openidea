@@ -156,6 +156,32 @@ describe("StreamTraceEditor", () => {
     expect(screen.getByRole("button", { name: "Abort Operation…" })).toBeTruthy();
   });
 
+  it("the buttons act on the tab's session, not the active one", () => {
+    setEntry({});
+    const other = { ...session, id: 2, name: "Other" } as DebugSession;
+    useDebug.setState({ sessions: { 1: session, 2: other }, active: 2 });
+    publishContext();
+    show();
+    const stop = screen.getByRole("button", { name: "Stop Recording" });
+    expect((stop as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Abort Operation…" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(stop);
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(5);
+    expect(useStreamTrace.getState().bySession[1]?.stoppedRecording).toBe(true);
+  });
+
+  it("Stop Recording follows the tab's trace while another session's trace is active", () => {
+    useStreamTrace.setState({
+      bySession: { 1: { ...RUNNING, stoppedRecording: true }, 2: { ...RUNNING, request: 6 } },
+    });
+    const other = { ...session, id: 2, name: "Other" } as DebugSession;
+    useDebug.setState({ sessions: { 1: session, 2: other }, active: 2 });
+    publishContext();
+    show();
+    expect((screen.getByRole("button", { name: "Stop Recording" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Abort Operation…" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("Stop Recording runs its action: the request is cancelled and breakpoints stay off", () => {
     setEntry({});
     show();
