@@ -920,6 +920,8 @@ pub struct EditorSettings {
     /// Colours the rainbow bracket depth cycles through (2–5).
     pub rainbow_bracket_colors: u32,
     pub ligatures: bool,
+    /// Editor › Font and Tools › Terminal › Font: the font pickers list only monospaced fonts.
+    pub only_monospaced_fonts: bool,
     /// Fallback font for glyphs the main font lacks; empty = none.
     pub fallback_font: String,
     /// Typography Settings › Main font weight (CSS 100–900), as IDEA.
@@ -966,6 +968,7 @@ impl Default for EditorSettings {
             rainbow_bracket_kinds: RainbowBracketKinds::default(),
             rainbow_bracket_colors: 3,
             ligatures: false,
+            only_monospaced_fonts: true,
             fallback_font: String::new(),
             font_weight: 400,
             bold_font_weight: 700,
@@ -1818,6 +1821,18 @@ mod tests {
         let restored: Settings = serde_json::from_value(json).unwrap();
         assert_eq!(restored.editor.rainbow_bracket_kinds, settings.editor.rainbow_bracket_kinds);
         assert_eq!(restored.editor.rainbow_bracket_colors, 5);
+    }
+
+    #[test]
+    fn only_monospaced_fonts_defaults_on_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"editor":{"ligatures":true}}"#).unwrap();
+        assert!(old.editor.only_monospaced_fonts);
+        let mut settings = Settings::default();
+        settings.editor.only_monospaced_fonts = false;
+        let json = serde_json::to_value(&settings).unwrap();
+        assert_eq!(json["editor"]["onlyMonospacedFonts"], false);
+        let restored: Settings = serde_json::from_value(json).unwrap();
+        assert!(!restored.editor.only_monospaced_fonts);
     }
 
     #[test]
