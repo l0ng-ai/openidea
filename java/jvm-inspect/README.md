@@ -187,7 +187,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-b33531c94516a4bf0373904c4b7a63b493e3308ad45080712c4e0b5b88b05e83  openidea-jvm-inspect.jar
+aad4c7913b45d19d6c1f374b15d4b1a698e0b4f0b989ca018c0ef46ca0dbd3d3  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.

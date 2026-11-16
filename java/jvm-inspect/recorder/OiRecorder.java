@@ -18,7 +18,8 @@ public final class OiRecorder implements Consumer<Object>, IntConsumer, LongCons
     public int size;
     /** Lowered to {@code size} by "stop recording" while the terminal runs, so {@code size} may exceed it. */
     public int budget;
-    public int dropped;
+    /** A long: an endless stream drops past {@code Integer.MAX_VALUE} within seconds. */
+    public long dropped;
     private final OiRecorder log;
     private final int step;
 

@@ -12,6 +12,7 @@ import com.sun.jdi.IncompatibleThreadStateException;
 import com.sun.jdi.IntegerValue;
 import com.sun.jdi.InvocationException;
 import com.sun.jdi.LocalVariable;
+import com.sun.jdi.LongValue;
 import com.sun.jdi.Location;
 import com.sun.jdi.Method;
 import com.sun.jdi.ObjectCollectedException;
@@ -130,7 +131,7 @@ final class RealRunTrace {
     private final List<ObjectReference> pinned = new CopyOnWriteArrayList<>();
     /** The log's counts last read, answered once the VM is gone. */
     private volatile int size;
-    private volatile int dropped;
+    private volatile long dropped;
     /** The worker is inside the terminal's invoke, which may never return. Cleared under {@link #silenceLock}. */
     private volatile boolean invoking;
     /**
@@ -745,7 +746,7 @@ final class RealRunTrace {
             }
         }
         if (why == null && !errors.isEmpty()) why = String.join("; ", errors);
-        int[] counts = counts();
+        long[] counts = counts();
         Map<String, Object> out = Values.json("state", seen.wire, "records", counts[0], "dropped", counts[1],
                 "elapsedMs", (System.nanoTime() - armedNanos) / 1_000_000);
         if (why != null) out.put("detail", why);
@@ -782,15 +783,15 @@ final class RealRunTrace {
     }
 
     /** The log's {@code {size, dropped}}, by field read; the last ones read once the VM is gone. */
-    private int[] counts() {
+    private long[] counts() {
         try {
             Map<Field, Value> counts = log.getValues(List.of(field("size"), field("dropped")));
             size = intOf(counts.get(field("size")));
-            dropped = intOf(counts.get(field("dropped")));
+            dropped = longOf(counts.get(field("dropped")));
         } catch (VMDisconnectedException | ObjectCollectedException e) {
             // the last counts read
         }
-        return new int[] {size, dropped};
+        return new long[] {size, dropped};
     }
 
     /**
@@ -801,9 +802,10 @@ final class RealRunTrace {
      * @return the records kept
      */
     int stopRecording() throws Exception {
-        if (!cancelBeforeTerminal()) log.setValue(field("budget"), vm.mirrorOf(counts()[0]));
+        // The budget field is an int, and size never passes it.
+        if (!cancelBeforeTerminal()) log.setValue(field("budget"), vm.mirrorOf((int) counts()[0]));
         // An append that passed the budget check before the write may still land.
-        return counts()[0];
+        return (int) counts()[0];
     }
 
     /**
@@ -888,7 +890,7 @@ final class RealRunTrace {
             default -> Values.json("kind", "value", "value", Values.preview(outcome, handle));
         };
         int skipped = silencers.stream().mapToInt(Silencer::silencedBreakpoints).sum();
-        return Values.json("records", records, "dropped", intOf(fields.get(field("dropped"))), "terminal", terminal,
+        return Values.json("records", records, "dropped", longOf(fields.get(field("dropped"))), "terminal", terminal,
                 "skippedBreakpoints", skipped, "sequentialized", plan.sequentialize());
     }
 
@@ -927,5 +929,9 @@ final class RealRunTrace {
 
     private static int intOf(Value value) {
         return ((IntegerValue) value).value();
+    }
+
+    private static long longOf(Value value) {
+        return ((LongValue) value).value();
     }
 }

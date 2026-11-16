@@ -303,7 +303,7 @@ public final class SelfTest {
         ((IntConsumer) step).accept(7);
         ((LongConsumer) step).accept(8L);
         ((DoubleConsumer) step).accept(9.5);
-        check(field(log, "size").equals(3) && field(log, "dropped").equals(1), "budget 3: 3 kept, 1 dropped");
+        check(field(log, "size").equals(3) && field(log, "dropped").equals(1L), "budget 3: 3 kept, 1 dropped");
         Object[] values = (Object[]) field(log, "values");
         int[] steps = (int[]) field(log, "steps");
         check(List.of(values[0], values[1], values[2]).equals(List.of("a", 7, 8L)), "primitives are boxed: " + List.of(values));
@@ -312,12 +312,16 @@ public final class SelfTest {
         Object big = type.getConstructor(int.class).newInstance(1000);
         Object bigStep = type.getConstructor(type, int.class).newInstance(big, 0);
         for (int i = 0; i < 600; i++) ((IntConsumer) bigStep).accept(i);
-        check(field(big, "size").equals(600) && field(big, "dropped").equals(0), "the log grows past its first capacity");
+        check(field(big, "size").equals(600) && field(big, "dropped").equals(0L), "the log grows past its first capacity");
         type.getField("budget").setInt(big, 0); // "stop recording" lowers the budget below the size
         ((IntConsumer) bigStep).accept(1);
-        check(field(big, "size").equals(600) && field(big, "dropped").equals(1), "a budget below the size drops");
+        check(field(big, "size").equals(600) && field(big, "dropped").equals(1L), "a budget below the size drops");
         ((Consumer<Object>) big).accept("on the log itself");
-        check(field(big, "dropped").equals(2), "the log accepting a value does not throw");
+        check(field(big, "dropped").equals(2L), "the log accepting a value does not throw");
+        // An endless stream drops 2^31 values in about 11 s.
+        type.getField("dropped").setLong(big, Integer.MAX_VALUE);
+        ((IntConsumer) bigStep).accept(2);
+        check(field(big, "dropped").equals(Integer.MAX_VALUE + 1L), "dropped counts past Integer.MAX_VALUE: " + field(big, "dropped"));
         pass("recorder_counts_past_the_budget_and_never_throws");
     }
 
