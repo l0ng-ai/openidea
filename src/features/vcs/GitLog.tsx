@@ -1,11 +1,41 @@
-import { writeClipboardText } from "@/platform/clipboard";
+import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { useBookmarkPopups } from "@/features/search/bookmarks/store";
-import { commitBookmarkPath } from "./logBookmarks";
+import { executeAction } from "@/platform/actions";
+import { writeClipboardText } from "@/platform/clipboard";
+import { setContext } from "@/platform/context";
+import { tx } from "@/platform/i18n";
+import { call, commands } from "@/platform/ipc";
+import { hasPrimaryModifier } from "@/platform/keymap";
+import { useWorkflowSettings } from "@/platform/workflowSettings";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  Menu,
+  Popup,
+  Scrollbar,
+  SearchField,
+  Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  T,
+  TOOLTIP_DELAY,
+  Tabs,
+  Tree,
+  copyText,
+  fileIconName,
+  hideNativeScrollbar,
+  lazyComponent,
+  lockDragCursor,
+  showContextMenu,
+  type MenuItem,
+  type TreeHandle,
+} from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
-/** Git tool window: Log (graph, filters, commit details) and Console tabs. */
-import { IssueText } from "./issueLinks";
-import { BranchFilterPopup } from "./BranchFilterPopup";
+import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import clsx from "clsx";
 import {
   Fragment,
   memo,
@@ -20,78 +50,6 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
-import clsx from "clsx";
-import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Branch, ChangedFile, Commit } from "@/bindings";
-import { call, commands } from "@/platform/ipc";
-import { executeAction } from "@/platform/actions";
-import { setContext } from "@/platform/context";
-import { maybeEditorService, useGitLogChecks, type EditorInput } from "@/workbench/contributions";
-import {
-  EmptyState,
-  Icon,
-  IconButton,
-  Menu,
-  SearchField,
-  SplitGroup,
-  SplitHandle,
-  SplitPanel,
-  Spinner,
-  Popup,
-  TOOLTIP_DELAY,
-  Tabs,
-  Tree,
-  fileIconName,
-  showContextMenu,
-  type MenuItem,
-  type TreeHandle,
-  T,
-  copyText,
-  hideNativeScrollbar,
-  lazyComponent,
-  lockDragCursor,
-  Scrollbar,
-} from "@/ui";
-import { hasPrimaryModifier } from "@/platform/keymap";
-import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
-import { nextSpeedMatch } from "./logSearch";
-import { presentLogGraph } from "./logPresentation";
-import {
-  closeLogTab,
-  extendCommitSelection,
-  goToChild,
-  goToParent,
-  initLogBranchFilter,
-  isMine,
-  loadMore,
-  logState,
-  loadNewer,
-  ME,
-  dateRangeLabel,
-  refsSignature,
-  reloadLog,
-  openLogTab,
-  recentLogFilters,
-  recentFilterValues,
-  toggleCommitBookmark,
-  selectCommit,
-  selectGitTab,
-  selectedCommits,
-  setLogBranches,
-  setLogFilters,
-  toggleCommitSelection,
-  toggleRepository,
-  updateLogOptions,
-  useGitLog,
-  PAGE,
-} from "./logStore";
-import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
-import { KIND_COLOR, dirName, fileCount, formatTime, relTo, renameFrom, type EffectiveKind } from "./model";
-import { clearConsole, useVcsConsole } from "./ops";
-import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
-import { branchMenu, inRepo, tagMenu } from "./branchMenu";
-import { BranchSync } from "./BranchSync";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -101,9 +59,21 @@ import {
   isFavoriteBranch,
   type BranchTreeNode,
 } from "./branches";
+import { BranchFilterPopup } from "./BranchFilterPopup";
+import { branchMenu, inRepo, tagMenu } from "./branchMenu";
+import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
+import { BranchSync } from "./BranchSync";
+import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import { chooseDateRange, chooseMany } from "./dialogs";
-import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
 import { DIFF_KIND, diffInput, vcsDiffInFront } from "./diffInput";
+import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
+import styles from "./GitLog.module.css";
+import { WorktreesPanel } from "./gitMenuDialogs";
+import { gitTabs, shownTab } from "./gitTabs";
+import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
+import { IssueText } from "./issueLinks";
+import { LANE, ROW, SUBJECT_COLUMN, columnSequence, toggle, type LogColumn, type RowEvents } from "./log/shared";
+import { commitBookmarkPath } from "./logBookmarks";
 import {
   absolutePath,
   filesUnder,
@@ -114,29 +84,52 @@ import {
   withLineStats,
   type LogChange,
 } from "./logChanges";
-import { canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
-import styles from "./GitLog.module.css";
-import { tx } from "@/platform/i18n";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { gitTabs, shownTab } from "./gitTabs";
-import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
-import { WorktreesPanel } from "./gitMenuDialogs";
-import { chooseLogPaths } from "./PathFilterDialog";
-import { goToRef } from "./logStore";
 import { LogIdContext } from "./logContext";
-import { LogScope } from "./LogScope";
-import { browseRepositoryAt, openExternalLog } from "./RevisionBrowser";
 import { invalidateLogDetails, loadLogDetails, useCommitDetails } from "./logDetails";
+import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
+import { canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
+import { presentLogGraph } from "./logPresentation";
+import { LogScope } from "./LogScope";
+import { nextSpeedMatch } from "./logSearch";
+import {
+  ME,
+  PAGE,
+  closeLogTab,
+  dateRangeLabel,
+  extendCommitSelection,
+  goToChild,
+  goToParent,
+  goToRef,
+  initLogBranchFilter,
+  isMine,
+  loadMore,
+  loadNewer,
+  logState,
+  openLogTab,
+  recentFilterValues,
+  recentLogFilters,
+  refsSignature,
+  reloadLog,
+  selectCommit,
+  selectGitTab,
+  selectedCommits,
+  setLogBranches,
+  setLogFilters,
+  toggleCommitBookmark,
+  toggleCommitSelection,
+  toggleRepository,
+  updateLogOptions,
+  useGitLog,
+} from "./logStore";
+import { KIND_COLOR, dirName, fileCount, formatTime, relTo, renameFrom, type EffectiveKind } from "./model";
+import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
+import { clearConsole, useVcsConsole } from "./ops";
+import { chooseLogPaths } from "./PathFilterDialog";
+import { browseRepositoryAt, openExternalLog } from "./RevisionBrowser";
+import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 
-const ROW = 26;
-const LANE = 14;
-interface LogColumn {
-  id: string;
-  title: string;
-  width: number;
-  render(commit: Commit): ReactNode;
-}
 const LogMergePreview = lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff));
+
 const LogDiffPreview = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 
 function useLogRepositories() {
@@ -645,6 +638,7 @@ const REMOTES_MENU: MenuItem[] = [{ label: "Manage Remotes…", run: () => void 
 // --- filters ----------------------------------------------------------------
 
 const DAY = 86_400_000;
+
 /** Keyboard moves through several files quickly: preview the one the selection settles on. */
 const PREVIEW_DELAY = 120;
 
@@ -658,6 +652,7 @@ function fileNodeAt<F>(nodes: readonly FileTreeNode<F>[], key: string): FileTree
   }
   return null;
 }
+
 const DATE_OPTIONS: { label: string; days: number }[] = [
   { label: "Last 24 Hours", days: 1 },
   { label: "Last 7 Days", days: 7 },
@@ -1079,12 +1074,6 @@ function FilterBar() {
     </div>
   );
 }
-
-const toggle = (label: string, o: LogOptions, key: keyof LogOptions): MenuItem => ({
-  label,
-  checked: !!o[key],
-  run: () => updateLogOptions({ [key]: !o[key] }),
-});
 
 /** IDEA's Git Log › Graph Options (sort, first parent / no merges, linear branches). */
 export function graphOptionsMenu(o: LogOptions): MenuItem[] {
@@ -1822,13 +1811,7 @@ interface ColumnDrag {
   target: string | null;
   after: boolean;
 }
-// The flexible "Commit" column shares the same order and can be dragged like the rest.
-const SUBJECT_COLUMN: LogColumn = { id: "subject", title: "Commit", width: 0, render: () => "" };
-// Until the user drags the commit column somewhere, it leads the row.
-const columnSequence = (columnOrder: string[], builtins: LogColumn[]): string[] => {
-  const ids = [...new Set([...columnOrder, ...builtins.map((c) => c.id)])];
-  return columnOrder.includes(SUBJECT_COLUMN.id) ? ids : [SUBJECT_COLUMN.id, ...ids];
-};
+
 function ColumnHeaders({
   columns,
   options,
@@ -2056,12 +2039,6 @@ function LogColumnHeader({
     </span>
   );
 }
-
-type RowEvents = {
-  onHover: (edge: string | null) => void;
-  onFragment: (from: string, target: string, expand: boolean) => void;
-  onNavigate: (index: number, key?: string) => void;
-};
 
 const remoteNameSets = new WeakMap<readonly string[], ReadonlySet<string>>();
 
