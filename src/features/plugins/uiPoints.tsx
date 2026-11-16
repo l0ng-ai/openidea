@@ -43,6 +43,7 @@ import { usePlugins } from "./store";
 import { pluginActionId } from "./points";
 import { defineUiPoint } from "./projection";
 import { declareStatusItem } from "./runtimeUi";
+import { addEscapeBinding, escapeBindings } from "./escapeBindings";
 import { registerWindowView } from "./views/viewWindows";
 import {
   CUSTOM_EDITOR_KIND,
@@ -261,6 +262,8 @@ interface KeymapDecl {
   command: string;
   key: string;
   mac?: string | null;
+  /** With an Escape binding (API 1.10). */
+  when?: string | null;
 }
 
 // --- status bar -------------------------------------------------------------------
@@ -443,9 +446,12 @@ export function defineViewUiPoints(): () => void {
     defineUiPoint<KeymapDecl>("keymaps", {
       title: "Shortcuts",
       project: ({ pluginId, decl }) =>
-        registerExtensionBindings(pluginActionId(pluginId, decl.command), [
-          isMacHost() ? (decl.mac ?? decl.key) : decl.key,
-        ]),
+        // Escape (only ever with `when`) is the editor's last Escape handler, not a shortcut.
+        decl.key === "Escape" && decl.when
+          ? addEscapeBinding(pluginActionId(pluginId, decl.command), decl.when)
+          : registerExtensionBindings(pluginActionId(pluginId, decl.command), [
+              isMacHost() ? (decl.mac ?? decl.key) : decl.key,
+            ]),
     }),
     defineUiPoint<StatusDecl>("statusBar", {
       title: "Status Bar Items",
@@ -494,6 +500,7 @@ export function defineViewUiPoints(): () => void {
       },
     }),
     registerEditorContribution({ id: "plugins.editorPanels", extensions: () => editorPanelUpdates }),
+    registerEditorContribution({ id: "plugins.escapeBindings", extensions: () => escapeBindings }),
     defineUiPoint<EditorPanelDecl>("editorPanels", {
       title: "Editor Panels",
       project: ({ pluginId, decl }) => projectEditorPanel(pluginId, decl),
