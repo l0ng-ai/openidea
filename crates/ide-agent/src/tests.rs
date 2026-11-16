@@ -909,8 +909,23 @@ async fn commands_are_remembered_per_project_and_merged_with_skills_on_disk() {
     wait_for(&mgr_a, &task.id, AgentStatus::NeedsInput).await;
     assert_eq!(names(mgr_a.commands("claude", None).await.unwrap()), ["review", "triage"]);
     assert_eq!(names(mgr_a.commands("claude", Some(&task.id)).await.unwrap()), ["review", "triage"]);
-    // Other agents get only what they offered.
-    assert!(mgr_a.commands("codex", None).await.unwrap().is_empty());
+    // Other agents get only what they offered, plus verified native builtins.
+    assert_eq!(
+        names(mgr_a.commands("codex", None).await.unwrap()),
+        [
+            "plan",
+            "mcp",
+            "skills",
+            "status",
+            "review",
+            "review-branch",
+            "review-commit",
+            "compact",
+            "goal",
+            "rename",
+            "logout",
+        ]
+    );
     mgr_a.cancel(&task.id, None).unwrap();
     wait_for(&mgr_a, &task.id, AgentStatus::Ready).await;
     mgr_a.shutdown();
@@ -930,9 +945,27 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
     let tmp = tempfile::tempdir().unwrap();
     let agent = Arc::new(FakeAgent::default());
     let mgr = manager_at(tmp.path(), &tmp.path().join("models.json"), agent);
-    for provider in ["claude", "claude-acp", "opencode2", "codex", "custom"] {
+    for provider in ["claude", "claude-acp", "opencode2", "custom"] {
         assert!(mgr.commands(provider, None).await.unwrap().is_empty(), "{provider}");
     }
+    let commands = mgr.commands("codex", None).await.unwrap();
+    assert_eq!(
+        commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        [
+            "plan",
+            "mcp",
+            "skills",
+            "status",
+            "review",
+            "review-branch",
+            "review-commit",
+            "compact",
+            "goal",
+            "rename",
+            "logout",
+        ]
+    );
+    assert_eq!(commands[1].hint.as_deref(), Some("[reconnect]"));
     let commands = mgr.commands("opencode", None).await.unwrap();
     assert_eq!(commands.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["compact"]);
     let task = mgr
@@ -1603,6 +1636,12 @@ async fn renamed_titles_survive_updates_forks_and_restart() {
         .unwrap();
     wait_for(&mgr, &task.id, AgentStatus::Ready).await;
     let handle = mgr.task(&task.id).unwrap();
+    // `/rename` reports an explicit title through the same update; later automatic names
+    // must not replace it even though AgentManager.rename was not called.
+    handle
+        .on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Command title", "userNamed": true}));
+    handle.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Automatic title"}));
+    assert_eq!(handle.state.lock().task.title, "Command title");
     assert!(mgr.rename(&task.id, "  ").is_err());
     let initial = handle.state.lock().task.title.clone();
     for title in [initial, "My task".to_owned(), "名".repeat(205)] {
@@ -1621,6 +1660,67 @@ async fn renamed_titles_survive_updates_forks_and_restart() {
     handle.on_update(None, &json!({"sessionUpdate": "session_info_update", "title": "Resumed title"}));
     assert_eq!(handle.state.lock().task.title, "My task");
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("again"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    handle.replaying.store(true, Ordering::Release);
+    handle.turn_started.store(false, Ordering::Release);
+    let client = Client { task: Arc::downgrade(&handle) };
+    client.on_notification(WARNING_NOTIFICATION, json!({"message": "Project MCP config is disabled until trusted."}));
+    client.on_notification(WARNING_NOTIFICATION, json!({"message": "  "}));
+    client.on_notification(WARNING_NOTIFICATION, json!({}));
+    assert_eq!(handle.state.lock().task.status, AgentStatus::Ready);
+    assert!(!handle.turn_started.load(Ordering::Acquire));
+    mgr.shutdown();
+    let restored = manager(tmp.path(), agent);
+    let handle = restored.task(&task.id).unwrap();
+    assert_eq!(handle.state.lock().conversation.main.entries.iter().filter(|entry| matches!(entry, AgentEntry::Error {message} if message == "Project MCP config is disabled until trusted.")).count(), 1);
+    restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn persistent_project_trust_needs_confirmation_even_with_bypass_and_is_denied_in_side_chats() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
+    let task = mgr
+        .create(NewAgentTask { provider: "claude".into(), prompt: text("again"), ..Default::default() })
+        .await
+        .unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+    let handle = mgr.task(&task.id).unwrap();
+    handle.state.lock().task.config = config::options_of(&json!({"configOptions": [{
+        "id": "mode", "category": "mode", "type": "select", "currentValue": "full-access",
+        "options": [{"value": "full-access", "name": "Full Access"}]
+    }]}));
+    assert!(config::bypass_approvals(&handle.state.lock().task.config));
+    let params = json!({"toolCall": {"toolCallId": "trust", "kind": "edit", "title": "Trust Project in Codex"},
+    "options": [
+        {"optionId": "codex-trust-project", "name": "Trust Project in Codex", "kind": "allow_always"},
+        {"optionId": "codex-keep-untrusted", "name": "Keep Untrusted", "kind": "reject_once"}
+    ]});
+    let asking = {
+        let handle = handle.clone();
+        let params = params.clone();
+        tokio::task::spawn_blocking(move || handle.ask_permission(&params))
+    };
+    wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+    assert!(!asking.is_finished());
+    let id = *handle.permissions.lock().keys().next().unwrap();
+    mgr.respond(&task.id, id, Some("codex-keep-untrusted".into())).unwrap();
+    assert_eq!(asking.await.unwrap()["outcome"]["optionId"], "codex-keep-untrusted");
+    handle.state.lock().ephemeral = true;
+    assert_eq!(handle.ask_permission(&params)["outcome"]["optionId"], "codex-keep-untrusted");
+    mgr.shutdown();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -4137,4 +4237,15 @@ done
         Some("medium")
     );
     mgr.shutdown();
+}
+
+#[test]
+fn session_params_name_the_servers_off() {
+    let mcp = McpForSession { servers: vec![json!({ "name": "docs" })], off: vec!["github".into()] };
+    let params = session_params("/p", &mcp);
+    assert_eq!(params["cwd"], "/p");
+    assert_eq!(params["mcpServers"][0]["name"], "docs");
+    assert_eq!(params["_meta"]["openidea"]["mcpServersOff"], json!(["github"]));
+    let none = McpForSession { servers: Vec::new(), off: Vec::new() };
+    assert!(session_params("/p", &none).get("_meta").is_none());
 }

@@ -187,6 +187,24 @@ describe("locationItems", () => {
     expect(item.detail).toBe("config · src/mod.py:1");
   });
 
+  it("names same-named targets (a method's implementations) by their containers", async () => {
+    const lines = (cls: string) => ["", `class ${cls}(Base):`, "", "    def refresh(self) -> None:"];
+    readManyFileLines.mockResolvedValue(
+      new Map([
+        ["/p/src/a.py", lines("Cached")],
+        ["/p/src/b.py", lines("Remote")],
+      ]),
+    );
+    project("/p");
+    const items = await locationItems([target("/p/src/a.py", "refresh", 3), target("/p/src/b.py", "refresh", 3)]);
+    expect(items.map((i) => [i.label, i.detail])).toEqual([
+      ["Cached", "src/a.py:4"],
+      ["Remote", "src/b.py:4"],
+    ]);
+    // A single target, or targets with different names, keep their own names.
+    expect((await locationItems([target("/p/src/a.py", "refresh", 3)]))[0]!.label).toBe("refresh");
+  });
+
   it("does not query the index for index symbols, which carry their container", async () => {
     readManyFileLines.mockResolvedValue(new Map());
     project("/p");

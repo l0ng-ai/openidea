@@ -112,6 +112,21 @@ describe("buildChangeTree", () => {
 });
 
 describe("unversioned file grouping", () => {
+  it.each([true, false])(
+    "keeps staged additions deleted from disk visible with separate unversioned grouping %s",
+    (separate) => {
+      const added = fs("added.txt", "added", "deleted");
+      const untracked = fs("new.txt", null, "untracked");
+      const tree = buildChangeTree([added, untracked], "/r", false, undefined, [], true, {}, true, separate);
+      expect(tree.find((n) => n.group === "staged")?.files).toEqual([added]);
+      expect(tree.find((n) => n.group === "unstaged")?.files).toEqual(separate ? [added] : [added, untracked]);
+      expect(tree.find((n) => n.group === "unversioned")?.files).toEqual(separate ? [untracked] : undefined);
+      const changes = buildChangeTree([added, untracked], "/r", false, undefined, [], false, {}, true, separate);
+      expect(changeFileNodes(changes).some((n) => n.path === added.path)).toBe(false);
+      expect(groupOf(untracked)).toBe("unversioned");
+    },
+  );
+
   it.each([false, true])("can merge untracked files independently of staging grouping (%s)", (byStaging) => {
     const tree = buildChangeTree(status, "/r", false, undefined, [], byStaging, {}, true, false);
     expect(tree.some((n) => n.group === "unversioned")).toBe(false);

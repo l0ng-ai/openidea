@@ -53,6 +53,23 @@ it("shows a request as a command only when it carries one, whatever its title", 
 });
 
 describe("permission choices", () => {
+  it("names Codex project trust explicitly instead of a generic Always Allow", () => {
+    expect(
+      permissionDetails({
+        ...entry,
+        command: null,
+        title: "Trust /project in Codex?",
+        options: [{ id: "codex-trust-project", kind: "allow_always", name: "Trust Project in Codex" }],
+      }),
+    ).toEqual({ title: "Trust Project in Codex", command: undefined, detail: "Trust /project in Codex?" });
+    expect(
+      permissionOption({ id: "codex-trust-project", kind: "allow_always", name: "Trust Project in Codex" }, false)
+        .label,
+    ).toBe("Trust Project in Codex");
+    expect(
+      permissionOption({ id: "codex-keep-untrusted", kind: "reject_once", name: "Keep Untrusted" }, false).label,
+    ).toBe("Keep Untrusted");
+  });
   it.each([
     ["allow_once", "yes", "Allow Once", "primary"],
     ["allow_always", "policy", "Always Allow", "secondary"],

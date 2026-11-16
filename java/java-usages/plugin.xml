@@ -20,6 +20,9 @@
     <delegateCommandHandler class="ai.openidea.archives.RefreshArchivesCommand">
       <command id="openidea.java.refreshArchives"/>
     </delegateCommandHandler>
+    <delegateCommandHandler class="ai.openidea.implementations.ImplementationTargetsCommand">
+      <command id="openidea.java.implementationLocations"/>
+    </delegateCommandHandler>
     <delegateCommandHandler class="ai.openidea.hierarchy.HierarchyCommand">
       <command id="openidea.java.hierarchy.members"/>
       <command id="openidea.java.hierarchy.refactor"/>

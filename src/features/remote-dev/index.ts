@@ -79,7 +79,7 @@ export function activate(): () => void {
         keywords: ["ssh", "remote", "close"],
         when: "projectOpen",
         run: async () => {
-          if (!(await confirmLeaveProject())) return;
+          if (!(await confirmLeaveProject(false))) return;
           try {
             await disconnectRemote();
           } catch (e) {

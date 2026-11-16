@@ -36,6 +36,9 @@ bundles = []
 # Library classes open as `jdt://` virtual documents (`java/classFileContents`).
 classFileContentsSupport = true
 resolveAdditionalTextEditsSupport = true
+# Move (F6) code actions run the client-side refactoring command; the IDE asks for the
+# destination and requests the edit (`java/getMoveDestinations`, `java/move`).
+moveRefactoringSupport = true
 
 [language-servers.initialization-options.settings.java]
 autobuild = { enabled = true }

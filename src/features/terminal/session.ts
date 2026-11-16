@@ -19,6 +19,7 @@ import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
+import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
 import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
@@ -30,6 +31,7 @@ import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
 import {
+  readLinkColor,
   readSearchDecorations,
   readTerminalTheme,
   remeasureWhenFontsLoad,
@@ -213,6 +215,7 @@ export class TerminalSession {
   private selectingSearchMatch = false;
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
+  private readonly linkHighlights: LinkHighlightController;
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -368,7 +371,8 @@ export class TerminalSession {
     this.selectionHighlights = installSelectionHighlights(this.term, {
       isSearchSelection: () => this.searchSelection,
     });
-    this.disposables.push(this.selectionHighlights);
+    this.linkHighlights = installLinkHighlights(this.term, readLinkColor);
+    this.disposables.push(this.selectionHighlights, this.linkHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
       { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
@@ -437,6 +441,7 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.selectionHighlights.refresh();
+    this.linkHighlights.refresh();
     this.scheduleFit();
   }
 
@@ -479,17 +484,14 @@ export class TerminalSession {
     const text = line.translateToString(true);
     const found = findTerminalLinks(text);
     if (found.length === 0) return undefined;
-    return found.map((l) => ({
-      text: l.text,
-      range: { start: { x: l.start + 1, y }, end: { x: l.end, y } },
-      decorations: { underline: true, pointerCursor: true },
-      activate: (event: MouseEvent) => {
+    return found.map((l) =>
+      xtermLink(this.term, line, y, l, (event) => {
         // Plain click opens; a click that ends a drag-selection never reaches here.
         event.preventDefault();
         if (l.kind === "url") void openExternal(l.url);
         else void openFileLink(l, this.snapshot.cwd);
-      },
-    }));
+      }),
+    );
   }
 
   /** Moves the host into `container` and fits / starts once the pane has a size. */
@@ -838,6 +840,7 @@ export class TerminalSession {
   applyTheme() {
     this.term.options.theme = readTerminalTheme();
     this.searchDecorations = null;
+    this.linkHighlights.refresh();
   }
 
   /** Finds `query` (highlighting every match); `incremental` keeps the current match while typing. */

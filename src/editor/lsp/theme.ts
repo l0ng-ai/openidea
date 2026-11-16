@@ -295,9 +295,10 @@ export const lspTheme = EditorView.theme({
     padding: "6px 10px",
     borderRadius: "var(--radius-popup)",
     boxShadow: "var(--shadow-popup)",
-    maxWidth: "480px",
     whiteSpace: "pre-wrap",
   },
+  // The hint is the tooltip element itself: beat the editor theme's `.cm-tooltip` width.
+  ".cm-tooltip.cm-lsp-hint": { maxWidth: "min(480px, 100%)" },
   ".cm-lsp-hint-error": {
     backgroundColor: "var(--bg-feedback-error, color-mix(in srgb, var(--danger) 8%, var(--bg-popup)))",
     borderColor: "color-mix(in srgb, var(--danger) 35%, var(--border-popup))",

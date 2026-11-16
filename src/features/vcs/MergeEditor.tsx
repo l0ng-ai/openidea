@@ -597,7 +597,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
 
   return (
     <div ref={rootRef} className={styles.root} {...focusProps}>
-      <MergeToolbar summary={summary} />
+      <MergeToolbar summary={summary} step={goto} run={(c) => void runAction(c)} />
       <div className={styles.labels}>
         <span>{txt(titles.yours)}</span>
         <span>
@@ -633,7 +633,7 @@ export function MergeEditor({ input }: { input: EditorInput }) {
           onContextMenu={(e) => theirsView.current && showSideMenu(e, theirsView.current, "right")}
         />
       </div>
-      <MergeFooter />
+      <MergeFooter run={(c) => void runAction(c)} />
     </div>
   );
 }

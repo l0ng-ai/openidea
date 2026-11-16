@@ -335,6 +335,11 @@ export function DiffEditor({
     };
   }, [path, leftKey, rightKey, contextKey]);
 
+  // A host that picks the layout (the all-in-one diff's toolbar) switches it in place.
+  const asked = input_.mode;
+  useEffect(() => {
+    if (asked) setOptsState((o) => (o.mode === asked ? o : { ...o, mode: asked }));
+  }, [asked]);
   const setOpts = (patch: Partial<DiffViewOptions>) =>
     setOptsState((o) => {
       const next = { ...o, ...patch };

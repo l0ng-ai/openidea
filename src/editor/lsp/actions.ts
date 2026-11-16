@@ -320,6 +320,9 @@ export function registerLspActions(): () => void {
     editorAction("refactor.extractParameter", "Introduce Parameter…", "Refactor", (v) =>
       runRefactoring(v, "extractParameter"),
     ),
+    editorAction("refactor.extractInterface", "Extract Interface…", "Refactor", (v) =>
+      runRefactoring(v, "extractInterface"),
+    ),
     editorAction("refactor.move", "Move…", "Refactor", (v) => runRefactoring(v, "move")),
     editorAction("refactor.changeSignature", "Change Signature…", "Refactor", (v) =>
       runRefactoring(v, "changeSignature"),

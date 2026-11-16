@@ -19,10 +19,13 @@ use std::time::{Duration, Instant};
 pub(crate) const SERVER: &str = "jdtls";
 
 pub(crate) mod configuration;
+mod extract_interface;
 mod formatter;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
+mod move_refactoring;
 pub(crate) mod reserved_names;
+mod signature;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);

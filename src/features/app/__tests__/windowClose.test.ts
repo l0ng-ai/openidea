@@ -115,6 +115,23 @@ describe("native window close", () => {
     expect(forget).not.toHaveBeenCalled();
   });
 
+  it("stays open when an untitled buffer's Save As is cancelled", async () => {
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: false, windows: 2 });
+    vi.mocked(services.maybeEditorService).mockReturnValue({
+      forgetSavedTabs: forget,
+      keepSavedTabs: keep,
+      dirtyDocumentIds: () => [],
+      untitledDirtyDocumentIds: () => ["untitled:1"],
+      cancelClose: vi.fn(),
+    } as never);
+    deps.prepareClose = async () => ({ dirty: 1, discard: vi.fn(), commit: vi.fn(), cancel: vi.fn() });
+    deps.ask = async () => ({ button: "save", checked: false });
+    const prevented = await close({});
+    expect(deps.saveAll).toHaveBeenCalledOnce();
+    expect(prevented).toHaveBeenCalledOnce();
+    expect(ipc.commands.windowGroupCancelClose).toHaveBeenCalled();
+  });
+
   it("restores saved tabs if returning to Welcome fails", async () => {
     vi.mocked(ipc.commands.closeProject).mockRejectedValue(new Error("close failed"));
     const prevented = await close({ closeTabsWithWindow: true });

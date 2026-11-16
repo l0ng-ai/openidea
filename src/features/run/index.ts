@@ -92,6 +92,7 @@ import {
   selectConfig,
   selectedConfig,
   startRun,
+  stopRunningInstances,
   startSampleOutput,
   stopSession,
   subscribeOutput,
@@ -171,6 +172,33 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     return;
   }
   if (remoteDebugBlocked(config)) return;
+  if (config.allowParallel) return debugLaunch(config, chain, show);
+  // Clicked again while it is still preparing (building): that launch goes on, no second one.
+  if (debugLaunching.has(config.id)) return;
+  debugLaunching.add(config.id);
+  let stopWatching = () => {};
+  let launched: Promise<void> | null = null;
+  try {
+    if (!(await stopRunningInstances(config))) return;
+    // From its session on, a further Debug asks to stop it (`stopRunningInstances`).
+    const debugging = new Promise<void>((resolve) => {
+      stopWatching = useDebugRunSessions.subscribe((s) => {
+        if (s.serviceSessions.some((d) => d.config.id === config.id && d.status !== "terminated")) resolve();
+      });
+    });
+    launched = debugLaunch(config, chain, show);
+    await Promise.race([launched.catch(() => {}), debugging]);
+  } finally {
+    stopWatching();
+    debugLaunching.delete(config.id);
+  }
+  await launched;
+}
+
+/** Configurations whose Debug is between the click and the debugger's session. */
+const debugLaunching = new Set<string>();
+
+async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
   if (!(await prepareLaunch(config, chain, show))) return;
   if (config.kind === UNITY_CONFIG_KIND) return showUnityAttach(config);
   // Python on a Docker / Compose target: debugpy in the container, the debugger attaches.
