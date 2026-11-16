@@ -136,7 +136,7 @@ async fn returns_all_python_classes_and_bases() {
     // (the IDE's file watcher calls this in production).
     let extra = p.root.join("src/extra.pyi");
     std::fs::write(&extra, "class Stub(Child): ...\nclass Added(Base): ...\n").unwrap();
-    p.host.project(WINDOW).unwrap().index.update(&[extra.clone()], &[]);
+    p.host.project(WINDOW).unwrap().index.update(std::slice::from_ref(&extra), &[]);
     assert!(p.host.project(WINDOW).unwrap().index.wait_idle(Duration::from_secs(5)));
     let again = ops::nav::nav_inheritance(&p.host, WINDOW).await.unwrap();
     assert_eq!(find(&again, "Stub").bases, vec!["Child".to_string()]);
