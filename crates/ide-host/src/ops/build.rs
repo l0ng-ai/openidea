@@ -311,12 +311,11 @@ pub async fn build_sync(
     if completion_token.is_cancelled() {
         return Err(IdeError::cancelled());
     }
-    if tool == BuildTool::Gradle {
-        // The sync may report project folders outside the project (`includeFlat`): index and list them.
-        project.refresh_index_scope();
-        let p = project.clone();
-        tokio::task::spawn_blocking(move || p.refresh_repositories());
-    }
+    // Gradle may report project folders outside the project (`includeFlat`), and a Maven
+    // reactor may have gained or dropped modules beside it: index and list them.
+    project.refresh_index_scope();
+    let p = project.clone();
+    tokio::task::spawn_blocking(move || p.refresh_repositories());
     // New source folders and dependency versions: the Project view and External Libraries reload.
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
     if tool == BuildTool::Maven
