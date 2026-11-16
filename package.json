@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "vitest run --config smoke/vitest.config.ts",
+    "smoke:native": "node smoke/native/run.ts",
     "lint": "oxlint",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
