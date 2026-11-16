@@ -5259,6 +5259,24 @@ export type FieldValue = { kind: "label"; value: string } | { kind: "readonlyTex
 	selected: string,
 } };
 
+export type FileColor = {
+	/**
+	 *  A built-in scope (`Tests`, `Production`, `Project Files`, `Non-Project Files`) or a
+	 *  `scopes` entry, by name.
+	 */
+	scope?: string,
+	/**  A palette name (`blue`, `green`, `orange`, `rose`, `violet`, `yellow`, `gray`) or `#rrggbb`. */
+	color?: string,
+};
+
+export type FileColorSettings = {
+	enabled?: boolean,
+	editorTabs?: boolean,
+	projectView?: boolean,
+	/**  Scope → colour; the first scope that holds a file gives its colour. */
+	colors?: FileColor[],
+};
+
 export type FileCoverage = {
 	path: IpcPath,
 	/**  Sorted by line. */
@@ -7783,6 +7801,15 @@ export type ModuleStructureSettings = {
 };
 
 /**
+ *  A named set of files: `file:src//*.ts && !file:*.test.ts` (project-relative path patterns
+ *  joined with `||`, `&&`, `!` and parentheses).
+ */
+export type NamedScope = {
+	name?: string,
+	pattern?: string,
+};
+
+/**
  *  Where the Navigation Bar (the file path breadcrumbs) is shown. Mirrors
  *  IDEA's `View | Appearance | Navigation Bar` (Top / Status Bar / Don't show).
  */
@@ -9895,6 +9922,10 @@ export type Settings_Deserialize = {
 	mcpServer?: McpServerSettings,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity?: AgentSecuritySettings,
+	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
+	scopes?: NamedScope[],
+	/**  Appearance & Behavior › File Colors. */
+	fileColors?: FileColorSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -9961,6 +9992,10 @@ export type Settings_Serialize = {
 	mcpServer: McpServerSettings,
 	/**  Tools › Agents: Command Execution Policy. */
 	agentSecurity: AgentSecuritySettings,
+	/**  Appearance & Behavior › Scopes: named file sets other settings refer to. */
+	scopes: NamedScope[],
+	/**  Appearance & Behavior › File Colors. */
+	fileColors: FileColorSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };

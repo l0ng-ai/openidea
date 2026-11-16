@@ -67,6 +67,10 @@ pub struct Settings {
     pub mcp_server: McpServerSettings,
     /// Tools › Agents: Command Execution Policy.
     pub agent_security: AgentSecuritySettings,
+    /// Appearance & Behavior › Scopes: named file sets other settings refer to.
+    pub scopes: Vec<NamedScope>,
+    /// Appearance & Behavior › File Colors.
+    pub file_colors: FileColorSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -502,6 +506,8 @@ impl Default for Settings {
             agents: AgentSettings::default(),
             mcp_server: McpServerSettings::default(),
             agent_security: AgentSecuritySettings::default(),
+            scopes: Vec::new(),
+            file_colors: FileColorSettings::default(),
             plugins: BTreeMap::new(),
         }
     }
@@ -510,6 +516,47 @@ impl Default for Settings {
 /// IDEA's keymap for the OS (`src/platform/keymaps/`).
 fn default_keymap() -> &'static str {
     if cfg!(target_os = "macos") { "intellij-macos" } else { "intellij-windows" }
+}
+
+/// A named set of files: `file:src//*.ts && !file:*.test.ts` (project-relative path patterns
+/// joined with `||`, `&&`, `!` and parentheses).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NamedScope {
+    pub name: String,
+    pub pattern: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileColorSettings {
+    pub enabled: bool,
+    pub editor_tabs: bool,
+    pub project_view: bool,
+    /// Scope → colour; the first scope that holds a file gives its colour.
+    pub colors: Vec<FileColor>,
+}
+
+impl Default for FileColorSettings {
+    fn default() -> Self {
+        let color = |scope: &str, color: &str| FileColor { scope: scope.into(), color: color.into() };
+        Self {
+            enabled: true,
+            editor_tabs: true,
+            project_view: true,
+            colors: vec![color("Non-Project Files", "yellow"), color("Tests", "green")],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FileColor {
+    /// A built-in scope (`Tests`, `Production`, `Project Files`, `Non-Project Files`) or a
+    /// `scopes` entry, by name.
+    pub scope: String,
+    /// A palette name (`blue`, `green`, `orange`, `rose`, `violet`, `yellow`, `gray`) or `#rrggbb`.
+    pub color: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]

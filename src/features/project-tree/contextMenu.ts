@@ -9,6 +9,7 @@ import type { MenuItem } from "@/ui";
 import { menuGroupItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
 import type { FolderRole } from "@/platform/languageSettings";
 import { directoryRole, markDirectory } from "./markDirectory";
+import { fileColorMenu } from "./fileColor";
 import type { ProjectNode } from "./model";
 import { packageKindAt } from "./packages";
 import {
@@ -455,6 +456,10 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
           : []),
       ],
     });
+  }
+  if (inProject && single && !single.root && !single.placeholder && !single.group) {
+    const color = fileColorMenu(single.path, single.dir);
+    if (color) push(color);
   }
   return items;
 }
