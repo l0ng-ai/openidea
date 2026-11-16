@@ -28,6 +28,7 @@ import { useStreamTrace, type TraceEntry } from "../streams/streamStore";
 import { STREAM_TRACE_KIND } from "../streams/streamTraceInput";
 import { StreamTraceEditor } from "../streams/StreamTraceEditor";
 import { StreamAbortDialog } from "../streams/StreamAbortDialog";
+import { CELL_LIMIT } from "../streams/TraceColumns";
 import { CHAIN_A, CHAIN_A_READY } from "./streamChainA";
 
 const session = {
@@ -59,11 +60,12 @@ const RUNNING: TraceEntry = {
   error: null,
   stoppedRecording: false,
   abort: null,
-  stops: 1,
+  thread: 1,
+  endStop: null,
 };
 
 /** One object record mapped to a string: enough to open a value. */
-const OBJECTS: StreamTraceResult = {
+const OBJECTS: typeof CHAIN_A_READY = {
   status: "ready",
   chain: CHAIN_A,
   steps: ["", "map"],
@@ -181,6 +183,20 @@ describe("StreamTraceEditor", () => {
     expect(useStreamTrace.getState().bySession[1]?.abort).toEqual({ kind: "interrupted" });
   });
 
+  it("Enter in the Abort dialog cancels: Cancel is the default and has the focus", () => {
+    setEntry({});
+    show();
+    fireEvent.click(screen.getByRole("button", { name: "Abort Operation…" }));
+    const dialog = screen.getByRole("dialog");
+    const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+    expect(cancel.hasAttribute("data-dialog-default")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Abort" }).hasAttribute("data-dialog-default")).toBe(false);
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(dialog, { key: "Enter" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(ipc.debugStreamTraceAbort).not.toHaveBeenCalled();
+  });
+
   it("Cancel in the Abort dialog leaves the operation alone", () => {
     setEntry({});
     show();
@@ -264,6 +280,78 @@ describe("StreamTraceEditor", () => {
     expect(within(source!).getByRole("button", { name: "8" }).getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("draws one curve per link, the related ones marked after a click", () => {
+    ready(CHAIN_A_READY);
+    const { container } = show();
+    const paths = () => [...container.querySelectorAll("svg path")];
+    // 4 links into each of the steps 1–4; the 8 source values have no parent.
+    expect(paths()).toHaveLength(16);
+    expect(paths().filter((p) => /ambiguous/.test(p.getAttribute("class")!))).toHaveLength(0);
+    fireEvent.click(within(screen.getAllByTestId("stream-trace-column")[0]!).getByRole("button", { name: "8" }));
+    // 0=8 → 1=8 → 2=81 → 3=81 → 4="81".
+    expect(paths().filter((p) => /relatedCurve/.test(p.getAttribute("class")!))).toHaveLength(4);
+  });
+
+  it("dashes a link the host could only guess", () => {
+    ready({
+      ...OBJECTS,
+      links: [
+        { parent: null, ambiguous: false },
+        { parent: 0, ambiguous: true },
+      ],
+    });
+    const { container } = show();
+    const [path] = [...container.querySelectorAll("svg path")];
+    expect(path!.getAttribute("class")).toMatch(/ambiguous/);
+  });
+
+  it("caps each column and draws no curve to a value past the cap", () => {
+    const source = Array.from({ length: CELL_LIMIT + 5 }, (_, i) => ({
+      step: 0,
+      value: { kind: "boxed" as const, id: i, typeName: "java.lang.Integer", text: String(i) },
+    }));
+    const mapped = [3, CELL_LIMIT + 2].map((from, i) => ({
+      step: 1,
+      value: { kind: "boxed" as const, id: 90_000 + i, typeName: "java.lang.Integer", text: String(from * 2) },
+    }));
+    ready(
+      chainA({
+        steps: ["stream", "map"],
+        records: [...source, ...mapped],
+        links: [
+          ...source.map(() => ({ parent: null, ambiguous: false })),
+          { parent: 3, ambiguous: false },
+          { parent: CELL_LIMIT + 2, ambiguous: false },
+        ],
+        terminal: { kind: "void" },
+      }),
+    );
+    const { container } = show();
+    expect(screen.getByText("Each step shows its first 1,000 values")).toBeTruthy();
+    const [first, second] = screen.getAllByTestId("stream-trace-column");
+    expect(within(first!).getAllByRole("listitem")).toHaveLength(CELL_LIMIT);
+    expect(within(second!).getAllByRole("listitem")).toHaveLength(2);
+    expect(container.querySelectorAll("svg path")).toHaveLength(1);
+  });
+
+  it("a reply that lands before its stop shows no outdated note and its values open", async () => {
+    ipc.debugJvmMemoryFields.mockReturnValue(ok(FIELDS));
+    useDebug.setState({ sessions: { 1: { ...session, status: "running" } } });
+    ready(OBJECTS);
+    show();
+    expect(screen.queryByRole("status")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Order@50" }));
+    toggle(item("Order@50"));
+    expect(await screen.findByText("total")).toBeTruthy();
+    expect(ipc.debugJvmMemoryFields).toHaveBeenCalledWith(1, { generation: 9, id: 50 });
+    // Its stop's event arrives.
+    act(() => {
+      useDebug.setState({ sessions: { 1: { ...session, stops: 3 } } });
+      ready(OBJECTS, { endStop: 3 });
+    });
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
   it("Split shows two adjacent steps", () => {
     ready(CHAIN_A_READY);
     show();
@@ -282,7 +370,7 @@ describe("StreamTraceEditor", () => {
 
   it("opens an object value through the memory reader", async () => {
     ipc.debugJvmMemoryFields.mockReturnValue(ok(FIELDS));
-    ready(OBJECTS, { stops: 1 });
+    ready(OBJECTS, { endStop: 2 });
     show();
     expect(screen.getAllByTestId("stream-trace-column")[0]!.textContent).toContain("Source");
     fireEvent.click(screen.getByRole("button", { name: "Order@50" }));
@@ -292,7 +380,7 @@ describe("StreamTraceEditor", () => {
   });
 
   it("stops opening values once the program ran on", () => {
-    ready(OBJECTS, { stops: 1 });
+    ready(OBJECTS, { endStop: 2 });
     show();
     const note = "Values can no longer be expanded after the program resumed";
     expect(screen.queryByText(note)).toBeNull();

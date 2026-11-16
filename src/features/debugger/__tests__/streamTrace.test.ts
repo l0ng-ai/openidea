@@ -42,7 +42,7 @@ import {
   stopRecording,
   traceStreamChain,
 } from "../streams/streamState";
-import { isTracing, useStreamTrace } from "../streams/streamStore";
+import { isTracing, traceValuesOutdated, useStreamTrace } from "../streams/streamStore";
 import { StreamChainChooser } from "../streams/StreamChainChooser";
 
 const frame: StackFrame = { id: 10, name: "main", path: "/p/Main.java", line: 5, column: 4, presentationHint: null };
@@ -271,6 +271,43 @@ describe("Trace Stream Chain", () => {
     expect(useStreamTrace.getState().bySession[1]?.abort).toEqual({ kind: "interrupted" });
     reply.resolve({ status: "ok", data: FAILED });
     await running;
+  });
+
+  it("another thread's stop during the trace is not the trace's stop", async () => {
+    const openFile = vi.fn(() => Promise.resolve());
+    provideEditorService({ openFile } as unknown as EditorService);
+    ipc.debugStackTrace.mockReturnValue(ok([frame]));
+    ipc.debugThreads.mockReturnValue(ok([{ id: 1, name: "main" }]));
+    ipc.debugScopes.mockReturnValue(ok([]));
+    const reply = deferred<{ status: "ok"; data: StreamTraceResult }>();
+    ipc.debugStreamChains.mockReturnValue(ok([chain(0)]));
+    ipc.debugStreamTrace.mockReturnValue(reply.promise);
+    const running = traceStreamChain(1);
+    await settle();
+    const stopOf = (threadId: number) =>
+      ({ kind: "stopped", threadId, reason: "exception", description: null, allThreadsStopped: false }) as const;
+    setSession({ status: "running" });
+    // An exception breakpoint on a worker: a stop of its own, revealed as usual.
+    handleDebugEvent(1, stopOf(2));
+    await settle();
+    expect(openFile).toHaveBeenCalledTimes(1);
+    setSession({ status: "running" });
+    handleDebugEvent(1, stopOf(1));
+    await settle();
+    expect(openFile).toHaveBeenCalledTimes(1);
+    reply.resolve({ status: "ok", data: READY });
+    await running;
+    const entry = () => useStreamTrace.getState().bySession[1]!;
+    const live = () => useDebug.getState().sessions[1];
+    expect(entry().endStop).toBe(live()!.stops);
+    expect(traceValuesOutdated(entry(), live())).toBe(false);
+
+    setSession({ status: "running" });
+    expect(traceValuesOutdated(entry(), live())).toBe(true);
+    handleDebugEvent(1, stopOf(1));
+    await settle();
+    expect(openFile).toHaveBeenCalledTimes(2);
+    expect(traceValuesOutdated(entry(), live())).toBe(true);
   });
 
   it("an Abort dialog left open closes when its trace ends", async () => {

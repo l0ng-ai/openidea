@@ -84,7 +84,8 @@ export async function startTrace(s: DebugSessionId, chain: StreamChainInfo): Pro
     error: null,
     stoppedRecording: false,
     abort: null,
-    stops: useDebug.getState().sessions[s]!.stops,
+    thread: at.thread,
+    endStop: null,
   };
   useStreamTrace.setState((st) => ({ bySession: { ...st.bySession, [s]: entry } }));
   publishContext();

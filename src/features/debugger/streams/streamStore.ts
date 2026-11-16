@@ -19,8 +19,10 @@ export interface TraceEntry {
   stoppedRecording: boolean;
   /** How far the host got cancelling the terminal operation; `null` until it is cancelled. */
   abort: AbortState | null;
-  /** The session's `stops` when the trace started. A trace that runs stops once, stepping out of the terminal. */
-  stops: number;
+  /** The thread the chain runs on; the trace ends with this thread's stop after stepping out of the terminal. */
+  thread: number;
+  /** The session's `stops` at that stop, like the Memory view's `takenAtStop`; `null` until its event arrives. */
+  endStop: number | null;
 }
 
 /** The latest trace of each session; it stays after it ends, since its tab shows it. */
@@ -32,15 +34,23 @@ export function isTracing(s: DebugSessionId): boolean {
 }
 
 /**
- * Whether the session's stop numbered `stops` is the step out of the terminal operation. The
- * reply may come before or after that stop's event, so a `ready` result still counts.
+ * Called for each stop event: records it as the stop the trace ended in when it is the traced
+ * thread's first stop since the trace started, and says whether it was. Another thread may stop
+ * meanwhile (an exception breakpoint), so stops are not counted. The reply may come before or
+ * after the event, so a `ready` result still takes it.
  */
-export function endsTrace(s: DebugSessionId, stops: number): boolean {
+export function markTraceStop(s: DebugSessionId, thread: number, stops: number): boolean {
   const e = useStreamTrace.getState().bySession[s];
-  return !!e && stops === e.stops + 1 && (isTracing(s) || e.result?.status === "ready");
+  if (!e || e.endStop !== null || thread !== e.thread || !(isTracing(s) || e.result?.status === "ready")) return false;
+  useStreamTrace.setState((st) => ({ bySession: { ...st.bySession, [s]: { ...e, endStop: stops } } }));
+  return true;
 }
 
-/** A ready trace's values can be opened only in the stop it ended in. */
+/**
+ * A ready trace's values can be opened only in the stop it ended in. Before that stop's event
+ * arrives the host is already suspended in it, so they are not outdated yet.
+ */
 export function traceValuesOutdated(e: TraceEntry, session: { status: string; stops: number } | undefined): boolean {
-  return !session || session.status !== "paused" || session.stops > e.stops + 1;
+  if (!session || session.status === "terminated") return true;
+  return e.endStop !== null && (session.status !== "paused" || session.stops !== e.endStop);
 }

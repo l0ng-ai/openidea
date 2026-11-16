@@ -34,9 +34,10 @@ export function StreamAbortDialog() {
       onClose={close}
       icon="warning"
       title={tx("Abort Operation")}
+      // Abort throws into the user's program, so Enter and the initial focus go to Cancel.
       buttons={[
-        { label: "Abort", role: "default", onClick: abort },
-        { label: "Cancel", role: "cancel" },
+        { label: "Abort", role: "extra", onClick: abort },
+        { label: "Cancel", role: "default", onClick: close, autoFocus: true },
       ]}
     >
       {tx("The program will receive java.lang.RuntimeException: oi-cancel. Abort the stream operation?")}
