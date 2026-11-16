@@ -144,7 +144,7 @@ impl Host {
         let lsp = LspManager::new(root.clone(), languages.clone(), sink.clone());
         crate::plugins::injections::configure_lsp(&lsp);
         lsp.set_execution_allowed(trusted.load(Ordering::Acquire));
-        lsp.set_content_roots(extra_roots.clone());
+        lsp.set_content_roots(language_server_roots(&root, extra_roots.clone()));
         lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
             &root,
             &settings.effective().languages.java.maven.linked_projects,
@@ -1224,7 +1224,7 @@ impl Project {
             return;
         }
         let (roots, excludes) = (self.content_roots(), self.exclude_globs());
-        self.lsp.set_content_roots(roots.clone());
+        self.lsp.set_content_roots(language_server_roots(&self.root, roots.clone()));
         self.lsp.set_jdtls_import_roots(ide_build::maven_external_roots(
             &self.root,
             &self.settings.effective().languages.java.maven.linked_projects,
@@ -1367,6 +1367,22 @@ fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cac
         return roots;
     }
     extra_content_roots(settings, root, build_cache)
+}
+
+/// The content roots plus the projects attached inside this one. The index covers those
+/// already, but each is a project of its own (a git worktree under the project, a nested
+/// Cargo workspace), so its files get a language server rooted there, not at this root.
+fn language_server_roots(root: &Path, mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root)
+        && !workspace.is_container(root)
+    {
+        for path in workspace.projects {
+            if path != root && path.starts_with(root) && !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+    }
+    roots
 }
 
 /// The roots a file may navigate into: its own root (the workspace member containing it, or
@@ -2162,5 +2178,26 @@ mod content_roots_tests {
             vec![dep.to_string_lossy().into_owned(), root.to_string_lossy().into_owned()];
         let roots = content_roots(&settings, &root, &tmp.path().join("build"));
         assert_eq!(roots, vec![shared, dep]);
+    }
+
+    #[test]
+    fn projects_attached_inside_the_root_get_their_own_language_server_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let (root, nested, other) = (ws.join("app"), ws.join("app/.wt/feature"), ws.join("other"));
+        for dir in [&nested, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let settings = ide_core::settings::Settings::default();
+        let build = ws.join("build");
+        assert!(super::language_server_roots(&root, content_roots(&settings, &root, &build)).is_empty());
+
+        ide_workspace::workspace::Workspace::attach(&root, "app", vec![root.clone(), nested.clone(), other.clone()])
+            .unwrap();
+        // The index walks the nested project as part of the root ...
+        let roots = content_roots(&settings, &root, &build);
+        assert_eq!(roots, vec![other.clone()]);
+        // ... while its files go to a language server of its own.
+        assert_eq!(super::language_server_roots(&root, roots), vec![other, nested]);
     }
 }
