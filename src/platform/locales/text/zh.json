@@ -8534,5 +8534,13 @@
   "Don't Add the Current File": "不附带当前文件",
   "Add {rel} and the selection to your requests": "在请求中附带 {rel} 和选区",
   "Cannot paste this path safely: its name contains control characters.": "无法安全粘贴此路径：名称包含控制字符。",
-  "Cannot paste the dropped files": "无法粘贴拖入的文件"
+  "Cannot paste the dropped files": "无法粘贴拖入的文件",
+  "Lost the connection to {host}": "与 {host} 的连接已断开",
+  "Reconnect": "重新连接",
+  "Reconnect to Remote Host": "重新连接远程主机",
+  "Connects this window to its remote project again after the connection was lost.": "连接断开后，让此窗口重新连接到其远程项目。",
+  "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "重新连接会重新打开项目。{count} 个文件中未保存的更改无法保存到 {host}，将会丢失。",
+  "Reconnecting to {host}…": "正在重新连接到 {host}…",
+  "Lost the connection to {host}. Click to reconnect.": "与 {host} 的连接已断开。点击重新连接。",
+  "{label} (disconnected)": "{label}（已断开）"
 }

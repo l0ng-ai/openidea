@@ -2147,5 +2147,13 @@
   "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
   "Add blank line": "Add blank line",
   "Cannot paste this path safely: its name contains control characters.": "Cannot paste this path safely: its name contains control characters.",
-  "Cannot paste the dropped files": "Cannot paste the dropped files"
+  "Cannot paste the dropped files": "Cannot paste the dropped files",
+  "Lost the connection to {host}": "Lost the connection to {host}",
+  "Reconnect": "Reconnect",
+  "Reconnect to Remote Host": "Reconnect to Remote Host",
+  "Connects this window to its remote project again after the connection was lost.": "Connects this window to its remote project again after the connection was lost.",
+  "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.",
+  "Reconnecting to {host}…": "Reconnecting to {host}…",
+  "Lost the connection to {host}. Click to reconnect.": "Lost the connection to {host}. Click to reconnect.",
+  "{label} (disconnected)": "{label} (disconnected)"
 }
