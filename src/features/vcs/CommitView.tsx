@@ -38,6 +38,7 @@ import {
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
+  tooltipAttrs,
   type MenuItem,
   type TabItem,
   type TreeHandle,
@@ -884,7 +885,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
-                title={n.type === "file" && n.kind ? tx(KIND_LABEL[n.kind]) : undefined}
+                {...(n.type === "file" && n.kind && tooltipAttrs(KIND_LABEL[n.kind]))}
               >
                 {nodeText(n)}
               </span>
