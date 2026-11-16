@@ -23,6 +23,26 @@
   flex: none;
   border-bottom: 1px solid var(--border-editor-tabs, var(--border));
 }
+/* The content beside the group's contributed panels. */
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.groupPanels {
+  flex: none;
+  display: flex;
+  border-left: 1px solid var(--border);
+  background: var(--bg-editor);
+}
+.groupPanels[hidden] {
+  display: none;
+}
+.groupPanel {
+  flex: none;
+  display: flex;
+}
 .content {
   flex: 1;
   display: flex;
