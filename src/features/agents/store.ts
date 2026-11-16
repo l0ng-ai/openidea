@@ -635,7 +635,7 @@ function onEvent(e: AgentEvent) {
   }
 }
 
-/** In-app balloon for an Attention event. Native chime owns sound when the app is backgrounded. */
+/** In-app balloon for an Attention event; OS delivery goes through the general balloon path. */
 function notifyAttention(taskId: string, reason: "finished" | "input" | "failed") {
   if (viewing(taskId)) return;
   const task = useAgents.getState().tasks.get(taskId);
@@ -646,11 +646,6 @@ function notifyAttention(taskId: string, reason: "finished" | "input" | "failed"
       : reason === "failed"
         ? (task?.error ?? "The agent stopped")
         : "Finished";
-  // Avoid double chime when native delivery will own the sound.
-  const native =
-    typeof document !== "undefined" &&
-    !document.hasFocus() &&
-    useProject.getState().settings?.notifications?.agentBackground === true;
   notifications().notify({
     level: reason === "failed" ? "error" : "info",
     title,
@@ -658,7 +653,6 @@ function notifyAttention(taskId: string, reason: "finished" | "input" | "failed"
     key: `agent:${taskId}`,
     group: "tools",
     sticky: reason !== "finished",
-    silent: native,
     actions: [
       {
         label: reason === "finished" ? "Review" : "Open",

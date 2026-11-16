@@ -108,8 +108,8 @@ export interface NotificationGroupValid {
 export interface NotificationsValid {
   balloons: boolean;
   sound: boolean;
-  /** Native OS notifications for agent tasks while OpenIDEA is in the background. */
-  agentBackground: boolean;
+  /** Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
+  systemNotifications: boolean;
   groups: Record<string, NotificationGroupValid>;
 }
 
@@ -165,7 +165,7 @@ export const DEFAULT_GENERAL_EXTRAS: GeneralExtras = {
 export const DEFAULT_NOTIFICATIONS: NotificationsValid = {
   balloons: true,
   sound: false,
-  agentBackground: false,
+  systemNotifications: true,
   groups: {},
 };
 
@@ -270,7 +270,7 @@ export function validateNotifications(raw: unknown): NotificationsValid {
   return {
     balloons: bool(n.balloons, DEFAULT_NOTIFICATIONS.balloons),
     sound: bool(n.sound, DEFAULT_NOTIFICATIONS.sound),
-    agentBackground: bool(n.agentBackground, DEFAULT_NOTIFICATIONS.agentBackground),
+    systemNotifications: bool(n.systemNotifications, DEFAULT_NOTIFICATIONS.systemNotifications),
     groups,
   };
 }

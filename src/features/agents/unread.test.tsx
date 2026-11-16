@@ -13,7 +13,6 @@ import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
 import { openChangeDiff } from "./SessionEditor";
 import * as actions from "@/platform/actions";
-import { useProject } from "@/platform/project";
 import { TASK_DRAG } from "./model";
 import {
   connect,
@@ -184,18 +183,6 @@ describe("agent unread activity", () => {
     emit({ type: "task", task: task("one", "ready") });
     expect(backend.notify).not.toHaveBeenCalled();
     expect(useAgents.getState().unread.has("one")).toBe(false);
-  });
-
-  it("skips in-app chime when unfocused and native agent notifications are on", () => {
-    vi.spyOn(document, "hasFocus").mockReturnValue(false);
-    useProject.setState({
-      settings: {
-        ...useProject.getState().settings!,
-        notifications: { balloons: true, sound: true, agentBackground: true, groups: {} },
-      },
-    });
-    emit({ type: "attention", task: "one", eventId: "one:finished:1", reason: "finished" });
-    expect(backend.notify).toHaveBeenCalledWith(expect.objectContaining({ silent: true }));
   });
 
   it("keeps the latest usage limits per provider without marking anything unread", () => {

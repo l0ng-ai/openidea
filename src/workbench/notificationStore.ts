@@ -1,7 +1,7 @@
 /** Notification center: balloons + history, backing `NotificationService`. */
 import type { ReactNode } from "react";
 import { create } from "zustand";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { call, commands, isTauri, onIdeEvent } from "@/platform/ipc";
 import { buildToolRecovery } from "@/platform/buildToolRecovery";
 import { txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
@@ -154,7 +154,14 @@ export function notify(n: Parameters<NotificationService["notify"]>[0]): number 
     const rest = n.key ? s.items.filter((x) => x.key !== n.key) : s.items;
     return { items: [item, ...rest].slice(0, MAX_HISTORY) };
   });
-  if (balloon && prefs.sound && !n.silent) playSound();
+  // OS toast owns the chime when system notifications are on and the app is backgrounded.
+  const systemOn = useProject.getState().settings?.notifications?.systemNotifications !== false;
+  const backgrounded = typeof document !== "undefined" && !document.hasFocus();
+  if (balloon && prefs.sound && !n.silent && !(systemOn && backgrounded)) playSound();
+  if (balloon && isTauri()) {
+    const plain = typeof n.body === "string" ? n.body : "";
+    void call(commands.showSystemNotification(n.title, plain)).catch(() => {});
+  }
   return id;
 }
 

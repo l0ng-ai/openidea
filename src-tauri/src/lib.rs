@@ -3,7 +3,6 @@
 //! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
 //! adapter from IPC to a backend crate; no domain logic lives here.
 
-mod agent_notifications;
 mod application_focus;
 mod cli;
 mod commands;
@@ -27,6 +26,7 @@ mod relaunch;
 mod remote_container;
 mod remote_dev;
 mod remote_wsl;
+mod system_notifications;
 
 mod state;
 mod theme_frame;
@@ -224,7 +224,7 @@ pub fn run() {
             windows::report_cli_error(app.handle(), error);
         }
         app.manage(application_focus::ApplicationFocus::default());
-        agent_notifications::init(app.handle());
+        system_notifications::init(app.handle());
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]

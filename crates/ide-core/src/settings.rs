@@ -647,16 +647,20 @@ impl Default for DateFormatSettings {
 pub struct NotificationSettings {
     pub balloons: bool,
     pub sound: bool,
-    /// Native OS notifications for agent tasks while OpenIDEA is in the background.
-    #[serde(default)]
-    pub agent_background: bool,
+    /// Mirror balloon notifications to the OS when no OpenIDEA window is focused.
+    #[serde(default = "default_true")]
+    pub system_notifications: bool,
     /// Group id → display; groups not listed use their default.
     pub groups: BTreeMap<String, NotificationGroupSettings>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for NotificationSettings {
     fn default() -> Self {
-        Self { balloons: true, sound: false, agent_background: false, groups: BTreeMap::new() }
+        Self { balloons: true, sound: false, system_notifications: true, groups: BTreeMap::new() }
     }
 }
 

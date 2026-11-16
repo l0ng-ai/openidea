@@ -36,8 +36,8 @@ const USER_ONLY: [&[&str]; 6] = [
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
     &["agents", "newTaskApprovals"],
-    // Native agent OS notifications: machine-local opt-in; projects must not enable/disable.
-    &["notifications", "agentBackground"],
+    // OS notification centre: machine-local; projects must not enable/disable.
+    &["notifications", "systemNotifications"],
 ];
 
 /// The [`USER_ONLY`] setting that writing `value` at `key` would set, as a dotted key.
@@ -1223,18 +1223,20 @@ mod tests {
     }
 
     #[test]
-    fn agent_background_notifications_are_a_user_setting() {
+    fn system_notifications_are_a_user_setting() {
         let tmp = tempfile::tempdir().unwrap();
         let config = tmp.path().join("config");
         let project = tmp.path().join("project");
         std::fs::create_dir_all(project.join(".openidea")).unwrap();
-        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nagentBackground = true\n").unwrap();
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = false\n")
+            .unwrap();
         let settings = SettingsStore::load(&config, Some(&project));
-        assert!(!settings.effective().notifications.agent_background);
-        assert!(settings.set(SettingsScope::Project, "notifications.agentBackground", json!(true)).is_err());
-        let s = settings.set(SettingsScope::Global, "notifications.agentBackground", json!(true)).unwrap();
-        assert!(s.notifications.agent_background);
-        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nagentBackground = false\n").unwrap();
-        assert!(settings.reload().notifications.agent_background);
+        assert!(settings.effective().notifications.system_notifications);
+        assert!(settings.set(SettingsScope::Project, "notifications.systemNotifications", json!(false)).is_err());
+        let s = settings.set(SettingsScope::Global, "notifications.systemNotifications", json!(false)).unwrap();
+        assert!(!s.notifications.system_notifications);
+        std::fs::write(project.join(".openidea/settings.toml"), "[notifications]\nsystemNotifications = true\n")
+            .unwrap();
+        assert!(!settings.reload().notifications.system_notifications);
     }
 }

@@ -1086,7 +1086,7 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
     title: "Notifications",
     group: APPEARANCE_GROUP,
     order: 2,
-    keywords: ["balloon", "popup", "sound", "alerts", "agent", "background"],
+    keywords: ["balloon", "popup", "sound", "alerts", "system", "os"],
     sections: [
       {
         options: [
@@ -1094,8 +1094,8 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
           { kind: "toggle", key: "notifications.sound", label: "Play sound" },
           {
             kind: "toggle",
-            key: "notifications.agentBackground",
-            label: "Notify about agent tasks when OpenIDEA is in the background",
+            key: "notifications.systemNotifications",
+            label: "Enable system notifications",
           },
         ],
       },

@@ -331,6 +331,8 @@ export const commands = {
 	 *  false when the clipboard stayed busy; the caller keeps working either way.
 	 */
 	clipboardSetFileList: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("clipboard_set_file_list", { paths })),
+	/**  When a balloon is shown and OpenIDEA is unfocused, mirror it to the OS. */
+	showSystemNotification: (title: string, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("show_system_notification", { title, body })),
 	/**
 	 *  Every installed family, sorted, each flagged monospaced or not. Read on
 	 *  first use (off the command threads), cached, and re-queried on `refresh`.
@@ -7960,8 +7962,8 @@ export type NotificationLevel = "info" | "warning" | "error";
 export type NotificationSettings = {
 	balloons?: boolean,
 	sound?: boolean,
-	/**  Native OS notifications for agent tasks while OpenIDEA is in the background. */
-	agentBackground?: boolean,
+	/**  Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
+	systemNotifications?: boolean,
 	/**  Group id → display; groups not listed use their default. */
 	groups?: { [key in string]: NotificationGroupSettings },
 };
