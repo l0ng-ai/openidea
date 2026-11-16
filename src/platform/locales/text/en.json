@@ -2157,5 +2157,6 @@
   "Extract Interface from '{name}'": "Extract Interface from '{name}'",
   "The interface could not be extracted": "The interface could not be extracted",
   "Extract Interface is not supported for {name}": "Extract Interface is not supported for {name}",
-  "Package for new interface": "Package for new interface"
+  "Package for new interface": "Package for new interface",
+  "Untitled files were not saved": "Untitled files were not saved"
 }
