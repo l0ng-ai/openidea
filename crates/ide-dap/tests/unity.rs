@@ -71,7 +71,7 @@ async fn real_editor_attach_breakpoint_step_variables_and_detach() {
     std::fs::create_dir(root.join("Packages")).unwrap();
     std::fs::write(
         root.join("ProjectSettings/ProjectVersion.txt"),
-        &format!(
+        format!(
             "m_EditorVersion: {}\n",
             PathBuf::from(&editor).ancestors().nth(2).and_then(|p| p.file_name()).unwrap().to_string_lossy()
         ),
