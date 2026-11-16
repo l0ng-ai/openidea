@@ -100,6 +100,7 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - `read_file` 还能读取依赖的源代码，以及 jar 和 zip 压缩包中的文件。
 - `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
 - 列表类工具每次返回一页：从 `offset` 开始的 `limit` 项（默认 100；`search_symbol` 为 50，`list_runs` 为 10）。`total`（计数代价低的工具才有）、`more` 和 `nextOffset` 说明后面还有多少。`list_runs` 可按 `state` 过滤（`running`、`idle`、`error` 或某个具体状态），`get_run_configurations` 可按 `query` 过滤，`get_project_problems` 默认只列错误，`errorsOnly` 传 false 时也列警告。
+- 查询类工具（各搜索工具、`find_references`、`get_project_problems`、`git_status`、`get_all_open_file_paths`、`get_run_configurations`、`list_runs`）接受 `scope`：一个目录（相对项目根目录或绝对路径），只返回其中文件的结果，比如某个附加项目或某个模块。
 - `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
 - `check_files` 才是重新分析，适合在任何工具修改文件之后调用：它从磁盘同步每个文件，通知语言服务器文件已保存（这样 `cargo check` 等保存时检查也会运行），并等到服务器答复且分析完成。每个文件都有一个 `status`，说明问题列表是否完整，或者为什么无法检查：没有对应的语言服务器，或者服务器未安装、配置错误、已崩溃。
 - `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。

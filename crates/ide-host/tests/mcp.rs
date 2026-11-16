@@ -441,6 +441,95 @@ async fn git_status_and_diff_on_a_temporary_repository() {
     assert!(!h.tmp.path().join("executed").exists());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_limits_the_query_tools_to_a_directory() {
+    let h = Harness::new();
+    std::fs::create_dir_all(h.root.join("lib")).unwrap();
+    std::fs::write(h.root.join("lib/c.txt"), "needle\n").unwrap();
+    let paths = |v: &Value| -> Vec<String> {
+        let mut out: Vec<String> =
+            v["items"].as_array().unwrap().iter().map(|i| i["filePath"].as_str().unwrap().to_owned()).collect();
+        out.dedup();
+        out
+    };
+    assert_eq!(paths(&h.json("search_text", json!({"q":"needle","scope":"lib"})).await), ["lib/c.txt"]);
+    assert_eq!(paths(&h.json("search_regex", json!({"q":"need.e","scope":"lib/"})).await), ["lib/c.txt"]);
+    let absolute = h.root.join("src").to_string_lossy().into_owned();
+    assert_eq!(paths(&h.json("search_file", json!({"q":"*.txt","scope":absolute})).await), ["src/a.txt", "src/b.txt"]);
+    // Within the scope, `paths` narrows further.
+    assert_eq!(
+        paths(&h.json("search_text", json!({"q":"needle","scope":"src","paths":["**/b.txt"]})).await),
+        ["src/b.txt"]
+    );
+    assert!(h.error("search_text", json!({"q":"needle","scope":"missing"})).await.contains("is not a directory"));
+    assert!(h.error("search_text", json!({"q":"needle","scope":".."})).await.contains("outside the project"));
+
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(&h.root).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&["init"]);
+    git(&["add", "."]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join("src/a.txt"), "changed\n").unwrap();
+    std::fs::write(h.root.join("lib/c.txt"), "changed\n").unwrap();
+    let status = h.json("git_status", json!({"scope":"lib"})).await;
+    assert_eq!(status["repositories"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        status["repositories"][0]["entries"],
+        json!([{"pathRelativeToRepository":"lib/c.txt","indexStatus":" ","workTreeStatus":"M"}])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
+    let h = Harness::new();
+    h.trust().await;
+    let git = |dir: &Path, args: &[&str]| {
+        let output = std::process::Command::new("git").current_dir(dir).args(args).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    };
+    git(&h.root, &["init"]);
+    git(&h.root, &["add", "."]);
+    git(&h.root, &["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "Initial"]);
+    std::fs::write(h.root.join(".git/info/exclude"), "/.wt/\n").unwrap();
+    git(&h.root, &["worktree", "add", "-q", ".wt/feature"]);
+    let worktree = h.root.join(".wt/feature");
+    h.host.trust.decide(&worktree, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &worktree).unwrap();
+    // Hidden folders excluded by name: `.wt` is one, the worktree's own files are not.
+    ide_host::ops::project::set_settings(
+        &h.host,
+        "main",
+        ide_workspace::settings::SettingsScope::Project,
+        "projectStructure.excludeFiles",
+        "\".*\"",
+    )
+    .unwrap();
+    let found = |args: Value| {
+        let h = &h;
+        async move {
+            let v = h.json("search_text", args).await;
+            let mut out: Vec<String> = v["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .map(|i| i["filePath"].as_str().unwrap().to_owned())
+                .collect();
+            out.dedup();
+            out
+        }
+    };
+    let everywhere = found(json!({"q":"needle"})).await;
+    assert!(everywhere.contains(&".wt/feature/src/b.txt".to_owned()), "{everywhere:?}");
+    assert_eq!(
+        found(json!({"q":"needle","scope":".wt/feature/src"})).await,
+        [".wt/feature/src/a.txt", ".wt/feature/src/b.txt"]
+    );
+    assert_eq!(found(json!({"q":"needle","paths":[".wt/feature/src/b.txt"]})).await, [".wt/feature/src/b.txt"]);
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn reformat_uses_the_formatter_chain_and_preserves_a_dirty_buffer() {
