@@ -1243,7 +1243,8 @@ mod tests {
     #[test]
     fn editor_panels_validate_api_width_when_capability_and_page() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/editor-panel");
-        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap();
+        // A Windows checkout may have CRLF line ends; the edits below match on `\n`.
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap().replace("\r\n", "\n");
         let check = |source: &str| {
             let manifest = ide_extension::Manifest::parse(source)?;
             let decl = manifest.declarations(EDITOR_PANELS).into_iter().next().unwrap();
