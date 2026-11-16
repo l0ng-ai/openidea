@@ -122,6 +122,8 @@ struct Smoke {
     root: PathBuf,
     events: Events,
     warm_up: Duration,
+    /// The test's name: its log file under `OPENIDEA_SMOKE_LOG_DIR`.
+    test: String,
     _tmp: tempfile::TempDir,
 }
 
@@ -150,6 +152,29 @@ fn utf16_len(s: &str) -> u32 {
     s.encode_utf16().count() as u32
 }
 
+/// Copies the log files below `from` (up to 8 MiB each) into `to`, named by their path below `base`.
+fn collect_logs(base: &Path, from: &Path, to: &Path, depth: usize) {
+    let Ok(entries) = std::fs::read_dir(from) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            if depth < 12 {
+                collect_logs(base, &path, to, depth + 1);
+            }
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_log = name.ends_with(".log") || name.ends_with(".out");
+        if !is_log || entry.metadata().is_ok_and(|m| m.len() > 8 << 20) {
+            continue;
+        }
+        let flat = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().replace(['/', '\\'], "__");
+        let _ = std::fs::create_dir_all(to);
+        let _ = std::fs::copy(&path, to.join(flat));
+    }
+}
+
 /// The 0-based line index and text of the first line containing `needle`.
 fn find_line<'a>(text: &'a str, needle: &str, what: &str) -> (u32, &'a str) {
     text.lines()
@@ -171,10 +196,25 @@ fn find_word(line: &str, word: &str) -> Option<usize> {
 
 impl Smoke {
     async fn start(language: &'static str, checks: &Checks) -> Self {
+        Self::open(language, checks.fixture, checks.files, checks.warm_up).await
+    }
+
+    /// Names the test, for its log.
+    fn named(mut self, test: &str) -> Self {
+        self.test = test.to_owned();
+        self
+    }
+
+    async fn open(
+        language: &'static str,
+        fixture: &'static str,
+        files: &'static [(&'static str, &'static str)],
+        warm_up: Duration,
+    ) -> Self {
         let tmp = tempfile::tempdir().unwrap();
-        let root = dunce::canonicalize(tmp.path()).unwrap().join(checks.fixture);
-        copy_dir(&fixture_dir(checks.fixture), &root);
-        for (path, text) in checks.files {
+        let root = dunce::canonicalize(tmp.path()).unwrap().join(fixture);
+        copy_dir(&fixture_dir(fixture), &root);
+        for (path, text) in files {
             let path = root.join(path);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
@@ -200,7 +240,35 @@ impl Smoke {
         }));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project(WINDOW, &root).unwrap();
-        Smoke { language, host, root, events, warm_up: checks.warm_up, _tmp: tmp }
+        Smoke { language, host, root, events, warm_up, test: language.to_owned(), _tmp: tmp }
+    }
+
+    /// Writes what happened to `OPENIDEA_SMOKE_LOG_DIR/<test>.log` (CI uploads it when a leg fails).
+    fn write_log(&self) {
+        let Some(dir) = std::env::var_os("OPENIDEA_SMOKE_LOG_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let _ = std::fs::create_dir_all(&dir);
+        let mut out = format!(
+            "test: {}\nlanguage: {}\nproject: {}\npanicking: {}\n\nlanguage server events:\n",
+            self.test,
+            self.language,
+            self.root.display(),
+            std::thread::panicking()
+        );
+        // A panic in another task may have poisoned the lock: the events are still worth writing.
+        let events = self.events.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for event in events.iter() {
+            if let IdeEvent::LanguageServer { name, status, message, .. } = event {
+                let detail = message.as_deref().map(|m| format!(" - {}", m.replace('\n', " | "))).unwrap_or_default();
+                out.push_str(&format!("  {name}: {status:?}{detail}\n"));
+            }
+        }
+        let _ = std::fs::write(dir.join(format!("{}.log", self.test)), out);
+        if std::thread::panicking() {
+            // What the servers wrote themselves (jdtls's `.metadata/.log`, logs of the IDE's own).
+            let base = self._tmp.path().join("app");
+            collect_logs(&base, &base, &dir.join(format!("{}-server-logs", self.test)), 0);
+        }
     }
 
     fn fail(&self, check: &str, message: impl std::fmt::Display) -> ! {
@@ -353,10 +421,16 @@ impl Smoke {
     }
 
     async fn diagnostic(&self, file: &str, message: &str) -> Range {
+        self.diagnostic_since(file, message, 0).await
+    }
+
+    /// The range of the diagnostic `message` in `file`, from the events after the first `since`
+    /// (a restart's new instance, not the one before it).
+    async fn diagnostic_since(&self, file: &str, message: &str, since: usize) -> Range {
         let path = self.path(file);
         self.retry("diagnostics", self.warm_up, || async {
             let events = self.events.lock().unwrap();
-            let latest = events.iter().rev().filter_map(|e| match e {
+            let latest = events[since.min(events.len())..].iter().rev().filter_map(|e| match e {
                 IdeEvent::Diagnostics { path: p, items, source } if **p == *path => Some((source, items)),
                 _ => None,
             });
@@ -370,6 +444,27 @@ impl Smoke {
             Err(seen.into_iter().take(4).collect::<Vec<_>>())
         })
         .await
+    }
+
+    /// Waits until no server reports `message` for `file` any more.
+    async fn diagnostic_gone(&self, file: &str, message: &str) {
+        let path = self.path(file);
+        self.retry("diagnostics clear", self.warm_up, || async {
+            let events = self.events.lock().unwrap();
+            let mut sources = BTreeSet::new();
+            for e in events.iter().rev() {
+                // Each source's latest report is what the editor shows.
+                if let IdeEvent::Diagnostics { path: p, items, source } = e
+                    && **p == *path
+                    && sources.insert(source.clone())
+                    && items.iter().any(|d| d.message.contains(message))
+                {
+                    return Err(format!("{source} still reports {message:?}"));
+                }
+            }
+            Ok(())
+        })
+        .await;
     }
 
     /// The code actions over `range` (all kinds, as the ⌥⏎ popup asks), the one titled `title`.
@@ -637,14 +732,166 @@ impl Smoke {
         if let Some((from, to, referencing, result)) = c.file_move {
             self.file_move(from, to, referencing, result).await;
         }
+        self.shutdown().await;
+    }
+
+    async fn shutdown(&self) {
         let shutdown = self.host.project(WINDOW).unwrap().lsp.clone();
         let _ = tokio::time::timeout(Duration::from_secs(20), shutdown.shutdown_all()).await;
+    }
+
+    /// Runs the project's build tool in the project folder; fails with the end of its output.
+    async fn build(&self, build: (&'static str, &'static [&'static str]), when: &str) {
+        let (program, args) = build;
+        let program = if cfg!(windows) {
+            match program {
+                "mvn" => "mvn.cmd",
+                "gradle" => "gradle.bat",
+                other => other,
+            }
+        } else {
+            program
+        };
+        let (root, args) = (self.root.clone(), args);
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(program).args(args).current_dir(root).output()
+        })
+        .await
+        .unwrap()
+        .unwrap_or_else(|e| self.fail("build", format_args!("cannot run {program}: {e}")));
+        if !output.status.success() {
+            let text =
+                format!("{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            let tail: Vec<&str> = text.lines().rev().take(60).collect::<Vec<_>>().into_iter().rev().collect();
+            self.fail("build", format_args!("{program} {args:?} failed {when}:\n{}", tail.join("\n")));
+        }
+    }
+
+    /// Go to definition from `from` lands outside the project (a library's class).
+    async fn library_definition(&self, from: At) {
+        let (doc, pos) = self.locate(from).await;
+        self.retry("go to a library's definition", self.warm_up, || async {
+            let found = ops::lsp::lsp_goto(&self.host, WINDOW, doc, pos, GotoKind::Definition).await;
+            match &found {
+                Ok(locs) if !locs.is_empty() && locs.iter().all(|l| !l.path.starts_with(&self.root)) => Ok(()),
+                _ => Err(found.map(|l| l.into_iter().map(|l| l.path).collect::<Vec<_>>())),
+            }
+        })
+        .await;
+    }
+}
+
+impl Drop for Smoke {
+    fn drop(&mut self) {
+        self.write_log();
     }
 }
 
 async fn smoke(language: &'static str, checks: Checks) {
     let smoke = Smoke::start(language, &checks).await;
     smoke.run(&checks).await;
+}
+
+/// Restarting a language server keeps the editor and the server in step: the text typed but not
+/// saved reaches the new instance (it reports the same problem again), and navigation answers.
+async fn restart_recovers(language: &'static str, checks: Checks, server: &'static str, test: &'static str) {
+    let smoke = Smoke::start(language, &checks).await.named(test);
+    smoke.definition(checks.definition.0, checks.definition.1).await;
+    let q = checks.quick_fix;
+    let (doc, _, before) = smoke.type_line(q.typed).await;
+    smoke.diagnostic(q.typed.file, q.diagnostic).await;
+    let since = smoke.events.lock().unwrap().len();
+    let id = ops::lsp::lsp_servers(&smoke.host, WINDOW)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.name == server)
+        .unwrap_or_else(|| smoke.fail("restart", format_args!("no {server} server is running")))
+        .id;
+    // A server that is still importing when the call gives up is not a failure: what counts is
+    // that it recovers, below.
+    let restarted = ops::lsp::lsp_restart(&smoke.host, WINDOW, id).await;
+    eprintln!("{test}: restart returned {restarted:?}");
+    smoke.diagnostic_since(q.typed.file, q.diagnostic, since).await;
+    smoke.definition(checks.definition.0, checks.definition.1).await;
+    let text = smoke.doc(q.typed.file).await.1;
+    if !text.contains(q.typed.text) {
+        smoke.fail("restart", format_args!("the unsaved line {:?} is gone from the buffer", q.typed.text));
+    }
+    smoke.restore(doc, &before).await;
+    smoke.shutdown().await;
+}
+
+/// Another program edits a file that is open and unmodified: the buffer follows the disk, the
+/// server learns of the new text (it reports a problem), and again when the file is restored.
+async fn external_change(language: &'static str, checks: Checks, test: &'static str) {
+    let smoke = Smoke::start(language, &checks).await.named(test);
+    smoke.definition(checks.definition.0, checks.definition.1).await;
+    let q = checks.quick_fix;
+    let path = smoke.path(q.typed.file);
+    // Open, and not modified.
+    let _ = smoke.doc(q.typed.file).await;
+    let original = std::fs::read_to_string(&path).unwrap();
+    let newline = if original.contains("\r\n") { "\r\n" } else { "\n" };
+    let after = original.find(q.typed.after).unwrap_or_else(|| panic!("{test}: no {:?}", q.typed.after));
+    let mut at = original[after..].find('\n').map_or(original.len(), |i| after + i);
+    if original[..at].ends_with('\r') {
+        at -= 1;
+    }
+    let edited = format!("{}{newline}{}{}", &original[..at], q.typed.text, &original[at..]);
+
+    std::fs::write(&path, &edited).unwrap();
+    smoke
+        .retry("the buffer follows the file on disk", Duration::from_secs(60), || async {
+            let text = smoke.doc(q.typed.file).await.1;
+            if text.contains(q.typed.text) { Ok(()) } else { Err(text.len()) }
+        })
+        .await;
+    smoke.diagnostic(q.typed.file, q.diagnostic).await;
+
+    std::fs::write(&path, &original).unwrap();
+    smoke
+        .retry("the buffer follows the restored file", Duration::from_secs(60), || async {
+            let text = smoke.doc(q.typed.file).await.1;
+            if text.contains(q.typed.text) { Err(text.len()) } else { Ok(()) }
+        })
+        .await;
+    smoke.diagnostic_gone(q.typed.file, q.diagnostic).await;
+    smoke.shutdown().await;
+}
+
+/// A project of two modules, one depending on the other and on a library.
+struct Modules {
+    fixture: &'static str,
+    warm_up: Duration,
+    /// Go to definition from a use in one module lands in the other.
+    across_modules: (At, At),
+    /// Go to definition from a library's class lands outside the project.
+    library: At,
+    /// Renaming this declaration edits these files of both modules.
+    rename: (At, &'static str, &'static [&'static str]),
+    /// The project's build tool compiles the project (program, arguments).
+    build: (&'static str, &'static [&'static str]),
+}
+
+/// Imports the project, resolves symbols across modules and in a library, renames across the
+/// modules, and the build tool still compiles the result.
+async fn multimodule(language: &'static str, m: Modules, test: &'static str) {
+    let smoke = Smoke::open(language, m.fixture, &[], m.warm_up).await.named(test);
+    // No server has a document yet: the baseline build does not compete with an import.
+    smoke.build(m.build, "before the rename").await;
+    smoke.definition(m.across_modules.0, m.across_modules.1).await;
+    smoke.library_definition(m.library).await;
+    let (symbol, to, files) = m.rename;
+    smoke.rename(symbol, to, files).await;
+    ops::doc::save_all(&smoke.host, WINDOW).await.unwrap_or_else(|e| smoke.fail("rename", format_args!("saving: {e}")));
+    for file in files {
+        let on_disk = std::fs::read_to_string(smoke.path(file)).unwrap();
+        if !on_disk.contains(to) {
+            smoke.fail("rename", format_args!("{file} on disk has no {to:?} after saving"));
+        }
+    }
+    smoke.build(m.build, "after the rename").await;
+    smoke.shutdown().await;
 }
 
 const TYPESCRIPT: Checks = Checks {
@@ -1056,4 +1303,86 @@ const PHP: Checks = Checks {
 #[ignore = "language smoke: needs intelephense"]
 async fn php() {
     smoke("php", PHP).await;
+}
+
+// ---- Restart, external changes and multi-module projects (the required `Real servers` legs) ----
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs vtsls"]
+async fn typescript_restart() {
+    restart_recovers("typescript", TYPESCRIPT, "vtsls", "typescript_restart").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs vtsls"]
+async fn typescript_external_change() {
+    external_change("typescript", TYPESCRIPT, "typescript_external_change").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs jdtls and JDK 21"]
+async fn java_restart() {
+    restart_recovers("java", JAVA, "jdtls", "java_restart").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs jdtls and JDK 21"]
+async fn java_external_change() {
+    external_change("java", JAVA, "java_external_change").await;
+}
+
+const JAVA_MODULES: Modules = Modules {
+    fixture: "java-multimodule",
+    warm_up: Duration::from_secs(300),
+    across_modules: (
+        at("app/src/main/java/com/example/app/Main.java", "Greeter greeter = new Greeter();", "Greeter"),
+        at("core/src/main/java/com/example/core/Greeter.java", "public class Greeter", "Greeter"),
+    ),
+    library: at("app/src/main/java/com/example/app/Main.java", "StringUtils.capitalize(\"world\")", "capitalize"),
+    rename: (
+        at("core/src/main/java/com/example/core/Greeter.java", "public String greet(String name)", "greet"),
+        "welcome",
+        &["core/src/main/java/com/example/core/Greeter.java", "app/src/main/java/com/example/app/Main.java"],
+    ),
+    build: ("mvn", &["-q", "-B", "compile"]),
+};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs jdtls, JDK 21 and Maven"]
+async fn java_multimodule() {
+    multimodule("java", JAVA_MODULES, "java_multimodule").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs kotlin-lsp, a JDK and Gradle"]
+async fn kotlin_restart() {
+    restart_recovers("kotlin", KOTLIN, "kotlin-lsp", "kotlin_restart").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs kotlin-lsp, a JDK and Gradle"]
+async fn kotlin_external_change() {
+    external_change("kotlin", KOTLIN, "kotlin_external_change").await;
+}
+
+const KOTLIN_MODULES: Modules = Modules {
+    fixture: "kotlin-gradle-multi",
+    warm_up: Duration::from_secs(480),
+    across_modules: (
+        at("app/src/main/kotlin/com/example/app/Main.kt", "val greeter = Greeter()", "Greeter"),
+        at("lib/src/main/kotlin/com/example/lib/Greeter.kt", "class Greeter {", "Greeter"),
+    ),
+    library: at("app/src/main/kotlin/com/example/app/Main.kt", "StringUtils.capitalize(\"world\")", "capitalize"),
+    rename: (
+        at("lib/src/main/kotlin/com/example/lib/Greeter.kt", "fun greet(name: String)", "greet"),
+        "welcome",
+        &["lib/src/main/kotlin/com/example/lib/Greeter.kt", "app/src/main/kotlin/com/example/app/Main.kt"],
+    ),
+    build: ("gradle", &["--no-daemon", "-q", "compileKotlin"]),
+};
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs kotlin-lsp, a JDK and Gradle"]
+async fn kotlin_multimodule() {
+    multimodule("kotlin", KOTLIN_MODULES, "kotlin_multimodule").await;
 }
