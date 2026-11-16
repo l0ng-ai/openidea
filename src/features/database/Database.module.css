@@ -47,7 +47,6 @@
 .headerName {
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 600;
 }
 .headerIcon {
   flex: none;
@@ -58,6 +57,7 @@
   margin-left: auto;
   color: var(--fg-muted);
 }
+
 .cellNumber {
   justify-content: flex-end;
 }
@@ -1364,7 +1364,7 @@
   gap: var(--space-0-5);
   padding: 2px 4px;
   border: 1px solid var(--border-popup, var(--border));
-  border-radius: var(--radius-small);
+  border-radius: var(--radius-popup);
   background: var(--bg-popup, var(--bg-elev));
   color: var(--fg-secondary);
   font-size: var(--fs-small);

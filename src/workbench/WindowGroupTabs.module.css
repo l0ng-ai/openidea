@@ -2,14 +2,13 @@
   display: flex;
   flex: none;
   align-items: center;
-  gap: var(--island-gap);
-  padding: 0 var(--island-gap) var(--island-gap);
+  position: relative;
+  padding: 0 var(--window-tabs-right, 40px) var(--space-0-5) var(--window-tabs-left, 40px);
   min-width: 0;
 }
 .tabs {
   display: flex;
   flex: 1;
-  gap: var(--space-1);
   overflow-x: auto;
   min-width: 0;
 }
@@ -19,13 +18,17 @@
   display: flex;
   align-items: center;
   flex: 1 1 0;
-  min-width: 120px;
-  border-radius: var(--radius-small);
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: var(--island-radius);
+  margin: 0 1px;
   color: var(--fg-muted);
 }
 .close {
   position: absolute;
-  left: 4px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
   opacity: 0;
 }
 .item:hover .close,
@@ -59,7 +62,7 @@
   color: inherit;
   background: transparent;
   font: inherit;
-  cursor: pointer;
+  cursor: default;
 }
 .tab span {
   overflow: hidden;
@@ -70,4 +73,21 @@
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   border-radius: var(--radius-small);
+}
+
+.item:not(.selected):not(:hover):not(:last-child):not(:has(+ .selected, + :hover))::after {
+  position: absolute;
+  top: 5px;
+  right: -1px;
+  bottom: 5px;
+  width: 1px;
+  background: var(--border-strong);
+  content: "";
+  pointer-events: none;
+}
+
+.detach {
+  position: absolute;
+  right: var(--stripe-outer-padding);
+  top: 0;
 }

@@ -77,6 +77,7 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   const keys = shortcut ?? (action ? shortcutLabel(action) : undefined);
   const busy = useRunningActions((s) => (action ? s.running.has(action) : false));
   const glyphSize = iconSize ?? 16;
+  const close = icon === "close";
   return (
     <button
       ref={ref}
@@ -88,7 +89,13 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       // Not `disabled`: a disabled button drops keyboard focus while the action runs.
       aria-disabled={busy || undefined}
       disabled={disabled}
-      className={clsx(styles.iconButton, styles[`is-${size}`], tone !== "default" && styles[`tone-${tone}`], className)}
+      className={clsx(
+        styles.iconButton,
+        styles[`is-${size}`],
+        close && styles.closeButton,
+        tone !== "default" && styles[`tone-${tone}`],
+        className,
+      )}
       onClick={(e) => {
         if (busy) return;
         onClick?.(e);
@@ -97,7 +104,16 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
       {...tooltipAttrs(label, keys, true)}
       {...rest}
     >
-      {busy ? <Spinner size={glyphSize} /> : <Icon name={icon} size={glyphSize} />}
+      {busy ? (
+        <Spinner size={glyphSize} />
+      ) : close ? (
+        <>
+          <Icon name="project-tab-close" size={16} className={styles.closeIdle} />
+          <Icon name="project-tab-close-hovered" size={16} className={styles.closeHovered} />
+        </>
+      ) : (
+        <Icon name={icon} size={glyphSize} />
+      )}
     </button>
   );
 });

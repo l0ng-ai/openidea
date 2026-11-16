@@ -38,12 +38,19 @@ import {
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
+  tooltipAttrs,
   type MenuItem,
   type TabItem,
   type TreeHandle,
   T,
 } from "@/ui";
-import { editorService, maybeEditorService, type EditorInput, useMenuSlotItems } from "@/workbench/contributions";
+import {
+  editorService,
+  maybeEditorService,
+  menuGroupItems,
+  type EditorInput,
+  useMenuSlotItems,
+} from "@/workbench/contributions";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
@@ -74,6 +81,7 @@ import {
   setGroupByDir,
   setGroupByRepo,
   setGroupByStaging,
+  setShowUnversionedSeparately,
   useCommit,
   type CommitTab,
 } from "./commitStore";
@@ -291,9 +299,11 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 
 /** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
 /** The selected files that still exist in the working tree (Delete… removes them from disk). */
+/** Whether the change leaves the file in the working tree. */
+const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+
 export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
-  const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
   return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
@@ -426,6 +436,10 @@ export function nodeMenu(
     { kind: "action", action: "vcs.localHistory", arg: first?.path },
     { kind: "action", action: "vcs.annotate", arg: first?.path },
     { kind: "separator" },
+    // Other features' groups (Deployment) for the files that exist.
+    ...menuGroupItems("changes", {
+      paths: files.filter(onDisk).map((f) => stripSlash(f.path)),
+    }),
     { label: "Copy Path", icon: "copy", run: () => copyChangePaths(nodes, "absolute") },
     { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
   );
@@ -612,6 +626,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const staging = useStagingArea() && mode === "commit";
   const groupByStaging = useCommit((s) => s.groupByStaging) || staging;
   const groupByRepo = useCommit((s) => s.groupByRepo);
+  const showUnversionedSeparately = useCommit((s) => s.showUnversionedSeparately);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
   const doubleClickOpensDiff = useWorkflowSettings((s) => s.vcs.commit.doubleClickOpensDiff);
@@ -630,8 +645,19 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   const heads = useVcs((s) => s.heads);
   const projectRoots = useEffectiveRoots();
   const roots = useMemo(
-    () => buildChangeTree(status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo),
-    [status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo],
+    () =>
+      buildChangeTree(
+        status,
+        root,
+        groupByDir,
+        lists,
+        repos,
+        groupByStaging,
+        heads,
+        groupByRepo,
+        showUnversionedSeparately,
+      ),
+    [status, root, groupByDir, lists, repos, groupByStaging, heads, groupByRepo, showUnversionedSeparately],
   );
   const [byKey, parents] = useMemo(() => {
     const m = new Map<string, ChangeNode>();
@@ -756,6 +782,12 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
               ...(staging
                 ? []
                 : [{ label: "Staging State", checked: groupByStaging, run: () => setGroupByStaging(!groupByStaging) }]),
+              { kind: "separator" },
+              {
+                label: "Show Unversioned Files Separately",
+                checked: showUnversionedSeparately,
+                run: () => setShowUnversionedSeparately(!showUnversionedSeparately),
+              },
               ...(mode === "local"
                 ? [
                     { kind: "separator" } as const,
@@ -884,7 +916,7 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
                   n.type === "group" && n.changelist && !n.active && styles.inactiveList,
                 )}
                 style={n.type === "file" && n.kind ? { color: KIND_COLOR[n.kind] } : undefined}
-                title={n.type === "file" && n.kind ? tx(KIND_LABEL[n.kind]) : undefined}
+                {...(n.type === "file" && n.kind && tooltipAttrs(KIND_LABEL[n.kind]))}
               >
                 {nodeText(n)}
               </span>

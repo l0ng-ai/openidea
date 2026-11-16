@@ -1,7 +1,7 @@
 use crate::apply::{
-    apply_to_run_configs, apply_to_run_configs_in, configure_server, jdtls_jdk, maven_command, maven_options,
-    project_jdk, python_interpreter, ruff_configuration, terminal_activation, tool_install_environment, tsdk,
-    without_derived, without_derived_in,
+    apply_to_run_configs, apply_to_run_configs_in, configure_server, configure_vue_module_resolution, jdtls_jdk,
+    maven_command, maven_options, project_jdk, python_interpreter, ruff_configuration, terminal_activation,
+    tool_install_environment, tsdk, without_derived, without_derived_in,
 };
 use crate::python::parse_pip_list;
 use crate::{bin_dir, exe, venv_of};
@@ -2734,4 +2734,51 @@ fn tool_installs_resolve_project_relative_sdks_and_leave_path_fallback_unconfigu
     std::fs::write(&real, "").unwrap();
     s.languages.python.interpreter = real.to_string_lossy().into_owned();
     assert_eq!(tool_install_environment(root, &s).commands["python"], real);
+}
+
+#[test]
+fn vue_module_resolution_plugin_follows_the_vue_plugin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    crate::apply::merge_init_options(
+        &mut cfg,
+        serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [crate::vue::tsserver_plugin(Path::new("/vue"))] } } }),
+    );
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+    assert_eq!(plugins[0]["name"], "@vue/typescript-plugin");
+    assert_eq!(plugins[1]["name"], "openidea-vue-module-resolution");
+    let index = tmp.path().join("tsplugins/node_modules/openidea-vue-module-resolution/index.js");
+    assert_eq!(std::fs::read_to_string(&index).unwrap(), include_str!("vue-module-resolution.js"));
+    // Running again replaces its own entry instead of stacking copies.
+    assert!(configure_vue_module_resolution(&mut cfg, tmp.path()));
+    let plugins = cfg
+        .initialization_options
+        .as_ref()
+        .map(|v| serde_json::to_value(v).unwrap())
+        .unwrap()
+        .pointer("/vtsls/tsserver/globalPlugins")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(plugins.len(), 2);
+}
+
+#[test]
+fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = server("vtsls");
+    assert!(!configure_vue_module_resolution(&mut cfg, tmp.path()));
+    assert!(cfg.initialization_options.is_none());
 }

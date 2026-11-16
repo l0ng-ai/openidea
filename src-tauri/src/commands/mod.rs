@@ -155,7 +155,6 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         agent::agent_send_queued_now,
         agent::agent_set_config,
         agent::agent_fork,
-        agent::agent_create_ephemeral,
         agent::agent_rollback,
         agent::agent_probe,
         agent::agent_cancel,

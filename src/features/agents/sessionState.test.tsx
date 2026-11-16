@@ -2016,7 +2016,9 @@ describe("meters in the task header", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const usage = screen.getByLabelText(/^Context /);
-    expect(usage).toHaveTextContent("24k/200k (12%)");
+    // The bar and percent show; the counts are in its label and tooltip.
+    expect(usage).toHaveTextContent("12%");
+    expect(usage).toHaveAccessibleName(/24k\/200k \(12%\)/);
     expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({
       width: "12%",
     });
