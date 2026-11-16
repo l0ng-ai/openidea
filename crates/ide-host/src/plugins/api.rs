@@ -677,9 +677,14 @@ impl Shared {
         }
         let previous =
             self.setting_snapshots.lock().insert((client.map(str::to_owned), pkg.id().into()), current.clone());
-        previous
-            .map(|old| current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect())
-            .unwrap_or_default()
+        match previous {
+            // First contact since the plugin loaded (fresh install, update,
+            // re-enable): hand over every current key, so the synthetic
+            // post-install `settings-changed` wakes the plugin instead of being
+            // dropped for having no diff yet.
+            None => current.into_keys().collect(),
+            Some(old) => current.into_iter().filter(|(k, v)| old.get(k) != Some(v)).map(|(k, _)| k).collect(),
+        }
     }
 
     pub fn status_snapshot(&self, client: &str) -> Vec<super::PluginStatusItem> {
