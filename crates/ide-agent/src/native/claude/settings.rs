@@ -50,9 +50,9 @@ impl Settings {
                 let value = s("value")?;
                 let resolved = s("resolvedModel");
                 // The default entry follows the account's default model, so "Default
-                // (recommended)" hides what actually runs: name it by the resolved model.
+                // (recommended)" hides what actually runs: name the model it resolves to.
                 let name = match (value.as_str(), resolved.as_deref()) {
-                    ("default", Some(r)) if !r.is_empty() => r.to_owned(),
+                    ("default", Some(r)) if !r.is_empty() => format!("Default ({r})"),
                     _ => s("displayName").unwrap_or_else(|| value.clone()),
                 };
                 Some(Model {
@@ -241,7 +241,7 @@ mod tests {
     fn the_default_entry_is_named_by_the_model_it_runs() {
         let s = Settings::from_cli(&init(), &json!({"applied": {"model": "claude-sonnet-5-5"}}));
         let names: Vec<_> = s.models.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(names, ["claude-sonnet-5-5", "Opus", "Haiku 4.5"]);
+        assert_eq!(names, ["Default (claude-sonnet-5-5)", "Opus", "Haiku 4.5"]);
         // Without a resolved model, the agent's own name stands.
         let s = Settings::from_cli(
             &json!({"models": [{"value": "default", "displayName": "Default (recommended)"}]}),
