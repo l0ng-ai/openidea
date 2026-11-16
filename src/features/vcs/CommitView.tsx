@@ -44,7 +44,13 @@ import {
   type TreeHandle,
   T,
 } from "@/ui";
-import { editorService, maybeEditorService, type EditorInput, useMenuSlotItems } from "@/workbench/contributions";
+import {
+  editorService,
+  maybeEditorService,
+  menuGroupItems,
+  type EditorInput,
+  useMenuSlotItems,
+} from "@/workbench/contributions";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import {
@@ -293,9 +299,11 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 
 /** Paths Delete… applies to: only when every selected file is unversioned (versioned ones are rolled back). */
 /** The selected files that still exist in the working tree (Delete… removes them from disk). */
+/** Whether the change leaves the file in the working tree. */
+const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
+
 export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
-  const onDisk = (f: FileStatus) => f.unstaged !== "deleted" && !(f.staged === "deleted" && !f.unstaged);
   return files.length && files.every(onDisk) ? files.map((f) => f.path) : [];
 }
 
@@ -428,6 +436,10 @@ export function nodeMenu(
     { kind: "action", action: "vcs.localHistory", arg: first?.path },
     { kind: "action", action: "vcs.annotate", arg: first?.path },
     { kind: "separator" },
+    // Other features' groups (Deployment) for the files that exist.
+    ...menuGroupItems("changes", {
+      paths: files.filter(onDisk).map((f) => stripSlash(f.path)),
+    }),
     { label: "Copy Path", icon: "copy", run: () => copyChangePaths(nodes, "absolute") },
     { label: "Copy File Name", icon: "copy", run: () => copyChangePaths(nodes, "name") },
   );
