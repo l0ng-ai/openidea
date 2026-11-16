@@ -641,6 +641,50 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
+/// Build / Rebuild of a Java project without a build tool, from its Project Structure;
+/// `None` when it has no Java sources under its source roots.
+fn structure_plan(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    kind: BuildKind,
+    cache: &Path,
+) -> IdeResult<Option<compile::BuildPlan>> {
+    use ide_workspace::roots::{ProjectRoots, RootKind};
+    if kind == BuildKind::Artifacts {
+        return Ok(None);
+    }
+    let roots = ProjectRoots::compute(detected.to_vec(), &settings.project_structure);
+    let of = |kind: RootKind| roots.roots.iter().filter(|r| r.kind == kind).map(|r| root.join(&r.path)).collect();
+    let module = settings.project_structure.module_settings(root, root);
+    let level = module
+        .map(|m| m.language_level.as_str())
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or(&settings.languages.java.language_level);
+    // Without a configured SDK, an installed JDK that can compile the language level.
+    let jdk = ide_sdk::apply::module_jdk(root, root, settings)
+        .or_else(|| {
+            let installed = ide_sdk::java::installed_jdks();
+            ide_sdk::java::pick_jdk(&installed, compile::language_release(level)).cloned()
+        })
+        .map(|j| compile::StructureJdk { home: j.home, major: j.major });
+    compile::structure_plan(
+        root,
+        &settings.project_structure,
+        &compile::StructureRoots {
+            sources: of(RootKind::Source),
+            tests: of(RootKind::Test),
+            resources: of(RootKind::Resources),
+            test_resources: of(RootKind::TestResources),
+            excluded: of(RootKind::Excluded),
+        },
+        jdk.as_ref(),
+        &settings.languages.java.language_level,
+        kind,
+        cache,
+    )
+}
+
 fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
     let commands = ide_run::cmake_build_configs(configs, id)?;
     let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
@@ -675,6 +719,7 @@ pub async fn build_run(
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
     let settings = project.settings.effective();
+    let detected = project.detected_roots.read().clone();
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
     let result = tokio::task::spawn_blocking(move || {
@@ -738,17 +783,15 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            prepare_plan(
-                compile::plan(
-                    &root,
-                    &with_profiles(load(&root, &cache, &settings), &cache),
-                    kind,
-                    file.as_deref(),
-                    settings.cmake.profiles.as_deref(),
-                )?,
-                &root,
-                &settings,
-            )
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            match compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref()) {
+                Ok(plan) => prepare_plan(plan, &root, &settings),
+                // No build tool: a Java project builds from its Project Structure.
+                Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => {
+                    structure_plan(&root, &settings, &detected, kind, &cache)?.ok_or(e)?
+                }
+                Err(e) => return Err(e),
+            }
         };
         let result = compile::run(&root, &plan, &token, &|e| {
             let _ = on_event.send(e);
