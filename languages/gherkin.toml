@@ -1,0 +1,6 @@
+id = "gherkin"
+name = "Gherkin"
+extensions = ["feature"]
+line-comment = "#"
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "Gherkin"
