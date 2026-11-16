@@ -422,7 +422,7 @@ async fn a_stop_of_the_traced_thread_while_the_chain_runs_is_resumed_unseen() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(h.commands().iter().filter(|c| *c == "continue").count(), 2, "{:?}", h.commands());
-    assert_eq!(h.log.lock().iter().filter(|m| m["command"] == "continue").last().unwrap()["arguments"]["threadId"], 1);
+    assert_eq!(h.log.lock().iter().rfind(|m| m["command"] == "continue").unwrap()["arguments"]["threadId"], 1);
     tracer.waits.lock().push_back(Ok(parked()));
     tracer.more.notify_one();
     let run = tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
