@@ -466,6 +466,14 @@ impl Action {
                 let mut written = Vec::new();
                 for (from, to) in entries {
                     let target = into.join(to);
+                    // The folders of the output it goes into (and a folder entry's own) are
+                    // never links; a file in a link's place replaces the link.
+                    let mut at = into.to_path_buf();
+                    let folders = to.components().count().saturating_sub(usize::from(!from.is_dir()));
+                    for c in to.components().take(folders) {
+                        at.push(c);
+                        refuse_link(&at)?;
+                    }
                     if from.is_dir() {
                         copy_tree(from, &target, &mut written, cancel)?;
                     } else if from.is_file() {
@@ -499,6 +507,16 @@ fn copy_file(from: &Path, to: &Path) -> IdeResult<()> {
     Ok(())
 }
 
+fn refuse_link(folder: &Path) -> IdeResult<()> {
+    if fs::symlink_metadata(folder).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(IdeError::invalid(format!(
+            "{} links to another folder; the artifact is not laid out through it",
+            folder.display()
+        )));
+    }
+    Ok(())
+}
+
 fn copy_tree(from: &Path, to: &Path, written: &mut Vec<PathBuf>, cancel: &CancellationToken) -> IdeResult<()> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
@@ -508,12 +526,7 @@ fn copy_tree(from: &Path, to: &Path, written: &mut Vec<PathBuf>, cancel: &Cancel
         let Ok(t) = e.file_type() else { continue };
         let target = to.join(e.file_name());
         if t.is_dir() {
-            if fs::symlink_metadata(&target).is_ok_and(|m| m.file_type().is_symlink()) {
-                return Err(IdeError::invalid(format!(
-                    "{} links to another folder; the artifact is not laid out through it",
-                    target.display()
-                )));
-            }
+            refuse_link(&target)?;
             copy_tree(&e.path(), &target, written, cancel)?;
         } else if t.is_file() {
             copy_file(&e.path(), &target)?;
@@ -926,6 +939,21 @@ mod tests {
             write(&project.join("src/x.txt"), "source");
             layout(&["a.jar"]).run(&CancellationToken::new()).unwrap();
             assert!(project.join("src/x.txt").is_file());
+        }
+        // An entry's own folder that links elsewhere stops the layout instead of copying through it.
+        #[cfg(unix)]
+        {
+            fs::remove_file(project.join("assets")).unwrap();
+            std::os::unix::fs::symlink(project.join("src"), project.join("classes")).unwrap();
+            write(&tmp.path().join("out/A.class"), "compiled");
+            let into_link = Action::Layout {
+                into: project.clone(),
+                entries: vec![(tmp.path().join("out"), PathBuf::from("classes"))],
+                record: Some(record.clone()),
+            };
+            assert!(into_link.run(&CancellationToken::new()).is_err());
+            assert!(!project.join("src/A.class").exists());
+            fs::remove_file(project.join("classes")).unwrap();
         }
         // Nor does one made for another output folder.
         write(&project.join("c.jar"), "mine");
