@@ -1,18 +1,18 @@
 import { executeAction } from "@/platform/actions";
-import { call, commands, isTauri } from "@/platform/ipc";
+import { call, commands, isTauri, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
 import { missingAdapter } from "./missingAdapter";
 import { useOverlays } from "./ui/popoverStore";
 
 /** Applies only the latest request of the open popup; results for a closed or refreshed one are dropped. */
-export async function openAttachPopup(mode: "all" | "unity" = "all") {
+export async function openAttachPopup(mode: "all" | "unity" = "all", runConfig?: RunConfig) {
   if (!isTauri()) {
     notifications().notify({ group: "run", level: "warning", title: "Attaching needs the desktop app" });
     return;
   }
   const projectRoot = useProject.getState().project?.root ?? null;
-  const pending = { processes: null, error: null, mode, projectRoot };
+  const pending = { processes: null, error: null, mode, projectRoot, runConfig };
   useOverlays.setState({ attach: pending });
   const current = () =>
     useOverlays.getState().attach === pending && (useProject.getState().project?.root ?? null) === projectRoot;
@@ -39,6 +39,6 @@ export async function installAttachAdapter() {
   if (!state?.installTool) return;
   await executeAction("tools.install", state.installTool);
   if (useOverlays.getState().attach === state && useProject.getState().project?.root === state.projectRoot) {
-    await openAttachPopup(state.mode);
+    await openAttachPopup(state.mode, state.runConfig);
   }
 }

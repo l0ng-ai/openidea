@@ -877,8 +877,8 @@ export function registerDebugActions(): () => void {
       category: "Run",
       icon: "debug",
       hidden: true,
-      when: "projectOpen && run.unityProject",
-      run: () => openAttachPopup("unity"),
+      when: "projectOpen",
+      run: ({ arg }) => openAttachPopup("unity", arg as RunConfig | undefined),
     },
     {
       id: "debug.debugInBrowser",

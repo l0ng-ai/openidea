@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { AttachableProcess, ProjectInfo } from "@/platform/ipc";
+import type { AttachableProcess, ProjectInfo, RunConfig } from "@/platform/ipc";
 
 const mocks = vi.hoisted(() => ({ discover: vi.fn(), generic: vi.fn(), start: vi.fn(), install: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -82,6 +82,16 @@ it("selects the requested Unity process and starts a non-rerunnable attach sessi
   );
   expect(mocks.generic).not.toHaveBeenCalled();
   expect(useOverlays.getState().attach).toBeNull();
+});
+
+it("associates the selected run configuration after refreshing the picker", async () => {
+  const runConfig = { id: "unity-editor", name: "Unity Editor", kind: "unity-editor" } as RunConfig;
+  await openAttachPopup("unity", runConfig);
+  render(<DebuggerOverlays />);
+  fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(useOverlays.getState().attach?.processes).toEqual([editor]));
+  fireEvent.click(screen.getByRole("button", { name: "Attach" }));
+  await waitFor(() => expect(mocks.start).toHaveBeenCalledWith(expect.anything(), { rerunnable: false, runConfig }));
 });
 
 it("offers installation for a missing adapter and retries discovery afterwards", async () => {

@@ -1,16 +1,13 @@
 import { executeAction, getAction } from "@/platform/actions";
-import { useProject } from "@/platform/project";
+import type { RunConfig } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
 
-export function isUnityProject(): boolean {
-  return !!useProject.getState().project?.unity;
-}
+export const UNITY_CONFIG_KIND = "unity-editor";
 
-export async function showUnityAttach(): Promise<void> {
-  if (!isUnityProject()) return;
+export async function showUnityAttach(config?: RunConfig): Promise<void> {
   if (!getAction("debug.attachUnity")) {
     notifications().notify({ group: "run", level: "warning", title: "Debugger is not available" });
     return;
   }
-  await executeAction("debug.attachUnity");
+  await executeAction("debug.attachUnity", config);
 }

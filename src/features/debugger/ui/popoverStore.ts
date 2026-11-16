@@ -21,6 +21,7 @@ interface OverlayState {
     mode?: "all" | "unity";
     projectRoot?: string | null;
     installTool?: string;
+    runConfig?: RunConfig;
   } | null;
   /**
    * Smart Step Into: picked in the editor when `inline` is set (targets sorted

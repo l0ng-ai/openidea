@@ -931,7 +931,7 @@ function AttachPopup() {
     close();
     if (!root) return;
     try {
-      await startSession(await attachConfig(p, root), { rerunnable: false });
+      await startSession(await attachConfig(p, root), { rerunnable: false, runConfig: state.runConfig });
     } catch (e) {
       notifications().notify({
         group: "run",
@@ -965,7 +965,7 @@ function AttachPopup() {
           disabled: state.processes === null || installing,
           onClick: () => {
             setActive(0);
-            void openAttachPopup(state.mode);
+            void openAttachPopup(state.mode, state.runConfig);
           },
         },
         { label: "Cancel", role: "cancel", onClick: close },

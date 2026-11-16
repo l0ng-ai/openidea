@@ -80,62 +80,32 @@ function openUnity() {
   });
 }
 
-it("disables Unity Run even with a selected configuration or a running session", async () => {
+it("keeps other configurations available in a Unity project", () => {
   openUnity();
-  const session = debug(app);
-  useRun.setState({ configs: [app], selectedId: app.id, loaded: true, sessions: [run(app)] });
-  useDebugRunSessions.setState({ sessions: [session] });
+  useRun.setState({ configs: [app, npm], selectedId: app.id, loaded: true });
   render(<RunWidget />);
-  expect(screen.getByRole("button", { name: "Run this project in Unity Editor" })).toBeDisabled();
-  expect(screen.getByRole("button", { name: "Attach to Unity Process" })).toBeEnabled();
-  expect(screen.queryByRole("button", { name: /Rerun/ })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Run/Debug Configurations" })).not.toBeInTheDocument();
-  for (const id of ["run.run", "run.runContext", "run.runConfig", "run.chooseConfig"]) {
-    expect(isActionEnabled(getAction(id)!)).toBe(false);
-    await executeAction(id, app);
-  }
-  expect(session.rerun).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Stop IDE Sessions" }));
-  await vi.waitFor(() => expect(session.stop).toHaveBeenCalledOnce());
+  expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeEnabled();
+  expect(isActionEnabled(getAction("run.run")!)).toBe(true);
+  expect(isActionEnabled(getAction("run.chooseConfig")!)).toBe(true);
 });
 
-it("opens Unity attachment from the Debug button and shortcut without selecting a run configuration", async () => {
+it("attaches when the Unity configuration is debugged", async () => {
   openUnity();
+  const unity = { ...config("unity-editor"), name: "Unity Editor", kind: "unity-editor", command: "" };
+  useRun.setState({ configs: [unity, app], selectedId: unity.id, loaded: true });
   const attach = vi.fn();
   const unregister = registerAction({ id: "debug.attachUnity", title: "Attach", run: attach });
   try {
     render(<RunWidget />);
-    fireEvent.click(screen.getByRole("button", { name: "Attach to Unity Process" }));
+    expect(screen.getByRole("button", { name: `'${unity.name}' can only be debugged` })).toBeDisabled();
     await act(async () => {
       await executeAction("run.debug");
     });
-    expect(attach).toHaveBeenCalledTimes(2);
+    expect(attach).toHaveBeenCalledOnce();
+    expect(useRun.getState().configs).toContain(app);
   } finally {
     unregister();
   }
-  expect(useRun.getState().chooserOpen).toBe(false);
-  expect(useRun.getState().sessions).toHaveLength(0);
-});
-
-it("restores normal Run controls when Unity metadata changes or another project opens", () => {
-  openUnity();
-  render(<RunWidget />);
-  act(() => {
-    useProject.setState({ project: { ...useProject.getState().project!, unity: null } });
-    useRun.setState({ configs: [app], selectedId: app.id });
-  });
-  expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeEnabled();
-  expect(isActionEnabled(getAction("run.run")!)).toBe(true);
-  expect(isActionEnabled(getAction("run.attachUnity")!)).toBe(false);
-  act(() => {
-    openUnity();
-  });
-  expect(screen.getByRole("button", { name: "Run this project in Unity Editor" })).toBeDisabled();
-  act(() => {
-    useProject.setState({ project: { ...useProject.getState().project!, root: "/app", unity: null } });
-    useRun.setState({ configs: [app], selectedId: app.id });
-  });
-  expect(screen.getByRole("button", { name: `Run '${app.name}'` })).toBeEnabled();
 });
 
 it("reruns and stops the selected configuration among several running sessions", () => {
