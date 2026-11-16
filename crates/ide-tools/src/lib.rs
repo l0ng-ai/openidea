@@ -92,6 +92,10 @@ pub struct ToolInfo {
     /// The interchangeable servers this one belongs to, in preference order: a
     /// server and the `fallback` ones after it. Empty when it has none.
     pub alternatives: Vec<String>,
+    /// A language server used for part of what its languages need (`features` in its
+    /// definition: pylsp-rope's refactorings next to basedpyright). Not offered for install
+    /// when missing; the Language Servers page lists it.
+    pub companion: bool,
 }
 
 /// Streamed install progress.
@@ -331,6 +335,7 @@ struct Usage {
     args: Vec<String>,
     initialization_options: Option<String>,
     alternatives: Vec<String>,
+    companion: bool,
 }
 
 fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
@@ -362,6 +367,11 @@ fn usages(langs: &[LanguageConfig]) -> BTreeMap<String, Usage> {
             let name =
                 if servers.contains(d.adapter.as_str()) && d.command != d.adapter { &d.command } else { &d.adapter };
             add(name, &d.command, ToolKind::Debugger, d.install_hint.as_ref(), &l.name);
+        }
+    }
+    for s in langs.iter().flat_map(|l| &l.language_servers).filter(|s| !s.features.is_empty()) {
+        if let Some(u) = map.get_mut(&s.name) {
+            u.companion = true;
         }
     }
     for (plugin, host) in registry::PLUGIN_HOSTS {
@@ -749,6 +759,7 @@ impl Tools {
                 default_args: u.args.clone(),
                 default_initialization_options: u.initialization_options.clone(),
                 alternatives: u.alternatives.clone(),
+                companion: u.companion,
             })
             .map(|info| self.apply_custom(info, None));
         };
@@ -775,6 +786,7 @@ impl Tools {
             default_args: usage.map(|u| u.args.clone()).unwrap_or_default(),
             default_initialization_options: usage.and_then(|u| u.initialization_options.clone()),
             alternatives: usage.map(|u| u.alternatives.clone()).unwrap_or_default(),
+            companion: usage.is_some_and(|u| u.companion),
         })
         .map(|info| self.apply_custom(info, Some(spec)))
     }

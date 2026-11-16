@@ -128,6 +128,7 @@ function pendingTool(name: string, entry: ServerEntry, languages: string[]): Too
     defaultArgs: [],
     defaultInitializationOptions: null,
     alternatives: [],
+    companion: false,
   };
 }
 

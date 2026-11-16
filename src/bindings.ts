@@ -10747,6 +10747,12 @@ export type ToolInfo = {
 	 *  server and the `fallback` ones after it. Empty when it has none.
 	 */
 	alternatives: string[],
+	/**
+	 *  A language server used for part of what its languages need (`features` in its
+	 *  definition: pylsp-rope's refactorings next to basedpyright). Not offered for install
+	 *  when missing; the Language Servers page lists it.
+	 */
+	companion: boolean,
 };
 
 export type ToolKind = "languageServer" | "debugger" | 

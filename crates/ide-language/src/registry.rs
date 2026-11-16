@@ -679,7 +679,7 @@ mod tests {
             let got: Vec<(&str, bool)> = cfg
                 .language_servers
                 .iter()
-                .filter(|s| !s.require_root_marker)
+                .filter(|s| !s.require_root_marker && s.features.is_empty())
                 .map(|s| (s.name.as_str(), s.fallback))
                 .collect();
             let expected: Vec<(&str, bool)> = servers.iter().enumerate().map(|(i, name)| (*name, i > 0)).collect();
@@ -780,12 +780,25 @@ mod tests {
     }
 
     #[test]
+    fn pylsp_adds_only_rope_refactorings_to_python() {
+        let reg = reg();
+        let cfg = reg.get(&LanguageId::new("python")).unwrap();
+        let pylsp = cfg.language_servers.iter().find(|s| s.name == "pylsp").unwrap();
+        assert!(!pylsp.fallback && !pylsp.require_root_marker);
+        assert_eq!(pylsp.features, ["code-action"]);
+        assert_eq!(pylsp.code_action_kinds, ["refactor"]);
+        let plugins = pylsp.initialization_options.as_ref().unwrap()["pylsp"]["plugins"].as_table().unwrap();
+        assert_eq!(plugins["jedi_completion"]["enabled"].as_bool(), Some(false));
+        assert!(plugins.values().all(|p| p["enabled"].as_bool() == Some(false)));
+    }
+
+    #[test]
     fn ruff_serves_python_files_only_below_its_config() {
         let reg = reg();
         let cfg = reg.get(&LanguageId::new("python")).unwrap();
         let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
         // After the fallbacks: hover, rename and symbols stay with the type checker.
-        assert_eq!(names, ["basedpyright", "pyright", "ty", "pyrefly", "ruff"]);
+        assert_eq!(names, ["basedpyright", "pyright", "ty", "pyrefly", "ruff", "pylsp"]);
         let ruff = cfg.language_servers.iter().find(|s| s.name == "ruff").unwrap();
         assert_eq!((ruff.command.as_str(), ruff.args.as_slice()), ("ruff", ["server".to_string()].as_slice()));
         assert!(ruff.require_root_marker && !ruff.fallback);
