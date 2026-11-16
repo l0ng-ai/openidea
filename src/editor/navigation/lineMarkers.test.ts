@@ -803,6 +803,26 @@ describe("python inheritance fallback", () => {
     expect(cachedMarkers(candidates, ALL, cache).map((m) => [m.line, m.kind])).toEqual([[0, "overridden"]]);
   });
 
+  it("walks up from the class itself, not every class of its name", async () => {
+    // a.py: `class BaseA` with `foo`, `class Child(BaseA)` with `foo`; b.py the same with BaseB.
+    const outline = (base: string) => [
+      item(base, "class", 0, 2, [item("foo", "method", 1, 1)], 6),
+      item("Child", "class", 3, 5, [item("foo", "method", 4, 4)], 6),
+    ];
+    const graph: ClassInheritance[] = [
+      { path: "/p/a.py", line: 0, col: 6, name: "BaseA", bases: [] },
+      { path: "/p/a.py", line: 3, col: 6, name: "Child", bases: ["BaseA"] },
+      { path: "/p/b.py", line: 0, col: 6, name: "BaseB", bases: [] },
+      { path: "/p/b.py", line: 3, col: 6, name: "Child", bases: ["BaseB"] },
+    ];
+    const { deps } = pythonServer(graph, { "/p/a.py": outline("BaseA"), "/p/b.py": outline("BaseB") });
+    const candidates = markerCandidates(outline("BaseA"), () => "");
+    const cache = emptyCache();
+    await fillMarkers("/p/a.py", candidates, ALL, deps(), cache);
+    const up = cachedMarkers(candidates, ALL, cache).find((m) => m.line === 4 && m.kind === "overriding");
+    expect(up?.targets.map((t) => [t.path, t.range.start.line])).toEqual([["/p/a.py", 1]]);
+  });
+
   it("resolves an ambiguous base name through the subclass file's imports", async () => {
     // Two modules declare `Config`; `from pkg.b import Config` picks one of them, so
     // only b.py's Config is marked as subclassed.
