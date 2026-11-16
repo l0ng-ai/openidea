@@ -7,10 +7,12 @@
 
 /** Output must keep coming this long to count: a single redraw (resize, focus, a status line) is not work. */
 export const SUSTAIN_MS = 500;
-/** Silence this long ends the work. Spinners and timers redraw far more often. */
+/** "Keeps coming": no longer apart than this. A clock or a monitor refreshing every second is not work. */
+export const DENSE_MS = 400;
+/** Silence this long ends the work; an elapsed-seconds counter keeps it going. */
 export const QUIET_MS = 1500;
 /** Output this soon after a keystroke is its echo. */
-export const ECHO_MS = 250;
+export const ECHO_MS = 400;
 
 export class OutputActivity {
   private streakStart: number | null = null;
@@ -22,8 +24,10 @@ export class OutputActivity {
   }
 
   output(now: number) {
-    if (now - this.lastInput < ECHO_MS) return;
-    if (this.streakStart === null || now - this.lastOutput > QUIET_MS) this.streakStart = now;
+    // Typing into a program at work must not hide its output.
+    const active = this.active(now);
+    if (!active && now - this.lastInput < ECHO_MS) return;
+    if (this.streakStart === null || now - this.lastOutput > (active ? QUIET_MS : DENSE_MS)) this.streakStart = now;
     this.lastOutput = now;
   }
 

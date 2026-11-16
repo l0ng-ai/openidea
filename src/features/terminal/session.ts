@@ -122,6 +122,8 @@ export interface SessionOptions {
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+/** Bracketed paste and the alternate screen: DEC private modes of a program that reads the keyboard itself. */
+const INPUT_MODES = new Set([47, 1047, 1049, 2004]);
 const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
 
 let audio: AudioContext | null = null;
@@ -267,6 +269,8 @@ export class TerminalSession {
   private commandInterrupted = false;
   private readonly activity = new OutputActivity();
   private activityTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Input modes the running command asked for; see `interactive`. */
+  private readonly inputModes = new Set<number>();
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -391,7 +395,7 @@ export class TerminalSession {
           this.commandInterrupted = false;
           // A new command in the tab: the previous completion has been seen, and
           // the new program has not reported progress yet.
-          this.activity.reset();
+          this.resetActivity();
           this.update({ commandRunning: true, unseenDone: false, progress: null });
         } else if (data === "D" || data.startsWith("D;")) {
           const status = data.length > 2 ? Number.parseInt(data.slice(2), 10) : Number.NaN;
@@ -399,6 +403,7 @@ export class TerminalSession {
           this.commandStartedAt = null;
           const interrupted = this.commandInterrupted;
           this.commandInterrupted = false;
+          this.resetActivity();
           this.update({ commandRunning: false, progress: null });
           // A D without a C (shell startup, a restored tab's first prompt) is
           // not a command finishing.
@@ -435,6 +440,8 @@ export class TerminalSession {
         if (!this.searchSelection && workflowSettings().terminal.copyOnSelection && this.term.hasSelection())
           this.copySelection();
       }),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => this.noteInputModes(params, true)),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => this.noteInputModes(params, false)),
       // Mouse reporting off: ignore the application's requests to enable mouse tracking.
       this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
         if (workflowSettings().terminal.mouseReporting) return false;
@@ -565,10 +572,27 @@ export class TerminalSession {
 
   /**
    * The running program takes input itself: it asked for bracketed paste or the
-   * alternate screen. Shells turn bracketed paste off before they run a command.
+   * alternate screen. Only its own requests count, not a mode an earlier program
+   * left on (one killed inside the alternate screen).
    */
   private get interactive(): boolean {
-    return this.term.modes.bracketedPasteMode || this.term.buffer.active.type === "alternate";
+    return this.inputModes.size > 0;
+  }
+
+  private noteInputModes(params: (number | number[])[], on: boolean): boolean {
+    for (const p of params) {
+      const mode = Array.isArray(p) ? p[0] : p;
+      if (mode === undefined || !INPUT_MODES.has(mode)) continue;
+      if (on) this.inputModes.add(mode);
+      else this.inputModes.delete(mode);
+    }
+    return false;
+  }
+
+  /** A command starts or ends: what the previous one asked for and drew no longer counts. */
+  private resetActivity() {
+    this.inputModes.clear();
+    this.activity.reset();
   }
 
   private isWorking(): boolean {
@@ -585,7 +609,7 @@ export class TerminalSession {
     this.activityTimer = null;
     const working = this.isWorking();
     if (working !== this.snapshot.working) this.update({});
-    if (!this.snapshot.commandRunning) return;
+    if (!this.snapshot.commandRunning || !this.interactive) return;
     const wait = this.activity.quietAt - Date.now();
     if (wait >= 0) this.activityTimer = setTimeout(() => this.syncWorking(), wait + 1);
   }
@@ -758,6 +782,7 @@ export class TerminalSession {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
     this.outputTail = "";
+    this.resetActivity();
     const custom = this.opts.command;
     this.update({
       status: "starting",
