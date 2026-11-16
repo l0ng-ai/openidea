@@ -5,6 +5,7 @@ import { toolWindowService } from "@/workbench/contributions";
 import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
+import { useTx } from "@/platform/i18n";
 import {
   Badge,
   dropZoneAt,
@@ -358,6 +359,7 @@ function GroupTabs({ group }: { group: string }) {
   const [shells, setShells] = useState<string[]>([]);
   const menuRef = useRef<HTMLButtonElement>(null);
   const focusRaf = useRef(0);
+  const tx = useTx();
 
   const items: TabItem[] = tabs.map((t) => {
     const session = sessions[t.session];
@@ -371,6 +373,12 @@ function GroupTabs({ group }: { group: string }) {
     ) : dead ? (
       <Badge dot tone={status === "error" ? "danger" : "neutral"}>
         {status === "error" ? "Failed" : "Exited"}
+      </Badge>
+    ) : session?.unseenDone ? (
+      // A finished command not seen yet (#3712): clears when the tab is focused
+      // or opened from its notification.
+      <Badge dot tone="accent">
+        {tx("Finished")}
       </Badge>
     ) : null;
     return {

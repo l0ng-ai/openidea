@@ -1,5 +1,5 @@
 import type { Branch, Commit } from "@/bindings";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const vcsCommitFiles = vi.fn();
@@ -88,6 +88,15 @@ afterEach(() => {
 });
 
 describe("changed files model", () => {
+  it("carries a symbolic link's target kind from both change shapes", () => {
+    const [one] = toLogChanges([{ path: "link1", kind: "added", oldPath: null, link: "dir" }], commit);
+    const [many] = toLogChanges(
+      [{ path: "link1", kind: "added", oldPath: null, before: null, after: commit.id, link: "unresolved" }],
+      null,
+    );
+    expect([one!.link, many!.link]).toEqual(["dir", "unresolved"]);
+  });
+
   it("keeps the revisions before and after each file's change", () => {
     const [mod, add, del] = toLogChanges(
       [
@@ -230,6 +239,28 @@ describe("changed files pane", () => {
     expect(await screen.findByText("moved from ../old/original.txt")).toBeInTheDocument();
     // A rename within one directory keeps naming just the file.
     expect(screen.getByText("renamed from original.txt")).toBeInTheDocument();
+  });
+
+  it("marks symbolic links with the target's folder or file icon and the link arrow (#3777)", async () => {
+    vcsCommitFiles.mockResolvedValue({
+      status: "ok",
+      data: [
+        { path: "dir1/example.txt", kind: "added", oldPath: null },
+        { path: "link1", kind: "added", oldPath: null, link: "dir" },
+        { path: "note-link.txt", kind: "added", oldPath: null, link: "file" },
+        { path: "link3", kind: "added", oldPath: null, link: "unresolved" },
+      ],
+    });
+    useGitLog.setState({ commits: [commit], selected: commit.id, selection: [commit.id] });
+    render(<CommitDetails commits={[commit]} />);
+    const row = (name: string) => screen.getByText(name).closest('[role="treeitem"]') as HTMLElement;
+    await screen.findByText("link1");
+    const linkOf = (name: string) => row(name).querySelector("[data-link]")?.getAttribute("data-link") ?? null;
+    expect(["link1", "note-link.txt", "link3", "example.txt"].map(linkOf)).toEqual(["dir", "file", "unresolved", null]);
+    expect(within(row("link1")).getByLabelText("Symbolic link")).toBeInTheDocument();
+    expect(within(row("note-link.txt")).getByLabelText("Symbolic link")).toBeInTheDocument();
+    expect(within(row("link3")).getByLabelText("Symbolic link, target not found in this revision")).toBeInTheDocument();
+    expect(within(row("example.txt")).queryByLabelText(/Symbolic link/)).toBeNull();
   });
 });
 

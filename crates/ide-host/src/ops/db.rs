@@ -532,3 +532,35 @@ fn console_dir(host: &Host, id: &str) -> IdeResult<PathBuf> {
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
+
+/// Runs a client tool against target `id` until it exits or the request is cancelled.
+/// Desktop only: the file paths come from local dialogs.
+pub async fn run_tool(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    id: &str,
+    executable: &std::path::Path,
+    job: &ide_db::tools::DbToolJob,
+    on_output: impl FnMut(Vec<ide_db::tools::ToolLine>),
+) -> IdeResult<Option<i32>> {
+    let db = host.project(window)?.db.clone();
+    let cancel = host.begin_request(request);
+    let result = db.run_tool(id, executable, job, &cancel, on_output).await;
+    host.end_request(request);
+    result
+}
+
+pub fn tool_preview(
+    host: &Host,
+    window: &str,
+    id: &str,
+    executable: &std::path::Path,
+    job: &ide_db::tools::DbToolJob,
+) -> IdeResult<String> {
+    host.project(window)?.db.tool_preview(id, executable, job)
+}
+
+pub async fn server_version(host: &Host, window: &str, id: &str) -> IdeResult<u32> {
+    host.project(window)?.db.server_version(id).await
+}

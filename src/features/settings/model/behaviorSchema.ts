@@ -105,11 +105,18 @@ export interface NotificationGroupValid {
   log: boolean;
 }
 
+/** When a finished terminal command notifies (#3712, Settings › Notifications › Terminal). */
+export type TerminalCompletionMode = "off" | "longRunning" | "all";
+
 export interface NotificationsValid {
   balloons: boolean;
   sound: boolean;
   /** Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
   systemNotifications: boolean;
+  /** Terminal command completions: off, long-running ones only (default), or every one. */
+  terminalCompletion: TerminalCompletionMode;
+  /** Mode `longRunning`: the run time a command must reach, in seconds. */
+  terminalThresholdSeconds: number;
   groups: Record<string, NotificationGroupValid>;
 }
 
@@ -166,6 +173,8 @@ export const DEFAULT_NOTIFICATIONS: NotificationsValid = {
   balloons: true,
   sound: false,
   systemNotifications: true,
+  terminalCompletion: "longRunning",
+  terminalThresholdSeconds: 10,
   groups: {},
 };
 
@@ -180,6 +189,7 @@ const int = (v: unknown, d: number, { min, max }: { min: number; max: number }) 
 const AA: readonly Antialiasing[] = ["subpixel", "greyscale", "none"];
 const concrete = (v: unknown, d: ConcreteTheme): ConcreteTheme => (isThemeChoiceId(v) ? v : d);
 const DISPLAYS: readonly NotificationDisplay[] = ["balloon", "sticky", "none"];
+const TERMINAL_COMPLETIONS: readonly TerminalCompletionMode[] = ["off", "longRunning", "all"];
 
 export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
   const a = obj(raw);
@@ -271,6 +281,11 @@ export function validateNotifications(raw: unknown): NotificationsValid {
     balloons: bool(n.balloons, DEFAULT_NOTIFICATIONS.balloons),
     sound: bool(n.sound, DEFAULT_NOTIFICATIONS.sound),
     systemNotifications: bool(n.systemNotifications, DEFAULT_NOTIFICATIONS.systemNotifications),
+    terminalCompletion: oneOf(n.terminalCompletion, TERMINAL_COMPLETIONS, DEFAULT_NOTIFICATIONS.terminalCompletion),
+    terminalThresholdSeconds: int(n.terminalThresholdSeconds, DEFAULT_NOTIFICATIONS.terminalThresholdSeconds, {
+      min: 1,
+      max: 86_400,
+    }),
     groups,
   };
 }

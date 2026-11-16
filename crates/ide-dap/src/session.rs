@@ -114,6 +114,8 @@ pub(crate) struct Session {
     pub jvm_located: watch::Sender<bool>,
     pub kotlin_mirror: Mutex<Option<crate::kotlin::SourceMirror>>,
     pub jvm_memory: tokio::sync::Mutex<crate::JvmMemoryState>,
+    pub stream_tracer: parking_lot::Mutex<Option<Arc<dyn ide_jvm_inspect::StreamTracer>>>,
+    pub(crate) stream_trace: parking_lot::Mutex<Option<crate::stream_trace::ActiveTrace>>,
     /// Used only by a kotlin-lsp session: see [`Session::kotlin_lsp_quirks`].
     pub(crate) quirks: kotlin_lsp::Quirks,
     pub(crate) unity_startup_activity: Mutex<Instant>,
@@ -195,6 +197,13 @@ impl Suspension {
         self.0.lock().ticket
     }
 
+    /// The ticket of a stop of `thread` (its own or every thread's) taken after ticket `after`.
+    pub fn stopped_since(&self, thread: i64, after: u64) -> Option<u64> {
+        let stops = self.0.lock();
+        let own = stops.threads.iter().find(|&&(id, _)| id == thread).map(|&(_, ticket)| ticket);
+        own.max(stops.all).filter(|&ticket| ticket > after)
+    }
+
     /// After a successful resume-like request for `thread`; `all`: every thread ran.
     pub fn resumed(&self, ticket: u64, thread: i64, all: bool) {
         self.0.lock().release(Some(thread), all, ticket);
@@ -270,6 +279,8 @@ impl Session {
             jvm_located: watch::channel(false).0,
             kotlin_mirror: Mutex::new(None),
             jvm_memory: tokio::sync::Mutex::default(),
+            stream_tracer: parking_lot::Mutex::new(None),
+            stream_trace: parking_lot::Mutex::new(None),
             quirks: kotlin_lsp::Quirks::default(),
             unity_startup_activity: Mutex::new(Instant::now()),
         }
@@ -741,6 +752,9 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         }
         "stopped" => {
             let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);
+            if crate::stream_trace::resume_traced_stop(s, int("threadId"), all) {
+                return;
+            }
             s.suspended.stopped(int("threadId"), all);
             let mut reason = str_("reason").unwrap_or_else(|| "pause".into());
             if let Some(quirks) = s.kotlin_lsp_quirks() {

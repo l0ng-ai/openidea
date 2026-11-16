@@ -109,8 +109,8 @@ export class BracketScanner {
     this.checkpoints.length = n;
   }
 
-  /** Brackets in `[from, to)` with their depth; unmatched ones get depth -1. */
-  marks(state: EditorState, from: number, to: number): BracketMark[] {
+  /** The state's syntax tree (null: lexical); drops checkpoints a changed tree may reinterpret. */
+  private sync(state: EditorState): Tree | null {
     const tree = treeOf(state);
     if (tree !== this.tree) {
       // A grown tree may reinterpret what was past its old end.
@@ -118,6 +118,37 @@ export class BracketScanner {
       else this.checkpoints.length = 0;
       this.tree = tree;
     }
+    return tree;
+  }
+
+  /**
+   * The innermost bracket still open at each of `positions` (ascending), or null where
+   * none is, or where the position lies past the parsed syntax tree.
+   */
+  openAt(state: EditorState, positions: readonly number[]): (BracketMark | null)[] {
+    const tree = this.sync(state);
+    const doc = state.doc;
+    const limit = tree ? Math.min(doc.length, tree.length) : doc.length;
+    const comments = tree ? {} : (state.languageDataAt<CommentTokens>("commentTokens", 0)[0] ?? {});
+    const out: (BracketMark | null)[] = [];
+    let s: ScanState | null = null;
+    for (const pos of positions) {
+      if (pos > limit) {
+        out.push(null);
+        continue;
+      }
+      // Continue from the previous position unless a checkpoint is nearer.
+      const cp = this.start(pos);
+      if (!s || s.pos > pos || cp.pos > s.pos) s = cp;
+      this.scan(doc, tree, comments, s, pos, () => {});
+      out.push(s.stack ? { from: s.stack.pos, depth: s.stack.depth } : null);
+    }
+    return out;
+  }
+
+  /** Brackets in `[from, to)` with their depth; unmatched ones get depth -1. */
+  marks(state: EditorState, from: number, to: number): BracketMark[] {
+    const tree = this.sync(state);
     const doc = state.doc;
     to = Math.min(to, doc.length);
     const limit = tree ? Math.min(doc.length, tree.length) : doc.length;
@@ -319,6 +350,14 @@ const plugin = ViewPlugin.fromClass(
   },
   { decorations: (v) => v.decorations },
 );
+
+/**
+ * The rainbow bracket scanner of `view`, up to date with its state, or null while
+ * rainbow brackets are off: indent guides and sticky lines take bracket colours from it.
+ */
+export function bracketScanner(view: EditorView): BracketScanner | null {
+  return view.plugin(plugin)?.scanner ?? null;
+}
 
 /** Rainbow brackets for one editor (Settings › Editor › Color Scheme › Rainbow brackets). */
 export function rainbowBrackets(): Extension {

@@ -24,7 +24,7 @@ import { openDialog } from "./dialogs";
 import { commitRepo, type RepoCommit } from "./multiRoot";
 import { currentRepoRoot } from "./store";
 import { repositoryPath } from "./repositoryPaths";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
 import styles from "./GitLog.module.css";
 import { choosePath } from "@/platform/choosePath";
 import { openLogTab } from "./logStore";
@@ -196,7 +196,8 @@ function RevisionSource({ repo, revision, path, external }: RevisionData) {
       if (external) await call(commands.vcsOpenExternalLog(repo));
       return call(commands.vcsFileAt(absolute, revision));
     };
-    void Promise.all([content(), languageFor(path)])
+    void content()
+      .then(async (text) => [text, await languageFor(absolute, text == null ? null : firstLineOf(text))] as const)
       .then(([text, language]) => {
         if (!alive || !host.current) return;
         view = new EditorView({

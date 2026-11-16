@@ -307,6 +307,20 @@ pub struct ChangedFile {
     pub path: String,
     pub kind: ChangeKind,
     pub old_path: Option<String>,
+    /// Set when the entry is a symbolic link (git mode `120000`); only revision diffs fill it.
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
+}
+
+/// What a symbolic link in a revision points to, resolved inside that revision's tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkTarget {
+    Dir,
+    File,
+    /// Dangling, outside the repository (absolute or above its root), or a link loop.
+    Unresolved,
 }
 
 /// Added and deleted lines of one file between two revisions (`git diff --numstat`).
@@ -334,6 +348,10 @@ pub struct RevisionChange {
     pub before: Option<String>,
     /// Commit holding the new content; `None` when the file was deleted.
     pub after: Option<String>,
+    /// Set when the entry is a symbolic link, resolved at `after` (`before`, for a deletion).
+    #[serde(default)]
+    #[specta(optional)]
+    pub link: Option<LinkTarget>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

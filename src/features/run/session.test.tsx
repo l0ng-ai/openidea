@@ -16,12 +16,14 @@ import { ConsoleModel } from "./console";
 import { ConsoleView, type ConsoleInput } from "./ConsoleView";
 import { buildRows, mnemonics } from "./ConfigChooser";
 import { activate } from "./index";
+import { launchProduced } from "./contextRun";
 import {
   onRunExited,
   closeSessionTab,
   resetRuns,
   runtime,
   startRun,
+  debugSingleInstance,
   stopRunningInstances,
   useRun,
   runSelectedTests,
@@ -118,6 +120,56 @@ describe("single-instance runs", () => {
     expect(await stopRunningInstances(app)).toBe(false);
     expect(await stopRunningInstances(config("other"))).toBe(true);
     expect(await stopRunningInstances(config("app", { allowParallel: true }))).toBe(true);
+  });
+
+  it("debugs one instance at a time: stops the debugged one first, ignores a Debug while preparing", async () => {
+    const app = config("app");
+    const stop = debugging(app);
+    let finish = () => {};
+    const launch = vi.fn(async () => {});
+    launch.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          expect(stop).toHaveBeenCalled();
+          finish = resolve;
+        }),
+    );
+    const first = debugSingleInstance(app, launch);
+    await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(1));
+    expect(confirm).toHaveBeenCalledWith("app", 1);
+    await debugSingleInstance(app, launch);
+    expect(launch).toHaveBeenCalledTimes(1);
+    finish();
+    await first;
+
+    confirm.mockResolvedValue(false);
+    await debugSingleInstance(app, launch);
+    expect(launch).toHaveBeenCalledTimes(1);
+    await debugSingleInstance(config("app", { allowParallel: true }), launch);
+    expect(launch).toHaveBeenCalledTimes(2);
+  });
+
+  it("Debug on a compiled single file being debugged asks before building it again", async () => {
+    const file = config("context:file:main.rs", { kind: "rustc", debugAdapter: "codelldb" });
+    const stop = debugging(file);
+    const produced = {
+      name: "main.rs",
+      scope: "file" as const,
+      config: file,
+      debug: {
+        build: config("context:build:main.rs", { name: "Build main.rs" }),
+        config: { ...file, kind: "native" },
+      },
+    };
+    confirm.mockResolvedValue(false);
+    await launchProduced(produced, true);
+    expect(confirm).toHaveBeenCalledWith("context:file:main.rs", 1);
+    expect(stop).not.toHaveBeenCalled();
+    expect(useRun.getState().sessions).toEqual([]);
+
+    confirm.mockResolvedValue(true);
+    await launchProduced(produced, true);
+    expect(stop).toHaveBeenCalled();
   });
 
   it("Run on a configuration being debugged asks and stops the debug session", async () => {

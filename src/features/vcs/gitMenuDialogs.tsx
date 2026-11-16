@@ -17,6 +17,7 @@ import {
   Tree,
   useSanitizedField,
   type SelectOption,
+  type SelectProps,
 } from "@/ui";
 import { sortLocal, sortRemote } from "./branches";
 import { conflictActions, openConflictsInstead, validateBranchName } from "./branchOps";
@@ -118,6 +119,11 @@ function useBranches(repo: string | null): Branch[] {
 
 const branchOptions = (list: readonly Branch[]): SelectOption[] =>
   list.filter((b) => !b.name.endsWith("/HEAD")).map((b) => ({ value: b.name, label: b.name, icon: "branch" }));
+
+/** Every branch choice in these dialogs: repositories hold hundreds of branches, so type to filter, Enter picks. */
+function BranchSelect(props: Omit<SelectProps, "searchable">) {
+  return <Select {...props} searchable />;
+}
 
 /** Remote branches of `remote` without the remote prefix (`origin/main` → `main`). */
 export function remoteBranchesOf(branches: readonly Branch[], remote: string): string[] {
@@ -255,7 +261,7 @@ function PullDialog({ initialRepo, onClose }: { initialRepo?: string | null; onC
               options={(remotes ?? []).map((r) => ({ value: r.name, label: r.name, detail: r.url }))}
               onChange={setRemote}
             />
-            <Select
+            <BranchSelect
               aria-label="Remote branch"
               className={styles.grow}
               value={branch}
@@ -333,7 +339,7 @@ function MergeDialog({ initialRepo, onClose }: { initialRepo?: string | null; on
         <div className={styles.fieldLabel}>
           <T>Branch to merge:</T>
         </div>
-        <Select
+        <BranchSelect
           aria-label="Branch to merge"
           value={branch}
           placeholder="Select branch"
@@ -424,7 +430,7 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
         <div className={styles.fieldLabel}>
           {useOnto ? tx`Rebase commits of ${head ?? "HEAD"} not on:` : `Rebase ${head ?? "HEAD"} onto:`}
         </div>
-        <Select
+        <BranchSelect
           aria-label="Upstream"
           value={upstream}
           placeholder="Select branch"
@@ -433,7 +439,13 @@ function RebaseDialog({ initialRepo, onClose }: { initialRepo?: string | null; o
         />
         <Checkbox label="--onto" checked={useOnto} onChange={setUseOnto} />
         {useOnto && (
-          <Select aria-label="New base" value={onto} placeholder="New base" options={options} onChange={setOnto} />
+          <BranchSelect
+            aria-label="New base"
+            value={onto}
+            placeholder="New base"
+            options={options}
+            onChange={setOnto}
+          />
         )}
         <Checkbox label="--rebase-merges" checked={rebaseMerges} onChange={setRebaseMerges} />
         <Checkbox label="--keep-empty" checked={keepEmpty} onChange={setKeepEmpty} />
@@ -913,7 +925,7 @@ function NewWorktreeDialog({
         <div className={styles.fieldLabel}>
           <T>Check out:</T>
         </div>
-        <Select
+        <BranchSelect
           aria-label="Check out"
           value={source}
           placeholder="Select branch"

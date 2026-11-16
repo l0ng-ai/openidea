@@ -3,9 +3,11 @@
 use crate::state::AppState;
 use ide_core::{IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
+use ide_db::tools::{DbDumpKind, DbTool, DbToolJob, ToolInstall, ToolLine};
 use ide_db::{DataSource, DbObjectKind, DbRowEdit, SortKey};
 #[allow(unused_imports)]
 pub use ide_host::ops::db::*;
+use tauri::ipc::Channel;
 use tauri::{State, Window};
 
 #[tauri::command]
@@ -368,4 +370,64 @@ pub fn db_console_path(state: State<'_, AppState>, id: String) -> IdeResult<IpcP
 #[specta::specta]
 pub fn db_consoles(state: State<'_, AppState>, id: String, create: bool) -> IdeResult<Vec<IpcPath>> {
     ide_host::ops::db::consoles(&state.host, &id, create)
+}
+
+/// Installed copies of `tool`, newest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
+    super::doc::blocking(move || Ok(ide_db::tools::find_installs(tool))).await
+}
+
+/// The version line of the executable at `path`.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
+    super::doc::blocking(move || ide_db::tools::version_of(&path)).await
+}
+
+/// What made the dump at `path` (from its first bytes), so a restore picks the right tool.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_dump_kind(path: std::path::PathBuf) -> IdeResult<DbDumpKind> {
+    super::doc::blocking(move || ide_db::tools::dump_kind(&path)).await
+}
+
+/// The command line `db_run_tool` would run, without the password.
+#[tauri::command]
+#[specta::specta]
+pub fn db_tool_preview(
+    window: Window,
+    state: State<'_, AppState>,
+    id: String,
+    executable: std::path::PathBuf,
+    job: DbToolJob,
+) -> IdeResult<String> {
+    ide_host::ops::db::tool_preview(&state.host, window.label(), &id, &executable, &job)
+}
+
+/// Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
+/// in the desktop shell like [`db_export_file`]: the paths in `job` are local.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_run_tool(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    id: String,
+    executable: std::path::PathBuf,
+    job: DbToolJob,
+    on_output: Channel<Vec<ToolLine>>,
+) -> IdeResult<Option<i32>> {
+    ide_host::ops::db::run_tool(&state.host, window.label(), request, &id, &executable, &job, |lines| {
+        let _ = on_output.send(lines);
+    })
+    .await
+}
+
+/// `server_version_num` of the PostgreSQL server of target `id` (connects first).
+#[tauri::command]
+#[specta::specta]
+pub async fn db_server_version(window: Window, state: State<'_, AppState>, id: String) -> IdeResult<u32> {
+    ide_host::ops::db::server_version(&state.host, window.label(), &id).await
 }

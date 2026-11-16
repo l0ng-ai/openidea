@@ -46,6 +46,7 @@ pub mod sdk;
 pub mod search;
 pub mod spell;
 pub mod ssh;
+pub mod stream_trace;
 pub mod syntax;
 pub mod term;
 pub mod tools;
@@ -216,7 +217,7 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         doc::doc_save_all,
         doc::doc_sync_from_disk,
         doc::doc_snapshot,
-        doc::doc_ui_mode,
+        doc::doc_language,
         doc::doc_set_encoding,
         doc::doc_set_bom,
         doc::doc_set_line_ending,
@@ -592,6 +593,9 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         heap::debug_heap_compare,
         heap::debug_heap_save,
         heap::debug_heap_close,
+        stream_trace::debug_stream_chains,
+        stream_trace::debug_stream_trace,
+        stream_trace::debug_stream_trace_abort,
         plugin::plugin_subscribe,
         plugin::plugin_list,
         plugin::plugin_set_enabled,
@@ -783,5 +787,11 @@ pub fn builder() -> tauri_specta::Builder<tauri::Wry> {
         db::db_apply_edits,
         db::db_console_path,
         db::db_consoles,
+        db::db_tool_installs,
+        db::db_tool_version,
+        db::db_tool_preview,
+        db::db_dump_kind,
+        db::db_run_tool,
+        db::db_server_version,
     ])
 }

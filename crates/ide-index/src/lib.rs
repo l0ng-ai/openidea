@@ -50,6 +50,17 @@ pub struct SymbolMatch {
     pub indices: MatchIndices,
 }
 
+/// A class declaration of the index and the base names written in its source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassDecl {
+    pub path: PathBuf,
+    pub name: String,
+    /// Selection range: the class name's identifier.
+    pub range: Range,
+    /// Bare base names, as written (`class X(pkg.mod.Base)` keeps `Base`).
+    pub bases: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum SymbolFilter {
@@ -206,9 +217,32 @@ impl ProjectIndex {
                     kind: s.kind,
                     container: s.container.map(ToString::to_string),
                     range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
                 })
                 .collect(),
         )
+    }
+
+    /// Every class declaration of the indexed project (content roots included) with the
+    /// base names written in its source, in path order. The UI builds an inheritance
+    /// graph from it, so it needs no language server's type hierarchy.
+    pub fn inheritance(&self) -> Vec<ClassDecl> {
+        let data = self.shared.data.read();
+        let mut out = Vec::new();
+        for entry in data.files.iter().flatten() {
+            for s in data.symbols_of(entry) {
+                if s.kind != SymbolKind::Class {
+                    continue;
+                }
+                out.push(ClassDecl {
+                    path: entry.path.clone(),
+                    name: s.name.to_owned(),
+                    range: s.range,
+                    bases: s.bases.split('\0').filter(|b| !b.is_empty()).map(str::to_owned).collect(),
+                });
+            }
+        }
+        out
     }
 
     /// Bounded file inventory for background plugin indexers; honors the same
@@ -517,6 +551,7 @@ pub mod bench_support {
                         kind: if k % 3 == 0 { SymbolKind::Class } else { SymbolKind::Method },
                         container: (k % 3 != 0).then(|| format!("{w}{s}")),
                         range: Range::default(),
+                        bases: Vec::new(),
                     })
                     .collect();
                 let record = FileRecord { symbols, ..Default::default() };
