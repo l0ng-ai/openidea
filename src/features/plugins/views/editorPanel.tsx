@@ -109,7 +109,7 @@ export class PanelEditor implements FrameEditor {
         } else {
           const before = syntaxTree(u.startState);
           const after = syntaxTree(u.state);
-          // ponytail: a parse that progressed redoes the lines from where the shorter tree ends;
+          // A parse that progressed redoes the lines from where the shorter tree ends;
           // compare the trees' fragments if pages need tighter ranges.
           if (before !== after) {
             const at = Math.min(before.length, after.length, u.state.doc.length);

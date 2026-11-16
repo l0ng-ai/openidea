@@ -278,11 +278,7 @@ function PaneView({ paneId }: { paneId: string }) {
       },
       onDropOutside: dropOutside,
     });
-    return {
-      all: strip(0),
-      pinned: strip(0, true),
-      rest: strip(pinnedCount, false),
-    };
+    return { all: strip(0), pinned: strip(0, true), rest: strip(pinnedCount, false) };
   }, [ctrl, paneId, pinnedCount]);
 
   // Dropping a tab or project files on the editor: an edge splits, the middle opens / moves here.

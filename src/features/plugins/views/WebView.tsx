@@ -472,7 +472,7 @@ export function WebView({
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
-      src={editor ? `${page.url}?${EDITOR_PANEL_QUERY}` : page.url}
+      src={editor ? `${page.url}${page.url.includes("?") ? "&" : "?"}${EDITOR_PANEL_QUERY}` : page.url}
       onLoad={() => {
         postTheme();
         setLoadedPage(page);
