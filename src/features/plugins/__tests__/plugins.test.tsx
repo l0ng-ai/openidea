@@ -1550,6 +1550,33 @@ describe("marketplace", () => {
     },
   );
 
+  it("shows the Java agent next to the java.agent permission", async () => {
+    setPluginsBackend(
+      createMemoryPluginsBackend([
+        plugin({
+          id: "spring",
+          name: "Spring",
+          hasCode: false,
+          status: "static",
+          capabilities: [
+            {
+              id: "java.agent",
+              risk: "high",
+              description: "Run code inside the Java applications you start",
+              optional: true,
+              granted: true,
+            },
+          ],
+          contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
+        }),
+      ]),
+    );
+    render(<PluginsPage initialTab="installed" />);
+    const permissions = await screen.findByRole("list", { name: "Permissions" });
+    expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
+    expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+  });
+
   it("offers to roll back an update", async () => {
     const base = createMemoryPluginsBackend([
       plugin({ id: "p", name: "P", version: "2.0.0", previousVersion: "1.0.0" }),
