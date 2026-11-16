@@ -214,6 +214,50 @@ async fn project_path_argument_routes_to_another_open_project() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn trusted_attached_projects_are_writable_and_reach_the_window_they_are_attached_in() {
+    let h = Harness::new();
+    h.trust().await;
+    let base = dunce::canonicalize(h.tmp.path()).unwrap();
+    let (attached, untrusted, other) = (base.join("attached"), base.join("untrusted"), base.join("other"));
+    for dir in [&attached, &untrusted, &other] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    ide_workspace::workspace::Workspace::attach(
+        &h.root,
+        "project",
+        vec![h.root.clone(), attached.clone(), untrusted.clone()],
+    )
+    .unwrap();
+    h.host.trust.decide(&attached, true, false).unwrap();
+
+    // Outside the project folder, by absolute path.
+    let file = attached.join("new.txt");
+    h.call("create_new_file", json!({"pathInProject": file, "text": "hello"})).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+    let shown = file.to_string_lossy().replace('\\', "/");
+    let patch = format!("*** Begin Patch\n*** Update File: {shown}\n@@\n-hello\n+patched\n*** End Patch");
+    let output = h.call("apply_patch", json!({ "input": patch })).await;
+    assert!(output.starts_with("1 out of 1"), "{output}");
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("patched"));
+    for dir in [&untrusted, &other] {
+        let e = h.error("create_new_file", json!({"pathInProject": dir.join("x.txt"), "text": "no"})).await;
+        assert!(e.contains("outside"), "{}: {e}", dir.display());
+        assert!(!dir.join("x.txt").exists());
+    }
+
+    // A `projectPath` naming the attached project reaches the window it is attached in.
+    let registry = Registry::new(h.host.clone());
+    assert!(registry.projects().contains(&attached));
+    let read = tokio::task::spawn_blocking(move || {
+        registry.call(&attached, "read_file", &json!({"file_path": "src/b.txt"}).to_string(), CancellationToken::new())
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(read.starts_with("L1: needle"), "{read}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
     let h = Harness::new();
     h.trust().await;

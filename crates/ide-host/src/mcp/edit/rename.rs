@@ -331,7 +331,7 @@ targetIndex, or narrow the call with a contextSnippet that shows the one you mea
             FileEdit::Rename { from, to } => vec![from, to],
         };
         for p in paths {
-            if let Err(e) = super::super::tool::ensure_inside(call.root(), p) {
+            if let Err(e) = call.ensure_writable_place(p) {
                 let hint = format!(
                     "{}. Nothing was renamed. A rename that must change a file outside the project cannot run here.",
                     e.message
