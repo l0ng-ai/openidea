@@ -596,6 +596,31 @@ fn agent_process(h: &Harness, name: &str) -> ide_core::RunId {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
+async fn run_command_returns_once_a_server_prints_its_ready_line() {
+    let h = Harness::new();
+    h.trust().await;
+    h.host.mcp_requests.set_ready("main", true);
+    h.host
+        .global_settings
+        .set(ide_workspace::SettingsScope::Global, "mcpServer.runWithoutConfirmation", json!(true))
+        .unwrap();
+    let _started = run_tool_window(&h);
+    // A server started with its ready line returns once it prints it, long before the timeout.
+    let started_at = std::time::Instant::now();
+    let up = h
+        .json(
+            "run_command",
+            json!({"name": "web", "command": "sleep 1; echo Listening on 8080; sleep 30", "pattern": "Listening on", "timeout": 60000}),
+        )
+        .await;
+    assert_eq!((up["waitEnded"].as_str(), up["state"].as_str()), (Some("matched"), Some("running")), "{up}");
+    assert!(up["output"].as_str().unwrap().contains("Listening on 8080"), "{up}");
+    assert!(started_at.elapsed() < std::time::Duration::from_secs(20), "returned after {:?}", started_at.elapsed());
+    h.json("stop_run", json!({"name": "web", "force": true, "timeout": 10000})).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
 async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
     let h = Harness::new();
     h.trust().await;
