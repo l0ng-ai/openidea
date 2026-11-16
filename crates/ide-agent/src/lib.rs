@@ -626,14 +626,9 @@ impl AgentManager {
             }
             offered = self.shared.known_commands(&provider);
         }
-        for &(name, description) in builtin_commands(&provider) {
-            if !offered.iter().any(|c| c.name == name) {
-                offered.push(AgentCommand {
-                    name: name.to_owned(),
-                    description: description.to_owned(),
-                    hint: None,
-                    source: AgentCommandSource::Command,
-                });
+        for command in builtin_commands(&provider) {
+            if !offered.iter().any(|c| c.name == command.name) {
+                offered.push(command);
             }
         }
         if provider != "claude" && provider != "claude-acp" {
@@ -2483,8 +2478,17 @@ impl Task {
             if let Some(title) = title {
                 // Check and write under one lock: a rename landing between them would be lost.
                 let mut s = self.state.lock();
-                if !s.title_renamed && s.task.title != title {
+                let user_named = update.get("userNamed").and_then(Value::as_bool) == Some(true);
+                let flag_changed = user_named && !s.title_renamed;
+                if user_named {
+                    s.title_renamed = true;
+                }
+                if (user_named || !s.title_renamed) && s.task.title != title {
                     s.task.title = title.to_owned();
+                    drop(s);
+                    self.persist();
+                    self.emit_task();
+                } else if flag_changed {
                     drop(s);
                     self.persist();
                     self.emit_task();
@@ -3196,13 +3200,20 @@ fn model_of(config: &[AgentConfigOption]) -> Option<String> {
     config.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.clone())
 }
 
-/// Commands the agent implements on its own and never lists in `availableCommands` —
-/// its CLI builtins, passed through as prompt text (e.g. `/compact`). `(name, description)`.
-fn builtin_commands(provider: &str) -> &'static [(&'static str, &'static str)] {
+/// Commands the agent implements on its own and never lists in `availableCommands`.
+fn builtin_commands(provider: &str) -> Vec<AgentCommand> {
     match provider {
+        // Codex app-server has no command-list API, so the native adapter supplies its
+        // stable builtins and merges the session's dynamic skills separately.
+        "codex" => native::codex::builtin_commands(),
         // OpenCode ACP handles `/compact` via session.summarize but omits it from its command list.
-        "opencode" => &[("compact", "compact the conversation")],
-        _ => &[],
+        "opencode" => vec![AgentCommand {
+            name: "compact".into(),
+            description: "compact the conversation".into(),
+            hint: None,
+            source: AgentCommandSource::Command,
+        }],
+        _ => Vec::new(),
     }
 }
 
