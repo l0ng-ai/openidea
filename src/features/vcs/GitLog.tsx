@@ -2122,11 +2122,17 @@ function CommitRowView({
   const merge = opts.highlightMerges && c.parents.length > 1;
   const subjectRef = useRef<HTMLSpanElement>(null);
   const [tooltip, setTooltip] = useState(false);
+  const tooltipBody = useRef<HTMLDivElement>(null);
   const tooltipTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(tooltipTimer.current), []);
   useEffect(() => {
     if (!tooltip) return;
-    const hide = () => setTooltip(false);
+    // Scrolling the log moves the anchor away; scrolling a long message inside the card doesn't.
+    const hide = (e: Event) => {
+      const card = tooltipBody.current?.closest("[data-popup]");
+      if (e.target instanceof Node && card?.contains(e.target)) return;
+      setTooltip(false);
+    };
     window.addEventListener("scroll", hide, true);
     return () => window.removeEventListener("scroll", hide, true);
   }, [tooltip]);
@@ -2192,7 +2198,7 @@ function CommitRowView({
         onClose={() => setTooltip(false)}
         className={styles.commitTooltip}
       >
-        <div onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
+        <div ref={tooltipBody} onPointerEnter={() => clearTimeout(tooltipTimer.current)} onPointerLeave={leaveTooltip}>
           <CommitMessage commit={c} />
         </div>
       </Popup>
