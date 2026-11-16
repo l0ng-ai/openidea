@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { BranchInfo } from "@/bindings";
-import { messageProblems, wrapAtMargin } from "../CommitView";
+import { addBlankLineAfterSubject, messageProblems, wrapAtMargin } from "../CommitView";
 import { linkifyIssues } from "../issueLinks";
 import {
   isProtectedBranch,
@@ -39,6 +39,14 @@ describe("commit message inspections", () => {
     ]);
     expect(messageProblems("ok\n\nthis body line is long", cfg)).toEqual(["Body line 3 is longer than 8 characters"]);
     expect(messageProblems("x".repeat(20), { ...cfg, limitSubject: false })).toEqual([]);
+  });
+
+  it("adds the missing blank line after the subject", () => {
+    const fixed = addBlankLineAfterSubject("111\n111");
+    expect(fixed).toBe("111\n\n111");
+    expect(messageProblems(fixed, cfg)).toEqual([]);
+    expect(addBlankLineAfterSubject("subject\nline 2\nline 3")).toBe("subject\n\nline 2\nline 3");
+    expect(addBlankLineAfterSubject("subject")).toBe("subject");
   });
 
   it("wraps body lines at the last space before the margin", () => {
