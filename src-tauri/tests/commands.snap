@@ -81,6 +81,7 @@ close_project                                always             project_host bin
 coverage_collect                             trusted            project_host bindings async
 coverage_import                              always             project_host bindings async
 coverage_prepare                             trusted            project_host bindings async
+cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
 db_completion                                trusted            project_host bindings async
 db_connect                                   trusted            project_host bindings async
