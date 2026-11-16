@@ -24,7 +24,7 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import { EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
+import { ChangeSet, EditorSelection, EditorState, Prec, StateEffect, StateField, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, keymap, type Rect, type ViewUpdate } from "@codemirror/view";
 import {
   call,
@@ -44,7 +44,7 @@ import {
   typeColumnText,
   withoutDuplicates,
 } from "./completionItems";
-import { lspSnippetToCm, snippetVariables } from "./snippet";
+import { lspSnippetToCm, lspSnippetToPlainWithCaret, snippetVariables } from "./snippet";
 import { docOf, isUnavailable, lspDoc, lspRequest, reportLspError } from "./lsp";
 import { offsetToPos, posToOffset, textEditsToChanges } from "./positions";
 import { isEmptyMarkup, renderCode, renderMarkup } from "./markdown";
@@ -268,6 +268,13 @@ export function applyLspCompletion(
     .map((c) => ({ from: mapOld(c.from), to: mapOld(c.to), insert: c.insert }))
     .filter((c) => c.to <= start || c.from >= end);
 
+  if (applyAtCarets(view, completion, item, start, end, extra)) {
+    if (item === completion.lsp && !item.additionalEdits.length && item.data != null)
+      void applyLateEdits(view, completion, start);
+    runCommand(view, item);
+    return;
+  }
+
   let insertedParens: ReturnType<typeof callParens> = null;
   let bareCall: number | null = null;
   if (item.isSnippet) {
@@ -317,6 +324,70 @@ export function applyLspCompletion(
   if ((insertedParens === "inside" || callSnippet) && !hintsCommand) setTimeout(() => triggerSignatureHelp(view), 0);
   else if (bareCall !== null) void parameterInfoOrLeave(view, bareCall);
   runCommand(view, item);
+}
+
+/**
+ * With several carets, the item goes in at each caret whose text around it matches the main
+ * caret's (the typed prefix, and what a replacing edit overwrites), as IDEA completes at all
+ * carets. Snippets go in as plain text with the caret at their first stop, since fields cannot
+ * be edited at several places at once. False with a single caret, or no other caret matches.
+ */
+function applyAtCarets(
+  view: EditorView,
+  completion: LspCompletion,
+  item: CompletionItem,
+  start: number,
+  end: number,
+  extra: { from: number; to: number; insert: string }[],
+): boolean {
+  const state = view.state;
+  const { ranges, mainIndex } = state.selection;
+  if (ranges.length < 2) return false;
+  // The server inserts the item at the main caret; `caretAfterServerInsert` repeats it at the others.
+  if (serverInserts(item)) return true;
+  const head = state.selection.main.head;
+  if (head < start || head > end) return false;
+  const prefix = state.sliceDoc(start, head);
+  const suffix = state.sliceDoc(head, end);
+  const sites: { from: number; to: number; main: boolean }[] = [];
+  ranges.forEach((r, i) => {
+    if (i === mainIndex) return sites.push({ from: start, to: end, main: true });
+    if (!r.empty) return;
+    const from = r.head - prefix.length;
+    const to = r.head + suffix.length;
+    if (from < 0 || to > state.doc.length) return;
+    if (state.sliceDoc(from, r.head) !== prefix || state.sliceDoc(r.head, to) !== suffix) return;
+    sites.push({ from, to, main: false });
+  });
+  if (sites.length < 2) return false;
+  sites.sort((a, b) => a.from - b.from);
+  for (let i = 1; i < sites.length; i++) if (sites[i]!.from < sites[i - 1]!.to) return false;
+  if (extra.some((c) => sites.some((site) => c.from < site.to && c.to > site.from))) return false;
+
+  let text: string;
+  let caret: number;
+  if (item.isSnippet) {
+    ({ text, caret } = lspSnippetToPlainWithCaret(item.insertText, snippetVariables(completion.req.path)));
+  } else {
+    const parens = editorPrefs().completion.insertParentheses
+      ? callParens(item, state.doc.lineAt(start), start, end)
+      : null;
+    text = item.insertText + (parens ? "()" : "");
+    caret = text.length - (parens === "inside" ? 1 : 0);
+  }
+  const changes = state.changes([...extra, ...sites.map((site) => ({ from: site.from, to: site.to, insert: text }))]);
+  const cursors = sites.map((site) => EditorSelection.cursor(changes.mapPos(site.from, -1) + caret));
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(
+      cursors,
+      sites.findIndex((site) => site.main),
+    ),
+    userEvent: "input.complete",
+    annotations: pickedCompletion.of(completion),
+    scrollIntoView: true,
+  });
+  return true;
 }
 
 const CALLABLE = new Set(["function", "method", "constructor"]);
@@ -382,22 +453,62 @@ const caretAfterServerInsert = EditorState.transactionFilter.of((tr) => {
   const at = tr.startState.field(serverInsertAt, false);
   const caret = tr.startState.selection.main;
   if (at == null || !tr.docChanged || !tr.annotation(remoteChange) || !caret.empty || caret.head !== at) return tr;
-  let inserted = false;
-  tr.changes.iterChangedRanges((fromA, toA) => {
-    if (fromA <= at && toA >= at) inserted = true;
+  let edit: { from: number; to: number; insert: string } | null = null;
+  tr.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+    if (!edit && fromA <= at && toA >= at) edit = { from: fromA, to: toA, insert: inserted.toString() };
   });
-  return inserted ? [tr, { selection: EditorSelection.cursor(tr.changes.mapPos(at, 1)), sequential: true }] : tr;
+  const landed = edit as { from: number; to: number; insert: string } | null;
+  if (!landed) return tr;
+  const mainAfter = tr.changes.mapPos(at, 1);
+  // Further carets (picked with several): the same edit around each, where the text matches.
+  const replaced = tr.startState.sliceDoc(landed.from, landed.to);
+  const before = at - landed.from;
+  const after = landed.to - at;
+  const others: { from: number; to: number }[] = [];
+  for (const r of tr.startState.selection.ranges) {
+    if (r === caret || !r.empty) continue;
+    const from = r.head - before;
+    const to = r.head + after;
+    if (from < 0 || to > tr.startState.doc.length || tr.startState.sliceDoc(from, to) !== replaced) continue;
+    if (tr.changes.touchesRange(from, to)) continue;
+    others.push({ from: tr.changes.mapPos(from, 1), to: tr.changes.mapPos(to, -1) });
+  }
+  if (!others.length) return [tr, { selection: EditorSelection.cursor(mainAfter), sequential: true }];
+  const mirror = ChangeSet.of(
+    others.map((o) => ({ from: o.from, to: o.to, insert: landed.insert })),
+    tr.newDoc.length,
+  );
+  const cursors = [
+    { pos: mirror.mapPos(mainAfter, 1), main: true },
+    ...others.map((o) => ({ pos: mirror.mapPos(o.from, -1) + landed.insert.length, main: false })),
+  ].sort((a, b) => a.pos - b.pos);
+  return [
+    tr,
+    {
+      changes: mirror,
+      selection: EditorSelection.create(
+        cursors.map((c) => EditorSelection.cursor(c.pos)),
+        cursors.findIndex((c) => c.main),
+      ),
+      sequential: true,
+    },
+  ];
 });
 
 /** Client-side commands handled by the editor itself (VS Code ids servers commonly send). */
 const CLIENT_COMMANDS = new Set(["editor.action.triggerParameterHints", "editor.action.triggerSuggest"]);
 
+/** kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing goes in here. */
+function serverInserts(item: CompletionItem): boolean {
+  const cmd = item.command?.command;
+  return !!cmd && !item.insertText && !CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.");
+}
+
 function runCommand(view: EditorView, item: CompletionItem) {
   const command = item.command;
   if (!command?.command) return;
   const cmd = command.command;
-  // kotlin-lsp inserts the item itself (`jetbrains.kotlin.completion.apply`): nothing went in here.
-  const serverInserted = !item.insertText && !CLIENT_COMMANDS.has(cmd) && !cmd.startsWith("editor.");
+  const serverInserted = serverInserts(item);
   if (serverInserted) view.dispatch({ effects: awaitServerInsert.of(view.state.selection.main.head) });
   if (cmd === "editor.action.triggerParameterHints") setTimeout(() => triggerSignatureHelp(view), 0);
   else if (cmd === "editor.action.triggerSuggest") setTimeout(() => startCompletion(view), 0);
