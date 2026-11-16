@@ -23,9 +23,30 @@ config_source = next(home / name / 'config.ini' for name in config_names if (hom
 (config / 'config.ini').write_bytes(config_source.read_bytes())
 project = work / 'project'
 (project / 'src/zoo').mkdir(parents=True)
+(project / 'lib').mkdir()
+libs = work / 'libsrc/zoo'
+libs.mkdir(parents=True)
+(libs / 'ExternalRepo.java').write_text('''package zoo;
+
+public interface ExternalRepo {
+    String find(String id, int limit);
+}
+''')
+(libs / 'ExternalImpl.java').write_text('''package zoo;
+
+public class ExternalImpl implements ExternalRepo {
+    public String find(String id, int limit) {
+        return id + limit;
+    }
+}
+''')
+lib_classes = work / 'libclasses'
+lib_classes.mkdir()
+subprocess.run(['javac', '--release', '8', '-d', str(lib_classes)] + [str(p) for p in libs.glob('*.java')], check=True)
+subprocess.run(['jar', 'cf', str(project / 'lib/external-api.jar'), '-C', str(lib_classes), '.'], check=True)
 (project / '.project').write_text('<projectDescription><name>zoo</name><buildSpec><buildCommand><name>org.eclipse.jdt.core.javabuilder</name></buildCommand></buildSpec><natures><nature>org.eclipse.jdt.core.javanature</nature></natures></projectDescription>')
 # `kotlin`: the project's compiled Kotlin classes, as the Kotlin bridge attaches them.
-(project / '.classpath').write_text('<classpath><classpathentry kind="src" path="src"/><classpathentry kind="lib" path="kotlin"><attributes><attribute name="ai.openidea.kotlin" value="true"/></attributes></classpathentry><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="output" path="bin"/></classpath>')
+(project / '.classpath').write_text('<classpath><classpathentry kind="src" path="src"/><classpathentry kind="lib" path="lib/external-api.jar"/><classpathentry kind="lib" path="kotlin"><attributes><attribute name="ai.openidea.kotlin" value="true"/></attributes></classpathentry><classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/><classpathentry kind="output" path="bin"/></classpath>')
 sources = {
     'Repo.java': '''package zoo;
 
@@ -85,6 +106,14 @@ public class Anon {
             public void save(Double item) {
             }
         };
+    }
+}
+''',
+    'UseExternal.java': '''package zoo;
+
+public class UseExternal {
+    void use(ExternalRepo repo) {
+        repo.find("x", 1);
     }
 }
 ''',
@@ -180,6 +209,28 @@ def implementations(file, needle):
     return sorted(names), found['complete']
 
 
+def definition(file, needle):
+    line, col = position(file, needle)
+    return request('textDocument/definition', {'textDocument': {'uri': uri(file)}, 'position': {'line': line, 'character': col}})
+
+
+def class_contents(class_uri):
+    return request('java/classFileContents', {'uri': class_uri})
+
+
+def standard_implementations(class_uri, line, col):
+    found = request('textDocument/implementation', {'textDocument': {'uri': class_uri}, 'position': {'line': line, 'character': col}})
+    return found or []
+
+
+def implementation_locations(class_uri, line, col, targets):
+    found = command('openidea.java.implementationLocations', class_uri, line, col, targets)
+    return [
+        (pathlib.Path(urllib.parse.unquote(urllib.parse.urlparse(loc['uri']).path)).name, loc['range']['start']['line'])
+        for loc in found['locations'] if loc is not None
+    ]
+
+
 try:
     init = request('initialize', {'processId': None, 'rootUri': project.as_uri(), 'workspaceFolders': [{'uri': project.as_uri(), 'name': 'zoo'}], 'capabilities': {}, 'initializationOptions': {'bundles': [str(bundle)], 'extendedClientCapabilities': {'classFileContentsSupport': True}, 'settings': {'java': {'import': {'gradle': {'enabled': False}, 'maven': {'enabled': False}}}}}})
     assert 'openidea.java.implementations' in init['capabilities']['executeCommandProvider']['commands']
@@ -207,6 +258,20 @@ try:
         if actual != expected:
             failures.append((file, needle, expected, actual))
     assert not failures, failures
+
+    # An interface in a dependency: the standard request starts at the class file, and the
+    # extension resolves the implementing method's declaration in the dependency.
+    defs = definition('UseExternal.java', 'ExternalRepo repo')
+    class_uri = defs[0]['uri']
+    text = class_contents(class_uri)
+    method_line = next(i for i, line in enumerate(text.splitlines()) if 'find(' in line)
+    method_col = text.splitlines()[method_line].index('find')
+    std = standard_implementations(class_uri, method_line, method_col)
+    targets = [loc['uri'] for loc in std]
+    resolved = implementation_locations(class_uri, method_line, method_col, targets)
+    print('dependency implementation:', resolved)
+    expected = [(pathlib.Path(urllib.parse.unquote(urllib.parse.urlparse(targets[0]).path)).name, 7)]
+    assert resolved == expected, (resolved, expected)
     print('ok')
 finally:
     proc.kill()

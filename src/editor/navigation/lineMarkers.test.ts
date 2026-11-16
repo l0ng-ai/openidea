@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   IpcError,
+  commands,
   type ClassInheritance,
   type HierarchyItem,
   type Location,
@@ -498,11 +499,46 @@ describe("clicking a marker", () => {
   it("navigates to a single target", async () => {
     const target = loc("/p/Circle.java", 0, 13);
     await openMarkerTargets(
-      { kind: "implemented", line: 0, name: "Shape", targets: [target], tooltip: "", chooserTitle: "" },
+      {
+        kind: "implemented",
+        line: 0,
+        col: 17,
+        method: false,
+        name: "Shape",
+        targets: [target],
+        tooltip: "",
+        chooserTitle: "",
+      },
       { x: 1, y: 2 },
     );
     expect(nav.navigateTo).toHaveBeenCalledWith(target);
     expect(nav.openPopup).not.toHaveBeenCalled();
+  });
+
+  it("resolves a dependency's implementation at its method", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    const zero = loc("jdt://contents/lib.jar/zoo/Impl.java?=p/lib.jar", 0, 0);
+    zero.uri = zero.path;
+    const method = { ...zero, range: { start: { line: 5, col: 4 }, end: { line: 7, col: 5 } } };
+    const spy = vi.spyOn(commands, "lspImplementationLocations").mockResolvedValue({ status: "ok", data: [method] });
+    await openMarkerTargets(
+      {
+        kind: "implemented",
+        line: 1,
+        col: 9,
+        method: true,
+        name: "save",
+        targets: [zero],
+        tooltip: "",
+        chooserTitle: "",
+      },
+      { x: 1, y: 2 },
+      7,
+    );
+    expect(spy).toHaveBeenCalledWith(expect.any(Number), 7, { line: 1, col: 9 }, [zero]);
+    expect(nav.navigateTo).toHaveBeenCalledWith(method);
+    spy.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   it("opens the chooser over several targets", async () => {
@@ -512,6 +548,8 @@ describe("clicking a marker", () => {
       {
         kind: "implemented",
         line: 0,
+        col: 17,
+        method: false,
         name: "Shape",
         targets,
         tooltip: "",

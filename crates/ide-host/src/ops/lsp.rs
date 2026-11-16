@@ -550,6 +550,24 @@ pub async fn lsp_implementations(
     result
 }
 
+/// Refines the implementations `targets` of the method at `pos` to their declarations (Java
+/// dependencies' class files point at the start of the class). Cancel with
+/// `cancel_request(request)`.
+pub async fn lsp_implementation_locations(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    targets: Vec<Location>,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let (_, cancel) = begin_position_request(host, window, request, doc, pos).await?;
+    let result = lsp.implementation_locations(doc, pos, targets, cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// Go to Implementation of the symbol at `pos`. Implementations found before a slower
 /// search for the rest (Java: the project's, before the dependencies') arrive on
 /// `on_partial`; the result has them all. Cancel with `cancel_request(request)`.
@@ -1986,6 +2004,17 @@ pub(crate) fn register(d: &mut Dispatcher) {
     d.add("lsp_goto_implementation", |c| async move {
         let on_partial = c.sender("onPartial")?;
         lsp_goto_implementation(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?, on_partial).await
+    });
+    d.add("lsp_implementation_locations", |c| async move {
+        lsp_implementation_locations(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("targets")?,
+        )
+        .await
     });
     d.add(
         "lsp_resolve_class_file",
