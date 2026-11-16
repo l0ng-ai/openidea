@@ -16,7 +16,10 @@ pub use single::{
     SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, single_file_classpath,
     single_file_target,
 };
-pub use structure::{StructureJdk, StructureRoots, language_release, structure_outputs, structure_plan};
+pub use structure::{
+    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
+    structure_war_plan, structure_web_artifacts,
+};
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 
 use crate::process::{self, Stream};

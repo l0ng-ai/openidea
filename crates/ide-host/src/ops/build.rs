@@ -641,8 +641,8 @@ pub async fn maven_exclude_dependency(
     .map_err(join_err)?
 }
 
-/// Build / Rebuild of a Java project without a build tool, from its Project Structure;
-/// `None` when it has no Java sources under its source roots.
+/// Build / Rebuild / Build Artifacts of a Java project without a build tool, from its
+/// Project Structure; `None` when it has no Java sources under its source roots.
 fn structure_plan(
     root: &Path,
     settings: &Settings,
@@ -650,10 +650,25 @@ fn structure_plan(
     kind: BuildKind,
     cache: &Path,
 ) -> IdeResult<Option<compile::BuildPlan>> {
+    let (roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_plan(
+        root,
+        &settings.project_structure,
+        &roots,
+        jdk.as_ref(),
+        &settings.languages.java.language_level,
+        kind,
+        cache,
+    )
+}
+
+/// The roots and JDK a build of a project without a build tool uses.
+pub(crate) fn structure_inputs(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+) -> (compile::StructureRoots, Option<compile::StructureJdk>) {
     use ide_workspace::roots::{ProjectRoots, RootKind};
-    if kind == BuildKind::Artifacts {
-        return Ok(None);
-    }
     let roots = ProjectRoots::compute(detected.to_vec(), &settings.project_structure);
     let of = |kind: RootKind| roots.roots.iter().filter(|r| r.kind == kind).map(|r| root.join(&r.path)).collect();
     let module = settings.project_structure.module_settings(root, root);
@@ -668,21 +683,14 @@ fn structure_plan(
             ide_sdk::java::pick_jdk(&installed, compile::language_release(level)).cloned()
         })
         .map(|j| compile::StructureJdk { home: j.home, major: j.major });
-    compile::structure_plan(
-        root,
-        &settings.project_structure,
-        &compile::StructureRoots {
-            sources: of(RootKind::Source),
-            tests: of(RootKind::Test),
-            resources: of(RootKind::Resources),
-            test_resources: of(RootKind::TestResources),
-            excluded: of(RootKind::Excluded),
-        },
-        jdk.as_ref(),
-        &settings.languages.java.language_level,
-        kind,
-        cache,
-    )
+    let roots = compile::StructureRoots {
+        sources: of(RootKind::Source),
+        tests: of(RootKind::Test),
+        resources: of(RootKind::Resources),
+        test_resources: of(RootKind::TestResources),
+        excluded: of(RootKind::Excluded),
+    };
+    (roots, jdk)
 }
 
 fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
