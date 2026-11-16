@@ -5,7 +5,7 @@ import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
 import { resolveMenuItems, type MenuItem } from "@/ui";
 import { registerMenuGroup } from "@/workbench/contributions";
-import { contextMenuItems, revealLabel } from "./contextMenu";
+import { contextMenuItems, keyLabel, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
 
@@ -87,6 +87,16 @@ describe("project view context menu", () => {
     const mixed = labels(contextMenuItems([node("/p/left", true), node("/p/a.txt")]));
     for (const label of ["Compare Directories", "Compare Files", "Compare With…"]) expect(mixed).not.toContain(label);
     expect(labels(contextMenuItems([node("/p/a.txt"), node("/p/b.txt")]))).toContain("Compare Files");
+  });
+
+  it("shows Compare With…'s shortcut on every comparison it runs (#3806)", () => {
+    const shortcut = (nodes: ProjectNode[], label: string) =>
+      resolveMenuItems(contextMenuItems(nodes)).find((r) => r.label === label)?.shortcut;
+    const expected = keyLabel("project.compareWith");
+    expect(expected).toBeTruthy();
+    expect(shortcut([node("/p/a.txt"), node("/p/b.txt")], "Compare Files")).toBe(expected);
+    expect(shortcut([node("/p/left", true), node("/p/right", true)], "Compare Directories")).toBe(expected);
+    expect(shortcut([node("/p/left", true)], "Compare With…")).toBe(expected);
   });
 
   it("offers Git for repositories found below a non-Git project root", () => {
