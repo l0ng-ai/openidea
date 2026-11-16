@@ -8497,5 +8497,19 @@
   "Controller": "控制器",
   "Helper": "辅助模块",
   "Model": "模型",
-  "Migration": "迁移"
+  "Migration": "迁移",
+  "Change Signature": "更改签名",
+  "Visibility:": "可见性:",
+  "Return type:": "返回类型:",
+  "package-private": "包私有",
+  "Delegate via overloading method": "通过重载方法委托",
+  "Signature Preview": "签名预览",
+  "Method name is not a valid identifier": "方法名不是有效的标识符",
+  "Return type is not specified": "未指定返回类型",
+  "Parameter type is not specified": "未指定形参类型",
+  "Parameter name is not a valid identifier": "形参名不是有效的标识符",
+  "Duplicate parameter name": "形参名重复",
+  "Default value is not specified for a new parameter": "未给新形参指定默认值",
+  "Visibility": "可见性",
+  "Change Signature of '{name}'": "更改 '{name}' 的签名"
 }

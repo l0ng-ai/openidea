@@ -18,7 +18,7 @@ The **Refactor** menu has IntelliJ IDEA's refactorings with their usual shortcut
 | Refactoring              | macOS | Windows / Linux | Works through                                          |
 | ------------------------ | ----- | --------------- | ------------------------------------------------------ |
 | **Rename…**              | `⇧F6` | `Shift+F6`      | Language server; local variables also without one      |
-| **Change Signature…**    | `⌘F6` | `Ctrl+F6`       | Language server                                        |
+| **Change Signature…**    | `⌘F6` | `Ctrl+F6`       | Java (dialog); other languages: language server        |
 | **Introduce Variable…**  | `⌥⌘V` | `Ctrl+Alt+V`    | Language server; simple cases also without one         |
 | **Introduce Constant…**  | `⌥⌘C` | `Ctrl+Alt+C`    | Language server; simple cases also without one         |
 | **Introduce Field…**     | `⌥⌘F` | `Ctrl+Alt+F`    | Language server                                        |
@@ -82,6 +82,10 @@ In the editor, **Move…** on a symbol runs the server's move refactoring, where
 
 These move fields and methods between a class and its superclasses or subclasses, in Java and, with Phoxite as the PHP server, in PHP (methods, properties and constants). A dialog lets you pick the members and the destination; problems the move would cause are listed in **Problems Detected** before you continue. For Java they are provided by the extension bundled with OpenIDEA, for PHP by Phoxite; they are not available for other languages or other PHP servers.
 
+## Change Signature
+
+In Java, **Change Signature…** (`⌘F6`) on a method opens a dialog to change its visibility, return type and name, and to add, remove and reorder its parameters. A new parameter needs a default value, which is passed at every existing call; **Delegate via overloading method** keeps the old signature as an overload that calls the new one. The preview line shows the resulting declaration. **Refactor** updates the method, its overrides and all calls in one step; **Preview** lists the changes first. In other languages it appears when the server offers a signature rewrite as a code action.
+
 ## Undo
 
 A refactoring is one undo step, even when it changed several files. After a multi-file refactoring, a notification offers **Undo** (and then **Redo**).
@@ -89,5 +93,5 @@ A refactoring is one undo step, even when it changed several files. After a mult
 ## Limits
 
 - Refactorings other than Rename, Safe Delete and the syntax-based fallbacks need a running language server that offers them. Check the **Language Services** widget in the status bar if one is missing.
-- Change Signature appears only when the server offers a signature rewrite as a code action.
+- Outside Java, Change Signature appears only when the server offers a signature rewrite as a code action.
 - There is no structural search-and-replace refactoring in this menu; see **Edit › Find › Replace Structurally…** in [Inspections](/en/guide/inspections).

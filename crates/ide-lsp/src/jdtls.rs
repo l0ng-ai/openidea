@@ -23,6 +23,7 @@ mod formatter;
 mod hierarchy;
 pub(crate) mod jvm_inspect;
 pub(crate) mod reserved_names;
+mod signature;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
