@@ -33,6 +33,7 @@ pub(crate) fn virtual_env_marker(dir: &Path) -> Option<&'static str> {
 /// Build files whose changes can change the detected roots.
 pub(crate) const BUILD_FILES: &[&str] = &[
     "pom.xml",
+    ".classpath",
     "build.gradle",
     "build.gradle.kts",
     "settings.gradle",
@@ -235,6 +236,20 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
         add("test", RootKind::Test, file);
         for ex in [".venv", "venv", "__pycache__", "build", "dist"] {
             add(ex, RootKind::Excluded, file);
+        }
+    }
+
+    // An Eclipse project without Maven or Gradle: its `.classpath` is the source model.
+    if has(".classpath")
+        && !has("pom.xml")
+        && !GRADLE_FILES.iter().any(|f| has(f))
+        && let Some(cp) = super::eclipse::classpath(&dir)
+    {
+        for (sub, test) in &cp.sources {
+            add(sub, if *test { RootKind::Test } else { RootKind::Source }, ".classpath");
+        }
+        if let Some(output) = &cp.output {
+            add(output, RootKind::Excluded, ".classpath");
         }
     }
 
