@@ -36,7 +36,7 @@ agent_rename                                 trusted            project_host bin
 agent_respond                                trusted            project_host bindings sync
 agent_rollback                               trusted            project_host bindings async
 agent_rollback_changes                       trusted            project_host bindings async
-agent_send_queued_now                        trusted            project_host bindings sync
+agent_send_queued_now                        trusted            project_host bindings async
 agent_set_command                            trusted            project_host bindings sync
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync

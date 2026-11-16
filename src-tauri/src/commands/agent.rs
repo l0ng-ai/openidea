@@ -311,13 +311,13 @@ pub fn agent_unqueue(
 /// Sends a queued message now, interrupting the current turn.
 #[tauri::command]
 #[specta::specta]
-pub fn agent_send_queued_now(
+pub async fn agent_send_queued_now(
     window: Window,
     state: State<'_, AppState>,
     task: String,
     queued: String,
 ) -> IdeResult<()> {
-    agent::send_queued_now(&state.host, window.label(), task, queued)
+    agent::send_queued_now(&state.host, window.label(), task, queued).await
 }
 
 /// Changes a session setting (model, mode, thinking effort…).
