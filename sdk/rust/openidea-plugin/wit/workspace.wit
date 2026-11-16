@@ -1,4 +1,4 @@
-package openidea:plugin@1.9.0;
+package openidea:plugin@1.10.0;
 
 interface workspace {
     use types.{error, location};
@@ -226,4 +226,66 @@ interface vcs {
     /// Fetches all remotes (pruning deleted branches). Requires `vcs.write`.
     /// Long-running: call it inside a task.
     fetch: func(project: borrow<project>) -> result<_, error>;
+}
+
+/// The Maven / Gradle dependency graph of a project, as the Dependency Analyzer
+/// has it (API 1.10). Read-only: no call runs a build tool.
+interface build {
+    use types.{error};
+    use workspace.{project};
+
+    /// How an occurrence of a dependency was resolved.
+    enum dependency-status {
+        /// Part of the resolved graph.
+        resolved,
+        /// Another version won (Maven: nearer the root; Gradle: the version the
+        /// build selected). `version` is the winner, `requested-version` what
+        /// this occurrence asked for.
+        omitted-for-conflict,
+        /// Listed with its dependencies elsewhere in the graph (Maven: a
+        /// duplicate or a cycle; Gradle: `(*)`); its children are not repeated.
+        omitted-for-duplicate,
+        /// The version comes from dependency management (Maven
+        /// `<dependencyManagement>`, a Gradle platform or constraint);
+        /// `requested-version` is the one declared here, when there is one.
+        version-managed,
+    }
+
+    /// One occurrence in the graph. Records don't nest, so the graph is a flat
+    /// list: `parent` is the index of the occurrence that brings this one in.
+    /// Each module is a root (`parent` none, empty `scope`) with its direct
+    /// dependencies under it, so walking `parent` up answers "why is this
+    /// artifact here".
+    record dependency-node {
+        /// Empty for a Gradle project of the build.
+        group: string,
+        /// Artifact id; a Gradle project's path (`:core`).
+        artifact: string,
+        /// The version in use; empty when there is none (a Gradle project of
+        /// the build) or it could not be resolved (Gradle `FAILED`).
+        version: string,
+        /// Maven scope (`compile`, `test`, …); the Gradle configuration
+        /// (`runtimeClasspath`, …).
+        scope: string,
+        status: dependency-status,
+        /// What this occurrence asked for, when it differs from `version`.
+        requested-version: option<string>,
+        parent: option<u32>,
+    }
+
+    /// The dependency graph of `module` (a Maven module's `groupId:artifactId`
+    /// or a Gradle project's path, `:` for the root project), or of every
+    /// module of the project's builds with `none`; an unknown module is
+    /// `not-found`. Answered from what the IDE already resolved:
+    ///
+    /// - Maven: the trees of the last Reload in the Maven tool window (with
+    ///   the occurrences Maven omitted); before one, or after a POM changed,
+    ///   only the dependencies the POMs declare.
+    /// - Gradle: the configurations the Dependency Analyzer has read for the
+    ///   project, until a build file changes; none read yet is the module's
+    ///   own node only.
+    ///
+    /// At most 100,000 nodes (else `failed`: ask for one module). Trusted
+    /// projects only; requires `build.read`.
+    dependencies: func(project: borrow<project>, module: option<string>) -> result<list<dependency-node>, error>;
 }

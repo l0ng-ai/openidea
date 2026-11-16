@@ -962,6 +962,7 @@
   "Connect to {host} over unencrypted HTTP (from the machine the project is on)": "Connect to {host} over unencrypted HTTP (from the machine the project is on)",
   "Connect to local socket {path} — equivalent to running arbitrary code on the project machine": "Connect to local socket {path} — equivalent to running arbitrary code on the project machine",
   "Send requests to the {server} language server, which reads and changes the project's files": "Send requests to the {server} language server, which reads and changes the project's files",
+  "Read the project's resolved Maven and Gradle dependencies": "Read the project's resolved Maven and Gradle dependencies",
   "Output: {channel}": "Output: {channel}",
   "You can close this tab.": "You can close this tab.",
   "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing": "Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing",

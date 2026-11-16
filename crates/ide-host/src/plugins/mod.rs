@@ -17,6 +17,7 @@
 
 mod api;
 mod auth;
+mod build_graph;
 pub mod commands;
 pub mod commit;
 mod database;
@@ -58,6 +59,7 @@ pub mod web;
 mod websocket;
 
 pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use build_graph::{BuildGraph, GradleModule};
 pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,

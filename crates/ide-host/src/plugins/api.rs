@@ -112,6 +112,11 @@ pub trait PluginWorkspace: Send + Sync {
     ) -> Result<serde_json::Value, HostError> {
         Err(HostError::NotFound(format!("no language server `{server}` is running for this project")))
     }
+    /// What the IDE has resolved of the Maven / Gradle builds of the project at `root`;
+    /// never runs a build tool.
+    fn build_graph(&self, _root: &Path) -> Result<super::BuildGraph, HostError> {
+        Ok(super::BuildGraph::default())
+    }
     /// Current index of the project rooted at `root`; never reads disk or calls LSP.
     fn symbols(
         &self,
@@ -2229,6 +2234,20 @@ impl HostApi for PluginApi {
         Ok(result.to_string())
     }
 
+    fn build_dependencies(
+        &self,
+        root: &Path,
+        module: Option<&str>,
+    ) -> Result<Vec<ide_plugin::DependencyNode>, HostError> {
+        self.require_api("`build`", 10)?;
+        let workspace = self.shared.workspace().ok_or_else(|| HostError::NotFound("no project is open".into()))?;
+        // The graph comes from running the project's build, as `vcs.read` does git.
+        if !workspace.trusted(root) {
+            return Err(HostError::Denied("project is not trusted".into()));
+        }
+        super::build_graph::dependency_nodes(&workspace.build_graph(root)?, module)
+    }
+
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError> {
         let matcher = globset::GlobBuilder::new(glob)
             .literal_separator(true)
@@ -3377,6 +3396,13 @@ impl PluginWorkspace for HostWorkspace {
             ErrorKind::Cancelled => HostError::Cancelled,
             _ => HostError::Failed(e.message),
         })
+    }
+
+    fn build_graph(&self, root: &Path) -> Result<super::BuildGraph, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = HostWorkspace::project_covering(self, root)
+            .ok_or_else(|| HostError::NotFound("the project is no longer open".into()))?;
+        crate::ops::build::analyzed_dependencies(&project, &host.config_dir, root).map_err(failed)
     }
 
     fn trusted(&self, root: &Path) -> bool {

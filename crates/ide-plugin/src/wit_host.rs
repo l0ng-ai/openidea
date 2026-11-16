@@ -48,6 +48,7 @@ pub(crate) mod syntax_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -87,6 +88,7 @@ pub(crate) mod providers_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -126,6 +128,7 @@ pub(crate) mod views_bindings {
             "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
             "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
             "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
             "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
             "openidea:plugin/events": super::bindings::openidea::plugin::events,
             "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
@@ -150,8 +153,8 @@ pub(crate) mod views_bindings {
 }
 
 use bindings::openidea::plugin::{
-    commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets, settings,
-    storage, tasks, types as wit, ui, vcs, views, workspace,
+    build, commit, detail_types, diagnostics, editor, events, fs, invocation, ipc, log, net, process, secrets,
+    settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
 /// A project handle: its root.
@@ -1189,6 +1192,44 @@ impl vcs::Host for StoreData {
         }
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
+    }
+}
+
+impl build::Host for StoreData {
+    fn dependencies(
+        &mut self,
+        project: Resource<ProjectRes>,
+        module: Option<String>,
+    ) -> Fallible<Vec<build::DependencyNode>> {
+        if let Err(e) = self.require(Capability::BuildRead) {
+            return Ok(Err(e));
+        }
+        let root = self.table.get(&project)?.root.clone();
+        Ok(self
+            .host
+            .build_dependencies(&root, module.as_deref())
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| build::DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            crate::DependencyStatus::Resolved => build::DependencyStatus::Resolved,
+                            crate::DependencyStatus::OmittedForConflict => build::DependencyStatus::OmittedForConflict,
+                            crate::DependencyStatus::OmittedForDuplicate => {
+                                build::DependencyStatus::OmittedForDuplicate
+                            }
+                            crate::DependencyStatus::VersionManaged => build::DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(to_wit))
     }
 }
 

@@ -196,6 +196,41 @@ impl PluginWorkspace for TestWorkspace {
         self.server_messages.lock().push((method.into(), params.clone(), notify));
         Ok(if notify { serde_json::Value::Null } else { serde_json::json!({ "method": method, "params": params }) })
     }
+    /// A Maven module with a lost version conflict, and a Gradle project with one report.
+    fn build_graph(&self, _root: &Path) -> Result<BuildGraph, HostError> {
+        let dep = |artifact: &str, version: &str| ide_build::MavenDependency {
+            group_id: "org.apache.commons".into(),
+            artifact_id: artifact.into(),
+            version: Some(version.into()),
+            scope: "compile".into(),
+            ..Default::default()
+        };
+        let mut text = dep("commons-text", "1.11.0");
+        text.children = vec![ide_build::MavenDependency {
+            omitted: Some(ide_build::Omission::Conflict),
+            conflict_with: Some("3.14.0".into()),
+            ..dep("commons-lang3", "3.12.0")
+        }];
+        let app = ide_build::MavenProject {
+            group_id: "com.example".into(),
+            artifact_id: "app".into(),
+            version: "1.0".into(),
+            dependencies: vec![text],
+            ..Default::default()
+        };
+        let snakeyaml = ide_build::GradleDependency {
+            group: "org.yaml".into(),
+            name: "snakeyaml".into(),
+            requested: Some("2.2".into()),
+            ..Default::default()
+        };
+        let report = ide_build::GradleReport {
+            project: ":web".into(),
+            configuration: "runtimeClasspath".into(),
+            dependencies: vec![snakeyaml],
+        };
+        Ok(BuildGraph { maven: vec![app], gradle: vec![GradleModule { path: ":web".into(), reports: vec![report] }] })
+    }
     fn project_windows(&self, root: &Path) -> Vec<String> {
         // `main` shows the fixture project; other open roots have no window left.
         if root == self.root { vec!["closing".into(), "main".into()] } else { Vec::new() }
@@ -7020,6 +7055,59 @@ fn the_language_server_grant_needs_api_1_9() {
     std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.9\"", "\"^1.8\"")).unwrap();
     let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
     assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
+}
+
+/// `build.dependencies` hands a plugin the resolved Maven / Gradle graph as a flat list, each
+/// module a root, with `build.read` in a trusted project (API 1.10).
+#[test]
+fn build_dependencies_need_the_grant_and_a_trusted_project() {
+    let f = fixture(Limits::default());
+    let id = "test.build-graph";
+    let info = f.install(&sample("build-graph"));
+    assert!(info.capabilities.iter().any(|c| c.id == "build.read" && c.granted && c.risk == ide_extension::Risk::Low));
+
+    // `parent group:artifact:version scope status requested`, as the fixture prints them.
+    assert_eq!(
+        f.run(id, "dependencies", None).unwrap().unwrap(),
+        "- com.example:app:1.0  resolved -\n\
+         0 org.apache.commons:commons-text:1.11.0 compile resolved -\n\
+         1 org.apache.commons:commons-lang3:3.14.0 compile conflict 3.12.0\n\
+         - ::web:  resolved -\n\
+         3 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    assert_eq!(
+        f.run(id, "dependencies", Some(":web")).unwrap().unwrap(),
+        "- ::web:  resolved -\n0 org.yaml:snakeyaml:2.2 runtimeClasspath resolved -"
+    );
+    let err = f.host.run_command(id, "dependencies", Some("app"), f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound, "{err:?}");
+
+    f.host.set_capability(id, "build.read", false).unwrap();
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("build.read"), "{err:?}");
+    f.host.set_capability(id, "build.read", true).unwrap();
+
+    // The graph comes from running the project's build: not in an untrusted project.
+    let mut untrusted = TestWorkspace::new(&f.project);
+    Arc::get_mut(&mut untrusted).unwrap().trusted = false;
+    f.host.set_workspace(Some(untrusted));
+    let err = f.host.run_command(id, "dependencies", None, f.inv()).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert_eq!(f.host.info_of(id).unwrap().stats.crashes, 0);
+}
+
+/// The grant is new in API 1.10: an older `engines.openidea` can't ask for it.
+#[test]
+fn the_build_grant_needs_api_1_10() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("build-graph");
+    copy_dir(&sample("build-graph"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.10\"", "\"^1.9\"")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("new in plugin API 1.10"), "{err:?}");
 }
 
 /// The UI's synthetic post-install `SettingsChanged([])` reaches a plugin that

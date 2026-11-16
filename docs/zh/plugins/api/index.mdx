@@ -33,6 +33,7 @@ description: "openidea:plugin WIT 包中的每个 interface：一句话说明及
 | `editor`           | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 文本编辑器：文档、选区、带版本号的编辑、滚动定位；已打开的编辑器和打开文件                                             |
 | `invocation`       | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 命令或事件的来源：所在项目、编辑器和选中的路径                                                                         |
 | `vcs`              | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | 项目所在仓库的 Git：状态、远程、fetch、log、blame、diff                                                                |
+| `build`            | [workspace.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/workspace.wit)     | IDE 已解析的 Maven / Gradle 依赖图，扁平列表，带冲突与省略状态（API 1.10，`build.read`）                               |
 | `fs`               | [fs.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/fs.wit)                   | 打开的项目以外的文件（`fs.read:` / `fs.write:`），以及插件私有目录                                                     |
 | `decorations`      | [decorations.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/decorations.wit) | 编辑器标注和项目树徽标（API 1.4）                                                                                      |
 | `commit`           | [commit.wit](https://github.com/l0ng-ai/openidea/blob/main/wit/commit.wit)           | 正在准备的提交及其提交信息                                                                                             |

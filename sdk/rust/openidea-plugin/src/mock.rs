@@ -151,6 +151,7 @@ struct State {
     owned_commands: BTreeSet<String>,
     search: Option<SearchHandler>,
     commits: Vec<CommitInfo>,
+    build_graph: Vec<DependencyNode>,
     blame: BTreeMap<String, Vec<BlameLine>>,
     patch: Option<String>,
     restricted: bool,
@@ -240,6 +241,7 @@ const ALL: &[&str] = &[
     "editor.write",
     "vcs.read",
     "vcs.write",
+    "build.read",
     "storage",
     "events",
     "events.input",
@@ -301,6 +303,11 @@ impl MockHost {
         s.commits = commits;
         s.blame.insert(path.into(), blame);
         s.patch = patch;
+    }
+    /// The project's dependency graph as the IDE would answer `build_dependencies(None)`:
+    /// modules are the roots, every parent comes before its children.
+    pub fn set_build_dependencies(&self, nodes: Vec<DependencyNode>) {
+        self.state.borrow_mut().build_graph = nodes;
     }
     /// Simulates Restricted Mode for new VCS read APIs.
     pub fn set_restricted(&self, restricted: bool) {
@@ -2337,6 +2344,46 @@ pub mod current {
             let answer = s.lsp_responses.get(&(server.to_owned(), method.to_owned())).cloned();
             s.lsp_requests.push(message);
             answer.ok_or_else(|| Error::Failed(format!("{server}: method not found: {method}")))
+        })
+    }
+    /// The module roots matching `module` (`group:artifact`, or a Gradle path) and what is
+    /// under them, with `parent` renumbered.
+    pub fn build_dependencies(_project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        with(|s| {
+            require(s, "build.read")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let mut index = vec![None; s.build_graph.len()];
+            let mut out: Vec<DependencyNode> = Vec::new();
+            for (i, node) in s.build_graph.iter().enumerate() {
+                let parent = match node.parent {
+                    // A Maven module is named `group:artifact`, a Gradle project by its path.
+                    None if module.is_none_or(|m| {
+                        if node.group.is_empty() {
+                            m == node.artifact
+                        } else {
+                            m == format!("{}:{}", node.group, node.artifact)
+                        }
+                    }) =>
+                    {
+                        None
+                    }
+                    None => continue,
+                    Some(p) => match index.get(p as usize).copied().flatten() {
+                        Some(p) => Some(p),
+                        None => continue,
+                    },
+                };
+                index[i] = Some(out.len() as u32);
+                out.push(DependencyNode { parent, ..node.clone() });
+            }
+            match module {
+                Some(m) if out.is_empty() => {
+                    Err(Error::NotFound(format!("no Maven or Gradle module `{m}` in this project")))
+                }
+                _ => Ok(out),
+            }
         })
     }
     pub fn lsp_notify(_project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
