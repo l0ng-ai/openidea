@@ -57,7 +57,7 @@ import {
   type SqlCandidate,
   type SqlCatalog,
 } from "./sql/complete";
-import { sqlSupport } from "./sqlSupport";
+import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
   bindConsole,
@@ -729,7 +729,7 @@ function docNode(text: string): Node {
   return pre;
 }
 
-function applyCandidate(c: SqlCandidate, driver: DbDriver) {
+function applyCandidate(c: SqlCandidate, driver: DbDriver, sql: SqlText) {
   return (view: EditorView, completion: Completion, from: number, to: number) => {
     // A selected template placeholder is replaced, as CodeMirror's own string completions do.
     const sel = view.state.selection.main;
@@ -752,7 +752,7 @@ function applyCandidate(c: SqlCandidate, driver: DbDriver) {
     }
     const changes: Array<{ from: number; to?: number; insert: string }> = [{ from, to, insert: text }];
     // Re-read the statement as it is now: the user may have typed on since the popup opened.
-    const a = analyze(view.state.doc.toString(), to, driver);
+    const a = analyze(sql.text(view.state), to, driver);
     if (a.fromInsert !== null) {
       const clause = ` ${a.lowerKeywords ? "from" : "FROM"} ${c.addFrom}`;
       if (a.fromInsert <= to) changes[0]!.insert += clause;
@@ -853,8 +853,10 @@ async function loadQualified(id: string, qualifier: readonly string[]): Promise<
   if (schema && !useDatabase.getState().tables[tablesKey(target, schema)]) await loadTables(target, schema);
 }
 
-function completionSource(path: string): CompletionSource {
+/** SQL completion in `path`, where `sql` says the SQL is (the whole file, or a mapper's statements). */
+export function completionSource(path: string, sql: SqlText = WHOLE_FILE): CompletionSource {
   return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
+    if (sql.at && !sql.at(ctx.state, ctx.pos)) return null;
     const id = consoleSource(path);
     const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
@@ -867,7 +869,7 @@ function completionSource(path: string): CompletionSource {
     // A selected template placeholder (`alias`) is about to be replaced: analyze without it.
     const sel = ctx.state.selection.main;
     const placeholder = !sel.empty && (ctx.pos === sel.from || ctx.pos === sel.to);
-    const doc = ctx.state.doc.toString();
+    const doc = sql.text(ctx.state);
     const analysis = placeholder
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
@@ -895,7 +897,7 @@ function completionSource(path: string): CompletionSource {
         type: c.kind === "keyword" ? "keyword" : c.kind,
         boost: Math.max(-99, Math.min(99, c.boost)),
         info: c.doc ? () => docNode(c.doc!) : undefined,
-        apply: applyCandidate(c, driver),
+        apply: applyCandidate(c, driver, sql),
       })),
       validFor: /^[\p{L}\p{N}_$]*$/u,
     };

@@ -124,6 +124,14 @@ export function activate(): () => void {
         () => import("./console").then((m) => m.consoleExtension),
       ),
     }),
+    registerEditorContribution({
+      id: "database.mybatis",
+      order: 58,
+      extensions: lazyEditorExtension(
+        (ctx) => /\.xml$/i.test(ctx.path) && !ctx.virtual,
+        () => import("./mybatis").then((m) => m.mapperExtension),
+      ),
+    }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
