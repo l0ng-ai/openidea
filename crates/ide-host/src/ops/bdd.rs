@@ -1,5 +1,6 @@
 //! Cucumber sources: the project's `.feature` files and the JavaScript / TypeScript files
-//! that could define steps (`@cucumber/cucumber`, `playwright-bdd`), with their text. The UI
+//! (`@cucumber/cucumber`, `playwright-bdd`) and Java / Kotlin files (cucumber-jvm's
+//! `@Given("…")` annotations and Java 8 lambdas) that could define steps, with their text. The UI
 //! owns the Gherkin and step-expression parsing and the index it feeds (as for `routes`),
 //! so this side stays a cheap scan.
 
@@ -37,7 +38,7 @@ fn is_feature(path: &Path) -> bool {
 fn is_script(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts")
+        Some("js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "java" | "kt")
     )
 }
 
@@ -100,13 +101,15 @@ mod tests {
         std::fs::write(root.join("steps/bdd.mjs"), "const { When } = createBdd();\nWhen(/^I add (\\d+)$/, f);")
             .unwrap();
         std::fs::write(root.join("src/app.ts"), "export const app = 1;").unwrap();
+        std::fs::write(root.join("src/CartSteps.java"), "@Given(\"an empty cart\")\npublic void empty() {}").unwrap();
+        std::fs::write(root.join("src/App.java"), "class App {}").unwrap();
         std::fs::write(root.join("src/notes.md"), "Given('x')").unwrap();
         std::fs::write(root.join("node_modules/@cucumber/cucumber/lib/index.js"), "Given('x')").unwrap();
         let files = sources_in(root, &["node_modules".to_owned()]);
         let names: Vec<String> =
             files.iter().map(|f| f.path.0.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/")).collect();
-        assert_eq!(names, ["features/cart.feature", "steps/bdd.mjs", "steps/cart.steps.ts"]);
+        assert_eq!(names, ["features/cart.feature", "src/CartSteps.java", "steps/bdd.mjs", "steps/cart.steps.ts"]);
         assert!(files[0].feature && !files[1].feature);
-        assert!(files[2].text.contains("an empty cart"));
+        assert!(files[3].text.contains("an empty cart"));
     }
 }

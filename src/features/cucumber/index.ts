@@ -1,9 +1,10 @@
 /**
- * Cucumber steps: Go to Declaration (⌘-click, ⌘B) on a `.feature` step opens its JavaScript /
- * TypeScript step definitions, and on a definition's pattern lists the feature steps it
+ * Cucumber steps: Go to Declaration (⌘-click, ⌘B) on a `.feature` step opens its step
+ * definitions (JavaScript / TypeScript, and cucumber-jvm's Java / Kotlin), and on a definition's pattern lists the feature steps it
  * matches. Steps no definition matches are reported (Undefined step), with a quick fix that
  * writes a pending definition into the project's step file.
  */
+import { Text } from "@codemirror/state";
 import { ViewPlugin, type EditorView } from "@codemirror/view";
 import {
   intentionProviders,
@@ -22,7 +23,15 @@ import { tx } from "@/platform/i18n";
 import { CUCUMBER_UNDEFINED_STEP_PRODUCER } from "@/platform/inspections";
 import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { editorService, notifications } from "@/workbench/contributions";
-import { definingKeyword, featureSteps, stepDefinitions, stepSnippet, type FeatureStep } from "./steps";
+import {
+  definingKeyword,
+  definitionInsertions,
+  featureSteps,
+  snippetStyle,
+  stepDefinitions,
+  stepSnippet,
+  type FeatureStep,
+} from "./steps";
 import {
   clearStepIndex,
   definitionFileFor,
@@ -32,7 +41,7 @@ import {
   usagesOf,
 } from "./stepIndex";
 
-const SCRIPT = /\.[cm]?[jt]sx?$/i;
+const SCRIPT = /\.(?:[cm]?[jt]sx?|java|kt)$/i;
 const FEATURE = /\.feature$/i;
 const DELAY_MS = 300;
 
@@ -62,21 +71,27 @@ async function createDefinition(featurePath: string, all: readonly FeatureStep[]
       cursor?.path === target
         ? (await call(commands.docSnapshot(cursor.doc))).text
         : await call(commands.fsReadText(target));
-    const lines = text.split("\n");
-    const end = { line: lines.length - 1, col: lines[lines.length - 1]!.length };
-    const lead = text.length === 0 ? "" : text.endsWith("\n\n") ? "" : text.endsWith("\n") ? "\n" : "\n\n";
-    const style = /\bcreateBdd\s*\(/.test(text) ? "playwright-bdd" : "cucumber";
-    const snippet = stepSnippet(definingKeyword(all, step), step.matchText, style);
+    const style = snippetStyle(target, text);
+    const keyword = definingKeyword(all, step);
+    const snippet = stepSnippet(keyword, step.matchText, style);
+    const { insertions, select } = definitionInsertions(text, keyword, snippet, style);
+    const lines = Text.of(text.split("\n"));
     await whenAllSynced();
     await call(
       commands.applyWorkspaceEdit({
-        files: [{ kind: "edit", path: target, edits: [{ range: { start: end, end }, new_text: lead + snippet.text }] }],
+        files: [
+          {
+            kind: "edit",
+            path: target,
+            edits: insertions.map((i) => ({ range: offsetsToRange(lines, i.at, i.at), new_text: i.text })),
+          },
+        ],
       }),
     );
-    // The body line (the pending return, or the comment) is selected.
-    const line = end.line + lead.split("\n").length - 1 + snippet.body;
-    const body = snippet.text.split("\n")[snippet.body]!;
-    await editorService().openFile(target, { selection: { line, col: 2, endLine: line, endCol: body.length } });
+    // The body line (the pending return or exception, or the comment) is selected.
+    await editorService().openFile(target, {
+      selection: { line: select.line, col: select.from, endLine: select.line, endCol: select.to },
+    });
   } catch (e) {
     notifications().notify({
       group: "cucumber",
