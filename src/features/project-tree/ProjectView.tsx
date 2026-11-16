@@ -33,6 +33,7 @@ import {
   useFileDecoration,
   type DecorationSegment,
 } from "@/workbench/contributions";
+import { useFileColors } from "@/workbench/fileColors";
 import {
   FILES_DRAG,
   REMOTE_FILES_DRAG,
@@ -461,6 +462,7 @@ export function ProjectView() {
   useFileIconRevision();
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
+  const fileColors = useFileColors("projectView");
   const expanded = useProjectTree((s) => s.expanded);
   const selected = useProjectTree((s) => s.selected);
   const editing = useProjectTree((s) => s.editing);
@@ -872,6 +874,11 @@ export function ProjectView() {
         loadChildren={loadChildren}
         renderNode={renderNode}
         rowClassName={(n) => (n.excluded ? styles.excludedRow : undefined)}
+        rowTint={
+          fileColors
+            ? (n) => (n.excluded || n.group || n.placeholder ? undefined : fileColors(n.path, n.dir))
+            : undefined
+        }
         expanded={expanded}
         onExpandedChange={onExpandedChange}
         selected={selected}

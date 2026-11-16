@@ -477,6 +477,15 @@ html {
   --db-color-blue: #3b92b8;
   --db-color-violet: #955ae0;
   --tint-strength: 22%;
+  /* File Colors palette (Appearance › File Colors); drawn as tints like the data source colours. */
+  --file-color-blue: #3b92b8;
+  --file-color-green: #5fad65;
+  --file-color-orange: #e08855;
+  --file-color-rose: #e06c88;
+  --file-color-violet: #955ae0;
+  --file-color-yellow: #d4b106;
+  --file-color-gray: #8c8c8c;
+  --file-tint-strength: 14%;
 }
 
 /* Windows caption buttons (frameless title bar): the system close red in every theme. */

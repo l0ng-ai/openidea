@@ -151,8 +151,20 @@ describe("project view context menu", () => {
       "Git",
       "-",
       "Compare With…",
+      "File Color",
     ]);
     expect(sub(items, "Refactor")).toEqual(["Rename…", "Move File…", "Copy File…", "-", "Safe Delete…"]);
+    expect(sub(items, "File Color")).toEqual([
+      "Blue",
+      "Green",
+      "Orange",
+      "Rose",
+      "Violet",
+      "Yellow",
+      "Gray",
+      "-",
+      "Edit File Colors…",
+    ]);
     expect(sub(items, "Open In")).toEqual([revealLabel(), "Terminal"]);
     expect(sub(items, "Git")?.slice(0, 4)).toEqual(["Commit File…", "Add", "-", "Annotate with Git Blame"]);
   });

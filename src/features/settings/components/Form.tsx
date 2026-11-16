@@ -225,7 +225,8 @@ export function Select<V extends string>({
 
 export interface ColorSwatchesProps {
   value: string;
-  presets: readonly { value: string; label: string }[];
+  /** `css`: how the swatch is drawn when `value` is a name rather than a colour. */
+  presets: readonly { value: string; label: string; css?: string }[];
   onChange: (value: string) => void;
   /** Offer a custom colour picker + hex field. */
   allowCustom?: boolean;
@@ -253,7 +254,7 @@ export function ColorSwatches({ value, presets, onChange, allowCustom = true, ..
             className={clsx(styles.swatch, on && styles.swatchOn)}
             onClick={() => onChange(p.value)}
           >
-            <span className={styles.swatchColor} style={{ background: p.value }} />
+            <span className={styles.swatchColor} style={{ background: p.css ?? p.value }} />
           </button>
         );
       })}

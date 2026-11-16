@@ -31,6 +31,7 @@ import {
   type EditorKindContribution,
 } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
+import { useFileColors } from "@/workbench/fileColors";
 import { EmptyEditor } from "@/workbench/EditorArea";
 import {
   EmptyState,
@@ -177,6 +178,7 @@ function PaneView({ paneId }: { paneId: string }) {
   const dirty = tabs.map((tab, i) => inputDirty(tab.input, kinds) ?? textDirty[i] ?? false);
   const colors = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.color ?? "") : ""))));
   const tints = useFileDecorations(useShallow(() => paths.map((p) => (p ? (getFileDecoration(p)?.tint ?? "") : ""))));
+  const fileColors = useFileColors("editorTabs");
 
   const hints = useTitleHints();
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
@@ -225,7 +227,8 @@ function PaneView({ paneId }: { paneId: string }) {
         // (middle click, Shift+click, Delete) alive when its position is None.
         showCloseButton,
         color: colors[i] || undefined,
-        tint: tints[i] || undefined,
+        tint:
+          tints[i] || (fileColors && t.input.kind === "file" && t.input.path ? fileColors(t.input.path) : undefined),
         tooltip: virtualTooltip(t.input) ?? (showFullPathOnHover ? (t.input.path ?? name) : undefined),
         trailing:
           kindMark || pin ? (
@@ -244,6 +247,7 @@ function PaneView({ paneId }: { paneId: string }) {
     dirty,
     colors,
     tints,
+    fileColors,
     hints,
     showExtension,
     markModified,

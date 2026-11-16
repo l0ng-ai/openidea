@@ -4,6 +4,8 @@
  * so `validateSettings` never throws — anything unknown or malformed falls
  * back to the default (mirrors `ide-core::settings` defaults).
  */
+import { DEFAULT_FILE_COLORS, validateFileColors, type FileColorSettings } from "@/platform/fileColors";
+import { validateScopes, type NamedScope } from "@/platform/scopes";
 import { validateCMake } from "@/platform/cmakeSettings";
 import { SUPPORTED_LOCALES, type Locale } from "@/platform/i18n";
 import { DEFAULT_IGNORED_NAMES } from "@/platform/ignoredNames";
@@ -59,6 +61,8 @@ export interface CustomKeymapSettings {
 
 export interface ValidSettings extends WorkflowSettings {
   plugins: Record<string, Record<string, unknown>>;
+  scopes: NamedScope[];
+  fileColors: FileColorSettings;
   general: {
     reopenLastProject: boolean;
     confirmExit: boolean;
@@ -159,6 +163,8 @@ export { ACCENT_PRESETS } from "@/workbench/theme";
 
 export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
+  scopes: [],
+  fileColors: DEFAULT_FILE_COLORS,
   general: {
     reopenLastProject: true,
     confirmExit: true,
@@ -332,6 +338,8 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
   }
   return {
     plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
+    scopes: validateScopes(root.scopes),
+    fileColors: validateFileColors(root.fileColors),
     general: {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),
