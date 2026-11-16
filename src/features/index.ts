@@ -48,7 +48,7 @@ import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
 import { activate as github, activateSettingsPages as githubPages } from "./github";
 import { activate as httpClient } from "./http-client";
-import { activate as database } from "./database";
+import { activate as database, activateSettingsPages as databasePages } from "./database";
 import { activate as graphql } from "./graphql";
 import { activate as deployment, activateDeploymentWindow } from "./deployment";
 import { activate as agents, activateSettingsPages as agentsPages } from "./agents";
@@ -188,6 +188,7 @@ export function activateSettingsWindowFeatures(parent: string): () => void {
     ["vim", vimPages],
     ["vcs", vcsPages],
     ["github", githubPages],
+    ["database", databasePages],
   ];
   return activateAll("settings pages", pages);
 }

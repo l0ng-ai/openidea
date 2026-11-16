@@ -474,6 +474,8 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
   const databases = useDatabase((s) => s.databases);
   const inEditor = useProject((s) => inEditorResults(s.settings));
+  // SQL resolution scopes in the settings can move the console to another data source.
+  useProject((s) => s.settings);
   const boundId = bound ? splitTarget(bound).id : null;
   const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
   const sqlServer = sourceById(boundId)?.driver === "sqlServer";

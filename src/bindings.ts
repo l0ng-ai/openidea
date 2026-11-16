@@ -3862,13 +3862,18 @@ export type DataSource_Serialize = {
 	pluginSourceId?: string | null,
 };
 
-/**  Database › Query Execution. */
+/**  Database settings: Query Execution and SQL Resolution Scopes. */
 export type DatabaseSettings = {
 	/**
 	 *  A console's result sets show under the statements that produced them, in the editor,
 	 *  instead of in the Services view's result tabs.
 	 */
 	inEditorResults?: boolean,
+	/**
+	 *  Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
+	 *  resolves against (completion, inspections, navigation), most specific path first.
+	 */
+	resolutionScopes?: SqlResolutionScope[],
 };
 
 /**  System Settings › Date Formats (Git log, Local History, blame). */
@@ -9947,7 +9952,7 @@ export type Settings_Deserialize = {
 	scopes?: NamedScope[],
 	/**  Appearance & Behavior › File Colors. */
 	fileColors?: FileColorSettings,
-	/**  Database › Query Execution. */
+	/**  Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes. */
 	database?: DatabaseSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
@@ -10019,7 +10024,7 @@ export type Settings_Serialize = {
 	scopes: NamedScope[],
 	/**  Appearance & Behavior › File Colors. */
 	fileColors: FileColorSettings,
-	/**  Database › Query Execution. */
+	/**  Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes. */
 	database: DatabaseSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
@@ -10167,6 +10172,16 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+};
+
+/**  One row of SQL Resolution Scopes. */
+export type SqlResolutionScope = {
+	/**  Project-relative file or folder, `/`-separated; empty for the whole project. */
+	path?: string,
+	/**  Data source id. */
+	dataSource?: string,
+	/**  Schema unqualified names resolve in; empty for the data source's default. */
+	schema?: string,
 };
 
 export type SqlStatement = {
