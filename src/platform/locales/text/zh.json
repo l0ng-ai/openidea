@@ -1336,7 +1336,6 @@
   "Fallback font": "备用字体",
   "Fallback font:": "备用字体：",
   "Fetch": "获取",
-  "Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure.": "在后台获取远程，以便传入的提交显示在“分支”弹出窗口中。“自动”在身份验证失败后停止。",
   "Field access": "字段访问",
   "Field modification": "字段修改",
   "Field watchpoints can be set on Java field declarations, or from the Variables view while suspended.": "字段监视点可以在 Java 字段声明上设置，也可以在挂起时从“变量”视图设置。",
@@ -8544,5 +8543,7 @@
   "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "重新连接会重新打开项目。{count} 个文件中未保存的更改无法保存到 {host}，将会丢失。",
   "Reconnecting to {host}…": "正在重新连接到 {host}…",
   "Lost the connection to {host}. Click to reconnect.": "与 {host} 的连接已断开。点击重新连接。",
-  "{label} (disconnected)": "{label}（已断开）"
+  "{label} (disconnected)": "{label}（已断开）",
+  "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.": "在后台获取每个仓库的远程，以便传入的提交显示在“分支”弹出窗口和项目视图中。“自动”在某个仓库检查失败（例如身份验证失败）后停止检查该仓库。",
+  "Check for incoming commits every": "检查传入提交的间隔"
 }

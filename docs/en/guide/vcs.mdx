@@ -147,7 +147,7 @@ With several repositories, the popup shows branches common to all of them, plus 
 
 ## Sync with remotes
 
-- **Fetch** fetches all repositories. OpenIDEA also checks for incoming commits in the background (after 20 seconds, then every 15 minutes); see **Explicitly check for incoming commits on remotes** in the Git settings.
+- **Fetch** fetches all repositories. OpenIDEA also checks for incoming commits in the background, fetching every repository whose branch has an upstream one after another (after 20 seconds, then every 15 minutes by default); see **Explicitly check for incoming commits on remotes** and **Check for incoming commits every** in the Git settings.
 - **Update Project…** (`⌘T` / `Ctrl+T`) pulls all repositories, by merge or by rebase. Uncommitted changes are stashed and restored. The **Update Project** dialog only shows when **Show options before Update** is on.
 - **Pull…** pulls a chosen remote branch into the current branch, with `--rebase`, `--ff-only`, `--no-ff`, `--squash` and other options.
 - **Push…** (`⇧⌘K` / `Ctrl+Shift+K`) lists outgoing commits and their files. Edit the target branch, pick a remote, and choose **Force (with lease)**, **Set upstream** or push tags. Force push is not allowed to protected branches (`master; main` by default). If the push is rejected, OpenIDEA offers to merge or rebase and push again.

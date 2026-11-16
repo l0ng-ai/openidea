@@ -765,7 +765,6 @@
   "Fallback font": "Police de secours",
   "Fallback font:": "Police de secours :",
   "Fetch": "Fetch",
-  "Fetches remotes in the background so incoming commits show in the Branches popup. Auto stops after an authentication failure.": "Effectue un fetch des dépôts distants en arrière-plan pour afficher les commits entrants dans la fenêtre Branches. Le mode Auto s'arrête après un échec d'authentification.",
   "Field access": "Accès au champ",
   "Field modification": "Modification du champ",
   "Field watchpoints can be set on Java field declarations, or from the Variables view while suspended.": "Les points de surveillance de champ se posent sur les déclarations de champs Java, ou depuis la vue Variables pendant une suspension.",

@@ -2156,5 +2156,7 @@
   "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.",
   "Reconnecting to {host}…": "Reconnecting to {host}…",
   "Lost the connection to {host}. Click to reconnect.": "Lost the connection to {host}. Click to reconnect.",
-  "{label} (disconnected)": "{label} (disconnected)"
+  "{label} (disconnected)": "{label} (disconnected)",
+  "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.": "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.",
+  "Check for incoming commits every": "Check for incoming commits every"
 }
