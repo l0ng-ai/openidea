@@ -2039,7 +2039,7 @@ impl Task {
             if !prompt.images.is_empty() && !live.capabilities.images {
                 return Err(Failure::from("This agent can't read images.".to_owned()));
             }
-            content = self.content(&live, &prompt).await;
+            content = self.content(&live, prompt).await;
             result = live
                 .peer
                 .request("session/prompt", json!({ "sessionId": live.session, "prompt": content }), None)
