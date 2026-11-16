@@ -265,6 +265,7 @@ const ICONS = {
   "agent-kiro": "openidea/agents/kiro",
   "agent-vibe": "openidea/agents/vibe",
   "agent-omp": "openidea/agents/omp",
+  "agent-deepseek-harness": "brands/deepseek",
   "toolwindow-maven": "toolwindows/maven",
   "toolwindow-gradle": "toolwindows/gradle",
   "toolwindow-build": "toolwindows/build",
