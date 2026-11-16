@@ -2,7 +2,8 @@
  * Prepares a nightly build's commit: `node scripts/nightly-prepare.ts 202611081417` sets the
  * version one patch above the current one, with that stamp as its prerelease number, in the
  * files `release:prepare` covers, and gives tauri.conf.json the nightly app's identity, so it
- * installs next to the stable app and updates from its own manifest. Prints the version.
+ * installs next to the stable app and updates from its own manifest. Prints the version;
+ * with `--print` after the stamp, only prints it.
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -32,6 +33,10 @@ export function setNightlyIdentity(json: string): string {
 function main() {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const version = nightlyVersion(cargoVersion(readFileSync(join(root, "Cargo.toml"), "utf8")), process.argv[2]);
+  if (process.argv[3] === "--print") {
+    console.log(version);
+    return;
+  }
 
   edit(join(root, "Cargo.toml"), (text) => setCargoVersion(text, version));
   edit(join(root, "package.json"), (text) => setJsonVersion(text, version));

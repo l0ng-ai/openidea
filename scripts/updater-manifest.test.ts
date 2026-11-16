@@ -12,13 +12,18 @@ const run = new Function("github", "context", "core", `return (async () => {${sc
 
 afterEach(() => vi.unstubAllEnvs());
 
-it.each(["v0.1.42", "v0.1.43-nightly.20261112"])(
-  "publishes signed portable updates for both Windows architectures alongside the installers (%s)",
-  async (tag) => {
+it.each([
+  { tag: "v0.1.42", version: "", downloadTag: "" },
+  { tag: "nightly-build-202611120217", version: "0.1.43-nightly.202611120217", downloadTag: "nightly" },
+])(
+  "publishes signed portable updates for both Windows architectures alongside the installers ($tag)",
+  async ({ tag, version: nightlyVersion, downloadTag }) => {
     vi.stubEnv("TAG", tag);
+    vi.stubEnv("VERSION", nightlyVersion);
+    vi.stubEnv("DOWNLOAD_TAG", downloadTag);
     vi.stubEnv("RELEASE_ID", "42");
-    const version = tag.slice(1);
-    const nightly = tag.includes("-nightly.");
+    const version = nightlyVersion || tag.slice(1);
+    const nightly = version.includes("-nightly.");
     const bundles = [
       "OpenIDEA_aarch64.AppImage",
       "OpenIDEA_arm64.deb",
@@ -60,6 +65,7 @@ it.each(["v0.1.42", "v0.1.43-nightly.20261112"])(
     );
     expect(failed).not.toHaveBeenCalled();
     const manifest = JSON.parse(upload.mock.calls[0]![0].data);
+    expect(manifest.version).toBe(version);
     for (const [arch, filename] of [
       ["x86_64", "x64"],
       ["aarch64", "arm64"],
@@ -68,7 +74,7 @@ it.each(["v0.1.42", "v0.1.43-nightly.20261112"])(
       const sig = assets.find((a) => a.name === `${name}.sig`)!;
       expect(manifest.platforms[`windows-${arch}-portable`]).toEqual({
         signature: `signature-${sig.id}`,
-        url: `https://github.com/l0ng-ai/openidea/releases/download/${tag}/${name}`,
+        url: `https://github.com/l0ng-ai/openidea/releases/download/${downloadTag || tag}/${name}`,
       });
       expect(manifest.platforms[`windows-${arch}`].url).toContain(nightly ? "-setup.exe" : "_en-US.msi");
       expect(manifest.platforms[`windows-${arch}-nsis`].url).toContain("-setup.exe");

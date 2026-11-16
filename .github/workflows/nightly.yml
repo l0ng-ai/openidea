@@ -1,9 +1,9 @@
 name: Nightly
 
-# Twice a day, builds the newest main commit that passed CI as a prerelease tagged with its own
-# version, so remote development finds the server of that version. The `nightly` release holds
-# the manifest the nightly app updates from; its tag marks the commit last built, and a run with
-# nothing newer stops there. Only the latest builds are kept.
+# Twice a day, builds the newest main commit that passed CI with a nightly version, into the one
+# `nightly` prerelease: its installers, the manifest the nightly app updates from, and the remote
+# development servers of recent builds, named by version so an app not yet updated still finds
+# its own. The `nightly` tag marks the commit last built, and a run with nothing newer stops there.
 on:
   schedule:
     - cron: "17 2,14 * * *"
@@ -33,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
       release_id: ${{ steps.release.outputs.id }}
     steps:
@@ -59,24 +60,18 @@ jobs:
       - uses: actions/setup-node@v5
         if: steps.commit.outputs.sha != ''
         with: { node-version: 22 }
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.commit.outputs.sha != ''
+      # The build goes into a draft, which nobody else sees, until `publish` moves it into `nightly`.
       - id: release
         if: steps.commit.outputs.sha != ''
         env:
           SHA: ${{ steps.commit.outputs.sha }}
         run: |
-          version="$(node scripts/nightly-prepare.ts "$(date -u +%Y%m%d%H%M)")"
-          tag="v$version"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: $tag"
-          git tag "$tag"
-          git push origin "$tag"
-          id="$(gh api -X POST "repos/$GH_REPO/releases" -f tag_name="$tag" -f name="OpenIDEA Nightly $version" \
-            -F draft=true -F prerelease=true -f body="Built from $SHA." --jq .id)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "id=$id" >> "$GITHUB_OUTPUT"
+          stamp="$(date -u +%Y%m%d%H%M)"
+          version="$(node scripts/nightly-prepare.ts "$stamp" --print)"
+          tag="nightly-build-$stamp"
+          id="$(gh api -X POST "repos/$GH_REPO/releases" -f tag_name="$tag" -f target_commitish="$SHA" \
+            -f name="OpenIDEA Nightly $version" -F draft=true -F prerelease=true -f body="Built from $SHA." --jq .id)"
+          { echo "version=$version"; echo "tag=$tag"; echo "id=$id"; } >> "$GITHUB_OUTPUT"
 
   binaries:
     permissions:
@@ -87,6 +82,9 @@ jobs:
     with:
       tag: ${{ needs.prepare.outputs.tag }}
       release_id: ${{ needs.prepare.outputs.release_id }}
+      ref: ${{ needs.prepare.outputs.sha }}
+      version: ${{ needs.prepare.outputs.version }}
+      download_tag: nightly
     secrets: inherit
 
   publish:
@@ -95,25 +93,50 @@ jobs:
     needs: [prepare, binaries]
     runs-on: ubuntu-latest
     env:
-      TAG: ${{ needs.prepare.outputs.tag }}
+      DRAFT: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
       SHA: ${{ needs.prepare.outputs.sha }}
       KEEP: 14
     steps:
-      - name: Publish the build
-        run: gh release edit "$TAG" --tag "$TAG" --draft=false
-      - name: Point the updater at it
+      - name: Move the build into the nightly release
         run: |
-          gh release download "$TAG" -p latest.json -D "$RUNNER_TEMP"
+          dir="$RUNNER_TEMP/build"
+          gh release download "$DRAFT" -D "$dir"
           gh release view nightly >/dev/null 2>&1 ||
-            gh release create nightly --prerelease --latest=false --target "$SHA" --title "OpenIDEA Nightly" \
-              --notes "The update manifest of the nightly builds, and the commit last built."
-          gh release upload nightly "$RUNNER_TEMP/latest.json" --clobber
+            gh release create nightly --prerelease --latest=false --target "$SHA" --title "OpenIDEA Nightly" --notes ""
+          # This build's own files first; then the ones every build replaces (the macOS update
+          # archives), and last the manifest that points at them.
+          shopt -s nullglob
+          own=() shared=()
+          for f in "$dir"/*; do
+            case "$(basename "$f")" in
+              latest.json) ;;
+              *"$VERSION"*) own+=("$f") ;;
+              *) shared+=("$f") ;;
+            esac
+          done
+          gh release upload nightly "${own[@]}" --clobber
+          [ ${#shared[@]} -eq 0 ] || gh release upload nightly "${shared[@]}" --clobber
+          [ ! -f "$dir/latest.json" ] || gh release upload nightly "$dir/latest.json" --clobber
+          gh release edit nightly --notes "OpenIDEA $VERSION, built from $SHA."
           gh api -X PATCH "repos/$GH_REPO/git/refs/tags/nightly" -f sha="$SHA" -F force=true --silent
-      # Failed builds' drafts go too, once they are this old.
+      # Earlier builds' installers go; their servers stay for the latest $KEEP builds, for
+      # apps not updated yet. Build drafts go too, this one and those of failed builds.
       - name: Delete old builds
         run: |
-          gh release list --limit 200 --json tagName,createdAt --jq \
-            '[.[] | select(.tagName | contains("-nightly."))] | sort_by(.createdAt) | reverse | .[env.KEEP | tonumber:][].tagName' |
+          stamp="${VERSION##*-nightly.}"
+          assets="$RUNNER_TEMP/assets"
+          id="$(gh api "repos/$GH_REPO/releases/tags/nightly" --jq .id)"
+          gh api --paginate "repos/$GH_REPO/releases/$id/assets?per_page=100" --jq '.[] | "\(.id) \(.name)"' > "$assets"
+          keep="$(grep -oE '^[0-9]+ openidea-server-.*-nightly\.[0-9]{12}' "$assets" | grep -oE '[0-9]{12}$' | sort -ru | head -n "$KEEP")"
+          while read -r asset name; do
+            built="$(grep -oE -- '-nightly\.[0-9]{12}' <<<"$name" | grep -oE '[0-9]{12}')" || continue
+            [ "$built" != "$stamp" ] || continue
+            case "$name" in openidea-server-*) ! grep -qx "$built" <<<"$keep" || continue ;; esac
+            gh api -X DELETE "repos/$GH_REPO/releases/assets/$asset" --silent
+          done < "$assets"
+          gh release list --limit 200 --json tagName --jq '.[].tagName | select(test("^nightly-build-|-nightly\\."))' |
             while read -r tag; do
-              gh release delete "$tag" --cleanup-tag --yes
+              gh release delete "$tag" --yes
+              gh api -X DELETE "repos/$GH_REPO/git/refs/tags/$tag" --silent 2>/dev/null || true
             done

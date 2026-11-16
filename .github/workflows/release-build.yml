@@ -1,12 +1,17 @@
 name: Release build
 
 # Builds a tag's desktop apps, remote servers and updater manifest into its draft release.
-# Stable releases (release.yml) and nightly builds (nightly.yml) both run it.
+# Stable releases (release.yml) and nightly builds (nightly.yml) both run it. A nightly build
+# checks out a main commit (`ref`), sets its version there, and builds into a draft that
+# nightly.yml moves into the `nightly` release (`download_tag`) once every build is in.
 on:
   workflow_call:
     inputs:
       tag: { type: string, required: true }
       release_id: { type: string, required: true }
+      ref: { type: string, default: "" }
+      version: { type: string, default: "" }
+      download_tag: { type: string, default: "" }
 
 permissions:
   contents: read
@@ -15,6 +20,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   TAG: ${{ inputs.tag }}
+  REF: ${{ inputs.ref || inputs.tag }}
+  VERSION: ${{ inputs.version }}
+  DOWNLOAD_TAG: ${{ inputs.download_tag || inputs.tag }}
 
 jobs:
   plugin-keys:
@@ -70,7 +78,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ env.REF }}" }
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
@@ -85,6 +93,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
       - run: pnpm install --frozen-lockfile
+      - name: Nightly version
+        if: contains(inputs.version, '-nightly.')
+        shell: bash
+        run: test "$(node scripts/nightly-prepare.ts "${VERSION##*-nightly.}")" = "$VERSION"
       # Signing is optional: only secrets that are set get exported, so forks and
       # unconfigured repos produce unsigned builds instead of failing.
       - name: Signing env
@@ -140,7 +152,7 @@ jobs:
         run: |
           $target = "${{ matrix.target }}"
           $arch = if ($target -like "x86_64*") { "x64" } else { "arm64" }
-          $version = $env:TAG -replace '^v', ''
+          $version = if ($env:VERSION) { $env:VERSION } else { $env:TAG -replace '^v', '' }
           $asset = "OpenIDEA_${version}_windows_${arch}_portable.zip"
           $dir = "target/$target/release"
           $files = @("$dir/openidea.exe")
@@ -177,11 +189,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
-        with: { ref: "${{ env.TAG }}" }
+        with: { ref: "${{ env.REF }}" }
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
       - uses: Swatinem/rust-cache@v2
         with: { key: "server-${{ matrix.target }}", cache-on-failure: true }
+      - uses: actions/setup-node@v5
+        if: contains(inputs.version, '-nightly.')
+        with: { node-version: 22 }
+      - name: Nightly version
+        if: contains(inputs.version, '-nightly.')
+        shell: bash
+        run: test "$(node scripts/nightly-prepare.ts "${VERSION##*-nightly.}")" = "$VERSION"
       - name: musl toolchain
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
@@ -192,11 +211,17 @@ jobs:
           cargo build --release --locked -p ide-host --bin openidea-server --target "$TARGET"
         env:
           TARGET: ${{ matrix.target }}
+      # Nightly servers carry their version: the `nightly` release keeps those of recent builds
+      # side by side, for apps not yet updated (ide-tools `server`).
       - name: Upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSET: openidea-server-${{ matrix.os }}-${{ matrix.arch }}.gz
+          PLATFORM: ${{ matrix.os }}-${{ matrix.arch }}
         run: |
+          case "$VERSION" in
+            *-nightly.*) ASSET="openidea-server-$VERSION-$PLATFORM.gz" ;;
+            *) ASSET="openidea-server-$PLATFORM.gz" ;;
+          esac
           gzip -9 -c target/${{ matrix.target }}/release/openidea-server > "$ASSET"
           if command -v sha256sum >/dev/null; then sha256sum "$ASSET"; else shasum -a 256 "$ASSET"; fi > "$ASSET.sha256"
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
@@ -217,6 +242,8 @@ jobs:
             const { owner, repo } = context.repo;
             const release_id = Number(process.env.RELEASE_ID);
             const tag = process.env.TAG;
+            const version = process.env.VERSION || tag.replace(/^v/, "");
+            const downloadTag = process.env.DOWNLOAD_TAG || tag;
             const assets = await github.paginate(github.rest.repos.listReleaseAssets, { owner, repo, release_id });
             const sigs = assets.filter((a) => a.name.endsWith(".sig"));
             if (sigs.length === 0) {
@@ -225,7 +252,7 @@ jobs:
             }
             // Bundle suffix → updater platform keys, as tauri-action names them.
             // Nightly versions don't fit MSI or RPM, so those builds offer NSIS on Windows.
-            const nightly = tag.includes("-nightly.");
+            const nightly = version.includes("-nightly.");
             const windows = (arch, msi, nsis) => nightly
               ? [[nsis, [`windows-${arch}`, `windows-${arch}-nsis`]]]
               : [[msi, [`windows-${arch}`, `windows-${arch}-msi`]], [nsis, [`windows-${arch}-nsis`]]];
@@ -252,7 +279,7 @@ jobs:
                 owner, repo, asset_id: sig.id, headers: { accept: "application/octet-stream" },
               });
               const signature = Buffer.from(data).toString("utf8").trim();
-              const url = `https://github.com/${owner}/${repo}/releases/download/${tag}/${encodeURIComponent(bundle)}`;
+              const url = `https://github.com/${owner}/${repo}/releases/download/${downloadTag}/${encodeURIComponent(bundle)}`;
               for (const key of kind[1]) platforms[key] = { signature, url };
             }
             const missing = kinds.flatMap(([, keys]) => keys).filter((k) => !platforms[k]);
@@ -300,7 +327,7 @@ jobs:
               Object.entries(translated).filter(([, text]) => text).map(([lang, text]) => [`notes.${lang}`, text]),
             );
             const manifest = {
-              version: tag.replace(/^v/, ""), notes, ...translations, pub_date: new Date().toISOString(), platforms,
+              version, notes, ...translations, pub_date: new Date().toISOString(), platforms,
             };
             const old = assets.find((a) => a.name === "latest.json");
             if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });

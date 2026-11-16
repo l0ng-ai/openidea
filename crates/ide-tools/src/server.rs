@@ -1,5 +1,6 @@
 //! `openidea-server` builds for remote development: the release of this
 //! version publishes one per supported host platform (see `release-build.yml`).
+//! Nightly builds share the `nightly` release, so their servers carry the version.
 
 use crate::process::Http;
 use crate::{InstallEvent, fetch_verified, sources};
@@ -13,9 +14,23 @@ const RELEASES: &str = "https://github.com/l0ng-ai/openidea/releases/download";
 pub const PLATFORMS: &[(&str, &str)] =
     &[("linux", "x86_64"), ("linux", "aarch64"), ("macos", "aarch64"), ("macos", "x86_64")];
 
-/// The release asset of the server for `os`-`arch` (gzip-compressed binary).
-pub fn asset_name(os: &str, arch: &str) -> String {
-    format!("openidea-server-{os}-{arch}.gz")
+/// The release asset of the server of `version` for `os`-`arch` (gzip-compressed binary).
+pub fn asset_name(version: &str, os: &str, arch: &str) -> String {
+    if is_nightly(version) {
+        format!("openidea-server-{version}-{os}-{arch}.gz")
+    } else {
+        format!("openidea-server-{os}-{arch}.gz")
+    }
+}
+
+/// Where the server of `version` for `os`-`arch` is published.
+fn asset_url(version: &str, os: &str, arch: &str) -> String {
+    let tag = if is_nightly(version) { "nightly".to_owned() } else { format!("v{version}") };
+    format!("{RELEASES}/{tag}/{}", asset_name(version, os, arch))
+}
+
+fn is_nightly(version: &str) -> bool {
+    version.contains("-nightly.")
 }
 
 /// Where a downloaded server of `version` is kept.
@@ -40,8 +55,8 @@ pub fn fetch(
     if !PLATFORMS.contains(&(os, arch)) {
         return Err(IdeError::unavailable(format!("remote development does not support {os}-{arch} hosts")));
     }
-    let name = asset_name(os, arch);
-    let url = format!("{RELEASES}/v{version}/{name}");
+    let name = asset_name(version, os, arch);
+    let url = asset_url(version, os, arch);
     let dir = dest.parent().expect("cached path has a parent");
     std::fs::create_dir_all(dir)?;
     let staging = tempfile_dir(dir)?;
@@ -91,9 +106,22 @@ mod tests {
 
     #[test]
     fn names_and_cache_layout() {
-        assert_eq!(asset_name("linux", "x86_64"), "openidea-server-linux-x86_64.gz");
+        assert_eq!(asset_name("1.2.3", "linux", "x86_64"), "openidea-server-linux-x86_64.gz");
+        assert_eq!(
+            asset_url("1.2.3", "linux", "x86_64"),
+            "https://github.com/l0ng-ai/openidea/releases/download/v1.2.3/openidea-server-linux-x86_64.gz"
+        );
         let p = cached_path(Path::new("/data"), "1.2.3", "linux", "aarch64");
         assert_eq!(p, Path::new("/data/server/1.2.3/linux-aarch64/openidea-server"));
+    }
+
+    #[test]
+    fn nightly_servers_are_named_by_version_in_the_nightly_release() {
+        let version = "0.1.47-nightly.202611170217";
+        assert_eq!(
+            asset_url(version, "macos", "aarch64"),
+            "https://github.com/l0ng-ai/openidea/releases/download/nightly/openidea-server-0.1.47-nightly.202611170217-macos-aarch64.gz"
+        );
     }
 
     #[test]
