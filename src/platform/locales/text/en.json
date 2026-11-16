@@ -75,6 +75,7 @@
   "Refreshing…": "Refreshing…",
   "Refresh in {seconds}s": "Refresh in {seconds}s",
   "Loading models…": "Loading models…",
+  "Loading model settings…": "Loading model settings…",
   "No models reported by this agent.": "No models reported by this agent.",
   "Could not refresh models: {detail}": "Could not refresh models: {detail}",
   "{model} (unavailable)": "{model} (unavailable)",

@@ -54,7 +54,9 @@ Codex keeps its own project trust decision. If it disables the current project's
   <Step title="Pick the agent and its settings">
     Choose the agent, and its model, mode and other options when it offers them. Cached models appear immediately; the selected agent's catalog refreshes in the background when it is more than 15 minutes old, without sending a prompt or attaching project MCP servers.
 
-    After changing the agent CLI or account, open the model picker and choose **Refresh models**. Refreshes share one lookup and have a 30-second cooldown after completion, including failures. Cached choices remain usable while refreshing or after a failure.
+    Model-specific effort levels and context options are looked up when you select a model whose settings are not cached, even before its first task. **Loading model settings…** appears beside the model during this short-lived lookup; no prompt is sent and existing tasks are not changed. Each model keeps its own choices, and models that report no effort control do not borrow another model's levels.
+
+    After changing the agent CLI or account, open the model picker and choose **Refresh models**. Refreshes share one lookup and have a 30-second cooldown after completion, including failures. Selecting an uncached model's settings does not wait for another model's cooldown. Cached choices remain usable while refreshing or after a failure; use **Refresh models** to retry a failed lookup after its cooldown.
 
     Available models depend on the installed agent and account. If a selected model is removed, choose another before starting. Refreshing does not change running tasks.
 

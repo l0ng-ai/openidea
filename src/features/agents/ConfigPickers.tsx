@@ -72,6 +72,7 @@ const selected = (option: AgentConfigOption, value: string | null) =>
 
 interface ModelRefresh {
   refreshing: boolean;
+  loadingSettings?: boolean;
   retryAtMs: number | null;
   error: string | null;
   onRefresh: () => void;
@@ -150,6 +151,11 @@ export function ConfigPickers({
             />
           ) : (
             <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
+          )}
+          {o === model && modelRefresh?.loadingSettings && (
+            <span className={styles.pickerValue} role="status">
+              <T>Loading model settings…</T>
+            </span>
           )}
         </span>
       ))}

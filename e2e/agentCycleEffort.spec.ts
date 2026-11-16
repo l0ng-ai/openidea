@@ -533,3 +533,69 @@ for (const setting of ["effort", "model"] as const) {
     await page.evaluate(() => document.dispatchEvent(new Event("release-config")));
   });
 }
+
+test("New Task discovers uncached model effort before the first prompt", async ({ workbench: page }, testInfo) => {
+  await seed(page, "editor", "new");
+  await expect
+    .poll(() =>
+      page.evaluate(async () => {
+        // The store must be loaded in the page's Vite realm, not Playwright's Node process.
+        const storePath = "/src/features/agents/store.ts";
+        const { useAgents } = await import(storePath);
+        return useAgents.getState().modelRequests.size;
+      }),
+    )
+    .toBe(0);
+  await page.evaluate(
+    async ({ provider, swift }) => {
+      // Static Node imports cannot update the browser workbench's store.
+      const storePath = "/src/features/agents/store.ts";
+      const { useAgents } = await import(storePath);
+      const thoughtLevels = { ...provider.thoughtLevels };
+      delete thoughtLevels.swift;
+      const cached = { ...provider, thoughtLevels };
+      window.__ipc.handlers.agent_providers = () => [cached];
+      window.__ipc.handlers.agent_refresh_models = async ({ model }) => {
+        if (model === "swift") {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          document.addEventListener("test:model-settings-ready", () => resolve(), { once: true });
+          await promise;
+          thoughtLevels.swift = [swift];
+        }
+        return {
+          provider: cached.id,
+          config: cached.config,
+          thoughtLevels: { ...thoughtLevels },
+          refreshing: false,
+          refreshedAtMs: Date.now(),
+          retryAtMs: null,
+          error: null,
+        };
+      };
+      useAgents.setState({ providers: [cached], modelCatalogs: new Map() });
+    },
+    { provider, swift },
+  );
+  await expectEffort(page, "Gentle");
+  await box(page).fill("Keep this first task unsent");
+  await chooseModel(page, "Swift");
+  try {
+    await expect
+      .poll(async () => (await ipcCalls(page, "agent_refresh_models")).filter((call) => call.model === "swift"))
+      .toEqual([{ provider: provider.id, force: false, model: "swift" }]);
+    await expect(page.getByRole("status").filter({ hasText: "Loading model settings…" })).toBeVisible();
+    await expect(effortButton(page)).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("model-settings-loading.png") });
+    await page.evaluate(() => document.dispatchEvent(new Event("test:model-settings-ready")));
+    await expectEffort(page, "Quick");
+    await effortButton(page).click();
+    await expect(page.getByRole("option", { name: "Quick", exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Thorough", exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: "Gentle", exact: true })).toHaveCount(0);
+    await expect(box(page)).toHaveText("Keep this first task unsent");
+    await expectNoSubmission(page);
+    expect(await ipcCalls(page, "agent_set_config")).toEqual([]);
+  } finally {
+    await page.screenshot({ path: testInfo.outputPath("uncached-model-effort.png") });
+  }
+});
