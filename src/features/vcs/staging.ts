@@ -5,7 +5,7 @@
  */
 import type { ChangelistState, FileStatus } from "@/bindings";
 import { useWorkflowSettings, workflowSettings } from "@/platform/workflowSettings";
-import { groupOf, type CheckState } from "./changes";
+import { addedThenDeleted, groupOf, type CheckState } from "./changes";
 import { withListDefaults } from "./changelists";
 
 const enabled = (vcs: { git: { stagingArea: boolean }; commit: { nonModal: boolean } }) =>
@@ -31,6 +31,8 @@ export function stagingChecks(status: readonly FileStatus[]): Map<string, CheckS
   const all = isCommitAll(status);
   const out = new Map<string, CheckState>();
   for (const f of status) {
+    // A staged addition deleted from disk is committed as staged (nothing against HEAD for Commit All).
+    if (addedThenDeleted(f) && !all) out.set(f.path, "staged");
     if (groupOf(f) !== "changes") continue;
     out.set(f.path, all ? "all" : staged(f) ? "staged" : "none");
   }

@@ -4,7 +4,7 @@ import type { FileStatus, Stash } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { Checkbox, Dialog, Icon, IconButton, Input, T, fileIconName } from "@/ui";
 import { notifications } from "@/workbench/contributions";
-import { groupOf, remainingOverrides, renamedFromPath } from "./changes";
+import { addedThenDeleted, groupOf, remainingOverrides, renamedFromPath } from "./changes";
 import { runCommitChecks } from "./commitChecks";
 import { contributedCheckProblems, currentPlan, selectionOf } from "./commitSelection";
 import { forgetAmendDraft, keepMessageAfterCommit, rememberMessage, useCommit } from "./commitStore";
@@ -54,7 +54,10 @@ export async function commitChanges(): Promise<string | undefined> {
     });
     return undefined;
   }
-  const candidates = plan.included.map((f) => ({ path: stripSlash(f.path), exists: effectiveKind(f) !== "deleted" }));
+  const candidates = plan.included.map((f) => ({
+    path: stripSlash(f.path),
+    exists: effectiveKind(f) !== "deleted" && !addedThenDeleted(f),
+  }));
   // IDEA: failed checks show in the commit panel; the next Commit ("Commit Anyway") skips them.
   const checked = !useCommit.getState().checkProblems.length;
   if (checked) {
