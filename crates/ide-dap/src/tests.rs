@@ -527,6 +527,14 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 }
             }
             "disconnect" => {
+                // Like Delve: the adapter ends the program it launched.
+                #[cfg(unix)]
+                if msg["arguments"]["terminateDebuggee"] == true
+                    && let Some(pid) = script.debuggee_pid
+                {
+                    // SAFETY: plain syscall on the test's own child process.
+                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                }
                 ok!(msg, Value::Null);
                 let _ = w.lock().await.shutdown().await;
                 break;
@@ -2317,6 +2325,44 @@ async fn stop_waits_for_the_launched_program_to_exit() {
     assert!(elapsed >= Duration::from_millis(800), "stop returned after {elapsed:?}, before the program exited");
     assert!(elapsed < Duration::from_secs(5), "stop waited {elapsed:?} for a program that ended after a second");
     h.wait_event(|e| matches!(e, DebugEvent::Terminated)).await;
+}
+
+/// Delve and other adapters without `terminate`: a program stopped at a breakpoint cannot
+/// handle the SIGTERM Stop sends, so Stop has the adapter end it instead of waiting out the grace period.
+#[cfg(unix)]
+#[tokio::test]
+async fn stop_kills_a_program_suspended_at_a_breakpoint_at_once() {
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let exited = Arc::new(AtomicBool::new(false));
+    {
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            exited.store(true, Ordering::Release);
+        });
+    }
+    let h = harness(Script { debuggee_pid: Some(pid), supports_terminate: false, ..Default::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+    while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await; // let the program install its trap
+    let started = Instant::now();
+    h.manager.stop(id).await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(3), "stop waited {elapsed:?} for a suspended program");
+    assert_eq!(h.request("disconnect")["arguments"]["terminateDebuggee"], true);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !exited.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline, "the suspended program was left running");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[cfg(unix)]
