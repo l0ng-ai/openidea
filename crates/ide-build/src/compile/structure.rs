@@ -3,7 +3,9 @@
 //! Web facet's `WEB-INF/lib`, and the resources are copied next to the classes; tests the
 //! same way into the test output, which also sees the production classes.
 use super::*;
-use ide_core::settings::{DependencyScope, ModuleStructureSettings, ProjectStructureSettings};
+use ide_core::settings::{
+    ArtifactConfig, ArtifactKind, DependencyScope, ModuleStructureSettings, ProjectStructureSettings,
+};
 use std::fs;
 
 /// The roots of the project as the IDE resolved them (absolute folders).
@@ -100,17 +102,38 @@ fn library_entries(root: &Path, ps: &ProjectStructureSettings, test: bool) -> Ve
         }
     }
     for facet in ps.facets.iter().filter(|f| f.kind == "web") {
-        let web_root = if facet.web_root.trim().is_empty() {
-            facet.descriptor.trim().strip_suffix("/WEB-INF/web.xml").unwrap_or("").to_owned()
-        } else {
-            facet.web_root.trim().to_owned()
-        };
-        let lib = root.join(&web_root).join("WEB-INF").join("lib");
+        let lib = web_root(root, facet).join("WEB-INF").join("lib");
         if lib.is_dir() {
             add(format!("{}{}*", lib.to_string_lossy(), std::path::MAIN_SEPARATOR));
         }
     }
     out
+}
+
+/// The web resource folder of a Web facet: its own, else the folder holding `WEB-INF/web.xml`.
+fn web_root(root: &Path, facet: &ide_core::settings::FacetConfig) -> PathBuf {
+    let dir = facet.web_root.trim();
+    let dir = if dir.is_empty() {
+        facet.descriptor.trim().replace('\\', "/").strip_suffix("/WEB-INF/web.xml").unwrap_or("").to_owned()
+    } else {
+        dir.to_owned()
+    };
+    root.join(dir)
+}
+
+/// The class archives and folders of a library path (`lib/*.jar` lists the folder's jars).
+fn library_files(root: &Path, value: &str) -> Vec<PathBuf> {
+    let entry = class_entry(root, value);
+    match entry.strip_suffix('*') {
+        Some(dir) => {
+            let mut jars: Vec<PathBuf> = fs::read_dir(dir)
+                .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "jar")).collect())
+                .unwrap_or_default();
+            jars.sort();
+            jars
+        }
+        None => vec![PathBuf::from(entry)],
+    }
 }
 
 /// A classpath entry for a library path: a folder of jars (`lib/*`) stays a wildcard javac expands.
@@ -218,7 +241,8 @@ pub fn structure_plan(
         },
         root,
     ));
-    if !test_sources.is_empty() {
+    // Artifacts hold production classes only.
+    if !test_sources.is_empty() && kind != BuildKind::Artifacts {
         let mut test_cp = vec![main_out.to_string_lossy().into_owned()];
         test_cp.extend(library_entries(root, ps, true));
         steps.push(compile("test", &test_sources, &test_out, &test_cp)?);
@@ -230,7 +254,148 @@ pub fn structure_plan(
             root,
         ));
     }
+    if kind == BuildKind::Artifacts {
+        if ps.artifacts.is_empty() {
+            return Err(IdeError::invalid("No artifacts are configured: add one in Project Structure › Artifacts"));
+        }
+        for artifact in &ps.artifacts {
+            steps.extend(artifact_steps(root, ps, artifact, &main_out, None, cache));
+        }
+    }
     Ok(Some(BuildPlan { system: BuildSystem::Javac, title: module_name(root), steps }))
+}
+
+/// Where an artifact goes: its output folder, else `out/artifacts/<name>`.
+pub fn artifact_output(root: &Path, artifact: &ArtifactConfig) -> PathBuf {
+    resolve_dir(root, &artifact.output_directory)
+        .unwrap_or_else(|| root.join("out").join("artifacts").join(file_name(&artifact.name)))
+}
+
+/// An artifact name as a file name (`shop:war exploded` → `shop_war_exploded`).
+fn file_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
+}
+
+/// The archive a `jar` / `war` artifact writes (`<output>/<name>.war`), or its folder (exploded).
+pub fn artifact_file(root: &Path, artifact: &ArtifactConfig) -> PathBuf {
+    let out = artifact_output(root, artifact);
+    let base = artifact.name.split(':').next().filter(|n| !n.trim().is_empty()).unwrap_or(&artifact.name);
+    match artifact.kind {
+        ArtifactKind::Jar => out.join(format!("{}.jar", file_name(base))),
+        ArtifactKind::War => out.join(format!("{}.war", file_name(base))),
+        ArtifactKind::WarExploded => out,
+    }
+}
+
+/// The steps laying out one artifact from the module output `classes`; `war`: write a
+/// WAR there instead of the artifact's own output (an application server's deployment).
+fn artifact_steps(
+    root: &Path,
+    ps: &ProjectStructureSettings,
+    artifact: &ArtifactConfig,
+    classes: &Path,
+    war: Option<&Path>,
+    cache: &Path,
+) -> Vec<BuildStep> {
+    let libraries: Vec<PathBuf> = ps
+        .libraries
+        .iter()
+        .filter(|l| artifact.include_libraries.contains(&l.name))
+        .flat_map(|l| l.classes.iter().flat_map(|c| library_files(root, c)))
+        .collect();
+    let facet = ps
+        .facets
+        .iter()
+        .filter(|f| f.kind == "web")
+        .find(|f| f.module == artifact.module || f.module.is_empty() && artifact.module == ".")
+        .or_else(|| ps.facets.iter().find(|f| f.kind == "web"));
+    let staging = cache.join("artifacts").join(file_name(&artifact.name));
+    let mut steps = Vec::new();
+    match (artifact.kind, war) {
+        (ArtifactKind::Jar, None) => {
+            let out = artifact_output(root, artifact);
+            let mut manifest = String::from("Manifest-Version: 1.0\r\n");
+            if !artifact.main_class.trim().is_empty() {
+                manifest.push_str(&format!("Main-Class: {}\r\n", artifact.main_class.trim()));
+            }
+            let names: Vec<String> =
+                libraries.iter().filter_map(|l| l.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+            if !names.is_empty() {
+                manifest.push_str(&format!("Class-Path: {}\r\n", names.join(" ")));
+            }
+            steps.push(BuildStep::action(
+                Action::Layout { into: staging.clone(), entries: vec![(classes.to_path_buf(), PathBuf::new())] },
+                root,
+            ));
+            // The jar's Class-Path names the libraries next to it.
+            steps.push(BuildStep::action(
+                Action::Layout {
+                    into: out.clone(),
+                    entries: libraries.iter().map(|l| (l.clone(), file_of(l))).collect(),
+                },
+                root,
+            ));
+            steps.push(BuildStep::action(
+                Action::Archive { from: staging, to: artifact_file(root, artifact), manifest: Some(manifest) },
+                root,
+            ));
+        }
+        (kind, war) => {
+            let exploded = match (kind, war) {
+                (ArtifactKind::WarExploded, None) => artifact_output(root, artifact),
+                _ => staging.clone(),
+            };
+            let mut entries = Vec::new();
+            if let Some(facet) = facet {
+                entries.push((web_root(root, facet), PathBuf::new()));
+            }
+            entries.push((classes.to_path_buf(), PathBuf::from("WEB-INF/classes")));
+            for lib in &libraries {
+                entries.push((lib.clone(), Path::new("WEB-INF/lib").join(file_of(lib))));
+            }
+            steps.push(BuildStep::action(Action::Layout { into: exploded.clone(), entries }, root));
+            let archive = war
+                .map(Path::to_path_buf)
+                .or_else(|| (kind != ArtifactKind::WarExploded).then(|| artifact_file(root, artifact)));
+            if let Some(to) = archive {
+                steps.push(BuildStep::action(Action::Archive { from: exploded, to, manifest: None }, root));
+            }
+        }
+    }
+    steps
+}
+
+fn file_of(path: &Path) -> PathBuf {
+    path.file_name().map(PathBuf::from).unwrap_or_default()
+}
+
+/// The WAR artifacts of a project without a build tool: an application server deploys them.
+pub fn structure_web_artifacts(ps: &ProjectStructureSettings) -> Vec<&ArtifactConfig> {
+    ps.artifacts.iter().filter(|a| matches!(a.kind, ArtifactKind::War | ArtifactKind::WarExploded)).collect()
+}
+
+/// A build of `artifact` into the WAR `war` (Tomcat's deployment), compiling first.
+#[allow(clippy::too_many_arguments)]
+pub fn structure_war_plan(
+    root: &Path,
+    ps: &ProjectStructureSettings,
+    roots: &StructureRoots,
+    jdk: Option<&StructureJdk>,
+    language_level: &str,
+    artifact: &ArtifactConfig,
+    war: &Path,
+    cache: &Path,
+) -> IdeResult<BuildPlan> {
+    let mut plan = structure_plan(root, ps, roots, jdk, language_level, BuildKind::Build, cache)?
+        .unwrap_or_else(|| BuildPlan { system: BuildSystem::Javac, title: module_name(root), steps: Vec::new() });
+    let (main_out, _) = structure_outputs(root, ps);
+    // Tests are not part of a deployment.
+    plan.steps.retain(|s| !s.args.iter().any(|a| a.ends_with("test.args")));
+    plan.steps
+        .retain(|s| !matches!(&s.action, Some((Action::CopyResources { to, .. }, _)) if !to.starts_with(&main_out)));
+    plan.steps.extend(artifact_steps(root, ps, artifact, &main_out, Some(war), cache));
+    plan.title = artifact.name.clone();
+    Ok(plan)
 }
 
 /// Work a build does in the IDE itself rather than through a tool.
@@ -241,6 +406,11 @@ pub(crate) enum Action {
     /// Copies the files of these folders that are not Java sources into `to`, keeping their
     /// relative paths; files that are already up to date are left alone.
     CopyResources { from: Vec<PathBuf>, to: PathBuf },
+    /// Lays out an artifact in `into`: each folder's content or file goes to its relative
+    /// place (`""` = the top). What is no longer laid out is removed.
+    Layout { into: PathBuf, entries: Vec<(PathBuf, PathBuf)> },
+    /// Zips the folder `from` into the archive `to`, with this manifest first.
+    Archive { from: PathBuf, to: PathBuf, manifest: Option<String> },
 }
 
 impl Action {
@@ -249,6 +419,8 @@ impl Action {
         match self {
             Action::Clean(dirs) => format!("Clean {}", dirs.iter().map(|d| rel(d)).collect::<Vec<_>>().join(", ")),
             Action::CopyResources { to, .. } => format!("Copy resources to {}", rel(to)),
+            Action::Layout { into, .. } => format!("Lay out {}", rel(into)),
+            Action::Archive { to, .. } => format!("Pack {}", rel(to)),
         }
     }
 
@@ -269,8 +441,111 @@ impl Action {
                 }
                 Ok(format!("{copied} resource file(s) copied"))
             }
+            Action::Layout { into, entries } => {
+                // A fresh layout: files dropped from the sources must not linger in the artifact.
+                if entries.iter().any(|(from, _)| from.starts_with(into)) {
+                    return Err(IdeError::invalid(format!(
+                        "The artifact output folder {} holds files the artifact is made of",
+                        into.display()
+                    )));
+                }
+                if into.exists() {
+                    fs::remove_dir_all(into)
+                        .map_err(|e| IdeError::internal(format!("cannot delete {} ({e})", into.display())))?;
+                }
+                let mut copied = 0;
+                for (from, to) in entries {
+                    let target = into.join(to);
+                    if from.is_dir() {
+                        copied += copy_tree(from, &target, cancel)?;
+                    } else if from.is_file() {
+                        copy_file(from, &target)?;
+                        copied += 1;
+                    }
+                }
+                Ok(format!("{copied} file(s) laid out"))
+            }
+            Action::Archive { from, to, manifest } => {
+                archive(from, to, manifest.as_deref(), cancel)?;
+                Ok(format!("Wrote {}", to.display()))
+            }
         }
     }
+}
+
+fn copy_file(from: &Path, to: &Path) -> IdeResult<()> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| IdeError::internal(format!("cannot create {} ({e})", parent.display())))?;
+    }
+    fs::copy(from, to).map_err(|e| IdeError::internal(format!("cannot copy {} ({e})", from.display())))?;
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path, cancel: &CancellationToken) -> IdeResult<usize> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let Ok(entries) = fs::read_dir(from) else { return Ok(0) };
+    let mut copied = 0;
+    for e in entries.flatten() {
+        let Ok(t) = e.file_type() else { continue };
+        let target = to.join(e.file_name());
+        if t.is_dir() {
+            copied += copy_tree(&e.path(), &target, cancel)?;
+        } else if t.is_file() {
+            copy_file(&e.path(), &target)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+fn archive(from: &Path, to: &Path, manifest: Option<&str>, cancel: &CancellationToken) -> IdeResult<()> {
+    use std::io::Write;
+    let err = |e: &dyn std::fmt::Display| IdeError::internal(format!("cannot write {} ({e})", to.display()));
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|e| err(&e))?;
+    }
+    let mut zip = zip::ZipWriter::new(fs::File::create(to).map_err(|e| err(&e))?);
+    let options = zip::write::SimpleFileOptions::default();
+    if let Some(manifest) = manifest {
+        zip.add_directory("META-INF/", options).map_err(|e| err(&e))?;
+        zip.start_file("META-INF/MANIFEST.MF", options).map_err(|e| err(&e))?;
+        zip.write_all(manifest.as_bytes()).map_err(|e| err(&e))?;
+    }
+    let mut stack = vec![from.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let path = e.path();
+            let name = path.strip_prefix(from).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+            if manifest.is_some() && name.eq_ignore_ascii_case("META-INF/MANIFEST.MF") {
+                continue;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => {
+                    if !(manifest.is_some() && name == "META-INF") {
+                        zip.add_directory(format!("{name}/"), options).map_err(|e| err(&e))?;
+                    }
+                    stack.push(path);
+                }
+                Ok(t) if t.is_file() => {
+                    zip.start_file(name, options).map_err(|e| err(&e))?;
+                    let mut file = fs::File::open(&path).map_err(|e| err(&e))?;
+                    std::io::copy(&mut file, &mut zip).map_err(|e| err(&e))?;
+                }
+                _ => {}
+            }
+        }
+    }
+    zip.finish().map_err(|e| err(&e))?;
+    Ok(())
 }
 
 fn copy_resources(base: &Path, dir: &Path, to: &Path, cancel: &CancellationToken) -> IdeResult<usize> {
@@ -444,5 +719,99 @@ mod tests {
         assert_eq!(action.run(&cancel).unwrap(), "0 resource file(s) copied");
         Action::Clean(vec![out.clone()]).run(&cancel).unwrap();
         assert!(!out.exists());
+    }
+
+    fn entries(archive: &Path) -> Vec<String> {
+        let mut zip = zip::ZipArchive::new(fs::File::open(archive).unwrap()).unwrap();
+        (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().unwrap().into_owned()).collect()
+    }
+
+    fn run_plan(plan: &BuildPlan) {
+        let cancel = CancellationToken::new();
+        for step in &plan.steps {
+            if let Some((action, _)) = &step.action {
+                action.run(&cancel).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn lays_out_war_jar_and_exploded_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("shop");
+        write(&root.join("WebRoot/index.jsp"), "hi");
+        write(&root.join("WebRoot/WEB-INF/web.xml"), "<web-app/>");
+        write(&root.join("WebRoot/WEB-INF/lib/inside.jar"), "");
+        write(&root.join("lib/extra.jar"), "");
+        let classes = root.join("out/production/shop");
+        write(&classes.join("com/a/A.class"), "");
+        let artifact = |name: &str, kind| ArtifactConfig {
+            name: name.into(),
+            kind,
+            module: ".".into(),
+            include_libraries: vec!["extra".into()],
+            main_class: "com.a.A".into(),
+            ..Default::default()
+        };
+        let ps = ProjectStructureSettings {
+            libraries: vec![ProjectLibrary {
+                name: "extra".into(),
+                classes: vec!["lib/*.jar".into()],
+                ..Default::default()
+            }],
+            facets: vec![FacetConfig {
+                kind: "web".into(),
+                module: ".".into(),
+                descriptor: "WebRoot/WEB-INF/web.xml".into(),
+                web_root: String::new(),
+            }],
+            artifacts: vec![
+                artifact("shop:war", ArtifactKind::War),
+                artifact("shop:war exploded", ArtifactKind::WarExploded),
+                artifact("shop:jar", ArtifactKind::Jar),
+            ],
+            ..Default::default()
+        };
+        let cache = tmp.path().join("cache");
+        for a in &ps.artifacts {
+            let plan = BuildPlan {
+                system: BuildSystem::Javac,
+                title: String::new(),
+                steps: artifact_steps(&root, &ps, a, &classes, None, &cache),
+            };
+            run_plan(&plan);
+        }
+        let war = entries(&root.join("out/artifacts/shop_war/shop.war"));
+        for name in [
+            "index.jsp",
+            "WEB-INF/web.xml",
+            "WEB-INF/lib/inside.jar",
+            "WEB-INF/lib/extra.jar",
+            "WEB-INF/classes/com/a/A.class",
+        ] {
+            assert!(war.iter().any(|e| e == name), "{name} in {war:?}");
+        }
+        let exploded = root.join("out/artifacts/shop_war_exploded");
+        assert!(exploded.join("WEB-INF/classes/com/a/A.class").is_file());
+        assert!(exploded.join("WEB-INF/lib/extra.jar").is_file());
+        let jar_dir = root.join("out/artifacts/shop_jar");
+        let jar = entries(&jar_dir.join("shop.jar"));
+        assert_eq!(jar[..2], ["META-INF/".to_owned(), "META-INF/MANIFEST.MF".to_owned()]);
+        assert!(jar.iter().any(|e| e == "com/a/A.class"));
+        assert!(jar_dir.join("extra.jar").is_file());
+        let mut zip = zip::ZipArchive::new(fs::File::open(jar_dir.join("shop.jar")).unwrap()).unwrap();
+        let mut manifest = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("META-INF/MANIFEST.MF").unwrap(), &mut manifest).unwrap();
+        assert!(manifest.contains("Main-Class: com.a.A") && manifest.contains("Class-Path: extra.jar"));
+    }
+
+    #[test]
+    fn never_lays_out_over_its_own_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let web = tmp.path().join("WebRoot");
+        write(&web.join("a.jsp"), "");
+        let action = Action::Layout { into: tmp.path().to_path_buf(), entries: vec![(web.clone(), PathBuf::new())] };
+        assert!(action.run(&CancellationToken::new()).is_err());
+        assert!(web.join("a.jsp").is_file());
     }
 }
