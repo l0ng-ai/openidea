@@ -139,8 +139,13 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
             }
             let page = Page::of(&call, CONFIGURATIONS_LIMIT)?;
             let query = call.opt_str("query")?.map(|q| q.to_lowercase());
+            let dir = crate::mcp::scope::Scope::of(&call)?;
             let list: Vec<Value> = configs
                 .iter()
+                // A configuration belongs where it runs.
+                .filter(|c| {
+                    dir.contains(&c.cwd.as_deref().map_or_else(|| call.root().to_path_buf(), |d| call.root().join(d)))
+                })
                 .filter(|c| {
                     query.as_ref().is_none_or(|q| {
                         [c.name.as_str(), c.kind.as_str(), command_line(c).as_str()]
@@ -164,6 +169,7 @@ the whole command. Run points are found in Rust, JavaScript/TypeScript, Python a
 in the file instead of project-wide run configurations.",
     ))
     .param(Param::optional("query", ParamType::String, "Only configurations whose name, type or command contains it"))
+    .param(crate::mcp::scope::param())
     .param(Param::optional("limit", ParamType::Integer, "Configurations to return at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
