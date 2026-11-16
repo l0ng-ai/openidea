@@ -55,10 +55,10 @@ function openFailed(path: string, e: unknown) {
 /** Opens project `path` in this window; true once it is this window's project. */
 async function openHere(path: string): Promise<boolean> {
   if (!isRemoteWindow() && useProject.getState().project?.root === path) return true;
-  if (!(await confirmLeaveProject())) return false;
+  // A folder of a WSL distro runs there, not as a network folder; the window then drops untitled buffers.
+  const wsl = await commands.wslResolve(path).catch(() => null);
+  if (!(await confirmLeaveProject(!wsl))) return false;
   try {
-    // A folder of a WSL distro runs there, not as a network folder.
-    const wsl = await commands.wslResolve(path).catch(() => null);
     if (wsl) await connectRemote(wsl.target, wsl.path);
     else await openProject(path);
     return true;

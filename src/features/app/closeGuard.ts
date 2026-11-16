@@ -250,7 +250,7 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
         dirty: dirtyCount(),
         project: s.project?.displayName || s.project?.name || null,
       },
-      deps,
+      savingUntitled(deps),
     );
     if (!ok) {
       await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
@@ -268,6 +268,18 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   } finally {
     closing = false;
   }
+}
+
+/** Save asks for each untitled buffer's path; one left unsaved (Save As cancelled) keeps the window open. */
+function savingUntitled(deps: CloseDeps): CloseDeps {
+  return {
+    ...deps,
+    saveAll: async () => {
+      await deps.saveAll();
+      if (maybeEditorService()?.untitledDirtyDocumentIds?.().length)
+        throw new IpcError({ kind: "cancelled", message: "Untitled files were not saved" });
+    },
+  };
 }
 
 /**
@@ -289,15 +301,7 @@ export async function confirmLeave(
       ? { ...deps, saveAll: () => Promise.resolve(maybeEditorService()?.saveAll({ skipUntitled: true })) }
       : keepUntitled
         ? deps
-        : {
-            ...deps,
-            // Save asks for each untitled buffer's path; one left unsaved (Save As cancelled) keeps the project open.
-            saveAll: async () => {
-              await deps.saveAll();
-              if (maybeEditorService()?.untitledDirtyDocumentIds?.().length)
-                throw new IpcError({ kind: "cancelled", message: "Untitled files were not saved" });
-            },
-          };
+        : savingUntitled(deps);
   return decideClose(
     {
       quitting: false,
