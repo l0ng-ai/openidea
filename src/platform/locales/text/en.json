@@ -2181,6 +2181,7 @@
   "Tracing the stream chain": "Tracing the stream chain",
   "Breakpoints stay off until {terminal} finishes": "Breakpoints stay off until {terminal} finishes",
   "The operation is stuck: {threads} hold locks it needs": "The operation is stuck: {threads} hold locks it needs",
+  "The operation is stuck; stop the debug session to end it": "The operation is stuck; stop the debug session to end it",
   "Recording stopped before the trace started": "Recording stopped before the trace started",
   "The trace was cancelled before the chain ran": "The trace was cancelled before the chain ran",
   "{records} records · {seconds} s": "{records} records · {seconds} s",

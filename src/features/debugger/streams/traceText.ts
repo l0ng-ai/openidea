@@ -58,6 +58,7 @@ export function bannerText(banner: TraceBanner, result: Ready, tx: Tx = catalogT
 /** Why an abort has not ended the operation yet, or `null` when there is nothing to say. */
 export function abortText(abort: AbortState | null, tx: Tx = catalogTx): string | null {
   if (abort?.kind !== "stuck") return null;
+  if (abort.holders.length === 0) return tx("The operation is stuck; stop the debug session to end it");
   const threads = abort.holders.map(([, name]) => name).join(", ");
   return tx`The operation is stuck: ${threads} hold locks it needs`;
 }

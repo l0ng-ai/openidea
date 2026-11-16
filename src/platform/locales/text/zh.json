@@ -8564,6 +8564,7 @@
   "Tracing the stream chain": "正在跟踪流链",
   "Breakpoints stay off until {terminal} finishes": "{terminal} 完成之前断点保持关闭",
   "The operation is stuck: {threads} hold locks it needs": "操作被阻塞：{threads} 持有它所需的锁",
+  "The operation is stuck; stop the debug session to end it": "操作被阻塞；请停止调试会话以结束它",
   "Recording stopped before the trace started": "跟踪开始前已停止记录",
   "The trace was cancelled before the chain ran": "链运行前跟踪已取消",
   "{records} records · {seconds} s": "{records} 条记录 · {seconds} 秒",

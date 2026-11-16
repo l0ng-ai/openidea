@@ -259,6 +259,12 @@ describe("StreamTraceEditor", () => {
     expect(screen.getByRole("alert").textContent).toBe("The operation is stuck: main, worker-1 hold locks it needs");
   });
 
+  it("a stuck operation with no lock holders says how to end it", () => {
+    setEntry({ abort: { kind: "stuck", holders: [] } });
+    show();
+    expect(screen.getByRole("alert").textContent).toBe("The operation is stuck; stop the debug session to end it");
+  });
+
   it("shows a result banner", () => {
     ready(chainA({ banners: [{ kind: "truncated", dropped: 3 }] }));
     show();
