@@ -15,7 +15,7 @@ import {
   type MouseEvent,
   type PointerEvent,
 } from "react";
-import { tx } from "@/platform/i18n";
+import { tx, txTemplate } from "@/platform/i18n";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
 import { basename, dirname } from "@/platform/project";
@@ -961,6 +961,14 @@ export function ChangesTree({ mode }: { mode: "commit" | "local" | "dialog" }) {
   );
 }
 
+const MISSING_BLANK_LINE = "Missing blank line between subject and body";
+
+/** The quick fix for {@link MISSING_BLANK_LINE}: an empty line after the subject. */
+export function addBlankLineAfterSubject(message: string): string {
+  const end = message.indexOf("\n");
+  return end < 0 ? message : `${message.slice(0, end)}\n${message.slice(end)}`;
+}
+
 /** Commit message inspections (Settings › Version Control › Commit). */
 export function messageProblems(
   message: string,
@@ -976,8 +984,7 @@ export function messageProblems(
   const out: string[] = [];
   if (c.limitSubject && (lines[0]?.length ?? 0) > c.subjectLimit)
     out.push(`Subject line is longer than ${c.subjectLimit} characters`);
-  if (c.blankLineAfterSubject && lines.length > 1 && lines[1]!.trim() !== "")
-    out.push("Missing blank line between subject and body");
+  if (c.blankLineAfterSubject && lines.length > 1 && lines[1]!.trim() !== "") out.push(MISSING_BLANK_LINE);
   if (c.limitBody) {
     const long = lines.slice(1).findIndex((l) => l.length > c.bodyLimit);
     if (long >= 0) out.push(`Body line ${long + 2} is longer than ${c.bodyLimit} characters`);
@@ -1160,7 +1167,29 @@ export function CommitMessageField({
       )}
       {problems.length > 0 && (
         <div className={styles.inspections} role="status">
-          {problems.join(" · ")}
+          {problems.map((p, i) => (
+            <span key={p}>
+              {i > 0 && " · "}
+              {txTemplate(p)}
+              {p === MISSING_BLANK_LINE && (
+                <button
+                  type="button"
+                  className={styles.inspectionFix}
+                  onClick={() => {
+                    const el = ref.current;
+                    const caret = el ? el.selectionStart + (el.selectionStart > first.length ? 1 : 0) : 0;
+                    useCommit.setState({ message: addBlankLineAfterSubject(message) });
+                    requestAnimationFrame(() => {
+                      el?.focus();
+                      el?.setSelectionRange(caret, caret);
+                    });
+                  }}
+                >
+                  <T>Add blank line</T>
+                </button>
+              )}
+            </span>
+          ))}
         </div>
       )}
       {checkProblems.length > 0 && (

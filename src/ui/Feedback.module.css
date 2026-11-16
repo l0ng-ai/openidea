@@ -105,6 +105,7 @@
   display: flex;
   gap: 10px;
   width: 340px;
+  max-width: 100%;
   /* Never grow past the window: the close button must stay reachable. */
   max-height: calc(100vh - 48px);
   padding: 14px 34px 14px 14px;

@@ -853,9 +853,9 @@ impl Walk {
                     }
                 }
                 EntryKind::File => {
-                    // Files of content roots outside the project go by absolute path.
+                    // Files of content roots outside the project go by absolute path, with `/` as elsewhere.
                     let path = relative_to_root(&self.root, &entry.path)
-                        .unwrap_or_else(|| entry.path.to_string_lossy().into_owned());
+                        .unwrap_or_else(|| entry.path.to_string_lossy().replace('\\', "/"));
                     if self.glob.is_match(&path) && self.scope.matches(&path) {
                         if found.len() == self.limit {
                             return true;
@@ -894,11 +894,15 @@ async fn symbol_search(call: Call) -> IdeResult<Output> {
     };
     let mut items: Vec<SearchItem> = found
         .into_iter()
-        .filter(|s| dir.contains(&s.path.0) && scope.matches(&s.rel_path))
-        .map(|s| SearchItem {
+        // By the path the other tools give: the index shows a root outside the project by its
+        // folder name, which is no path to read.
+        .filter(|s| dir.contains(&s.path.0))
+        .map(|s| (call.display(&s.path.0), s))
+        .filter(|(path, _)| scope.matches(path))
+        .map(|(path, s)| SearchItem {
             name: Some(s.name),
             container: s.container.filter(|c| !c.is_empty()),
-            ..SearchItem::at(s.rel_path, s.range)
+            ..SearchItem::at(path, s.range)
         })
         .collect();
     let mut timed_out = false;

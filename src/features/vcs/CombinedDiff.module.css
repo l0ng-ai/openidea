@@ -71,6 +71,9 @@
   display: flex;
   flex-direction: column;
 }
+.body[hidden] {
+  display: none;
+}
 /* Space a block takes before its diff loads, so the scrollbar is roughly right. */
 .placeholder {
   height: 160px;

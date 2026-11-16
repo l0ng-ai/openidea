@@ -57,6 +57,14 @@ export function groupOf(fs: FileStatus): GroupId | null {
   return "changes";
 }
 
+/**
+ * Added to the index, then deleted from disk: no change against HEAD, so the change list leaves
+ * it out, but the staging area shows the staged addition (and the deletion, unstaged).
+ */
+export function addedThenDeleted(fs: Pick<FileStatus, "staged" | "unstaged">): boolean {
+  return fs.staged === "added" && fs.unstaged === "deleted";
+}
+
 export function isPartiallyStaged(fs: FileStatus): boolean {
   return (
     !!fs.staged &&
@@ -99,7 +107,9 @@ const KIND_ORDER: GroupId[] = ["conflicts", "changes", "unversioned"];
 function fileNode(fs: FileStatus, root: string, group: GroupId, flat: boolean, scope: string = group): ChangeNode {
   const path = stripSlash(fs.path);
   const rel = relTo(root, path);
-  const kind = effectiveKind(fs) ?? "modified";
+  // Under Staged / Unstaged, a file without an overall kind (added, then deleted) shows its side's.
+  const side = group === "staged" ? fs.staged : group === "unstaged" ? fs.unstaged : null;
+  const kind = effectiveKind(fs) ?? (side === "added" || side === "deleted" ? side : "modified");
   const dir = dirName(rel);
   return {
     key: `${scope}:${path}`,
@@ -259,7 +269,7 @@ export function buildChangeTree(
   const repoRoots = byRepo ? repos : [];
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
-    const g = groupOf(fs);
+    const g = groupOf(fs) ?? (byStaging && addedThenDeleted(fs) ? "changes" : null);
     if (!g) continue;
     let list = byGroup.get(g);
     if (!list) byGroup.set(g, (list = []));
@@ -400,8 +410,12 @@ export function planCommit(status: readonly FileStatus[], checks: ReadonlyMap<st
   const plan: CommitPlan = { stage: [], exclude: [], included: [], partial: [] };
   for (const fs of status) {
     if (!groupOf(fs)) {
-      // Listed nowhere, yet staged: added to the index, then deleted from disk. It is no
-      // change against HEAD, so the commit must not pick up the staged addition.
+      // Added to the index, then deleted from disk: no change against HEAD, so the commit
+      // leaves the staged addition out, unless the staging area commits it (checked "staged").
+      if (addedThenDeleted(fs) && (checks.get(fs.path) ?? checks.get(stripSlash(fs.path))) === "staged") {
+        plan.included.push(fs);
+        continue;
+      }
       if (fs.staged && fs.staged !== "conflicted" && fs.unstaged !== "ignored") plan.exclude.push(stripSlash(fs.path));
       continue;
     }

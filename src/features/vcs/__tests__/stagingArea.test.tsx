@@ -59,6 +59,26 @@ describe("staging area inclusion", () => {
     expect(plan.stage).toEqual(["/p/src/Unstaged.kt", "/p/src/Gone.kt"]);
   });
 
+  it("lists and commits a staged addition deleted from disk; the change lists leave it out", () => {
+    const gone = file("src/New.txt", "added", "deleted");
+    const status = [gone, unstagedOnly];
+    expect(isCommitAll(status)).toBe(false);
+    const plan = planCommit(status, stagingChecks(status));
+    expect(plan.included.map((f) => f.relPath)).toEqual(["src/New.txt"]);
+    expect(plan.exclude).toEqual([]);
+    // Staged shows the addition, Unstaged the deletion.
+    const tree = buildChangeTree(status, "/p", false, undefined, [], true);
+    const kinds = (group: string) =>
+      tree.find((n) => n.group === group)?.children?.flatMap((n) => (n.label === "New.txt" ? [n.kind] : []));
+    expect(kinds("staged")).toEqual(["added"]);
+    expect(kinds("unstaged")).toEqual(["deleted"]);
+    // Without the staging area it is no change against HEAD: listed nowhere, never committed.
+    expect(buildChangeTree(status, "/p", false).flatMap((n) => n.files.map((f) => f.relPath))).toEqual([
+      "src/Unstaged.kt",
+    ]);
+    expect(planCommit(status, new Map([[unstagedOnly.path, "all" as const]])).exclude).toEqual(["/p/src/New.txt"]);
+  });
+
   it("is not Commit All when only unversioned files changed", () => {
     expect(isCommitAll([untracked])).toBe(false);
   });

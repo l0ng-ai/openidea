@@ -148,6 +148,8 @@ describe("openProjectInWindow", () => {
     expect(wslResolve).toHaveBeenCalledWith(share);
     expect(connectRemote).toHaveBeenCalledWith(target, linuxPath);
     expect(openProject).not.toHaveBeenCalled();
+    // The remote window doesn't keep untitled buffers, so the guard counts them.
+    expect(confirmLeaveProject).toHaveBeenCalledWith(false);
   });
 
   it("asks for a new window when this one already has a project", async () => {

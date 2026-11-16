@@ -25,5 +25,9 @@ describe("extract interface", () => {
     expect(interfaceProblem("Shape", "Shape", 1)).toBe("Interface name should differ from the class name");
     expect(interfaceProblem("HasArea", "Shape", 0)).toBe("Select the members to form the interface");
     expect(interfaceProblem("HasArea", "Shape", 2)).toBeNull();
+    // Java identifiers take letters of any script.
+    expect(interfaceProblem("处理器", "Shape", 1)).toBeNull();
+    expect(interfaceProblem("Größe", "Shape", 1)).toBeNull();
+    expect(interfaceProblem("a-b", "Shape", 1)).toBe("Interface name is not a valid identifier");
   });
 });

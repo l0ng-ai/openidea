@@ -1,5 +1,5 @@
 /** IDEA's Extract Interface dialog for Java classes (`extractInterface.ts`). */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Checkbox, Dialog, Input, Select, Spinner, T } from "@/ui";
 import { useTx } from "@/platform/i18n";
 import {
@@ -39,7 +39,11 @@ function ExtractInterfaceDialogInner({ request }: { request: InterfaceRequest })
   const ready = !busy && !problem && !!target;
   const allChecked = checked.size === info.members.length;
 
+  // Closing the dialog cancels a refactoring still being checked: it applies nothing.
+  const running = useRef<AbortController | null>(null);
+  useEffect(() => () => running.current?.abort(), []);
   const close = () => {
+    running.current?.abort();
     useExtractInterfaceDialog.setState({ request: null });
     request.view.focus();
   };
@@ -52,10 +56,11 @@ function ExtractInterfaceDialogInner({ request }: { request: InterfaceRequest })
     });
   const submit = async (preview: boolean) => {
     if (!ready) return;
+    const run = (running.current = new AbortController());
     setBusy(true);
     setError(null);
     const members = info.members.map((m) => m.handleIdentifier).filter((id) => checked.has(id));
-    const outcome = await extractInterface(request, trimmed, target, members, preview);
+    const outcome = await extractInterface(request, trimmed, target, members, preview, run.signal);
     if (useExtractInterfaceDialog.getState().request !== request) return;
     setBusy(false);
     if (outcome.status === "done") close();

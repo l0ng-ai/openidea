@@ -316,7 +316,7 @@ export async function fillMarkers(
       const c = up[i]!;
       const self = classOf(c);
       if (!self) continue;
-      const found = resolver ? await superMethodsFrom(resolver, self.name, c.symbol, deps) : [];
+      const found = resolver ? await superMethodsFrom(resolver, self, c.symbol, deps) : [];
       if (!found.length) continue;
       const known = supers[i]!;
       // Same merge rule as ↓: add the graph's super methods to what the server answered.
@@ -369,41 +369,37 @@ function mergeLocations(first: readonly Location[], more: readonly Location[]): 
   return [...first, ...more.filter((l) => !first.some((f) => sameDeclarationLine(f, l)))];
 }
 
-/** Identifies one class declaration in the inheritance graph. */
 /**
- * Super methods of `method` declared by a class in `byName`, walking the inheritance
- * graph's bases up to a few levels. Empty when no base declares the method.
+ * Super methods of `method` declared by a base of the class declaration `start`, walking the
+ * inheritance graph's concrete declarations up to a few levels: a base resolves from the file
+ * that names it, so an unrelated class of the same name never joins the walk. Empty when no
+ * base declares the method.
  */
 async function superMethodsFrom(
   resolver: InheritanceIndex,
-  start: string,
+  start: ClassInheritance,
   method: string,
   deps: MarkerDeps,
   depth = 3,
 ): Promise<{ location: Location; owner: string }[]> {
   const bare = method.replace(/\s*[(<].*$/, "");
-  const seen = new Set<string>([start]);
+  const key = (c: ClassInheritance) => `${c.path}:${c.line}:${c.col}`;
+  const seen = new Set<string>([key(start)]);
   let level = [start];
   for (let d = 0; d < depth && level.length; d++) {
-    const next: string[] = [];
+    const next: ClassInheritance[] = [];
     const found: { location: Location; owner: string }[] = [];
-    for (const name of level) {
-      for (const cls of resolver.byName.get(name) ?? []) {
-        for (const base of cls.bases) {
-          if (!seen.add(base)) continue;
-          // Same rule as the graph: a base the imports name, else a unique one.
-          const declarations = await resolver.resolve(base, cls.path);
-          let answered = false;
-          for (const baseCls of declarations) {
-            const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
-            const m = methodInOutline(outline, baseCls, bare);
-            if (m) {
-              found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
-              answered = true;
-            }
-          }
-          // Not found in a base that declares nothing: keep walking its own bases.
-          if (!answered) next.push(base);
+    for (const cls of level) {
+      for (const base of cls.bases) {
+        // Same rule as the graph: a base the imports name, else a unique one.
+        for (const baseCls of await resolver.resolve(base, cls.path)) {
+          if (seen.has(key(baseCls))) continue;
+          seen.add(key(baseCls));
+          const outline = await deps.supers.outline(baseCls.path).catch(() => [] as OutlineItem[]);
+          const m = methodInOutline(outline, baseCls, bare);
+          if (m) found.push({ location: { path: baseCls.path, range: m.selection_range }, owner: base });
+          // Not declared there: keep walking that class's own bases.
+          else next.push(baseCls);
         }
       }
     }

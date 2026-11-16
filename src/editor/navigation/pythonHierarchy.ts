@@ -123,7 +123,9 @@ export async function pythonDescendants(
     const next: ClassInheritance[] = [];
     for (const parent of level) {
       for (const sub of subclasses.get(declarationKey(parent)) ?? []) {
-        if (!seen.add(declarationKey(sub))) continue;
+        const key = declarationKey(sub);
+        if (seen.has(key)) continue;
+        seen.add(key);
         out.push(sub);
         next.push(sub);
       }

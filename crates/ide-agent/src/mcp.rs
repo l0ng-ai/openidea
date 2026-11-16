@@ -86,6 +86,29 @@ fn matches_agent(agents: &[String], provider: &str) -> bool {
     })
 }
 
+/// The configured servers off for this session: off by default and not switched on for it, or
+/// switched off for it. Named so an agent that also loads its own configuration can keep a
+/// same-named server of it off too. Workspace entries take precedence, as in [`acp_mcp_servers`].
+pub(crate) fn servers_off(all: &[McpServer], overrides: &BTreeMap<String, bool>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let ordered =
+        all.iter().filter(|s| s.scope == McpScope::Workspace).chain(all.iter().filter(|s| s.scope == McpScope::User));
+    let configured: Vec<String> = ordered
+        .filter(|s| seen.insert(s.name.as_str()))
+        .filter(|s| !overrides.get(&s.name).copied().unwrap_or(s.enabled))
+        .map(|s| s.name.clone())
+        .collect();
+    // A server switched off that the IDE doesn't configure may still be the agent's own.
+    let switched = overrides
+        .iter()
+        .filter(|(name, on)| !**on && name.as_str() != BUILTIN_MCP_NAME && !seen.contains(name.as_str()))
+        .map(|(name, _)| name.clone());
+    let mut off: Vec<String> = configured.into_iter().chain(switched).collect();
+    off.sort();
+    off.dedup();
+    off
+}
+
 /// Builds the ACP `mcpServers` array for `session/new`, `session/load`, and `session/fork`.
 /// Workspace entries take precedence over User entries with the same name. Per-session
 /// `overrides` (`server_name` -> `enabled`) can enable a disabled server or disable an enabled one
@@ -1015,6 +1038,44 @@ fn parse_key_values_map(val: Option<&Value>) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configured(name: &str, scope: McpScope, enabled: bool) -> McpServer {
+        McpServer {
+            id: format!("{scope:?}:{name}"),
+            name: name.into(),
+            scope,
+            transport: McpTransport::Stdio,
+            enabled,
+            command: Some("x".into()),
+            args: Vec::new(),
+            env: Vec::new(),
+            url: None,
+            headers: Vec::new(),
+            agents: Vec::new(),
+            unapproved: false,
+        }
+    }
+
+    #[test]
+    fn servers_off_follow_the_effective_state() {
+        let all = [
+            configured("default-off", McpScope::User, false),
+            configured("switched-on", McpScope::User, false),
+            configured("on", McpScope::User, true),
+            configured("switched-off", McpScope::User, true),
+            // The workspace entry decides for its name.
+            configured("both", McpScope::User, true),
+            configured("both", McpScope::Workspace, false),
+        ];
+        let overrides = BTreeMap::from([
+            ("switched-on".to_owned(), true),
+            ("switched-off".to_owned(), false),
+            ("agent-own".to_owned(), false),
+            (BUILTIN_MCP_NAME.to_owned(), false),
+        ]);
+        assert_eq!(servers_off(&all, &overrides), ["agent-own", "both", "default-off", "switched-off"]);
+        assert_eq!(servers_off(&all[2..4], &BTreeMap::new()), Vec::<String>::new());
+    }
 
     #[test]
     fn crud_and_acp_filtering_by_scope_agent_and_transport() {

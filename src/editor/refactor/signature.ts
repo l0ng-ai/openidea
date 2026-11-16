@@ -15,7 +15,7 @@ import { showHint } from "@/editor/lsp/hint";
 import { openPopup } from "@/editor/lsp/popupStore";
 import { summarizeWorkspaceEdit } from "@/editor/lsp/workspaceEdit";
 import { tx } from "@/platform/i18n";
-import { commands, isCancelled, nextRequestId, unavailableText } from "@/platform/ipc";
+import { IpcError, commands, isCancelled, nextRequestId, unavailableText } from "@/platform/ipc";
 import { ask } from "@/workbench/messages";
 import { cannotPerform } from "./catalog";
 
@@ -50,7 +50,8 @@ export function signatureText(sig: {
   return head + throws;
 }
 
-const JAVA_NAME = /^[A-Za-z_$][\w$]*$/;
+/** A Java identifier: letters of any script, `$` and `_`, then digits and combining marks too. */
+export const JAVA_NAME = /^[\p{L}\p{Nl}\p{Sc}\p{Pc}][\p{L}\p{Nl}\p{Sc}\p{Pc}\p{Nd}\p{Mn}\p{Mc}]*$/u;
 
 /** Why the edited signature can't be submitted yet, or null. */
 export function signatureProblem(sig: MethodSignature): string | null {
@@ -128,12 +129,37 @@ export async function startChangeSignature(view: EditorView): Promise<void> {
   }
 }
 
-export async function applyEdit(view: EditorView, edit: WorkspaceEdit) {
+export async function applyEdit(view: EditorView, edit: WorkspaceEdit, signal?: AbortSignal) {
   try {
     await whenAllSynced();
-    await lspRequest(() => commands.applyWorkspaceEdit(edit));
+    // The dialog closed while the editors were syncing: nothing is applied.
+    if (signal?.aborted) return;
+    await lspRequest(
+      () => commands.applyWorkspaceEdit(edit),
+      () => !signal?.aborted,
+    );
   } catch (e) {
     reportLspError(view, e, true);
+  }
+}
+
+/**
+ * Sends `send(id, wanted)` with a fresh request id that `signal` cancels. `wanted` goes to
+ * `lspRequest`, which syncs editors first: a dialog closed meanwhile never sends the request.
+ */
+export async function cancellable<T>(
+  signal: AbortSignal | undefined,
+  send: (id: number, wanted: () => boolean) => Promise<T>,
+): Promise<T> {
+  // Closed before the request went out: it never does (a cancel can't reach an unsent request).
+  if (signal?.aborted) throw new IpcError({ kind: "cancelled", message: "Cancelled" });
+  const id = nextRequestId();
+  const abort = () => void commands.cancelRequest(id);
+  signal?.addEventListener("abort", abort);
+  try {
+    return await send(id, () => !signal?.aborted);
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -158,6 +184,8 @@ export async function changeSignature(
   signature: MethodSignature,
   delegate: boolean,
   preview: boolean,
+  /** The dialog closed: nothing is confirmed, previewed or applied any more. */
+  signal?: AbortSignal,
 ): Promise<SignatureOutcome> {
   const { view } = request;
   if (view.state.doc !== request.text) return { status: "stay", error: "The file changed; open the dialog again" };
@@ -167,18 +195,20 @@ export async function changeSignature(
     for (;;) {
       await whenSynced(view);
       const token: string | null = confirmation;
-      changed = await lspRequest(() =>
-        commands.lspChangeSignature(nextRequestId(), request.doc, request.pos, signature, delegate, token),
+      changed = await cancellable(signal, (id, wanted) =>
+        lspRequest(() => commands.lspChangeSignature(id, request.doc, request.pos, signature, delegate, token), wanted),
       );
+      if (signal?.aborted) return { status: "stay" };
       const fatal = changed.problems.find((p) => p.severity === "fatal");
       if (fatal || (!changed.edit && !changed.confirmation))
         return { status: "stay", error: fatal?.message ?? "Nothing to change" };
       if (!changed.confirmation) break;
-      if (!(await confirmProblems(changed.problems.map((p) => p.message)))) return { status: "stay" };
+      if (!(await confirmProblems(changed.problems.map((p) => p.message))) || signal?.aborted)
+        return { status: "stay" };
       confirmation = changed.confirmation;
     }
   } catch (e) {
-    if (isCancelled(e)) return { status: "stay" };
+    if (isCancelled(e) || signal?.aborted) return { status: "stay" };
     return { status: "stay", error: errorText(e) };
   }
   const edit = changed.edit!;
@@ -193,7 +223,7 @@ export async function changeSignature(
       onConfirm: () => void applyEdit(view, edit),
     });
   } else {
-    await applyEdit(view, edit);
+    await applyEdit(view, edit, signal);
   }
   return { status: "done" };
 }

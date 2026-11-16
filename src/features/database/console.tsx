@@ -571,6 +571,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       />
       <span className={styles.toolbarSeparator} />
       <Select
+        variant="ghost"
         aria-label="Row limit"
         value={String(maxRows)}
         options={ROW_LIMITS.map((v) => ({ value: v, label: tx`${Number(v).toLocaleString("en")} rows` }))}
@@ -580,6 +581,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         <>
           <span className={styles.toolbarSeparator} />
           <Select
+            variant="ghost"
             aria-label="Transaction mode"
             value={manual ? "manual" : "auto"}
             options={[
@@ -611,6 +613,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       {bound && sourceById(boundId)?.driver === "snowflake" && <SnowflakeSession target={bound} idle={!running} />}
       {switchable && (
         <Select
+          variant="ghost"
           aria-label={sqlServer ? "Database" : "Schema"}
           value={schema || null}
           placeholder="<schema>"
@@ -621,6 +624,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
         />
       )}
       <Select
+        variant="ghost"
         aria-label="Data source"
         value={bound ?? null}
         placeholder={sources.length ? "<data source>" : "None configured"}
@@ -674,6 +678,7 @@ function SnowflakeSession({ target, idle }: { target: string; idle: boolean }) {
   return (
     <>
       <Select
+        variant="ghost"
         aria-label="Warehouse"
         value={state.warehouse || null}
         placeholder="<warehouse>"
@@ -683,6 +688,7 @@ function SnowflakeSession({ target, idle }: { target: string; idle: boolean }) {
         disabled={!idle}
       />
       <Select
+        variant="ghost"
         aria-label="Role"
         value={state.role || null}
         placeholder="<role>"

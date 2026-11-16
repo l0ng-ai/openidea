@@ -1,4 +1,4 @@
-package openidea:plugin@1.8.0;
+package openidea:plugin@1.9.0;
 
 /// Launches this plugin's configurations in the invoking window's Run tool window.
 interface run {
@@ -22,6 +22,46 @@ interface run-configurations {
     }
     /// Returns the complete set for this project root.
     configurations: func(project-root: string) -> list<run-configuration>;
+}
+
+/// Optional dynamic configurations with an environment and a debugger (API 1.9).
+/// When a plugin exports both, the IDE uses this one instead of `run-configurations`.
+interface launch-configurations {
+    use types.{extension};
+    /// A process the run starts, to attach the debugger to.
+    record attach-child {
+        /// Its debugger, as in Attach to Process: `dotnet`, `node`, `python`, `go` or `native`.
+        kind: string,
+        /// Only a process whose command line contains this text.
+        command-contains: option<string>,
+    }
+    /// How Debug starts the configuration.
+    variant debugger {
+        /// Starts `program` under the debugger of this language id (its `[debugger]`), e.g. `python`.
+        launch(string),
+        /// Runs the configuration as Run does, then attaches to the first matching process the
+        /// run starts (it waits for one up to 60 seconds).
+        attach-child(attach-child),
+        /// Later kinds; this IDE treats the configuration as having no debugger.
+        other(extension),
+    }
+    /// `run-configuration` with an environment and a debugger.
+    record launch-configuration {
+        id: string,
+        name: string,
+        program: string,
+        args: list<string>,
+        cwd: option<string>,
+        test: bool,
+        framework: option<string>,
+        /// Variables added to the run's environment (at most 64). A name the IDE's own
+        /// environment already has, such as `PATH`, is refused like in `process`.
+        env: list<tuple<string, string>>,
+        /// None: Debug infers the debugger from a source file in `args`, as before.
+        debugger: option<debugger>,
+    }
+    /// Returns the complete set for this project root.
+    configurations: func(project-root: string) -> list<launch-configuration>;
 }
 
 /// Optional parser for test configurations whose framework is plugin.
