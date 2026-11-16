@@ -37,6 +37,9 @@ pub struct ProjectInterpreter {
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
     host.require_trust(window)?;
     let project = host.project(window).ok();
+    if kind == SdkKind::Jdk {
+        host.apply_added_jdks();
+    }
     let root = project.as_ref().map(|p| p.root.clone());
     // The interpreter the project uses is a choice even where detection doesn't look (a
     // virtualenv in a subfolder, one picked by path), so it shows by name and version.
@@ -372,9 +375,20 @@ pub async fn sdk_python_pip(
     result?
 }
 
+/// The JDK whose home is `path` (a macOS bundle too), as the SDK list shows it; `None` when
+/// `path` is no JDK home (Add JDK from Disk…).
+pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
+    tokio::task::spawn_blocking(move || {
+        ide_sdk::java::jdk_at(std::path::Path::new(&path)).map(|j| ide_sdk::jdk_sdk(&j))
+    })
+    .await
+    .map_err(join_err)
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
+    d.add("sdk_jdk_at", |c| async move { sdk_jdk_at(c.arg("path")?).await });
     d.add(
         "sdk_python_project_interpreters",
         |c| async move { sdk_python_project_interpreters(&c.host, &c.window).await },
