@@ -71,7 +71,7 @@ pub struct Settings {
     pub scopes: Vec<NamedScope>,
     /// Appearance & Behavior › File Colors.
     pub file_colors: FileColorSettings,
-    /// Database › Query Execution.
+    /// Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes.
     pub database: DatabaseSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]

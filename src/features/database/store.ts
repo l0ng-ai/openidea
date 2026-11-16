@@ -56,6 +56,7 @@ import { formatted } from "./sql/format";
 import { bindParams, findParams } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
+import { resolutionScopeOf, resolutionScopesOf, type SqlResolutionScope } from "./resolutionScopes";
 import { databaseRequest, invalidateDatabaseRequests, projectRequest } from "./requests";
 import { tx } from "@/platform/i18n";
 
@@ -884,7 +885,10 @@ export function bindConsole(path: string, id: string | null) {
 export function consoleSchema(path: string): string {
   const s = useDatabase.getState();
   const id = consoleSource(path);
-  return activeSchema(s.consoleSchemas[path], id ? s.completion[id]?.defaultSchema : undefined);
+  // A scope's schema applies while the console is on that scope's data source.
+  const scope = s.consoles[path] ? null : scopeOf(path);
+  const picked = s.consoleSchemas[path] ?? (scope && scope.dataSource === id ? scope.schema : undefined);
+  return activeSchema(picked || undefined, id ? s.completion[id]?.defaultSchema : undefined);
 }
 
 /** Sets (or clears, for `null`) the console's active schema and remembers it per console file. */
@@ -902,11 +906,26 @@ export function setConsoleSchema(path: string, schema: string | null) {
   });
 }
 
-/** The data source a console / SQL file runs on: its binding, else the only data source. */
+/** The SQL resolution scope of file `path` (Languages & Frameworks › SQL Resolution Scopes), if any. */
+function scopeOf(path: string): SqlResolutionScope | null {
+  const { project, settings } = useProject.getState();
+  if (!project) return null;
+  const sources = useDatabase.getState().sources;
+  return resolutionScopeOf(path, project.root, resolutionScopesOf(settings), (id) =>
+    sources.some((x) => x.id === splitTarget(id).id),
+  );
+}
+
+/**
+ * The data source a console / SQL file runs on and resolves against: the one picked in its
+ * toolbar, else its SQL resolution scope's, else the only data source.
+ */
 export function consoleSource(path: string): string | null {
   const s = useDatabase.getState();
   const bound = s.consoles[path];
   if (bound && s.sources.some((x) => x.id === splitTarget(bound).id)) return bound;
+  const scope = scopeOf(path);
+  if (scope) return scope.dataSource;
   return s.sources.length === 1 ? (s.sources[0]!.id ?? null) : null;
 }
 

@@ -64,7 +64,7 @@ export interface ValidSettings extends WorkflowSettings {
   scopes: NamedScope[];
   fileColors: FileColorSettings;
   /** Database › Query Execution. */
-  database: { inEditorResults: boolean };
+  database: { inEditorResults: boolean; resolutionScopes: Array<{ path: string; dataSource: string; schema: string }> };
   general: {
     reopenLastProject: boolean;
     confirmExit: boolean;
@@ -167,7 +167,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
   scopes: [],
   fileColors: DEFAULT_FILE_COLORS,
-  database: { inEditorResults: false },
+  database: { inEditorResults: false, resolutionScopes: [] },
   general: {
     reopenLastProject: true,
     confirmExit: true,
@@ -343,7 +343,17 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     plugins: Object.fromEntries(Object.entries(obj(root.plugins)).map(([id, values]) => [id, obj(values)])),
     scopes: validateScopes(root.scopes),
     fileColors: validateFileColors(root.fileColors),
-    database: { inEditorResults: bool(obj(root.database).inEditorResults, d.database.inEditorResults) },
+    database: {
+      inEditorResults: bool(obj(root.database).inEditorResults, d.database.inEditorResults),
+      resolutionScopes: (Array.isArray(obj(root.database).resolutionScopes)
+        ? (obj(root.database).resolutionScopes as unknown[])
+        : []
+      ).map((r) => ({
+        path: str(obj(r).path, ""),
+        dataSource: str(obj(r).dataSource, ""),
+        schema: str(obj(r).schema, ""),
+      })),
+    },
     general: {
       ...validateGeneralExtras(g),
       reopenLastProject: bool(g.reopenLastProject, d.general.reopenLastProject),

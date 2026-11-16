@@ -8363,5 +8363,11 @@
   "Edit File Colors…": "编辑文件颜色…",
   "Enable system notifications": "启用系统通知",
   "In-Editor Results": "编辑器内结果",
-  "Show query results in the editor, under the statements that produced them": "在编辑器中、产生结果的语句下方显示查询结果"
+  "Show query results in the editor, under the statements that produced them": "在编辑器中、产生结果的语句下方显示查询结果",
+  "SQL Resolution Scopes": "SQL 解析作用域",
+  "SQL in these folders and files resolves against the data source: completion, inspections and navigation use its tables, and query consoles run on it unless another data source is picked in their toolbar.": "这些文件夹和文件中的 SQL 按所选数据源解析：补全、检查和导航使用它的表；查询控制台也在它上面执行，除非在控制台工具栏中另选了数据源。",
+  "Project data source": "项目数据源",
+  "Project schema": "项目架构",
+  "Add Folder or File": "添加文件夹或文件",
+  "Paths are relative to the project root. The deepest folder or file that contains a file applies to it.": "路径相对于项目根目录。对某个文件生效的是包含它的最深一级文件夹或该文件本身。"
 }

@@ -1971,5 +1971,11 @@
   "Edit File Colors…": "Edit File Colors…",
   "Enable system notifications": "Enable system notifications",
   "In-Editor Results": "In-Editor Results",
-  "Show query results in the editor, under the statements that produced them": "Show query results in the editor, under the statements that produced them"
+  "Show query results in the editor, under the statements that produced them": "Show query results in the editor, under the statements that produced them",
+  "SQL Resolution Scopes": "SQL Resolution Scopes",
+  "SQL in these folders and files resolves against the data source: completion, inspections and navigation use its tables, and query consoles run on it unless another data source is picked in their toolbar.": "SQL in these folders and files resolves against the data source: completion, inspections and navigation use its tables, and query consoles run on it unless another data source is picked in their toolbar.",
+  "Project data source": "Project data source",
+  "Project schema": "Project schema",
+  "Add Folder or File": "Add Folder or File",
+  "Paths are relative to the project root. The deepest folder or file that contains a file applies to it.": "Paths are relative to the project root. The deepest folder or file that contains a file applies to it."
 }
