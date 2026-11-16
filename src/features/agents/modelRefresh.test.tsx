@@ -152,6 +152,7 @@ it("keeps cached choices usable while refreshing and shares the completion/coold
   expect(screen.getByRole("button", { name: "Start" })).toBeEnabled();
   await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
   emit(catalog("first", { retryAtMs: Date.now() + 30_000 }));
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("button", { name: /Refresh in \d+s/ })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("small");
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
@@ -213,11 +214,12 @@ it("retains cached model and effort choices after a command failure and retries 
     draft: savedDraft({ provider: "first", config: { model: "big" }, thoughtLevels: { big: { effort: "low" } } }),
   });
   render(<HomeEditor />);
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("connection lost");
-  expect(screen.getByRole("button", { name: "Configure model" })).toHaveTextContent("biglow");
   fireEvent.click(screen.getByRole("option", { name: "small" }));
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("small");
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("button", { name: "Refresh models" }));
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("small");
@@ -238,11 +240,11 @@ it("preserves a valid remembered model and effort when discovery changes the def
   );
   render(<HomeEditor />);
   await waitFor(() => expect(useAgents.getState().modelRequests.size).toBe(0));
-  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("biglow");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("big");
+  expect(screen.getByRole("button", { name: "Reasoning" })).toHaveTextContent("low");
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   expect(screen.getByRole("option", { name: "new" })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
-  expect(screen.getByRole("radio", { name: "low" })).toHaveAttribute("aria-checked", "true");
+  fireEvent.keyDown(document, { key: "Escape" });
   fireEvent.click(screen.getByRole("button", { name: "Start" }));
   await waitFor(() => expect(backend.create).toHaveBeenCalled());
   expect(backend.create.mock.calls[0]![0].config).toEqual([

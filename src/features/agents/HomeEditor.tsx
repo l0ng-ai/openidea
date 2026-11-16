@@ -1,4 +1,4 @@
-/** New Task page: one prompt box with the agent and its settings; where it works under it. */
+/** New Task page: one prompt box with the agent and its settings; where it works in a quiet line under it. */
 import clsx from "clsx";
 import { useEffect, useRef, useState } from "react";
 import type { AgentProbe, Branch } from "@/bindings";
@@ -6,7 +6,7 @@ import { executeAction } from "@/platform/actions";
 import { call, commands } from "@/platform/ipc";
 import { useTx, useTxTemplate } from "@/platform/i18n";
 import { basename, useProject } from "@/platform/project";
-import { Chip, Select, T, type SelectOption } from "@/ui";
+import { Icon, Select, T, tooltipAttrs, type SelectOption } from "@/ui";
 import { defaultTaskProject } from "./project";
 import { maybeEditorService, useEditorShown, type EditorInput } from "@/workbench/contributions";
 import { Composer } from "./Composer";
@@ -122,6 +122,10 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
     !starting &&
     (!project?.workspace || repoState?.root === root);
 
+  const openMcp = () => setMcpOpenRequest((n) => n + 1);
+  // The agent shows as its icon; its name and version are in the tooltip.
+  const agentTitle = [provider?.name ?? tx("Agent"), probe?.version].filter(Boolean).join(" ");
+
   const start = () => {
     if (!canStart) return;
     setStarting(true);
@@ -137,93 +141,25 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
       className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}
       style={zoomStyle}
     >
+      {/* In the tool window the box sits at the bottom, under the question centred in the space above. */}
+      {docked && (
+        <div className={styles.dockedIntro}>
+          <h1 className={styles.heading}>
+            <T>What should the agent do?</T>
+          </h1>
+        </div>
+      )}
       <div className={styles.inner}>
         {!docked && (
           <h1 className={styles.heading}>
             <T>What should the agent do?</T>
           </h1>
         )}
-        {/* Above the box, like the running session's state line. */}
-        <div className={styles.where}>
-          {members.length > 1 ? (
-            <Select
-              variant="chip"
-              aria-label={tx("Project")}
-              className={styles.projectPicker}
-              value={root}
-              options={members.map((path) => ({
-                value: path,
-                label: basename(path),
-                detail: path,
-                icon: "folder",
-              }))}
-              onChange={(path) => {
-                setSelected(path);
-                updateDraft({ base: null });
-              }}
-            />
-          ) : projectLabel ? (
-            <Chip icon="folder" title={root} className={styles.projectChip}>
-              {projectLabel}
-            </Chip>
-          ) : null}
-          {isGit && (
-            <Select
-              variant="chip"
-              aria-label="Isolation"
-              className={styles.isolation}
-              value={isolation}
-              options={[
-                { value: "worktree", label: tx("New worktree"), icon: "branch", detail: tx("away from your changes") },
-                {
-                  value: "local",
-                  label: tx("Local checkout"),
-                  icon: "folder",
-                  detail: tx("edits your files directly"),
-                },
-              ]}
-              onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
-            />
-          )}
-          {/* A folder that isn't a repository has no branch: the one Git found below it isn't where the agent runs. */}
-          {isolation === "local" && isGit && current && (
-            <>
-              {!docked && (
-                <span className={styles.note}>
-                  <T>on</T>
-                </span>
-              )}
-              <Chip icon="branch" title={current} className={styles.branch}>
-                {current}
-              </Chip>
-            </>
-          )}
-          {isolation === "worktree" && branches.length > 0 && (
-            <>
-              {!docked && (
-                <span className={styles.note}>
-                  <T>from</T>
-                </span>
-              )}
-              <Select
-                variant="chip"
-                aria-label="Base branch"
-                className={styles.basePicker}
-                value={base}
-                options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
-                onChange={(b) => updateDraft({ base: b === current ? null : b })}
-              />
-            </>
-          )}
-        </div>
         <Composer
           id={HOME}
+          className={docked ? undefined : styles.composer}
           autoFocus
-          placeholder={
-            docked
-              ? "Describe a task…"
-              : "Describe a task for the agent. @ references a file or folder, / runs a command"
-          }
+          placeholder={docked ? "Describe a task…" : "Describe a task. @ for files, / for commands"}
           root={root}
           projectRoot={root}
           commands={agentCommands}
@@ -231,19 +167,23 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
           config={config}
           onConfig={setDraftOption}
           onSubmit={start}
-          onOpenMcp={() => setMcpOpenRequest((n) => n + 1)}
+          onOpenMcp={openMcp}
           disabled={!canStart}
+          addMenu={provider ? [{ id: "mcp", label: "MCP Servers…", icon: "plugin", run: openMcp }] : undefined}
           toolbar={
             <>
-              <Select
-                variant="ghost"
-                aria-label="Agent"
-                value={provider?.id ?? null}
-                options={providerOptions}
-                onChange={(id) =>
-                  id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
-                }
-              />
+              <span className={styles.agentPicker} {...tooltipAttrs(agentTitle, undefined, true)}>
+                <Select
+                  variant="ghost"
+                  aria-label="Agent"
+                  value={provider?.id ?? null}
+                  options={providerOptions}
+                  renderValue={(o) => (o?.icon ? <Icon name={o.icon} size={14} /> : <T>Agent</T>)}
+                  onChange={(id) =>
+                    id === ADD_AGENT ? void executeAction("agents.addAgent") : updateDraft({ provider: id, config: {} })
+                  }
+                />
+              </span>
               <ConfigPickers
                 key={provider?.id}
                 config={config}
@@ -265,6 +205,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
                   overrides={draft.mcpOverrides}
                   onChange={setDraftMcpOverrides}
                   openRequest={mcpOpenRequest}
+                  hideTrigger
                 />
               )}
             </>
@@ -278,6 +219,71 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
             />
           }
         />
+        {/* Under the box: where the agent works. Project and checkout on the left, the branch on the right. */}
+        <div className={styles.where}>
+          {members.length > 1 ? (
+            <Select
+              variant="ghost"
+              aria-label={tx("Project")}
+              className={styles.projectPicker}
+              value={root}
+              options={members.map((path) => ({
+                value: path,
+                label: basename(path),
+                detail: path,
+                icon: "folder",
+              }))}
+              onChange={(path) => {
+                setSelected(path);
+                updateDraft({ base: null });
+              }}
+            />
+          ) : projectLabel ? (
+            <span className={styles.project} title={root}>
+              <Icon name="folder" size={14} />
+              <span className={styles.label}>{projectLabel}</span>
+            </span>
+          ) : null}
+          {isGit && (
+            <Select
+              variant="ghost"
+              aria-label="Isolation"
+              value={isolation}
+              options={[
+                {
+                  value: "local",
+                  label: tx("Local checkout"),
+                  icon: "folder",
+                  detail: tx("edits your files directly"),
+                },
+                {
+                  value: "worktree",
+                  label: tx("New worktree"),
+                  icon: "branch",
+                  detail: tx("away from your changes"),
+                },
+              ]}
+              renderValue={(o) => (o?.value === "worktree" ? tx("Worktree") : tx("Local"))}
+              onChange={(isolation) => updateDraft({ isolation, isolationChosen: true })}
+            />
+          )}
+          {/* A folder that isn't a repository has no branch: the one Git found below it isn't where the agent runs. */}
+          {isolation === "local" && isGit && current && (
+            <span className={styles.project} title={current}>
+              <Icon name="branch" size={14} />
+              <span className={styles.label}>{current}</span>
+            </span>
+          )}
+          {isolation === "worktree" && branches.length > 0 && (
+            <Select
+              variant="ghost"
+              aria-label="Base branch"
+              value={base}
+              options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
+              onChange={(b) => updateDraft({ base: b === current ? null : b })}
+            />
+          )}
+        </div>
         {/* Notes under the box don't take part in centring, so the box stays put as they come and go. */}
         <div className={styles.notes}>
           {effortAnnouncement && (
@@ -290,11 +296,9 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               <T>Choose another model before starting.</T>
             </p>
           )}
-          {probe && (!docked || probe.error) && (
-            <p className={probe.error ? styles.warning : styles.note}>
-              {probe.error
-                ? txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)
-                : [probe.name, probe.version, probe.protocol].filter(Boolean).join(" · ")}
+          {probe?.error && (
+            <p className={styles.warning}>
+              {txTemplate(`${provider?.name ?? probe.provider} didn't start: ${probe.error}`)}
             </p>
           )}
           {(error || (provider && !provider.installed)) && (

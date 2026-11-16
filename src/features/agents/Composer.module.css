@@ -173,9 +173,6 @@
 .chipDetail > span {
   grid-area: 1 / 1;
 }
-.chipSizer {
-  visibility: hidden;
-}
 .chipChevron {
   flex: none;
   color: var(--fg-muted);
@@ -222,46 +219,38 @@
   color: var(--fg-muted);
   cursor: default;
 }
-.activeModelBar {
+/* The model popup's top: effort (and context size) as segmented controls. */
+.quickSettings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  padding: 4px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.quickRow {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: calc(100% - 12px);
-  margin: 2px 6px 6px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: var(--radius-control);
-  background: var(--bg-elev);
-  box-shadow: inset 0 0 0 1px var(--border);
-  color: var(--fg-strong);
-  text-align: left;
-  cursor: pointer;
-  transition: background var(--dur-fast) var(--ease);
 }
-.activeModelBar:hover,
-.activeModelBar:focus-visible {
-  outline: none;
-  background: var(--bg-hover);
-}
-.activeModelName {
-  flex: 1 1 auto;
+.quickRow > .segmented {
+  flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
 }
-.activeModelMeta {
+.quickLabel {
   flex: none;
+  width: 52px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
 }
-.activeModelGear {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-0-5);
-  flex: none;
-  color: var(--fg-muted);
+/* A model's configure button shows on its row's hover only. */
+.modelEffortPopup [role="option"] .modelRowConfigure {
+  opacity: 0;
+}
+.modelEffortPopup [role="option"]:hover .modelRowConfigure,
+.modelEffortPopup [role="option"][aria-selected="true"] .modelRowConfigure,
+.modelEffortPopup .modelRowConfigure:focus-visible {
+  opacity: 1;
 }
 .modelRowConfigure {
   display: grid;
@@ -299,51 +288,8 @@
   color: var(--warning);
 }
 
-/* Page 2: per-model configuration view. */
-.modelDetail {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: 6px 12px 8px;
-}
-.modelDetailHeader {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-}
-.modelDetailTitle {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg-strong);
-  font-weight: 600;
-}
-.modelDetailActions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-0-5);
-  flex: none;
-}
 .pinnedButton {
   color: var(--accent);
-}
-.detailSection {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1-5);
-}
-.detailSectionLabel {
-  color: var(--fg-strong);
-  font-weight: 600;
-  font-size: var(--fs-small);
-}
-.detailRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
 }
 .segmented {
   display: flex;
@@ -383,84 +329,6 @@
   background: var(--bg-floating-toolbar);
   color: var(--fg-strong);
   font-weight: 600;
-}
-.costCard {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: 8px 10px;
-  border-radius: var(--radius-popup);
-  background: var(--bg-elev);
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.costCardHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-.costCardTitle {
-  color: var(--fg-strong);
-  font-weight: 600;
-  font-size: var(--fs-small);
-}
-.costCardRow {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-3);
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-}
-.costCardValue {
-  color: var(--fg-strong);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.pricingCard {
-  display: flex;
-  flex-direction: column;
-  border-radius: var(--radius-popup);
-  background: var(--bg-elev);
-  box-shadow: inset 0 0 0 1px var(--border);
-}
-.pricingHeader {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  width: 100%;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: inherit;
-  background: transparent;
-  color: var(--fg-strong);
-  text-align: left;
-  cursor: pointer;
-}
-.pricingHeader:hover,
-.pricingHeader:focus-visible {
-  outline: none;
-  background: var(--bg-hover);
-}
-.pricingChevron {
-  flex: none;
-  color: var(--fg-muted);
-}
-.pricingTitle {
-  flex: 1 1 auto;
-  font-weight: 600;
-  font-size: var(--fs-small);
-}
-.pricingBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: 2px 12px 10px;
-}
-.pricingSubhead {
-  margin-bottom: 2px;
-  color: var(--fg-muted);
-  font-size: var(--fs-small);
 }
 .modePopup {
   min-width: 200px;
@@ -560,9 +428,6 @@
   align-items: baseline;
   gap: 5px;
   white-space: nowrap;
-}
-.pickerName {
-  color: var(--fg-subtle);
 }
 
 /* Above the text: the current file to reference, attached files and images. */
