@@ -891,9 +891,9 @@ impl AgentManager {
         let prompt = clean(req.prompt).ok_or_else(|| IdeError::invalid("describe the topic first"))?;
         let title = title_of(&prompt);
         let mut config = self.merged_config(&spec.id, &req.config);
-        // The source task's choices may approve everything; the side conversation asks.
+        // The source task's choices may change the project without asking; the side conversation asks.
         let wanted = config::asking_choices(&config, &req.config);
-        config::ask_for_approvals(&mut config);
+        config::keep_asking(&mut config);
         if config::bypass_approvals(&config) {
             return Err(IdeError::invalid(
                 "this agent has no mode that asks before changing things, so it can't run a side conversation",
@@ -1052,8 +1052,14 @@ impl AgentManager {
             if !o.values.iter().any(|v| v.value == value) {
                 return Err(IdeError::invalid(format!("{} has no value {value}", o.name)));
             }
-            if s.ephemeral && config::approves_everything(o, &value) {
-                return Err(IdeError::invalid("a side conversation asks before changing anything"));
+            if s.ephemeral {
+                let mut next = s.task.config.clone();
+                if let Some(n) = next.iter_mut().find(|n| n.id == option) {
+                    n.current = Some(value.clone());
+                }
+                if !config::keeps_asking(&next) {
+                    return Err(IdeError::invalid("a side conversation asks before changing anything"));
+                }
             }
             o.clone()
         };
@@ -2424,6 +2430,14 @@ impl Task {
                 }
                 Err(e) => tracing::warn!("agent task {}: setting {} to {} failed: {e}", self.id, o.id, choice.value),
             }
+        }
+        // A side conversation never runs in a mode that changes things without asking: when the
+        // agent refused the switch, it doesn't start.
+        if self.state.lock().ephemeral && !config::keeps_asking(&options) {
+            return Err(SessionOpenError {
+                message: "The agent didn't switch to a mode that asks before changing anything, so the side conversation can't start".into(),
+                allow_acp_fallback: false,
+            });
         }
         let model = model_of(&options).filter(|_| model_options);
         self.shared.remember(provider_id, Some(&options), None, model.as_deref());

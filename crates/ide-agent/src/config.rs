@@ -54,28 +54,43 @@ pub(crate) fn bypass_approvals(config: &[AgentConfigOption]) -> bool {
         .any(|category| selected(category).zip(bypass_value(category)).is_some_and(|(value, bypass)| bypass(value)))
 }
 
-/// Whether `value` of `option` approves everything without asking.
-pub(crate) fn approves_everything(option: &AgentConfigOption, value: &str) -> bool {
-    option.category.as_deref().and_then(bypass_value).is_some_and(|bypass| bypass(value))
+/// Mode values that ask before anything changes the project, most careful first: Codex's
+/// Read Only (its Ask still edits the workspace), Claude Code's default (its Accept Edits
+/// doesn't ask), then plan modes.
+const ASKING_MODES: [&str; 4] = ["read-only", "default", "plan", "ask"];
+
+/// Moves `config` to settings that ask before anything changes the project (a side
+/// conversation): approvals that approve everything ask, and the mode is the most careful one.
+pub(crate) fn keep_asking(config: &mut [AgentConfigOption]) {
+    ask_for_approvals(config);
+    for option in config.iter_mut().filter(|o| o.category.as_deref() == Some("mode")) {
+        if let Some(mode) = ASKING_MODES.iter().find(|m| option.values.iter().any(|v| v.value == **m)) {
+            option.current = Some((*mode).to_owned());
+        }
+    }
 }
 
-/// The choices that keep a session asking before it changes anything: `wanted` without values
-/// that approve everything, and an asking value for each option of `options` that approves
-/// everything as it stands.
+/// The choices that keep a session asking before it changes anything: `wanted` without its
+/// mode and approval choices, and the [`keep_asking`] value of each such option of `options`.
 pub(crate) fn asking_choices(options: &[AgentConfigOption], wanted: &[AgentConfigChoice]) -> Vec<AgentConfigChoice> {
-    let mut out: Vec<AgentConfigChoice> = wanted
-        .iter()
-        .filter(|c| !options.iter().any(|o| o.id == c.id && approves_everything(o, &c.value)))
-        .cloned()
-        .collect();
+    let guarded = |o: &AgentConfigOption| o.category.as_deref().and_then(bypass_value).is_some();
+    let mut out: Vec<AgentConfigChoice> =
+        wanted.iter().filter(|c| !options.iter().any(|o| o.id == c.id && guarded(o))).cloned().collect();
     let mut asking = options.to_vec();
-    ask_for_approvals(&mut asking);
-    for (before, after) in options.iter().zip(&asking) {
-        let Some(value) = after.current.as_ref().filter(|v| before.current.as_ref() != Some(*v)) else { continue };
-        out.retain(|c| c.id != after.id);
-        out.push(AgentConfigChoice { id: after.id.clone(), value: value.clone() });
+    keep_asking(&mut asking);
+    for option in asking.iter().filter(|o| guarded(o)) {
+        if let Some(value) = &option.current {
+            out.push(AgentConfigChoice { id: option.id.clone(), value: value.clone() });
+        }
     }
     out
+}
+
+/// Whether `config` is what [`keep_asking`] makes of it.
+pub(crate) fn keeps_asking(config: &[AgentConfigOption]) -> bool {
+    let mut asking = config.to_vec();
+    keep_asking(&mut asking);
+    asking.iter().zip(config).all(|(a, b)| a.current == b.current)
 }
 
 /// For an option of `category` that can approve everything, what tells its approving values.
@@ -489,19 +504,23 @@ mod tests {
     }
 
     #[test]
-    fn asking_choices_drop_and_override_values_that_approve_everything() {
+    fn asking_choices_keep_a_side_conversation_from_changing_anything() {
         let codex = options_of(&json!({"modes": {"currentModeId": "full-access",
             "availableModes": [{"id": "read-only"}, {"id": "ask"}, {"id": "auto"}, {"id": "full-access"}]}}));
         let mode = codex[0].id.clone();
         let choice = |id: &str, value: &str| AgentConfigChoice { id: id.into(), value: value.into() };
-        // The source task's Full Access goes; the session's own Full Access is turned to Ask.
+        // Codex goes to Read Only (its Ask edits the workspace), whatever the source task chose.
         let wanted = asking_choices(&codex, &[choice(&mode, "full-access"), choice("model", "gpt")]);
-        assert_eq!(wanted, [choice("model", "gpt"), choice(&mode, "ask")]);
-        // A mode that already asks is left alone.
-        let mut auto = codex.clone();
-        auto[0].current = Some("auto".into());
-        assert_eq!(asking_choices(&auto, &[choice(&mode, "auto")]), [choice(&mode, "auto")]);
-        assert!(approves_everything(&codex[0], "full-access") && !approves_everything(&codex[0], "auto"));
+        assert_eq!(wanted, [choice("model", "gpt"), choice(&mode, "read-only")]);
+        assert_eq!(asking_choices(&codex, &[choice(&mode, "ask")]), [choice(&mode, "read-only")]);
+        // Claude Code's Accept Edits doesn't ask: default does.
+        let claude = options_of(&json!({"modes": {"currentModeId": "acceptEdits",
+            "availableModes": [{"id": "default"}, {"id": "acceptEdits"}, {"id": "plan"}, {"id": "bypassPermissions"}]}}));
+        assert_eq!(asking_choices(&claude, &[]), [choice(&claude[0].id, "default")]);
+        assert!(!keeps_asking(&claude));
+        let mut safe = claude.clone();
+        keep_asking(&mut safe);
+        assert!(keeps_asking(&safe));
     }
 
     #[test]
