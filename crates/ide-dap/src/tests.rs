@@ -136,6 +136,13 @@ struct Script {
     /// Answer `stepOut` and stop these threads one after the other, 100 ms apart (java-debug
     /// stops the stepping thread right after the call returns).
     step_out_stops: &'static [i64],
+    /// Refuse `stepOut`.
+    refuse_step_out: bool,
+    /// Refuse `continue`.
+    refuse_continue: bool,
+    /// Stop thread 1 alone at a breakpoint right after each of the first this many `continue`s
+    /// that `continue_reply` answers.
+    breakpoints_after_continue: usize,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
@@ -190,6 +197,9 @@ impl Default for Script {
             continue_reply: None,
             stop_after_continue: false,
             step_out_stops: &[],
+            refuse_step_out: false,
+            refuse_continue: false,
+            breakpoints_after_continue: 0,
             step_reason: None,
             refuse_next: false,
             invalidated_after_stop: false,
@@ -253,6 +263,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
     let mut running = false;
     let mut thread_requests = 0;
     let mut unity = false;
+    let mut breakpoints_left = script.breakpoints_after_continue;
     macro_rules! send {
         ($v:expr) => {{
             let mut v: Value = $v;
@@ -499,7 +510,21 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     {"label": ""},
                 ]})
             ),
-            "continue" if script.continue_reply.is_some() => ok!(msg, script.continue_reply.clone().unwrap()),
+            "continue" if script.refuse_continue => send!(
+                json!({"type": "response", "request_seq": msg["seq"], "command": "continue", "success": false, "message": "Thread is not suspended"})
+            ),
+            "continue" if script.continue_reply.is_some() => {
+                ok!(msg, script.continue_reply.clone().unwrap());
+                if breakpoints_left > 0 {
+                    breakpoints_left -= 1;
+                    send!(
+                        json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}})
+                    );
+                }
+            }
+            "stepOut" if script.refuse_step_out => send!(
+                json!({"type": "response", "request_seq": msg["seq"], "command": "stepOut", "success": false, "message": "Thread is not suspended"})
+            ),
             "continue" if script.stop_after_continue => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(

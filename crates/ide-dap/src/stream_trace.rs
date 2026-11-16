@@ -133,9 +133,14 @@ pub(crate) async fn run(
     if !s.suspended.get() {
         return unavailable(TraceUnavailable::NotSuspended);
     }
-    let trace = Trace { mgr, s, tracer: &*tracer, target: &target, thread_id, progress, last: Counts::default() };
+    let mut trace =
+        Trace { mgr, s, tracer: &*tracer, target: &target, thread_id, progress, id: None, last: Counts::default() };
     match trace.drive(plan, cancel).await {
-        Ok(run) | Err(run) => run,
+        Ok(run) => run,
+        Err(run) => {
+            trace.release().await;
+            run
+        }
     }
 }
 
@@ -176,18 +181,21 @@ struct Trace<'a, P> {
     target: &'a VmTarget,
     thread_id: i64,
     progress: &'a P,
+    /// Set once `arm` answers.
+    id: Option<TraceId>,
     last: Counts,
 }
 
 impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
     /// `Err` ends the trace early.
-    async fn drive(mut self, plan: &Value, cancel: &CancellationToken) -> Result<TraceRun, TraceRun> {
+    async fn drive(&mut self, plan: &Value, cancel: &CancellationToken) -> Result<TraceRun, TraceRun> {
         let (s, tracer, target) = (self.s, self.tracer, self.target);
         self.report(TracePhase::Arming);
         let id = self
             .until_ended(tracer.arm(target, self.thread_id, plan, BUDGET))
             .await?
             .map_err(|e| if s.ended.is_cancelled() { ended() } else { refused(e) })?;
+        self.id = Some(id);
         if let Some(active) = s.stream_trace.lock().as_mut() {
             active.id = Some(id);
         }
@@ -245,6 +253,20 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
         let stopped_in = VmTarget { generation, ..vm_target(s) };
         let collected = self.inspect(tracer.collect(&stopped_in, id)).await?;
         Ok(TraceRun::Done { collected, generation })
+    }
+
+    /// After a trace that ended early. Left to the bundle, an armed trace would keep every
+    /// breakpoint off and a parked one its thread suspended behind java-debug's back; the bundle
+    /// undoes either, or does so once a terminal still running returns. Not after a finished
+    /// trace: the records it unpins are the values the result shows.
+    async fn release(&self) {
+        let Some(id) = self.id else { return };
+        if self.s.ended.is_cancelled() {
+            return;
+        }
+        if let Ok(Err(e)) = self.until_ended(self.tracer.release(self.target, id)).await {
+            tracing::debug!(session = self.s.id.0, trace = id, "stream trace release: {e}");
+        }
     }
 
     fn report(&self, phase: TracePhase) {
