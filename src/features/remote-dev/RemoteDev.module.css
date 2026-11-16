@@ -72,3 +72,8 @@
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
+.lost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}

@@ -29,7 +29,7 @@ fn relative_to(root: &Path, path: &Path) -> String {
     };
     match rel {
         Some(rel) => rel.to_string_lossy().replace('\\', "/"),
-        None => path.to_string_lossy().into_owned(),
+        None => path.to_string_lossy().replace('\\', "/"),
     }
 }
 
@@ -266,11 +266,16 @@ By default all Git repositories are returned.",
                 .map(|r| (r.root.into_path_buf(), r.head))
                 .collect();
             let wanted = call.opt_str("repositoryPathRelativeToProject")?;
+            let scope = super::scope::Scope::of(&call)?;
             let git = git_executable(&call);
-            let mut roots: Vec<(PathBuf, Option<String>)> = match &wanted {
+            // A repository asked for, or the one holding `scope`.
+            let target = match &wanted {
+                Some(wanted) => Some(call.resolve_inside(wanted)?),
+                None => scope.dir().map(Path::to_path_buf),
+            };
+            let mut roots: Vec<(PathBuf, Option<String>)> = match target {
                 None => repos,
-                Some(wanted) => {
-                    let path = call.resolve_inside(wanted)?;
+                Some(path) => {
                     // The innermost repository containing the path.
                     match innermost_repo(repos, &path) {
                         Some(repo) => vec![repo],
@@ -282,7 +287,8 @@ By default all Git repositories are returned.",
                                 vec![(root, branch)]
                             }
                             None => {
-                                return Err(IdeError::not_found(format!("No git repository found for path: {wanted}")));
+                                let shown = wanted.unwrap_or_else(|| call.display(&path));
+                                return Err(IdeError::not_found(format!("No git repository found for path: {shown}")));
                             }
                         },
                     }
@@ -293,12 +299,13 @@ By default all Git repositories are returned.",
             for (root, branch) in roots {
                 let rel = relative_to_project(&call, &root);
                 let (git, dir) = (git.clone(), root.clone());
-                let entries = host
+                let mut entries = host
                     .blocking(move || read_status(&git, &dir, include_untracked, include_ignored))
                     .await
                     .map_err(|e| {
                         IdeError::internal(format!("Failed to get git status for repository '{rel}': {}", e.message))
                     })?;
+                entries.retain(|e| scope.contains(&root.join(e.path.trim_end_matches('/'))));
                 let count = |f: fn(&StatusEntry) -> bool| entries.iter().filter(|e| f(e)).count();
                 let listed: Vec<Value> = entries
                     .iter()
@@ -345,6 +352,7 @@ By default all Git repositories are returned.",
     ))
     .param(Param::optional("includeUntracked", ParamType::Boolean, "Whether to include untracked files"))
     .param(Param::optional("includeIgnored", ParamType::Boolean, "Whether to include ignored files"))
+    .param(super::scope::param())
     .param(Param::optional("limit", ParamType::Integer, "Entries to return per repository at most (default 100)"))
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }

@@ -7,6 +7,7 @@ import { create } from "zustand";
 import type { GitOperation, RemoteOp } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
+import { AnsiStream, stripAnsi, type Span } from "@/ui/ansi";
 import { call, commands, isCancelled, nextRequestId } from "@/platform/ipc";
 import { attachDocument, editorsFor } from "@/editor/api";
 import {
@@ -28,7 +29,10 @@ export interface ConsoleLine {
   id: number;
   time: number;
   kind: ConsoleKind;
+  /** The line without escape sequences (copying, searching). */
   text: string;
+  /** Its coloured runs, when the output had SGR colours (hook output). */
+  spans?: Span[];
 }
 
 interface ConsoleState {
@@ -41,11 +45,17 @@ export const useVcsConsole = create<ConsoleState>(() => ({ lines: [] }));
 
 export function logConsole(kind: ConsoleKind, text: string) {
   const time = Date.now();
+  // One stream per output, so a colour set on one line carries to the next.
+  const ansi = new AnsiStream();
   const add = text
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .filter((l, i, all) => l.length > 0 || (i > 0 && i < all.length - 1))
-    .map((l) => ({ id: ++lineSeq, time, kind, text: l }));
+    .map((l): ConsoleLine => {
+      if (!l.includes("\x1b")) return { id: ++lineSeq, time, kind, text: l };
+      const spans = ansi.parse(l);
+      return { id: ++lineSeq, time, kind, text: spans.map((s) => s.text).join(""), spans };
+    });
   if (!add.length) return;
   useVcsConsole.setState((s) => {
     const lines = s.lines.concat(add);
@@ -63,7 +73,13 @@ export function errorMessage(e: unknown): string {
 
 /** Feedback for an explicit Git command stays visible when background VCS notifications are muted. */
 function notify(n: Omit<Parameters<NotificationService["notify"]>[0], "group" | "userInitiated">) {
-  notifications().notify({ ...n, group: "vcs", userInitiated: true });
+  // Hook output (linters, test runners) is often coloured; a balloon shows it as plain text.
+  notifications().notify({
+    ...n,
+    body: typeof n.body === "string" ? stripAnsi(n.body) : n.body,
+    group: "vcs",
+    userInitiated: true,
+  });
 }
 
 // ---------------------------------------------------------------------------

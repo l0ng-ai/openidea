@@ -28,6 +28,8 @@ import { tx } from "@/platform/i18n";
 import { displayPath } from "./compareData";
 import { repositoryPath } from "./repositoryPaths";
 import { RepoPicker } from "./gitMenuDialogs";
+import { openRevisionFile } from "./revisionInput";
+import { ipcPath } from "@/platform/paths";
 
 // ---------------------------------------------------------------------------
 // Operation in progress
@@ -518,8 +520,29 @@ function TagDialog({ onClose }: { onClose: () => void }) {
 }
 
 /** Compare with Local: files that differ between the commit and the working tree. */
-export function showCompareWithLocal(commit: Commit) {
+export function showCompareWithLocal(commit: Commit, historyTarget?: string | null) {
+  if (historyTarget) {
+    const repo = commitRepo(commit) ?? repoOf(historyTarget) ?? currentRepoRoot();
+    const historicalPath = commit.historyPath && repo ? repositoryPath(repo, commit.historyPath) : historyTarget;
+    void openVcsDiff({
+      path: historyTarget,
+      left: { type: "rev", rev: commit.id, path: historicalPath, label: short(commit.id) },
+      right: { type: "worktree" },
+    });
+    return;
+  }
   showDiffWithWorkingTree(commit.id, short(commit.id));
+}
+
+/** Opens the selected File History entry's file exactly as it exists in that commit. */
+export function showFileAtRevision(commit: Commit, target: string, external = false) {
+  const repo = commitRepo(commit) ?? repoOf(target) ?? currentRepoRoot();
+  if (!repo) return;
+  const root = ipcPath(repo).replace(/\/$/, "");
+  const file = ipcPath(target);
+  const relative = file.startsWith(`${root}/`) ? file.slice(root.length + 1) : file;
+  const path = commit.historyPath ?? relative;
+  openRevisionFile(repo, commit.id, path, external);
 }
 
 /** Files that differ between `rev` (a commit or branch) and the working tree, in the Compare tool window. */
@@ -528,7 +551,18 @@ export function showDiffWithWorkingTree(rev: string, label = rev) {
 }
 
 /** IDEA's Compare Versions of two Git Log commits: files that differ between them, older first. */
-export function showCompareVersions(older: Commit, newer: Commit) {
+export function showCompareVersions(older: Commit, newer: Commit, historyTarget?: string | null) {
+  if (historyTarget) {
+    const repo = commitRepo(older) ?? commitRepo(newer) ?? repoOf(historyTarget) ?? currentRepoRoot();
+    const olderPath = older.historyPath && repo ? repositoryPath(repo, older.historyPath) : historyTarget;
+    const newerPath = newer.historyPath && repo ? repositoryPath(repo, newer.historyPath) : historyTarget;
+    void openVcsDiff({
+      path: historyTarget,
+      left: { type: "rev", rev: older.id, path: olderPath, label: short(older.id) },
+      right: { type: "rev", rev: newer.id, path: newerPath, label: short(newer.id) },
+    });
+    return;
+  }
   showComparison({ rev: older.id, label: short(older.id) }, { rev: newer.id, label: short(newer.id) });
 }
 

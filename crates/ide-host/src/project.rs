@@ -177,6 +177,7 @@ impl Host {
                 let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 if cfg.name == "jdtls" {
                     // A workspace member keeps its build model under its own key (Build Project).
