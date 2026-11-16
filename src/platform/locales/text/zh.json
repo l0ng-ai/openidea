@@ -8541,5 +8541,8 @@
   "The interface could not be extracted": "无法提取接口",
   "Extract Interface is not supported for {name}": "{name} 不支持提取接口",
   "Package for new interface": "新接口的软件包",
-  "Untitled files were not saved": "未命名文件未保存"
+  "Untitled files were not saved": "未命名文件未保存",
+  "Missing blank line between subject and body": "主题和正文之间缺少空行",
+  "Body line {0} is longer than {1} characters": "正文第 {0} 行超过 {1} 个字符",
+  "Add blank line": "添加空行"
 }

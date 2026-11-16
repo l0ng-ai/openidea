@@ -2158,5 +2158,8 @@
   "The interface could not be extracted": "The interface could not be extracted",
   "Extract Interface is not supported for {name}": "Extract Interface is not supported for {name}",
   "Package for new interface": "Package for new interface",
-  "Untitled files were not saved": "Untitled files were not saved"
+  "Untitled files were not saved": "Untitled files were not saved",
+  "Missing blank line between subject and body": "Missing blank line between subject and body",
+  "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
+  "Add blank line": "Add blank line"
 }
