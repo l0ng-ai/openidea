@@ -87,6 +87,18 @@ export interface ResultTab {
   total?: number | null;
   /** Kept when the console runs again (Pin Tab); results otherwise replace the console's last ones. */
   pinned?: boolean;
+  /** Shown in the editor under its statement (In-Editor Results), not as a result tab. */
+  inline?: boolean;
+}
+
+/** Database › In-Editor Results: result sets show under their statements instead of in result tabs. */
+export function inEditorResults(settings: unknown = useProject.getState().settings): boolean {
+  return (settings as { database?: { inEditorResults?: unknown } } | null)?.database?.inEditorResults === true;
+}
+
+export async function setInEditorResults(on: boolean): Promise<void> {
+  const settings = await call(commands.settingsSet("global", "database.inEditorResults", JSON.stringify(on)));
+  useProject.setState({ settings });
 }
 
 /** One line of the consoles' Output log (IDEA's Database Console output). */
@@ -167,6 +179,8 @@ interface DatabaseState {
   separateProceduresAndFunctions: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
+  /** Results shown in the editor under their statements (In-Editor Results), oldest first. */
+  inline: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
   activeResult: number | null;
   output: OutputLine[];
@@ -234,6 +248,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
   completion: {},
   results: [],
+  inline: [],
   activeResult: null,
   output: [],
   running: {},
@@ -1141,6 +1156,10 @@ export async function executeConsole(
       const title = index === 1 ? tx`Result ${n}` : tx`Result ${n}-${index}`;
       return { id: nextTab++, title, path, sourceId: id, schema, outcome, page: 0, pageSize };
     });
+    if (inEditorResults()) {
+      useDatabase.setState((s) => ({ inline: [...s.inline, ...tabs.map((t) => ({ ...t, inline: true }))] }));
+      return outcomes;
+    }
     const failed = outcomes.some((o) => o.error);
     useDatabase.setState((s) => ({
       results: replaceResults(s.results, path, tabs),
@@ -1282,7 +1301,7 @@ export async function openObjectDdl(id: string, schema: string, kind: DbObjectKi
 
 /** Re-runs the statement of result tab `tabId`, replacing its rows (a plan tab explains it again). */
 export async function rerunResult(tabId: number): Promise<void> {
-  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  const tab = findResult(tabId);
   if (!tab || tab.busy) return;
   if (tab.plan) {
     patchResult(tabId, { busy: true });
@@ -1305,8 +1324,16 @@ export function pageable(tab: ResultTab): boolean {
   return !tab.plan && isReadOnlyQuery(tab.outcome.statement.text, sourceById(tab.sourceId)?.driver ?? "sqlite");
 }
 
+/** Result tab `tabId`, in the Services view or in an editor. */
+export function findResult(tabId: number): ResultTab | undefined {
+  const st = useDatabase.getState();
+  return st.results.find((r) => r.id === tabId) ?? st.inline.find((r) => r.id === tabId);
+}
+
 function patchResult(tabId: number, p: Partial<ResultTab>) {
-  useDatabase.setState((s) => ({ results: s.results.map((r) => (r.id === tabId ? { ...r, ...p } : r)) }));
+  const patch = (list: ResultTab[]) =>
+    list.some((r) => r.id === tabId) ? list.map((r) => (r.id === tabId ? { ...r, ...p } : r)) : list;
+  useDatabase.setState((s) => ({ results: patch(s.results), inline: patch(s.inline) }));
 }
 
 /**
@@ -1315,7 +1342,7 @@ function patchResult(tabId: number, p: Partial<ResultTab>) {
  * `rerun` also forgets the counted total.
  */
 export async function loadResultPage(tabId: number, page: number, pageSize: number, rerun = false): Promise<void> {
-  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  const tab = findResult(tabId);
   if (!tab || tab.busy || tab.plan) return;
   if (page > 0 && !pageable(tab)) return;
   patchResult(tabId, { busy: true });
@@ -1363,7 +1390,7 @@ export function countable(tab: ResultTab): boolean {
 
 /** Counts the rows of result tab `tabId`'s whole query (the pager's "of 501+"). */
 export async function countResult(tabId: number): Promise<number | null> {
-  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  const tab = findResult(tabId);
   if (!tab || tab.busy || !countable(tab)) return null;
   const text = countQuery(tab.outcome.statement.text)!;
   patchResult(tabId, { busy: true });
@@ -1466,6 +1493,12 @@ export function closeResult(id: number) {
       activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
     };
   });
+}
+
+/** Closes in-editor results `ids`. */
+export function closeInlineResults(ids: readonly number[]) {
+  if (!ids.length) return;
+  useDatabase.setState((s) => ({ inline: s.inline.filter((r) => !ids.includes(r.id)) }));
 }
 
 export function pinResult(id: number, pinned: boolean) {

@@ -1407,3 +1407,33 @@
   color: inherit;
   cursor: default;
 }
+
+/* In-Editor Results: a result set under its statement in the console. */
+:global(.cm-openidea-db-inline) {
+  padding: var(--space-1) 0 var(--space-2);
+  cursor: default;
+}
+.inlineResult {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  background: var(--bg-editor);
+  font-family: var(--font-ui);
+  font-size: var(--fs-ui);
+  line-height: normal;
+  white-space: normal;
+}
+.inlineResult > :first-child {
+  flex: 1;
+  min-height: 0;
+}
+.inlineResize {
+  position: absolute;
+  inset: auto 0 0;
+  height: 5px;
+  cursor: row-resize;
+}

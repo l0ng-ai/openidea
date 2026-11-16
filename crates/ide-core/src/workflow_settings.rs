@@ -241,6 +241,15 @@ impl Default for LogLevelColors {
     }
 }
 
+/// Database › Query Execution.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DatabaseSettings {
+    /// A console's result sets show under the statements that produced them, in the editor,
+    /// instead of in the Services view's result tabs.
+    pub in_editor_results: bool,
+}
+
 /// Build, Execution, Deployment › Console.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]

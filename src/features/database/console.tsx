@@ -39,13 +39,14 @@ import {
   type Panel,
   type Tooltip,
 } from "@codemirror/view";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
 import { iconNode } from "@/ui/iconNode";
 import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
-import { IconButton, Select } from "@/ui";
+import { IconButton, Select, lazyComponent } from "@/ui";
+import { useProject } from "@/platform/project";
 import { activeSchema, schemaSwitchable, sourceLabel, splitTarget, targetOf } from "./model";
 import { loadSavedCatalog, offerIntrospection } from "./introspection";
 import { analyze, templateContexts, valuesSlot } from "./sql/analyze";
@@ -61,6 +62,9 @@ import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
   bindConsole,
   cancelConsole,
+  closeInlineResults,
+  inEditorResults,
+  setInEditorResults,
   consoleSchema,
   consoleSource,
   executeConsole,
@@ -84,6 +88,7 @@ import {
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { databaseRequest, projectRequest } from "./requests";
+import type { ResultTab } from "./store";
 
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
@@ -252,6 +257,213 @@ export async function explainInView(view: EditorView, path: string) {
 
 const consolePath = Facet.define<string, string>({ combine: (v) => v[0] ?? "" });
 
+/** An in-editor result and the statement it shows under (mapped through edits). */
+interface InlineAnchor {
+  id: number;
+  from: number;
+  to: number;
+}
+
+/**
+ * Where each in-editor result's statement is now and how tall the result is, by result id:
+ * a console's view can be rebuilt (closed and reopened), and its results go back where they were.
+ */
+const anchors = new Map<number, { from: number; to: number }>();
+const heights = new Map<number, number>();
+const MAX_FIT_HEIGHT = 320;
+const MIN_HEIGHT = 96;
+
+/** Toolbar, notice, header row, the rows and room for the floating pager, up to `MAX_FIT_HEIGHT`. */
+function fitHeight(tab: ResultTab | undefined): number {
+  const rows = tab?.outcome.result?.rows.length ?? 0;
+  return Math.max(MIN_HEIGHT, Math.min(MAX_FIT_HEIGHT, 40 + 24 + 24 + Math.max(rows, 1) * 24 + 56));
+}
+
+const setInline = StateEffect.define<InlineAnchor[]>();
+/** An in-editor result was resized: its widget is redrawn so the editor measures it again. */
+const resized = StateEffect.define<null>();
+
+function anchorOf(tab: ResultTab): InlineAnchor {
+  return { id: tab.id, ...(anchors.get(tab.id) ?? { from: tab.outcome.statement.from, to: tab.outcome.statement.to }) };
+}
+
+const inlineField = StateField.define<readonly InlineAnchor[]>({
+  create: (state) => {
+    const path = state.facet(consolePath);
+    return useDatabase
+      .getState()
+      .inline.filter((t) => t.path === path)
+      .map(anchorOf)
+      .filter((a) => a.to <= state.doc.length);
+  },
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setInline)) value = e.value;
+      else if (e.is(resized)) value = [...value];
+    }
+    if (!tr.docChanged) return value;
+    const next: InlineAnchor[] = [];
+    for (const a of value) {
+      const from = tr.changes.mapPos(a.from, 1);
+      const to = tr.changes.mapPos(a.to, -1);
+      // The statement was deleted: so is its result (the store drops it in `syncInline`).
+      if (to <= from) continue;
+      anchors.set(a.id, { from, to });
+      next.push({ id: a.id, from, to });
+    }
+    return next;
+  },
+  // Under the statement's last line.
+  provide: (f) =>
+    EditorView.decorations.compute([f], (state) =>
+      Decoration.set(
+        state
+          .field(f)
+          .map((a) =>
+            Decoration.widget({ widget: new InlineResultWidget(a.id, heightOf(a.id)), block: true, side: 1 }).range(
+              state.doc.lineAt(a.to).to,
+            ),
+          ),
+        true,
+      ),
+    ),
+});
+
+/**
+ * Keeps the view's in-editor results in step with the store: a run's new results show under
+ * their statements (replacing what those statements showed before), closed ones go away.
+ */
+const syncInline = ViewPlugin.define((view) => {
+  const path = view.state.facet(consolePath);
+  let destroyed = false;
+  const sync = () => {
+    if (destroyed) return;
+    const current = view.state.field(inlineField);
+    const tabs = useDatabase.getState().inline.filter((t) => t.path === path);
+    const ids = new Set(tabs.map((t) => t.id));
+    const known = new Set(current.map((a) => a.id));
+    const len = view.state.doc.length;
+    const added = tabs
+      .filter((t) => !known.has(t.id))
+      .map(anchorOf)
+      .filter((a) => a.to <= len);
+    const overlaps = (a: InlineAnchor) => added.some((b) => b.from < a.to && a.from < b.to);
+    const replaced = current.filter((a) => ids.has(a.id) && overlaps(a)).map((a) => a.id);
+    const kept = current.filter((a) => ids.has(a.id) && !replaced.includes(a.id));
+    for (const a of current)
+      if (!ids.has(a.id)) {
+        anchors.delete(a.id);
+        heights.delete(a.id);
+      }
+    if (!added.length && kept.length === current.length) return;
+    for (const a of added) anchors.set(a.id, { from: a.from, to: a.to });
+    view.dispatch({ effects: setInline.of([...kept, ...added].sort((a, b) => a.to - b.to || a.id - b.id)) });
+    if (replaced.length) closeInlineResults(replaced);
+  };
+  let shown = view.state.field(inlineField);
+  const stop = useDatabase.subscribe((s, prev) => {
+    if (s.inline !== prev.inline) queueMicrotask(sync);
+  });
+  queueMicrotask(sync);
+  return {
+    // Results whose statements were deleted go too.
+    update(u) {
+      const next = u.state.field(inlineField);
+      if (next === shown) return;
+      const gone = shown.filter((a) => !next.some((b) => b.id === a.id)).map((a) => a.id);
+      shown = next;
+      if (gone.length && u.docChanged) queueMicrotask(() => closeInlineResults(gone));
+    },
+    destroy: () => {
+      destroyed = true;
+      stop();
+    },
+  };
+});
+
+function heightOf(id: number): number {
+  return heights.get(id) ?? fitHeight(useDatabase.getState().inline.find((r) => r.id === id));
+}
+
+const InlineGrid = lazyComponent(() => import("./ResultsView").then((m) => m.Result));
+
+function InlineResult({ id, view }: { id: number; view: EditorView }) {
+  const tab = useDatabase((s) => s.inline.find((r) => r.id === id));
+  const [height, setHeight] = useState(() => heightOf(id));
+  const drag = useRef<{ y: number; height: number } | null>(null);
+  const measured = useRef(height);
+  useEffect(() => {
+    if (measured.current === height) return;
+    measured.current = height;
+    view.dispatch({ effects: resized.of(null) });
+  }, [height, view]);
+  if (!tab) return null;
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { y: e.clientY, height };
+  };
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (!drag.current) return;
+    const next = Math.max(MIN_HEIGHT, Math.round(drag.current.height + e.clientY - drag.current.y));
+    heights.set(id, next);
+    setHeight(next);
+  };
+  return (
+    <div className={styles.inlineResult} style={{ height }}>
+      <InlineGrid tab={tab} onClose={() => closeInlineResults([id])} />
+      <div
+        className={styles.inlineResize}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label={tx("Resize")}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={() => (drag.current = null)}
+      />
+    </div>
+  );
+}
+
+const inlineRoots = new WeakMap<HTMLElement, ReturnType<typeof createRoot>>();
+
+class InlineResultWidget extends WidgetType {
+  constructor(
+    readonly id: number,
+    readonly height: number,
+  ) {
+    super();
+  }
+  eq(other: InlineResultWidget) {
+    return other.id === this.id && other.height === this.height;
+  }
+  /** A resized result keeps its DOM (and grid state); only the editor's measurement changes. */
+  updateDOM(dom: HTMLElement) {
+    return dom.dataset.result === String(this.id);
+  }
+  get estimatedHeight() {
+    return this.height + 12;
+  }
+  toDOM(view: EditorView) {
+    const dom = document.createElement("div");
+    dom.className = "cm-openidea-db-inline";
+    dom.contentEditable = "false";
+    dom.dataset.result = String(this.id);
+    const root = createRoot(dom);
+    inlineRoots.set(dom, root);
+    root.render(<InlineResult id={this.id} view={view} />);
+    return dom;
+  }
+  destroy(dom: HTMLElement) {
+    const root = inlineRoots.get(dom);
+    inlineRoots.delete(dom);
+    queueMicrotask(() => root?.unmount());
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
 function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const sources = useDatabase((s) => s.sources);
   const loaded = useDatabase((s) => s.loaded);
@@ -261,6 +473,7 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const manual = useDatabase((s) => !!bound && s.manualCommit.has(bound));
   const pending = useDatabase((s) => !!bound && s.pendingTx.has(bound));
   const databases = useDatabase((s) => s.databases);
+  const inEditor = useProject((s) => inEditorResults(s.settings));
   const boundId = bound ? splitTarget(bound).id : null;
   const supportsTransactions = sourceById(boundId)?.driver !== "clickhouse";
   const sqlServer = sourceById(boundId)?.driver === "sqlServer";
@@ -348,6 +561,12 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
       />
       <span className={styles.toolbarSeparator} />
       <IconButton icon="history" title="Browse Query History" disabled={!bound} onClick={() => openHistory(path)} />
+      <IconButton
+        icon="db-in-editor-results"
+        title="In-Editor Results"
+        aria-pressed={inEditor}
+        onClick={() => void setInEditorResults(!inEditor)}
+      />
       <span className={styles.toolbarSeparator} />
       <Select
         aria-label="Row limit"
@@ -779,6 +998,8 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
     consolePath.of(ctx.path),
     runField,
     runGutter,
+    inlineField,
+    syncInline,
     showPanel.of(consolePanel(ctx.path)),
     EditorState.languageData.of(() => [
       { openideaCompletion: completionSource(ctx.path), [TEMPLATE_CONTEXT_KEY]: templateContextsAt(ctx.path) },

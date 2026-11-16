@@ -3862,6 +3862,15 @@ export type DataSource_Serialize = {
 	pluginSourceId?: string | null,
 };
 
+/**  Database › Query Execution. */
+export type DatabaseSettings = {
+	/**
+	 *  A console's result sets show under the statements that produced them, in the editor,
+	 *  instead of in the Services view's result tabs.
+	 */
+	inEditorResults?: boolean,
+};
+
 /**  System Settings › Date Formats (Git log, Local History, blame). */
 export type DateFormatSettings = {
 	/**  Use `pattern` / `use24_hour` instead of the system locale's format. */
@@ -9938,6 +9947,8 @@ export type Settings_Deserialize = {
 	scopes?: NamedScope[],
 	/**  Appearance & Behavior › File Colors. */
 	fileColors?: FileColorSettings,
+	/**  Database › Query Execution. */
+	database?: DatabaseSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins?: { [key in string]: { [key in string]: unknown } },
 };
@@ -10008,6 +10019,8 @@ export type Settings_Serialize = {
 	scopes: NamedScope[],
 	/**  Appearance & Behavior › File Colors. */
 	fileColors: FileColorSettings,
+	/**  Database › Query Execution. */
+	database: DatabaseSettings,
 	/**  Plugin settings (`[contributes.settings]`): plugin id → its values by key. */
 	plugins: { [key in string]: { [key in string]: unknown } },
 };

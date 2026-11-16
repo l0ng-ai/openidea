@@ -1,0 +1,4 @@
+<!-- OpenIDEA: in-editor results (text lines over a result grid) -->
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M2.5 2.5H10.5M2.5 5H7.5" stroke="#6C707E" stroke-linecap="round"/><rect x="2.5" y="7.5" width="11" height="6" rx="1" stroke="#6C707E"/><path d="M2.5 10.5H13.5M6.5 7.5V13.5" stroke="#6C707E"/>
+</svg>

@@ -39,6 +39,8 @@ import {
   RESULTS_VIEW,
   consoleSource,
   consoleTints,
+  inEditorResults,
+  setInEditorResults,
   loadSources,
   connect,
   loadSchemas,
@@ -135,6 +137,7 @@ export function activate(): () => void {
         objects: {},
         completion: {},
         results: [],
+        inline: [],
         output: [],
         activeResult: null,
         selectedSource: null,
@@ -261,6 +264,16 @@ export function activate(): () => void {
           }
           await (await import("./console")).executeInView(e.view, e.ctx.path);
         },
+      },
+      {
+        id: "db.toggleInEditorResults",
+        title: "In-Editor Results",
+        description: "Show query results in the editor, under the statements that produced them",
+        category: "Tools",
+        icon: "db-in-editor-results",
+        keywords: ["inline", "results", "console", "grid"],
+        toggled: () => inEditorResults(),
+        run: () => setInEditorResults(!inEditorResults()),
       },
       {
         id: "db.executeScript",
