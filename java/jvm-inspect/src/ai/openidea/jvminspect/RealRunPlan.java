@@ -11,9 +11,10 @@ import java.util.Map;
  * @param root null when the stream is already held in {@code local}
  * @param stepKinds {@code "sync"}, {@code "reorder"} or {@code "unlinked"}, relating recorded step i to i + 1
  * @param firstLine 0-based line of the statement's first token
+ * @param lastLine 0-based line the chain ends on
  */
 record RealRunPlan(StepSpec root, String local, List<StepSpec> steps, StepSpec terminal, List<String> classFilters,
-        List<String> stepKinds, boolean sequentialize, int firstLine) {
+        List<String> stepKinds, boolean sequentialize, int firstLine, int lastLine) {
 
     /**
      * @param args parameter count of the JVM method
@@ -42,7 +43,8 @@ record RealRunPlan(StepSpec root, String local, List<StepSpec> steps, StepSpec t
                 strings(m.get("classFilters"), "plan.classFilters"),
                 strings(m.get("stepKinds"), "plan.stepKinds"),
                 member(m.get("sequentialize"), Boolean.class, "plan.sequentialize"),
-                member(m.get("firstLine"), Number.class, "plan.firstLine").intValue());
+                member(m.get("firstLine"), Number.class, "plan.firstLine").intValue(),
+                member(m.get("lastLine"), Number.class, "plan.lastLine").intValue());
     }
 
     private static List<String> strings(Object json, String what) {

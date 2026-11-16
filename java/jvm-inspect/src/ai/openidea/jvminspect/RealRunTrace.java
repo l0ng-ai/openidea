@@ -32,8 +32,10 @@ import com.sun.jdi.event.VMDisconnectEvent;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.MethodEntryRequest;
 import com.sun.jdi.request.MethodExitRequest;
+import com.sun.jdi.request.StepRequest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -144,6 +146,14 @@ final class RealRunTrace {
 
     // Worker.
     private final List<EventRequest> requests = new ArrayList<>();
+    /** Exits of the user's class: only there to notice the statement ending before the terminal. */
+    private EventRequest userExits;
+    /**
+     * Steps out of the user's frame, which JDWP reports for a frame an exception pops, unlike its
+     * method exit. Never switched off for the build's invokes: enabled again, it would step out of the
+     * op's frame instead.
+     */
+    private StepRequest frameExit;
     private int rootSkip;
     /** Index of the next op in {@code plan.steps()}. */
     private int nextOp;
@@ -235,6 +245,9 @@ final class RealRunTrace {
             rootSkip = plan.root().skip();
         }
         // Last: with these on, an invoke into the thread would raise the trace's own events inside it.
+        // The step out of the frame never fires inside an invoke, which runs above it.
+        frameExit = vm.eventRequestManager().createStepRequest(thread, StepRequest.STEP_MIN, StepRequest.STEP_OUT);
+        own(frameExit);
         if (held != null && plan.steps().isEmpty()) {
             watchTerminal();
         } else {
@@ -330,6 +343,11 @@ final class RealRunTrace {
         boolean hold = false;
         try {
             if (!building()) return;
+            if (leftStatement()) {
+                if (fail("the chain did not run: its statement ended before " + plan.terminal().name() + " was called")) teardown();
+                return;
+            }
+            if (event.request() == userExits || event.request() == frameExit) return;
             if (event instanceof MethodExitEvent exit) {
                 onExit(exit);
             } else if (event instanceof MethodEntryEvent entry) {
@@ -440,7 +458,7 @@ final class RealRunTrace {
             if (released || state != State.BUILDING) return false;
             state = State.TERMINAL_RUNNING;
         }
-        deleteRequests();
+        stopWatching();
         // For requests java-debug made since arm, when the user added or edited a breakpoint.
         silencers.add(Silencer.silence(vm.eventRequestManager()));
         StackFrame frame = thread.frame(0);
@@ -507,6 +525,21 @@ final class RealRunTrace {
         return hold;
     }
 
+    /**
+     * Worker: whether the user's frame is gone or past the chain's lines. An exception thrown before
+     * the terminal (by the root's arguments, a step's) skips the rest of the statement: uncaught, the
+     * frame exits; caught in the frame, it runs on outside the statement. Either way no event of the
+     * chain will come.
+     */
+    private boolean leftStatement() throws IncompatibleThreadStateException {
+        int count = thread.frameCount();
+        // At depth itself frame 0 is the user's method, so the event is that method's own exit.
+        if (count <= depth) return true;
+        Location at = thread.frame(count - depth).location();
+        int line = at.lineNumber() - 1;
+        return !at.method().equals(userMethod) || line < plan.firstLine() || line > plan.lastLine();
+    }
+
     private boolean calledByUser() throws IncompatibleThreadStateException {
         return thread.frameCount() == depth + 1 && thread.frame(1).location().method().equals(userMethod);
     }
@@ -553,6 +586,7 @@ final class RealRunTrace {
             r.addClassFilter(filter);
             own(r);
         }
+        watchUserExits();
     }
 
     private void watchTerminal() {
@@ -566,6 +600,21 @@ final class RealRunTrace {
         // The instance filter lets static methods through: <clinit> and others would arrive by the thousand.
         r.addClassFilter("java.util.stream.*");
         own(r);
+        watchUserExits();
+    }
+
+    /**
+     * The user's method exits through this when the statement throws, and a frame that catches it
+     * next calls a method of its own class or exits. The plan's filters name JDK classes only, so no
+     * exit comes twice in one event set.
+     */
+    private void watchUserExits() {
+        MethodExitRequest r = vm.eventRequestManager().createMethodExitRequest();
+        requests.add(r);
+        r.addThreadFilter(thread);
+        r.addClassFilter(userMethod.declaringType());
+        own(r);
+        userExits = r;
     }
 
     private void own(EventRequest r) {
@@ -586,6 +635,17 @@ final class RealRunTrace {
         }
     }
 
+    /** All of the trace's requests; also lets the client's DAP step out, since JDI allows one step request per thread. */
+    private void stopWatching() {
+        try {
+            deleteRequests();
+        } finally {
+            StepRequest step = frameExit;
+            frameExit = null;
+            if (step != null) vm.eventRequestManager().deleteEventRequest(step);
+        }
+    }
+
     /** Moves a running trace to {@link State#FAILED}; false when it was no longer running. */
     private boolean fail(String why) {
         synchronized (stateLock) {
@@ -600,7 +660,7 @@ final class RealRunTrace {
     /** Worker: takes the trace's requests out and the user's breakpoints back; the program runs on untouched. */
     private void teardown() {
         try {
-            deleteRequests();
+            stopWatching();
         } catch (VMDisconnectedException e) {
             // they went with the VM
         } catch (RuntimeException e) {
@@ -747,9 +807,27 @@ final class RealRunTrace {
                 }
             }
         }
-        if (why == null && !errors.isEmpty()) why = String.join("; ", errors);
         long[] counts = counts();
-        Map<String, Object> out = Values.json("state", seen.wire, "records", counts[0], "dropped", counts[1],
+        return waitReply(seen, why, counts[0], counts[1]);
+    }
+
+    /**
+     * What {@code wait} answers once the VM is gone, from the counts last read: no JDI call. Call it
+     * after {@link #vmGone}.
+     */
+    Map<String, Object> ended() {
+        State seen;
+        String why;
+        synchronized (stateLock) {
+            seen = state;
+            why = detail;
+        }
+        return Collections.unmodifiableMap(waitReply(seen, why, size, dropped));
+    }
+
+    private Map<String, Object> waitReply(State seen, String why, long records, long droppedRecords) {
+        if (why == null && !errors.isEmpty()) why = String.join("; ", errors);
+        Map<String, Object> out = Values.json("state", seen.wire, "records", records, "dropped", droppedRecords,
                 "elapsedMs", (System.nanoTime() - armedNanos) / 1_000_000);
         if (why != null) out.put("detail", why);
         return out;

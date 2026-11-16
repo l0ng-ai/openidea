@@ -99,6 +99,9 @@ public class Real {
             case "abort": abort(); break;
             case "exit": exit(); break;
             case "mid": mid(); break;
+            case "fn": functionAndData(); break;
+            case "throws": throwsBeforeRoot(); break;
+            case "hit": hitWhileRunning(Integer.parseInt(a[1])); break;
             default: throw new IllegalArgumentException(a[0]);
         }
         System.out.println("END");
@@ -228,6 +231,62 @@ public class Real {
                         .map(String::valueOf)
                         .collect(Collectors.toList());
         System.out.println("MID " + m + " " + head);
+    }
+
+    static int touched;
+
+    static boolean touch(int x) {
+        touched++; // @touch
+        return x % 2 == 0;
+    }
+
+    static void functionAndData() {
+        long n = nums.stream().filter(Real::touch).count(); // @fn
+        System.out.println("FN " + n);
+        touch(1); // @fn_after
+        System.out.println("FN after " + touched);
+    }
+
+    static List<Integer> parse(String s) {
+        return new ArrayList<>(Arrays.asList(Integer.parseInt(s)));
+    }
+
+    static void escapes() {
+        long n = parse("x").stream().filter(x -> x > 0).count(); // @escapes
+        System.out.println("ESCAPES not reached " + n);
+    }
+
+    static void escapesLater() {
+        long n = nums.stream().filter(x -> x > 0).limit(parse("z").size()).count(); // @escapes_later
+        System.out.println("ESCAPES_LATER not reached " + n);
+    }
+
+    static void throwsBeforeRoot() {
+        try {
+            escapes();
+        } catch (NumberFormatException e) {
+            System.out.println("ESCAPES caught by the caller");
+        }
+        try {
+            escapesLater();
+        } catch (NumberFormatException e) {
+            System.out.println("ESCAPES_LATER caught by the caller"); // @later_landing
+            System.out.println("ESCAPES_LATER after the catch's first line"); // @later_catch
+        }
+        long n;
+        try {
+            n = parse("y").stream().filter(x -> x > 0).count(); // @caught
+        } catch (NumberFormatException e) {
+            n = -1;
+        }
+        long m = nums.stream().count();
+        System.out.println("THROWS " + n + " " + m); // @throws_end
+    }
+
+    static void hitWhileRunning(int size) {
+        long n = Stream.iterate(0, i -> i + 1).limit(size).filter(Real::evenSlowly).count(); // @hit
+        evenSlowly(25_000);
+        System.out.println("HIT " + n);
     }
 }
 '''
@@ -416,8 +475,22 @@ def plan(at, root=spec('stream'), local=None, steps=(spec('filter', 1), spec('ma
          class_filters=('java.util.stream.*', 'java.util.Collection'), step_kinds=('sync', 'sync'), sequentialize=False,
          program='Chains'):
     """A `ide_streams::RealRunPlan` for the chain on line `at`; the defaults fit the `loop` chain."""
+    first = line(at, program) - 1
     return {'root': root, 'local': local, 'steps': list(steps), 'terminal': terminal, 'classFilters': list(class_filters),
-            'stepKinds': list(step_kinds), 'sequentialize': sequentialize, 'firstLine': line(at, program) - 1}
+            'stepKinds': list(step_kinds), 'sequentialize': sequentialize, 'firstLine': first,
+            'lastLine': statement_end(program, first)}
+
+
+def statement_end(program, first):
+    """0-based line of the `;` that ends the statement starting on 0-based line `first`, lambda bodies skipped."""
+    depth = 0
+    for i, text in enumerate(PROGRAMS[program].splitlines()[first:], first):
+        for ch in text.split('//')[0]:
+            depth += ch in '({'
+            depth -= ch in ')}'
+            if ch == ';' and depth == 0:
+                return i
+    raise ValueError(f'no statement end after line {first + 1}')
 
 
 def arm(dbg, at='loop', budget=50_000, **plan_args):
@@ -1008,6 +1081,159 @@ def real_run_ecj_heads():
         check('ECJ: an assignment head whose code runs after the chain is notAtChainStart', error(r) == 'notAtChainStart', r)
     finally:
         dbg.end()
+
+
+@case
+def real_run_function_and_data_breakpoints():
+    # java-debug makes a function breakpoint a MethodEntryRequest and a data breakpoint a watchpoint
+    # request; left on, either is hit inside the terminal's invoke (and slows it to the interpreter).
+    kinds = (('function', 'setFunctionBreakpoints', {'breakpoints': [{'name': 'Real#touch'}]}),
+             ('data', 'setDataBreakpoints', {'breakpoints': [{'dataId': 'Real#touched', 'accessType': 'write'}]}))
+    for kind, command, arguments in kinds:
+        dbg = real('fn')
+        try:
+            reply = dbg.dap.request(command, arguments)
+            check(f'{kind} breakpoint: java-debug verifies it', all(b.get('verified') for b in reply['body']['breakpoints']), reply)
+            trace, state, _ = run_until_parked(dbg, 'fn', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',),
+                                               timeout=20)
+            check(f'{kind} breakpoint: silenced while the chain runs, so the trace parks', state['state'] == 'parked', state)
+            if state['state'] != 'parked':
+                continue
+            c = step_out_and_collect(dbg, trace)
+            collected_ok(f'{kind} breakpoint', c, terminal='4')
+            resume(dbg)
+            try:
+                body = expect_stop(dbg, 20, f'{kind} breakpoint after the trace')
+                check(f'{kind} breakpoint: back on after the trace', body.get('reason') == f'{kind} breakpoint'
+                      and top(dbg)['line'] == line('touch', 'Real'), (body, top(dbg)))
+            except TimeoutError:
+                check(f'{kind} breakpoint: back on after the trace', False, 'no stop')
+        finally:
+            dbg.end()
+
+
+PLAN_THROWS = dict(steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',))
+
+
+@case
+def real_run_statement_throws_before_the_root():
+    # JDWP reports no method exit for a frame an exception pops: the trace must notice the caller's
+    # catch before the caller's next breakpoint, which is still off until then.
+    dbg = real('throws', 'escapes', 'escapes_later', 'later_landing', 'later_catch', 'caught', 'throws_end')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'escapes', timeout=20, **PLAN_THROWS)
+        check('throws, uncaught in the frame: the trace fails', state['state'] == 'failed'
+              and state.get('detail', '').startswith('the chain did not run'), state)
+        try:
+            expect_stop(dbg, 20, 'escapes_later')
+            check('throws, uncaught in the frame: the next breakpoint stops', top(dbg)['line'] == line('escapes_later', 'Real'),
+                  top(dbg))
+        except TimeoutError:
+            check('throws, uncaught in the frame: the next breakpoint stops', False, 'no stop')
+            return
+        # The root and filter are wrapped (invokes into the thread) before limit's argument throws.
+        trace, state, _ = run_until_parked(dbg, 'escapes_later', timeout=20, steps=(spec('filter', 1), spec('limit', 1)),
+                                           terminal=spec('count'), step_kinds=('sync', 'sync'))
+        check('throws in a step argument: the trace fails', state['state'] == 'failed'
+              and state.get('detail', '').startswith('the chain did not run'), state)
+        try:
+            expect_stop(dbg, 20, 'later_catch')
+            if top(dbg)['line'] == line('later_landing', 'Real'):
+                report('NOTE', "throws in a step argument: the breakpoint where the step out lands stopped too")
+                resume(dbg)
+                expect_stop(dbg, 20, 'later_catch')
+            else:
+                # The step out lands on the handler's first line, with its breakpoint still off: JVMTI
+                # checks for a breakpoint before posting the step, so switching it on then is too late.
+                report('NOTE', "throws in a step argument: the breakpoint where the step out lands is missed")
+            check("throws in a step argument: the caller's catch stops", top(dbg)['line'] == line('later_catch', 'Real'), top(dbg))
+        except TimeoutError:
+            check("throws in a step argument: the caller's catch stops", False, 'no stop')
+            return
+        resume(dbg)
+        try:
+            expect_stop(dbg, 20, 'caught')
+            check('throws: the breakpoint after stops', top(dbg)['line'] == line('caught', 'Real'), top(dbg))
+        except TimeoutError:
+            check('throws: the breakpoint after stops', False, 'no stop')
+            return
+        trace, state, _ = run_until_parked(dbg, 'caught', timeout=20, **PLAN_THROWS)
+        check('throws, caught in the frame: the trace fails', state['state'] == 'failed'
+              and state.get('detail', '').startswith('the chain did not run'), state)
+        try:
+            expect_stop(dbg, 20, 'throws_end')
+            check('throws, caught in the frame: a later breakpoint stops', top(dbg)['line'] == line('throws_end', 'Real'), top(dbg))
+        except TimeoutError:
+            check('throws, caught in the frame: a later breakpoint stops', False, 'no stop')
+            return
+        resume(dbg)
+        check('throws: the program runs on untouched', output_line(dbg, 'THROWS ') == 'THROWS -1 8')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_breakpoint_hit_while_running():
+    # A breakpoint set while the terminal runs and hit before the bundle's next re-silence: ide-dap
+    # continues the thread (R32), which lets the invoke go on. No `wait` before the hit, so nothing
+    # re-silences it first.
+    dbg = real('hit', 'hit', extra=(SR_SIZE,))
+    try:
+        trace = ok(arm(dbg, at='hit', root=spec('iterate', 2), steps=(spec('limit', 1), spec('filter', 1)),
+                       terminal=spec('count'), class_filters=('java.util.stream.*',)))['traceId']
+        traced = dbg.thread
+        resume(dbg)
+        time.sleep(0.3)
+        breakpoints(dbg, 'hit', 'sr_late')
+        try:
+            body = expect_stop(dbg, 20, 'sr_late inside the invoke')
+            check('hit-while-running: the new breakpoint stops the traced thread inside the invoke',
+                  body.get('threadId') == traced and top(dbg)['line'] == line('sr_late', 'Real'), (body, top(dbg)))
+        except TimeoutError:
+            check('hit-while-running: the new breakpoint stops the traced thread inside the invoke', False, 'no stop')
+            return
+        dbg.dap.request('continue', {'threadId': traced})
+        state = wait_until_done(dbg, trace, 30)
+        check('hit-while-running: after a continue the trace still parks', state['state'] == 'parked', state)
+        if state['state'] != 'parked':
+            return
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('hit-while-running', c, terminal=str(SR_SIZE // 2))
+        resume(dbg)
+        try:
+            expect_stop(dbg, 20, 'sr_late after the trace')
+            check('hit-while-running: the breakpoint is back on after the trace', top(dbg)['line'] == line('sr_late', 'Real'), top(dbg))
+        except TimeoutError:
+            check('hit-while-running: the breakpoint is back on after the trace', False, 'no stop')
+            return
+        resume(dbg)
+        check('hit-while-running: program output', output_line(dbg, 'HIT ') == f'HIT {SR_SIZE // 2}')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_wait_after_the_vm_is_gone():
+    # Once java-debug no longer lists the VM, `wait` still answers the trace's end from what was read
+    # before, without touching the dead VM.
+    dbg = real('fn')
+    trace, state, _ = run_until_parked(dbg, 'fn', steps=(spec('filter', 1),), terminal=spec('count'), step_kinds=('sync',),
+                                       timeout=20)
+    check('gone: the trace parks first', state['state'] == 'parked', state)
+    dbg.end()
+    # collect has no answer for a gone VM, so it tells when java-debug dropped it.
+    for _ in range(100):
+        if error(stream('collect', dbg, traceId=trace)) == 'vmNotFound':
+            break
+        time.sleep(0.1)
+    else:
+        check('gone: java-debug drops the VM', False)
+        return
+    for attempt in ('first', 'second'):
+        reply = stream('wait', dbg, traceId=trace, ms=0)
+        check(f'gone: the {attempt} wait answers the counts read before', 'ok' in reply and reply['ok']['state'] == 'parked'
+              and reply['ok']['records'] == state['records'], reply)
+    check('gone: release answers too', 'ok' in stream('release', dbg, traceId=trace))
 
 
 def run():

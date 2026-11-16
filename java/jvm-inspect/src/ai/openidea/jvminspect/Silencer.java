@@ -4,6 +4,8 @@ import com.sun.jdi.VMDisconnectedException;
 import com.sun.jdi.request.BreakpointRequest;
 import com.sun.jdi.request.EventRequest;
 import com.sun.jdi.request.EventRequestManager;
+import com.sun.jdi.request.MethodEntryRequest;
+import com.sun.jdi.request.WatchpointRequest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -12,9 +14,11 @@ import java.util.Set;
 import java.util.function.Supplier;
 
 /**
- * Switches off the user's breakpoints and exception breakpoints for a trace, and back on after it. A
- * breakpoint hit while the bundle invokes into the thread makes java-debug report a stop the invoke
- * then waits on forever.
+ * Switches off the user's breakpoints of every kind for a trace, and back on after it. A breakpoint
+ * hit while the bundle invokes into the thread makes java-debug report a stop the invoke then waits
+ * on forever. java-debug makes a function breakpoint a {@link MethodEntryRequest} and a data
+ * breakpoint a watchpoint request; any method request left on also runs the terminal in the
+ * interpreter.
  */
 final class Silencer {
     /** The property that marks the bundle's own requests; its value is the trace id. */
@@ -27,21 +31,31 @@ final class Silencer {
     private Silencer(Supplier<List<EventRequest>> current, List<EventRequest> silenced) {
         this.current = current;
         this.silenced = silenced;
-        this.breakpoints = (int) silenced.stream().filter(BreakpointRequest.class::isInstance).count();
+        this.breakpoints = (int) silenced.stream().filter(Silencer::isBreakpoint).count();
     }
 
     static Silencer silence(EventRequestManager erm) {
         return silence(() -> {
             List<EventRequest> requests = new ArrayList<>(erm.breakpointRequests());
             requests.addAll(erm.exceptionRequests());
+            requests.addAll(erm.methodEntryRequests());
+            requests.addAll(erm.methodExitRequests());
+            requests.addAll(erm.accessWatchpointRequests());
+            requests.addAll(erm.modificationWatchpointRequests());
             return requests;
         });
+    }
+
+    /** Method exits are java-debug's own (a step's return value), so they are not counted. */
+    private static boolean isBreakpoint(EventRequest r) {
+        return r instanceof BreakpointRequest || r instanceof MethodEntryRequest || r instanceof WatchpointRequest;
     }
 
     /**
      * Switches off the enabled requests not marked {@link #OWN_PROPERTY}.
      *
-     * @param current the breakpoint and exception requests the VM has now; asked again by {@link #restore}
+     * @param current the breakpoint, exception, method and watchpoint requests the VM has now; asked
+     *     again by {@link #restore}
      */
     static Silencer silence(Supplier<List<EventRequest>> current) {
         List<EventRequest> silenced = new ArrayList<>();
@@ -59,7 +73,7 @@ final class Silencer {
         return silenced.size();
     }
 
-    /** {@link BreakpointRequest}s among the silenced ones, counted when silenced. */
+    /** Line, function and data breakpoint requests among the silenced ones, counted when silenced. */
     int silencedBreakpoints() {
         return breakpoints;
     }

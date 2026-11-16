@@ -36,15 +36,16 @@ public final class StreamCommand implements IDelegateCommandHandler {
     private static final String PREFIX = "openidea.jvm.stream.";
     /** {@code stream.wait} holds a JDT LS request thread at most this long. */
     private static final long MAX_WAIT_MS = 30_000;
-    /** Traces of VMs that disconnected, kept so that {@code wait} still answers their end. */
+    /** How many traces of VMs that disconnected keep their last {@code wait} answer. */
     private static final int GONE_KEPT = 16;
     private static final AtomicLong IDS = new AtomicLong();
     private static final Map<VirtualMachine, RealRunTrace> TRACES = new IdentityHashMap<>();
-    private static final Map<Long, RealRunTrace> GONE = new LinkedHashMap<>() {
+    /** By trace id, the answer {@link RealRunTrace#ended} gave: the trace itself would keep its dead VM's mirrors. */
+    private static final Map<Long, Map<String, Object>> GONE = new LinkedHashMap<>() {
         private static final long serialVersionUID = 1L;
 
         @Override
-        protected boolean removeEldestEntry(Map.Entry<Long, RealRunTrace> eldest) {
+        protected boolean removeEldestEntry(Map.Entry<Long, Map<String, Object>> eldest) {
             return size() > GONE_KEPT;
         }
     };
@@ -61,10 +62,10 @@ public final class StreamCommand implements IDelegateCommandHandler {
             try {
                 vm = InspectCommand.select(vms, target);
             } catch (Failure e) {
-                RealRunTrace gone = name.equals("arm") ? null : gone(args);
+                Map<String, Object> gone = name.equals("arm") ? null : gone(args);
                 if (gone == null) throw e;
                 return InspectCommand.ok(switch (name) {
-                    case "wait" -> gone.await(0);
+                    case "wait" -> gone;
                     case "release" -> Map.of();
                     default -> throw e;
                 });
@@ -152,7 +153,7 @@ public final class StreamCommand implements IDelegateCommandHandler {
         }
     }
 
-    private static RealRunTrace gone(Map<?, ?> args) {
+    private static Map<String, Object> gone(Map<?, ?> args) {
         if (!(args.get("traceId") instanceof Number id)) return null;
         synchronized (TRACES) {
             return GONE.get(id.longValue());
@@ -179,15 +180,15 @@ public final class StreamCommand implements IDelegateCommandHandler {
             for (Iterator<Map.Entry<VirtualMachine, RealRunTrace>> i = TRACES.entrySet().iterator(); i.hasNext(); ) {
                 Map.Entry<VirtualMachine, RealRunTrace> e = i.next();
                 if (live.contains(e.getKey())) continue;
-                gone.add(e.getValue());
-                GONE.put(e.getValue().id, e.getValue());
+                RealRunTrace trace = e.getValue();
+                trace.vmGone();
+                GONE.put(trace.id, trace.ended());
+                gone.add(trace);
                 i.remove();
             }
         }
-        for (RealRunTrace trace : gone) {
-            trace.vmGone();
-            trace.release();
-        }
+        // Outside the lock: release waits on the trace's worker, which may still be talking to the VM.
+        for (RealRunTrace trace : gone) trace.release();
         RecorderLoader.retain(live);
     }
 

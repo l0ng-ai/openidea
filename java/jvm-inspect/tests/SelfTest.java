@@ -336,12 +336,13 @@ public final class SelfTest {
         json.put("stepKinds", List.of("sync", "sync"));
         json.put("sequentialize", false);
         json.put("firstLine", 19.0);
+        json.put("lastLine", 23.0);
         RealRunPlan plan = RealRunPlan.of(json);
         check(plan.root().equals(new RealRunPlan.StepSpec("stream", 0, 1)) && plan.local() == null, "root: " + plan.root());
         check(plan.steps().equals(List.of(new RealRunPlan.StepSpec("filter", 1, 0), new RealRunPlan.StepSpec("map", 1, 0))), "steps");
         check(plan.terminal().name().equals("collect") && plan.terminal().args() == 1, "terminal: " + plan.terminal());
         check(plan.classFilters().size() == 2 && plan.stepKinds().equals(List.of("sync", "sync")), "filters and kinds");
-        check(!plan.sequentialize() && plan.firstLine() == 19, "sequentialize and firstLine: " + plan);
+        check(!plan.sequentialize() && plan.firstLine() == 19 && plan.lastLine() == 23, "sequentialize and lines: " + plan);
         json.remove("terminal");
         try {
             RealRunPlan.of(json);
