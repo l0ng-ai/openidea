@@ -44,7 +44,15 @@ import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { IconButton, Select, Spinner, T, isPopupOpen, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffOverview, diffWords, documentTooltips, languageFor, viewerBase } from "./cm";
+import {
+  changedLineGutters,
+  diffOverview,
+  diffWords,
+  documentTooltips,
+  firstLineOf,
+  languageFor,
+  viewerBase,
+} from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -204,6 +212,8 @@ function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () =>
 }
 
 const NO_CONTRIBUTIONS: DiffViewerContribution[] = [];
+/** A file without a language; one value, so finding none again doesn't rebuild the views. */
+const NO_LANGUAGE: Extension = [];
 
 /** Joins the open document of a file-backed side (working file, Compare Files); null for revisions / texts. */
 async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachment | null> {
@@ -408,13 +418,21 @@ export function DiffEditor({
     void Promise.resolve().then(reload);
   }, [reload, version]);
 
+  // The file's language as its editor resolves it, from the shown text's first line too
+  // (hashbang-only scripts): the right side's, or the left one's when the file is deleted.
+  const firstLine = useMemo(() => {
+    if (!attached || !statics) return undefined;
+    const text = attached.b?.text() ?? statics.b ?? attached.a?.text() ?? statics.a;
+    return text == null ? null : firstLineOf(text);
+  }, [attached, statics]);
   useEffect(() => {
+    if (firstLine === undefined) return;
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine]);
 
   const updateChunkInfo = useCallback((docChanged = false) => {
     const v = viewsRef.current?.b;

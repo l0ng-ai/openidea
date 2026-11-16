@@ -377,10 +377,11 @@ export const commands = {
 	docSyncFromDisk: () => typedError<null, IdeError>(__TAURI_INVOKE("doc_sync_from_disk")),
 	docSnapshot: (doc: DocId) => typedError<DocumentInfo, IdeError>(__TAURI_INVOKE("doc_snapshot", { doc })),
 	/**
-	 *  The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
-	 *  without opening it: previews of closed files.
+	 *  The language and CodeMirror mode `path` is shown with in an editor, without opening
+	 *  it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
+	 *  for hashbang detection; without it the file's on disk counts.
 	 */
-	docUiMode: (path: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("doc_ui_mode", { path })),
+	docLanguage: (path: string, firstLine: string | null) => typedError<DocumentLanguage, IdeError>(__TAURI_INVOKE("doc_language", { path, firstLine })),
 	/**  "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state. */
 	docSetEncoding: (doc: DocId, encoding: string, reload: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_encoding", { doc, encoding, reload })),
 	docSetBom: (doc: DocId, hasBom: boolean) => typedError<DocumentEncoding, IdeError>(__TAURI_INVOKE("doc_set_bom", { doc, hasBom })),
@@ -4946,6 +4947,13 @@ export type DocumentInfo = {
 	 *  CodeMirror mode replacing the language's own one (an Angular project's
 	 *  HTML templates).
 	 */
+	uiMode?: string | null,
+};
+
+/**  The language and CodeMirror mode a file is shown with, like `DocumentInfo`. */
+export type DocumentLanguage = {
+	language: LanguageId,
+	/**  CodeMirror mode replacing the language's own one (`DocumentInfo::ui_mode`). */
 	uiMode?: string | null,
 };
 

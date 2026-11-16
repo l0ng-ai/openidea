@@ -6,7 +6,7 @@ use ide_core::{ChangeSet, DocId, IdeResult, OutlineItem, Range};
 pub use ide_host::ops::doc::*;
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentEncoding, DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
 use std::path::PathBuf;
 use tauri::{Manager, State, Window};
 
@@ -104,12 +104,18 @@ pub async fn doc_open_virtual(window: Window, state: State<'_, AppState>, uri: S
     ide_host::ops::doc::doc_open_virtual(&state.host, window.label(), uri).await
 }
 
-/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
-/// without opening it: previews of closed files.
+/// The language and CodeMirror mode `path` is shown with in an editor, without opening
+/// it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
+/// for hashbang detection; without it the file's on disk counts.
 #[tauri::command]
 #[specta::specta]
-pub async fn doc_ui_mode(window: Window, state: State<'_, AppState>, path: PathBuf) -> IdeResult<Option<String>> {
-    ide_host::ops::doc::doc_ui_mode(&state.host, window.label(), path).await
+pub async fn doc_language(
+    window: Window,
+    state: State<'_, AppState>,
+    path: PathBuf,
+    first_line: Option<String>,
+) -> IdeResult<DocumentLanguage> {
+    ide_host::ops::doc::doc_language(&state.host, window.label(), path, first_line).await
 }
 
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.

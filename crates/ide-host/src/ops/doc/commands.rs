@@ -5,7 +5,7 @@ use crate::rpc::Dispatcher;
 use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
-use ide_workspace::{DocumentEncoding, DocumentInfo, HistoryEntry};
+use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
 use std::path::PathBuf;
 
 /// Runs blocking work (disk I/O, parsing, large copies) on the blocking pool,
@@ -32,11 +32,17 @@ pub async fn doc_open_virtual(host: &Host, window: &str, uri: String) -> IdeResu
     .await
 }
 
-/// The CodeMirror mode `path` gets when opened (`DocumentInfo::ui_mode`),
-/// without opening it: previews of closed files.
-pub async fn doc_ui_mode(host: &Host, window: &str, path: PathBuf) -> IdeResult<Option<String>> {
+/// The language and CodeMirror mode `path` is shown with in an editor, without opening
+/// it: previews of closed files and diffs. `first_line` is the shown text's (a revision's)
+/// for hashbang detection; without it the file's on disk counts.
+pub async fn doc_language(
+    host: &Host,
+    window: &str,
+    path: PathBuf,
+    first_line: Option<String>,
+) -> IdeResult<DocumentLanguage> {
     let project = host.project(window)?;
-    blocking(move || Ok(project.documents.ui_mode_of(&path))).await
+    blocking(move || Ok(project.documents.language_of(&path, first_line.as_deref()))).await
 }
 
 /// "Reload with Encoding" (`reload`) or "Convert to Encoding"; returns the new encoding and BOM state.
@@ -209,7 +215,10 @@ pub fn history_content(host: &Host, window: &str, id: String) -> IdeResult<Strin
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("doc_open_virtual", |c| async move { doc_open_virtual(&c.host, &c.window, c.arg("uri")?).await });
-    d.add("doc_ui_mode", |c| async move { doc_ui_mode(&c.host, &c.window, c.arg("path")?).await });
+    d.add(
+        "doc_language",
+        |c| async move { doc_language(&c.host, &c.window, c.arg("path")?, c.arg("firstLine")?).await },
+    );
     d.add("doc_set_encoding", |c| async move {
         doc_set_encoding(&c.host, &c.window, c.arg("doc")?, c.arg("encoding")?, c.arg("reload")?).await
     });

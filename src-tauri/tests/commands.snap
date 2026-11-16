@@ -187,6 +187,7 @@ doc_close                                    always             project_host bin
 doc_edit                                     always             project_host bindings async
 doc_folding                                  always             project_host bindings async
 doc_highlights                               always             project_host bindings async
+doc_language                                 always             project_host bindings async
 doc_open                                     always             project_host bindings async
 doc_open_untitled                            always             project_host bindings async
 doc_open_virtual                             always             project_host bindings async
@@ -201,7 +202,6 @@ doc_set_encoding                             always             project_host bin
 doc_set_line_ending                          always             project_host bindings async
 doc_snapshot                                 always             project_host bindings async
 doc_sync_from_disk                           always             project_host bindings async
-doc_ui_mode                                  always             project_host bindings async
 docker_compose_op                            trusted            desktop      bindings async
 docker_container_op                          trusted            desktop      bindings async
 docker_container_stats                       trusted            desktop      bindings async
