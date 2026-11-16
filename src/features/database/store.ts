@@ -56,6 +56,8 @@ import { formatted } from "./sql/format";
 import { bindParams, findParams } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
+import type { TableSnapshot } from "./schemaCompare";
+import { resolutionScopeOf, resolutionScopesOf, type SqlResolutionScope } from "./resolutionScopes";
 import { databaseRequest, invalidateDatabaseRequests, projectRequest } from "./requests";
 import { tx } from "@/platform/i18n";
 
@@ -87,6 +89,18 @@ export interface ResultTab {
   total?: number | null;
   /** Kept when the console runs again (Pin Tab); results otherwise replace the console's last ones. */
   pinned?: boolean;
+  /** Shown in the editor under its statement (In-Editor Results), not as a result tab. */
+  inline?: boolean;
+}
+
+/** Database › In-Editor Results: result sets show under their statements instead of in result tabs. */
+export function inEditorResults(settings: unknown = useProject.getState().settings): boolean {
+  return (settings as { database?: { inEditorResults?: unknown } } | null)?.database?.inEditorResults === true;
+}
+
+export async function setInEditorResults(on: boolean): Promise<void> {
+  const settings = await call(commands.settingsSet("global", "database.inEditorResults", JSON.stringify(on)));
+  useProject.setState({ settings });
 }
 
 /** One line of the consoles' Output log (IDEA's Database Console output). */
@@ -130,7 +144,9 @@ export type DialogState =
   /** Browse Query History of target `id`; Paste goes to console `path`. */
   | { kind: "history"; id: string; path: string | null }
   /** Import Data from File into a table. */
-  | { kind: "import"; id: string; schema: string; table: string };
+  | { kind: "import"; id: string; schema: string; table: string }
+  /** Compare Structure: `source` starts as the schema the action was invoked on. */
+  | { kind: "compareSchemas"; source: { id: string; schema: string } | null };
 
 /** The schemas and tables of a data source's databases, as far as introspection has read them. */
 export interface SourceCatalog {
@@ -167,6 +183,8 @@ interface DatabaseState {
   separateProceduresAndFunctions: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
+  /** Results shown in the editor under their statements (In-Editor Results), oldest first. */
+  inline: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
   activeResult: number | null;
   output: OutputLine[];
@@ -234,6 +252,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
   completion: {},
   results: [],
+  inline: [],
   activeResult: null,
   output: [],
   running: {},
@@ -693,6 +712,25 @@ export async function loadTables(id: string, schema: string): Promise<void> {
   }
 }
 
+/** The tables of `schema` on target `id` with their columns, indexes and foreign keys (Compare Structure). */
+export async function schemaSnapshot(id: string, schema: string, signal?: AbortSignal): Promise<TableSnapshot[]> {
+  const tables = (await withConnection(id, () => call(commands.dbTables(id, schema)))).filter(
+    (t) => t.kind === "table",
+  );
+  const out: TableSnapshot[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < tables.length) {
+      if (signal?.aborted) return;
+      const t = tables[next++]!;
+      const details = await call(commands.dbTableDetails(id, schema, t.name));
+      out.push({ name: t.name, kind: t.kind, ...details });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, tables.length) }, worker));
+  return out;
+}
+
 export async function loadDetails(id: string, schema: string, table: string): Promise<void> {
   const key = detailsKey(id, schema, table);
   const current = metadataRequest(id, "details", key);
@@ -869,7 +907,10 @@ export function bindConsole(path: string, id: string | null) {
 export function consoleSchema(path: string): string {
   const s = useDatabase.getState();
   const id = consoleSource(path);
-  return activeSchema(s.consoleSchemas[path], id ? s.completion[id]?.defaultSchema : undefined);
+  // A scope's schema applies while the console is on that scope's data source.
+  const scope = s.consoles[path] ? null : scopeOf(path);
+  const picked = s.consoleSchemas[path] ?? (scope && scope.dataSource === id ? scope.schema : undefined);
+  return activeSchema(picked || undefined, id ? s.completion[id]?.defaultSchema : undefined);
 }
 
 /** Sets (or clears, for `null`) the console's active schema and remembers it per console file. */
@@ -887,11 +928,26 @@ export function setConsoleSchema(path: string, schema: string | null) {
   });
 }
 
-/** The data source a console / SQL file runs on: its binding, else the only data source. */
+/** The SQL resolution scope of file `path` (Languages & Frameworks › SQL Resolution Scopes), if any. */
+function scopeOf(path: string): SqlResolutionScope | null {
+  const { project, settings } = useProject.getState();
+  if (!project) return null;
+  const sources = useDatabase.getState().sources;
+  return resolutionScopeOf(path, project.root, resolutionScopesOf(settings), (id) =>
+    sources.some((x) => x.id === splitTarget(id).id),
+  );
+}
+
+/**
+ * The data source a console / SQL file runs on and resolves against: the one picked in its
+ * toolbar, else its SQL resolution scope's, else the only data source.
+ */
 export function consoleSource(path: string): string | null {
   const s = useDatabase.getState();
   const bound = s.consoles[path];
   if (bound && s.sources.some((x) => x.id === splitTarget(bound).id)) return bound;
+  const scope = scopeOf(path);
+  if (scope) return scope.dataSource;
   return s.sources.length === 1 ? (s.sources[0]!.id ?? null) : null;
 }
 
@@ -1141,6 +1197,10 @@ export async function executeConsole(
       const title = index === 1 ? tx`Result ${n}` : tx`Result ${n}-${index}`;
       return { id: nextTab++, title, path, sourceId: id, schema, outcome, page: 0, pageSize };
     });
+    if (inEditorResults()) {
+      useDatabase.setState((s) => ({ inline: [...s.inline, ...tabs.map((t) => ({ ...t, inline: true }))] }));
+      return outcomes;
+    }
     const failed = outcomes.some((o) => o.error);
     useDatabase.setState((s) => ({
       results: replaceResults(s.results, path, tabs),
@@ -1282,7 +1342,7 @@ export async function openObjectDdl(id: string, schema: string, kind: DbObjectKi
 
 /** Re-runs the statement of result tab `tabId`, replacing its rows (a plan tab explains it again). */
 export async function rerunResult(tabId: number): Promise<void> {
-  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  const tab = findResult(tabId);
   if (!tab || tab.busy) return;
   if (tab.plan) {
     patchResult(tabId, { busy: true });
@@ -1305,8 +1365,16 @@ export function pageable(tab: ResultTab): boolean {
   return !tab.plan && isReadOnlyQuery(tab.outcome.statement.text, sourceById(tab.sourceId)?.driver ?? "sqlite");
 }
 
+/** Result tab `tabId`, in the Services view or in an editor. */
+export function findResult(tabId: number): ResultTab | undefined {
+  const st = useDatabase.getState();
+  return st.results.find((r) => r.id === tabId) ?? st.inline.find((r) => r.id === tabId);
+}
+
 function patchResult(tabId: number, p: Partial<ResultTab>) {
-  useDatabase.setState((s) => ({ results: s.results.map((r) => (r.id === tabId ? { ...r, ...p } : r)) }));
+  const patch = (list: ResultTab[]) =>
+    list.some((r) => r.id === tabId) ? list.map((r) => (r.id === tabId ? { ...r, ...p } : r)) : list;
+  useDatabase.setState((s) => ({ results: patch(s.results), inline: patch(s.inline) }));
 }
 
 /**
@@ -1315,7 +1383,7 @@ function patchResult(tabId: number, p: Partial<ResultTab>) {
  * `rerun` also forgets the counted total.
  */
 export async function loadResultPage(tabId: number, page: number, pageSize: number, rerun = false): Promise<void> {
-  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  const tab = findResult(tabId);
   if (!tab || tab.busy || tab.plan) return;
   if (page > 0 && !pageable(tab)) return;
   patchResult(tabId, { busy: true });
@@ -1363,7 +1431,7 @@ export function countable(tab: ResultTab): boolean {
 
 /** Counts the rows of result tab `tabId`'s whole query (the pager's "of 501+"). */
 export async function countResult(tabId: number): Promise<number | null> {
-  const tab = useDatabase.getState().results.find((r) => r.id === tabId);
+  const tab = findResult(tabId);
   if (!tab || tab.busy || !countable(tab)) return null;
   const text = countQuery(tab.outcome.statement.text)!;
   patchResult(tabId, { busy: true });
@@ -1466,6 +1534,12 @@ export function closeResult(id: number) {
       activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
     };
   });
+}
+
+/** Closes in-editor results `ids`. */
+export function closeInlineResults(ids: readonly number[]) {
+  if (!ids.length) return;
+  useDatabase.setState((s) => ({ inline: s.inline.filter((r) => !ids.includes(r.id)) }));
 }
 
 export function pinResult(id: number, pinned: boolean) {

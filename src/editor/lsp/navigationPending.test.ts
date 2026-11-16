@@ -70,6 +70,27 @@ describe("slow navigation feedback", () => {
     expect(document.querySelector(".cm-lsp-hint")).toBeNull();
   });
 
+  it("clears the progress hint when the target opens in another tab and hides this view (#3647)", async () => {
+    let resolve!: (result: Awaited<ReturnType<typeof commands.lspGotoImplementation>>) => void;
+    lspGotoImplementation.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    // Opening the target's tab detaches this tab's view, as `EditorSlot.unmount` does.
+    openFile.mockImplementationOnce(async () => view.dom.remove());
+    const pending = gotoTargets(view, "implementation");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(document.querySelector(".cm-lsp-hint")?.textContent).toBe("Finding navigation target…");
+    resolve({
+      status: "ok",
+      data: [{ path: "/p/Impl.java", range: { start: { line: 1, col: 0 }, end: { line: 1, col: 4 } }, uri: null }],
+    });
+    await pending;
+    expect(openFile).toHaveBeenCalled();
+    expect(view.dom.isConnected).toBe(false);
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+    // Shown again, the tab has no stale progress hint.
+    document.body.appendChild(view.dom);
+    expect(document.querySelector(".cm-lsp-hint")).toBeNull();
+  });
+
   it("shows progress while the chooser's rows load after a quick answer, until the chooser opens", async () => {
     let finish!: (files: Map<string, string[]>) => void;
     vi.spyOn(files, "readManyFileLines").mockImplementationOnce(() => new Promise((r) => (finish = r)));

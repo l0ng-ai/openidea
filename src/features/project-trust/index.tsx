@@ -5,6 +5,7 @@ import { call, commands, onIdeEvent, type TrustDecisions, type TrustStatus } fro
 import { dirname, useProject } from "@/platform/project";
 import { initializeRemoteTrustMigration, isRemoteRoot } from "@/platform/remote";
 import { provideProjectTrustPrompt, type ProjectTrustScope } from "@/platform/projectTrust";
+import { askOverSplash } from "@/platform/splash";
 import { invokeLocal } from "@/platform/tauriCore";
 import { registerOverlay, registerSettingsPage, registerWorkbenchBanner } from "@/workbench/contributions";
 import { Button, Checkbox, Dialog, T } from "@/ui";
@@ -209,7 +210,7 @@ async function decide(trusted: boolean) {
 
 function promptForTrust(status: TrustStatus, scope: ProjectTrustScope): Promise<boolean> {
   usePrompt.getState().finish?.(false);
-  return new Promise<boolean>((resolve) =>
+  const answer = new Promise<boolean>((resolve) =>
     usePrompt.setState({
       path: status.root,
       scope,
@@ -220,6 +221,8 @@ function promptForTrust(status: TrustStatus, scope: ProjectTrustScope): Promise<
       },
     }),
   );
+  askOverSplash(answer);
+  return answer;
 }
 
 async function trustProject() {

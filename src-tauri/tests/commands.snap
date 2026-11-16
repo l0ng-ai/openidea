@@ -165,6 +165,7 @@ debug_step_in_target                         trusted            project_host bin
 debug_step_in_targets                        trusted            project_host bindings async
 debug_stop                                   always             project_host bindings async
 debug_threads                                trusted            project_host bindings async
+debug_unity_processes                        trusted            project_host bindings async
 debug_variables                              trusted            project_host bindings async
 dependency_versions                          trusted            project_host bindings async
 deploy_compare                               trusted            project_host bindings async
@@ -512,6 +513,7 @@ scaffold_requirements                        always             project_host bin
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   trusted            project_host bindings async
+sdk_jdk_at                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async
 sdk_php_effective                            trusted            project_host bindings sync

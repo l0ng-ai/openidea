@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorState, StateEffect } from "@codemirror/state";
+import { showTooltip, type Tooltip } from "@codemirror/view";
 import { indentUnit, language as languageFacet } from "@codemirror/language";
 import { HEAVY_LIMIT, onEditorEvent, registerSaveParticipant, remoteChange, shownAgain } from "@/editor/api";
 import { createMemoryBackend, type MemoryBackend } from "../backend";
@@ -14,6 +15,15 @@ const host: SlotHost = {
   onSelection: () => {},
   onUserEdit: () => {},
   onContextMenu: () => {},
+};
+
+const testTooltip: Tooltip = {
+  pos: 0,
+  create: () => {
+    const dom = document.createElement("div");
+    dom.className = "test-tab-tooltip";
+    return { dom };
+  },
 };
 
 async function settle() {
@@ -359,6 +369,29 @@ describe("DocumentManager + slots", () => {
     expect(view.dom.isConnected).toBe(true);
     expect(shown).toContain(true);
     slot.dispose();
+    manager.stop();
+  });
+
+  it("takes a hidden tab's tooltips off the page with its view, and back when it shows again (#3647)", async () => {
+    const { manager } = setup({ "/p/a.txt": "abc" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    const other = new EditorSlot(model, "t2", host);
+    const tooltip = () => document.querySelector(".cm-tooltip.test-tab-tooltip");
+    const view = slot.mount(document.body);
+    // Any tooltip of the tab (a hint, hover, completion…): they live in `document.body`, outside the view.
+    view.dispatch({ effects: StateEffect.appendConfig.of(showTooltip.of(testTooltip)) });
+    expect(tooltip()).not.toBeNull();
+    slot.unmount();
+    other.mount(document.body);
+    expect(tooltip()).toBeNull();
+    other.unmount();
+    expect(slot.mount(document.body)).toBe(view);
+    expect(tooltip()).not.toBeNull();
+    // Disposing the tab leaves nothing of it in the page.
+    slot.dispose();
+    other.dispose();
+    expect(tooltip()).toBeNull();
     manager.stop();
   });
 

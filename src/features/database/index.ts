@@ -39,6 +39,8 @@ import {
   RESULTS_VIEW,
   consoleSource,
   consoleTints,
+  inEditorResults,
+  setInEditorResults,
   loadSources,
   connect,
   loadSchemas,
@@ -78,6 +80,8 @@ function tableTarget(arg: unknown): TableCommandTarget {
   if (arg && typeof arg === "object" && "rows" in arg) return arg as TableCommandTarget;
   return { rows: activeCellGrid()?.selectedRows() ?? [], editor: null };
 }
+
+export { activateSettingsPages } from "./settingsPages";
 
 export function activate(): () => void {
   const disposers = [
@@ -120,6 +124,14 @@ export function activate(): () => void {
         () => import("./console").then((m) => m.consoleExtension),
       ),
     }),
+    registerEditorContribution({
+      id: "database.mybatis",
+      order: 58,
+      extensions: lazyEditorExtension(
+        (ctx) => /\.xml$/i.test(ctx.path) && !ctx.virtual,
+        () => import("./mybatis").then((m) => m.mapperExtension),
+      ),
+    }),
     // A reopened project starts with a fresh backend: forget the old one's state.
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
@@ -135,6 +147,7 @@ export function activate(): () => void {
         objects: {},
         completion: {},
         results: [],
+        inline: [],
         output: [],
         activeResult: null,
         selectedSource: null,
@@ -261,6 +274,16 @@ export function activate(): () => void {
           }
           await (await import("./console")).executeInView(e.view, e.ctx.path);
         },
+      },
+      {
+        id: "db.toggleInEditorResults",
+        title: "In-Editor Results",
+        description: "Show query results in the editor, under the statements that produced them",
+        category: "Tools",
+        icon: "db-in-editor-results",
+        keywords: ["inline", "results", "console", "grid"],
+        toggled: () => inEditorResults(),
+        run: () => setInEditorResults(!inEditorResults()),
       },
       {
         id: "db.executeScript",

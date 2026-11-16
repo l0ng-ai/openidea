@@ -20,7 +20,7 @@ import {
   type TransactionSpec,
 } from "@codemirror/state";
 import { historyField } from "@codemirror/commands";
-import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap, tooltips, type ViewUpdate } from "@codemirror/view";
 import {
   _addEditor,
   _removeEditor,
@@ -69,6 +69,11 @@ export class EditorSlot {
   view: EditorView | null = null;
   /** The view kept, detached from the document, while the tab is hidden. */
   private kept: EditorView | null = null;
+  /**
+   * The tab's tooltips (hints, hover, completion…). They live outside the view, in `document.body`,
+   * so they leave the page with the view when the tab is hidden instead of floating over the next tab.
+   */
+  private readonly tooltipLayer = typeof document === "undefined" ? null : document.createElement("div");
   /** The view's scroll offset, tracked so hiding it needn't read layout. */
   private scrollPos = { top: 0, left: 0 };
   handle: TextEditorHandle | null = null;
@@ -166,6 +171,8 @@ export class EditorSlot {
         }
       }),
       Prec.highest(keymap.of([{ key: "Escape", run: () => this.host.onEscape?.(this) ?? false }])),
+      // Ahead of the shared `document.body` parent (the tooltip space still comes from it).
+      this.tooltipLayer ? Prec.highest(tooltips({ parent: this.tooltipLayer })) : [],
       EditorView.domEventObservers({
         scroll: (_e, view) => {
           if (view === this.view) this.scrollPos = { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft };
@@ -200,6 +207,7 @@ export class EditorSlot {
 
   mount(parent: HTMLElement): EditorView {
     if (this.view) return this.view;
+    if (this.tooltipLayer && !this.tooltipLayer.isConnected) document.body.appendChild(this.tooltipLayer);
     const kept = this.kept;
     let view: EditorView;
     if (kept) {
@@ -243,6 +251,7 @@ export class EditorSlot {
     this.kept = view;
     if (!keep) return this.release();
     view.dom.remove();
+    this.tooltipLayer?.remove();
     keptSlots.push(this);
     if (keptSlots.length > KEPT_VIEWS) keptSlots.shift()!.release();
   }
@@ -258,6 +267,7 @@ export class EditorSlot {
     this.scroll = scrollSnapshotAt(view, this.scrollPos);
     this.stored = view.state;
     view.destroy();
+    this.tooltipLayer?.remove();
   }
 
   dispose() {

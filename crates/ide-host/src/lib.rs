@@ -190,6 +190,7 @@ impl Host {
             open_locks: Default::default(),
         };
         host.apply_proxy();
+        host.apply_added_jdks();
         ops::agent::move_user_mcp_values(&host);
         host
     }
@@ -562,5 +563,13 @@ mod tests {
         assert!(project.upgrade().is_none(), "the closed project is dropped");
         host.open_project("main", &root).unwrap();
         host.close_project("main");
+    }
+}
+
+impl Host {
+    /// Lists the JDKs added by hand (global Settings › SDKs) with the detected ones.
+    pub fn apply_added_jdks(&self) {
+        let homes = self.global_settings.effective().languages.java.added_jdks;
+        ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
     }
 }

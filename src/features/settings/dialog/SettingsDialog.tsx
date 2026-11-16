@@ -152,10 +152,11 @@ function PageHost({
   const spec = page ? builtinSpec(page.id) : undefined;
   const projectScope = !!(spec?.projectScope ?? page?.projectScope) && hasProject && !newProjects;
   const scopeKey = spec?.scopeGroup ?? pageId;
-  const chosen = useSettingsDialog((s) => s.scopes[scopeKey]) ?? spec?.defaultScope;
+  const defaultScope = spec?.defaultScope ?? page?.defaultScope;
+  const chosen = useSettingsDialog((s) => s.scopes[scopeKey]) ?? defaultScope;
   const scope: Scope = projectScope && chosen === "project" ? "project" : "global";
   // Where a project value is the norm, say what the global one is for.
-  const globalNote = newProjects || (projectScope && scope === "global" && spec?.defaultScope === "project");
+  const globalNote = newProjects || (projectScope && scope === "global" && defaultScope === "project");
   const ctx = useMemo(() => ({ pageId, scope }), [pageId, scope]);
   const form = useSettingsFormFor(pageId, scope);
   const focus = useSettingsDialog((s) => s.focus);

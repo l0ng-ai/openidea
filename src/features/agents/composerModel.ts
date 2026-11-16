@@ -317,6 +317,36 @@ export function mentionOf(rel: string, lines?: { from: number; to: number }): st
 export const isMentioned = (text: string, rel: string) =>
   new RegExp(`@${escapeRe(rel)}(?![\\w./-])|@${escapeRe(rel)}:`).test(text);
 
+/** The file in the focused editor and the lines selected in it, for IDE context. */
+export interface IdeContext {
+  path: string;
+  rel: string;
+  /** 1-based lines of a non-empty selection. */
+  lines?: { from: number; to: number };
+}
+
+/**
+ * `draft` with the editor's current file added (as an attachment), or its selection as a
+ * line-range mention after the text; unchanged when the draft already references the file.
+ */
+export function withIdeContext(draft: ComposerDraft, context: IdeContext | null): ComposerDraft {
+  if (
+    !context ||
+    isMentioned(draft.text, context.rel) ||
+    draft.files.some((f) => f.path === context.path && f.attached)
+  )
+    return draft;
+  if (!context.lines)
+    return { ...draft, files: [...draft.files, { path: context.path, rel: context.rel, attached: true }] };
+  const mention = mentionOf(context.rel, context.lines);
+  const text = draft.text.trim();
+  return {
+    ...draft,
+    text: text ? `${text}\n\n${mention}` : mention,
+    files: [...draft.files, { path: context.path, rel: context.rel }],
+  };
+}
+
 /** The prompt to send: attached files, files still mentioned in the text (each once), and the images. */
 export function toPrompt(draft: ComposerDraft): AgentPrompt {
   const seen = new Set<string>();

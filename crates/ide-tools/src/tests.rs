@@ -50,6 +50,24 @@ fn find<'a>(list: &'a [ToolInfo], name: &str) -> &'a ToolInfo {
 }
 
 #[test]
+fn unity_adapter_download_is_pinned_and_checksum_verified() {
+    let env = Env::new();
+    let tools = env.tools();
+    let spec = registry::find("unity-debug").unwrap();
+    let Method::Release { source, assets, locate } = spec.method else { panic!("expected release") };
+    // A fixed release resolves without a network request.
+    let curl = env.sys.join(if cfg!(windows) { "curl.exe" } else { "curl" });
+    fs::write(&curl, b"unused").unwrap();
+    archive::make_executable(&curl).unwrap();
+    let http = Http::new(env.sys.as_os_str()).unwrap();
+    let download = tools.resolve_release(&http, source, assets, &CancellationToken::new()).unwrap();
+    assert_eq!(download.version, "3.0.1");
+    assert!(download.url.starts_with("https://github.com/Unity-Technologies/vscode-unity-debug/releases/download/"));
+    assert_eq!(download.sha256.as_deref(), Some("4fa00660e0b52b0413726f80962e7d3d6efd41ac6cfd4df39520cae4a8ba5bd0"));
+    assert_eq!(locate, &["UnityDebug.exe"]);
+}
+
+#[test]
 fn bundled_lombok_replaces_legacy_installs_on_every_platform_without_downloads() {
     for os in [Os::Mac, Os::Linux, Os::Windows] {
         for arch in [platform::Arch::Arm64, platform::Arch::X64] {
@@ -877,9 +895,14 @@ esac
     }
 }
 
+/// Installs of one tool name share a process-wide slot: tests installing debugpy take turns.
+#[cfg(unix)]
+static DEBUGPY_INSTALL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 #[cfg(unix)]
 #[test]
 fn selected_python_is_used_for_pip_and_uv_even_with_a_versioned_filename() {
+    let _guard = DEBUGPY_INSTALL.lock();
     let env = Env::new();
     env.script(&env.sys, "python3", "exit 99");
     let sdk = env._tmp.path().join("python-sdk");
@@ -915,6 +938,51 @@ exit 1
     let _ = tools.install("ruff", &langs(), &CancellationToken::new(), &|_| {});
     let args = fs::read_to_string(log).unwrap();
     assert!(args.contains(&format!("--python {}", sdk.join("python3.14").display())), "{args}");
+}
+
+/// A virtualenv made by uv has no pip: debugpy's private copy is made with pip through uv.
+#[cfg(unix)]
+#[test]
+fn debugpy_installs_through_uv_when_the_selected_python_has_no_pip() {
+    let _guard = DEBUGPY_INSTALL.lock();
+    let env = Env::new();
+    let venv = env._tmp.path().join("project/.venv/bin");
+    env.script(&venv, "python", "echo \"$(basename \"$0\"): No module named pip\" >&2; exit 1");
+    let log = env._tmp.path().join("uv.log");
+    env.script(
+        &env.sys,
+        "uv",
+        &format!(
+            r#"
+echo "$@" >> '{log}'
+while [ $# -gt 0 ]; do
+    if [ "$1" = "--target" ]; then
+        /bin/mkdir -p "$2/debugpy" "$2/debugpy-1.8.0.dist-info"
+        /usr/bin/touch "$2/debugpy/__init__.py"
+        exit 0
+    fi
+    shift
+done
+exit 1
+"#,
+            log = log.display()
+        ),
+    );
+    let tools = env.tools().with_runtime(BTreeMap::from([("python".into(), venv.join("python"))]), BTreeMap::new());
+    let lines = Mutex::new(Vec::new());
+    let info = tools
+        .install("debugpy", &langs(), &CancellationToken::new(), &|e| {
+            if let InstallEvent::Line { text } = e {
+                lines.lock().push(text);
+            }
+        })
+        .unwrap();
+    assert_eq!(info.status, ToolStatus::Installed);
+    assert_eq!(info.version.as_deref(), Some("1.8.0"));
+    let args = fs::read_to_string(log).unwrap();
+    assert!(args.starts_with("tool run pip install "), "{args}");
+    assert!(args.contains("--platform any"), "{args}");
+    assert!(lines.lock().iter().any(|l| l.contains("has no pip")));
 }
 
 #[test]

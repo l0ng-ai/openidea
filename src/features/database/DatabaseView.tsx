@@ -6,7 +6,7 @@
  * source to open its query console.
  */
 import { useEffect, useMemo, useRef } from "react";
-import type { DbColor, DbDatabases, DbTableDetails } from "@/platform/ipc";
+import type { DbDatabases, DbTableDetails } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { shortcutLabel } from "@/platform/keymap";
 import {
@@ -54,15 +54,6 @@ import { newMenu, nodeMenu } from "./treeMenu";
 import styles from "./Database.module.css";
 import { tx } from "@/platform/i18n";
 import { databaseRequest } from "./requests";
-
-const ROW_TINTS: Record<DbColor, string | undefined> = {
-  red: styles.tintRed,
-  orange: styles.tintOrange,
-  yellow: styles.tintYellow,
-  green: styles.tintGreen,
-  blue: styles.tintBlue,
-  violet: styles.tintViolet,
-};
 
 const GROUP_LABELS: Record<Group, string> = {
   columns: "columns",
@@ -525,11 +516,11 @@ export function DatabaseView() {
           getIcon={(n) => icon(n)}
           getDetail={detail}
           getColor={(n) => (n.kind === "message" && n.error ? "var(--danger)" : undefined)}
-          rowClassName={(n) => {
+          rowTint={(n) => {
             // IDEA tints every row of a coloured data source across its full width and height.
             const target = nodeTarget(n);
             const color = target ? sourceOf(target)?.color : null;
-            return color ? `${styles.tintedRow} ${ROW_TINTS[color]}` : undefined;
+            return color ? `var(--db-color-${color})` : undefined;
           }}
           speedSearchField
           renderNode={(n: Node, state) => {

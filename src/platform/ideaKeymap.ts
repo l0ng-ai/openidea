@@ -4,8 +4,16 @@
  * parent; each listed action's shortcuts replace the parent's.
  */
 import { IDEA_ACTIONS } from "@/platform/ideaActions";
-import { defaultPreset, isValidBinding, normalizeBinding, type Keymap } from "@/platform/keymap";
-import { withBindings } from "./model";
+import type { CustomKeymap } from "@/bindings";
+import {
+  customKeymapId,
+  defaultPreset,
+  isValidBinding,
+  normalizeBinding,
+  PRESET_TITLES,
+  withBindings,
+  type Keymap,
+} from "@/platform/keymap";
 
 export interface ImportedIdeaKeymap {
   name: string;
@@ -67,13 +75,16 @@ const SWING_KEYS: Record<string, string> = {
 
 const SWING_MODS: Record<string, string> = { shift: "Shift", ctrl: "Ctrl", control: "Ctrl", alt: "Alt", meta: "Meta" };
 
-/** `"shift meta O"` / `"ctrl pressed OPEN_BRACKET"` → `"Meta+Shift+O"`, or null when not expressible. */
+/**
+ * `"shift meta O"` / `"ctrl pressed OPEN_BRACKET"` → `"Meta+Shift+O"`, or null when not expressible.
+ * Bundled keymaps name keys in upper case; the keymaps IDEA saves for the user are all lower case (`"ctrl right"`).
+ */
 export function fromSwingStroke(stroke: string): string | null {
   const words = stroke
     .trim()
     .split(/\s+/)
     .filter((w) => !/^(pressed|released|typed)$/i.test(w));
-  const key = words.pop();
+  const key = words.pop()?.toUpperCase();
   if (!key || words.some((w) => !SWING_MODS[w.toLowerCase()])) return null;
   const name = /^([A-Z0-9]|F\d{1,2})$/.test(key) ? key : SWING_KEYS[key];
   return name ? [...words.map((w) => SWING_MODS[w.toLowerCase()]), name].join("+") : null;
@@ -133,4 +144,17 @@ export function parseIdeaKeymap(xml: string): ImportedIdeaKeymap {
     unknownActions,
     skippedShortcuts,
   };
+}
+
+/**
+ * Adds a parsed keymap to the user keymaps under its own name, replacing an
+ * earlier import of the same name (a name a bundled keymap has gets a suffix).
+ */
+export function addIdeaKeymap(
+  customs: Record<string, CustomKeymap>,
+  parsed: ImportedIdeaKeymap,
+): { id: string; customs: Record<string, CustomKeymap> } {
+  const name = Object.values(PRESET_TITLES).includes(parsed.name) ? `${parsed.name} (JetBrains)` : parsed.name;
+  const id = Object.keys(customs).find((k) => customs[k]?.name === name) ?? customKeymapId(name, customs);
+  return { id, customs: { ...customs, [id]: { name, parent: parsed.parent, overrides: parsed.overrides } } };
 }

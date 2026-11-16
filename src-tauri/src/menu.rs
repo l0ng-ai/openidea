@@ -904,6 +904,17 @@ pub struct MenuRoute {
     pub arg: Option<String>,
 }
 
+/// Payload of [`MENU_EVENT`]: the route, and the window that was in front when the item was
+/// chosen if the action runs in another one (a Settings window's project window).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MenuEvent<'a> {
+    #[serde(flatten)]
+    pub route: &'a MenuRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_to: Option<&'a str>,
+}
+
 /// Maps a clicked item id to the action to run. `None` for ids that are not
 /// IDE items (native roles, placeholders).
 pub fn route(spec: &[Entry], id: &str) -> Option<MenuRoute> {

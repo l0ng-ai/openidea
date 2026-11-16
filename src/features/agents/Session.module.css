@@ -404,6 +404,13 @@
   .agentName {
     display: none;
   }
+  .processBody,
+  .turnBody {
+    padding-left: var(--space-2);
+  }
+  .processBody > .thoughtEntry ~ .toolEntry {
+    padding-left: var(--space-3);
+  }
 }
 .messageActions {
   display: inline-flex;
@@ -771,6 +778,10 @@
   margin-bottom: 0;
 }
 
+.thoughtEntry,
+.toolEntry {
+  min-width: 0;
+}
 .thought summary,
 .toolDetails > summary {
   cursor: pointer;
@@ -783,15 +794,18 @@
 .thought summary {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-1-5);
   min-width: 0;
   min-height: var(--h-row);
+  padding: 0 calc(var(--space-2) / 2);
+  border-radius: var(--radius-row);
   color: var(--fg-muted);
   font-size: var(--agent-fs-small, var(--fs-small));
   -webkit-user-select: none;
   user-select: none;
 }
 .thought summary:hover {
+  background: var(--bg-hover);
   color: var(--fg);
 }
 .thoughtChevron {
@@ -807,7 +821,9 @@
   transform: rotate(90deg);
 }
 .thoughtBody {
-  margin-top: var(--space-2);
+  margin: var(--space-1-5) 0 var(--space-1) 10px;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border);
   color: var(--fg-secondary);
 }
 .thoughtText {
@@ -821,7 +837,7 @@
 .tool {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
   min-width: 0;
   box-sizing: border-box;
   min-height: var(--h-row);
@@ -846,6 +862,10 @@
   text-overflow: ellipsis;
 }
 .toolChevron {
+  flex: none;
+}
+.toolChevronSpacer {
+  width: 12px;
   flex: none;
 }
 .toolDetails[open] > summary .toolChevron {
@@ -927,12 +947,15 @@
   gap: var(--space-0-5);
   max-height: calc(var(--h-row) * 16);
   overflow-y: auto;
-  margin-top: 2px;
-  padding-left: 10px;
+  margin: 2px 0 0 10px;
+  padding-left: var(--space-3);
   border-left: 1px solid var(--border);
 }
+.processBody > .thoughtEntry ~ .toolEntry {
+  padding-left: var(--space-4);
+}
 .output {
-  margin: 4px 0 0;
+  margin: 4px 0 4px 22px;
   max-height: 240px;
   overflow: auto;
   padding: 8px 10px;
@@ -1828,8 +1851,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  margin-top: 2px;
-  padding-left: 10px;
+  margin: 2px 0 0 10px;
+  padding-left: var(--space-3);
   border-left: 1px solid var(--border);
 }
 

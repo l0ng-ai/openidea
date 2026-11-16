@@ -232,6 +232,9 @@ pub fn set_settings(
     if key == "ssh" || key.starts_with("ssh.") {
         host.ssh.set_configs(host.global_settings.effective().ssh.configs);
     }
+    if key == "languages" || key == "languages.java" || key.starts_with("languages.java.addedJdks") {
+        host.apply_added_jdks();
+    }
     if is_proxy {
         host.apply_proxy();
     }

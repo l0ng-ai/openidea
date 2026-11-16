@@ -1091,6 +1091,8 @@ export interface SettingsPageContribution {
   component?: ComponentType;
   /** The page edits settings that a project can override (Global / This project switch). */
   projectScope?: boolean;
+  /** The scope the switch starts on (default: global). */
+  defaultScope?: "global" | "project";
 }
 
 /**

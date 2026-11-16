@@ -89,11 +89,13 @@ export function cellLspExtensions(ctx: EditorDocContext): Extension[] {
 }
 
 /**
- * A diff pane showing a file's open document: hover / quick docs and ⌘/Ctrl-click navigation,
- * so references can be followed while reviewing. Editing features stay with text editors.
+ * A diff pane showing a file's open document: hover / quick docs, ⌘/Ctrl-click
+ * navigation and semantic highlighting, so colours match the editor while
+ * reviewing. Editing features stay with text editors; panes without a document
+ * (revisions) get nothing from the semantic extension (`docOf` is null).
  */
 export function diffLspExtensions(ctx: EditorDocContext): Extension[] {
-  return [lspDoc.of(ctx), lspTheme, hintExtension(), hoverExtension(), navigationExtension()];
+  return [lspDoc.of(ctx), lspTheme, hintExtension(), hoverExtension(), navigationExtension(), semanticExtension()];
 }
 
 export function activate(): () => void {

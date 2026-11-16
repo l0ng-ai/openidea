@@ -19,6 +19,7 @@ mod jvm_memory;
 pub mod kotlin;
 pub mod kotlin_lsp;
 mod session;
+pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
@@ -1121,6 +1122,16 @@ impl DebugManager {
             let _ = tokio::time::timeout(INIT_TIMEOUT, initialized.wait_for(|v| *v)).await;
         }
 
+        if s.adapter == "unity" {
+            if launch_result.is_none()
+                && let Some(launch) = launch.as_mut()
+            {
+                launch.await?;
+                launch_result = Some(());
+            }
+            unity::wait_for_threads(s).await?;
+        }
+
         // A fresh adapter has no breakpoints, so a file with none enabled needs no request; the
         // others go out together, as VS Code sends them, instead of one round trip per file.
         let (files, idle): (Vec<_>, Vec<_>) = self
@@ -1202,6 +1213,10 @@ impl DebugManager {
         if let Some(link) = s.jdwp_link.lock().as_ref() {
             link.release();
         }
+        if s.adapter == "unity" {
+            unity::settle_startup(s).await;
+            s.emit(ide_core::event::DebugEvent::Initialized);
+        }
         Ok(())
     }
 
@@ -1229,11 +1244,18 @@ impl DebugManager {
         // rdbg's terminate exits the Ruby process without terminating its children.
         let graceful =
             terminate && s.request == "launch" && s.adapter != "rdbg" && s.supports("supportsTerminateRequest");
+        // A program suspended in the debugger cannot act on SIGTERM, and on macOS not even die of
+        // SIGKILL while the debugger holds it: it is killed (with what it started) and the adapter
+        // is told to end it. A killed program has no shutdown output to wait for.
+        let killed = own_terminate && !graceful && s.suspended.get();
+        if killed {
+            crate::session::signal_debuggee(s, true).await;
+        }
         if !s.conn.is_closed() {
             if graceful {
                 let _ = s.conn.request_timeout("terminate", json!({ "restart": false }), SHUTDOWN_TIMEOUT).await;
             }
-            if !graceful && !own_terminate {
+            if !graceful && (!own_terminate || killed) {
                 let _ = s
                     .conn
                     .request_timeout(
@@ -1244,7 +1266,7 @@ impl DebugManager {
                     .await;
             }
         }
-        if own_terminate && !graceful {
+        if own_terminate && !graceful && !killed {
             // Signal before anything else: waiting on a request the adapter may not answer
             // would delay the shutdown the console is supposed to show.
             crate::session::signal_debuggee(s, false).await;
@@ -1263,7 +1285,7 @@ impl DebugManager {
         // lets Run start again into an occupied port, so wait for the program first — with the
         // connection still open, so a second Stop can find the session and kill it.
         crate::session::wait_for_debuggee(s, terminate).await;
-        if terminate && s.request == "launch" {
+        if terminate && s.request == "launch" && !killed {
             // The adapter reports `terminated` only after it has drained the program's console
             // (java-debug waits up to 5 s for the pump): closing before that drops the last
             // shutdown lines from the console.

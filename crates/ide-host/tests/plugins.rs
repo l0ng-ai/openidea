@@ -6271,10 +6271,15 @@ fn api14_settings_and_input_events_use_other_and_capture_the_editor() {
     assert!(f.host.wait_events(Duration::from_secs(5)));
     let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
-    assert_eq!(events.len(), 3, "{received}");
+    assert_eq!(events.len(), 4, "{received}");
+    // The first synthetic post hands over the current keys ("enabled": false);
+    // the second is a real diff to true. Keys come from the recomputed
+    // snapshot, never from the event payload ("another-plugin-key").
     assert_eq!(events[0]["kind"], "settings-changed");
     assert_eq!(events[0]["data"], "[\"enabled\"]");
-    assert_eq!(events[2]["kind"], "input-mode-changed");
+    assert_eq!(events[1]["kind"], "settings-changed");
+    assert_eq!(events[1]["data"], "[\"enabled\"]");
+    assert_eq!(events[3]["kind"], "input-mode-changed");
     assert_eq!(events[2]["editor"][0], path);
     assert_eq!(events[2]["editor"][1][0], serde_json::json!([0, 0, 0, 0]));
 }
@@ -7015,4 +7020,23 @@ fn the_language_server_grant_needs_api_1_9() {
     std::fs::write(pkg.join("plugin.toml"), manifest.replace("\"^1.9\"", "\"^1.8\"")).unwrap();
     let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
     assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
+}
+
+/// The UI's synthetic post-install `SettingsChanged([])` reaches a plugin that
+/// subscribes to `on-event:settings-changed`, though it carries no keys.
+#[test]
+fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
+    let f = fixture(Limits::default());
+    f.install(&sample("api14"));
+    use ide_plugin::WorkbenchEvent as E;
+    // What refreshEventKinds() posts right after commandsChanged (install).
+    f.host.post_events(Some("main"), vec![E::SettingsChanged(Vec::new())]);
+    f.host.flush_events_at(Instant::now() + Duration::from_secs(2));
+    assert!(f.host.wait_events(Duration::from_secs(5)));
+    let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
+    let events = received.as_array().unwrap();
+    assert!(
+        events.iter().any(|e| e["kind"] == "settings-changed"),
+        "freshly installed plugin got no post-install event: {received}"
+    );
 }

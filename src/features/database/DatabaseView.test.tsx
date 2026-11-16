@@ -8,7 +8,6 @@ import { tablesKey, useDatabase } from "./store";
 import { tableInput } from "./tableInput";
 import { useEditorRegistry } from "@/editor/api";
 import { provideEditorService, provideToolWindowService, type EditorInput } from "@/workbench/contributions";
-import styles from "./Database.module.css";
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -195,9 +194,10 @@ describe("data source colour", () => {
     });
     render(<DatabaseView />);
     const tree = within(screen.getByRole("tree", { name: "Data sources" }));
-    for (const name of ["PostgreSQL", "public", "routines", "refresh_data"]) {
-      expect(tree.getByText(name).closest('[role="treeitem"]')).toHaveClass(styles.tintedRow!, styles.tintRed!);
-    }
-    expect(tree.getByText("SQLite").closest('[role="treeitem"]')).not.toHaveClass(styles.tintedRow!);
+    const tint = (name: string) =>
+      tree.getByText(name).closest<HTMLElement>('[role="treeitem"]')!.style.getPropertyValue("--row-tint");
+    for (const name of ["PostgreSQL", "public", "routines", "refresh_data"])
+      expect(tint(name)).toBe("var(--db-color-red)");
+    expect(tint("SQLite")).toBe("");
   });
 });

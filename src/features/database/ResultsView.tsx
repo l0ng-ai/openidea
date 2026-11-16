@@ -254,7 +254,8 @@ function setSubmittingResult(result: DbQueryResult, on: boolean) {
   notifyResults();
 }
 
-function Result({ tab }: { tab: ResultTab }) {
+/** A result set's toolbar, grid and pager; `onClose` makes it an in-editor result (closed in place, not pinned). */
+export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void }) {
   const [view, setView] = useState<"table" | "chart">("table");
   const [panel, setPanel] = useState<DataPanel | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -516,7 +517,7 @@ function Result({ tab }: { tab: ResultTab }) {
           disabled={busy}
           onClick={() => void rerunResult(tab.id)}
         />
-        <PinButton tab={tab} />
+        {!onClose && <PinButton tab={tab} />}
         {view === "table" && (
           <IconButton
             icon="search"
@@ -568,6 +569,7 @@ function Result({ tab }: { tab: ResultTab }) {
           onClick={(e) => showExport({ x: e.clientX, y: e.clientY })}
         />
         {view === "table" && <PanelToggle panel={panel} onChange={setPanel} />}
+        {onClose && <IconButton icon="close" title="Close" onClick={onClose} />}
       </Toolbar>
       {view === "chart" ? (
         <div className={styles.fill}>

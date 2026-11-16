@@ -71,6 +71,8 @@ pub struct Settings {
     pub scopes: Vec<NamedScope>,
     /// Appearance & Behavior › File Colors.
     pub file_colors: FileColorSettings,
+    /// Database › Query Execution, Languages & Frameworks › SQL Resolution Scopes.
+    pub database: DatabaseSettings,
     /// Plugin settings (`[contributes.settings]`): plugin id → its values by key.
     #[specta(type = BTreeMap<String, BTreeMap<String, specta_typescript::Unknown>>)]
     pub plugins: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
@@ -508,6 +510,7 @@ impl Default for Settings {
             agent_security: AgentSecuritySettings::default(),
             scopes: Vec::new(),
             file_colors: FileColorSettings::default(),
+            database: DatabaseSettings::default(),
             plugins: BTreeMap::new(),
         }
     }
@@ -1344,6 +1347,9 @@ pub struct JavaSettings {
     pub jdtls_vm_args: String,
     /// Share one JDT LS across builds in an ordinary project window; other windows remain separate.
     pub jdtls_shared: bool,
+    /// JDK homes added by hand (Platform Settings › SDKs › Add JDK from Disk…), listed with the
+    /// detected ones.
+    pub added_jdks: Vec<String>,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
     /// Build Tools › Gradle.

@@ -885,6 +885,8 @@ pub fn jdk_sdk(j: &crate::java::Jdk) -> Sdk {
         "JAVA_HOME"
     } else if crate::java::is_downloaded(&j.home) {
         "downloaded"
+    } else if crate::java::is_added(&j.home) {
+        "added"
     } else {
         version_managers::manager_of(&j.home).unwrap_or("system")
     };

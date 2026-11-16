@@ -730,3 +730,43 @@ export function installKeyboardDispatcher(
     target.removeEventListener("blur", onBlur);
   };
 }
+
+/** A keymap being edited: a bundled preset and the overrides on top of it. */
+export interface KeymapDraft {
+  preset: string;
+  overrides: Keymap;
+}
+
+/**
+ * The defaults of `id`: the preset's, or for an action the preset leaves out,
+ * the shortcut its plugin declares (`keymaps`). Removing or changing one is an
+ * override like any other.
+ */
+export function presetBindings(preset: string, id: string): string[] {
+  const own = PRESETS[preset];
+  const keys = own && id in own ? own[id] : useKeymap.getState().extensions?.[id];
+  return (keys ?? []).map(normalizeBinding);
+}
+
+const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** Sets the full binding list of `id`; drops the override when it equals the preset. */
+export function withBindings(draft: KeymapDraft, id: string, bindings: readonly string[]): Keymap {
+  const list = [...new Set(bindings.map(normalizeBinding))];
+  const overrides = { ...draft.overrides };
+  if (sameList(list, presetBindings(draft.preset, id))) delete overrides[id];
+  else overrides[id] = list;
+  return overrides;
+}
+
+/** A free id for a user keymap called `name`. */
+export function customKeymapId(name: string, customs: Record<string, unknown>): string {
+  const slug =
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "keymap";
+  let id = `custom.${slug}`;
+  for (let i = 2; customs[id] || PRESETS[id]; i++) id = `custom.${slug}-${i}`;
+  return id;
+}
