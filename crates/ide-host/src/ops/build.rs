@@ -650,28 +650,52 @@ fn structure_plan(
     kind: BuildKind,
     cache: &Path,
 ) -> IdeResult<Option<compile::BuildPlan>> {
-    let (roots, jdk) = structure_inputs(root, settings, detected);
-    compile::structure_plan(
-        root,
-        &settings.project_structure,
-        &roots,
-        jdk.as_ref(),
-        &settings.languages.java.language_level,
-        kind,
-        cache,
-    )
+    let (ps, roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_plan(root, &ps, &roots, jdk.as_ref(), &settings.languages.java.language_level, kind, cache)
 }
 
-/// The roots and JDK a build of a project without a build tool uses.
+/// The Project Structure, roots and JDK a build of a project without a build tool uses.
+/// An Eclipse project's `.classpath` libraries and its web content folder count as if they
+/// were configured, and a web project with no artifacts gets IDEA's `<name>:war exploded`.
 pub(crate) fn structure_inputs(
     root: &Path,
     settings: &Settings,
     detected: &[ide_workspace::roots::SourceFolder],
-) -> (compile::StructureRoots, Option<compile::StructureJdk>) {
-    use ide_workspace::roots::{ProjectRoots, RootKind};
-    let roots = ProjectRoots::compute(detected.to_vec(), &settings.project_structure);
+) -> (ide_core::settings::ProjectStructureSettings, compile::StructureRoots, Option<compile::StructureJdk>) {
+    use ide_core::settings::{ArtifactConfig, ArtifactKind, FacetConfig, ProjectLibrary};
+    use ide_workspace::roots::{ProjectRoots, RootKind, eclipse};
+    let mut ps = settings.project_structure.clone();
+    let mut included = Vec::new();
+    if let Some(cp) = eclipse::classpath(root).filter(|cp| !cp.libraries.is_empty()) {
+        let name = "Eclipse classpath".to_owned();
+        if !ps.libraries.iter().any(|l| l.name == name) {
+            ps.libraries.push(ProjectLibrary { name: name.clone(), classes: cp.libraries, ..Default::default() });
+        }
+        included.push(name);
+    }
+    if !ps.facets.iter().any(|f| f.kind == "web")
+        && let Some(web) = eclipse::web_root(root)
+    {
+        ps.facets.push(FacetConfig {
+            kind: "web".into(),
+            module: ".".into(),
+            descriptor: format!("{web}/WEB-INF/web.xml"),
+            web_root: web,
+        });
+        if ps.artifacts.is_empty() {
+            let name = root.file_name().map_or_else(|| "app".into(), |n| n.to_string_lossy().into_owned());
+            ps.artifacts.push(ArtifactConfig {
+                name: format!("{name}:war exploded"),
+                kind: ArtifactKind::WarExploded,
+                module: ".".into(),
+                include_libraries: included,
+                ..Default::default()
+            });
+        }
+    }
+    let roots = ProjectRoots::compute(detected.to_vec(), &ps);
     let of = |kind: RootKind| roots.roots.iter().filter(|r| r.kind == kind).map(|r| root.join(&r.path)).collect();
-    let module = settings.project_structure.module_settings(root, root);
+    let module = ps.module_settings(root, root);
     let level = module
         .map(|m| m.language_level.as_str())
         .filter(|l| !l.trim().is_empty())
@@ -690,7 +714,7 @@ pub(crate) fn structure_inputs(
         test_resources: of(RootKind::TestResources),
         excluded: of(RootKind::Excluded),
     };
-    (roots, jdk)
+    (ps, roots, jdk)
 }
 
 fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
