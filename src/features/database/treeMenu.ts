@@ -117,6 +117,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation(),
         sep,
         sqlScripts(n, false),
+        act("db.compareSchemas", n),
         sep,
         act("db.drop", n, { label: "Remove Data Source…" }),
       ];
@@ -142,6 +143,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation(),
         sep,
         sqlScripts(n, false),
+        ...(n.kind === "schema" ? [act("db.compareSchemas", n)] : []),
         ...(n.kind === "schema" ? [sep, drop] : []),
       ];
     case "table":
