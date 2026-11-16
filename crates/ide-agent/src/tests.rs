@@ -4238,3 +4238,17 @@ done
     );
     mgr.shutdown();
 }
+
+#[test]
+fn session_params_name_the_servers_switched_off() {
+    let overrides = BTreeMap::from([
+        ("github".to_owned(), false),
+        ("docs".to_owned(), true),
+        (mcp::BUILTIN_MCP_NAME.to_owned(), false),
+    ]);
+    let params = session_params("/p", &[json!({ "name": "docs" })], &overrides);
+    assert_eq!(params["cwd"], "/p");
+    assert_eq!(params["mcpServers"][0]["name"], "docs");
+    assert_eq!(params["_meta"]["openidea"]["mcpServersOff"], json!(["github"]));
+    assert!(session_params("/p", &[], &BTreeMap::new()).get("_meta").is_none());
+}
