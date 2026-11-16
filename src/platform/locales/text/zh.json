@@ -8711,5 +8711,20 @@
   "When off, Settings opens as a dialog in the project window, which is faster": "关闭时，设置以对话框形式在项目窗口中打开，速度更快",
   "Run code inside the Java applications you start": "在你启动的 Java 应用中运行代码",
   "Java agents of {list} were not added: they load only in local projects.": "未添加 {list} 的 Java 代理：Java 代理只加载到本地项目中。",
-  "Java agent": "Java 代理"
+  "Java agent": "Java 代理",
+  "1 Pull Request": "1 个拉取请求",
+  "{count} Pull Requests": "{count} 个拉取请求",
+  "Issues": "议题",
+  "1 Issue": "1 个议题",
+  "{count} Issues": "{count} 个议题",
+  "References": "引用",
+  "1 Reference": "1 个引用",
+  "{count} References": "{count} 个引用",
+  "1 Artifact": "1 个制品",
+  "{count} Artifacts": "{count} 个制品",
+  "Websites": "网站",
+  "Discussions": "讨论",
+  "Session references and artifacts": "会话引用与制品",
+  "Copy Link": "复制链接",
+  "Add to Message": "添加到消息"
 }
