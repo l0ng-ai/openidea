@@ -10,6 +10,7 @@ import { basename } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { toolWindowService } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { completionAlert, completionPrefs, raiseCompletionNotification, type CompletionInfo } from "./completion";
 import { readStored, writeStored, type StoredTerminals } from "./persist";
 import { TerminalSession, type SessionOptions, type SessionSnapshot } from "./session";
 
@@ -83,6 +84,34 @@ export function sessionForTerminalId(id: number): TerminalSession | undefined {
   return allSessions().find((s) => s.terminalId === id);
 }
 
+/**
+ * A shell-integration command finished in a tool-window tab (#3712): per
+ * Settings › Notifications › Terminal, a long-running (or failing) command
+ * whose tab cannot be seen notifies and marks its tab until it is seen.
+ */
+function notifyCompletion(key: string, info: CompletionInfo) {
+  const state = useTerminals.getState();
+  const tab = state.tabs.find((t) => t.session === key);
+  if (!tab) return;
+  let watched = document.hasFocus();
+  if (watched) {
+    try {
+      watched = toolWindowService().isVisible("terminal") && state.selected[tab.group] === tab.id;
+    } catch {
+      watched = false;
+    }
+  }
+  const alert = completionAlert(completionPrefs(), info, watched);
+  if (!alert) return;
+  sessions.get(key)?.markUnseenDone();
+  raiseCompletionNotification(key, tabTitle(tab, state.sessions), alert, () => {
+    selectTab(tab.id);
+    toolWindowService().show("terminal", true);
+    // The pane re-mounts once the tool window is shown; then give xterm the caret.
+    requestAnimationFrame(() => sessions.get(key)?.focus());
+  });
+}
+
 function createSession(cwd: string, command?: SessionOptions["command"], fallbackRoot?: string): TerminalSession {
   const key = `s${++seq}`;
   const session = new TerminalSession({
@@ -95,6 +124,7 @@ function createSession(cwd: string, command?: SessionOptions["command"], fallbac
       const tab = tabOfSession(k);
       if (tab) selectTab(tab.id);
     },
+    onCompletion: notifyCompletion,
     onExit: (k) => {
       const tab = tabOfSession(k);
       if (!tab || !workflowSettings().terminal.closeOnExit) return;

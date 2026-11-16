@@ -8544,5 +8544,11 @@
   "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "重新连接会重新打开项目。{count} 个文件中未保存的更改无法保存到 {host}，将会丢失。",
   "Reconnecting to {host}…": "正在重新连接到 {host}…",
   "Lost the connection to {host}. Click to reconnect.": "与 {host} 的连接已断开。点击重新连接。",
-  "{label} (disconnected)": "{label}（已断开）"
+  "{label} (disconnected)": "{label}（已断开）",
+  "Notify when a terminal command finishes": "终端命令结束时的通知",
+  "Long-running commands": "长时间运行的命令",
+  "All commands": "所有命令",
+  "Minimum run time of a long-running command": "长时间运行命令的最短运行时间",
+  "Exited with code {code}": "退出代码 {code}",
+  "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.": "仅当标签页不可见时通知。用 Ctrl-C 停止的命令、shell 启动和短命令保持安静；非零退出始终报告退出代码。"
 }

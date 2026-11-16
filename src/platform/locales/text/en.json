@@ -2156,5 +2156,12 @@
   "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.",
   "Reconnecting to {host}…": "Reconnecting to {host}…",
   "Lost the connection to {host}. Click to reconnect.": "Lost the connection to {host}. Click to reconnect.",
-  "{label} (disconnected)": "{label} (disconnected)"
+  "{label} (disconnected)": "{label} (disconnected)",
+  "Notify when a terminal command finishes": "Notify when a terminal command finishes",
+  "Long-running commands": "Long-running commands",
+  "All commands": "All commands",
+  "Minimum run time of a long-running command": "Minimum run time of a long-running command",
+  "Exited with code {code}": "Exited with code {code}",
+  "Finished": "Finished",
+  "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code.": "Only while the tab cannot be seen. A command stopped with Ctrl-C, shell startup and short commands stay quiet; a non-zero exit always reports its code."
 }

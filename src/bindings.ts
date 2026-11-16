@@ -8222,6 +8222,10 @@ export type NotificationSettings = {
 	sound?: boolean,
 	/**  Mirror balloon notifications to the OS when no OpenIDEA window is focused. */
 	systemNotifications?: boolean,
+	/**  Terminal command completions (#3712): `off` | `longRunning` | `all`. */
+	terminalCompletion?: string,
+	/**  `longRunning`: the run time a finished command must reach, in seconds. */
+	terminalThresholdSeconds?: number,
 	/**  Group id → display; groups not listed use their default. */
 	groups?: { [key in string]: NotificationGroupSettings },
 };
