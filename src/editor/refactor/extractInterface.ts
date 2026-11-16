@@ -136,9 +136,10 @@ export async function extractInterface(
     for (;;) {
       await whenSynced(view);
       const token: string | null = confirmation;
-      extracted = await cancellable(signal, (id) =>
-        lspRequest(() =>
-          commands.lspExtractInterface(id, request.doc, request.pos, [...members], name, pkg.json, token),
+      extracted = await cancellable(signal, (id, wanted) =>
+        lspRequest(
+          () => commands.lspExtractInterface(id, request.doc, request.pos, [...members], name, pkg.json, token),
+          wanted,
         ),
       );
       if (signal?.aborted) return { status: "stay" };
