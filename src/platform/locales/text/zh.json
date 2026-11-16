@@ -8414,5 +8414,10 @@
   "Re-reads the projects of build.sbt": "重新读取 build.sbt 中的项目",
   "Run sbt Task": "运行 sbt 任务",
   "sbt Task": "sbt 任务",
-  "Open build.sbt": "打开 build.sbt"
+  "Open build.sbt": "打开 build.sbt",
+  "Undefined step reference: {text}": "未定义的步骤引用：{text}",
+  "Create Step Definition": "创建步骤定义",
+  "Create step definition '{text}'": "创建步骤定义“{text}”",
+  "Reports steps of a .feature file that no step definition of the project's JavaScript or TypeScript files matches (Cucumber expressions and regular expressions). Projects without step definitions in those files are not checked. Alt+Enter creates the definition.": "报告 .feature 文件中没有任何步骤定义匹配的步骤（按项目 JavaScript 或 TypeScript 文件中的 Cucumber 表达式和正则表达式匹配）。这些文件里没有步骤定义的项目不做检查。按 Alt+Enter 可创建定义。",
+  "Undefined step": "未定义的步骤"
 }

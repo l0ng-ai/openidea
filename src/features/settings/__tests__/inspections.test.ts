@@ -105,6 +105,7 @@ describe("inspections tree", () => {
     expect(tree.map((g) => g.name)).toEqual([
       "Cargo",
       "General",
+      "Gherkin",
       "Java",
       "JavaScript",
       "Other",

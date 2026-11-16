@@ -2027,5 +2027,10 @@
   "Re-reads the projects of build.sbt": "Re-reads the projects of build.sbt",
   "Run sbt Task": "Run sbt Task",
   "sbt Task": "sbt Task",
-  "Open build.sbt": "Open build.sbt"
+  "Open build.sbt": "Open build.sbt",
+  "Undefined step reference: {text}": "Undefined step reference: {text}",
+  "Create Step Definition": "Create Step Definition",
+  "Create step definition '{text}'": "Create step definition '{text}'",
+  "Reports steps of a .feature file that no step definition of the project's JavaScript or TypeScript files matches (Cucumber expressions and regular expressions). Projects without step definitions in those files are not checked. Alt+Enter creates the definition.": "Reports steps of a .feature file that no step definition of the project's JavaScript or TypeScript files matches (Cucumber expressions and regular expressions). Projects without step definitions in those files are not checked. Alt+Enter creates the definition.",
+  "Undefined step": "Undefined step"
 }

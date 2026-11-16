@@ -82,3 +82,21 @@ export async function usagesOf(definition: StepDefinition): Promise<Array<Locati
       .map((s) => location(file.path, file.text, s.from, s.to, `${s.keyword} ${s.text}`)),
   );
 }
+
+/** The steps no definition matches; null when the project defines no steps in its scripts. */
+export async function undefinedSteps(steps: readonly FeatureStep[]): Promise<FeatureStep[] | null> {
+  const { definitions } = await stepIndex();
+  if (!definitions.length) return null;
+  return steps.filter((step) => !definitions.some((file) => file.items.some((d) => matchesStep(d, step))));
+}
+
+/** The file a new definition for a step of `featurePath` goes to: the step file named like the feature, else the one with the most definitions. */
+export async function definitionFileFor(featurePath: string): Promise<string | null> {
+  const { definitions } = await stepIndex();
+  const stem = (path: string) => (path.split("/").pop() ?? "").split(".")[0]!.toLowerCase();
+  const feature = stem(featurePath);
+  const named = definitions.find((file) => stem(file.path) === feature);
+  if (named) return named.path;
+  const most = [...definitions].sort((a, b) => b.items.length - a.items.length)[0];
+  return most?.path ?? null;
+}
