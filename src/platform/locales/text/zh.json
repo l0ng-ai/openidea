@@ -8678,5 +8678,6 @@
   "Choose Directory Archive…": "选择目录归档…",
   "This is a MySQL dump: restore it into a MySQL data source.": "这是 MySQL 转储：请恢复到 MySQL 数据源。",
   "This is a pg_dump archive: restore it with pg_restore.": "这是 pg_dump 归档：请使用 pg_restore 恢复。",
-  "This is a plain SQL dump: restore it with psql.": "这是纯 SQL 转储：请使用 psql 恢复。"
+  "This is a plain SQL dump: restore it with psql.": "这是纯 SQL 转储：请使用 psql 恢复。",
+  "Open the commit when the inline blame is clicked": "点击内联 Git Blame 时打开提交"
 }

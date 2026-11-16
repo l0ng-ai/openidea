@@ -9,6 +9,14 @@ describe("validateWorkflow", () => {
     expect(validateWorkflow({ vcs: { git: { inlineBlame: "true" } } }).vcs.git.inlineBlame).toBe(false);
   });
 
+  it("keeps the inline blame label clickable unless switched off", () => {
+    const clickable = (inlineBlameClickable: unknown) =>
+      validateWorkflow({ vcs: { git: { inlineBlameClickable } } }).vcs.git.inlineBlameClickable;
+    expect(DEFAULT_WORKFLOW.vcs.git.inlineBlameClickable).toBe(true);
+    expect(clickable(false)).toBe(false);
+    expect(clickable("no")).toBe(true);
+  });
+
   it("keeps the double-click choice unset until it is made", () => {
     expect(DEFAULT_WORKFLOW.vcs.commit.doubleClickOpensDiff).toBeNull();
     expect(validateWorkflow(undefined).vcs.commit.doubleClickOpensDiff).toBeNull();

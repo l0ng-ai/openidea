@@ -6025,6 +6025,11 @@ export type GitOperation =
 export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
+	/**
+	 *  A click (or Enter / Space) on the inline blame label opens its commit; off, the
+	 *  label is plain text and a click on it places the caret as past the line end.
+	 */
+	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,

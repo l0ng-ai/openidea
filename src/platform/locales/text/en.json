@@ -2293,5 +2293,6 @@
   "Choose Directory Archive…": "Choose Directory Archive…",
   "This is a MySQL dump: restore it into a MySQL data source.": "This is a MySQL dump: restore it into a MySQL data source.",
   "This is a pg_dump archive: restore it with pg_restore.": "This is a pg_dump archive: restore it with pg_restore.",
-  "This is a plain SQL dump: restore it with psql.": "This is a plain SQL dump: restore it with psql."
+  "This is a plain SQL dump: restore it with psql.": "This is a plain SQL dump: restore it with psql.",
+  "Open the commit when the inline blame is clicked": "Open the commit when the inline blame is clicked"
 }
