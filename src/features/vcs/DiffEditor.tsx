@@ -249,6 +249,18 @@ function isStrokeOf(e: KeyboardEvent, actionId: string): boolean {
   return !!stroke && bindingsFor(actionId).some((b) => normalizeBinding(b) === stroke);
 }
 
+/**
+ * The typed text of editable text sides (by the request's side), per diff request: it outlives
+ * rebuilt views and the editor unmounting while its tab is hidden.
+ */
+const typedSides = new WeakMap<DiffData, { left?: Text; right?: Text }>();
+
+function typedSidesOf(data: DiffData): { left?: Text; right?: Text } {
+  let typed = typedSides.get(data);
+  if (!typed) typedSides.set(data, (typed = {}));
+  return typed;
+}
+
 export function DiffEditor({
   input,
   toolbarActions,
@@ -284,10 +296,8 @@ export function DiffEditor({
     [input_, swapped],
   );
   const { path, left, right } = data;
-  /** The typed text of editable text sides (by the request's side), kept across rebuilt views. */
-  const edited = useRef<{ of: DiffData; left?: Text; right?: Text }>({ of: input_ });
-  if (edited.current.of !== input_) edited.current = { of: input_ };
-  const editedText = (s: Side) => edited.current[originOf(s, swapped)]?.toString();
+  const edited = typedSidesOf(input_);
+  const editedText = (s: Side) => edited[originOf(s, swapped)]?.toString();
   const [attached, setAttached] = useState<Attached | null>(null);
   const [binary, setBinary] = useState<boolean | null>(null);
   /** Text of the sides that are not live documents. */
@@ -464,7 +474,7 @@ export function DiffEditor({
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !attached || !statics || lang === null) return;
-    const typed = (s: Side) => edited.current[originOf(s, swapped)]?.toString();
+    const typed = (s: Side) => edited[originOf(s, swapped)]?.toString();
     const textA = typed("a") ?? attached.a?.text() ?? statics.a ?? "";
     const textB = typed("b") ?? attached.b?.text() ?? statics.b ?? "";
     const prev = viewsRef.current;
@@ -483,7 +493,7 @@ export function DiffEditor({
     const keepEdits = (s: Side) =>
       isEditableText(s === "a" ? left : right)
         ? EditorView.updateListener.of((u) => {
-            if (u.docChanged) edited.current[originOf(s, swapped)] = u.state.doc;
+            if (u.docChanged) edited[originOf(s, swapped)] = u.state.doc;
           })
         : [];
     const focusTracker = (side: "a" | "b") =>
