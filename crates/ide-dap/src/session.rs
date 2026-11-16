@@ -752,6 +752,9 @@ async fn on_event(mgr: &Arc<DebugManager>, s: &Arc<Session>, event: &str, mut bo
         }
         "stopped" => {
             let all = body.get("allThreadsStopped").and_then(Value::as_bool).unwrap_or(false);
+            if crate::stream_trace::resume_traced_stop(s, int("threadId"), all) {
+                return;
+            }
             s.suspended.stopped(int("threadId"), all);
             let mut reason = str_("reason").unwrap_or_else(|| "pause".into());
             if let Some(quirks) = s.kotlin_lsp_quirks() {

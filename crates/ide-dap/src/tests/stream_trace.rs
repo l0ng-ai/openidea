@@ -173,8 +173,9 @@ async fn trace_runs_continue_then_step_out() {
 
     let run = trace(&h, id).await.unwrap();
 
-    let TraceRun::Done { collected: got, generation } = run else { panic!("not done: {run:?}") };
+    let TraceRun::Done { collected: got, generation, resumed_stops } = run else { panic!("not done: {run:?}") };
     assert_eq!(got, collected());
+    assert_eq!(resumed_stops, 0);
     assert!(generation > start, "collected in the stop of the trace ({start}), not after it ({generation})");
     let commands = h.commands();
     let resumed = commands.iter().position(|c| c == "continue").expect("no continue");
@@ -387,6 +388,37 @@ async fn a_failed_collect_releases_the_trace() {
 
     assert!(matches!(trace(&h, id).await.unwrap(), TraceRun::Failed { .. }));
     assert_eq!(tracer.names(), ["arm", "wait", "collect", "release"]);
+}
+
+fn stops(h: &Harness) -> usize {
+    h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Stopped { .. }, .. })).count()
+}
+
+#[tokio::test]
+async fn a_stop_of_the_traced_thread_while_the_chain_runs_is_resumed_unseen() {
+    // A breakpoint java-debug set meanwhile, hit inside the terminal's invoke before the bundle
+    // switched it off: held there, the invoke would never return.
+    let h = harness(Script { breakpoints_after_continue: 1, ..java_debug() });
+    let tracer = FakeTracer::scripted([]);
+    let id = stopped_java(&h, &tracer).await;
+    let shown = stops(&h);
+    let task = hanging_trace(&h, id, &tracer).await;
+
+    for _ in 0..200 {
+        if h.commands().iter().filter(|c| *c == "continue").count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(h.commands().iter().filter(|c| *c == "continue").count(), 2, "{:?}", h.commands());
+    assert_eq!(h.log.lock().iter().filter(|m| m["command"] == "continue").last().unwrap()["arguments"]["threadId"], 1);
+    tracer.waits.lock().push_back(Ok(parked()));
+    tracer.more.notify_one();
+    let run = tokio::time::timeout(Duration::from_secs(5), task).await.unwrap().unwrap().unwrap();
+
+    let TraceRun::Done { resumed_stops, .. } = run else { panic!("not done: {run:?}") };
+    assert_eq!(resumed_stops, 1);
+    assert_eq!(stops(&h), shown + 1, "only the step-out stop is shown, after the trace parked");
 }
 
 #[tokio::test]

@@ -2189,6 +2189,8 @@
   "The parallel chain ran sequentially so it could be traced": "The parallel chain ran sequentially so it could be traced",
   "{count} breakpoint was off while the chain ran": "{count} breakpoint was off while the chain ran",
   "{count} breakpoints were off while the chain ran": "{count} breakpoints were off while the chain ran",
+  "{count} breakpoint hit while the chain ran was resumed": "{count} breakpoint hit while the chain ran was resumed",
+  "{count} breakpoint hits while the chain ran were resumed": "{count} breakpoint hits while the chain ran were resumed",
   "The chain threw {exception}": "The chain threw {exception}",
   "The program is not stopped": "The program is not stopped",
   "Another stream trace is running": "Another stream trace is running",

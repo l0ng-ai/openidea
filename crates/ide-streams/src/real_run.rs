@@ -149,6 +149,10 @@ pub enum TraceBanner {
     BreakpointsSkipped {
         count: u32,
     },
+    /// Breakpoint stops of the chain's thread while it ran, resumed without being shown.
+    BreakpointsResumed {
+        count: u32,
+    },
     Threw,
 }
 

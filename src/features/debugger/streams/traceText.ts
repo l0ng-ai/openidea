@@ -42,6 +42,12 @@ export function bannerText(banner: TraceBanner, result: Ready, tx: Tx = catalogT
         ? tx`${count} breakpoint was off while the chain ran`
         : tx`${count} breakpoints were off while the chain ran`;
     }
+    case "breakpointsResumed": {
+      const count = formatCount(banner.count);
+      return banner.count === 1
+        ? tx`${count} breakpoint hit while the chain ran was resumed`
+        : tx`${count} breakpoint hits while the chain ran were resumed`;
+    }
     case "threw": {
       const exception = result.terminal.kind === "threw" ? formatJvmValue(result.terminal.exception) : "";
       return tx`The chain threw ${exception}`;

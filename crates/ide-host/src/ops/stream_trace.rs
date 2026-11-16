@@ -181,9 +181,9 @@ async fn trace(
     };
     let run = host.debugger.stream_trace(session, thread_id, plan_json, cancel.clone(), progress).await?;
     Ok(match run {
-        TraceRun::Done { collected, generation } => {
+        TraceRun::Done { collected, generation, resumed_stops } => {
             let info = candidate.info;
-            host.blocking(move || Ok(ready(info, &chain, &plan, collected, generation))).await?
+            host.blocking(move || Ok(ready(info, &chain, &plan, collected, generation, resumed_stops))).await?
         }
         TraceRun::Unavailable { reason } => StreamTraceResult::Unavailable { reason },
         TraceRun::Failed { detail } => StreamTraceResult::Failed { detail },
@@ -362,6 +362,7 @@ fn ready(
     plan: &RealRunPlan,
     collected: TraceCollected,
     generation: u64,
+    resumed_stops: u32,
 ) -> StreamTraceResult {
     let recording = TraceRecording {
         records: collected.records.iter().map(|(step, v)| Record { step: *step, value: trace_value(v) }).collect(),
@@ -372,7 +373,10 @@ fn ready(
             CollectedTerminal::Threw(e) => TerminalOutcome::Threw { exception: trace_value(e) },
         },
     };
-    let linked = link_trace(plan, &recording, collected.skipped_breakpoints);
+    let mut linked = link_trace(plan, &recording, collected.skipped_breakpoints);
+    if resumed_stops > 0 {
+        linked.banners.push(TraceBanner::BreakpointsResumed { count: resumed_stops });
+    }
     StreamTraceResult::Ready {
         chain: Box::new(chain_info),
         steps: recorded_steps(chain),

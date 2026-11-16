@@ -208,7 +208,7 @@ fn ready_links_the_collected_records() {
         collected.records.iter().map(|(step, value)| TraceRecordView { step: *step, value: value.clone() }).collect();
 
     let StreamTraceResult::Ready { chain: shown, steps, records, links, terminal, banners, generation } =
-        ready(info.clone(), &chain, &plan, collected, 9)
+        ready(info.clone(), &chain, &plan, collected, 9, 0)
     else {
         panic!("not ready");
     };
@@ -231,6 +231,28 @@ fn ready_links_the_collected_records() {
     );
     assert_eq!(banners, [TraceBanner::Truncated { dropped: 3 }, TraceBanner::BreakpointsSkipped { count: 2 }]);
     assert_eq!(generation, 9);
+}
+
+#[test]
+fn ready_says_how_many_stops_were_resumed() {
+    let java = LanguageId::new("java");
+    let snap = Snapshot::text(&java, SOURCE);
+    let found = chains_at(service(), &snap, &frame(line_of("C_SPIKE")), true, true, &CancellationToken::new()).unwrap();
+    let Candidate { info, chain } = found.into_iter().next().unwrap();
+    let chain = chain.unwrap();
+    let plan = real_run_plan(&chain).unwrap();
+
+    let StreamTraceResult::Ready { banners, .. } = ready(info, &chain, &plan, spike_collected(), 9, 3) else {
+        panic!("not ready");
+    };
+    assert_eq!(
+        banners,
+        [
+            TraceBanner::Truncated { dropped: 3 },
+            TraceBanner::BreakpointsSkipped { count: 2 },
+            TraceBanner::BreakpointsResumed { count: 3 }
+        ]
+    );
 }
 
 const WINDOW: &str = "main";

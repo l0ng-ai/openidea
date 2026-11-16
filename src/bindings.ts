@@ -11160,7 +11160,9 @@ export type ToolUpdate = {
 /**  Something the user must know to read the trace correctly. */
 export type TraceBanner = { kind: "truncated"; dropped: number } | 
 /**  `count()` on a sized source skips the pipeline, so nothing was recorded. */
-{ kind: "countFromSize" } | { kind: "sortedPassThrough"; step: number } | { kind: "sequentialized" } | { kind: "breakpointsSkipped"; count: number } | { kind: "threw" };
+{ kind: "countFromSize" } | { kind: "sortedPassThrough"; step: number } | { kind: "sequentialized" } | { kind: "breakpointsSkipped"; count: number } | 
+/**  Breakpoint stops of the chain's thread while it ran, resumed without being shown. */
+{ kind: "breakpointsResumed"; count: number } | { kind: "threw" };
 
 export type TracePhase = "arming" | "running" | 
 /**  The terminal operation runs on, keeping no more records. */

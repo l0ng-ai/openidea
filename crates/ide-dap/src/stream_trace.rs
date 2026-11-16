@@ -23,6 +23,7 @@ const BUDGET: u32 = 50_000;
 const WAIT_MS: u32 = 500;
 const STOP_POLL: Duration = Duration::from_millis(20);
 const STOP_WAIT: Duration = Duration::from_secs(30);
+const RESUME_TIMEOUT: Duration = Duration::from_secs(30);
 /// The bundle reaches the JVM through java-debug's own session.
 const ADAPTER: &str = "java-debug";
 
@@ -54,6 +55,8 @@ pub enum TraceRun {
     Done {
         collected: TraceCollected,
         generation: u64,
+        /// Stops of the traced thread while the program ran the chain, resumed unseen.
+        resumed_stops: u32,
     },
     Unavailable {
         reason: TraceUnavailable,
@@ -87,6 +90,39 @@ pub(crate) struct ActiveTrace {
     target: VmTarget,
     id: Option<TraceId>,
     aborting: bool,
+    thread_id: i64,
+    /// From the `continue` that runs the chain until the bundle holds the thread after it.
+    running: bool,
+    resumed_stops: u32,
+}
+
+/// A stop of the traced thread while the program runs the chain is resumed instead of shown, as
+/// IntelliJ does (spec G5): the UI keeps Resume locked meanwhile, and a breakpoint java-debug set
+/// since the bundle last switched them off, hit inside the terminal's invoke, would hold that
+/// invoke forever. java-debug stops a breakpoint's thread alone; a stop of every thread is shown.
+/// `true` when the stop was taken.
+pub(crate) fn resume_traced_stop(s: &Arc<Session>, thread_id: Option<i64>, all: bool) -> bool {
+    let Some(thread_id) = thread_id.filter(|_| !all) else { return false };
+    {
+        let mut slot = s.stream_trace.lock();
+        let Some(active) = slot.as_mut().filter(|a| a.running && a.thread_id == thread_id) else { return false };
+        active.resumed_stops += 1;
+    }
+    let s = s.clone();
+    tokio::spawn(async move {
+        let sent =
+            s.conn.request_timeout("continue", serde_json::json!({ "threadId": thread_id }), RESUME_TIMEOUT).await;
+        if let Err(e) = sent {
+            tracing::warn!(session = s.id.0, thread_id, "resuming a stop inside a stream trace: {e}");
+        }
+    });
+    true
+}
+
+fn set_running(s: &Session, running: bool) {
+    if let Some(active) = s.stream_trace.lock().as_mut() {
+        active.running = running;
+    }
 }
 
 /// Frees the session for the next trace however this one ends, a dropped future included.
@@ -127,7 +163,15 @@ pub(crate) async fn run(
         if slot.is_some() {
             return unavailable(TraceUnavailable::Busy);
         }
-        *slot = Some(ActiveTrace { tracer: tracer.clone(), target: target.clone(), id: None, aborting: false });
+        *slot = Some(ActiveTrace {
+            tracer: tracer.clone(),
+            target: target.clone(),
+            id: None,
+            aborting: false,
+            thread_id,
+            running: false,
+            resumed_stops: 0,
+        });
         Claim(s)
     };
     if !s.suspended.get() {
@@ -138,6 +182,8 @@ pub(crate) async fn run(
     match trace.drive(plan, cancel).await {
         Ok(run) => run,
         Err(run) => {
+            // A stop from now on is the user's to see.
+            set_running(s, false);
             trace.release().await;
             run
         }
@@ -199,6 +245,8 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
         if let Some(active) = s.stream_trace.lock().as_mut() {
             active.id = Some(id);
         }
+        // Before the request: the thread can stop again before its reply arrives.
+        set_running(s, true);
         self.dap(self.mgr.resume(s.id, self.thread_id)).await?;
         let mut stopped = false;
         loop {
@@ -226,6 +274,7 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
                     });
                 }
                 TraceState::Parked { records, dropped } => {
+                    set_running(s, false);
                     self.last.records = records;
                     self.last.dropped = dropped;
                     break;
@@ -252,7 +301,8 @@ impl<P: Fn(TraceProgress) + Send + Sync> Trace<'_, P> {
         };
         let stopped_in = VmTarget { generation, ..vm_target(s) };
         let collected = self.inspect(tracer.collect(&stopped_in, id, self.last.records)).await?;
-        Ok(TraceRun::Done { collected, generation })
+        let resumed_stops = s.stream_trace.lock().as_ref().map_or(0, |a| a.resumed_stops);
+        Ok(TraceRun::Done { collected, generation, resumed_stops })
     }
 
     /// After a trace that ended early. Left to the bundle, an armed trace would keep every

@@ -246,6 +246,8 @@ describe("StreamTraceEditor", () => {
     [{ kind: "sequentialized" }, "The parallel chain ran sequentially so it could be traced"],
     [{ kind: "breakpointsSkipped", count: 1 }, "1 breakpoint was off while the chain ran"],
     [{ kind: "breakpointsSkipped", count: 2 }, "2 breakpoints were off while the chain ran"],
+    [{ kind: "breakpointsResumed", count: 1 }, "1 breakpoint hit while the chain ran was resumed"],
+    [{ kind: "breakpointsResumed", count: 4 }, "4 breakpoint hits while the chain ran were resumed"],
   ])("banner %j", (banner, text) => {
     ready(chainA({ banners: [banner] }));
     show();
