@@ -488,6 +488,7 @@ const ICONS = {
   "mute-breakpoint": "run/muteBreakpoints",
   "view-breakpoints": "run/viewBreakpoints",
   "heap-snapshot": "actions/profileMemory",
+  "stream-trace": "openidea/general/streamTrace",
   // Build tools (Maven / Gradle tool windows)
   "maven-project": "maven/mavenProject",
   "maven-module": "maven/mavenModule",

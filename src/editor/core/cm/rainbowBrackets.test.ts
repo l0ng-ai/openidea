@@ -200,6 +200,23 @@ describe("rainbow brackets", () => {
     ).toEqual(["[2", "]2", "}!"]);
   });
 
+  it("knows the innermost open bracket at given positions, also far into the document", async () => {
+    const body = "x(y)\n".repeat(5000);
+    const doc = `{\n${body}f([\n"(", g(\n`;
+    const state = EditorState.create({ doc, extensions: cStyle });
+    const scanner = new BracketScanner();
+    const at = (...positions: number[]) =>
+      scanner.openAt(state, positions).map((m) => m && `${doc[m.from]}${m.depth}@${m.from}`);
+    const f = doc.indexOf("f([");
+    const g = doc.indexOf("g(");
+    expect(at(0, 1, f, f + 3, doc.length)).toEqual([null, "{0@0", "{0@0", `[2@${f + 2}`, `(3@${g + 1}`]);
+    // The string's bracket is skipped; asking again (from checkpoints) gives the same answer.
+    expect(at(g)).toEqual([`[2@${f + 2}`]);
+    // With a syntax tree, a bracket in a template literal is skipped too.
+    const js = completedSyntaxState(EditorState.create({ doc: "f(`(`, [\n", extensions: await javascript() }));
+    expect(new BracketScanner().openAt(js, [js.doc.length]).map((m) => m?.depth)).toEqual([1]);
+  });
+
   it("is installed by the Rainbow brackets setting", () => {
     const render = (rainbowBrackets: boolean) => {
       const view = new EditorView({

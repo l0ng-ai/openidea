@@ -26,6 +26,7 @@ pub(crate) mod jvm_inspect;
 mod move_refactoring;
 pub(crate) mod reserved_names;
 mod signature;
+pub(crate) mod stream_trace;
 pub use formatter::configure_formatter;
 /// First start imports the Maven / Gradle model, which can take minutes.
 const READY_TIMEOUT: Duration = Duration::from_secs(240);
