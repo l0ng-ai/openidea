@@ -8680,5 +8680,11 @@
   "This is a plain SQL dump: restore it with psql.": "这是纯 SQL 转储：请使用 psql 恢复。",
   "Open the commit when the inline blame is clicked": "点击内联 Git Blame 时打开提交",
   "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.": "在后台获取每个仓库的远程，以便传入的提交显示在“分支”弹出窗口和项目视图中。“自动”在某个仓库检查失败（例如身份验证失败）后停止检查该仓库。",
-  "Check for incoming commits every": "检查传入提交的间隔"
+  "Check for incoming commits every": "检查传入提交的间隔",
+  "Show Code Vision": "显示 Code Vision",
+  "Hide Usages": "隐藏用法",
+  "Hide Code Author": "隐藏代码作者",
+  "Hide Code Vision": "隐藏 Code Vision",
+  "Code Vision Settings…": "Code Vision 设置…",
+  "Code Vision": "Code Vision"
 }

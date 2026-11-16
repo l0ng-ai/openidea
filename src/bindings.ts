@@ -6729,6 +6729,8 @@ export type InlayHintsSettings = {
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
 	disabledLanguages?: string[],
+	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
+	codeVision?: boolean,
 	/**  Code vision: usages above declarations. */
 	codeVisionUsages?: boolean,
 	/**  Code vision: last author of a declaration (VCS blame) beside its usages. */

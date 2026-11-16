@@ -2,10 +2,13 @@
  * Renders `codeLenses` (editor/api) as one small hint row above the target
  * line, indented like the line (IDEA "3 usages   Run test" inlays), and those
  * whose kind is set to "right" (`codeLensPositions`) after the end of that line.
+ * Right-click offers to hide the hint's kind or all of Code Vision.
  */
 import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { codeLenses, type CodeLens } from "@/editor/api";
+import { showContextMenu } from "@/ui";
+import { codeVisionMenuItems } from "../codeVision";
 import { LINE_INSET } from "./lineInset";
 
 /**
@@ -98,7 +101,7 @@ class LensWidget extends WidgetType {
 
   override toDOM(view: EditorView): HTMLElement {
     // The inline one shares no class with the row, so none of the row's block styles reach into the line.
-    const dom = document.createElement(this.inline ? "span" : "div");
+    const dom: HTMLElement = document.createElement(this.inline ? "span" : "div");
     dom.className = this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens";
     // The line-end hint draws from a zero-width anchor in an absolutely positioned inner box: an
     // in-flow box would wrap to the next line when the line is soft-wrapped and there is no room.
@@ -108,6 +111,12 @@ class LensWidget extends WidgetType {
       dom.appendChild(host);
     }
     this.fill(host, view);
+    dom.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const item = (e.target as Element | null)?.closest?.<HTMLElement>(".cm-openidea-lensItem");
+      showContextMenu(e, codeVisionMenuItems(item?.dataset.kind));
+    });
     return dom;
   }
 
@@ -131,6 +140,7 @@ class LensWidget extends WidgetType {
       const el = document.createElement(lens.run ? "button" : "span");
       el.className = lens.run ? "cm-openidea-lensItem cm-openidea-lensAction" : "cm-openidea-lensItem";
       if (lens.tooltip) el.title = lens.tooltip;
+      if (lens.kind) el.dataset.kind = lens.kind;
       if (lens.icon && ICONS[lens.icon]) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         svg.setAttribute("viewBox", "0 0 16 16");
