@@ -170,3 +170,61 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
     db.execute("p", "DROP SCHEMA oi_meta CASCADE", 10, &c).await?;
     Ok(())
 }
+
+/// Opening a table pairs the columns of composite keys in order, also when a foreign key lists
+/// them in another order than the key it references; its data page and DDL read the same catalog,
+/// and completion tells identity columns apart in one query (#3637).
+#[tokio::test]
+async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_keys CASCADE",
+        "CREATE SCHEMA oi_keys",
+        "CREATE TABLE oi_keys.pairs (a INT, b INT, PRIMARY KEY (b, a))",
+        "CREATE TABLE oi_keys.refs (id INT PRIMARY KEY, x INT, y INT, FOREIGN KEY (y, x) REFERENCES oi_keys.pairs (b, a))",
+        "CREATE UNIQUE INDEX refs_yx ON oi_keys.refs (y, x)",
+        "INSERT INTO oi_keys.pairs VALUES (1, 2)",
+        "INSERT INTO oi_keys.refs VALUES (7, 1, 2)",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+
+    let details = db.table_details("p", "oi_keys", "refs").await?;
+    let indexes: Vec<_> = details.indexes.iter().map(|i| (i.name.as_str(), i.unique, i.columns.join(","))).collect();
+    assert_eq!(indexes, [("refs_pkey", true, "id".into()), ("refs_yx", true, "y,x".into())]);
+    let key = |k: &ide_db::ForeignKey| (k.columns.join(","), k.ref_table.clone(), k.ref_columns.join(","));
+    assert_eq!(
+        details.foreign_keys.iter().map(key).collect::<Vec<_>>(),
+        [("y,x".into(), "pairs".into(), "b,a".into())]
+    );
+    let pairs = db.table_details("p", "oi_keys", "pairs").await?;
+    assert_eq!(pairs.indexes[0].columns, ["b", "a"]);
+
+    let page = db.table_page("p", "oi_keys", "refs", None, &[], 0, 10, &c).await?;
+    assert_eq!(page.result.rows.len(), 1);
+    // Identity columns (PostgreSQL 10+; openGauss has none) are optional in INSERT.
+    let identity =
+        db.execute("p", "CREATE TABLE oi_keys.ids (n INT GENERATED ALWAYS AS IDENTITY, v INT)", 10, &c).await;
+    let completion = db.completion("p").await?;
+    if identity.is_ok() {
+        let ids = completion.tables.iter().find(|t| t.schema == "oi_keys" && t.name == "ids").expect("ids");
+        let defaults: Vec<_> = ids.columns.iter().map(|c| (c.name.as_str(), c.has_default)).collect();
+        assert_eq!(defaults, [("n", true), ("v", false)]);
+    }
+    assert!(
+        completion.foreign_keys.iter().any(|k| k.table == "refs" && key(k).2 == "b,a"),
+        "{:?}",
+        completion.foreign_keys
+    );
+    // The other catalog reads of the tree and its DDL actions, on the same server.
+    assert!(db.schemas("p").await?.iter().any(|s| s == "oi_keys"));
+    assert_eq!(db.tables("p", "oi_keys").await?.len(), if identity.is_ok() { 3 } else { 2 });
+    db.execute("p", "CREATE SEQUENCE oi_keys.seq", 10, &c).await?;
+    let objects = db.schema_objects("p", "oi_keys").await?;
+    assert_eq!(objects.sequences.len(), 1);
+    assert!(db.ddl("p", "oi_keys", "refs").await?.contains("FOREIGN KEY"));
+    db.execute("p", "DROP SCHEMA oi_keys CASCADE", 10, &c).await?;
+    Ok(())
+}

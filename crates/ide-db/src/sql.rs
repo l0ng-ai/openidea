@@ -219,6 +219,9 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
 }
 
 /// Rows: `index name, unique (0/1), column` (one row per indexed column, in order).
+// Key columns are paired from a fixed series up to INDEX_MAX_KEYS (32, the most columns an index
+// or key has in a default build): unlike a series per catalog row, it lets the planner find the
+// table's rows through the catalog's index first.
 pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
@@ -236,8 +239,7 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
             "SELECT i.relname, CASE WHEN ix.indisunique THEN 1 ELSE 0 END, a.attname \
              FROM pg_index ix JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_class i ON i.oid = ix.indexrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
-             JOIN (SELECT indexrelid, generate_series(0, indnatts - 1) AS ord FROM pg_index) k \
-             ON k.indexrelid = ix.indexrelid \
+             JOIN generate_series(0, 31) AS k(ord) ON k.ord < ix.indnatts \
              JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ix.indkey[k.ord] \
              WHERE n.nspname = {s} AND t.relname = {t} ORDER BY i.relname, k.ord"
         ),
@@ -285,12 +287,15 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              FROM sqlite_master m JOIN pragma_table_info(m.name) p \
              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY m.name, p.cid"
         }
+        // Identity columns own their sequence through an internal dependency (`attidentity` is PostgreSQL 10+).
         DbDriver::Postgres => {
             "SELECT n.nspname, c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END, a.attname, \
              format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, \
              CASE WHEN EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary \
                AND a.attnum = ANY(i.indkey)) THEN 1 ELSE 0 END, \
-             CASE WHEN a.atthasdef OR a.attidentity <> '' THEN 1 ELSE 0 END \
+             CASE WHEN a.atthasdef OR EXISTS (SELECT 1 FROM pg_depend d WHERE d.refclassid = 'pg_class'::regclass \
+               AND d.refobjid = c.oid AND d.refobjsubid = a.attnum AND d.classid = 'pg_class'::regclass \
+               AND d.deptype = 'i') THEN 1 ELSE 0 END \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid \
              WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f') AND a.attnum > 0 AND NOT a.attisdropped \
              AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
@@ -364,8 +369,7 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
              FROM pg_constraint con \
              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace \
              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace \
-             JOIN (SELECT oid, generate_series(1, array_upper(conkey, 1)) AS ord FROM pg_constraint \
-             WHERE contype = 'f') k ON k.oid = con.oid \
+             JOIN generate_series(1, 32) AS k(ord) ON k.ord <= array_upper(con.conkey, 1) \
              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord] \
              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord] \
              WHERE con.contype = 'f' AND sn.nspname NOT IN ('pg_catalog', 'information_schema') \
@@ -410,7 +414,7 @@ pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String
             "SELECT {s}, {t}, f.id, f.\"from\", {s}, f.\"table\", f.\"to\"              FROM pragma_foreign_key_list({t}, {s}) f ORDER BY f.id, f.seq"
         ),
         DbDriver::Postgres => format!(
-            "SELECT sn.nspname, sc.relname, con.conname, sa.attname, tn.nspname, tc.relname, ta.attname              FROM pg_constraint con              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace              JOIN (SELECT oid, generate_series(1, array_upper(conkey, 1)) AS ord FROM pg_constraint              WHERE contype = 'f') k ON k.oid = con.oid              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord]              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord]              WHERE con.contype = 'f' AND sn.nspname = {s} AND sc.relname = {t} ORDER BY 3, k.ord"
+            "SELECT sn.nspname, sc.relname, con.conname, sa.attname, tn.nspname, tc.relname, ta.attname              FROM pg_constraint con              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace              JOIN generate_series(1, 32) AS k(ord) ON k.ord <= array_upper(con.conkey, 1)              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord]              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord]              WHERE con.contype = 'f' AND sn.nspname = {s} AND sc.relname = {t} ORDER BY 3, k.ord"
         ),
         DbDriver::Mysql => format!(
             "SELECT table_schema, table_name, constraint_name, column_name,              referenced_table_schema, referenced_table_name, referenced_column_name              FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL              AND table_schema = {s} AND table_name = {t} ORDER BY constraint_name, ordinal_position"
@@ -674,11 +678,10 @@ pub fn sqlite_trigger_event(sql: &str) -> (String, String) {
 }
 
 /// PostgreSQL catalog query `sql` of this module for servers whose catalog predates a column
-/// it reads: PostgreSQL before 10 (`attidentity`) and 11 (`prokind`), and the servers built on
-/// an older PostgreSQL (openGauss, GaussDB). `None` when it reads neither.
+/// it reads: PostgreSQL before 11 (`prokind`), and the servers built on an older PostgreSQL
+/// (openGauss, GaussDB). `None` when it reads none.
 pub fn postgres_legacy(sql: &str) -> Option<String> {
     let legacy = sql
-        .replace(" OR a.attidentity <> ''", "")
         .replace("CASE WHEN p.prokind = 'p' THEN 'procedure' ELSE 'function' END", "'function'")
         .replace("p.prokind IN ('f', 'p')", "NOT p.proisagg AND NOT p.proiswindow");
     (legacy != sql).then_some(legacy)
@@ -1189,12 +1192,26 @@ mod tests {
     #[test]
     fn postgres_catalog_queries_run_on_older_servers() {
         let pg = DbDriver::Postgres;
-        // Neither LATERAL (9.3) nor WITH ORDINALITY (9.4): openGauss / GaussDB parse 9.2's grammar.
-        for q in [indexes(pg, "s", "t"), table_foreign_keys(pg, "s", "t"), foreign_keys(pg).to_owned()] {
-            assert!(!q.contains("LATERAL") && !q.contains("ORDINALITY"), "{q}");
+        // Neither LATERAL (9.3), WITH ORDINALITY (9.4) nor attidentity (10) in any metadata query:
+        // openGauss / GaussDB parse 9.2's grammar and catalog. `prokind` (11) has its legacy rerun.
+        let queries = [
+            schemas(pg, false).to_owned(),
+            schemas(pg, true).to_owned(),
+            tables(pg, "s"),
+            columns(pg, "s", "t"),
+            indexes(pg, "s", "t"),
+            completion_columns(pg).to_owned(),
+            foreign_keys(pg).to_owned(),
+            table_foreign_keys(pg, "s", "t"),
+            triggers(pg, "s", "t"),
+            routines(pg, "s").unwrap(),
+            sequences(pg, "s").unwrap(),
+        ];
+        for q in queries {
+            let upper = q.to_uppercase();
+            assert!(!["LATERAL", "ORDINALITY", "ATTIDENTITY"].iter().any(|w| upper.contains(w)), "{q}");
         }
-        let completion = postgres_legacy(completion_columns(pg)).unwrap();
-        assert!(!completion.contains("attidentity") && completion.contains("a.atthasdef"));
+        assert_eq!(postgres_legacy(completion_columns(pg)), None);
         let routines = postgres_legacy(&routines(pg, "s").unwrap()).unwrap();
         assert!(!routines.contains("prokind") && routines.contains("NOT p.proisagg"));
         assert_eq!(postgres_legacy(&indexes(pg, "s", "t")), None);
