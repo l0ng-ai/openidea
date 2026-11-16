@@ -470,3 +470,94 @@ describe("terminal font zoom", () => {
     for (const tab of useTerminals.getState().tabs) expect(getSession(tab.session)!.term.options.fontSize).toBe(18);
   });
 });
+
+describe("terminal tab spinner state (#3831)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const feed = async (session: TerminalSession, ...chunks: string[]) => {
+    for (const chunk of chunks) {
+      await new Promise<void>((resolve) => session.term.write(chunk, resolve));
+    }
+  };
+
+  it("lets a program's OSC 9;4 progress decide the spinner over the OSC 133 boundaries", async () => {
+    const session = new TerminalSession({ key: "s-progress", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      // An agent CLI is one command to the shell: C at launch, D only at exit.
+      await feed(session, "\x1b]133;C\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: null });
+      // The agent works on a turn (indeterminate progress), then sits idle at its
+      // own input prompt: the report clears while the command is still running.
+      await feed(session, "\x1b]9;4;3\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: "active" });
+      await feed(session, "\x1b]9;4;0\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: "cleared" });
+      // The next turn reports again, with a progress value attached.
+      await feed(session, "\x1b]9;4;1;75\x07");
+      expect(session.state).toMatchObject({ progress: "active" });
+      // The CLI exits: the command boundary clears the stale report too.
+      await feed(session, "\x1b]133;D;0\x07");
+      expect(session.state).toMatchObject({ commandRunning: false, progress: null });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("starts each command without the previous program's progress report", async () => {
+    const session = new TerminalSession({ key: "s-progress-reset", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      await feed(session, "\x1b]133;C\x07", "\x1b]9;4;0\x07");
+      expect(session.state.progress).toBe("cleared");
+      await feed(session, "\x1b]133;D;0\x07", "\x1b]133;C\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: null });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("leaves the spinner decision to OSC 133 for programs that never report progress", async () => {
+    const session = new TerminalSession({ key: "s-progress-none", cwd: "/repo", onChange() {}, onFocus() {} });
+    try {
+      // OSC 9 payloads that are not progress reports (iTerm2 notifications, …)
+      // and a malformed report change nothing.
+      await feed(session, "\x1b]133;C\x07", "\x1b]9;notify: done\x07", "\x1b]9;4;\x07");
+      expect(session.state).toMatchObject({ commandRunning: true, progress: null });
+      await feed(session, "\x1b]133;D\x07");
+      expect(session.state).toMatchObject({ commandRunning: false, progress: null });
+    } finally {
+      session.dispose();
+    }
+  });
+
+  it("stops the spinner of a non-shell command tab when the process exits", async () => {
+    ipc.commands.fsEntryKind.mockResolvedValue("dir");
+    ipc.commands.termSpawn.mockResolvedValue({ id: 11, title: "claude" });
+    const session = new TerminalSession({
+      key: "s-custom-exit",
+      cwd: "/repo",
+      onChange() {},
+      onFocus() {},
+      command: { program: "claude", args: [] },
+    });
+    await session.start();
+    expect(session.state).toMatchObject({ status: "running", commandRunning: true, progress: null });
+    session.exited(0);
+    expect(session.state).toMatchObject({ status: "exited", commandRunning: false, progress: null });
+    session.dispose();
+  });
+
+  it("stops the spinner of a non-shell command tab that fails to start", async () => {
+    ipc.commands.fsEntryKind.mockResolvedValue("dir");
+    ipc.commands.termSpawn.mockRejectedValue(new Error("no claude"));
+    const session = new TerminalSession({
+      key: "s-custom-error",
+      cwd: "/repo",
+      onChange() {},
+      onFocus() {},
+      command: { program: "claude", args: [] },
+    });
+    await session.start();
+    expect(session.state).toMatchObject({ status: "error", commandRunning: false, progress: null });
+    session.dispose();
+  });
+});

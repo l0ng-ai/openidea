@@ -366,8 +366,11 @@ function GroupTabs({ group }: { group: string }) {
     const status = session?.status;
     const dead = status === "exited" || status === "error";
     // Running / done marker (#2233): a command at work spins, a finished one
-    // shows a filled dot, an idle shell at the prompt shows none.
-    const busy = !!session?.commandRunning || status === "starting";
+    // shows a filled dot, an idle shell at the prompt shows none. A program that
+    // reports its own progress (OSC 9;4) decides for itself (#3831): an
+    // interactive agent CLI is one long command to the shell, and it clears the
+    // report while it waits for input between turns.
+    const busy = status === "starting" || (!!session?.commandRunning && session.progress !== "cleared");
     const mark = busy ? (
       <Spinner size={10} variant="spokes" label="Running" />
     ) : dead ? (
