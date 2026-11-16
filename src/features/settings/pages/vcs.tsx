@@ -204,6 +204,22 @@ function LargeFilesRow() {
   );
 }
 
+function InlineBlameRows() {
+  const [show] = useSetting<boolean>("vcs.git.inlineBlame");
+  return (
+    <>
+      <BoundToggle k="vcs.git.inlineBlame" label="Show inline blame for the current line" />
+      <Indented>
+        <BoundToggle
+          k="vcs.git.inlineBlameClickable"
+          label="Open the commit when the inline blame is clicked"
+          disabled={!show}
+        />
+      </Indented>
+    </>
+  );
+}
+
 function PushDialogRows() {
   const [show] = useSetting<boolean>("vcs.git.showPushDialog");
   return (
@@ -493,7 +509,12 @@ export const VCS_PAGES: PageSpec[] = [
             keywords: ["Test", "git version"],
             component: GitExecutableRow,
           },
-          { kind: "toggle", key: "vcs.git.inlineBlame", label: "Show inline blame for the current line" },
+          {
+            kind: "custom",
+            label: "Show inline blame for the current line",
+            keywords: ["Open the commit when the inline blame is clicked"],
+            component: InlineBlameRows,
+          },
           {
             kind: "toggle",
             key: "vcs.git.showBranchInProjectView",

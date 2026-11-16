@@ -3221,6 +3221,8 @@ export type ChangedFile = {
 	path: string,
 	kind: ChangeKind,
 	oldPath: string | null,
+	/**  Set when the entry is a symbolic link (git mode `120000`); only revision diffs fill it. */
+	link?: LinkTarget | null,
 };
 
 export type Changelist = {
@@ -6023,6 +6025,11 @@ export type GitOperation =
 export type GitSettings = {
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
+	/**
+	 *  A click (or Enter / Space) on the inline blame label opens its commit; off, the
+	 *  label is plain text and a click on it places the caret as past the line end.
+	 */
+	inlineBlameClickable?: boolean,
 	showBranchInProjectView?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
@@ -7556,6 +7563,11 @@ export type Link = {
 	parent: number | null,
 	ambiguous: boolean,
 };
+
+/**  What a symbolic link in a revision points to, resolved inside that revision's tree. */
+export type LinkTarget = "dir" | "file" | 
+/**  Dangling, outside the repository (absolute or above its root), or a link loop. */
+"unresolved";
 
 /**  Settings › System Settings › Caches: where the local data lives. */
 export type LocalDataInfo = {
@@ -9799,6 +9811,8 @@ export type RevisionChange = {
 	before: string | null,
 	/**  Commit holding the new content; `None` when the file was deleted. */
 	after: string | null,
+	/**  Set when the entry is a symbolic link, resolved at `after` (`before`, for a deletion). */
+	link?: LinkTarget | null,
 };
 
 /**  How a grant is presented (plan 4.2). */

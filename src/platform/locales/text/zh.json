@@ -10,6 +10,7 @@
   "Attach": "附加",
   "Installing…": "正在安装…",
   "Symbolic link": "符号链接",
+  "Symbolic link, target not found in this revision": "符号链接，目标在此修订中不存在",
   "Copy as TSV": "复制为 TSV",
   "Copy as CSV": "复制为 CSV",
   "Copy as One-Row": "复制为单行",
@@ -8677,6 +8678,7 @@
   "This is a MySQL dump: restore it into a MySQL data source.": "这是 MySQL 转储：请恢复到 MySQL 数据源。",
   "This is a pg_dump archive: restore it with pg_restore.": "这是 pg_dump 归档：请使用 pg_restore 恢复。",
   "This is a plain SQL dump: restore it with psql.": "这是纯 SQL 转储：请使用 psql 恢复。",
+  "Open the commit when the inline blame is clicked": "点击内联 Git Blame 时打开提交",
   "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.": "在后台获取每个仓库的远程，以便传入的提交显示在“分支”弹出窗口和项目视图中。“自动”在某个仓库检查失败（例如身份验证失败）后停止检查该仓库。",
   "Check for incoming commits every": "检查传入提交的间隔"
 }

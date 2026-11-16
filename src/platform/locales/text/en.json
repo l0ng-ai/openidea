@@ -12,6 +12,7 @@
   "Installing…": "Installing…",
   "moved from {oldPath}": "moved from {oldPath}",
   "Symbolic link": "Symbolic link",
+  "Symbolic link, target not found in this revision": "Symbolic link, target not found in this revision",
   "Copy as TSV": "Copy as TSV",
   "Copy as CSV": "Copy as CSV",
   "Copy as One-Row": "Copy as One-Row",
@@ -2293,6 +2294,7 @@
   "This is a MySQL dump: restore it into a MySQL data source.": "This is a MySQL dump: restore it into a MySQL data source.",
   "This is a pg_dump archive: restore it with pg_restore.": "This is a pg_dump archive: restore it with pg_restore.",
   "This is a plain SQL dump: restore it with psql.": "This is a plain SQL dump: restore it with psql.",
+  "Open the commit when the inline blame is clicked": "Open the commit when the inline blame is clicked",
   "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.": "Fetches the remotes of every repository in the background so incoming commits show in the Branches popup and the Project view. Auto stops checking a repository after it fails, for example on an authentication failure.",
   "Check for incoming commits every": "Check for incoming commits every"
 }
