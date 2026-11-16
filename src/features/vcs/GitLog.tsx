@@ -3,6 +3,7 @@ import { call, commands } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, T, Tabs } from "@/ui";
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
+import { spanStyle } from "@/ui/ansi";
 import clsx from "clsx";
 import { useContext, useEffect, useLayoutEffect, useRef } from "react";
 import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
@@ -270,7 +271,15 @@ function ConsoleView() {
             {l.kind === "cmd" && (
               <span className={styles.time}>{new Date(l.time).toLocaleTimeString(undefined, { hour12: false })} </span>
             )}
-            {l.text}
+            {l.spans
+              ? l.spans.map((s, i) => (
+                  // A background without a colour of its own keeps the default text colour, as in
+                  // a terminal, not the red of an error line.
+                  <span key={i} style={s.bg && !s.fg ? { ...spanStyle(s), color: "var(--fg)" } : spanStyle(s)}>
+                    {s.text}
+                  </span>
+                ))
+              : l.text}
           </div>
         ))}
       </div>
