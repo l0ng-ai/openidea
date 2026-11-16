@@ -37,6 +37,8 @@ export function AddInterpreterDialog({
   const bases = useMemo(() => list.filter((s) => s.source !== "venv"), [list]);
   const [base, setBase] = useState<string | null>(null);
   const [location, setLocation] = useState(`${root}/.venv`);
+  // Conda keeps named environments in its own envs directory, so only a name is asked for.
+  const [envName, setEnvName] = useState(() => root.replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "env");
   const [existing, setExisting] = useState<string | null>(null);
   const [browsed, setBrowsed] = useState<Sdk[]>([]);
   const [busy, setBusy] = useState<{ cancel: () => void } | null>(null);
@@ -92,6 +94,7 @@ export function AddInterpreterDialog({
       });
   };
 
+  const target = (kind === "conda" ? envName : location).trim();
   const ok = () => {
     if (busy) return;
     setError(null);
@@ -103,9 +106,9 @@ export function AddInterpreterDialog({
         });
       return;
     }
-    if (!baseValue || !location.trim()) return;
+    if (!baseValue || !target) return;
     setLog([]);
-    const job = createVenv(kind, baseValue, location.trim(), (line) => setLog((l) => [...l.slice(-200), line]));
+    const job = createVenv(kind, baseValue, target, (line) => setLog((l) => [...l.slice(-200), line]));
     setBusy({ cancel: job.cancel });
     job.promise
       .then((sdk) => {
@@ -116,11 +119,11 @@ export function AddInterpreterDialog({
       .finally(() => setBusy(null));
   };
 
-  const canOk = !busy && (mode === "new" ? !!baseValue && !!location.trim() : !!existing?.trim());
+  const canOk = !busy && (mode === "new" ? !!baseValue && !!target : !!existing?.trim());
   const note = {
     venv: tx("Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter."),
     conda: tx(
-      "Runs “conda create -p <location> python=<version>”: a new environment with only Python in it; the new interpreter becomes the project interpreter.",
+      "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.",
     ),
     uv: tx("Runs “uv venv <location> --python <base>”; the new interpreter becomes the project interpreter."),
     poetry: tx(
@@ -191,28 +194,43 @@ export function AddInterpreterDialog({
           </div>
           {mode === "new" ? (
             <>
-              <label htmlFor={ids.location}>
-                <T>Location:</T>
-              </label>
-              <div className={styles.pathRow}>
-                <Input
-                  id={ids.location}
-                  className={styles.pathInput}
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                  disabled={kind === "poetry"}
-                />
-                <IconButton
-                  icon="folder-open"
-                  size="small"
-                  title="Browse…"
-                  disabled={kind === "poetry"}
-                  onClick={async () => {
-                    const p = await choosePath({ directory: true, title: "Virtualenv Location", defaultPath: root });
-                    if (p) setLocation(p);
-                  }}
-                />
-              </div>
+              {kind === "conda" ? (
+                <>
+                  <label htmlFor={ids.location}>
+                    <T>Name:</T>
+                  </label>
+                  <Input id={ids.location} value={envName} onChange={(e) => setEnvName(e.target.value)} />
+                </>
+              ) : (
+                <>
+                  <label htmlFor={ids.location}>
+                    <T>Location:</T>
+                  </label>
+                  <div className={styles.pathRow}>
+                    <Input
+                      id={ids.location}
+                      className={styles.pathInput}
+                      value={location}
+                      onChange={(e) => setLocation(e.target.value)}
+                      disabled={kind === "poetry"}
+                    />
+                    <IconButton
+                      icon="folder-open"
+                      size="small"
+                      title="Browse…"
+                      disabled={kind === "poetry"}
+                      onClick={async () => {
+                        const p = await choosePath({
+                          directory: true,
+                          title: "Virtualenv Location",
+                          defaultPath: root,
+                        });
+                        if (p) setLocation(p);
+                      }}
+                    />
+                  </div>
+                </>
+              )}
               <label htmlFor={ids.base}>{kind === "conda" ? <T>Python version:</T> : <T>Base interpreter:</T>}</label>
               <div className={styles.pathRow}>
                 <Select

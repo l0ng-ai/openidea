@@ -67,7 +67,7 @@ Ruff 只为位于 Ruff 配置之下的文件启动：`ruff.toml`、`.ruff.toml`�
 - **Virtualenv 环境**：用你选的基础解释器执行 `python -m venv`。
 - **uv 环境**：执行 `uv venv <location> --python <base>`（`PATH` 上需要有 uv）。
 - **Poetry 环境**：在项目中执行 `poetry env use <base>`。
-- **Conda 环境**：执行 `conda create -p <location>`，Python 版本与基础解释器一致。
+- **Conda 环境**：执行 `conda create -n <名称>`，环境建在 conda 的 envs 目录中，Python 版本为所选版本。
 
 也可以直接选择已有的解释器或环境目录。新解释器会成为项目解释器。
 

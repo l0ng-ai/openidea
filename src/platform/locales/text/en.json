@@ -2327,5 +2327,6 @@
   "When off, Settings opens as a dialog in the project window, which is faster": "When off, Settings opens as a dialog in the project window, which is faster",
   "Run code inside the Java applications you start": "Run code inside the Java applications you start",
   "Java agents of {list} were not added: they load only in local projects.": "Java agents of {list} were not added: they load only in local projects.",
-  "Java agent": "Java agent"
+  "Java agent": "Java agent",
+  "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.": "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter."
 }

@@ -94,21 +94,32 @@ describe("Add Python Interpreter", () => {
     mocks.createVenv.mockImplementation(() => new Promise((r) => (finish = r)));
     open();
     await waitFor(() => expect(screen.getByRole("button", { name: "Base interpreter" })).toBeInTheDocument());
-    for (const [label, tool] of [
-      ["uv Environment", "uv"],
-      ["Conda Environment", "conda"],
+    // Conda asks for a name (the project's by default) and keeps the env in its envs directory.
+    for (const [label, tool, target] of [
+      ["uv Environment", "uv", "/project/.venv"],
+      ["Conda Environment", "conda", "project"],
     ] as const) {
       fireEvent.click(screen.getByRole("button", { name: label }));
       fireEvent.click(screen.getByRole("button", { name: "OK" }));
       expect(mocks.createVenv).toHaveBeenLastCalledWith(
         tool,
         "/usr/bin/python3",
-        "/project/.venv",
+        target,
         expect.anything(),
         expect.anything(),
       );
       await act(async () => finish(ok(VENV)));
     }
+    fireEvent.change(screen.getByLabelText("Name:"), { target: { value: " ds " } });
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    expect(mocks.createVenv).toHaveBeenLastCalledWith(
+      "conda",
+      "/usr/bin/python3",
+      "ds",
+      expect.anything(),
+      expect.anything(),
+    );
+    await act(async () => finish(ok(VENV)));
     fireEvent.click(screen.getByRole("button", { name: "Poetry Environment" }));
     await waitFor(() => expect(screen.getByLabelText("Location:")).toBeDisabled());
     fireEvent.click(screen.getByRole("button", { name: "OK" }));

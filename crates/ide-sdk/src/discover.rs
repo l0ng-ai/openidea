@@ -116,7 +116,7 @@ fn is_python_name(name: &str) -> bool {
 
 /// Prefixes named by `conda env list`: `base * /opt/conda`, `myenv  /opt/conda/envs/myenv`,
 /// a `--prefix` env shown as a bare path, comment lines skipped (#2240).
-fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
+pub(crate) fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
     output
         .lines()
         .map(|l| l.trim_start_matches(['#', '*', ' ']).trim_end())
