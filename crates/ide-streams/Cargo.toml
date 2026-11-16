@@ -1,0 +1,17 @@
+[package]
+name = "ide-streams"
+description = "Java Stream Debugger engine: finds stream chains and links the recorded elements"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ide-core.workspace = true
+ide-syntax.workspace = true
+serde.workspace = true
+specta.workspace = true
+tree-sitter.workspace = true
+
+[dev-dependencies]
+ide-language.workspace = true
+serde_json.workspace = true

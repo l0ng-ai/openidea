@@ -169,6 +169,9 @@ debug_step                                   trusted            project_host bin
 debug_step_in_target                         trusted            project_host bindings async
 debug_step_in_targets                        trusted            project_host bindings async
 debug_stop                                   always             project_host bindings async
+debug_stream_chains                          trusted            project_host bindings async
+debug_stream_trace                           trusted            project_host bindings async
+debug_stream_trace_abort                     trusted            project_host bindings async
 debug_threads                                trusted            project_host bindings async
 debug_unity_processes                        trusted            project_host bindings async
 debug_variables                              trusted            project_host bindings async
