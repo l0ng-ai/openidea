@@ -44,7 +44,7 @@ import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { IconButton, Select, Spinner, T, isPopupOpen, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffOverview, diffWords, languageFor, viewerBase } from "./cm";
+import { changedLineGutters, diffOverview, diffWords, documentTooltips, languageFor, viewerBase } from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -528,7 +528,7 @@ export function DiffEditor({
       blameSlot(),
       att?.extension ?? [],
       // The file's open document: quick docs and ⌘/Ctrl-click navigation, as in its editor.
-      att ? diffSideExtensions(att.context()) : [],
+      att ? [diffSideExtensions(att.context()), documentTooltips] : [],
       editable ? [editableExtensions(), embeddedEditorExtensions(path)] : [],
       notes
         ? diffAnnotations(

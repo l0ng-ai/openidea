@@ -836,6 +836,7 @@ const linkField = StateField.define<LinkState | null>({
       return {
         pos: v.from,
         above: true,
+        arrow: true,
         create: (view) => {
           const dom = document.createElement("div");
           dom.className = "cm-lsp-hover cm-lsp-nav-info";
