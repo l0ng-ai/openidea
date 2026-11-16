@@ -14,6 +14,7 @@ import type {
   AgentImage,
   AgentLimit,
   AgentModelCatalog,
+  AgentPrompt,
   AgentProvider,
   AgentTask,
   ExternalSession,
@@ -35,8 +36,10 @@ import {
   isMentioned,
   isPerModelOption,
   toPrompt,
+  withIdeContext,
   type ComposerDraft,
   type FileRef,
+  type IdeContext,
 } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
@@ -127,6 +130,8 @@ interface AgentsState {
   /** Side conversations by task id: kept out of the task list, discarded when their view closes. */
   ephemeral: ReadonlySet<string>;
   pinnedModels: string[];
+  /** Whether messages carry the editor's current file and selection. */
+  ideContext: boolean;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
@@ -134,6 +139,7 @@ const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
 const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
 const PINNED_MODELS_KEY = "openidea.agents.pinnedModels.v1";
+const IDE_CONTEXT_KEY = "openidea.agents.ideContext.v1";
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -198,6 +204,7 @@ export const useAgents = create<AgentsState>(() => ({
   homeOpen: false,
   ephemeral: new Set<string>(),
   pinnedModels: load<string[]>(PINNED_MODELS_KEY, []),
+  ideContext: load<boolean>(IDE_CONTEXT_KEY, true),
   scrollPositions: new Map(),
 }));
 
@@ -972,7 +979,7 @@ export async function startTask(
     const task = await call(
       commands.agentCreate({
         projectRoot,
-        prompt: toPrompt(composer),
+        prompt: promptOf(HOME, composer),
         provider: draft.provider,
         config,
         isolation,
@@ -1086,6 +1093,28 @@ export async function importExternalSessions(
   void showError(title, failures.join("\n"));
 }
 
+export function setIdeContext(on: boolean) {
+  useAgents.setState({ ideContext: on });
+  save(IDE_CONTEXT_KEY, on);
+}
+
+/** The IDE context of each mounted composer, by draft key. */
+const ideContexts = new Map<string, () => IdeContext | null>();
+
+/** Registers what composer `key` sends as IDE context; returns the unregister. */
+export function provideIdeContext(key: string, context: () => IdeContext | null): () => void {
+  ideContexts.set(key, context);
+  return () => {
+    if (ideContexts.get(key) === context) ideContexts.delete(key);
+  };
+}
+
+/** The prompt of composer `key`, with the IDE context when it is on. */
+function promptOf(key: string, composer: ComposerDraft): AgentPrompt {
+  const context = useAgents.getState().ideContext ? (ideContexts.get(key)?.() ?? null) : null;
+  return toPrompt(withIdeContext(composer, context));
+}
+
 function remember(text: string) {
   if (!text) return;
   const history = [text, ...useAgents.getState().history.filter((h) => h !== text)].slice(0, HISTORY_SIZE);
@@ -1098,7 +1127,7 @@ export async function sendMessage(task: string, now: boolean): Promise<void> {
   const composer = composerDraft(task);
   if (!canSend(composer)) return;
   const started = generation;
-  await call(commands.agentPrompt(task, toPrompt(composer), now));
+  await call(commands.agentPrompt(task, promptOf(task, composer), now));
   clearSubmittedComposer(task, composer, started);
 }
 

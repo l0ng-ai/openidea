@@ -66,7 +66,7 @@ import {
 } from "./composerModel";
 import { referenceExtensions, setReferences } from "./composerEditor";
 import { referenceHover } from "./ReferenceChip";
-import { composerDraft, updateComposer, useAgents } from "./store";
+import { composerDraft, provideIdeContext, setIdeContext, updateComposer, useAgents } from "./store";
 import { ImagePreview, imageSrc } from "./ImagePreview";
 import { useAgentSettings } from "./agentSettings";
 import styles from "./Composer.module.css";
@@ -933,6 +933,27 @@ export function Composer(props: ComposerProps) {
     return { path: activePath, rel };
   }, [activePath, projectRoot, root, text]);
 
+  const ideContext = useAgents((s) => s.ideContext);
+  useEffect(
+    () =>
+      provideIdeContext(id, () => {
+        const active = useEditorRegistry.getState().active;
+        const path = active?.ctx.path;
+        if (!active || !path || isVirtualUri(path)) return null;
+        const rel = relativeTo([projectRoot, root], path);
+        if (!rel || rel === ".") return null;
+        const { doc, selection } = active.view.state;
+        const { from, to } = selection.main;
+        if (from === to) return { path, rel };
+        const first = doc.lineAt(from).number;
+        const end = doc.lineAt(to);
+        // A selection ending at the start of a line does not take that line.
+        const last = end.from === to && end.number > first ? end.number - 1 : end.number;
+        return { path, rel, lines: { from: first, to: last } };
+      }),
+    [id, projectRoot, root],
+  );
+
   const showContext = images.length > 0 || attached.length > 0 || !!suggested;
 
   return (
@@ -1056,7 +1077,14 @@ export function Composer(props: ComposerProps) {
       )}
       {showContext && (
         <div className={styles.context} onMouseDown={(e) => e.stopPropagation()}>
-          {suggested && (
+          {suggested && ideContext && (
+            <span className={styles.attachment} title={tx`${suggested.rel} is added to your request`}>
+              <Icon name={fileIconName(basename(suggested.rel), suggested.rel)} size={14} />
+              <span className={styles.attachmentName}>{basename(suggested.rel)}</span>
+              <span className={styles.suggestionHint}>{tx("Current File")}</span>
+            </span>
+          )}
+          {suggested && !ideContext && (
             <button
               type="button"
               className={styles.suggestion}
@@ -1126,6 +1154,17 @@ export function Composer(props: ComposerProps) {
               const before = view.state.sliceDoc(Math.max(0, from - 1), from);
               replace(from, to, before && !/\s/.test(before) ? " @" : "@");
             }}
+          />
+          <IconButton
+            icon="file-code"
+            title={
+              ideContext
+                ? "IDE Context Enabled: the current file and selection are added to your request"
+                : "IDE Context Disabled: the current file and selection are not added to your request"
+            }
+            pressed={ideContext}
+            className={styles.composerButton}
+            onClick={() => setIdeContext(!ideContext)}
           />
           <IconButton
             icon="image"
