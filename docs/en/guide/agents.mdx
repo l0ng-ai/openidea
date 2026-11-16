@@ -32,6 +32,8 @@ These agents are built in. Install the agent's own CLI and sign in once in a ter
 
 Agents are unavailable in a project you have not marked as trusted.
 
+Codex keeps its own project trust decision. If it disables the current project's `.codex` configuration, the task asks whether to **Trust Project in Codex** or **Keep Untrusted**. Trusting saves only that project's trust entry through Codex's configuration API before the session loads its configuration, including MCP servers, hooks and exec policies. This confirmation is required even in Full Access mode; declining keeps the configuration disabled and shows the reason without stopping the conversation. Codex configuration and runtime warnings also appear in the task.
+
 ## Start a task
 
 | Action             | macOS | Windows / Linux    |

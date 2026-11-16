@@ -45,9 +45,6 @@ pub struct AgentCapabilities {
     pub steer: bool,
     /// It reports its background tasks and stops them one by one.
     pub background_tasks: bool,
-    /// The task runs read-only: it asks before anything, and requests that would change
-    /// the project are denied (a temporary side conversation).
-    pub read_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]

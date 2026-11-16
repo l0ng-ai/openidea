@@ -9,6 +9,7 @@ import {
   activeEditor,
   iconAreaSource,
   intentionProviders,
+  mapLineStart,
   type ContributedIntention,
   type EditorDocContext,
 } from "@/editor/api";
@@ -169,7 +170,7 @@ const marksField = StateField.define<Mark[]>({
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setMarks)) return e.value;
     if (!tr.docChanged || !value.length) return value;
-    return value.map((m) => ({ ...m, pos: tr.state.doc.lineAt(tr.changes.mapPos(m.pos, -1)).from }));
+    return value.map((m) => ({ ...m, pos: mapLineStart(tr, m.pos) }));
   },
 });
 

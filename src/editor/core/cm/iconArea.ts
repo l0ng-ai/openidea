@@ -3,7 +3,7 @@
  * rendered-doc toggle share one column, as wide as the most icons on any line, instead of a
  * column per kind that stays empty on the lines where another kind has its icon.
  */
-import { Facet, type EditorState, type Extension, type RangeSet } from "@codemirror/state";
+import { Facet, type EditorState, type Extension, type RangeSet, type Transaction } from "@codemirror/state";
 import {
   EditorView,
   GutterMarker,
@@ -26,6 +26,16 @@ export interface IconAreaSource {
   reserve?(state: EditorState): boolean;
   /** A press on the area at `block`; true when the source handled it. */
   mousedown?(view: EditorView, block: BlockInfo, event: MouseEvent): boolean;
+}
+
+/**
+ * Where a marker on the line starting at `pos` goes after `tr`: the start of the line its text is
+ * on now. An Enter at the start of the line moves the marker down with its text, as every source
+ * must agree; one left on the new blank line until its source refreshes would split a line's icons
+ * and briefly narrow the area, shifting the code.
+ */
+export function mapLineStart(tr: Transaction, pos: number): number {
+  return tr.state.doc.lineAt(tr.changes.mapPos(pos, 1)).from;
 }
 
 export const iconAreaSource = Facet.define<IconAreaSource, readonly IconAreaSource[]>({

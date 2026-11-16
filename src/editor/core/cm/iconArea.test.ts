@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent } from "@testing-library/react";
 import { EditorState, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { EditorView, GutterMarker } from "@codemirror/view";
-import { SETTLE_MS, iconAreaExtension, iconAreaSource } from "./iconArea";
+import { SETTLE_MS, iconAreaExtension, iconAreaSource, mapLineStart } from "./iconArea";
 
 class Dot extends GutterMarker {
   constructor(readonly name: string) {
@@ -153,4 +153,19 @@ describe("while edits place icons again", () => {
     v.dispatch({ effects: setImpl.of([2]) });
     expect(spacerIcons(v)).toBe(2);
   });
+});
+
+it("moves a line's marker down with its text when Enter is pressed at the line's start", () => {
+  const state = EditorState.create({ doc: "a\nclass B {}\nc" });
+  const lineB = state.doc.line(2).from;
+  const tr = state.update({ changes: { from: lineB, insert: "\n" } });
+  expect(mapLineStart(tr, lineB)).toBe(tr.state.doc.line(3).from);
+  const after = (from: number, insert: string, to = from) =>
+    mapLineStart(state.update({ changes: { from, to, insert } }), lineB);
+  // Other edits keep it at the start of its line.
+  expect(after(lineB, "  ")).toBe(lineB);
+  expect(after(1, "\nnew")).toBe(lineB + 4);
+  expect(after(lineB + 5, "\n")).toBe(lineB);
+  // Joined into the line above, it goes with its text.
+  expect(after(1, "", lineB)).toBe(0);
 });

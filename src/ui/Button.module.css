@@ -142,3 +142,27 @@
     border: 1px solid ButtonText;
   }
 }
+
+.closeButton.closeButton {
+  display: inline-grid;
+  place-items: center;
+  cursor: default;
+  transition: none;
+}
+.closeButton.closeButton:not(:disabled):hover,
+.closeButton.closeButton:not(:disabled):active {
+  background: transparent;
+}
+.closeIdle,
+.closeHovered {
+  grid-area: 1 / 1;
+}
+.closeHovered {
+  visibility: hidden;
+}
+.closeButton:not(:disabled):hover .closeIdle {
+  visibility: hidden;
+}
+.closeButton:not(:disabled):hover .closeHovered {
+  visibility: visible;
+}

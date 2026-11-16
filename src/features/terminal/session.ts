@@ -19,7 +19,8 @@ import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
-import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
+import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
+import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
@@ -29,7 +30,9 @@ import { hostOs, useRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { workflowSettings, type TerminalSettingsValid } from "@/platform/workflowSettings";
 import { editorPrefs } from "@/platform/editorSettings";
+import type { CompletionInfo } from "./completion";
 import {
+  readLinkColor,
   readSearchDecorations,
   readTerminalTheme,
   remeasureWhenFontsLoad,
@@ -64,6 +67,11 @@ export interface SessionSnapshot {
   commandRunning: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
+  /**
+   * A finished command has not been seen yet (#3712): the tab shows a dot
+   * until it is focused or opened from its notification.
+   */
+  unseenDone: boolean;
 }
 
 export interface SessionOptions {
@@ -73,6 +81,11 @@ export interface SessionOptions {
   onFocus: (key: string) => void;
   /** The shell exited (after the exit message was printed). */
   onExit?: (key: string) => void;
+  /**
+   * A shell-integration command finished (OSC 133 D): how long it ran, its
+   * exit status, and whether it was stopped with Ctrl-C (#3712).
+   */
+  onCompletion?: (key: string, info: CompletionInfo) => void;
   /**
    * Run this program instead of the configured shell (e.g. `docker exec -it <id> sh`).
    * `shell`: it is a shell (a predefined session), so shell integration still applies.
@@ -213,6 +226,7 @@ export class TerminalSession {
   private selectingSearchMatch = false;
   private searchSelection = false;
   private readonly selectionHighlights: SelectionHighlightController;
+  private readonly linkHighlights: LinkHighlightController;
   private opts: SessionOptions;
   private snapshot: SessionSnapshot;
   private ptyId: TerminalId | null = null;
@@ -232,6 +246,10 @@ export class TerminalSession {
   private lastSize = { cols: 0, rows: 0 };
   /** Per-tab font size offset (px) relative to `workflowSettings().terminal.fontSize`. */
   private fontZoom = 0;
+  /** Kept while a shell-integration command runs, for its completion time (#3712). */
+  private commandStartedAt: number | null = null;
+  /** Ctrl-C was typed while the current command ran: it was stopped, not finished. */
+  private commandInterrupted = false;
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -243,7 +261,7 @@ export class TerminalSession {
    * Hands the session to another owner (a terminal tab moved to the editor): its
    * snapshots, focus and exit go there from now on. The PTY keeps running.
    */
-  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit">) {
+  rebind(owner: Pick<SessionOptions, "onChange" | "onFocus" | "onExit" | "onCompletion">) {
     this.opts = { ...this.opts, ...owner, onExit: owner.onExit };
     this.opts.onChange(this.key, this.snapshot);
   }
@@ -258,6 +276,7 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       cwd: opts.cwd,
+      unseenDone: false,
     };
     this.host = document.createElement("div");
     this.host.className = "openidea-terminal-host";
@@ -341,9 +360,31 @@ export class TerminalSession {
         }
         return true;
       }),
-      // OSC 133 (shell integration): C = a command starts, D = it finished.
+      // OSC 133 (shell integration): C = a command starts, D;<status> = it
+      // finished (plain D carries no status; both are accepted).
       this.term.parser.registerOscHandler(133, (data) => {
-        if (data === "C" || data.startsWith("D")) this.update({ commandRunning: data === "C" });
+        if (data === "C") {
+          this.commandStartedAt = Date.now();
+          this.commandInterrupted = false;
+          // A new command in the tab: the previous completion has been seen.
+          this.update({ commandRunning: true, unseenDone: false });
+        } else if (data === "D" || data.startsWith("D;")) {
+          const status = data.length > 2 ? Number.parseInt(data.slice(2), 10) : Number.NaN;
+          const startedAt = this.commandStartedAt;
+          this.commandStartedAt = null;
+          const interrupted = this.commandInterrupted;
+          this.commandInterrupted = false;
+          this.update({ commandRunning: false });
+          // A D without a C (shell startup, a restored tab's first prompt) is
+          // not a command finishing.
+          if (startedAt !== null) {
+            this.opts.onCompletion?.(this.key, {
+              durationMs: Date.now() - startedAt,
+              exitCode: Number.isFinite(status) ? status : null,
+              interrupted,
+            });
+          }
+        }
         return true;
       }),
       this.term.registerLinkProvider({
@@ -368,10 +409,11 @@ export class TerminalSession {
     this.selectionHighlights = installSelectionHighlights(this.term, {
       isSearchSelection: () => this.searchSelection,
     });
-    this.disposables.push(this.selectionHighlights);
+    this.linkHighlights = installLinkHighlights(this.term, readLinkColor);
+    this.disposables.push(this.selectionHighlights, this.linkHighlights);
     this.disposables.push(
       { dispose: installTerminalPaste(this.host, (text) => this.paste(text), this.clipboardTarget) },
-      { dispose: installTerminalDrop(this.host, (text) => this.paste(text)) },
+      { dispose: installTerminalDrop(this.host, (text) => this.paste(text), this.clipboardTarget) },
     );
     this.host.addEventListener("mousedown", this.onMiddleClick);
     this.host.addEventListener("wheel", this.onWheelZoom, { capture: true, passive: false });
@@ -437,6 +479,7 @@ export class TerminalSession {
     o.cursorBlink = t.cursorBlink;
     o.macOptionIsMeta = t.optionAsMeta;
     this.selectionHighlights.refresh();
+    this.linkHighlights.refresh();
     this.scheduleFit();
   }
 
@@ -460,6 +503,16 @@ export class TerminalSession {
     return this.snapshot;
   }
 
+  /** Marks the tab: a finished command here has not been seen yet (#3712). */
+  markUnseenDone() {
+    if (!this.snapshot.unseenDone) this.update({ unseenDone: true });
+  }
+
+  /** The completion has been seen (the tab was focused). */
+  private clearUnseenDone() {
+    if (this.snapshot.unseenDone) this.update({ unseenDone: false });
+  }
+
   get hasSelection(): boolean {
     return this.term.hasSelection();
   }
@@ -479,17 +532,14 @@ export class TerminalSession {
     const text = line.translateToString(true);
     const found = findTerminalLinks(text);
     if (found.length === 0) return undefined;
-    return found.map((l) => ({
-      text: l.text,
-      range: { start: { x: l.start + 1, y }, end: { x: l.end, y } },
-      decorations: { underline: true, pointerCursor: true },
-      activate: (event: MouseEvent) => {
+    return found.map((l) =>
+      xtermLink(this.term, line, y, l, (event) => {
         // Plain click opens; a click that ends a drag-selection never reaches here.
         event.preventDefault();
         if (l.kind === "url") void openExternal(l.url);
         else void openFileLink(l, this.snapshot.cwd);
-      },
-    }));
+      }),
+    );
   }
 
   /** Moves the host into `container` and fits / starts once the pane has a size. */
@@ -525,7 +575,10 @@ export class TerminalSession {
       () => !this.disposed,
       () => this.scheduleFit(),
     );
-    this.term.textarea?.addEventListener("focus", () => this.opts.onFocus(this.key));
+    this.term.textarea?.addEventListener("focus", () => {
+      this.clearUnseenDone();
+      this.opts.onFocus(this.key);
+    });
     this.watchImeCommit();
     if (this.pendingFocus) this.focus();
   }
@@ -757,6 +810,8 @@ export class TerminalSession {
       this.pendingInput += data;
       return;
     }
+    // Ctrl-C stops the running command: its D mark must not count as a completion (#3712).
+    if (this.snapshot.commandRunning && data.includes("\x03")) this.commandInterrupted = true;
     void call(commands.termWrite(this.ptyId, data)).catch((error) => {
       notifications().notify({
         level: "error",
@@ -781,7 +836,7 @@ export class TerminalSession {
 
   paste(text: string) {
     if (this.disposed) return;
-    this.term.paste(text);
+    pasteIntoTerminal(this.term, text);
   }
 
   clearSelection() {
@@ -820,6 +875,8 @@ export class TerminalSession {
   /** Asks xterm to take the caret. Remembered when the textarea does not exist yet. */
   focus() {
     if (this.disposed) return;
+    // The tab is becoming visible either way: its finished command counts as seen.
+    this.clearUnseenDone();
     if (!this.opened || !this.term.textarea) {
       this.pendingFocus = true;
       this.scheduleFit();
@@ -838,6 +895,7 @@ export class TerminalSession {
   applyTheme() {
     this.term.options.theme = readTerminalTheme();
     this.searchDecorations = null;
+    this.linkHighlights.refresh();
   }
 
   /** Finds `query` (highlighting every match); `incremental` keeps the current match while typing. */

@@ -1,9 +1,10 @@
 /**
  * Rainbow brackets (VS Code's bracket pair colorization): `()`, `[]`, `{}`
  * coloured by nesting depth (`--syn-bracket-<n>`, cycling), unmatched ones in
- * the error colour. Strings and comments are skipped: with the syntax tree
- * when the language has one, else lexically with the language's comment
- * tokens and quotes.
+ * the error colour. Strings, comments and markup literals are skipped: with
+ * the syntax tree when the language has one, else lexically with the
+ * language's comment tokens and quotes. Interpolated expressions stay
+ * visible as holes inside those literals.
  *
  * Only the viewport is decorated. The nesting state at its start comes from
  * checkpoints saved every few KB while scanning, so scrolling and typing
@@ -57,12 +58,39 @@ interface CommentTokens {
   block?: { open: string; close: string };
 }
 
-const SKIP_NODE = /string|comment|char|rune|regexp|textblock|docstring|heredoc/i;
+const SKIP_NODE =
+  /string|comment|char|rune|regexp|textblock|docstring|heredoc|attributevalue|cdata|doctype|processinginst|^(FormatSpec|Text|JSXText)$/i;
+const INTERPOLATION_NODE = /^(Interpolation|FormatReplacement)$/;
 const skipCache = new WeakMap<NodeType, boolean>();
 function skipsNode(type: NodeType): boolean {
   let v = skipCache.get(type);
   if (v === undefined) skipCache.set(type, (v = !type.isTop && SKIP_NODE.test(type.name)));
   return v;
+}
+
+/** Literal ranges, with holes for interpolated code (which may contain more literals). */
+function literalRanges(tree: Tree, from: number, to: number): number[] {
+  const ranges: number[] = [];
+  const parents: boolean[] = [];
+  let skipping = false;
+  let start = from;
+  const setSkipping = (next: boolean, pos: number) => {
+    if (next === skipping) return;
+    if (next) start = Math.max(from, pos);
+    else if (start < Math.min(to, pos)) ranges.push(start - from, Math.min(to, pos) - from);
+    skipping = next;
+  };
+  tree.iterate({
+    from,
+    to,
+    enter: (n) => {
+      parents.push(skipping);
+      if (skipsNode(n.type)) setSkipping(true, n.from);
+      else if (INTERPOLATION_NODE.test(n.name)) setSkipping(false, n.from);
+    },
+    leave: (n) => setSkipping(parents.pop()!, n.to),
+  });
+  return ranges;
 }
 
 /**
@@ -153,17 +181,7 @@ export class BracketScanner {
       const base = s.pos;
       const text = doc.sliceString(base, Math.min(doc.length, chunkEnd + TOKEN_SLACK));
       const stop = chunkEnd - base;
-      const skips: number[] = [];
-      if (tree)
-        tree.iterate({
-          from: base,
-          to: chunkEnd,
-          enter: (n) => {
-            if (!skipsNode(n.type)) return;
-            skips.push(n.from - base, n.to - base);
-            return false;
-          },
-        });
+      const skips = tree ? literalRanges(tree, base, chunkEnd) : [];
       let k = 0;
       let i = 0;
       while (i < stop) {

@@ -13,3 +13,10 @@
   position: relative;
   z-index: 1;
 }
+
+/* Always-on underline for highlighted URLs (linkHighlights); the decoration's foreground colour tints the text. */
+.xterm .xterm-decoration.openidea-terminal-link {
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--link, var(--accent));
+  pointer-events: none;
+}

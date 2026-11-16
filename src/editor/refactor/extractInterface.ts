@@ -17,7 +17,7 @@ import { tx } from "@/platform/i18n";
 import { commands, isCancelled, nextRequestId, unavailableText } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 import { cannotPerform } from "./catalog";
-import { applyEdit, confirmProblems } from "./signature";
+import { JAVA_NAME, applyEdit, cancellable, confirmProblems } from "./signature";
 
 /** Languages whose server extracts interfaces through the dialog. */
 export const EXTRACT_INTERFACE_LANGUAGES = new Set(["java"]);
@@ -50,8 +50,6 @@ export function memberLabel(m: InterfaceMember): string {
   const params = m.parameters ? `(${m.parameters.join(", ")})` : "";
   return `${m.name}${params}: ${m.typeName}`;
 }
-
-const JAVA_NAME = /^[A-Za-z_$][\w$]*$/;
 
 /** Why the interface can't be extracted yet, or null. */
 export function interfaceProblem(name: string, className: string, members: number): string | null {
@@ -127,6 +125,8 @@ export async function extractInterface(
   pkg: PackageChoice,
   members: readonly string[],
   preview: boolean,
+  /** The dialog closed: nothing is confirmed, previewed or applied any more. */
+  signal?: AbortSignal,
 ): Promise<InterfaceOutcome> {
   const { view } = request;
   if (view.state.doc !== request.text) return { status: "stay", error: "The file changed; open the dialog again" };
@@ -136,27 +136,32 @@ export async function extractInterface(
     for (;;) {
       await whenSynced(view);
       const token: string | null = confirmation;
-      extracted = await lspRequest(() =>
-        commands.lspExtractInterface(nextRequestId(), request.doc, request.pos, [...members], name, pkg.json, token),
+      extracted = await cancellable(signal, (id, wanted) =>
+        lspRequest(
+          () => commands.lspExtractInterface(id, request.doc, request.pos, [...members], name, pkg.json, token),
+          wanted,
+        ),
       );
+      if (signal?.aborted) return { status: "stay" };
       const fatal = extracted.problems.find((p) => p.severity === "fatal");
       if (fatal || (!extracted.edit && !extracted.confirmation))
         return { status: "stay", error: fatal?.message ?? "Nothing to change" };
       if (!extracted.confirmation) break;
-      if (!(await confirmProblems(extracted.problems.map((p) => p.message)))) return { status: "stay" };
+      if (!(await confirmProblems(extracted.problems.map((p) => p.message))) || signal?.aborted)
+        return { status: "stay" };
       confirmation = extracted.confirmation;
     }
   } catch (e) {
-    if (isCancelled(e)) return { status: "stay" };
+    if (isCancelled(e) || signal?.aborted) return { status: "stay" };
     return { status: "stay", error: errorText(e) };
   }
   const edit = extracted.edit!;
   const summary = summarizeWorkspaceEdit(edit);
   if (!summary.files) return { status: "stay", error: "Nothing to change" };
   const created = edit.files.find((f) => f.kind === "create")?.path;
-  const apply = async () => {
-    await applyEdit(view, edit);
-    if (created) await editorService().openFile(created, { focus: true });
+  const apply = async (cancel?: AbortSignal) => {
+    await applyEdit(view, edit, cancel);
+    if (created && !cancel?.aborted) await editorService().openFile(created, { focus: true });
   };
   if (preview) {
     openPopup({
@@ -167,7 +172,7 @@ export async function extractInterface(
       onConfirm: () => void apply(),
     });
   } else {
-    await apply();
+    await apply(signal);
   }
   return { status: "done" };
 }

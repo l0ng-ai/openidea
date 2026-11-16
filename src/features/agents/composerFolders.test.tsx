@@ -318,7 +318,7 @@ describe("Composer editing", () => {
 });
 
 describe("Composer current file", () => {
-  it("offers the focused editor's file until the draft references it", () => {
+  it("offers the focused editor's file, and adds it with the selection to requests when chosen", () => {
     const view = {} as TextEditorHandle["view"];
     act(() => setIdeContext(false));
     act(() =>
@@ -329,10 +329,10 @@ describe("Composer current file", () => {
       const offer = screen.getByRole("button", { name: /main\.ts/ });
       expect(offer).toHaveTextContent("Current File");
       fireEvent.click(offer);
-      expect(composerDraft(ID).text).toBe("@src/main.ts ");
-      expect(toPrompt(composerDraft(ID)).files).toEqual(["/p/src/main.ts"]);
+      expect(useAgents.getState().ideContext).toBe(true);
+      expect(composerDraft(ID).text).toBe("");
       expect(screen.queryByRole("button", { name: /main\.ts/ })).toBeNull();
-      expect(document.querySelector("[data-ref-path]")).toHaveAttribute("data-ref-path", "/p/src/main.ts");
+      expect(screen.getByTitle("src/main.ts is added to your request")).toHaveTextContent("Current File");
     } finally {
       act(() => useEditorRegistry.setState({ active: null }));
     }
@@ -348,8 +348,6 @@ describe("Composer IDE context", () => {
     );
     try {
       renderComposer();
-      const toggle = screen.getByRole("button", { name: /IDE Context Enabled/ });
-      expect(toggle).toHaveAttribute("aria-pressed", "true");
       expect(screen.queryByRole("button", { name: /main\.ts/ })).toBeNull();
       expect(screen.getByTitle("src/main.ts is added to your request")).toHaveTextContent("Current File");
 
@@ -369,9 +367,9 @@ describe("Composer IDE context", () => {
       // A draft that already references the file is sent as written.
       expect(await send("see @src/main.ts:1")).toEqual({ text: "see @src/main.ts:1", files: [], images: [] });
 
-      fireEvent.click(toggle);
+      fireEvent.click(screen.getByRole("button", { name: "Don't Add the Current File" }));
       expect(useAgents.getState().ideContext).toBe(false);
-      expect(screen.getByRole("button", { name: /IDE Context Disabled/ })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("button", { name: /main\.ts/ })).toHaveTextContent("Current File");
       expect(await send("explain")).toEqual({ text: "explain", files: [], images: [] });
     } finally {
       act(() => useEditorRegistry.setState({ active: null }));

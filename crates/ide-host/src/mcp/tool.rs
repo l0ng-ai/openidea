@@ -37,7 +37,12 @@ impl Call {
             .collect()
     }
     pub fn resolve_inside(&self, path: &str) -> IdeResult<PathBuf> {
-        resolve_inside(self.root(), path)
+        resolve_inside(self.root(), path).or_else(|e| {
+            // An absolute path may name a trusted attached project, wherever it is.
+            let absolute = path.starts_with("file://") || Path::new(path).is_absolute();
+            let attached = if absolute { self.trusted_attachments() } else { Vec::new() };
+            attached.iter().find_map(|root| resolve_inside(root, path).ok()).ok_or(e)
+        })
     }
     pub async fn resolve_writable(&self, path: &str) -> IdeResult<PathBuf> {
         let path = self.resolve_inside(path)?;
@@ -46,7 +51,24 @@ impl Call {
     }
     pub async fn check_writable(&self, path: &Path) -> IdeResult<()> {
         self.project.require_trust()?;
-        ensure_inside(self.root(), path)
+        self.ensure_writable_place(path)
+    }
+    /// `path` is inside the project or a trusted project attached to it.
+    pub fn ensure_writable_place(&self, path: &Path) -> IdeResult<()> {
+        ensure_inside(self.root(), path).or_else(|e| {
+            if self.trusted_attachments().iter().any(|root| ensure_inside(root, path).is_ok()) {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })
+    }
+    /// The projects attached to this one that the user trusts (each is trusted on its own).
+    fn trusted_attachments(&self) -> Vec<PathBuf> {
+        attached_projects(self.root())
+            .into_iter()
+            .filter(|root| self.host.trust.trusted(root).unwrap_or(false))
+            .collect()
     }
     pub async fn ask(&self, request: ide_core::event::McpUiRequest) -> IdeResult<()> {
         self.host.mcp_requests.ask(self, request).await
@@ -299,4 +321,13 @@ pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
 }
 pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
     resolve_inside(root, &path.to_string_lossy()).map(|_| ())
+}
+
+/// The projects attached to the one at `root` (its workspace members), `root` itself left out.
+pub(crate) fn attached_projects(root: &Path) -> Vec<PathBuf> {
+    ide_workspace::workspace::Workspace::load(root)
+        .ok()
+        .flatten()
+        .map(|w| w.projects.into_iter().filter(|p| p != root).collect())
+        .unwrap_or_default()
 }
