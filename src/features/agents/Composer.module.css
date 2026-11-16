@@ -417,6 +417,51 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+.pricingCard {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-popup);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.pricingHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--fg-strong);
+  text-align: left;
+  cursor: pointer;
+}
+.pricingHeader:hover,
+.pricingHeader:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+}
+.pricingChevron {
+  flex: none;
+  color: var(--fg-muted);
+}
+.pricingTitle {
+  flex: 1 1 auto;
+  font-weight: 600;
+  font-size: var(--fs-small);
+}
+.pricingBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 2px 12px 10px;
+}
+.pricingSubhead {
+  margin-bottom: 2px;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
 .modePopup {
   min-width: 200px;
   padding: 6px 0;

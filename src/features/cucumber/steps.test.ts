@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { expressionRegExp, featureSteps, matchesStep, stepDefinitions } from "./steps";
+import {
+  definingKeyword,
+  definitionInsertions,
+  expressionRegExp,
+  featureSteps,
+  matchesStep,
+  snippetStyle,
+  stepDefinitions,
+  stepSnippet,
+} from "./steps";
 
 const STEPS = `import { Given, When, Then } from "@cucumber/cucumber";
 import { createBdd } from "playwright-bdd";
@@ -83,5 +92,115 @@ describe("Cucumber steps", () => {
     const defs = stepDefinitions(STEPS);
     const matched = featureSteps(FEATURE).map((s) => defs.findIndex((d) => matchesStep(d, s)));
     expect(matched).toEqual([0, 1, 2, 3, 1, 3]);
+  });
+});
+
+describe("stepSnippet", () => {
+  const definitionOf = (snippet: { text: string }) => stepDefinitions(snippet.text)[0]!;
+  const step = (text: string) => featureSteps(`Feature: f\n  Scenario: s\n    Given ${text}\n`)[0]!;
+
+  it("turns strings and numbers into parameters and matches the step it was made for", () => {
+    const snippet = stepSnippet("When", `I add 3 "red apples" for 2.5 EUR (each) to cart/basket`);
+    expect(snippet.text.split("\n")[0]).toBe(
+      `When('I add {int} {string} for {float} EUR \\\\(each\\\\) to cart\\\\/basket', async function (int, string, float) {`,
+    );
+    expect(snippet.text).toContain("return 'pending';");
+    expect(snippet.text.split("\n")[snippet.body]).toBe("  return 'pending';");
+    const definition = definitionOf(snippet);
+    expect(matchesStep(definition, step(`I add 3 "red apples" for 2.5 EUR (each) to cart/basket`))).toBe(true);
+    expect(matchesStep(definition, step(`I add 3 "red apples" for 2.5 EUR to cart`))).toBe(false);
+  });
+
+  it("numbers repeated parameter names and leaves digits inside words alone", () => {
+    const snippet = stepSnippet("Given", "item2 costs 4 and 5 with 'it'");
+    expect(snippet.text.split("\n")[0]).toBe(
+      "Given('item2 costs {int} and {int} with {string}', async function (int, int2, string) {",
+    );
+    expect(matchesStep(definitionOf(snippet), step("item2 costs 4 and 5 with 'x'"))).toBe(true);
+  });
+
+  it("escapes quotes and keeps plain steps plain", () => {
+    const snippet = stepSnippet("Then", "the user's cart is empty");
+    expect(snippet.text.split("\n")[0]).toBe("Then('the user\\'s cart is empty', async function () {");
+    expect(matchesStep(definitionOf(snippet), step("the user's cart is empty"))).toBe(true);
+  });
+});
+
+describe("stepSnippet for playwright-bdd", () => {
+  it("takes the fixtures first and has no pending return", () => {
+    const snippet = stepSnippet("Then", "I see 2 items", "playwright-bdd");
+    expect(snippet.text).toBe(
+      "Then('I see {int} items', async ({}, int) => {\n  // Write code here that turns the phrase above into concrete actions\n});\n",
+    );
+    expect(snippet.body).toBe(1);
+  });
+});
+
+describe("definingKeyword", () => {
+  it("continues the previous primary keyword for And, But and *", () => {
+    const steps = featureSteps(
+      "Feature: f\n  Scenario: s\n    Given a\n    And b\n    When c\n    * d\n    Then e\n    But f\n",
+    );
+    expect(steps.map((s) => definingKeyword(steps, s))).toEqual(["Given", "Given", "When", "When", "Then", "Then"]);
+  });
+});
+
+describe("cucumber-jvm", () => {
+  const step = (text: string) => featureSteps(`Feature: f\n  Scenario: s\n    Given ${text}\n`)[0]!;
+  const JAVA = `package shop;
+
+import io.cucumber.java.en.Given;
+import io.cucumber.java.en.Then;
+
+public class CartSteps {
+    @Given("an empty cart")
+    public void emptyCart() {}
+
+    @Then("^the total is (\\\\d+\\\\.\\\\d+) EUR$")
+    public void total(String amount) {}
+}
+`;
+
+  it("reads annotation patterns, anchored strings as regular expressions", () => {
+    const definitions = stepDefinitions(JAVA);
+    expect(definitions.map((d) => d.source)).toEqual(["an empty cart", "^the total is (\\d+\\.\\d+) EUR$"]);
+    expect(matchesStep(definitions[1]!, step("the total is 3.50 EUR"))).toBe(true);
+    expect(matchesStep(definitions[0]!, step("an empty cart"))).toBe(true);
+  });
+
+  it("writes a Java method into the class with the keyword's import", () => {
+    const snippet = stepSnippet("When", `I pay 12 "EUR" for 2.5 kg (net)`, "java");
+    expect(snippet.text).toBe(
+      [
+        '    @When("I pay {int} {string} for {double} kg \\\\(net\\\\)")',
+        "    public void i_pay_for_kg_net(Integer int1, String string, Double double1) {",
+        "        // Write code here that turns the phrase above into concrete actions",
+        "        throw new io.cucumber.java.PendingException();",
+        "    }",
+        "",
+      ].join("\n"),
+    );
+    const { insertions, select } = definitionInsertions(JAVA, "When", snippet, "java");
+    let out = JAVA;
+    for (const i of [...insertions].sort((a, b) => b.at - a.at)) out = out.slice(0, i.at) + i.text + out.slice(i.at);
+    expect(out).toContain("import io.cucumber.java.en.Then;\nimport io.cucumber.java.en.When;\n");
+    expect(
+      out.endsWith("    public void total(String amount) {}\n\n" + snippet.text.replace(/\n$/, "") + "\n}\n"),
+    ).toBe(true);
+    expect(out.split("\n")[select.line]!.slice(select.from, select.to)).toBe(
+      "throw new io.cucumber.java.PendingException();",
+    );
+    const created = stepDefinitions(out).find((d) => d.source.startsWith("I pay"))!;
+    expect(matchesStep(created, step(`I pay 12 "EUR" for 2.5 kg (net)`))).toBe(true);
+  });
+
+  it("writes Kotlin in camel case and escapes $", () => {
+    const snippet = stepSnippet("Given", "a $5 coupon", "kotlin");
+    expect(snippet.text.split("\n").slice(0, 2)).toEqual([
+      '    @Given("a \\${int} coupon")',
+      "    fun aCoupon(int1: Int) {",
+    ]);
+    expect(snippetStyle("src/test/kotlin/CartSteps.kt", "")).toBe("kotlin");
+    expect(snippetStyle("steps/cart.steps.ts", "createBdd()")).toBe("playwright-bdd");
   });
 });

@@ -240,6 +240,10 @@ export const DEPENDENCY_INSPECTION = "builtin:dependency-versions";
 export const CONFLICT_MARKERS_PRODUCER = "merge-conflict-markers";
 export const CONFLICT_MARKERS_INSPECTION = "builtin:merge-conflict-markers";
 
+/** Gherkin steps no step definition of the project matches. */
+export const CUCUMBER_UNDEFINED_STEP_PRODUCER = "cucumber-undefined-step";
+export const CUCUMBER_UNDEFINED_STEP_INSPECTION = "builtin:cucumber-undefined-step";
+
 /** Python inheritance checks the IDE computes from its own inheritance graph (no server offers one). */
 export const PYTHON_CIRCULAR_BASES_PRODUCER = "python-circular-bases";
 export const PYTHON_CIRCULAR_BASES_INSPECTION = "builtin:python-circular-bases";
@@ -319,6 +323,15 @@ export const BUILTIN_INSPECTIONS: readonly BuiltinInspection[] = [
       "Errors the project's vendor/bin/phpstan reports in a PHP file when it is saved, shown at their lines. PHPStan reads phpstan.neon, phpstan.neon.dist or phpstan.dist.neon from the project root, or the configuration file chosen in Settings › Languages & Frameworks › PHP. Each rule PHPStan has reported is listed below by its identifier and can be turned off or re-graded on its own.",
     defaultLevel: "warning",
     byCode: true,
+  },
+  {
+    id: CUCUMBER_UNDEFINED_STEP_INSPECTION,
+    producer: CUCUMBER_UNDEFINED_STEP_PRODUCER,
+    name: "Undefined step",
+    group: "Gherkin",
+    description:
+      "Reports steps of a .feature file that no step definition of the project matches (Cucumber expressions and regular expressions, in JavaScript, TypeScript, Java and Kotlin files). Projects without step definitions in those files are not checked. Alt+Enter creates the definition.",
+    defaultLevel: "warning",
   },
   {
     id: PYTHON_CIRCULAR_BASES_INSPECTION,

@@ -3939,3 +3939,202 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
     assert!(reloaded.1.contains(&"slack".to_string()));
     mgr.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails() {
+    #[derive(Clone, Copy)]
+    enum BreakAt {
+        Initialize,
+        SessionNew,
+        Prompt,
+    }
+
+    struct BrokenHeadless(BreakAt);
+
+    impl ide_jsonrpc::Handler for BrokenHeadless {
+        fn on_notification(&self, _: &str, _: Value) {}
+
+        fn on_request(&self, method: &str, _: Value) -> Result<Value, (i64, String)> {
+            match (self.0, method) {
+                (BreakAt::Initialize, "initialize") => {
+                    Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, "connect unsupported".into()))
+                }
+                (_, "initialize") => Ok(json!({
+                    "protocolVersion": 1,
+                    "agentCapabilities": { "loadSession": true },
+                    "agentInfo": { "name": "copilot", "version": "2.0.0" },
+                })),
+                (BreakAt::SessionNew, "session/new") => {
+                    Err((ide_jsonrpc::codes::INVALID_PARAMS, "session.create schema changed".into()))
+                }
+                (BreakAt::Prompt, "session/new") => Ok(json!({ "sessionId": "headless-sess" })),
+                (BreakAt::Prompt, "session/prompt") => {
+                    Err((ide_jsonrpc::codes::INVALID_PARAMS, "session.send schema changed".into()))
+                }
+                _ => Err((ide_jsonrpc::codes::METHOD_NOT_FOUND, format!("unexpected {method}"))),
+            }
+        }
+    }
+
+    let build_mgr = |dir: &Path, break_at: BreakAt| {
+        let acp_agent = Arc::new(FakeAgent::default());
+        let seen_drivers = Arc::new(Mutex::new(Vec::<(provider::Driver, Vec<String>)>::new()));
+        let connector: Connector = {
+            let acp_agent = acp_agent.clone();
+            let seen_drivers = seen_drivers.clone();
+            Arc::new(move |spec, _cwd, client, _stderr| {
+                seen_drivers.lock().push((spec.driver, spec.args.clone()));
+                let (a, b) = duplex(1 << 20);
+                let (ar, aw) = tokio::io::split(a);
+                let (br, bw) = tokio::io::split(b);
+                let server = match spec.driver {
+                    provider::Driver::Copilot => {
+                        Peer::connect_framed(br, bw, Arc::new(BrokenHeadless(break_at)), Framing::Lines)
+                    }
+                    _ => Peer::connect_framed(br, bw, acp_agent.clone(), Framing::Lines),
+                };
+                acp_agent.servers.lock().push(server);
+                Ok(Peer::connect_framed(ar, aw, client, Framing::Lines))
+            })
+        };
+        let mgr = AgentManager::with_connector(
+            AgentPaths {
+                project_root: dir.to_path_buf(),
+                store_dir: dir.join("store"),
+                worktrees_dir: dir.join("worktrees"),
+                models_file: dir.join("models.json"),
+                custom_agents_dir: None,
+                home_dir: None,
+                env_secrets: None,
+                catalogs: Arc::default(),
+            },
+            tokio::runtime::Handle::current(),
+            connector,
+        );
+        (mgr, seen_drivers)
+    };
+
+    // 1. Probe failure on headless falls back to `copilot --acp`.
+    let tmp1 = tempfile::tempdir().unwrap();
+    let (mgr1, seen1) = build_mgr(tmp1.path(), BreakAt::Initialize);
+    let probe = mgr1.probe("copilot", false).await.unwrap();
+    assert!(probe.error.is_none(), "{probe:?}");
+    assert!(probe.protocol.starts_with("ACP v"), "{probe:?}");
+    {
+        let launches = seen1.lock().clone();
+        assert_eq!(launches.len(), 2, "{launches:?}");
+        assert_eq!(launches[0].0, provider::Driver::Copilot);
+        assert_eq!(launches[1], (provider::Driver::Acp, vec!["--acp".to_owned()]));
+    }
+    mgr1.shutdown();
+
+    // 2. `session/new` (`session.create`) failure on headless falls back to `copilot --acp`.
+    let tmp2 = tempfile::tempdir().unwrap();
+    let (mgr2, seen2) = build_mgr(tmp2.path(), BreakAt::SessionNew);
+    let task2 = mgr2
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "copilot".into(),
+            config: vec![AgentConfigChoice { id: "context_tier".into(), value: "long_context".into() }],
+            isolation: Isolation::Local,
+            base: None,
+            mcp_overrides: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr2, &task2.id, AgentStatus::Ready).await;
+    {
+        let launches = seen2.lock().clone();
+        assert_eq!(launches.len(), 2, "{launches:?}");
+        assert_eq!(launches[0].0, provider::Driver::Copilot);
+        assert_eq!(launches[1], (provider::Driver::Acp, vec!["--acp".to_owned()]));
+    }
+    mgr2.shutdown();
+
+    // 3. `session/prompt` (`session.send`) protocol error before streaming falls back to `copilot --acp`.
+    let tmp3 = tempfile::tempdir().unwrap();
+    let (mgr3, seen3) = build_mgr(tmp3.path(), BreakAt::Prompt);
+    let task3 = mgr3
+        .create(NewAgentTask {
+            project_root: None,
+            prompt: text("again"),
+            provider: "copilot".into(),
+            config: vec![],
+            isolation: Isolation::Local,
+            base: None,
+            mcp_overrides: BTreeMap::new(),
+        })
+        .await
+        .unwrap();
+    wait_for(&mgr3, &task3.id, AgentStatus::Ready).await;
+    {
+        let launches = seen3.lock().clone();
+        assert_eq!(launches.len(), 2, "{launches:?}");
+        assert_eq!(launches[0].0, provider::Driver::Copilot);
+        assert_eq!(launches[1], (provider::Driver::Acp, vec!["--acp".to_owned()]));
+    }
+    mgr3.shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn copilot_catalog_discovery_falls_back_to_acp_when_headless_exits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let agents_dir = tmp.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    let fake_copilot = tmp.path().join("copilot");
+    let script = r#"#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--headless" ]; then
+    echo "unknown option: --headless" >&2
+    exit 1
+  fi
+done
+while IFS= read -r line; do
+  case "$line" in
+    *'"initialize"'*)
+      echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"agentInfo":{"name":"copilot","version":"1.0.112"}}}'
+      ;;
+    *'"session/new"'*)
+      echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"acp-disc-1","configOptions":[{"id":"model","name":"Model","category":"model","type":"select","currentValue":"claude-sonnet-5.5","options":[{"value":"claude-sonnet-5.5","name":"Claude Sonnet 5.5","_meta":{"copilotPriceCategory":"medium"}}]},{"id":"reasoning_effort","name":"Effort","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"low","name":"Low"},{"value":"medium","name":"Medium"},{"value":"high","name":"High"}]}]}}'
+      ;;
+  esac
+done
+"#;
+    std::fs::write(&fake_copilot, script).unwrap();
+    std::fs::set_permissions(&fake_copilot, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        agents_dir.join("copilot.toml"),
+        format!("name = \"GitHub Copilot\"\ncommand = {:?}\nargs = [\"--acp\"]\n", fake_copilot.to_string_lossy()),
+    )
+    .unwrap();
+
+    let mgr = AgentManager::new(
+        AgentPaths {
+            project_root: tmp.path().to_path_buf(),
+            store_dir: tmp.path().join("store"),
+            worktrees_dir: tmp.path().join("worktrees"),
+            models_file: tmp.path().join("models.json"),
+            custom_agents_dir: Some(agents_dir),
+            home_dir: None,
+            env_secrets: None,
+            catalogs: Arc::default(),
+        },
+        tokio::runtime::Handle::current(),
+    );
+    mgr.commands("copilot", None).await.unwrap();
+    let copilot = mgr.providers().into_iter().find(|p| p.id == "copilot").unwrap();
+    let models = copilot.config.iter().find(|o| o.category.as_deref() == Some("model")).expect("ACP fallback models");
+    assert_eq!(models.current.as_deref(), Some("claude-sonnet-5.5"));
+    assert_eq!(
+        copilot.thought_levels["claude-sonnet-5.5"]
+            .iter()
+            .find(|o| o.id == "reasoning_effort")
+            .and_then(|o| o.current.as_deref()),
+        Some("medium")
+    );
+    mgr.shutdown();
+}

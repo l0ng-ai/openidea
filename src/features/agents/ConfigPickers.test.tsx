@@ -366,6 +366,56 @@ describe("model and effort button", () => {
     expect(within(listbox).getByText("Models")).toBeVisible();
   });
 
+  it("updates per-tier token pricing live when switching Context Size", () => {
+    const cfg = copilotConfig().map((o) =>
+      o.id === "model"
+        ? {
+            ...o,
+            values: o.values.map((v) =>
+              v.value === "claude-sonnet-5.5"
+                ? {
+                    ...v,
+                    pricing: {
+                      costTier: "medium",
+                      multiplier: 1,
+                      tiers: {
+                        default: { input: 200, output: 1000, cacheRead: 10, cacheWrite: 0, contextTokens: 200_000 },
+                        long_context: {
+                          input: 400,
+                          output: 2000,
+                          cacheRead: 20,
+                          cacheWrite: 0,
+                          contextTokens: 1_000_000,
+                        },
+                      },
+                    },
+                  }
+                : v,
+            ),
+          }
+        : o,
+    );
+    cfg.push({
+      id: "context_tier",
+      name: "Context Size",
+      category: "model_config",
+      description: null,
+      current: "long_context",
+      via: "option",
+      values: [value("default", "200K"), value("long_context", "1M")],
+    });
+    const { rerender } = render(<ConfigPickers config={cfg} onChange={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure model" }));
+    expect(screen.getByText("Credits per 1M tokens")).toBeVisible();
+    expect(screen.getByText("400")).toBeVisible();
+    expect(screen.getByText("2000")).toBeVisible();
+
+    rerender(<ConfigPickers config={cfg} values={{ context_tier: "default" }} onChange={vi.fn()} />);
+    expect(screen.getByText("200")).toBeVisible();
+    expect(screen.getByText("1000")).toBeVisible();
+  });
+
   it("filters the model list and picks the highlighted model with the keyboard", () => {
     const onChange = vi.fn();
     render(<ConfigPickers config={copilotConfig()} onChange={onChange} />);

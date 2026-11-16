@@ -89,6 +89,7 @@ pub fn register_builtin_points(
     registry.register(Arc::new(UiPoint::new(p::SETTINGS, ui.clone(), p::settings)))?;
     registry.register(Arc::new(UiPoint::new(p::VIEWS, ui.clone(), p::view)))?;
     registry.register(Arc::new(UiPoint::new(p::CUSTOM_EDITORS, ui.clone(), p::custom_editor)))?;
+    registry.register(Arc::new(UiPoint::new(p::EDITOR_PANELS, ui.clone(), p::editor_panel)))?;
     registry.register(Arc::new(UiPoint::new(p::MARKER_ICONS, ui.clone(), p::marker_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_ICONS, ui.clone(), p::file_icon)))?;
     registry.register(Arc::new(UiPoint::new(p::FILE_TEMPLATES, ui.clone(), p::file_template)))?;

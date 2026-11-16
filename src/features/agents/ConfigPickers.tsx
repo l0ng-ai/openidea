@@ -7,11 +7,11 @@
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
-import type { AgentConfigOption } from "@/bindings";
+import type { AgentConfigOption, AgentModelPricing } from "@/bindings";
 import { tx as rawTx, useTx } from "@/platform/i18n";
 import { Icon, IconButton, Popup, Select, T, Toggle } from "@/ui";
 import { SelectListbox, type SelectOption } from "@/ui/Select";
-import { isContextOption, mainOptions, modelConfigOptions, modeIcon } from "./composerModel";
+import { formatCreditRate, isContextOption, mainOptions, modelConfigOptions, modeIcon } from "./composerModel";
 import { togglePinnedModel, useAgents } from "./store";
 import styles from "./Composer.module.css";
 
@@ -103,7 +103,7 @@ export function ConfigPickers({
   const model = options.find((o) => o.category === "model");
   const effort = config.find((o) => o.category === "thought_level" && o.values.length > 0);
   const modelConfigs = modelConfigOptions(config);
-  const hasCostMeta = model?.values.some((v) => !!v.costCategory || !!v.usageMultiplier) ?? false;
+  const hasCostMeta = model?.values.some((v) => !!v.costCategory || !!v.usageMultiplier || !!v.pricing) ?? false;
   const combinedModel = model && (modelRefresh || effort || modelConfigs.length > 0 || hasCostMeta);
   const tuckedModelConfig = new Set(modelConfigs.map((o) => o.id));
   const mode = options.find((o) => o.category === "mode");
@@ -294,7 +294,8 @@ function ModelEffortPicker({
     contextOption ||
     otherModelConfigs.length > 0 ||
     selectedModel?.costCategory ||
-    selectedModel?.usageMultiplier
+    selectedModel?.usageMultiplier ||
+    selectedModel?.pricing
   );
 
   const closePopup = () => {
@@ -519,6 +520,7 @@ function ModelDetailView({
   onChange: (option: string, value: string) => void;
 }) {
   const tx = useTx();
+  const [pricingOpen, setPricingOpen] = useState(true);
 
   const defaultEffort = effort ? (effort.defaultValue ?? effort.current) : null;
   const defaultContext = contextOption ? (contextOption.defaultValue ?? contextOption.current) : null;
@@ -627,21 +629,115 @@ function ModelDetailView({
         </div>
       ))}
 
-      {hasCostCard && (
-        <div className={styles.costCard}>
-          <div className={styles.costCardHeader}>
-            <span className={styles.costCardTitle}>
-              <T>Pricing details</T>
-            </span>
-            <CostBadge category={modelEntry.costCategory} />
-          </div>
-          {modelEntry.usageMultiplier && (
-            <div className={styles.costCardRow}>
-              <span>
-                <T>Multiplier</T>
+      {modelEntry.pricing ? (
+        <PricingDetailsCard
+          pricing={modelEntry.pricing}
+          activeTier={contextValue}
+          open={pricingOpen}
+          onToggle={() => setPricingOpen((v) => !v)}
+        />
+      ) : (
+        hasCostCard && (
+          <div className={styles.costCard}>
+            <div className={styles.costCardHeader}>
+              <span className={styles.costCardTitle}>
+                <T>Pricing details</T>
               </span>
-              <span className={styles.costCardValue}>{modelEntry.usageMultiplier}</span>
+              <CostBadge category={modelEntry.costCategory} />
             </div>
+            {modelEntry.usageMultiplier && (
+              <div className={styles.costCardRow}>
+                <span>
+                  <T>Multiplier</T>
+                </span>
+                <span className={styles.costCardValue}>{modelEntry.usageMultiplier}</span>
+              </div>
+            )}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+/** Collapsible per-tier token pricing breakdown card (`Credits per 1M tokens`). */
+function PricingDetailsCard({
+  pricing,
+  activeTier,
+  open,
+  onToggle,
+}: {
+  pricing: AgentModelPricing;
+  activeTier: string | null;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const tiers = pricing.tiers ?? {};
+  const tierData =
+    (activeTier ? tiers[activeTier] : undefined) ?? tiers["default"] ?? tiers["long_context"] ?? undefined;
+  const hasRates = tierData && (tierData.input != null || tierData.output != null);
+  if (!hasRates && pricing.multiplier == null && !pricing.costTier) return null;
+
+  return (
+    <div className={styles.pricingCard}>
+      <button type="button" className={styles.pricingHeader} aria-expanded={open} onClick={onToggle}>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={12} className={styles.pricingChevron} />
+        <span className={styles.pricingTitle}>
+          <T>Pricing details</T>
+        </span>
+        {pricing.costTier ? (
+          <CostBadge category={pricing.costTier} />
+        ) : (
+          pricing.multiplier != null && (
+            <span className={styles.costBadge}>{`${formatCreditRate(pricing.multiplier)}x`}</span>
+          )
+        )}
+      </button>
+      {open && (
+        <div className={styles.pricingBody}>
+          {hasRates && tierData ? (
+            <>
+              <div className={styles.pricingSubhead}>
+                <T>Credits per 1M tokens</T>
+              </div>
+              <div className={styles.costCardRow}>
+                <span>
+                  <T>Input</T>
+                </span>
+                <span className={styles.costCardValue}>{formatCreditRate(tierData.input)}</span>
+              </div>
+              <div className={styles.costCardRow}>
+                <span>
+                  <T>Output</T>
+                </span>
+                <span className={styles.costCardValue}>{formatCreditRate(tierData.output)}</span>
+              </div>
+              {tierData.cacheRead != null && (
+                <div className={styles.costCardRow}>
+                  <span>
+                    <T>Cache Read</T>
+                  </span>
+                  <span className={styles.costCardValue}>{formatCreditRate(tierData.cacheRead)}</span>
+                </div>
+              )}
+              {tierData.cacheWrite != null && (
+                <div className={styles.costCardRow}>
+                  <span>
+                    <T>Cache Write</T>
+                  </span>
+                  <span className={styles.costCardValue}>{formatCreditRate(tierData.cacheWrite)}</span>
+                </div>
+              )}
+            </>
+          ) : (
+            pricing.multiplier != null && (
+              <div className={styles.costCardRow}>
+                <span>
+                  <T>Multiplier</T>
+                </span>
+                <span className={styles.costCardValue}>{`${formatCreditRate(pricing.multiplier)}x`}</span>
+              </div>
+            )
           )}
         </div>
       )}

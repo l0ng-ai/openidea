@@ -122,6 +122,8 @@ export function lazyEditorExtension(
 export interface TextEditorHandle {
   view: EditorView;
   ctx: EditorDocContext;
+  /** The editor tab it shows, for the editors of tabs (not diff sides, previews…). */
+  tabId?: string;
 }
 
 interface EditorRegistry {

@@ -1350,15 +1350,20 @@ pub(crate) fn workspace_member_roots(root: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Workspace members in manifest order, or extra Project Structure directories, Gradle
-/// project folders outside the project, and directories of Maven POMs linked from
-/// outside it (`build_cache` is the Gradle sync cache).
+/// Workspace members in manifest order, or the attached projects outside the project and
+/// those inside it that its walk skips as ignored (a git worktree under an ignored folder),
+/// extra Project Structure directories, Gradle project folders outside the project, and
+/// directories of Maven POMs linked from outside it (`build_cache` is the Gradle sync cache).
 fn content_roots(settings: &ide_core::settings::Settings, root: &Path, build_cache: &Path) -> Vec<PathBuf> {
     if let Ok(Some(workspace)) = ide_workspace::workspace::Workspace::load(root) {
         if workspace.is_container(root) {
             return workspace.projects;
         }
-        let mut roots = workspace.projects.into_iter().filter(|p| !p.starts_with(root)).collect::<Vec<_>>();
+        let mut roots = workspace
+            .projects
+            .into_iter()
+            .filter(|p| !p.starts_with(root) || ide_index::walk_skips(root, p))
+            .collect::<Vec<_>>();
         for path in extra_content_roots(settings, root, build_cache) {
             if !roots.contains(&path) {
                 roots.push(path);

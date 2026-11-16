@@ -136,6 +136,40 @@ pub struct AgentRetry {
     pub error: Option<String>,
 }
 
+/// Token pricing (Credits per 1M tokens) and context window capacity for one tier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokenPricing {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cache_write: Option<f64>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub context_tokens: Option<u32>,
+}
+
+/// Pricing and context-tier metadata attached to a model [`AgentConfigValue`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelPricing {
+    /// `"low"`, `"medium"`, `"high"`, or `"very_high"`.
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_tier: Option<String>,
+    /// Request-based billing multiplier (e.g. `1.0`, `0.33`, `3.0`), when applicable.
+    #[serde(default)]
+    #[specta(optional)]
+    pub multiplier: Option<f64>,
+    /// Token pricing keyed by context tier (`"default"`, `"long_context"`).
+    #[serde(default)]
+    pub tiers: BTreeMap<String, AgentTokenPricing>,
+}
+
 /// One value of a select-type session setting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -151,6 +185,10 @@ pub struct AgentConfigValue {
     #[serde(default)]
     #[specta(optional)]
     pub usage_multiplier: Option<String>,
+    /// Detailed per-tier token pricing from `_meta.pricing` when available.
+    #[serde(default)]
+    #[specta(optional)]
+    pub pricing: Option<Box<AgentModelPricing>>,
 }
 
 /// How a setting is changed.

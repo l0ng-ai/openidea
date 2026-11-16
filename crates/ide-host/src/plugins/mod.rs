@@ -1489,9 +1489,8 @@ impl PluginHost {
     }
 
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
-            .iter()
-            .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
+        let declared =
+            ui_points::WEB_POINTS.iter().any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
     }
 

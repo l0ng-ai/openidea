@@ -1,4 +1,4 @@
-//! Build tool models for the Maven and Gradle tool windows, and Build › Build
+//! Build tool models for the Maven, Gradle and sbt tool windows, and Build › Build
 //! Project ([`compile`]) for Maven, Gradle, Cargo, Go and TypeScript projects.
 //!
 //! [`load`] reads the project's build files (instant, no build tool involved)
@@ -13,6 +13,7 @@ pub mod kotlin_bridge;
 pub mod maven;
 pub mod pom_edit;
 mod process;
+pub mod sbt;
 mod sync;
 pub mod web;
 mod xml;
@@ -20,6 +21,7 @@ mod xml;
 pub use gradle::{GradleModel, GradleProject, GradleTask};
 pub use gradle_deps::{GradleDependency, gradle_dependencies};
 pub use maven::{MavenDependency, MavenModel, MavenPlugin, MavenProfile, MavenProject, Omission};
+pub use sbt::{SbtBuild, SbtProject};
 pub use sync::{
     SyncOptions, SyncProgress, maven_profiles, save_maven_profiles, sync_gradle, sync_gradle_model, sync_maven,
 };
@@ -42,6 +44,9 @@ pub struct BuildModel {
     pub maven: Option<MavenModel>,
     #[serde(default)]
     pub gradle: Vec<GradleModel>,
+    /// sbt builds, read from their `build.sbt` (sbt is not started).
+    #[serde(default)]
+    pub sbt: Vec<SbtBuild>,
 }
 
 impl BuildModel {
@@ -96,7 +101,7 @@ pub fn load_linked(
             g
         })
         .collect();
-    BuildModel { maven, gradle }
+    BuildModel { maven, gradle, sbt: sbt::load(root) }
 }
 
 /// Gradle project folders outside `root` as of the last sync (`includeFlat` siblings):
@@ -329,7 +334,7 @@ mod tests {
             ..Default::default()
         };
         let gradle = gradle::load(root).into_iter().collect();
-        let model = BuildModel { maven: Some(maven), gradle };
+        let model = BuildModel { maven: Some(maven), gradle, sbt: Vec::new() };
         let names: Vec<String> = dependency_coordinates(root, &model)
             .into_iter()
             .map(|c| format!("{}{}:{}:{}", if c.gradle { "G " } else { "M " }, c.group_id, c.artifact_id, c.version))
@@ -348,7 +353,7 @@ mod tests {
             "ext { gson = '2.8.9' }\ndependencies { implementation \"com.google.code.gson:gson:${gson}\" }\n",
         )
         .unwrap();
-        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect(), sbt: Vec::new() };
         let names: Vec<String> = dependency_coordinates(root, &model)
             .into_iter()
             .map(|c| format!("{}:{}:{}", c.group_id, c.artifact_id, c.version))
@@ -367,7 +372,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("gradle.properties"), "# versions\nv = 1.2\nonlyInProperties: 2.3\n").unwrap();
-        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect() };
+        let model = BuildModel { maven: None, gradle: gradle::load(root).into_iter().collect(), sbt: Vec::new() };
         let versions: Vec<_> = dependency_coordinates(root, &model).into_iter().map(|c| c.version).collect();
         assert_eq!(versions, ["1.2", "2.3"]);
     }

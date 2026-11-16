@@ -231,7 +231,7 @@ export class EditorSlot {
       if (this.scroll) view.dispatch({ effects: this.scroll });
     }
     this.scroll = null;
-    this.handle = { view, ctx: this.model.ctx() };
+    this.handle = { view, ctx: this.model.ctx(), tabId: this.tabId };
     _addEditor(this.handle);
     if (this.pendingReveal) {
       const r = this.pendingReveal;

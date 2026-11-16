@@ -106,6 +106,37 @@ it("switches model-specific levels and restores each draft effort before startin
   ]);
 });
 
+it("uses GitHub Copilot's own defaults and preserves per-model context tier and effort choices", async () => {
+  const copilot = {
+    ...backend.providers[0]!,
+    id: "copilot",
+    name: "GitHub Copilot",
+    config: [option("model", "model", ["gemini-4-carbon", "gpt-5.6-sol"], "gemini-4-carbon")],
+    thoughtLevels: {
+      "gemini-4-carbon": [
+        option("reasoning_effort", "thought_level", ["low", "medium", "high"], "medium"),
+        option("context_tier", "model_config", ["default", "long_context"], "default"),
+      ],
+      "gpt-5.6-sol": [
+        option("reasoning_effort", "thought_level", ["low", "medium", "high", "xhigh", "max"], "medium"),
+        option("context_tier", "model_config", ["default", "long_context"], "default"),
+      ],
+    },
+  };
+  useAgents.setState({ providers: [copilot], draft: savedDraft({ provider: "copilot", config: {} }) });
+  render(<HomeEditor />);
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gemini-4-carbonmedium · default");
+  await chooseModel("gpt-5.6-sol");
+  expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("gpt-5.6-solmedium · default");
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([
+    { id: "model", value: "gpt-5.6-sol" },
+    { id: "reasoning_effort", value: "medium" },
+    { id: "context_tier", value: "default" },
+  ]);
+});
+
 it.each(["plain", "unknown"])("hides effort for %s models and sends no stale effort", async (model) => {
   render(<HomeEditor />);
   await chooseModel(model);

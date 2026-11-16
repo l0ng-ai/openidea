@@ -5,7 +5,10 @@
  * expression matching between them.
  */
 
-/** A step definition: the pattern literal of a `Given` / `When` / `Then` / `Step` call. */
+/**
+ * A step definition: the pattern literal of a `Given` / `When` / `Then` / `Step` call, or of a
+ * cucumber-jvm `@Given("…")` annotation.
+ */
 export interface StepDefinition {
   /** Offsets of the literal (quotes or slashes included) in its file. */
   from: number;
@@ -36,10 +39,24 @@ export function stepDefinitions(text: string): StepDefinition[] {
     const at = m.index + m[0].length;
     const literal = readLiteral(text, at);
     if (!literal) continue;
-    const regexp = literal.regexp ?? expressionRegExp(literal.value);
+    const regexp = literal.regexp ?? stringPattern(literal.value);
     if (regexp) out.push({ from: at, to: literal.end, source: literal.value, regexp });
   }
   return out;
+}
+
+/**
+ * The pattern of a string: a regular expression when it is anchored with `^` or `$` (how
+ * Cucumber's expression factory tells them apart, and how cucumber-jvm annotations write them),
+ * else a Cucumber expression.
+ */
+function stringPattern(value: string): RegExp | null {
+  if (!value.startsWith("^") && !value.endsWith("$")) return expressionRegExp(value);
+  try {
+    return new RegExp(value);
+  } catch {
+    return null;
+  }
 }
 
 /** A string, template (without substitutions) or regular expression literal at `at`. */
@@ -51,8 +68,9 @@ function readLiteral(text: string, at: number): { value: string; end: number; re
       const c = text[i]!;
       if (c === "\\") {
         const next = text[i + 1] ?? "";
-        // An escaped quote is the quote; other escapes stay (a Cucumber expression's `\(`).
-        value += next === quote ? next : c + next;
+        // An escaped quote or backslash is itself (`'\\('` is the expression `\(`); other
+        // escapes stay as written.
+        value += next === quote || next === "\\" ? next : c + next;
         i++;
       } else if (c === quote) return { value, end: i + 1 };
       else if ((c === "\n" && quote !== "`") || (quote === "`" && c === "$" && text[i + 1] === "{")) return null;
@@ -203,3 +221,187 @@ export function featureSteps(text: string): FeatureStep[] {
 }
 
 export const matchesStep = (definition: StepDefinition, step: FeatureStep) => definition.regexp.test(step.matchText);
+
+/** The keyword a step's definition is written with: `And`, `But` and `*` continue the previous step's. */
+export function definingKeyword(steps: readonly FeatureStep[], step: FeatureStep): "Given" | "When" | "Then" {
+  let keyword: "Given" | "When" | "Then" = "Given";
+  for (const s of steps) {
+    if (s.keyword === "Given" || s.keyword === "When" || s.keyword === "Then") keyword = s.keyword;
+    if (s === step) break;
+  }
+  return keyword;
+}
+
+/** Strings and numbers of a step's text, as Cucumber's snippets turn them into parameters. */
+const SNIPPET_PARAMETER = /(^|[^\w.-])("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|-?\d+\.\d+|-?\d+)(?![\w.])/g;
+
+export type SnippetStyle = "cucumber" | "playwright-bdd" | "java" | "kotlin";
+
+/** The snippet style of a step definition file. */
+export function snippetStyle(path: string, text: string): SnippetStyle {
+  if (/\.java$/i.test(path)) return "java";
+  if (/\.kts?$/i.test(path)) return "kotlin";
+  return /\bcreateBdd\s*\(/.test(text) ? "playwright-bdd" : "cucumber";
+}
+
+/** `text` as a Cucumber expression inside a string literal of the snippet's language. */
+function expressionText(text: string, style: SnippetStyle): string {
+  const escaped = text.replace(/[\\(){}/]/g, "\\\\$&");
+  if (style === "java") return escaped.replace(/"/g, '\\"');
+  if (style === "kotlin") return escaped.replace(/"/g, '\\"').replace(/\$/g, "\\$");
+  return escaped.replace(/'/g, "\\'");
+}
+
+/** cucumber-jvm's method name for a step: its words without the parameters, in snake case (camel case in Kotlin). */
+function methodName(words: string, style: "java" | "kotlin"): string {
+  const parts = words
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  if (!parts.length) return "step";
+  const name =
+    style === "java"
+      ? parts.join("_")
+      : parts[0]! +
+        parts
+          .slice(1)
+          .map((p) => p[0]!.toUpperCase() + p.slice(1))
+          .join("");
+  return /^\d/.test(name) ? `_${name}` : name;
+}
+
+const COMMENT = "// Write code here that turns the phrase above into concrete actions";
+
+/**
+ * The step definition Cucumber suggests for an undefined step: its strings and numbers become
+ * `{string}`, `{float}` (`{double}` on the JVM) and `{int}` parameters of a pending step.
+ * `playwright-bdd` steps take the fixtures first; Java and Kotlin ones are annotated methods,
+ * indented for a class body. `body` is the line (0-based) of the snippet the caret goes to.
+ */
+export function stepSnippet(
+  keyword: string,
+  text: string,
+  style: SnippetStyle = "cucumber",
+): { text: string; body: number } {
+  const jvm = style === "java" || style === "kotlin";
+  const types: string[] = [];
+  let expression = "";
+  let words = "";
+  let last = 0;
+  for (const m of text.matchAll(SNIPPET_PARAMETER)) {
+    const start = m.index + m[1]!.length;
+    const value = m[2]!;
+    const type = /^["']/.test(value) ? "string" : value.includes(".") ? (jvm ? "double" : "float") : "int";
+    expression += `${expressionText(text.slice(last, start), style)}{${type}}`;
+    words += ` ${text.slice(last, start)}`;
+    types.push(type);
+    last = start + value.length;
+  }
+  expression += expressionText(text.slice(last), style);
+  words += ` ${text.slice(last)}`;
+  const seen = new Map<string, number>();
+  const names = types.map((type) => {
+    const n = (seen.get(type) ?? 0) + 1;
+    seen.set(type, n);
+    // cucumber-jvm numbers its int and double parameters from 1.
+    return type === "string" ? (n === 1 ? type : `${type}${n}`) : jvm ? `${type}${n}` : n === 1 ? type : `${type}${n}`;
+  });
+  if (style === "java") {
+    const javaType: Record<string, string> = { int: "Integer", double: "Double", string: "String" };
+    const params = types.map((t, i) => `${javaType[t]} ${names[i]}`).join(", ");
+    return {
+      text: [
+        `    @${keyword}("${expression}")`,
+        `    public void ${methodName(words, "java")}(${params}) {`,
+        `        ${COMMENT}`,
+        "        throw new io.cucumber.java.PendingException();",
+        "    }",
+        "",
+      ].join("\n"),
+      body: 3,
+    };
+  }
+  if (style === "kotlin") {
+    const kotlinType: Record<string, string> = { int: "Int", double: "Double", string: "String" };
+    const params = types.map((t, i) => `${names[i]}: ${kotlinType[t]}`).join(", ");
+    return {
+      text: [
+        `    @${keyword}("${expression}")`,
+        `    fun ${methodName(words, "kotlin")}(${params}) {`,
+        `        ${COMMENT}`,
+        "        throw io.cucumber.java.PendingException()",
+        "    }",
+        "",
+      ].join("\n"),
+      body: 3,
+    };
+  }
+  if (style === "playwright-bdd")
+    return {
+      text: [`${keyword}('${expression}', async (${["{}", ...names].join(", ")}) => {`, `  ${COMMENT}`, "});", ""].join(
+        "\n",
+      ),
+      body: 1,
+    };
+  return {
+    text: [
+      `${keyword}('${expression}', async function (${names.join(", ")}) {`,
+      `  ${COMMENT}`,
+      "  return 'pending';",
+      "});",
+      "",
+    ].join("\n"),
+    body: 2,
+  };
+}
+
+/** A text insertion at an offset of the file. */
+export interface Insertion {
+  at: number;
+  text: string;
+}
+
+/**
+ * Where a definition goes in a step file: at its end, or before the closing brace of its class
+ * for Java and Kotlin, which also get the keyword's `io.cucumber.java.en` import when the file
+ * imports others from there. `select` is the body line's range in the file after the insertions.
+ */
+export function definitionInsertions(
+  fileText: string,
+  keyword: string,
+  snippet: { text: string; body: number },
+  style: SnippetStyle,
+): { insertions: Insertion[]; select: { line: number; from: number; to: number } } {
+  const insertions: Insertion[] = [];
+  let at: number;
+  let insert: string;
+  if (style === "java" || style === "kotlin") {
+    const close = fileText.lastIndexOf("}");
+    at = close < 0 ? fileText.length : fileText.slice(0, close).trimEnd().length;
+    insert = `\n\n${snippet.text.replace(/\n$/, "")}`;
+    if (close >= 0 && !fileText.slice(at, close).includes("\n")) insert += "\n";
+    const imports = [...fileText.matchAll(/^import\s+io\.cucumber\.java\.en\.(\w+);?[ \t]*$/gm)];
+    if (imports.length && !imports.some((m) => m[1] === keyword || m[1] === "*")) {
+      const lastImport = imports[imports.length - 1]!;
+      const end = lastImport.index + lastImport[0].length;
+      const statement = ["import io.cucumber.java.en.", keyword, style === "java" ? ";" : ""].join("");
+      insertions.push({ at: end, text: `\n${statement}` });
+    }
+  } else {
+    at = fileText.length;
+    const lead = !fileText ? "" : fileText.endsWith("\n\n") ? "" : fileText.endsWith("\n") ? "\n" : "\n\n";
+    insert = lead + snippet.text;
+  }
+  insertions.push({ at, text: insert });
+  // The snippet's first line, counted in the file after every insertion before it.
+  const before = insertions.filter((i) => i.at < at).reduce((n, i) => n + (i.text.split("\n").length - 1), 0);
+  const snippetStart = insert.length - insert.trimStart().length;
+  const firstLine =
+    fileText.slice(0, at).split("\n").length - 1 + before + (insert.slice(0, snippetStart).split("\n").length - 1);
+  const bodyText = snippet.text.split("\n")[snippet.body]!;
+  const indent = bodyText.length - bodyText.trimStart().length;
+  return {
+    insertions,
+    select: { line: firstLine + snippet.body, from: indent, to: bodyText.length },
+  };
+}

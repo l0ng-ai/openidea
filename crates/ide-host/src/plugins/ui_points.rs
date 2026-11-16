@@ -36,6 +36,12 @@
 //! layout = "tab"                   # or "split" / "preview": beside the text editor
 //! web = "web/index.html"           # a web page from the package instead of rendered content
 //!
+//! [[contributes.editorPanels]]
+//! id = "minimap"
+//! web = "web/index.html"           # beside each editor group's text editor; needs `editor.read`
+//! width = 110                      # pixels, 40–400
+//! when = "plugin.<id>.enabled"     # optional
+//!
 //! [[contributes.fileIcons]]
 //! id = "drawing"
 //! patterns = ["*.excalidraw"]
@@ -73,6 +79,9 @@ pub const STATUS_BAR: &str = "statusBar";
 pub const SETTINGS: &str = "settings";
 pub const VIEWS: &str = "views";
 pub const CUSTOM_EDITORS: &str = "customEditors";
+pub const EDITOR_PANELS: &str = "editorPanels";
+/// The points whose declarations can name a `web` page (served, messaged, sent view events).
+pub const WEB_POINTS: [&str; 3] = [VIEWS, CUSTOM_EDITORS, EDITOR_PANELS];
 pub const FILE_ICONS: &str = "fileIcons";
 pub const MARKER_ICONS: &str = "markerIcons";
 pub const FILE_TEMPLATES: &str = "fileTemplates";
@@ -745,6 +754,41 @@ pub(super) fn custom_editor(pkg: &Package, decl: toml::Value) -> Result<UiDecl, 
     Ok(out)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct EditorPanelDecl {
+    id: String,
+    web: String,
+    width: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
+}
+
+const EDITOR_PANEL_WIDTH: std::ops::RangeInclusive<u32> = 40..=400;
+
+/// `[[contributes.editorPanels]]` (API 1.9): a web page at the right edge of every
+/// editor group, beside its text editor. It sees each file the group shows, so it
+/// needs `editor.read`.
+pub(super) fn editor_panel(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
+    let d: EditorPanelDecl = decode(EDITOR_PANELS, decl)?;
+    pkg.manifest.needs_api(&format!("contributes.{EDITOR_PANELS}"), 9)?;
+    validate_item_id(&d.id, "editor panel id")?;
+    let what = format!("editor panel {:?}", d.id);
+    if !EDITOR_PANEL_WIDTH.contains(&d.width) {
+        return Err(format!("{what}: `width` is {}–{} pixels", EDITOR_PANEL_WIDTH.start(), EDITOR_PANEL_WIDTH.end()));
+    }
+    if let Some(when) = &d.when {
+        validate_when(when).map_err(|e| format!("{what}: {e}"))?;
+    }
+    if !pkg.manifest.capabilities.all().any(|c| *c == ide_extension::Capability::EditorRead) {
+        return Err(format!("{what}: needs the `editor.read` capability (the page sees the files editors show)"));
+    }
+    let files = super::web::web_files(pkg, &d.web, &what)?;
+    let mut out = UiDecl::new(d.id.clone(), d.id.clone(), json(&d)?);
+    out.files = files;
+    Ok(out)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FileIconDecl {
@@ -1194,6 +1238,46 @@ mod tests {
                 assert_eq!(settings(&Package::new(manifest, dir.path().to_path_buf()), decl).is_ok(), valid);
             }
         }
+    }
+
+    #[test]
+    fn editor_panels_validate_api_width_when_capability_and_page() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/editor-panel");
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap();
+        let check = |source: &str| {
+            let manifest = ide_extension::Manifest::parse(source)?;
+            let decl = manifest.declarations(EDITOR_PANELS).into_iter().next().unwrap();
+            editor_panel(&Package::new(manifest, root.clone()), decl)
+        };
+        let valid = check(&source).unwrap();
+        assert_eq!(valid.key, "minimap");
+        assert_eq!(valid.json, serde_json::json!({ "id": "minimap", "web": "web/index.html", "width": 110 }));
+        assert_eq!(valid.files, [PathBuf::from("web/index.html")]);
+        let when = source.replace("width = 110", "width = 110\nwhen = \"plugin.editor-panel.enabled\"");
+        assert_eq!(check(&when).unwrap().json["when"], "plugin.editor-panel.enabled");
+        for width in ["40", "400"] {
+            assert!(check(&source.replace("width = 110", &format!("width = {width}"))).is_ok(), "{width}");
+        }
+        for (bad, error) in [
+            (source.replace("^1.9", "^1.8"), "1.9"),
+            (source.replace("width = 110", "width = 39"), "40–400"),
+            (source.replace("width = 110", "width = 401"), "40–400"),
+            (source.replace("width = 110", "width = -1"), "u32"),
+            (source.replace("width = 110\n", ""), "width"),
+            (source.replace("width = 110", "width = 110\nwhen = \"a &&\""), "when"),
+            (source.replace("width = 110", "width = 110\nside = \"left\""), "side"),
+            (source.replace(r#"required = ["editor.read"]"#, "required = []"), "editor.read"),
+            (source.replace("web/index.html", "index.html"), "directory of its own"),
+            (source.replace("web/index.html", "web/missing.html"), "no such file"),
+            (source.replace("web/index.html", "../web/index.html"), "web"),
+            (source.replace(r#"id = "minimap""#, r#"id = "Mini Map""#), "id"),
+        ] {
+            let err = check(&bad).unwrap_err();
+            assert!(err.contains(error), "{bad}\n→ {err}");
+        }
+        // Declared as optional, the capability is still shown at install.
+        let optional = source.replace("required = [", "optional = [");
+        assert!(check(&optional).is_ok());
     }
 
     fn package_with_catalogs(files: &[(&str, &str)]) -> (tempfile::TempDir, Package) {

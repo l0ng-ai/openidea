@@ -56,6 +56,16 @@ pub(crate) fn detect_with_profiles(
     detect_projects_matching(root, ruby_project, detect_ruby, &mut out);
     detect_projects(root, &["rebar.config"], detect_rebar, &mut out);
     detect_projects(root, &["mix.exs"], detect_mix, &mut out);
+    // A project's own `build.sbt` belongs to the build above it.
+    detect_projects_matching(
+        root,
+        |dir| {
+            dir.join("build.sbt").is_file()
+                && !dir.ancestors().skip(1).take_while(|a| a.starts_with(root)).any(|a| a.join("build.sbt").is_file())
+        },
+        detect_sbt,
+        &mut out,
+    );
     for dir in ide_core::project_roots::discover(root, &["CMakeLists.txt"]) {
         let start = out.len();
         cmake::detect(&dir, if dir == root { profiles } else { None }, &mut out);
@@ -1360,6 +1370,14 @@ fn detect_mix(root: &Path, out: &mut Vec<RunConfig>) {
         out.push(config("mix:iex", "iex -S mix", "mix", "iex", &["-S", "mix"]));
     }
     out.push(config("mix:test", "mix test", "mix", "mix", &["test"]).test());
+}
+
+/// sbt (Scala): `sbt run` and `sbt test` on the build's root project, with the build's
+/// own launcher script when it has one. Other tasks run from the sbt tool window.
+fn detect_sbt(root: &Path, out: &mut Vec<RunConfig>) {
+    let sbt = wrapper(root, "sbt", "sbt.bat", "sbt");
+    out.push(config("sbt:run", "sbt run", "sbt", &sbt, &["run"]));
+    out.push(config("sbt:test", "sbt test", "sbt", &sbt, &["test"]).test());
 }
 
 /// Godot projects (`project.godot`) at the root or one level down: "Godot Project"

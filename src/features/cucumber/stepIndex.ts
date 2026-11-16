@@ -18,7 +18,7 @@ let cached: Promise<StepIndex> | null = null;
 
 /** Whether a change to `path` can change the index: a feature or script file. */
 export function isCucumberSource(path: string): boolean {
-  return /\.(feature|[cm]?[jt]sx?)$/i.test(path);
+  return /\.(feature|[cm]?[jt]sx?|java|kt)$/i.test(path);
 }
 
 /** Forgets the index, so the next lookup rescans the project. */
@@ -81,4 +81,28 @@ export async function usagesOf(definition: StepDefinition): Promise<Array<Locati
       .filter((s) => matchesStep(definition, s))
       .map((s) => location(file.path, file.text, s.from, s.to, `${s.keyword} ${s.text}`)),
   );
+}
+
+/** The steps no definition matches; null when the project defines no steps in its scripts. */
+export async function undefinedSteps(steps: readonly FeatureStep[]): Promise<FeatureStep[] | null> {
+  const { definitions } = await stepIndex();
+  if (!definitions.length) return null;
+  return steps.filter((step) => !definitions.some((file) => file.items.some((d) => matchesStep(d, step))));
+}
+
+/** The file a new definition for a step of `featurePath` goes to: the step file named like the feature, else the one with the most definitions. */
+export async function definitionFileFor(featurePath: string): Promise<string | null> {
+  const { definitions } = await stepIndex();
+  // `cart.steps.ts`, `CartSteps.java` and `cart_stepdefs.kt` all name the `cart` feature's steps.
+  const stem = (path: string) =>
+    (path.split("/").pop() ?? "")
+      .split(".")[0]!
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .replace(/(?:stepdefinitions|stepdefs|steps)$/, "");
+  const feature = stem(featurePath);
+  const named = definitions.find((file) => stem(file.path) === feature);
+  if (named) return named.path;
+  const most = [...definitions].sort((a, b) => b.items.length - a.items.length)[0];
+  return most?.path ?? null;
 }
