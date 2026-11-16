@@ -1403,6 +1403,37 @@ export async function stopRunningInstances(config: RunConfig): Promise<boolean> 
   return true;
 }
 
+/** Configurations whose Debug is between the click and the debugger's session. */
+const debugLaunching = new Set<string>();
+
+/**
+ * Debugs `config` with `launch`, one instance at a time unless it allows parallel runs: its
+ * running and debugged instances are stopped first (`stopRunningInstances`), and a Debug while
+ * one is still preparing (building) is ignored.
+ */
+export async function debugSingleInstance(config: RunConfig, launch: () => Promise<void>): Promise<void> {
+  if (config.allowParallel) return launch();
+  if (debugLaunching.has(config.id)) return;
+  debugLaunching.add(config.id);
+  let stopWatching = () => {};
+  let launched: Promise<void> | null = null;
+  try {
+    if (!(await stopRunningInstances(config))) return;
+    // From its session on, a further Debug asks to stop it (`stopRunningInstances`).
+    const debugging = new Promise<void>((resolve) => {
+      stopWatching = useDebugRunSessions.subscribe((s) => {
+        if (s.serviceSessions.some((d) => d.config.id === config.id && d.status !== "terminated")) resolve();
+      });
+    });
+    launched = launch();
+    await Promise.race([launched.catch(() => {}), debugging]);
+  } finally {
+    stopWatching();
+    debugLaunching.delete(config.id);
+  }
+  await launched;
+}
+
 /** Resolves once the given sessions' processes exited (or after `timeoutMs`, unless `null`). */
 export function waitForExit(sessionIds: readonly string[], timeoutMs: number | null = 10_000): Promise<void> {
   const live = () =>
