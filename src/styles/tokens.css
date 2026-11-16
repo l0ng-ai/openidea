@@ -485,7 +485,7 @@ html {
   --file-color-violet: #955ae0;
   --file-color-yellow: #d4b106;
   --file-color-gray: #8c8c8c;
-  --file-tint-strength: 14%;
+  --file-tint-strength: 9%;
 }
 
 /* Windows caption buttons (frameless title bar): the system close red in every theme. */

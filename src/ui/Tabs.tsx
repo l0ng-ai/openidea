@@ -50,6 +50,8 @@ export interface TabItem {
   color?: string;
   /** CSS colour the tab background is tinted with (IDEA's data source / file colours). */
   tint?: string;
+  /** How strongly `tint` shows, e.g. `var(--file-tint-strength)`; defaults to `--tint-strength`. */
+  tintStrength?: string;
   italic?: boolean;
   /** Greyed out, e.g. a run tab whose process has ended. */
   dimmed?: boolean;
@@ -401,7 +403,13 @@ export function Tabs({
                 marker === items.length && index === items.length - 1 && styles.dropAfter,
                 item.tint && styles.tinted,
               )}
-              style={{ "--tab-tint": item.tint, order: order?.get(item.id) } as CSSProperties}
+              style={
+                {
+                  "--tab-tint": item.tint,
+                  "--tab-tint-strength": item.tintStrength,
+                  order: order?.get(item.id),
+                } as CSSProperties
+              }
               onPointerDown={
                 dnd
                   ? (e) => {

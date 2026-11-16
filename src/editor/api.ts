@@ -34,7 +34,7 @@ import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
 import { maybeEditorService } from "@/workbench/contributions";
 import { cornerInset } from "@/editor/core/cm/cornerInset";
-export { iconAreaSource, type IconAreaSource } from "@/editor/core/cm/iconArea";
+export { iconAreaSource, mapLineStart, type IconAreaSource } from "@/editor/core/cm/iconArea";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;

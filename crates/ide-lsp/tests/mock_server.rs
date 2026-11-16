@@ -3484,6 +3484,52 @@ async fn java_implementations_come_from_sources_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_dependency_implementations_point_at_the_method() {
+    let caps = json!({
+        "textDocumentSync": 1,
+        "implementationProvider": true,
+        "executeCommandProvider": { "commands": ["openidea.java.implementations", "openidea.java.implementationLocations"] },
+    });
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, _) = h.open("Repo.java", "interface Repo {\n    void save(String item);\n}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let class_uri = "jdt://contents/lib.jar/zoo/RepoImpl.java?=p/lib.jar%3Czoo%28RepoImpl.class";
+    let method = json!({
+        "uri": class_uri,
+        "range": {"start":{"line":4,"character":4},"end":{"line":6,"character":5}},
+    });
+    let at_zero = json!({
+        "uri": class_uri,
+        "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+    });
+    let refined = method.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "openidea.java.implementations" => {
+            Some(json!({ "locations": [], "complete": false }))
+        }
+        "workspace/executeCommand" if params["command"] == "openidea.java.implementationLocations" => {
+            assert_eq!(params["arguments"][3], json!([class_uri]));
+            Some(json!({ "locations": [refined] }))
+        }
+        "textDocument/implementation" => Some(json!([at_zero])),
+        _ => None,
+    }));
+    let partial = Mutex::new(Vec::new());
+    let found = h
+        .mgr
+        .goto_implementation(doc, Pos::new(1, 9), Default::default(), &|locs| partial.lock().push(locs.to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].uri.as_deref(), Some(class_uri));
+    assert_eq!(found[0].range.start.line, 4);
+    assert_eq!(s.requested("textDocument/implementation").len(), 1);
+    let commands = s.requested("workspace/executeCommand");
+    assert!(commands.iter().any(|r| r["command"] == "openidea.java.implementationLocations"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn navigation_rename_format_and_decorations() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
