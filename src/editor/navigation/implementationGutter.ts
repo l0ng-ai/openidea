@@ -29,6 +29,7 @@ import {
   nextRequestId,
   onIdeEvent,
   type ClassInheritance,
+  type DocId,
   type HierarchyItem,
   type Location,
   type OutlineItem,
@@ -324,6 +325,8 @@ export async function fillMarkers(
       entry(c).supers = {
         kind: "overriding",
         line: c.line,
+        col: c.col,
+        method: c.method,
         name: c.name,
         targets: [...known.map((s) => s.location), ...extra],
         tooltip: tx`Overrides method in ${owners.join(", ")}`,
@@ -510,18 +513,46 @@ export function cachedMarkers(
   return out;
 }
 
+/**
+ * A dependency's implementation (Java) starts at `0:0` of the class file: the server resolves
+ * the method's declaration when the marker is opened, not for every marker in the gutter.
+ */
+async function markerTargets(marker: LineMarker, doc: DocId | null): Promise<Location[]> {
+  if (
+    doc === null ||
+    doc < 0 ||
+    !marker.method ||
+    (marker.kind !== "implemented" && marker.kind !== "overridden") ||
+    !marker.targets.some((t) => t.range.start.line === 0 && t.uri?.startsWith("jdt:"))
+  )
+    return marker.targets;
+  const request = nextRequestId();
+  try {
+    return await lspRequest(() =>
+      commands.lspImplementationLocations(request, doc, { line: marker.line, col: marker.col }, marker.targets),
+    );
+  } catch {
+    return marker.targets;
+  }
+}
+
 /** Opens the single target, or the chooser over several. */
-export async function openMarkerTargets(marker: LineMarker, anchor: { x: number; y: number }) {
-  if (marker.targets.length === 1) {
-    await navigateTo(marker.targets[0]!);
+export async function openMarkerTargets(
+  marker: LineMarker,
+  anchor: { x: number; y: number },
+  doc: DocId | null = null,
+) {
+  const targets = await markerTargets(marker, doc);
+  if (targets.length === 1) {
+    await navigateTo(targets[0]!);
     return;
   }
   openPopup({
     kind: "list",
     anchor,
     title: marker.chooserTitle,
-    items: await locationItems(marker.targets),
-    pin: pinToFind(marker.name, marker.targets),
+    items: await locationItems(targets),
+    pin: pinToFind(marker.name, targets),
   });
 }
 
@@ -785,7 +816,7 @@ export function implementationGutter(ctx: EditorDocContext): Extension {
         if (!marker) return false;
         e.preventDefault();
         const rect = (target.closest(`.${styles.marker}`) ?? target).getBoundingClientRect();
-        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 });
+        void openMarkerTargets(marker, { x: rect.left, y: rect.bottom + 2 }, ctx.doc);
         return true;
       },
     }),

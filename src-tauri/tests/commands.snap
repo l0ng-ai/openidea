@@ -311,6 +311,7 @@ lsp_goto_implementation                      trusted            project_host bin
 lsp_hierarchy_members                        trusted            project_host bindings async
 lsp_hierarchy_refactor                       trusted            project_host bindings async
 lsp_hover                                    trusted            project_host bindings async
+lsp_implementation_locations                 trusted            project_host bindings async
 lsp_implementations                          trusted            project_host bindings async
 lsp_inlay_hints                              trusted            project_host bindings async
 lsp_inline_completion                        trusted            project_host bindings async
