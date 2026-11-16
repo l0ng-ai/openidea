@@ -2,12 +2,13 @@
  * Renders `codeLenses` (editor/api) as one small hint row above the target
  * line, indented like the line (IDEA "3 usages   Run test" inlays), and those
  * whose kind is set to "right" (`codeLensPositions`) after the end of that line.
+ * Right-click offers to hide the hint's kind or all of Code Vision.
  */
 import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
-import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
-import { guideVars, rainbowGuides } from "./indentGuides";
+import { showContextMenu } from "@/ui";
+import { codeVisionMenuItems } from "../codeVision";
 import { LINE_INSET } from "./lineInset";
 
 /**
@@ -79,8 +80,6 @@ class LensWidget extends WidgetType {
   constructor(
     readonly lenses: CodeLens[],
     readonly indent: number,
-    readonly indentUnit: number,
-    readonly rainbow: boolean,
     /** After the end of the line instead of a row above it. */
     readonly inline = false,
   ) {
@@ -92,10 +91,6 @@ class LensWidget extends WidgetType {
       (this.inline ? "inline\u0000" : "") +
       this.indent +
       "\u0000" +
-      this.indentUnit +
-      "\u0000" +
-      (this.rainbow ? 1 : 0) +
-      "\u0000" +
       this.lenses.map((l) => `${l.icon ?? ""}|${l.title}|${l.tooltip ?? ""}|${l.run ? 1 : 0}`).join("\u0001")
     );
   }
@@ -106,7 +101,7 @@ class LensWidget extends WidgetType {
 
   override toDOM(view: EditorView): HTMLElement {
     // The inline one shares no class with the row, so none of the row's block styles reach into the line.
-    const dom = document.createElement(this.inline ? "span" : "div");
+    const dom: HTMLElement = document.createElement(this.inline ? "span" : "div");
     dom.className = this.inline ? "cm-openidea-lensInline" : "cm-openidea-lens";
     // The line-end hint draws from a zero-width anchor in an absolutely positioned inner box: an
     // in-flow box would wrap to the next line when the line is soft-wrapped and there is no room.
@@ -116,6 +111,12 @@ class LensWidget extends WidgetType {
       dom.appendChild(host);
     }
     this.fill(host, view);
+    dom.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const item = (e.target as Element | null)?.closest?.<HTMLElement>(".cm-openidea-lensItem");
+      showContextMenu(e, codeVisionMenuItems(item?.dataset.kind));
+    });
     return dom;
   }
 
@@ -130,25 +131,16 @@ class LensWidget extends WidgetType {
 
   private fill(dom: HTMLElement, view: EditorView) {
     dom.textContent = "";
-    // The guides of the annotated line continue through this row while indent guides are on.
-    const guides = this.inline
-      ? null
-      : guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
+    // The indent guides plugin gives the row the guides of the annotated line (indentGuides.ts).
     if (!this.inline)
       dom.style.paddingLeft = `calc(${LINE_INSET}px + ${this.indent} * var(--openidea-space, ${view.defaultCharacterWidth}px))`;
-    if (guides) {
-      dom.style.setProperty("--openidea-guide-images", guides.images);
-      dom.style.setProperty("--openidea-guide-positions", guides.positions);
-    } else {
-      dom.style.removeProperty("--openidea-guide-images");
-      dom.style.removeProperty("--openidea-guide-positions");
-    }
     dom.setAttribute("role", "group");
     dom.setAttribute("aria-label", "Code lens");
     for (const lens of this.lenses) {
       const el = document.createElement(lens.run ? "button" : "span");
       el.className = lens.run ? "cm-openidea-lensItem cm-openidea-lensAction" : "cm-openidea-lensItem";
       if (lens.tooltip) el.title = lens.tooltip;
+      if (lens.kind) el.dataset.kind = lens.kind;
       if (lens.icon && ICONS[lens.icon]) {
         const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
         svg.setAttribute("viewBox", "0 0 16 16");
@@ -196,22 +188,16 @@ function buildDecorations(state: EditorState): DecorationSet {
   for (const group of groupLenses(state, lenses)) {
     const line = state.doc.lineAt(group.lineFrom);
     const indent = indentColumns(line.text, state.tabSize);
-    const unit = Math.max(1, getIndentUnit(state));
-    const rainbow = state.facet(rainbowGuides);
     const above = group.lenses.filter((l) => !right(l));
     const after = group.lenses.filter(right);
     if (above.length)
       builder.add(
         line.from,
         line.from,
-        Decoration.widget({ widget: new LensWidget(above, indent, unit, rainbow), block: true, side: -1 }),
+        Decoration.widget({ widget: new LensWidget(above, indent), block: true, side: -1 }),
       );
     if (after.length)
-      builder.add(
-        line.to,
-        line.to,
-        Decoration.widget({ widget: new LensWidget(after, indent, unit, rainbow, true), side: 1 }),
-      );
+      builder.add(line.to, line.to, Decoration.widget({ widget: new LensWidget(after, indent, true), side: 1 }));
   }
   return builder.finish();
 }
@@ -280,6 +266,6 @@ const lensTheme = EditorView.theme({
 
 /** Base extension (always installed): no cost until a provider contributes lenses. */
 export const codeLensExtension: Extension = [
-  EditorView.decorations.compute([codeLenses, rainbowGuides, codeLensPositions], buildDecorations),
+  EditorView.decorations.compute([codeLenses, codeLensPositions], buildDecorations),
   lensTheme,
 ];

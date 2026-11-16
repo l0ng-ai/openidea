@@ -181,6 +181,7 @@ export const EDITOR_EXTRA_DEFAULTS = {
     parameters: true,
     other: true,
     disabledLanguages: [] as string[],
+    codeVision: true,
     codeVisionUsages: true,
     codeVisionAuthor: true,
     codeVisionNoUsages: true,

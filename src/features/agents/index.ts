@@ -15,6 +15,7 @@ import {
   registerEditorDropHandler,
   registerEditorKind,
   registerMenuGroup,
+  registerMenuSlotItem,
   registerOverlay,
   registerSettingsPage,
   registerStatusItem,
@@ -195,6 +196,13 @@ export function activate(): () => void {
       accepts: (type) => type === TASK_DRAG,
       drop: ({ payload }) => void executeAction("agents.openTaskInEditor", payload),
     }),
+    // The button above the commit message (the Commit tool window and dialog).
+    registerMenuSlotItem("commitMessage", {
+      action: "agents.generateCommitMessage",
+      label: "Generate Commit Message with Agent",
+      icon: "toolwindow-agents",
+      when: "projectOpen && vcsAvailable",
+    }),
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
       id: "agents.send",
@@ -302,6 +310,21 @@ export function activate(): () => void {
         run: ({ arg }) => {
           if (Array.isArray(arg)) sendPaths(arg.filter((p): p is string => typeof p === "string"));
           else sendSelection();
+        },
+      },
+      {
+        id: "agents.generateCommitMessage",
+        title: "Generate Commit Message with Agent",
+        description:
+          "Has the coding agent you work with review the changes about to be committed and write the commit message.",
+        category: "Agents",
+        icon: "toolwindow-agents",
+        when: "projectOpen && vcsAvailable",
+        keywords: ["agent", "commit", "message", "ai", "copilot", "generate"],
+        indicatesRunning: true,
+        run: async () => {
+          const { generateCommitMessage } = await import("./commitMessage");
+          await generateCommitMessage();
         },
       },
       {

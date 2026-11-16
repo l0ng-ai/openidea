@@ -63,7 +63,7 @@ impl JdtJvmInspector {
 }
 
 /// `VmTarget` is not `Serialize`: the field names here are the bundle's.
-fn target_json(target: &VmTarget) -> Value {
+pub(super) fn target_json(target: &VmTarget) -> Value {
     json!({
         "pid": target.pid,
         "host": target.attach_host,
@@ -72,7 +72,7 @@ fn target_json(target: &VmTarget) -> Value {
     })
 }
 
-fn command_error(e: IdeError) -> InspectError {
+pub(super) fn command_error(e: IdeError) -> InspectError {
     if missing_bundle(&e) {
         InspectError::Unsupported("the JVM inspector bundle is not loaded".to_owned())
     } else {
@@ -81,7 +81,7 @@ fn command_error(e: IdeError) -> InspectError {
 }
 
 /// `{"ok": payload}` or `{"error": code, "detail": text}`.
-fn decode<T: DeserializeOwned>(mut reply: Value) -> Result<T, InspectError> {
+pub(super) fn decode<T: DeserializeOwned>(mut reply: Value) -> Result<T, InspectError> {
     if let Some(code) = reply.get("error").and_then(Value::as_str) {
         let detail = reply.get("detail").and_then(Value::as_str);
         return Err(match code {
@@ -94,6 +94,11 @@ fn decode<T: DeserializeOwned>(mut reply: Value) -> Result<T, InspectError> {
             "classNotLoaded" => InspectError::ClassNotLoaded,
             "notSuspended" => InspectError::NotSuspended,
             "timedOut" => InspectError::TimedOut,
+            "noSession" => InspectError::NoSession,
+            "notAtChainStart" => InspectError::NotAtChainStart(detail.unwrap_or_default().to_owned()),
+            "busy" => InspectError::Busy,
+            "noTrace" => InspectError::NoTrace,
+            "failed" | "badArgument" => InspectError::Failed(detail.unwrap_or(code).to_owned()),
             other => InspectError::Failed(match detail {
                 Some(detail) => format!("{other}: {detail}"),
                 None => other.to_owned(),

@@ -47,6 +47,16 @@ pub struct DocumentInfo {
     pub ui_mode: Option<String>,
 }
 
+/// The language and CodeMirror mode a file is shown with, like `DocumentInfo`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentLanguage {
+    pub language: LanguageId,
+    /// CodeMirror mode replacing the language's own one (`DocumentInfo::ui_mode`).
+    #[specta(optional)]
+    pub ui_mode: Option<String>,
+}
+
 /// Encoding and BOM currently applied to an open document.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -221,10 +231,18 @@ impl Documents {
         self
     }
 
-    /// The `DocumentInfo::ui_mode` `path` gets when opened, without opening it
-    /// (previews of other files).
-    pub fn ui_mode_of(&self, path: &Path) -> Option<String> {
-        (self.detect_ui_mode)(path, &(self.detect_language)(path, None))
+    /// The language and mode `path` gets when opened, without opening it (previews, diffs
+    /// of other revisions), detected from `first_line` (hashbangs) or, without one, the
+    /// first line of its open buffer or of the file on disk.
+    pub fn language_of(&self, path: &Path, first_line: Option<&str>) -> DocumentLanguage {
+        let current = match first_line {
+            Some(_) => None,
+            None => self.text_of(path).or_else(|| first_line_on_disk(path)),
+        };
+        let first_line = first_line.or(current.as_deref()).and_then(|l| l.lines().next());
+        let language = (self.detect_language)(path, first_line);
+        let ui_mode = (self.detect_ui_mode)(path, &language);
+        DocumentLanguage { language, ui_mode }
     }
 
     /// Settings-derived defaults for new files, fallback decoding and EditorConfig support.
@@ -1287,4 +1305,12 @@ impl Documents {
             }
         }
     }
+}
+
+/// The first line of a file, read no further than a hashbang needs; `None` when it can't be read.
+fn first_line_on_disk(path: &Path) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let mut line = String::new();
+    std::io::BufReader::new(std::fs::File::open(path).ok()?.take(1024)).read_line(&mut line).ok()?;
+    Some(line)
 }

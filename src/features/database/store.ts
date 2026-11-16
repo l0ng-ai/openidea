@@ -146,7 +146,11 @@ export type DialogState =
   /** Import Data from File into a table. */
   | { kind: "import"; id: string; schema: string; table: string }
   /** Compare Structure: `source` starts as the schema the action was invoked on. */
-  | { kind: "compareSchemas"; source: { id: string; schema: string } | null };
+  | { kind: "compareSchemas"; source: { id: string; schema: string } | null }
+  /** Export with 'pg_dump' of a database, schema or table. */
+  | { kind: "dump"; target: string; database: string; schemas?: string; tables?: string; serverVersion: number | null }
+  /** Restore with 'pg_restore' / 'psql' into a database. */
+  | { kind: "restore"; target: string; database: string; serverVersion: number | null };
 
 /** The schemas and tables of a data source's databases, as far as introspection has read them. */
 export interface SourceCatalog {

@@ -19,7 +19,9 @@ describe("previewExtensions", () => {
   });
 
   it("shows a closed file in the mode it would open with", async () => {
-    const backend = { uiModeOf: async () => "Angular Template" } as Partial<DocBackend> as DocBackend;
+    const backend = {
+      languageOf: async () => ({ language: "html", uiMode: "Angular Template" }),
+    } as Partial<DocBackend> as DocBackend;
     const extensions = await previewExtensions("/p/app.html", undefined, backend);
     expect(EditorState.create({ doc: "@if (a) {}", extensions }).facet(language)?.name).toBe("angular");
   });

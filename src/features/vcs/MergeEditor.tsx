@@ -14,7 +14,7 @@ import { copyText } from "@/ui/selectableText";
 import { Button, Spinner, T } from "@/ui";
 import { editorService, type EditorInput } from "@/workbench/contributions";
 import { blameSlot, toggleAnnotations } from "./blame";
-import { languageFor, viewerBase } from "./cm";
+import { firstLineOf, languageFor, viewerBase } from "./cm";
 import { ideaDiffConfig } from "./diffOptions";
 import { confirmDialog } from "./dialogs";
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
@@ -96,6 +96,8 @@ const writeAutoApply = (on: boolean) => {
 // Each side against the base is compared line by line, as in the diff viewer. The default diff
 // gives up on long files and marks the whole file as one changed block.
 const SIDE_DIFF = ideaDiffConfig("none", "words");
+/** A file without a language; one value, so finding none again doesn't rebuild the panes. */
+const NO_LANGUAGE: Extension = [];
 
 export function MergeEditor({ input }: { input: EditorInput }) {
   const { path } = input.data as MergeData;
@@ -153,13 +155,16 @@ export function MergeEditor({ input }: { input: EditorInput }) {
   useEffect(() => {
     void Promise.resolve().then(load);
   }, [load]);
+  // From a side's first line (hashbang-only scripts): the file on disk may start with a conflict marker.
+  const firstLine = state ? firstLineOf(state.ours || state.theirs) : undefined;
   useEffect(() => {
+    if (firstLine === undefined) return;
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine]);
 
   useEffect(() => {
     if (!state || lang === null || !oursRef.current || !resultRef.current || !theirsRef.current) return;

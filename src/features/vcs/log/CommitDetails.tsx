@@ -1,4 +1,4 @@
-import type { ChangedFile, Commit } from "@/bindings";
+import type { ChangedFile, Commit, LinkTarget } from "@/bindings";
 import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
@@ -566,13 +566,26 @@ function ChangedFileRow({ node, flat = false }: { node: FileTreeNode<ChangedFile
   const kind: EffectiveKind = f.kind === "untracked" ? "added" : f.kind;
   return (
     <span className={styles.fileRow} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
-      <Icon name={fileIconName(node.name)} size={16} className={styles.fileIcon} />
+      <ChangedFileIcon name={node.name} link={f.link} />
       <span className={styles.fileName} style={{ color: KIND_COLOR[kind] }}>
         {node.name}
       </span>
       {flat && dirName(f.path) && <span className={styles.fileDir}>{dirName(f.path)}</span>}
       {f.oldPath && <span className={styles.fileDir}>{renameFrom(f.path, f.oldPath)}</span>}
       {stats && <LineStats added={stats.added} removed={stats.removed} />}
+    </span>
+  );
+}
+
+/** Like the Project tree: a link shows its target's folder or file icon with IDEA's link arrow. */
+function ChangedFileIcon({ name, link }: { name: string; link?: LinkTarget | null }) {
+  if (!link) return <Icon name={fileIconName(name)} size={16} className={styles.fileIcon} />;
+  const icon = link === "dir" ? "folder" : link === "file" ? fileIconName(name) : "file-unknown";
+  const label = link === "unresolved" ? tx("Symbolic link, target not found in this revision") : tx("Symbolic link");
+  return (
+    <span className={styles.iconStack} data-link={link}>
+      <Icon name={icon} size={16} />
+      <Icon name="symlink-mark" size={16} className={styles.iconOverlay} label={label} />
     </span>
   );
 }

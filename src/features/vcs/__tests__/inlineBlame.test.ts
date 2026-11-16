@@ -47,8 +47,18 @@ const uncommitted: BlameLine = { commit: "0".repeat(40), author: "Not Committed 
 const ctx = { doc: 1, path: "/repo/file.ts", language: "typescript", uiMode: null, readOnly: false };
 let view: EditorView | undefined;
 
-function settings(enabled: boolean) {
-  useProject.setState({ settings: { vcs: { git: { inlineBlame: enabled } } } as Settings });
+function settings(enabled: boolean, clickable = true) {
+  useProject.setState({
+    settings: { vcs: { git: { inlineBlame: enabled, inlineBlameClickable: clickable } } } as Settings,
+  });
+}
+
+/** Presses the primary button on the label; jsdom has no layout, so the click resolves to `pos`
+    the way a browser resolves a point past the line end. */
+function pressLabel(v: EditorView, pos: number) {
+  vi.spyOn(v, "posAndSideAtCoords").mockReturnValue({ pos, assoc: -1 });
+  label()!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+  document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
 }
 
 function editor(doc = "one\ntwo\nthree", context = ctx) {
@@ -265,6 +275,46 @@ describe("current line decoration", () => {
     resolve({ status: "ok", data: [alice, bob] });
     await vi.advanceTimersByTimeAsync(0);
     expect(hint()?.textContent).toContain("Bob Jones");
+    expect(mocks.blame).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a click on a non-clickable label to the editor, which puts the caret at the line end (#3802)", async () => {
+    settings(true, false);
+    const v = editor();
+    v.dispatch({ selection: { anchor: 1 } });
+    await tick();
+    expect(hint()?.textContent).toContain("Alice Smith");
+    expect(label()?.hasAttribute("role")).toBe(false);
+    expect(label()?.hasAttribute("tabindex")).toBe(false);
+    label()!.click();
+    label()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    pressLabel(v, 3);
+    expect(v.state.selection.main.head).toBe(3);
+    expect(mocks.action).not.toHaveBeenCalled();
+  });
+
+  it("leaves a click on the uncommitted-changes label, which opens nothing, to the editor", async () => {
+    const v = editor();
+    v.dispatch({ selection: { anchor: 9 } });
+    await tick();
+    expect(hint()?.textContent).toBe("You, now · Uncommitted changes");
+    expect(label()?.hasAttribute("role")).toBe(false);
+    pressLabel(v, 13);
+    expect(v.state.selection.main.head).toBe(13);
+  });
+
+  it("applies the clickable setting to an open editor without another git call", async () => {
+    editor();
+    await tick();
+    expect(label()?.getAttribute("role")).toBe("button");
+    settings(true, false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(label()?.hasAttribute("role")).toBe(false);
+    settings(true, true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(label()?.getAttribute("role")).toBe("button");
+    label()!.click();
+    expect(mocks.action).toHaveBeenCalledWith("vcs.showCommit", alice.commit);
     expect(mocks.blame).toHaveBeenCalledTimes(1);
   });
 

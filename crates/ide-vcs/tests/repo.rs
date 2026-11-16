@@ -597,6 +597,73 @@ fn commit_files_kinds() {
     assert!(repo.commit_files("HEAD").unwrap().len() == 4);
 }
 
+/// Stages a symbolic link (mode 120000) to `target` without touching the working tree, so
+/// the test needs no symlink support from the file system.
+fn stage_link(fx: &Fixture, path: &str, target: &str) {
+    let blob = fx._tmp.path().join("link-target");
+    std::fs::write(&blob, target).unwrap();
+    let id = fx.git(&["hash-object", "-w", blob.to_str().unwrap()]);
+    fx.git(&["update-index", "--add", "--cacheinfo", &format!("120000,{id},{path}")]);
+}
+
+/// Git records only a link's target path; the changed-file lists resolve it in the commit's tree (#3777).
+#[test]
+fn changed_files_classify_symbolic_links_in_the_revision_tree() {
+    let fx = Fixture::new();
+    for dir in ["dir1", "dir2", "nested/deep"] {
+        fx.write(&format!("{dir}/example.txt"), "example\n");
+    }
+    fx.write("plain.txt", "p\n");
+    let root = fx.commit_all("directories");
+    let cases = [
+        ("link1", "dir1", Some(LinkTarget::Dir)),
+        ("link2", "dir2/", Some(LinkTarget::Dir)),
+        ("link3", "dir3", Some(LinkTarget::Unresolved)),
+        ("file_link", "plain.txt", Some(LinkTarget::File)),
+        ("nested/up", "../dir1/example.txt", Some(LinkTarget::File)),
+        ("nested/here", ".", Some(LinkTarget::Dir)),
+        ("via_link", "link1/example.txt", Some(LinkTarget::File)),
+        ("chain", "link1", Some(LinkTarget::Dir)),
+        ("absolute", "/etc", Some(LinkTarget::Unresolved)),
+        ("escape", "../outside", Some(LinkTarget::Unresolved)),
+        ("loop_a", "loop_b", Some(LinkTarget::Unresolved)),
+        ("loop_b", "loop_a", Some(LinkTarget::Unresolved)),
+        ("through_file", "plain.txt/x", Some(LinkTarget::Unresolved)),
+    ];
+    for (path, target, _) in &cases {
+        stage_link(&fx, path, target);
+    }
+    fx.write("dir1/more.txt", "more\n");
+    fx.git(&["add", "dir1/more.txt"]);
+    fx.git(&["commit", "-q", "-m", "links"]);
+    let links = fx.git(&["rev-parse", "HEAD"]);
+    let repo = fx.repo();
+
+    let check = |files: &[(String, Option<LinkTarget>)], label: &str| {
+        for (path, _, expected) in &cases {
+            let found = files.iter().find(|(p, _)| p == path).unwrap_or_else(|| panic!("{label} {path}: {files:?}"));
+            assert_eq!(found.1, *expected, "{label} {path}");
+        }
+        let plain = files.iter().find(|(p, _)| p == "dir1/more.txt").unwrap();
+        assert_eq!(plain.1, None, "{label}: a regular file is no link");
+    };
+    let pairs = |files: Vec<ChangedFile>| files.into_iter().map(|f| (f.path, f.link)).collect::<Vec<_>>();
+    check(&pairs(repo.commit_files(&links).unwrap()), "commit_files");
+    check(&pairs(repo.diff_revisions(&root, &links).unwrap()), "diff_revisions");
+    let combined = repo.commits_changes(std::slice::from_ref(&links)).unwrap();
+    check(&combined.into_iter().map(|f| (f.path, f.link)).collect::<Vec<_>>(), "commits_changes");
+
+    // A deleted link is described as it was before the deletion; the working tree plays no part.
+    fx.git(&["rm", "-q", "--cached", "link1", "file_link"]);
+    fx.git(&["commit", "-q", "-m", "drop links"]);
+    let dropped = fx.git(&["rev-parse", "HEAD"]);
+    for files in [repo.commit_files(&dropped).unwrap(), repo.diff_revisions(&links, &dropped).unwrap()] {
+        let files = pairs(files);
+        assert!(files.contains(&("link1".into(), Some(LinkTarget::Dir))), "{files:?}");
+        assert!(files.contains(&("file_link".into(), Some(LinkTarget::File))), "{files:?}");
+    }
+}
+
 /// Line counts follow the same first-parent diff as the commit's file list, including renames.
 #[test]
 fn diff_numstat_counts_added_deleted_and_renames() {
