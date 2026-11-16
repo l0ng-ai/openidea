@@ -8390,5 +8390,10 @@
   "Only in target": "仅在目标中",
   "Different": "不同",
   "Foreign Keys": "外键",
-  "Indexes": "索引"
+  "Indexes": "索引",
+  "Add JDK from Disk…": "从磁盘添加 JDK…",
+  "Select Home Directory for JDK": "选择 JDK 主目录",
+  "The selected directory is not a valid home for JDK: {path}": "所选目录不是有效的 JDK 主目录：{path}",
+  "Add SDK": "添加 SDK",
+  "Remove SDK": "移除 SDK"
 }

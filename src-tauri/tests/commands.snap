@@ -513,6 +513,7 @@ scaffold_requirements                        always             project_host bin
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   trusted            project_host bindings async
+sdk_jdk_at                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async
 sdk_php_effective                            trusted            project_host bindings sync

@@ -63,6 +63,11 @@ export function detectSdks(kind: SdkKind, force = false): Promise<Sdk[]> {
   return p;
 }
 
+/** Drops an SDK (e.g. a JDK added by hand, then removed) from the cached list. */
+export function forgetSdk(kind: SdkKind, path: string) {
+  useSdks.setState((s) => ({ byKind: { ...s.byKind, [kind]: (s.byKind[kind] ?? []).filter((x) => x.path !== path) } }));
+}
+
 /** Adds an SDK (e.g. a just-created virtualenv) to the cached list. */
 export function rememberSdk(kind: SdkKind, sdk: Sdk) {
   const remember = () =>

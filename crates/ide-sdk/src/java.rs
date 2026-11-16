@@ -138,6 +138,26 @@ pub fn add_jdk_root(dir: &Path) {
     }
 }
 
+/// JDK homes added by hand (Settings › SDKs › Add JDK from Disk…).
+static ADDED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Sets the JDK homes added by hand; the next scan lists them (a change drops the cached scan).
+pub fn set_added_jdks(homes: impl IntoIterator<Item = PathBuf>) {
+    let homes: Vec<PathBuf> = homes.into_iter().filter(|h| !h.as_os_str().is_empty()).collect();
+    let mut added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    if *added != homes {
+        *added = homes;
+        drop(added);
+        *JDKS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// Whether `home` is a JDK added by hand.
+pub fn is_added(home: &Path) -> bool {
+    let added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    added.iter().any(|h| jdk_at(h).is_some_and(|j| j.home == home))
+}
+
 /// Whether `home` lies in a folder registered with [`add_jdk_root`].
 pub fn is_downloaded(home: &Path) -> bool {
     let roots = EXTRA_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -190,6 +210,7 @@ fn scan() -> Vec<Jdk> {
     for (dir, _) in ide_core::version_managers::installs(ide_core::version_managers::Tool::Java) {
         homes.extend([dir.join("Contents/Home"), dir]);
     }
+    homes.extend(ADDED.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
     let mut out: Vec<Jdk> = Vec::new();
     for h in homes {
         if let Some(jdk) = jdk_at(&h)
@@ -1362,6 +1383,26 @@ mod tests {
         assert!(found.iter().any(|j| j.home == home && j.major == 25), "{found:?}");
         assert!(found.iter().any(|j| j.home == bundle && j.major == 21), "{found:?}");
         assert!(is_downloaded(&home) && !is_downloaded(Path::new("/elsewhere")));
+    }
+
+    #[test]
+    fn jdks_added_by_hand_are_listed_until_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A macOS bundle picked as its folder: listed by its `Contents/Home`.
+        let bundle = tmp.path().join("odd place/my-jdk.jdk");
+        let home = bundle.join("Contents/Home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("release"), "JAVA_VERSION=\"17.0.9\"\nIMPLEMENTOR=\"Acme\"\n").unwrap();
+        std::fs::write(home.join("bin").join(crate::exe("java")), "").unwrap();
+        let home = dunce::canonicalize(&home).unwrap();
+        set_added_jdks([bundle.clone()]);
+        assert!(installed_jdks().iter().any(|j| j.home == home && j.major == 17));
+        assert!(is_added(&home));
+        let sdk = crate::jdk_sdk(&jdk_at(&bundle).unwrap());
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Acme 17.0.9", "added"));
+        set_added_jdks(Vec::new());
+        assert!(!installed_jdks().iter().any(|j| j.home == home));
+        assert!(!is_added(&home));
     }
 
     #[test]
