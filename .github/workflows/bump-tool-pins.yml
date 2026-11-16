@@ -1,0 +1,57 @@
+name: Bump tool pins
+# JetBrains kotlin-lsp builds expire a few weeks after release, and the Real servers check pins one
+# (.github/tool-versions.env). Weekly: find the newest build, hash its archives, open a PR.
+# Needs the repo setting "Allow GitHub Actions to create pull requests" (Settings > Actions > General).
+# A PR opened with GITHUB_TOKEN does not start the Language smoke on it; to get that run, add a
+# TOOL_PINS_TOKEN secret (a token that can push branches and open pull requests) and it is used instead.
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  kotlin-lsp:
+    name: Bump kotlin-lsp
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOOL_PINS_TOKEN || github.token }}
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - id: bump
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/bump-kotlin-lsp.mjs
+      - if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.TOOL_PINS_TOKEN || github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch="ci/bump-kotlin-lsp-$VERSION"
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "A pull request for $branch is already open"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add .github/tool-versions.env
+          git commit -m "chore(ci): bump kotlin-lsp to $VERSION"
+          git push --force origin "$branch"
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          The pinned kotlin-lsp build expires a few weeks after release. This moves \`KOTLIN_LSP\` to $VERSION and updates the sha256 of its Linux and Windows archives. \`scripts/ci/bump-kotlin-lsp.mjs\` hashed both downloads and compared them with the checksums JetBrains publishes.
+
+          ## How it was verified
+
+          The \`Real servers\` check on this pull request runs the Kotlin leg against the new build.
+          EOF
+          gh pr create --base main --head "$branch" \
+            --title "chore(ci): bump kotlin-lsp to $VERSION" \
+            --body-file "$RUNNER_TEMP/body.md"

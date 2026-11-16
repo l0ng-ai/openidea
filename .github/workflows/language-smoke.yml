@@ -8,28 +8,18 @@ name: Language smoke
 # (Run, Run tests, the test tree, Rerun Failed Tests): smoke/run.test.ts; and debugging its
 # entry point with the debugger the IDE installs (breakpoint, frames, variables, evaluate,
 # Step Over, Resume): smoke/debug.test.ts.
+# TypeScript, Java and Kotlin also restart their server and take an external file change, and
+# Java and Kotlin import a multi-module project; their steps are in .github/actions/smoke-leg.
 on:
   push:
     branches: [main]
-    paths: &paths
-      - "crates/**"
-      - "languages/**"
-      - "fixtures/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "src/features/run/**"
-      - "src/features/debugger/**"
-      - "src/platform/**"
-      - "smoke/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/language-smoke.yml"
-      - ".github/tool-versions.env"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
-    paths: *paths
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: language-smoke-${{ github.ref }}
@@ -41,93 +31,129 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # Whether a pull request touches anything the smoke can see, so unaffected ones (docs, UI
+  # only) skip the legs instead of waiting on a path-filtered workflow that never starts.
+  # Pushes and manual runs always run everything.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      smoke: ${{ steps.classify.outputs.smoke }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+            echo "smoke=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
+          cat files.txt
+          # The Rust code embeds files from java/ and from a few places under src/ (see ci.yml).
+          relevant='^(crates/|languages/|fixtures/|java/|wit/|plugins/|\.cargo/|smoke/|scripts/ci/|src/features/run/|src/features/debugger/|src/platform/|src/bindings\.ts$|src/styles/tokens\.css$|src/features/plugins/views/frame-bridge\.js$|Cargo\.toml$|Cargo\.lock$|rust-toolchain|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.github/workflows/language-smoke\.yml$|\.github/actions/smoke-leg/|\.github/tool-versions\.env$)'
+          smoke=false
+          if grep -Eq "$relevant" files.txt; then smoke=true; fi
+          echo "smoke=$smoke"
+          echo "smoke=$smoke" >> "$GITHUB_OUTPUT"
+
+  # TypeScript, Java and Kotlin: the legs behind the `Real servers` check.
   smoke:
     name: Language smoke (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.smoke == 'true'
     strategy:
       fail-fast: false
       matrix:
-        language: [typescript, python, rust, go, java, kotlin, php, c, cpp]
+        include:
+          - { language: typescript, tests: "typescript typescript_restart typescript_external_change" }
+          - { language: java, tests: "java java_restart java_external_change java_multimodule" }
+          - { language: kotlin, tests: "kotlin kotlin_restart kotlin_external_change kotlin_multimodule" }
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/smoke-leg
+        with:
+          language: ${{ matrix.language }}
+          tests: ${{ matrix.tests }}
+
+  # The other languages: same legs, not part of the `Real servers` check.
+  smoke-other:
+    name: Language smoke (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.smoke == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { language: python, tests: python }
+          - { language: rust, tests: rust }
+          - { language: go, tests: go }
+          - { language: php, tests: php }
+          - { language: c, tests: c }
+          - { language: cpp, tests: cpp }
     # C/C++ debug with GDB, whose DAP interpreter needs 14+: 22.04 ships 12.1, 24.04 ships 15.
     runs-on: ${{ (matrix.language == 'c' || matrix.language == 'cpp') && 'ubuntu-24.04' || 'ubuntu-22.04' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      # Tool versions, shared with the evals (pnpm eval).
-      - run: grep -E '^[A-Z0-9_]+=' .github/tool-versions.env >> "$GITHUB_ENV"
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: "rust-analyzer, rustfmt" }
-      # One build cache for every language; main saves it.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/smoke-leg
         with:
-          shared-key: language-smoke
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.language == 'rust' }}
+          language: ${{ matrix.language }}
+          tests: ${{ matrix.tests }}
 
-      - uses: pnpm/action-setup@v4
-        with: { version: 11 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: pnpm }
-      - if: matrix.language == 'typescript'
-        run: npm install --global "@vtsls/language-server@$VTSLS" "typescript@$TYPESCRIPT"
+  # Advisory: Windows is the platform most bug reports come from and nothing has run these legs
+  # there before. Not in `Real servers`; a maintainer adds it once the legs are stable.
+  smoke-windows:
+    name: Language smoke Windows (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.smoke == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { language: typescript, tests: "typescript typescript_restart typescript_external_change" }
+          - { language: java, tests: "java java_restart java_external_change java_multimodule" }
+          - { language: kotlin, tests: "kotlin kotlin_restart kotlin_external_change kotlin_multimodule" }
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 60
+    steps:
+      # Before checkout: fixtures and scripts are LF (a CRLF bash script does not run).
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/smoke-leg
+        with:
+          language: ${{ matrix.language }}
+          tests: ${{ matrix.tests }}
 
-      # The smoke builds the c-app fixture and debugs it with GDB's own DAP interpreter.
-      - if: matrix.language == 'c' || matrix.language == 'cpp'
+  # The one check to require in the repo ruleset (Settings > Rules > main > Require status
+  # checks): `Real servers`. Matrix job names are not stable, this one is. It passes when the
+  # TypeScript, Java and Kotlin legs passed, or were skipped because the pull request touched
+  # nothing they cover; it fails when one failed or was cancelled.
+  real-servers:
+    name: Real servers
+    needs: [changes, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          RESULTS: ${{ needs.changes.result }} ${{ needs.smoke.result }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gdb
-
-      - if: matrix.language == 'python'
-        uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - if: matrix.language == 'python'
-        run: pip install "basedpyright==$BASEDPYRIGHT" "ruff==$RUFF"
-
-      - if: matrix.language == 'go'
-        uses: actions/setup-go@v5
-        with: { go-version: "1.27", cache: false }
-      - if: matrix.language == 'go'
-        run: go install "golang.org/x/tools/gopls@$GOPLS"
-
-      - if: matrix.language == 'java' || matrix.language == 'kotlin'
-        uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "${{ env.JAVA }}" }
-      - if: matrix.language == 'java'
-        run: |
-          mkdir -p "$RUNNER_TEMP/jdtls"
-          curl -fsSL "https://download.eclipse.org/jdtls/milestones/${JDTLS%-*}/jdt-language-server-$JDTLS.tar.gz" \
-            | tar xz -C "$RUNNER_TEMP/jdtls"
-          echo "$RUNNER_TEMP/jdtls/bin" >> "$GITHUB_PATH"
-
-      # The Kotlin fixture has no Gradle wrapper: the server imports it with the Gradle on PATH.
-      - if: matrix.language == 'kotlin'
-        uses: gradle/actions/setup-gradle@v4
-        with: { gradle-version: "${{ env.GRADLE }}" }
-      - if: matrix.language == 'kotlin'
-        run: |
-          mkdir -p "$RUNNER_TEMP/kotlin-lsp" "$RUNNER_TEMP/bin"
-          curl -fsSL "https://download.jetbrains.com/language-server/kotlin-server/$KOTLIN_LSP/kotlin-server-$KOTLIN_LSP.tar.gz" \
-            | tar xz -C "$RUNNER_TEMP/kotlin-lsp" --strip-components=1
-          ln -s "$RUNNER_TEMP/kotlin-lsp/kotlin-lsp.sh" "$RUNNER_TEMP/bin/kotlin-lsp"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-
-      # Xdebug for the debug smoke; Composer installs the fixture's Pest for the run smoke.
-      - if: matrix.language == 'php'
-        uses: shivammathur/setup-php@v2
-        with: { php-version: "8.5", coverage: xdebug, tools: composer }
-      - if: matrix.language == 'php'
-        run: npm install --global "intelephense@$INTELEPHENSE"
-
-      - run: cargo test --locked -p ide-host --test language_smoke --no-run
-      - run: cargo test --locked -p ide-host --test language_smoke -- --ignored --exact ${{ matrix.language }}
-      - if: matrix.language == 'java'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact maven_sync jdk maven_launch_classpath_uses_the_runner_jdk_classifier
-      - if: matrix.language == 'kotlin'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact gradle_sync
-      - if: matrix.language == 'python'
-        run: cargo test --locked -p ide-host --test project_smoke -- --ignored --exact python_venv
-
-      - run: pnpm install --frozen-lockfile
-      - run: cargo build --locked -p ide-host --bin openidea-server
-      - run: pnpm smoke smoke/run.test.ts -t "^${{ matrix.language }}$"
-      - run: pnpm smoke smoke/debug.test.ts -t "^${{ matrix.language }}$"
-        # The IDE installs the debugger from GitHub releases: authenticated, against rate limits.
-        env: { GITHUB_TOKEN: "${{ github.token }}" }
+          echo "changes, smoke: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *) echo "::error::the real-server legs did not pass ($result)"; exit 1 ;;
+            esac
+          done

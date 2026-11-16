@@ -1,0 +1,74 @@
+name: Native smoke
+# Launches the built debug desktop app on a fixture and drives its real webview through the MCP
+# bridge debug builds carry: smoke/native/run.ts (pnpm smoke:native). Advisory: not part of the
+# `Real servers` check, and not run on pull requests (the debug app build is heavy).
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  native:
+    name: Native smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 60
+    steps:
+      # Before checkout: the fixture is copied as is, LF.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb
+      - run: pnpm install --frozen-lockfile
+      # The global Tauri API lets the bridge return script results. tauri.conf.json's
+      # beforeBuildCommand (pnpm build) builds the frontend dist.
+      - run: pnpm tauri build --debug --no-bundle --config src-tauri/tauri.dev.conf.json
+      - name: Native smoke
+        env:
+          OPENIDEA_SMOKE_LOG_DIR: ${{ runner.temp }}/smoke-logs
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a pnpm smoke:native target/debug/openidea ts-app
+          else
+            pnpm smoke:native target/debug/openidea.exe ts-app
+          fi
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-smoke-logs-${{ runner.os }}
+          path: ${{ runner.temp }}/smoke-logs
+          retention-days: 7
+          if-no-files-found: warn
+          overwrite: true
