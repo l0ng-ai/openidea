@@ -146,6 +146,9 @@ export function classifyAction(action: Pick<CodeAction, "kind" | "title">): Refa
       )
     )
       return null;
+    // rope: a module-level method has no IDEA counterpart; a module-level variable is a constant.
+    if (/\bglobal method\b/i.test(title)) return null;
+    if (/\bglobal variable\b/i.test(title)) return "extractConstant";
     if (is(/function|method/i)) return "extractMethod";
     if (is(/field|member|property/i)) return "extractField";
     if (is(/parameter|argument/i)) return "extractParameter";
