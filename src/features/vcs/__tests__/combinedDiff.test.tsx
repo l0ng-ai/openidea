@@ -103,12 +103,20 @@ describe("the all-in-one diff tab", () => {
     expect(screen.getAllByTestId("block-diff")[0]).toBe(first);
   });
 
-  it("switches every block between side-by-side and unified", () => {
+  it("switches every block between side-by-side and unified, collapsed ones too, in place", () => {
     render(<CombinedDiffTab input={input} />);
+    const before = screen.getAllByTestId("block-diff");
+    act(() => {
+      fireEvent.click(screen.getAllByRole("button", { name: "Collapse File" })[0]!);
+    });
     act(() => {
       fireEvent.click(screen.getByRole("button", { name: "Unified Viewer" }));
     });
-    expect(screen.getAllByTestId("block-diff").every((b) => b.dataset.mode === "unified")).toBe(true);
+    const after = screen.getAllByTestId("block-diff");
+    expect(after.every((b) => b.dataset.mode === "unified")).toBe(true);
+    // The same diffs: switching never released their documents (and unsaved edits).
+    expect(after).toEqual(before);
+    after.forEach((b, i) => expect(b).toBe(before[i]));
   });
 
   it("opens a file's own diff, and goes back to one tab per file", async () => {
