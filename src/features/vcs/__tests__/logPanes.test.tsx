@@ -27,11 +27,12 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
-import { BranchesPanel, CommitDetails, changesMenu } from "../GitLog";
+import { CommitDetails, changesMenu } from "../GitLog";
 import { LogSettingsPage } from "../LogSettingsPage";
 import { canDeleteBranch } from "../branchOps";
 import { buildBranchTree, filterBranchTree } from "../branches";
 import { buildFileTree } from "../fileTree";
+import { BranchesPanel } from "../log/BranchesPanel";
 import { graphOptionsMenu } from "../log/FilterBar";
 import {
   EMPTY_TREE,
