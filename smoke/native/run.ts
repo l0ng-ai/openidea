@@ -43,7 +43,9 @@ type Response = { id: string; success: boolean; data?: unknown; error?: string }
 class Bridge {
   private next = 0;
   private waiting = new Map<string, (r: Response) => void>();
-  private constructor(private socket: WebSocket) {
+  private socket: WebSocket;
+  private constructor(socket: WebSocket) {
+    this.socket = socket;
     socket.addEventListener("message", (event) => {
       try {
         const response = JSON.parse(String(event.data)) as Response;
@@ -58,8 +60,11 @@ class Bridge {
   static connect(port: number, timeoutMs = 2000): Promise<Bridge | undefined> {
     return new Promise((resolveBridge) => {
       const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+      let done = false;
       const timer = setTimeout(() => finish(undefined), timeoutMs);
       const finish = (bridge?: Bridge) => {
+        if (done) return;
+        done = true;
         clearTimeout(timer);
         if (!bridge) socket.close();
         resolveBridge(bridge);
