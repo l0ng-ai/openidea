@@ -360,8 +360,8 @@ impl AuxKind {
         self != AuxKind::Settings
     }
 
-    /// Modal for its parent: menu items other than app-level ones are dropped.
-    pub fn modal(self) -> bool {
+    /// Has no actions of its own: menu items run in its project window.
+    fn runs_menu_in_parent(self) -> bool {
         self == AuxKind::Settings
     }
 
@@ -384,6 +384,34 @@ pub fn auxiliary(label: &str) -> Option<(AuxKind, &str)> {
         };
         (!parent.is_empty()).then_some((kind, parent))
     })
+}
+
+/// Where a menu item chosen while window `label` is focused runs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MenuDestination<'a> {
+    /// The window's own frontend.
+    Own,
+    /// The project window `label`; `raise` brings it to the front so what the action shows is seen.
+    Parent { label: &'a str, raise: bool },
+    /// The window itself is the tab: Close Tab closes it.
+    Close,
+}
+
+/// Actions an auxiliary window always leaves to its project window.
+const PARENT_ACTIONS: [&str; 4] = ["app.quit", "file.settings", "file.projectStructure", "file.newProjectsSettings"];
+
+/// Where menu item `action` runs while window `label` is focused. As in IDEA, the menu stays usable
+/// with Settings open: it runs in the project window, whose enablement (no focused editor) the menu shows.
+pub fn menu_destination<'a>(label: &'a str, action: &str) -> MenuDestination<'a> {
+    match auxiliary(label) {
+        None => MenuDestination::Own,
+        Some((_, parent)) if PARENT_ACTIONS.contains(&action) => {
+            MenuDestination::Parent { label: parent, raise: false }
+        }
+        Some((kind, parent)) if kind.runs_menu_in_parent() => MenuDestination::Parent { label: parent, raise: true },
+        Some(_) if action == "editor.closeTab" => MenuDestination::Close,
+        Some(_) => MenuDestination::Own,
+    }
 }
 
 /// The project window an auxiliary window belongs to (`settings-main` → `main`).
@@ -2347,6 +2375,27 @@ mod tests {
         assert_eq!(state_key("project-3"), "project-3");
         let labels = ["comparison-main-0", "diff-main-1", "project-2", "main", "settings-main", "deployment-project-2"];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
+    }
+
+    #[test]
+    fn menu_items_chosen_in_settings_run_in_its_project_window() {
+        use MenuDestination::*;
+        for (label, action, expected) in [
+            ("main", "app.about", Own),
+            ("main", "editor.closeTab", Own),
+            // #3625: Settings has no actions of its own; the rest of the menu runs in the project window.
+            ("settings-main", "app.checkForUpdates", Parent { label: "main", raise: true }),
+            ("settings-project-2", "file.newFile", Parent { label: "project-2", raise: true }),
+            ("settings-main", "editor.closeTab", Parent { label: "main", raise: true }),
+            ("settings-main", "file.settings", Parent { label: "main", raise: false }),
+            ("settings-main", "app.quit", Parent { label: "main", raise: false }),
+            ("comparison-main-0", "app.quit", Parent { label: "main", raise: false }),
+            ("comparison-main-0", "editor.closeTab", Close),
+            ("diff-main-1", "vcs.diff.next", Own),
+            ("deployment-main", "app.about", Own),
+        ] {
+            assert_eq!(menu_destination(label, action), expected, "{label} {action}");
+        }
     }
 
     #[test]
