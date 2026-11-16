@@ -62,6 +62,8 @@ export interface AppearanceExtras {
   mainMenuStyle: "hamburger" | "merged" | "toolbar";
   /** A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
   mainMenuAlt: boolean;
+  /** Settings open in a native window of their own; off opens the in-page dialog (#3797). */
+  settingsInSeparateWindow: boolean;
   ideAntialiasing: Antialiasing;
   editorAntialiasing: Antialiasing;
   showToolWindowBars: boolean;
@@ -143,6 +145,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   menuIcons: true,
   mainMenuStyle: "hamburger",
   mainMenuAlt: true,
+  settingsInSeparateWindow: true,
   ideAntialiasing: "greyscale",
   editorAntialiasing: "greyscale",
   showToolWindowBars: true,
@@ -218,6 +221,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     menuIcons: b("menuIcons"),
     mainMenuStyle: oneOf(a.mainMenuStyle, ["hamburger", "merged", "toolbar"], d.mainMenuStyle),
     mainMenuAlt: b("mainMenuAlt"),
+    settingsInSeparateWindow: b("settingsInSeparateWindow"),
     ideAntialiasing: oneOf(a.ideAntialiasing, AA, d.ideAntialiasing),
     editorAntialiasing: oneOf(a.editorAntialiasing, AA, d.editorAntialiasing),
     showToolWindowBars: b("showToolWindowBars"),

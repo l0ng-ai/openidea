@@ -2775,6 +2775,11 @@ export type AppearanceSettings_Deserialize = {
 	mainMenuStyle?: string,
 	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
 	mainMenuAlt?: boolean,
+	/**
+	 *  Settings open in a native window of their own (IDEA parity); off opens them
+	 *  as a dialog inside the project window, which needs no new webview.
+	 */
+	settingsInSeparateWindow?: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing?: string,
 	editorAntialiasing?: string,
@@ -2839,6 +2844,11 @@ export type AppearanceSettings_Serialize = {
 	mainMenuStyle: string,
 	/**  A lone Alt press focuses or opens the main menu (IDEA `ide.windows.main.menu.focus.on.alt`). */
 	mainMenuAlt: boolean,
+	/**
+	 *  Settings open in a native window of their own (IDEA parity); off opens them
+	 *  as a dialog inside the project window, which needs no new webview.
+	 */
+	settingsInSeparateWindow: boolean,
 	/**  `subpixel` | `greyscale` | `none` */
 	ideAntialiasing: string,
 	editorAntialiasing: string,

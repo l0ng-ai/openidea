@@ -8699,5 +8699,7 @@
   "Reformat {length} files?": "是否重新格式化 {length} 个文件？",
   "Reformat Code cancelled after {done} of {length} files": "重新格式化代码已在处理 {done}/{length} 个文件后取消",
   "Reformatted {formatted} of {length} files": "已重新格式化 {formatted}/{length} 个文件",
-  "Skipped {count} files without a formatter: {names}": "已跳过 {count} 个没有格式化程序的文件：{names}"
+  "Skipped {count} files without a formatter: {names}": "已跳过 {count} 个没有格式化程序的文件：{names}",
+  "Open Settings in a separate window": "在单独的窗口中打开设置",
+  "When off, Settings opens as a dialog in the project window, which is faster": "关闭时，设置以对话框形式在项目窗口中打开，速度更快"
 }
