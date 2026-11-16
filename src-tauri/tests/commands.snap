@@ -297,6 +297,7 @@ log_frontend                                 always             desktop      bin
 lsp_apply_code_action                        trusted            project_host bindings async
 lsp_call_hierarchy                           trusted            project_host bindings async
 lsp_can_download_sources                     trusted            project_host bindings async
+lsp_change_signature                         trusted            project_host bindings async
 lsp_code_action_query                        trusted            project_host bindings async
 lsp_code_actions                             trusted            project_host bindings async
 lsp_code_lens                                trusted            project_host bindings async
@@ -329,6 +330,7 @@ lsp_restart_named                            trusted            desktop      bin
 lsp_semantic_tokens                          trusted            project_host bindings async
 lsp_servers                                  always             project_host bindings sync
 lsp_signature_help                           trusted            project_host bindings async
+lsp_signature_info                           trusted            project_host bindings async
 lsp_type_hierarchy                           trusted            project_host bindings async
 lsp_virtual_document                         trusted            project_host bindings async
 lsp_workspace_symbols                        trusted            project_host bindings async

@@ -2113,5 +2113,19 @@
   "Controller": "Controller",
   "Helper": "Helper",
   "Model": "Model",
-  "Migration": "Migration"
+  "Migration": "Migration",
+  "Change Signature": "Change Signature",
+  "Visibility:": "Visibility:",
+  "Return type:": "Return type:",
+  "package-private": "package-private",
+  "Delegate via overloading method": "Delegate via overloading method",
+  "Signature Preview": "Signature Preview",
+  "Method name is not a valid identifier": "Method name is not a valid identifier",
+  "Return type is not specified": "Return type is not specified",
+  "Parameter type is not specified": "Parameter type is not specified",
+  "Parameter name is not a valid identifier": "Parameter name is not a valid identifier",
+  "Duplicate parameter name": "Duplicate parameter name",
+  "Default value is not specified for a new parameter": "Default value is not specified for a new parameter",
+  "Visibility": "Visibility",
+  "Change Signature of '{name}'": "Change Signature of '{name}'"
 }

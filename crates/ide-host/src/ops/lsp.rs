@@ -1173,6 +1173,55 @@ pub async fn lsp_hierarchy_refactor(
     .await
 }
 
+/// The signature of the method at `pos`, for Change Signature.
+pub async fn lsp_signature_info(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<MethodSignature> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.change_signature_info(doc, pos, cancel).await;
+    host.end_request(request);
+    result
+}
+
+/// Checks changing the method at `pos` to `signature` and computes the edit without applying it.
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_change_signature(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    signature: MethodSignature,
+    delegate: bool,
+    confirmation: Option<String>,
+) -> IdeResult<SignatureChanged> {
+    let project = host.project(window)?;
+    let documents = project.documents.clone();
+    let version = blocking(move || documents.version(doc)).await?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.change_signature(doc, pos, signature, delegate, confirmation, cancel).await;
+    host.end_request(request);
+    let mut changed = result?;
+    blocking(move || {
+        if project.documents.version(doc)? != version {
+            return Err(ide_core::IdeError::new(
+                ide_core::error::ErrorKind::OutOfSync,
+                "document changed while computing the refactoring; request it again",
+            ));
+        }
+        if let Some(edit) = &mut changed.edit {
+            project.documents.prepare_workspace_edit(edit)?;
+        }
+        Ok(changed)
+    })
+    .await
+}
+
 pub async fn lsp_rename(
     host: &Host,
     window: &str,
@@ -1893,6 +1942,22 @@ pub(crate) fn register(d: &mut Dispatcher) {
             c.arg("kind")?,
             c.arg("target")?,
             c.arg("choices")?,
+        )
+        .await
+    });
+    d.add("lsp_signature_info", |c| async move {
+        lsp_signature_info(&c.host, &c.window, c.arg("request")?, c.arg("doc")?, c.arg("pos")?).await
+    });
+    d.add("lsp_change_signature", |c| async move {
+        lsp_change_signature(
+            &c.host,
+            &c.window,
+            c.arg("request")?,
+            c.arg("doc")?,
+            c.arg("pos")?,
+            c.arg("signature")?,
+            c.arg("delegate")?,
+            c.arg("confirmation")?,
         )
         .await
     });

@@ -504,6 +504,51 @@ pub struct HierarchyRefactored {
     pub edit: Option<WorkspaceEdit>,
 }
 
+/// A parameter in Change Signature: its type, name, the value passed at existing calls when it is
+/// added, and its index in the current signature (-1 for an added one).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureParameter {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub name: String,
+    pub default_value: String,
+    pub original_index: i32,
+}
+
+/// A declared exception (`throws`), with the server's handle of its type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureException {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    pub type_handle_identifier: String,
+}
+
+/// The signature of the method at a position, as Change Signature edits it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MethodSignature {
+    /// The server's handle of the method, passed back unchanged.
+    pub method_identifier: String,
+    /// `public`, `protected`, `private`, or empty for package-private.
+    pub modifier: String,
+    pub return_type: String,
+    pub method_name: String,
+    pub parameters: Vec<SignatureParameter>,
+    pub exceptions: Vec<SignatureException>,
+}
+
+/// Change Signature's check: problems to show, the edit when none is fatal, and the token that
+/// confirms going on despite warnings.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureChanged {
+    pub problems: Vec<RefactoringProblem>,
+    pub edit: Option<WorkspaceEdit>,
+    pub confirmation: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CallHierarchy {

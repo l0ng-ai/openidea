@@ -642,6 +642,8 @@ export const commands = {
 	lspHierarchyMembers: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring) => typedError<HierarchyMembers, IdeError>(__TAURI_INVOKE("lsp_hierarchy_members", { request, doc, pos, kind })),
 	/**  Checks Pull Members Up / Push Members Down and computes the edit without applying it. */
 	lspHierarchyRefactor: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring, target: string | null, choices: HierarchyChoice[]) => typedError<HierarchyRefactored, IdeError>(__TAURI_INVOKE("lsp_hierarchy_refactor", { request, doc, pos, kind, target, choices })),
+	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
+	lspChangeSignature: (request: RequestId, doc: DocId, pos: Pos, signature: MethodSignature, delegate: boolean, confirmation: string | null) => typedError<SignatureChanged, IdeError>(__TAURI_INVOKE("lsp_change_signature", { request, doc, pos, signature, delegate, confirmation })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -7992,6 +7994,18 @@ export type MethodBody =
 /**  Anything else. */
 { kind: "other" };
 
+/**  The signature of the method at a position, as Change Signature edits it. */
+export type MethodSignature = {
+	/**  The server's handle of the method, passed back unchanged. */
+	methodIdentifier: string,
+	/**  `public`, `protected`, `private`, or empty for package-private. */
+	modifier: string,
+	returnType: string,
+	methodName: string,
+	parameters: SignatureParameter[],
+	exceptions: SignatureException[],
+};
+
 /**  Per-function totals (a recursive function's samples count once in `total`). */
 export type MethodStat = {
 	frame: number,
@@ -10286,10 +10300,37 @@ export type Signature = {
 	parameters: ([number, number])[],
 };
 
+/**
+ *  Change Signature's check: problems to show, the edit when none is fatal, and the token that
+ *  confirms going on despite warnings.
+ */
+export type SignatureChanged = {
+	problems: RefactoringProblem[],
+	edit: WorkspaceEdit | null,
+	confirmation: string | null,
+};
+
+/**  A declared exception (`throws`), with the server's handle of its type. */
+export type SignatureException = {
+	type: string,
+	typeHandleIdentifier: string,
+};
+
 export type SignatureHelp = {
 	signatures: Signature[],
 	activeSignature: number,
 	activeParameter: number,
+};
+
+/**
+ *  A parameter in Change Signature: its type, name, the value passed at existing calls when it is
+ *  added, and its index in the current signature (-1 for an added one).
+ */
+export type SignatureParameter = {
+	type: string,
+	name: string,
+	defaultValue: string,
+	originalIndex: number,
 };
 
 /**

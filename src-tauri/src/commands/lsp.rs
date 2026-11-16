@@ -319,6 +319,44 @@ pub async fn lsp_hierarchy_refactor(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn lsp_signature_info(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<MethodSignature> {
+    ide_host::ops::lsp::lsp_signature_info(&state.host, window.label(), request, doc, pos).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_change_signature(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+    signature: MethodSignature,
+    delegate: bool,
+    confirmation: Option<String>,
+) -> IdeResult<SignatureChanged> {
+    ide_host::ops::lsp::lsp_change_signature(
+        &state.host,
+        window.label(),
+        request,
+        doc,
+        pos,
+        signature,
+        delegate,
+        confirmation,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn lsp_format(
     window: Window,
     state: State<'_, AppState>,
