@@ -216,6 +216,11 @@ fn settle<T>(result: Result<T, InspectError>) -> IdeResult<Result<T, JvmInspectU
         InspectError::TimedOut => U::TimedOut,
         InspectError::Closed => U::BackendClosed,
         InspectError::Failed(message) => return Err(IdeError::internal(format!("JVM inspector: {message}"))),
+        // Only the stream trace commands answer these, never the memory view's.
+        other @ (InspectError::NoSession
+        | InspectError::NotAtChainStart(_)
+        | InspectError::Busy
+        | InspectError::NoTrace) => return Err(IdeError::internal(format!("JVM inspector: {other}"))),
     }))
 }
 

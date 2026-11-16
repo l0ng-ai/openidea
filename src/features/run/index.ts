@@ -30,7 +30,7 @@ import {
   compiledDebugPlan,
   contextMenuItems,
   executeContext,
-  launchProduced,
+  debugBinary,
   modifyContext,
   prepareMenu,
   runContextAction,
@@ -92,7 +92,7 @@ import {
   selectConfig,
   selectedConfig,
   startRun,
-  stopRunningInstances,
+  debugSingleInstance,
   startSampleOutput,
   stopSession,
   subscribeOutput,
@@ -172,31 +172,8 @@ async function debugConfig(config: RunConfig, chain: readonly string[] = [], sho
     return;
   }
   if (remoteDebugBlocked(config)) return;
-  if (config.allowParallel) return debugLaunch(config, chain, show);
-  // Clicked again while it is still preparing (building): that launch goes on, no second one.
-  if (debugLaunching.has(config.id)) return;
-  debugLaunching.add(config.id);
-  let stopWatching = () => {};
-  let launched: Promise<void> | null = null;
-  try {
-    if (!(await stopRunningInstances(config))) return;
-    // From its session on, a further Debug asks to stop it (`stopRunningInstances`).
-    const debugging = new Promise<void>((resolve) => {
-      stopWatching = useDebugRunSessions.subscribe((s) => {
-        if (s.serviceSessions.some((d) => d.config.id === config.id && d.status !== "terminated")) resolve();
-      });
-    });
-    launched = debugLaunch(config, chain, show);
-    await Promise.race([launched.catch(() => {}), debugging]);
-  } finally {
-    stopWatching();
-    debugLaunching.delete(config.id);
-  }
-  await launched;
+  await debugSingleInstance(config, () => debugLaunch(config, chain, show));
 }
-
-/** Configurations whose Debug is between the click and the debugger's session. */
-const debugLaunching = new Set<string>();
 
 async function debugLaunch(config: RunConfig, chain: readonly string[], show?: boolean): Promise<void> {
   if (!(await prepareLaunch(config, chain, show))) return;
@@ -219,7 +196,7 @@ async function debugLaunch(config: RunConfig, chain: readonly string[], show?: b
   // A single compiled file (rustc / clang / zig): build with debug info, then debug the binary.
   const compiled = await compiledDebugPlan(config);
   if (compiled?.debug) {
-    await launchProduced(compiled, true, show);
+    await debugBinary(compiled.debug, config, show);
     return;
   }
   // "Build and run using: Gradle": the JavaExec JVM gets the agent, the debugger attaches to it.

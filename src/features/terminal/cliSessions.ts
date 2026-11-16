@@ -5,8 +5,10 @@
  * Sessions outlive React: they belong to the tab, which reattaches the same xterm
  * host when it is shown again.
  */
+import { editorService } from "@/workbench/contributions";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { useClis } from "./cli";
+import { CLI_KIND, useClis } from "./cli";
+import { completionAlert, completionPrefs, raiseCompletionNotification, type CompletionInfo } from "./completion";
 import { TerminalSession, type SessionSnapshot } from "./session";
 
 const sessions = new Map<string, TerminalSession>();
@@ -40,10 +42,39 @@ function onChange(key: string, snapshot: SessionSnapshot) {
   useClis.setState((s) => ({ sessions: { ...s.sessions, [key]: snapshot } }));
 }
 
+/**
+ * A shell-integration command finished in an editor tab (#3712): like a tool
+ * window tab, it notifies when the tab cannot be seen — here, when it is not
+ * the active editor tab of a focused window — and marks it until seen.
+ */
+function noteCliCompletion(key: string, info: CompletionInfo) {
+  let watched = false;
+  try {
+    watched = document.hasFocus() && editorService().activeInput?.()?.key === key;
+  } catch {
+    /* no workbench */
+  }
+  const alert = completionAlert(completionPrefs(), info, watched);
+  if (!alert) return;
+  const snapshot = useClis.getState().sessions[key];
+  sessions.get(key)?.markUnseenDone();
+  raiseCompletionNotification(key, snapshot?.appTitle ?? snapshot?.title ?? "Terminal", alert, () => {
+    void editorService().openInput(
+      { kind: CLI_KIND, key, data: { name: snapshot?.appTitle ?? snapshot?.title ?? "Terminal" } },
+      { focus: true },
+    );
+  });
+}
+
 /** Tab `key` takes over `session`, a running tool window session (Move to Editor). */
 export function adoptCli(key: string, session: TerminalSession) {
   sessions.set(key, session);
-  session.rebind({ onChange: (_, snapshot) => onChange(key, snapshot), onFocus() {}, onExit: undefined });
+  session.rebind({
+    onChange: (_, snapshot) => onChange(key, snapshot),
+    onFocus() {},
+    onExit: undefined,
+    onCompletion: (_, info) => noteCliCompletion(key, info),
+  });
 }
 
 /**
@@ -53,7 +84,14 @@ export function adoptCli(key: string, session: TerminalSession) {
 export function startCli(key: string, cwd: string, command: string, fallbackRoot?: string): TerminalSession {
   const existing = sessions.get(key);
   if (existing) return existing;
-  const session = new TerminalSession({ key, cwd, fallbackRoot, onChange, onFocus() {} });
+  const session = new TerminalSession({
+    key,
+    cwd,
+    fallbackRoot,
+    onChange,
+    onFocus() {},
+    onCompletion: (_, info) => noteCliCompletion(key, info),
+  });
   sessions.set(key, session);
   useClis.setState((s) => ({ sessions: { ...s.sessions, [key]: session.state } }));
   // Typed while the PTY is still starting: sent as the shell's first input.

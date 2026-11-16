@@ -19,6 +19,7 @@ mod jvm_memory;
 pub mod kotlin;
 pub mod kotlin_lsp;
 mod session;
+mod stream_trace;
 pub mod unity;
 
 use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
@@ -39,6 +40,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+pub use stream_trace::{TracePhase, TraceProgress, TraceRun, TraceUnavailable};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -146,6 +148,9 @@ pub struct DebugCapabilities {
     pub js_page: bool,
     /// The adapter evaluates expressions while the program runs, without a stack frame.
     pub live_evaluate: bool,
+    /// A stream chain can be traced while the program runs it ([`DebugManager::stream_trace`]).
+    /// Can change during the session, like `jvm_instances`.
+    pub stream_trace: bool,
 }
 
 /// Result of [`DebugManager::redefine_classes`].
@@ -602,6 +607,7 @@ pub(crate) fn capabilities_from(caps: &Value) -> DebugCapabilities {
         jvm_heap: false,
         js_page: false,
         live_evaluate: false,
+        stream_trace: false,
     }
 }
 
@@ -613,6 +619,7 @@ pub(crate) fn session_capabilities(session: &Session) -> DebugCapabilities {
     caps.jvm_heap = JVM_MEMORY_ADAPTERS.contains(&session.adapter.as_str());
     caps.js_page = js_debug::is_page(session);
     caps.live_evaluate = session.adapter == js_debug::ADAPTER;
+    caps.stream_trace = stream_trace::available(session);
     caps
 }
 
@@ -1871,6 +1878,42 @@ impl DebugManager {
         limit: u32,
     ) -> IdeResult<JvmReferrersResult> {
         jvm_memory::referrers(&*self.session(s)?, object, limit).await
+    }
+
+    /// Gives the session the backend for [`Self::stream_trace`] (used by java-debug sessions
+    /// only); the UI is told to reload the session's capabilities.
+    pub fn set_stream_tracer(
+        &self,
+        s: DebugSessionId,
+        tracer: Arc<dyn ide_jvm_inspect::StreamTracer>,
+    ) -> IdeResult<()> {
+        let session = self.session(s)?;
+        if session.ended.is_cancelled() {
+            return Err(no_session(s));
+        }
+        stream_trace::set_tracer(&session, tracer);
+        Ok(())
+    }
+
+    /// Traces the stream chain `plan` (the JSON of `ide_streams::RealRunPlan`) while the program
+    /// runs it, from `thread_id` stopped where the chain starts. Leaves the thread stopped right
+    /// after the chain's terminal operation. `cancel` stops keeping records; the program runs on.
+    pub async fn stream_trace(
+        &self,
+        s: DebugSessionId,
+        thread_id: i64,
+        plan: Value,
+        cancel: ide_core::CancellationToken,
+        progress: impl Fn(TraceProgress) + Send + Sync,
+    ) -> IdeResult<TraceRun> {
+        let session = self.session(s)?;
+        Ok(stream_trace::run(self, &session, thread_id, &plan, &cancel, &progress).await)
+    }
+
+    /// Ends the running terminal operation by interrupting its thread, then by throwing into it.
+    /// `None` when no trace runs.
+    pub async fn stream_trace_abort(&self, s: DebugSessionId) -> IdeResult<Option<ide_jvm_inspect::AbortState>> {
+        stream_trace::abort(&*self.session(s)?).await
     }
 
     /// HotSwap: reloads the classes compiled since the session started (or since the

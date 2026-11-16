@@ -44,7 +44,15 @@ import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { IconButton, Select, Spinner, T, isPopupOpen, showContextMenu } from "@/ui";
 import { registerSoftWrapSurface } from "@/workbench/softWrap";
 import { editorService, notifications, type EditorInput } from "@/workbench/contributions";
-import { changedLineGutters, diffOverview, diffWords, documentTooltips, languageFor, viewerBase } from "./cm";
+import {
+  changedLineGutters,
+  diffOverview,
+  diffWords,
+  documentTooltips,
+  firstLineOf,
+  languageFor,
+  viewerBase,
+} from "./cm";
 import { applyChunk, arrowControls, chunkAt, hoverRevert, revertUnifiedChunk } from "./diffControls";
 import {
   HIGHLIGHT_OPTIONS,
@@ -70,6 +78,7 @@ import {
   loadSideMode,
   oneSided,
   openDiff,
+  rememberDiffCaret,
   sideFile,
   sideKey,
   sideLabel,
@@ -204,6 +213,8 @@ function viewerHost(views: Views, data: DiffData, mode: DiffMode, focused: () =>
 }
 
 const NO_CONTRIBUTIONS: DiffViewerContribution[] = [];
+/** A file without a language; one value, so finding none again doesn't rebuild the views. */
+const NO_LANGUAGE: Extension = [];
 
 /** Joins the open document of a file-backed side (working file, Compare Files); null for revisions / texts. */
 async function attachSide(side: DiffSide, path: string): Promise<DocumentAttachment | null> {
@@ -288,6 +299,9 @@ export function DiffEditor({
   fit?: boolean;
 }) {
   const input_ = input.data as DiffData;
+  // Read by the panes' listeners, which outlive a render.
+  const inputKey = useRef(input.key);
+  inputKey.current = input.key;
   // Swap Sides shows the request's sides the other way round; another request starts unswapped.
   const [swappedFor, setSwappedFor] = useState<DiffData | null>(null);
   const swapped = swappedFor === input_;
@@ -408,13 +422,21 @@ export function DiffEditor({
     void Promise.resolve().then(reload);
   }, [reload, version]);
 
+  // The file's language as its editor resolves it, from the shown text's first line too
+  // (hashbang-only scripts): the right side's, or the left one's when the file is deleted.
+  const firstLine = useMemo(() => {
+    if (!attached || !statics) return undefined;
+    const text = attached.b?.text() ?? statics.b ?? attached.a?.text() ?? statics.a;
+    return text == null ? null : firstLineOf(text);
+  }, [attached, statics]);
   useEffect(() => {
+    if (firstLine === undefined) return;
     let alive = true;
-    void languageFor(path).then((l) => alive && setLang(() => l ?? []));
+    void languageFor(path, firstLine).then((l) => alive && setLang(() => l ?? NO_LANGUAGE));
     return () => {
       alive = false;
     };
-  }, [path]);
+  }, [path, firstLine]);
 
   const updateChunkInfo = useCallback((docChanged = false) => {
     const v = viewsRef.current?.b;
@@ -487,6 +509,12 @@ export function DiffEditor({
     host.textContent = "";
     const listener = EditorView.updateListener.of((u) => {
       if (u.selectionSet || u.docChanged) updateChunkInfo(u.docChanged);
+      if (u.selectionSet && u.view.hasFocus) {
+        const head = u.state.selection.main.head;
+        const line = u.state.doc.lineAt(head);
+        const side = originOf(u.view === viewsRef.current?.a ? "a" : "b", swapped);
+        rememberDiffCaret(inputKey.current, line.number - 1, head - line.from, side);
+      }
     });
     const findWatch = (s: Side) => EditorView.updateListener.of((u) => findWatchers.current[s].forEach((fn) => fn(u)));
     /** Keeps what the user typed into an editable text side for the next rebuild (options, Swap Sides). */
@@ -785,7 +813,8 @@ export function DiffEditor({
 
   // Reveal the requested line (or the first / last difference) once per request.
   const revealed = useRef<string | null>(null);
-  const revealKey = data.line == null && !data.reveal ? null : `${data.line}:${data.lineSide}:${data.reveal}`;
+  const revealKey =
+    data.line == null && !data.reveal ? null : `${data.line}:${data.col}:${data.lineSide}:${data.reveal}`;
   useEffect(() => {
     let v = viewsRef.current?.b;
     if (!v || revealKey === null || revealed.current === revealKey || !ready) return;
@@ -797,7 +826,8 @@ export function DiffEditor({
         const found = viewerRef.current?.locate("left", line);
         if (found) [v, line] = [found.pane.view, found.line];
       }
-      at = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, line + 1))).from;
+      const target = v.state.doc.line(Math.min(v.state.doc.lines, Math.max(1, line + 1)));
+      at = target.from + Math.min(data.col ?? 0, target.length);
     } else {
       const chunks = getChunks(v.state)?.chunks ?? [];
       at = (data.reveal === "last" ? chunks[chunks.length - 1] : chunks[0])?.fromB;
@@ -808,7 +838,7 @@ export function DiffEditor({
     // Keep keyboard navigation in the revealed pane after moving to another file.
     if (data.reveal || v === viewsRef.current?.a) v.focus();
     updateChunkInfo();
-  }, [ready, statics, revealKey, data.line, data.lineSide, data.reveal, updateChunkInfo]);
+  }, [ready, statics, revealKey, data.line, data.col, data.lineSide, data.reveal, updateChunkInfo]);
 
   // IDEA: past the last (first) difference F7 (Shift+F7) first hints, then moves along the chain.
   const [navHint, setNavHint] = useState<string | null>(null);

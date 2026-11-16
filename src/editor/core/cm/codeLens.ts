@@ -6,11 +6,9 @@
  */
 import { EditorState, Facet, RangeSetBuilder, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
-import { getIndentUnit } from "@codemirror/language";
 import { codeLenses, type CodeLens } from "@/editor/api";
 import { showContextMenu } from "@/ui";
 import { codeVisionMenuItems } from "../codeVision";
-import { guideVars, rainbowGuides } from "./indentGuides";
 import { LINE_INSET } from "./lineInset";
 
 /**
@@ -82,8 +80,6 @@ class LensWidget extends WidgetType {
   constructor(
     readonly lenses: CodeLens[],
     readonly indent: number,
-    readonly indentUnit: number,
-    readonly rainbow: boolean,
     /** After the end of the line instead of a row above it. */
     readonly inline = false,
   ) {
@@ -94,10 +90,6 @@ class LensWidget extends WidgetType {
     return (
       (this.inline ? "inline\u0000" : "") +
       this.indent +
-      "\u0000" +
-      this.indentUnit +
-      "\u0000" +
-      (this.rainbow ? 1 : 0) +
       "\u0000" +
       this.lenses.map((l) => `${l.icon ?? ""}|${l.title}|${l.tooltip ?? ""}|${l.run ? 1 : 0}`).join("\u0001")
     );
@@ -139,19 +131,9 @@ class LensWidget extends WidgetType {
 
   private fill(dom: HTMLElement, view: EditorView) {
     dom.textContent = "";
-    // The guides of the annotated line continue through this row while indent guides are on.
-    const guides = this.inline
-      ? null
-      : guideVars(Math.floor(this.indent / this.indentUnit), this.indentUnit, this.rainbow);
+    // The indent guides plugin gives the row the guides of the annotated line (indentGuides.ts).
     if (!this.inline)
       dom.style.paddingLeft = `calc(${LINE_INSET}px + ${this.indent} * var(--openidea-space, ${view.defaultCharacterWidth}px))`;
-    if (guides) {
-      dom.style.setProperty("--openidea-guide-images", guides.images);
-      dom.style.setProperty("--openidea-guide-positions", guides.positions);
-    } else {
-      dom.style.removeProperty("--openidea-guide-images");
-      dom.style.removeProperty("--openidea-guide-positions");
-    }
     dom.setAttribute("role", "group");
     dom.setAttribute("aria-label", "Code lens");
     for (const lens of this.lenses) {
@@ -206,22 +188,16 @@ function buildDecorations(state: EditorState): DecorationSet {
   for (const group of groupLenses(state, lenses)) {
     const line = state.doc.lineAt(group.lineFrom);
     const indent = indentColumns(line.text, state.tabSize);
-    const unit = Math.max(1, getIndentUnit(state));
-    const rainbow = state.facet(rainbowGuides);
     const above = group.lenses.filter((l) => !right(l));
     const after = group.lenses.filter(right);
     if (above.length)
       builder.add(
         line.from,
         line.from,
-        Decoration.widget({ widget: new LensWidget(above, indent, unit, rainbow), block: true, side: -1 }),
+        Decoration.widget({ widget: new LensWidget(above, indent), block: true, side: -1 }),
       );
     if (after.length)
-      builder.add(
-        line.to,
-        line.to,
-        Decoration.widget({ widget: new LensWidget(after, indent, unit, rainbow, true), side: 1 }),
-      );
+      builder.add(line.to, line.to, Decoration.widget({ widget: new LensWidget(after, indent, true), side: 1 }));
   }
   return builder.finish();
 }
@@ -290,6 +266,6 @@ const lensTheme = EditorView.theme({
 
 /** Base extension (always installed): no cost until a provider contributes lenses. */
 export const codeLensExtension: Extension = [
-  EditorView.decorations.compute([codeLenses, rainbowGuides, codeLensPositions], buildDecorations),
+  EditorView.decorations.compute([codeLenses, codeLensPositions], buildDecorations),
   lensTheme,
 ];

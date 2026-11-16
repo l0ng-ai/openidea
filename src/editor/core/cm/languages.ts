@@ -18,7 +18,7 @@ import {
 import { styleTags, tags as t } from "@lezer/highlight";
 import { languages as languageData } from "@codemirror/language-data";
 import type { DocBackend, LanguageInfo } from "../backend";
-import { _languageMode } from "@/editor/api";
+import { _languageMode, editorsFor } from "@/editor/api";
 import { JS_TAGS } from "./jsTags";
 import { docCommentTags } from "./docCommentTags";
 
@@ -270,6 +270,26 @@ export function findLanguageDescription(uiMode: string | null, path: string): La
   if (uiMode === null && infos) return null;
   const matched = LanguageDescription.matchFilename(BUILTIN_MODES, path.slice(path.lastIndexOf("/") + 1));
   return OWN_MODES.find((l) => l.name === matched?.name) ?? matched;
+}
+
+/**
+ * The language `path` is shown with outside its editor tab (previews, diffs), resolved as
+ * the editor's: an open editor's mode, else the backend's detection on opening (Override
+ * File Type, File Types patterns, the hashbang of `firstLine` or of the file, framework
+ * modes), else the extension.
+ */
+export async function languageDescriptionFor(
+  path: string,
+  firstLine?: string,
+  backend: DocBackend | null = infosBackend,
+): Promise<LanguageDescription | null> {
+  const open = editorsFor(path)[0]?.ctx;
+  if (open) return findLanguageDescription(open.uiMode, path);
+  const detected = await backend?.languageOf?.(path, firstLine).catch(() => null);
+  const uiMode = detected
+    ? (detected.uiMode ?? languageInfo(detected.language)?.uiMode ?? null)
+    : (uiModeForPath(path) ?? null);
+  return findLanguageDescription(uiMode, path);
 }
 
 /** Loads (once) the CodeMirror language for `desc`. */

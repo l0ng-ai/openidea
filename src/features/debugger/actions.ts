@@ -7,6 +7,7 @@ import {
   isTauri,
   nextRequestId,
   type AttachableProcess,
+  type DebugSessionId,
   type LaunchConfig,
   type RunConfig,
   type RunId,
@@ -42,6 +43,8 @@ import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
 import { captureHeap } from "./heap/heapState";
+import { stopRecording, traceStreamChain } from "./streams/streamState";
+import { isTracing, useStreamTrace } from "./streams/streamStore";
 import { startPageProfile, stopPageProfile } from "./js/profile";
 import { activeCapturedSnapshot, openHeapDump, saveHeapDump } from "./heap/heapDumpFiles";
 import { browserLaunch, browserLaunchConfig, browserUrl, installedDebugBrowser, isBrowserConfig } from "./browser";
@@ -61,9 +64,11 @@ import {
   evaluate,
   isLive,
   justDetached,
+  pausedThread,
   rerunSession,
   revealFrame,
   rootOf,
+  selectedFrame,
   sessionSupports,
   showExecutionPoint,
   startBrowserSession,
@@ -80,7 +85,13 @@ import { expressionAt, valueHint } from "./editor/valueTooltip";
 import { mouseEvaluateTarget } from "./editor/quickEvaluate";
 import { showHint } from "@/editor/lsp/hint";
 import { pausedLineTargets, startInlineSmartStep } from "./editor/smartStep";
-import { openBreakpointsDialog, openConfigChooser, openEvaluateDialog, openSmartStepChooser } from "./ui/popoverStore";
+import {
+  openBreakpointsDialog,
+  openConfigChooser,
+  openEvaluateDialog,
+  openSmartStepChooser,
+  useOverlays,
+} from "./ui/popoverStore";
 import { tx } from "@/platform/i18n";
 import { openAttachPopup } from "./attachPopup";
 
@@ -114,8 +125,13 @@ async function report(title: string, p: Promise<unknown>) {
 function pausedTarget(): { s: DebugSession; thread: number } | null {
   const s = activeSession();
   if (!s || s.status !== "paused") return null;
-  const thread = s.selectedThread ?? s.stoppedThread ?? s.threads[0]?.id;
+  const thread = pausedThread(s);
   return thread == null ? null : { s, thread };
+}
+
+/** The trace tab passes its own session; from elsewhere, the active session's trace. */
+function traceTarget(arg: unknown): DebugSessionId | undefined {
+  return typeof arg === "number" ? arg : activeSession()?.id;
 }
 
 function breakpointPathAllowed(path: string): boolean {
@@ -142,11 +158,6 @@ function notSupported(what: string, s: DebugSession) {
     key: "debug.unsupported",
     title: `${what} is not supported by ${s.adapter || "this debugger"}`,
   });
-}
-
-/** The selected frame of the paused session (top frame when none is selected). */
-function selectedFrame(s: DebugSession) {
-  return s.frames.find((f) => f.id === s.selectedFrame) ?? s.frames[0] ?? null;
 }
 
 /**
@@ -407,7 +418,8 @@ async function warnWithoutXdebug(launch: LaunchConfig) {
 }
 
 export function registerDebugActions(): () => void {
-  const paused = "debugSessionPaused";
+  // A stream trace runs the program from the paused thread, so nothing may move it until the trace ends.
+  const paused = "debugSessionPaused && !debugStreamTracing";
   const step = (id: string, title: string, kind: "over" | "into" | "out", icon: string): Action => ({
     id,
     title,
@@ -722,7 +734,8 @@ export function registerDebugActions(): () => void {
       title: "Pause Program",
       category: "Debug",
       icon: "pause",
-      when: "debugSessionRunning",
+      // The trace resumes the program itself; a pause would suspend threads under the running trace.
+      when: "debugSessionRunning && !debugStreamTracing",
       run: async () => {
         const s = activeSession();
         if (!s || s.status !== "running") return;
@@ -808,7 +821,7 @@ export function registerDebugActions(): () => void {
       title: "Show Execution Point",
       category: "Debug",
       icon: "show-execution-point",
-      when: paused,
+      when: "debugSessionPaused",
       run: () => {
         const s = activeSession();
         if (s) void showExecutionPoint(s.id);
@@ -850,7 +863,7 @@ export function registerDebugActions(): () => void {
       title: "Jump to Source",
       category: "Debug",
       keyWhen: "debugFramesFocus || debugVariablesFocus",
-      when: paused,
+      when: "debugSessionPaused",
       run: () => {
         const view = focusedDebugView();
         if (view?.jumpToSource) {
@@ -1043,6 +1056,49 @@ export function registerDebugActions(): () => void {
       category: "Debug",
       when: "debugSessionActive",
       run: () => openEvaluateDialog(evaluateSeed()),
+    },
+    {
+      id: "debug.traceStreamChain",
+      title: "Trace Stream Chain",
+      category: "Debug",
+      icon: "stream-trace",
+      keywords: ["stream", "chain", "trace", "java"],
+      when: "debugCanTraceStream",
+      run: () => {
+        const t = pausedTarget();
+        if (t) void report(tx("Trace Stream Chain failed"), traceStreamChain(t.s.id));
+      },
+    },
+    {
+      // The trace tab passes its session as `arg`.
+      id: "debug.streamTrace.stopRecording",
+      title: "Stop Recording",
+      category: "Debug",
+      keywords: ["stream", "trace"],
+      when: "debugAnyStreamTracing",
+      enabled: ({ arg }) => {
+        const id = traceTarget(arg);
+        return id != null && isTracing(id) && !useStreamTrace.getState().bySession[id]?.stoppedRecording;
+      },
+      run: ({ arg }) => {
+        const id = traceTarget(arg);
+        if (id != null) stopRecording(id);
+      },
+    },
+    {
+      id: "debug.streamTrace.abort",
+      title: "Abort Operation…",
+      category: "Debug",
+      keywords: ["stream", "trace", "cancel"],
+      when: "debugAnyStreamTracing",
+      enabled: ({ arg }) => {
+        const id = traceTarget(arg);
+        return id != null && isTracing(id);
+      },
+      run: ({ arg }) => {
+        const id = traceTarget(arg);
+        if (id != null) useOverlays.setState({ streamAbort: id });
+      },
     },
     {
       id: "debug.browseConsoleHistory",
