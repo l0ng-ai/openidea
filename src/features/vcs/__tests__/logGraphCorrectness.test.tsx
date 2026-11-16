@@ -1,12 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
 import type { Commit } from "@/bindings";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { collapseLinear, computeGraph, hideLongEdges, linearizeMerges } from "../graph";
-import { commitKey, graphCommit } from "../multiRoot";
-import { presentLogGraph } from "../logPresentation";
-import { DEFAULT_LOG_OPTIONS } from "../logOptions";
-import { GraphCell } from "../GitLog";
+import { GraphCell } from "../log/GraphCell";
 import { toLogChanges } from "../logChanges";
+import { DEFAULT_LOG_OPTIONS } from "../logOptions";
+import { presentLogGraph } from "../logPresentation";
+import { commitKey, graphCommit } from "../multiRoot";
 
 const commit = (id: string, parents: string[] = [], refs: string[] = []): Commit => ({
   id,
