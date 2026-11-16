@@ -45,6 +45,8 @@ export interface DiffData {
   line?: number;
   /** The side `line` is on. */
   lineSide?: "left" | "right";
+  /** UTF-16 column on `line` for the caret (the line start when absent). */
+  col?: number;
   /** Tab title instead of the default "name (left ↔ right)". */
   title?: string;
   /** Notes shown under lines (unified mode shows the right side's only). */
@@ -122,6 +124,23 @@ export function sideLabel(s: DiffSide): string {
 }
 
 const diffKey = (data: DiffData) => `diff:${data.path}:${sideKey(data.left)}:${sideKey(data.right)}`;
+
+/** Each diff's caret by tab key, most recent last, so Back returns to it there. */
+const carets = new Map<string, { line: number; col: number; side: "left" | "right" }>();
+
+export function rememberDiffCaret(key: string, line: number, col: number, side: "left" | "right") {
+  carets.delete(key);
+  carets.set(key, { line, col, side });
+  if (carets.size > 100) carets.delete(carets.keys().next().value!);
+}
+
+/** `input` reopening at its diff's last caret. */
+export function diffInputAtCaret(input: EditorInput): EditorInput {
+  const caret = carets.get(input.key);
+  if (!caret) return input;
+  const { reveal: _reveal, ...data } = input.data as DiffData;
+  return { ...input, data: { ...data, line: caret.line, col: caret.col, lineSide: caret.side } };
+}
 
 export function diffInput(data: DiffData): EditorInput {
   return { kind: DIFF_KIND, key: diffKey(data), path: data.path, data };

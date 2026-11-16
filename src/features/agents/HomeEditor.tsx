@@ -280,6 +280,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
             <Select
               variant="ghost"
               aria-label="Base branch"
+              searchable
               value={base}
               options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
               onChange={(b) => updateDraft({ base: b === current ? null : b })}

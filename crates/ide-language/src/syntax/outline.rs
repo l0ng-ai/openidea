@@ -143,6 +143,8 @@ struct Raw {
     visibility: Option<Visibility>,
     /// Rust `impl Trait for Type`: members take the trait's visibility.
     trait_impl: bool,
+    /// Base names of a class definition (empty where the grammar has none).
+    bases: Vec<String>,
 }
 
 struct Built {
@@ -221,6 +223,13 @@ fn collect(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Vec<Built>
             detail: detail.map(|d| clean(node_text(&d, text), 80)).filter(|d| !d.is_empty()),
             visibility: explicit_visibility(&node, text),
             trait_impl,
+            // The index needs every class's bases; Python is the grammar that has them.
+            bases: match kind {
+                ItemKind::Symbol(SymbolKind::Class) if g.spec.name == "python" => {
+                    super::inheritance::class_base_names(node, text)
+                }
+                _ => Vec::new(),
+            },
         };
         match by_node.get(&raw.node_id) {
             Some(existing) if existing.pattern <= raw.pattern => {}
@@ -369,6 +378,7 @@ pub(crate) fn tags(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Ve
                     kind: b.kind,
                     container: own_container.map(str::to_owned),
                     range: b.raw.sel,
+                    bases: b.raw.bases.clone(),
                 });
             }
             let next = if b.raw.tag || matches!(b.raw.kind, ItemKind::Impl | ItemKind::Extension) {

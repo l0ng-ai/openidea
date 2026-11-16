@@ -752,7 +752,13 @@ impl Shared {
                 .syntax
                 .tags(&lang, &text)
                 .into_iter()
-                .map(|t| StoredSymbol { name: t.name, kind: t.kind, container: t.container, range: t.range })
+                .map(|t| StoredSymbol {
+                    name: t.name,
+                    kind: t.kind,
+                    container: t.container,
+                    range: t.range,
+                    bases: t.bases,
+                })
                 .collect();
         }
         Extracted::New(rec)

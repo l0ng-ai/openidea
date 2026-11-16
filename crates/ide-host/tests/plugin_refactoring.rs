@@ -225,6 +225,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         kind: ide_core::SymbolKind::Method,
         container: None,
         range: ide_core::Range::new(Pos::new(0, 4), Pos::new(0, 5)),
+        bases: Vec::new(),
     };
     plugins
         .index_navigation(

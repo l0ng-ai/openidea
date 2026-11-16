@@ -14,6 +14,8 @@ const ExportDialog = lazyComponent(() => import("./ExportDialog").then((m) => m.
 const HistoryDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.HistoryDialog));
 const ImportDialog = lazyComponent(() => import("./DataDialogs").then((m) => m.ImportDialog));
 const SchemaCompareDialog = lazyComponent(() => import("./SchemaCompareDialog").then((m) => m.SchemaCompareDialog));
+const DumpDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.DumpDialog));
+const RestoreDialog = lazyComponent(() => import("./DumpDialogs").then((m) => m.RestoreDialog));
 
 function PasswordDialog({ source, resolve }: { source: DataSource; resolve: (ok: boolean) => void }) {
   const [password, setPassword] = useState("");
@@ -191,6 +193,26 @@ export function DatabaseDialogs() {
   if (dialog.kind === "import")
     return (
       <ImportDialog key={`${dialog.id}.${dialog.table}`} id={dialog.id} schema={dialog.schema} table={dialog.table} />
+    );
+  if (dialog.kind === "dump")
+    return (
+      <DumpDialog
+        key={dialog.target}
+        target={dialog.target}
+        database={dialog.database}
+        schemas={dialog.schemas}
+        tables={dialog.tables}
+        serverVersion={dialog.serverVersion}
+      />
+    );
+  if (dialog.kind === "restore")
+    return (
+      <RestoreDialog
+        key={dialog.target}
+        target={dialog.target}
+        database={dialog.database}
+        serverVersion={dialog.serverVersion}
+      />
     );
   if (dialog.kind === "sshSecret")
     return (

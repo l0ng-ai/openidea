@@ -143,6 +143,8 @@ export interface EditorKindContribution {
   keepAlive?: boolean;
   /** Last tab showing this input closed (including split tabs and tab-limit eviction). */
   onClose?(input: EditorInput): void;
+  /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
+  navigationInput?(input: EditorInput): EditorInput;
   /** Any tab of this kind closed (`tabId` is the closed `Tab.id`, even when split siblings remain). */
   onTabClose?(tabId: string, input: EditorInput): void;
   /**
@@ -774,7 +776,7 @@ export interface NotificationService {
     verbatim?: boolean;
     /**
      * Notification group (Settings › Notifications): `system` (default), `lsp`,
-     * `vcs`, `run`, `tools`, `plugins`, `search`, `updates`.
+     * `vcs`, `run`, `tools`, `plugins`, `search`, `terminal`, `updates`.
      */
     group?: string;
     /**
@@ -873,8 +875,22 @@ export interface CommitService {
    * Commit does); `null` without a repository.
    */
   selection(): Promise<CommitSelection | null>;
+  /**
+   * The included changes as a unified diff against HEAD (unsaved editors saved first);
+   * `null` without a repository.
+   */
+  changes(): Promise<CommitChanges | null>;
   /** Replaces the message if the draft is still at `revision`; false when it changed. */
   setMessage(revision: number, message: string): boolean;
+}
+
+export interface CommitChanges {
+  /** The draft's revision the diff was read at, for `CommitService.setMessage`. */
+  revision: number;
+  /** Repositories the commit goes to. */
+  roots: string[];
+  /** Untracked files included; empty when nothing is included. */
+  patch: string;
 }
 
 let commitServiceImpl: CommitService | undefined;
@@ -1273,6 +1289,7 @@ export type ContextMenuId =
   | "editor"
   | "projectView"
   | "editorTab"
+  | "changes"
   | "problems"
   | "searchResults"
   | "editorGutter"

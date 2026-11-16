@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
+/// `conda env list` starts conda's own Python and reports the frozen state of every
+/// registered prefix — seconds even on a warm machine (26.x measured 2–3 s), which a
+/// `--version` budget cannot spare (#3729).
+const CONDA_ENV_LIST_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Installed SDKs of `kind`, project-local ones (`root`) first. Blocking: runs
 /// `--version` queries in parallel.
@@ -136,6 +140,12 @@ fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Prefixes from conda's `~/.conda/environments.txt` registry: one absolute path per
+/// line, blanks and `#` comments skipped (#3729).
+fn conda_environments_txt_prefixes(output: &str) -> Vec<PathBuf> {
+    output.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.starts_with('#')).map(PathBuf::from).collect()
+}
+
 /// The host's directory conventions; a parameter so tests cover every platform.
 #[derive(Clone, Copy)]
 enum Host {
@@ -247,6 +257,14 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         if let Some(prefix) = std::env::var_os("CONDA_PREFIX") {
             conda_roots.push(PathBuf::from(prefix));
         }
+        // Conda's own registry of known prefixes (`~/.conda/environments.txt`, one path
+        // per line, kept current on create/remove/activation): names `--prefix` envs kept
+        // outside `envs/` just like `conda env list`, and reads even when the query below
+        // comes up empty — conda 26.x starts slowly enough to miss a short timeout, and a
+        // missed query hid every such env (#3729).
+        if let Ok(text) = std::fs::read_to_string(home.join(".conda").join("environments.txt")) {
+            conda_roots.extend(conda_environments_txt_prefixes(&text));
+        }
         // A conda on PATH reveals a non-default install root (Anaconda on D:\, Miniconda
         // in ProgramData): the binary lives at <root>/Scripts/conda.exe (Windows) or
         // <root>/bin/conda. Without this, an install outside the home-dir guesses keeps
@@ -257,7 +275,7 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
             }
             // `conda env list` also names `--prefix` envs kept outside `envs/` and envs_dirs
             // configured in .condarc — every env the user sees on the CLI shows up here.
-            if let Some(list) = query(&conda, &["env", "list"], VERSION_TIMEOUT) {
+            if let Some(list) = query(&conda, &["env", "list"], CONDA_ENV_LIST_TIMEOUT) {
                 conda_roots.extend(conda_env_list_prefixes(&list));
             }
         }
@@ -1156,6 +1174,54 @@ legacy                   C:\\Users\\dev\\.conda\\envs\\legacy
             conda_env_list_prefixes(output),
             vec![PathBuf::from("/opt/miniconda3"), PathBuf::from("/opt/miniconda3/envs/prod")]
         );
+    }
+
+    #[test]
+    fn conda_env_list_parses_the_26_x_legend_and_prefix_envs() {
+        // conda 26.9.4 on Windows (`conda create -p D:\condaenvs\camera`) (#3729): the
+        // header grew the active/frozen legend, `--prefix` envs list bare paths, the
+        // install root repeats (registered twice), and nothing is active in that shell.
+        let output = "\
+# conda environments:
+#
+# * -> active
+# + -> frozen
+base                     d:\\ProgramData\\miniconda3
+camera                   D:\\condaenvs\\camera
+llmstudy                 D:\\condaenvs\\llmstudy
+base                     d:\\ProgramData\\miniconda3
+";
+        let prefixes = conda_env_list_prefixes(output);
+        assert_eq!(
+            prefixes,
+            vec![
+                PathBuf::from("d:\\ProgramData\\miniconda3"),
+                PathBuf::from("D:\\condaenvs\\camera"),
+                PathBuf::from("D:\\condaenvs\\llmstudy"),
+                PathBuf::from("d:\\ProgramData\\miniconda3"),
+            ]
+        );
+    }
+
+    #[test]
+    fn conda_environments_txt_names_every_registered_prefix() {
+        // `~/.conda/environments.txt` written by the same conda 26.9.4 (#3729).
+        let output = "\
+C:\\Users\\dev\\miniconda3
+D:\\condaenvs\\camera
+
+# a comment line conda never writes, tolerated anyway
+D:\\condaenvs\\llmstudy
+";
+        assert_eq!(
+            conda_environments_txt_prefixes(output),
+            vec![
+                PathBuf::from("C:\\Users\\dev\\miniconda3"),
+                PathBuf::from("D:\\condaenvs\\camera"),
+                PathBuf::from("D:\\condaenvs\\llmstudy"),
+            ]
+        );
+        assert!(conda_environments_txt_prefixes("").is_empty());
     }
 }
 
