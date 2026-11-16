@@ -7022,10 +7022,8 @@ fn the_language_server_grant_needs_api_1_9() {
     assert!(err.message.contains("new in plugin API 1.9"), "{err:?}");
 }
 
-/// Reproduces the "install does not take effect" report: after installing a
-/// plugin that subscribes to `on-event:settings-changed`, the UI's synthetic
-/// post-install `SettingsChanged([])` must actually reach the new plugin (it
-/// carries no keys, so `changed_settings` currently drops it on first call).
+/// The UI's synthetic post-install `SettingsChanged([])` reaches a plugin that
+/// subscribes to `on-event:settings-changed`, though it carries no keys.
 #[test]
 fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
     let f = fixture(Limits::default());
@@ -7035,8 +7033,7 @@ fn a_freshly_installed_plugin_gets_the_post_install_settings_event() {
     f.host.post_events(Some("main"), vec![E::SettingsChanged(Vec::new())]);
     f.host.flush_events_at(Instant::now() + Duration::from_secs(2));
     assert!(f.host.wait_events(Duration::from_secs(5)));
-    let received: serde_json::Value =
-        serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
+    let received: serde_json::Value = serde_json::from_str(&f.run("api14", "events", None).unwrap().unwrap()).unwrap();
     let events = received.as_array().unwrap();
     assert!(
         events.iter().any(|e| e["kind"] == "settings-changed"),
