@@ -873,8 +873,22 @@ export interface CommitService {
    * Commit does); `null` without a repository.
    */
   selection(): Promise<CommitSelection | null>;
+  /**
+   * The included changes as a unified diff against HEAD (unsaved editors saved first);
+   * `null` without a repository.
+   */
+  changes(): Promise<CommitChanges | null>;
   /** Replaces the message if the draft is still at `revision`; false when it changed. */
   setMessage(revision: number, message: string): boolean;
+}
+
+export interface CommitChanges {
+  /** The draft's revision the diff was read at, for `CommitService.setMessage`. */
+  revision: number;
+  /** Repositories the commit goes to. */
+  roots: string[];
+  /** Untracked files included; empty when nothing is included. */
+  patch: string;
 }
 
 let commitServiceImpl: CommitService | undefined;

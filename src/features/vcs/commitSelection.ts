@@ -7,14 +7,19 @@
 import type { CommitOptions, CommitSelection, PartialCommitFile } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { workflowSettings } from "@/platform/workflowSettings";
-import { maybeEditorService, provideCommitService, useCommitCheckProviders } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  provideCommitService,
+  useCommitCheckProviders,
+  type CommitChanges,
+} from "@/workbench/contributions";
 import { commitRepos, planCommit, type CommitPlan } from "./changes";
 import type { CommitProblem } from "./commitChecks";
 import { useChangelists } from "./changelists";
 import { inclusionChecks, stagingAreaOn } from "./staging";
 import { useCommit } from "./commitStore";
 import { hunkKeys } from "./hunks";
-import { baseName, rootOf } from "./model";
+import { baseName, rootOf, stripSlash } from "./model";
 import { saveAll } from "./ops";
 import { currentRepo, refreshNow, useVcs } from "./store";
 
@@ -119,9 +124,35 @@ async function pendingSelection(): Promise<CommitSelection | null> {
   return { ...selection, revision: rev };
 }
 
+/** The included files' local changes, one patch per repository. */
+async function pendingChanges(): Promise<CommitChanges | null> {
+  if (!useVcs.getState().root) return null;
+  await saveAll();
+  await refreshNow();
+  const { root, roots } = useVcs.getState();
+  if (!root) return null;
+  const rev = revision;
+  const { included } = currentPlan();
+  const repos = commitRepos(included, roots, currentRepo());
+  const patches: string[] = [];
+  for (const repo of repos) {
+    const paths = included
+      .map((f) => stripSlash(f.path))
+      .filter((path) => {
+        const owner = rootOf(path, roots);
+        return owner === null ? repos.length === 1 : owner === repo;
+      });
+    if (!paths.length) continue;
+    const patch = await call(commands.vcsCreatePatch(repo ?? root, { from: "changes", paths, reverse: false }));
+    if (patch.trim()) patches.push(patch);
+  }
+  return { revision: rev, roots: repos.map((r) => r ?? root), patch: patches.join("\n") };
+}
+
 export function provideCommit(): () => void {
   provideCommitService({
     selection: pendingSelection,
+    changes: pendingChanges,
     setMessage: (rev, message) => {
       if (rev !== revision || !useVcs.getState().root) return false;
       useCommit.setState({ message });
