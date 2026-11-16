@@ -20,7 +20,7 @@ import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
-import { installTerminalPaste, pasteTerminalClipboard } from "./paste";
+import { installTerminalPaste, pasteIntoTerminal, pasteTerminalClipboard } from "./paste";
 import { ImeCommitGate } from "./imeCommit";
 import { ownTerminalInput } from "./imeInput";
 import { findTerminalLinks, resolvePath, type TerminalLink } from "./links";
@@ -783,7 +783,7 @@ export class TerminalSession {
 
   paste(text: string) {
     if (this.disposed) return;
-    this.term.paste(text);
+    pasteIntoTerminal(this.term, text);
   }
 
   clearSelection() {

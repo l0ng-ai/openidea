@@ -548,7 +548,7 @@ impl PathMap {
 }
 
 /// Removes `.` and resolvable `..` components without touching the file system.
-fn normalize(p: &Path) -> PathBuf {
+pub(crate) fn normalize(p: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for c in p.components() {

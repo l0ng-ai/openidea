@@ -69,9 +69,12 @@
 .columns .groupTitle {
   color: var(--fg-subtle);
 }
-.processRow {
-  padding-right: 4px;
+/* Values in every section end where the process rows' Memory column ends, before their End Process slot. */
+.panel .row,
+.panel .groupRow {
+  padding-right: calc(4px + 20px + var(--space-2));
 }
+.panel .processRow,
 .columns {
   padding-right: 4px;
 }
