@@ -148,16 +148,16 @@ function FilterChip({
         {!set && <Icon name="chevron-down" size={12} className={styles.chipChevron} />}
       </button>
       {set && (
-        <button
+        <IconButton
           type="button"
           className={styles.chipReset}
           aria-label={t`Reset ${name}`}
           onClick={() => onChange(undefined)}
           onKeyDown={onKeyDown}
           tabIndex={-1}
-        >
-          <Icon name="close" size={12} />
-        </button>
+          icon="close"
+          size="small"
+        />
       )}
       {anchor &&
         popup(anchor, (v) => {

@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { useSystemFontStore } from "@/platform/systemFonts";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
 import {
   provideEmbeddedTerminal,
@@ -319,6 +320,14 @@ export function activate(): () => void {
         terminalRuntime()?.applySettingsToAll();
         terminalRuntime()?.applySettingsToClis();
       }
+    }),
+    // Prompt-theme icons (oh-my-posh, starship) come from the user's installed Nerd Font.
+    // Faces beyond the known list are discovered once the native font catalog loads (off
+    // startup), so open terminals re-apply their font stack then (#3723).
+    useSystemFontStore.subscribe((s, prev) => {
+      if (s.fonts === prev.fonts) return;
+      terminalRuntime()?.applySettingsToAll();
+      terminalRuntime()?.applySettingsToClis();
     }),
     onIdeEvent("terminalExited", (e) => {
       const rt = terminalRuntime();

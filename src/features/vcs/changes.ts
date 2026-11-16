@@ -255,6 +255,8 @@ function tagList(nodes: ChangeNode[], id: string): ChangeNode[] {
  * repositories (`repos`), each group's files are grouped by repository first, with
  * each repository's branch (`heads`) beside its name, unless `byRepo` is off. With
  * `byStaging`, "Changes" becomes "Staged Changes" and "Unstaged Changes" instead.
+ * Without `showUnversionedSeparately`, untracked files join Changes (the active list)
+ * or Unstaged Changes; their Git status and default commit inclusion stay unchanged.
  */
 export function buildChangeTree(
   status: readonly FileStatus[],
@@ -265,11 +267,13 @@ export function buildChangeTree(
   byStaging = false,
   heads: Readonly<Record<string, RepoHead>> = {},
   byRepo = true,
+  showUnversionedSeparately = true,
 ): ChangeNode[] {
   const repoRoots = byRepo ? repos : [];
   const byGroup = new Map<GroupId, FileStatus[]>();
   for (const fs of status) {
-    const g = groupOf(fs) ?? (byStaging && addedThenDeleted(fs) ? "changes" : null);
+    const kind = groupOf(fs) ?? (byStaging && addedThenDeleted(fs) ? "changes" : null);
+    const g = kind === "unversioned" && !showUnversionedSeparately ? "changes" : kind;
     if (!g) continue;
     let list = byGroup.get(g);
     if (!list) byGroup.set(g, (list = []));
@@ -301,7 +305,7 @@ export function buildChangeTree(
     if (g === "changes" && lists) {
       const byList = new Map<string, FileStatus[]>(lists.lists.map((l) => [l.id, []]));
       for (const f of files) {
-        const id = lists.files?.[relTo(root, stripSlash(f.path))];
+        const id = groupOf(f) === "unversioned" ? lists.active : lists.files?.[relTo(root, stripSlash(f.path))];
         byList.get(id && byList.has(id) ? id : lists.active)?.push(f);
       }
       for (const l of lists.lists) {

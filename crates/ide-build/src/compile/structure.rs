@@ -40,6 +40,18 @@ pub fn structure_outputs(root: &Path, ps: &ProjectStructureSettings) -> (PathBuf
     (main, test)
 }
 
+/// Whether Rebuild may delete the output folder `dir`: never the project folder or one above
+/// it, nor a folder that holds or lies inside a source, test or resource root.
+fn deletable_output(dir: &Path, root: &Path, roots: &StructureRoots) -> bool {
+    let dir = normalize(dir);
+    let overlaps = |r: &PathBuf| {
+        let r = normalize(r);
+        r.starts_with(&dir) || dir.starts_with(&r)
+    };
+    !normalize(root).starts_with(&dir)
+        && !roots.sources.iter().chain(&roots.tests).chain(&roots.resources).chain(&roots.test_resources).any(overlaps)
+}
+
 fn module_name(root: &Path) -> String {
     root.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned())
 }
@@ -207,7 +219,11 @@ pub fn structure_plan(
 
     let mut steps = Vec::new();
     if kind == BuildKind::Rebuild {
-        steps.push(BuildStep::action(Action::Clean(vec![main_out.clone(), test_out.clone()]), root));
+        let dirs: Vec<PathBuf> =
+            [&main_out, &test_out].into_iter().filter(|d| deletable_output(d, root, roots)).cloned().collect();
+        if !dirs.is_empty() {
+            steps.push(BuildStep::action(Action::Clean(dirs), root));
+        }
     }
     let main_cp = library_entries(root, ps, false);
     let compile = |name: &str, sources: &[PathBuf], out: &Path, cp: &[String]| -> IdeResult<BuildStep> {
@@ -778,6 +794,37 @@ mod tests {
         assert!(
             javac.args.windows(2).any(|w| w[0] == "-d" && Path::new(&w[1]).ends_with("build/classes/production/p"))
         );
+    }
+
+    #[test]
+    fn rebuild_never_cleans_an_output_folder_over_the_project_or_its_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("p");
+        write(&root.join("src/A.java"), "class A {}");
+        let roots = StructureRoots { sources: vec![root.join("src")], ..Default::default() };
+        for (main, test) in [(".", "bin"), ("src", "src/../test-out"), ("src/classes", ".."), ("", "")] {
+            let mut ps = ProjectStructureSettings::default();
+            ps.modules.insert(
+                ".".into(),
+                ModuleStructureSettings {
+                    compiler_output: main.into(),
+                    test_compiler_output: test.into(),
+                    ..Default::default()
+                },
+            );
+            let plan = structure_plan(&root, &ps, &roots, None, "17", BuildKind::Rebuild, &tmp.path().join("c"))
+                .unwrap()
+                .unwrap();
+            let clean: Vec<String> =
+                plan.steps.iter().map(BuildStep::display).filter(|s| s.starts_with("Clean")).collect();
+            let expected: &[&str] = match main {
+                "." => &["Clean bin"],
+                "src" => &["Clean src/../test-out"],
+                "src/classes" => &[],
+                _ => &["Clean out/production/p, out/test/p"],
+            };
+            assert_eq!(clean, expected, "{main} / {test}");
+        }
     }
 
     #[test]

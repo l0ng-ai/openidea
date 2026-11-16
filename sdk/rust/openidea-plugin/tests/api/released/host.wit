@@ -1,4 +1,4 @@
-package openidea:plugin@1.8.0;
+package openidea:plugin@1.9.0;
 
 /// Writes to the IDE log, tagged with the plugin id.
 interface log {
@@ -124,6 +124,33 @@ interface command-runner {
     /// or none for IDE actions; unknown ids are not-found. Nested calls are bounded.
     /// Requires high-risk `ide.commands`, except for this plugin's own commands.
     execute: func(id: string, arg: option<string>) -> result<option<string>, error>;
+}
+
+/// Requests to the language servers the IDE runs (API 1.9).
+interface language-servers {
+    use types.{error};
+    use workspace.{project};
+
+    /// Sends `method` to the server named `server` (the `name` of its
+    /// `[[language-servers]]` entry in the language definition, e.g. `phoxite`)
+    /// running for `project`, and returns the result as JSON. `params` is JSON,
+    /// or none for no params. Requires `lsp:<server>` and a trusted project.
+    ///
+    /// Only the server's own methods pass (`phoxite/laravel/routes`): `initialize`,
+    /// `initialized`, `shutdown`, `exit`, anything starting with `$/` and any
+    /// method whose first segment is an LSP namespace (`textDocument`, `workspace`,
+    /// `window`, `notebookDocument`, `callHierarchy`, `typeHierarchy`,
+    /// `completionItem`, `codeAction`, `codeLens`, `documentLink`, `inlayHint`,
+    /// `workspaceSymbol`, `client`, `telemetry`) are `invalid`.
+    ///
+    /// `not-found` when no such server is running for the project: the call never
+    /// starts one. The server's own error is `failed` with its message. The call
+    /// ends with the invocation's cancellation and time budget. At most 256 bytes
+    /// of method and 1 MiB of params.
+    request: func(project: borrow<project>, server: string, method: string, params: option<string>) -> result<string, error>;
+
+    /// The same for a notification: no answer is awaited.
+    notify: func(project: borrow<project>, server: string, method: string, params: option<string>) -> result<_, error>;
 }
 
 /// Per-plugin named, read-only Output tabs (API 1.4), with a 1 MiB UTF-8 ring buffer.

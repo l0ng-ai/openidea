@@ -10,6 +10,7 @@ import {
   initialCheck,
   hunkIncluded,
   groupFileNodes,
+  groupOf,
   planCommit,
   remainingOverrides,
   stagingSide,
@@ -107,6 +108,80 @@ describe("buildChangeTree", () => {
       "  README.md",
     ]);
     expect(changes.children![0]!.files).toHaveLength(3);
+  });
+});
+
+describe("unversioned file grouping", () => {
+  it.each([true, false])(
+    "keeps staged additions deleted from disk visible with separate unversioned grouping %s",
+    (separate) => {
+      const added = fs("added.txt", "added", "deleted");
+      const untracked = fs("new.txt", null, "untracked");
+      const tree = buildChangeTree([added, untracked], "/r", false, undefined, [], true, {}, true, separate);
+      expect(tree.find((n) => n.group === "staged")?.files).toEqual([added]);
+      expect(tree.find((n) => n.group === "unstaged")?.files).toEqual(separate ? [added] : [added, untracked]);
+      expect(tree.find((n) => n.group === "unversioned")?.files).toEqual(separate ? [untracked] : undefined);
+      const changes = buildChangeTree([added, untracked], "/r", false, undefined, [], false, {}, true, separate);
+      expect(changeFileNodes(changes).some((n) => n.path === added.path)).toBe(false);
+      expect(groupOf(untracked)).toBe("unversioned");
+    },
+  );
+
+  it.each([false, true])("can merge untracked files independently of staging grouping (%s)", (byStaging) => {
+    const tree = buildChangeTree(status, "/r", false, undefined, [], byStaging, {}, true, false);
+    expect(tree.some((n) => n.group === "unversioned")).toBe(false);
+    expect(tree.find((n) => n.group === "conflicts")?.files).toEqual([status[5]]);
+    const merged = tree.find((n) => n.group === (byStaging ? "unstaged" : "changes"))!;
+    const untracked = merged.children!.find((n) => n.path === status[4]!.path)!;
+    expect(untracked.kind).toBe("untracked");
+    expect(groupOf(untracked.files[0]!)).toBe("unversioned");
+    expect(checkOf(untracked.files[0]!, new Map())).toBe("none");
+    expect(ignoreTargets([merged], [])).toEqual([status[4]!.path]);
+    expect(planCommit(status, new Map()).included).not.toContain(status[4]);
+    if (byStaging) expect(tree.find((n) => n.group === "staged")!.files).not.toContain(status[4]);
+  });
+
+  it.each([false, true])("shows a repository containing only untracked files (%s)", (byStaging) => {
+    const tree = buildChangeTree([status[4]!], "/r", true, undefined, [], byStaging, {}, true, false);
+    expect(tree).toHaveLength(1);
+    expect(tree[0]!.group).toBe(byStaging ? "unstaged" : "changes");
+    expect(tree[0]!.files).toEqual([status[4]]);
+  });
+
+  it("merges into the same directory and repository as tracked changes", () => {
+    const tracked = fs("libs/core/src/App.kt", null, "modified");
+    const untracked = fs("libs/core/src/New.kt", null, "untracked");
+    const tree = buildChangeTree(
+      [status[0]!, tracked, untracked],
+      "/r",
+      true,
+      undefined,
+      ["/r", "/r/libs/core"],
+      true,
+      {},
+      true,
+      false,
+    );
+    const repo = tree[0]!.children!.find((n) => n.path === "/r/libs/core")!;
+    expect(repo.files).toEqual([tracked, untracked]);
+    expect(shape(repo.children!)).toEqual(["src", "  App.kt", "  New.kt"]);
+    expect(ignoreTargets([repo], ["/r", "/r/libs/core"])).toEqual([untracked.path]);
+  });
+
+  it("displays untracked files in the active changelist without assigning them to it", () => {
+    const lists = {
+      active: "feature",
+      lists: [
+        { id: "default", name: "Changes", comment: "" },
+        { id: "feature", name: "Feature", comment: "" },
+      ],
+      files: { "notes.txt": "default" },
+    };
+    const tree = buildChangeTree([status[4]!], "/r", false, lists, [], false, {}, true, false);
+    expect(tree.find((n) => n.changelist === "default")!.files).toEqual([]);
+    expect(tree.find((n) => n.changelist === "feature")!.files).toEqual([status[4]]);
+    expect(lists.files).toEqual({ "notes.txt": "default" });
+    expect(initialCheck(status[4]!)).toBe("none");
   });
 });
 

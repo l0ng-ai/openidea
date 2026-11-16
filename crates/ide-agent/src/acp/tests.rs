@@ -180,6 +180,7 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
 fn a_v2_initialize_response_reads_as_v1_capabilities() {
     let n = Negotiated::from_initialize(&result(TURN, 1));
     assert_eq!(n.generation, 2);
+    assert!(!n.resume_instead_of_load(), "v2 maps `session/load` itself");
     assert!(n.load_session());
     assert!(n.prompt("image") && n.prompt("embeddedContext") && !n.prompt("audio"));
     assert!(n.session("fork") && n.session("resume") && n.session("close") && n.session("delete"));
@@ -680,4 +681,88 @@ fn stdio_mcp_is_v1_baseline_and_negotiated_in_v2() {
         super::Negotiated::from_initialize(&json!({"info":{},"capabilities":{"session":{"mcp":{"stdio":{}}}}}))
             .mcp_stdio()
     );
+}
+
+/// A v1 agent that answers `initialize` with `init` and records every request it gets.
+/// Keeps its own `Peer` so the duplex stays open while the client sends.
+struct V1Agent {
+    init: Value,
+    peer: std::sync::OnceLock<Peer>,
+    requests: parking_lot::Mutex<Vec<(String, Value)>>,
+}
+
+impl Handler for V1Agent {
+    fn on_notification(&self, _: &str, _: Value) {}
+
+    fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        self.requests.lock().push((method.to_owned(), params));
+        Ok(if method == "initialize" { self.init.clone() } else { json!({}) })
+    }
+}
+
+async fn connect_v1(agent: Arc<V1Agent>) -> (Conn, Negotiated) {
+    let (a, b) = tokio::io::duplex(1 << 20);
+    let (ar, aw) = tokio::io::split(a);
+    let (br, bw) = tokio::io::split(b);
+    let _ = agent.peer.set(Peer::connect_framed(br, bw, agent.clone(), Framing::Lines));
+    let dialect = Dialect::wrap(Arc::new(Recorder::default()));
+    let conn = Conn::new(Peer::connect_framed(ar, aw, dialect.clone(), Framing::Lines), dialect);
+    let n = conn.initialize(&json!({ "name": "OpenIDEA", "version": "0" })).await.unwrap();
+    assert_eq!((n.generation, conn.generation()), (1, 1));
+    (conn, n)
+}
+
+fn v1_agent(init: Value) -> Arc<V1Agent> {
+    Arc::new(V1Agent { init, peer: Default::default(), requests: Default::default() })
+}
+
+/// A v1 agent that advertises `sessionCapabilities.resume` instead of `loadSession`
+/// (DeepSeek Harness) can reopen a saved session, but only through `session/resume`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_v1_agent_with_resume_instead_of_load_reopens_through_session_resume() {
+    let agent = v1_agent(json!({
+        "protocolVersion": 1,
+        "agentInfo": { "name": "deepseek-harness-acp", "version": "0.0.1" },
+        "agentCapabilities": { "sessionCapabilities": { "close": {}, "list": {}, "resume": {} } },
+    }));
+    let (conn, n) = connect_v1(agent.clone()).await;
+    assert!(n.load_session(), "a resume-only agent is reloadable");
+    assert!(n.resume_instead_of_load());
+    assert!(n.session("resume"));
+
+    let params = json!({ "sessionId": "s1", "cwd": "/p", "mcpServers": [] });
+    let _: Value = conn.request("session/load", params.clone(), None).await.unwrap();
+    let requests = agent.requests.lock().clone();
+    assert_eq!(requests.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["initialize", "session/resume"]);
+    assert_eq!(requests[1].1, params, "same request shape as `session/load`");
+}
+
+/// Every other v1 agent is untouched: `loadSession` still sends `session/load`, and an
+/// agent advertising neither capability is not treated as loadable.
+#[tokio::test(flavor = "multi_thread")]
+async fn v1_agents_that_do_not_advertise_resume_keep_session_load() {
+    for (init, loadable) in [
+        (json!({ "protocolVersion": 1, "agentCapabilities": { "loadSession": true } }), true),
+        (json!({ "protocolVersion": 1, "agentCapabilities": { "loadSession": false } }), false),
+        (json!({ "protocolVersion": 1, "agentCapabilities": { "sessionCapabilities": { "resume": null } } }), false),
+        (json!({ "protocolVersion": 1 }), false),
+    ] {
+        let agent = v1_agent(init);
+        let (conn, n) = connect_v1(agent.clone()).await;
+        assert_eq!(n.load_session(), loadable);
+        assert!(!n.resume_instead_of_load());
+        let _: Value = conn.request("session/load", json!({ "sessionId": "s1" }), None).await.unwrap();
+        let methods: Vec<String> = agent.requests.lock().iter().map(|(m, _)| m.clone()).collect();
+        assert_eq!(methods, ["initialize", "session/load"]);
+    }
+    // `loadSession: true` wins over a resume-only advertisement.
+    let agent = v1_agent(json!({
+        "protocolVersion": 1,
+        "agentCapabilities": { "loadSession": true, "sessionCapabilities": { "resume": {} } },
+    }));
+    let (conn, n) = connect_v1(agent.clone()).await;
+    assert!(n.load_session() && !n.resume_instead_of_load());
+    let _: Value = conn.request("session/load", json!({ "sessionId": "s1" }), None).await.unwrap();
+    let methods: Vec<String> = agent.requests.lock().iter().map(|(m, _)| m.clone()).collect();
+    assert_eq!(methods, ["initialize", "session/load"]);
 }

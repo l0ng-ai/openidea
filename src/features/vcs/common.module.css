@@ -78,6 +78,23 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Checkable changes tree in the Shelve / Create Patch dialogs. */
+.fileTree {
+  display: flex;
+  height: 260px;
+  margin: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.fileTreeView {
+  flex: 1;
+  min-width: 0;
+}
+.fileTreeRow {
+  composes: fileRow;
+  flex: 1;
+  padding: 0;
+}
 .grow {
   flex: 1;
 }

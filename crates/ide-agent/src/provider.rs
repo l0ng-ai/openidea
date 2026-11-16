@@ -56,6 +56,13 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
         &["npx", "-y", "@agentclientprotocol/codex-acp@2.3.0"],
         "Run `codex login` in a terminal.",
     ),
+    (
+        "deepseek-harness",
+        "DeepSeek Harness",
+        Driver::Acp,
+        &["dsh", "--profile", "acp"],
+        "Run `dsh` in a terminal and sign in.",
+    ),
     ("gemini", "Gemini CLI", Driver::Acp, &["gemini", "--experimental-acp"], "Run `gemini` in a terminal and sign in."),
     (
         "copilot",

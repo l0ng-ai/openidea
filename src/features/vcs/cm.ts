@@ -26,6 +26,7 @@ import {
   lineNumberMarkers,
   lineNumberWidgetMarker,
   lineNumbers,
+  tooltips,
   WidgetType,
   type DecorationSet,
   type ViewUpdate,
@@ -40,7 +41,7 @@ import { findExtension } from "@/editor/core/cm/find";
 import { overviewLane, overviewLaneIn } from "@/editor/core/cm/lanes";
 import { LINE_INSET } from "@/editor/core/cm/lineInset";
 import { caretExtension } from "@/editor/core/cm/prefs";
-import { fontExtension } from "@/editor/core/cm/setup";
+import { fontExtension, tooltipBounds } from "@/editor/core/cm/setup";
 import { caretStyles, findLocals, findStyles, overviewStyles } from "@/editor/core/cm/theme";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
@@ -521,6 +522,16 @@ export function viewerBase(opts: {
     opts.readOnly ? EditorView.contentAttributes.of({ tabindex: "0" }) : [],
   ];
 }
+
+/**
+ * Tooltips of a pane showing an open document (quick docs, ⌘-hover info), parented to the
+ * body as the editor's are, so the pane neither clips them nor keeps them under the tool
+ * window stripes, and they move left to fit.
+ */
+export const documentTooltips: Extension = tooltips({
+  parent: typeof document === "undefined" ? undefined : document.body,
+  tooltipSpace: tooltipBounds,
+});
 
 const cache = new Map<string, Promise<LanguageSupport | null>>();
 

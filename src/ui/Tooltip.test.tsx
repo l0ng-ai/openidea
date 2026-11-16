@@ -92,3 +92,91 @@ describe("TooltipHost", () => {
     }
   });
 });
+
+describe("TooltipHost on cut-off text", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  /** jsdom lays nothing out: give `el` the widths a browser would. */
+  const widths = (el: HTMLElement, scroll: number, client: number) => {
+    Object.defineProperty(el, "scrollWidth", { configurable: true, value: scroll });
+    Object.defineProperty(el, "clientWidth", { configurable: true, value: client });
+  };
+
+  const hover = (el: Element) => {
+    fireEvent.pointerOver(el);
+    act(() => {
+      vi.advanceTimersByTime(TOOLTIP_DELAY);
+    });
+    return screen.queryByRole("tooltip")?.textContent ?? null;
+  };
+
+  it("shows the whole text only while it is cut off", () => {
+    render(
+      <>
+        <TooltipHost />
+        <div style={{ textOverflow: "ellipsis", overflow: "hidden" }} data-testid="row">
+          <span>origin/feature/REQ-126-明细汇总多选</span>
+        </div>
+      </>,
+    );
+    const row = screen.getByTestId("row");
+    widths(row, 300, 120);
+    expect(hover(row.firstElementChild!)).toBe("origin/feature/REQ-126-明细汇总多选");
+    fireEvent.pointerOut(row);
+
+    widths(row, 120, 120);
+    expect(hover(row.firstElementChild!)).toBeNull();
+  });
+
+  it("leaves text with a title alone, and text without an ellipsis; adds its own tooltip beside it", () => {
+    render(
+      <>
+        <TooltipHost />
+        <div style={{ textOverflow: "ellipsis" }} title="native" data-testid="titled">
+          long name
+        </div>
+        <div style={{ textOverflow: "clip" }} data-testid="clipped">
+          long name
+        </div>
+        <div style={{ textOverflow: "ellipsis" }} data-testid="own" {...tooltipAttrs("Own tooltip", undefined, true)}>
+          long name
+        </div>
+      </>,
+    );
+    for (const id of ["titled", "clipped", "own"]) widths(screen.getByTestId(id), 300, 120);
+    expect(hover(screen.getByTestId("titled"))).toBeNull();
+    expect(hover(screen.getByTestId("clipped"))).toBeNull();
+    expect(hover(screen.getByTestId("own"))).toBe("long nameOwn tooltip");
+  });
+});
+
+it("shows a tab's cut-off title whole, with the tab's own tooltip beside it", () => {
+  vi.useFakeTimers();
+  render(
+    <>
+      <TooltipHost />
+      <div role="tab" {...tooltipAttrs("/repo/src/history/PscPrinted.js", undefined, true)}>
+        <span style={{ textOverflow: "ellipsis" }} data-testid="label">
+          历史记录: PscPrinted.js
+        </span>
+      </div>
+    </>,
+  );
+  const label = screen.getByTestId("label");
+  Object.defineProperty(label, "scrollWidth", { configurable: true, value: 300 });
+  Object.defineProperty(label, "clientWidth", { configurable: true, value: 100 });
+  fireEvent.pointerOver(label);
+  act(() => {
+    vi.advanceTimersByTime(TOOLTIP_DELAY);
+  });
+  expect(screen.getByRole("tooltip").textContent).toBe("历史记录: PscPrinted.js/repo/src/history/PscPrinted.js");
+  cleanup();
+  vi.useRealTimers();
+});

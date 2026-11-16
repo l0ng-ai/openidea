@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
@@ -7,7 +7,13 @@ import { notifications } from "./contributions";
 import styles from "./WindowGroupTabs.module.css";
 
 function run(work: Promise<unknown>) {
-  void work.catch((e) => notifications().notify({ level: "error", title: "Window group", body: String(e) }));
+  void work.catch((e) =>
+    notifications().notify({
+      level: "error",
+      title: "Window group",
+      body: String(e),
+    }),
+  );
 }
 
 export function WindowGroupTabs() {
@@ -15,9 +21,39 @@ export function WindowGroupTabs() {
   const drag = useRef<{ label: string; x: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const tx = useTx();
+  const bar = useRef<HTMLDivElement>(null);
+  const grouped = tabs.length > 1;
+  useLayoutEffect(() => {
+    const element = bar.current;
+    if (!element) return;
+    const frame = element.parentElement;
+    if (!frame) return;
+    const update = () => {
+      for (const side of ["left", "right"]) {
+        const stripe = frame.querySelector(`[data-stripe-side="${side}"]`);
+        element.style.setProperty(
+          `--window-tabs-${side}`,
+          stripe ? `${stripe.getBoundingClientRect().width}px` : "var(--island-gap)",
+        );
+      }
+    };
+    const resize = new ResizeObserver(update);
+    const observe = () => {
+      resize.disconnect();
+      frame.querySelectorAll("[data-stripe-side]").forEach((stripe) => resize.observe(stripe));
+      update();
+    };
+    const children = new MutationObserver(observe);
+    children.observe(frame, { childList: true, subtree: true });
+    observe();
+    return () => {
+      resize.disconnect();
+      children.disconnect();
+    };
+  }, [grouped]);
   if (tabs.length < 2) return null;
   return (
-    <div className={styles.bar} data-window-group>
+    <div ref={bar} className={styles.bar} data-window-group>
       <div className={styles.tabs} role="tablist" aria-label={tx("Project windows")}>
         {tabs.map((tab) => (
           <div
@@ -70,8 +106,14 @@ export function WindowGroupTabs() {
                   run: () => executeAction("window.detachTab"),
                 },
                 { kind: "separator" },
-                { label: "Close Tab", run: () => executeAction("window.closeTab", tab.label) },
-                { label: "Close Other Tabs", run: () => executeAction("window.closeOtherTabs", tab.label) },
+                {
+                  label: "Close Tab",
+                  run: () => executeAction("window.closeTab", tab.label),
+                },
+                {
+                  label: "Close Other Tabs",
+                  run: () => executeAction("window.closeOtherTabs", tab.label),
+                },
                 {
                   label: "Close Tabs to the Left",
                   disabled: index <= 0,
@@ -108,16 +150,21 @@ export function WindowGroupTabs() {
               <span>{tab.name}</span>
             </button>
             <IconButton
-              className={styles.close}
               icon="close"
               size="small"
+              className={styles.close}
               title={tx`Close ${tab.name}`}
               onClick={() => run(executeAction("window.closeTab", tab.label))}
             />
           </div>
         ))}
       </div>
-      <IconButton icon="external-link" title="Move Tab to New Window" action="window.detachTab" />
+      <IconButton
+        className={styles.detach}
+        icon="external-link"
+        title="Move Tab to New Window"
+        action="window.detachTab"
+      />
     </div>
   );
 }

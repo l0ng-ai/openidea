@@ -60,6 +60,8 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [mcpOpenRequest, setMcpOpenRequest] = useState(0);
+  // Kept mounted while another tab shows: what changed meanwhile is read again when it shows.
+  const shown = useEditorShown();
 
   // Agents installed in Settings (its own window) show up when this one is back in front.
   useEffect(() => {
@@ -70,6 +72,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   }, []);
 
   useEffect(() => {
+    if (!shown) return;
     let live = true;
     const repo = project?.workspace ? root : null;
     void Promise.all([call(commands.vcsBranchInfo(repo)), call(commands.vcsBranches(repo))])
@@ -83,10 +86,9 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
     return () => {
       live = false;
     };
-  }, [root, project?.workspace]);
+  }, [root, project?.workspace, shown]);
 
   const provider = providers.find((p) => p.id === draft.provider) ?? providers[0];
-  const shown = useEditorShown();
   const probe = useProbe(provider?.installed ? provider.id : null, provider?.command, shown);
   const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
@@ -158,7 +160,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
         <Composer
           id={HOME}
           className={docked ? undefined : styles.composer}
-          autoFocus
+          autoFocus={shown}
           placeholder={docked ? "Describe a task…" : "Describe a task. @ for files, / for commands"}
           root={root}
           projectRoot={root}

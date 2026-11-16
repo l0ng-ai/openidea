@@ -109,7 +109,7 @@ pub async fn check_connection(proxy: &ProxySettings, url: &str, cancel: &Cancell
 }
 
 /// reqwest errors with their causes ("error sending request: … connection refused").
-pub(crate) fn describe(e: &reqwest::Error) -> String {
+pub fn describe(e: &reqwest::Error) -> String {
     use std::error::Error;
     let mut msg = e.to_string();
     let mut source = e.source();
