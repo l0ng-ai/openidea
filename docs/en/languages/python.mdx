@@ -67,7 +67,7 @@ On **Settings › Languages & Frameworks › Python Interpreter**, choose **Add 
 - **Virtualenv Environment**: `python -m venv` from the base interpreter you pick.
 - **uv Environment**: `uv venv <location> --python <base>` (uv must be on `PATH`).
 - **Poetry Environment**: `poetry env use <base>` in the project.
-- **Conda Environment**: `conda create -p <location>`, with the base interpreter's Python version.
+- **Conda Environment**: `conda create -n <name>` in conda's envs directory, with the chosen Python version.
 
 You can also select an existing interpreter or environment folder. The new interpreter becomes the project interpreter.
 
