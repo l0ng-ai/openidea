@@ -320,7 +320,8 @@ fn rename_failure(error: &io::Error) -> RenameFailure {
 }
 
 /// Only Windows splits these paths. Renames are cheap; cross-volume copies run in
-/// the background. Consumers always use Local, even when migration fails.
+/// the background. Consumers always use Local, even when migration fails. On every
+/// system, tool virtual environments moved from elsewhere are dropped (#3581).
 pub fn migrate(data: &Path, local: &Path) {
     if cfg!(target_os = "windows") && data != local {
         migrate_entries(data, local);
@@ -328,6 +329,7 @@ pub fn migrate(data: &Path, local: &Path) {
     if cfg!(target_os = "windows") {
         relative_tool_shims(&local.join("tools"));
     }
+    ide_tools::drop_moved_venvs(&local.join("tools"));
 }
 
 /// Wrappers written before they named their tool relative to themselves hold its absolute

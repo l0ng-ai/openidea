@@ -56,6 +56,12 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 
 pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
     let target = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"));
+    // Debug builds can end up on machines other than the one that built them
+    // (packaged test builds). Without the checkout there is nothing to sync,
+    // and `CARGO_MANIFEST_DIR` points at the build machine anyway.
+    if !target.parent().is_some_and(Path::is_dir) {
+        return;
+    }
     // Rewritten only when it changes: every debug launch exports, also a second instance that just
     // hands its path over, and a rewrite makes Vite reload the running app's windows.
     let fresh = std::env::temp_dir().join(format!("openidea-bindings-{}.ts", std::process::id()));

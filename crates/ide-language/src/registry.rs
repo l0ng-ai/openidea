@@ -627,6 +627,7 @@ mod tests {
         "Vue",
         "Angular Template",
         "Angular TypeScript",
+        "Thymeleaf",
         "ERB",
         "JSP",
         "Astro",
@@ -838,6 +839,23 @@ mod tests {
         assert_eq!(mode("typescriptreact", "apps/web/src/app/app.tsx"), None);
         assert!(reg.is_framework_marker(&root.join("apps/admin/angular.json")));
         assert!(!reg.is_framework_marker(&root.join("apps/admin/package.json")));
+    }
+
+    #[test]
+    fn spring_template_folders_make_html_thymeleaf() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mode = |file: &str| reg.framework_ui_mode(&LanguageId::new("html"), &root.join(file), Some(root));
+        std::fs::create_dir_all(root.join("web/src/main/resources/templates/fragments")).unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        for file in
+            ["web/src/main/resources/templates/index.html", "web/src/main/resources/templates/fragments/nav.html"]
+        {
+            assert_eq!(mode(file).as_deref(), Some("Thymeleaf"), "{file}");
+        }
+        assert_eq!(mode("docs/index.html"), None);
+        assert!(reg.is_framework_marker(&root.join("web/src/main/resources/templates")));
     }
 
     #[test]
