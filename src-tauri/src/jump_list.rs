@@ -156,7 +156,7 @@ mod tests {
     use ide_core::IpcPath;
 
     fn item(name: &str, path: &str) -> RecentProject {
-        RecentProject { path: IpcPath::from(path), name: name.into(), opened_at_ms: 0.0, branch: None }
+        RecentProject { path: IpcPath::from(path), name: name.into(), opened_at_ms: 0.0, branch: None, missing: false }
     }
 
     #[test]

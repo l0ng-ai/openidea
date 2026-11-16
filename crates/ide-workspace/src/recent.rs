@@ -13,6 +13,10 @@ pub struct RecentProject {
     /// Git branch shown on the welcome screen. Persisted as of last open; [`RecentProjects::list_live`]
     /// refreshes it from `.git/HEAD` when the list is shown.
     pub branch: Option<String>,
+    /// The local folder no longer exists (set by [`with_live_branches`] when the list is shown): the
+    /// welcome screen shows the entry as unavailable.
+    #[serde(default)]
+    pub missing: bool,
 }
 
 pub const MAX_RECENT_PROJECTS: usize = 30;
@@ -139,9 +143,21 @@ pub fn with_live_branches(mut items: Vec<RecentProject>) -> Vec<RecentProject> {
     for item in &mut items {
         if let Ok(branch) = read_head_branch(item.path.as_ref()) {
             item.branch = branch;
+        } else if is_missing(item.path.as_ref()) {
+            // A deleted repository has no branch to show.
+            item.missing = true;
+            item.branch = None;
         }
     }
     items
+}
+
+/// A local project folder that is gone. Remote locations (`ssh://`, `wsl://`, `devcontainer://`)
+/// and WSL shares, which a stopped distribution only hides, never count as missing.
+fn is_missing(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let wsl = text.starts_with(r"\\wsl$") || text.starts_with(r"\\wsl.localhost");
+    path.is_absolute() && !text.contains("://") && !wsl && !path.exists()
 }
 
 impl RecentProjects {
@@ -192,7 +208,7 @@ impl RecentProjects {
         items.retain(|p| p.path != path);
         let name =
             path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
-        items.insert(0, RecentProject { path: path.into(), name, opened_at_ms: now_ms(), branch });
+        items.insert(0, RecentProject { path: path.into(), name, opened_at_ms: now_ms(), branch, missing: false });
         cap(&mut items, &self.groups.lock());
         self.persist(&items)
     }
@@ -339,6 +355,33 @@ mod tests {
         assert_eq!(by_path(&repo).branch.as_deref(), Some("feature/list-live"));
         assert_eq!(by_path(&plain).branch.as_deref(), Some("kept"));
         assert_eq!(recent.list().iter().find(|i| i.path.as_ref() == repo).unwrap().branch.as_deref(), Some("stale"));
+    }
+
+    #[test]
+    fn list_live_marks_deleted_folders_missing_without_their_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("removed-worktree");
+        write_head(&gone.join(".git"), "ref: refs/heads/feature-x\n");
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let recent = RecentProjects::load(tmp.path().join("config").as_path());
+        recent.touch(&gone, Some("feature-x".into())).unwrap();
+        recent.touch(&plain, Some("kept".into())).unwrap();
+        recent.touch(Path::new("ssh://server/home/me/app"), None).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let live = recent.list_live();
+        let by_path = |p: &Path| live.iter().find(|i| i.path.as_ref() == p).unwrap();
+        assert!(by_path(&gone).missing);
+        assert_eq!(by_path(&gone).branch, None);
+        assert!(!by_path(&plain).missing);
+        assert_eq!(by_path(&plain).branch.as_deref(), Some("kept"));
+        assert!(!by_path(Path::new("ssh://server/home/me/app")).missing, "remote locations are not checked");
+        // Only the shown list: the saved one keeps the last branch.
+        let stored = recent.list();
+        let stored = stored.iter().find(|i| i.path.as_ref() == gone).unwrap();
+        assert!(!stored.missing);
+        assert_eq!(stored.branch.as_deref(), Some("feature-x"));
     }
 
     #[test]

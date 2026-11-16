@@ -526,6 +526,15 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A recent project whose folder is gone. */
+.recentName.unavailable,
+.projectName.unavailable {
+  color: var(--fg-subtle);
+}
+.tileMissing {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
 .branch {
   display: inline-flex;
   align-items: center;

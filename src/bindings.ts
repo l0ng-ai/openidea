@@ -9587,6 +9587,11 @@ export type RecentProject = {
 	 *  refreshes it from `.git/HEAD` when the list is shown.
 	 */
 	branch: string | null,
+	/**
+	 *  The local folder no longer exists (set by [`with_live_branches`] when the list is shown): the
+	 *  welcome screen shows the entry as unavailable.
+	 */
+	missing?: boolean,
 };
 
 /**  A named group of recent projects on the welcome screen (New Project Group…, Move to Group). */
