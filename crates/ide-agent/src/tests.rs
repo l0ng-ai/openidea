@@ -1964,11 +1964,15 @@ async fn changing_an_idle_tasks_settings_keeps_its_models_effort_levels() {
         mgr.shutdown();
         let restored = manager(tmp.path(), agent);
         restored.set_config(&task.id, "model", "small".into()).await.unwrap();
-        let small = restored.task(&task.id).unwrap();
-        let small = small.state.lock();
-        let effort = small.task.config.iter().find(|option| option.id == "effort").unwrap();
-        assert_eq!(effort.values.iter().map(|value| value.value.as_str()).collect::<Vec<_>>(), ["minimal", "medium"]);
-        drop(small);
+        {
+            let small = restored.task(&task.id).unwrap();
+            let small = small.state.lock();
+            let effort = small.task.config.iter().find(|option| option.id == "effort").unwrap();
+            assert_eq!(
+                effort.values.iter().map(|value| value.value.as_str()).collect::<Vec<_>>(),
+                ["minimal", "medium"]
+            );
+        }
         restored.set_config(&task.id, "model", "big".into()).await.unwrap();
         restored.set_config(&task.id, option, value.into()).await.unwrap();
         let p = restored.providers().into_iter().find(|p| p.id == "claude-acp").unwrap();
@@ -2018,11 +2022,12 @@ async fn idle_model_switches_discover_controls_and_no_control_models_without_ano
     let known = restored.shared.paths.catalogs.cached(&restored.shared, "claude-acp");
     assert!(known.thought_levels["plain"].is_empty());
     assert_eq!(known.config.iter().find(|option| option.id == "model").unwrap().current.as_deref(), Some("big"));
-    let calls = agent.calls.lock();
-    assert!(!calls.iter().any(|call| call == "session/prompt" || call == "session/load"));
-    assert_eq!(calls.iter().filter(|call| *call == "session/new").count(), 2);
-    drop(calls);
-    agent.calls.lock().clear();
+    {
+        let mut calls = agent.calls.lock();
+        assert!(!calls.iter().any(|call| call == "session/prompt" || call == "session/load"));
+        assert_eq!(calls.iter().filter(|call| *call == "session/new").count(), 2);
+        calls.clear();
+    }
     restored.set_config(&task.id, "model", "small".into()).await.unwrap();
     assert!(agent.calls.lock().is_empty(), "a known model remains a cache-only selection");
     assert!(current.live.lock().is_none(), "discovery never mutates a task's live session");
