@@ -69,6 +69,9 @@ pub struct GitSettings {
     pub push_dialog_only_protected: bool,
     /// Stashes and shelves share one tab.
     pub combine_stash_and_shelf: bool,
+    /// The non-modal Commit tool window works on the index: Staged / Unstaged groups,
+    /// stage and unstage instead of inclusion checkboxes, and no change lists.
+    pub staging_area: bool,
 }
 
 impl Default for GitSettings {
@@ -90,6 +93,7 @@ impl Default for GitSettings {
             show_push_dialog: true,
             push_dialog_only_protected: false,
             combine_stash_and_shelf: false,
+            staging_area: false,
         }
     }
 }

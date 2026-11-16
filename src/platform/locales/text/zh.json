@@ -8315,5 +8315,8 @@
   "New playful word": "新的趣味文字",
   "Restore Built-in Words": "恢复内置文字",
   "None — type the Engine API URL below": "无（在下方输入 Engine API URL）",
-  "Open in Right Split": "在右侧拆分中打开"
+  "Open in Right Split": "在右侧拆分中打开",
+  "Enable staging area": "启用暂存区",
+  "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.": "提交基于 Git 索引：通过暂存和取消暂存选择要提交的更改，而不是勾选。不使用更改列表。仅适用于非模态提交界面。",
+  "Commit All": "全部提交"
 }
