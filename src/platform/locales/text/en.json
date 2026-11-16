@@ -1237,7 +1237,7 @@
   "Curly braces { }": "Curly braces { }",
   "Angle brackets and tags < >": "Angle brackets and tags < >",
   "Type arguments and parameters, and HTML, XML and JSX tags, where the syntax tree marks them; comparisons stay uncolored. They count toward the depth of what they enclose: an element's tags take one level, its content the next.": "Type arguments and parameters, and HTML, XML and JSX tags, where the syntax tree marks them; comparisons stay uncolored. They count toward the depth of what they enclose: an element's tags take one level, its content the next.",
-  "Colors:": "Colors:",
+  "Number of colors": "Number of colors",
   "Color picker": "Color picker",
   "HEX": "HEX",
   "Red": "Red",

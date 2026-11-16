@@ -4543,7 +4543,7 @@
   "Curly braces { }": "花括号 { }",
   "Angle brackets and tags < >": "尖括号和标签 < >",
   "Type arguments and parameters, and HTML, XML and JSX tags, where the syntax tree marks them; comparisons stay uncolored. They count toward the depth of what they enclose: an element's tags take one level, its content the next.": "语法树标记的类型实参和类型形参，以及 HTML、XML 和 JSX 标签；比较运算符不着色。它们计入所包含内容的深度：元素的标签占一层，其内容占下一层。",
-  "Colors:": "颜色数：",
+  "Number of colors": "颜色数",
   "Main font weight": "主字重",
   "Bold font weight": "粗体字重",
   "Used wherever the color scheme shows text in bold": "用于配色方案中所有以粗体显示文本的地方",

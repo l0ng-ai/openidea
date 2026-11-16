@@ -1768,7 +1768,7 @@ export const COLOR_SCHEME_PAGES: PageSpec[] = [
                 label: "Angle brackets and tags < >",
                 hint: "Type arguments and parameters, and HTML, XML and JSX tags, where the syntax tree marks them; comparisons stay uncolored. They count toward the depth of what they enclose: an element's tags take one level, its content the next.",
               },
-              { t: "number", key: "editor.rainbowBracketColors", label: "Colors:", min: 2, max: 5 },
+              { t: "number", key: "editor.rainbowBracketColors", label: "Number of colors", min: 2, max: 5 },
             ],
           },
         ],
