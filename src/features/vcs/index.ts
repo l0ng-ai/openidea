@@ -4,6 +4,7 @@
  * merge and Local History editors, remote operations.
  */
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
+import { COMBINED_DIFF_KIND, type CombinedDiffData } from "./allInOneDiff";
 import { editorsFor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
@@ -159,13 +160,24 @@ export { activateDiffWindow, DiffWindow } from "./DiffWindow";
 
 /** The diff viewer (editor kind `diff`), also for windows that show diffs without Git (deployment). */
 export function activateDiffViewer(): () => void {
-  return registerEditorKind({
+  const single = registerEditorKind({
     kind: DIFF_KIND,
     standalone: true,
     component: lazyComponent(() => import("./diff-editor-tab").then((m) => m.DiffEditorTab)),
     title: (input) => diffTitle(input.data as DiffData),
     icon: () => "diff",
   });
+  const combined = registerEditorKind({
+    kind: COMBINED_DIFF_KIND,
+    standalone: true,
+    component: lazyComponent(() => import("./CombinedDiff").then((m) => m.CombinedDiffTab)),
+    title: (input) => (input.data as CombinedDiffData).title ?? tx("Combined Changes Diff"),
+    icon: () => "diff",
+  });
+  return () => {
+    single();
+    combined();
+  };
 }
 
 export function activateSettingsPages(): () => void {

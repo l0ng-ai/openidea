@@ -7,6 +7,7 @@ import {
   isFindRangeShown,
   pathLink,
   quoteText,
+  symbolRef,
   withQuote,
 } from "./conversation";
 
@@ -42,6 +43,44 @@ describe("pathLink", () => {
       "tests/",
     ]) {
       expect(pathLink(t, cwd)).toBeNull();
+    }
+  });
+});
+
+describe("symbolRef", () => {
+  it("reads the forms a reply names a symbol in", () => {
+    expect(symbolRef("FooView")).toMatchObject({ name: "FooView", kinds: expect.arrayContaining(["class"]) });
+    expect(symbolRef("load()")).toMatchObject({ name: "load", kinds: ["function", "method", "constructor"] });
+    expect(symbolRef("validate(input)")).toMatchObject({ name: "validate" });
+    expect(symbolRef("has_header")).toMatchObject({ name: "has_header", kinds: ["function", "method", "constructor"] });
+    expect(symbolRef("loadConfig")).toMatchObject({ name: "loadConfig" });
+    expect(symbolRef("Config.load")).toMatchObject({ name: "load", container: "Config" });
+    expect(symbolRef("Config::load()")).toMatchObject({ name: "load", container: "Config" });
+    expect(symbolRef("lib.rs::has_header")).toMatchObject({ name: "has_header", file: "lib.rs" });
+    expect(symbolRef("src/a.ts#load")).toMatchObject({ name: "load", file: "src/a.ts" });
+  });
+  it("leaves words, keywords, literals, commands and code plain", () => {
+    for (const text of [
+      "true",
+      "null",
+      "inventory",
+      "None",
+      "False",
+      "Self",
+      "Some(x)",
+      "None.value",
+      "42",
+      "1.5",
+      "cargo test",
+      "git log --oneline",
+      "x = 1",
+      "a && b",
+      "$HOME",
+      "foo(bar(1))",
+      "TODO",
+      "src/",
+    ]) {
+      expect(symbolRef(text)).toBeNull();
     }
   });
 });

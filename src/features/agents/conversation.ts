@@ -1,5 +1,6 @@
-/** Reading an agent conversation: quoting, file links, turn times and finding text. */
+/** Reading an agent conversation: quoting, file and symbol links, turn times and finding text. */
 
+import type { SymbolKind } from "@/platform/ipc";
 import { opensOtherShare } from "@/platform/paths";
 
 /** `text` as a Markdown quote for the composer, followed by an empty line to type in. */
@@ -62,6 +63,48 @@ export function pathLink(text: string, cwd: string): PathLink | null {
   if (line) out.line = Math.max(0, Number(line) - 1);
   if (m[3]) out.col = Math.max(0, Number(m[3]) - 1);
   return out;
+}
+
+/** A symbol an inline code span names: `name`, inside `container` or `file` when the text says so. */
+export interface SymbolRef {
+  name: string;
+  container?: string;
+  /** The tail of the defining file's path (`lib.rs`, `src/a.ts`). */
+  file?: string;
+  kinds: readonly SymbolKind[];
+}
+
+const IDENT = "[A-Za-z_$][\\w$]*";
+const CALL = "(\\([^()]*\\))?";
+const SYMBOL = new RegExp(`^(?:(${IDENT})(?:\\.|#|::))?(${IDENT})${CALL}$`);
+const FILE_SYMBOL = new RegExp(`^((?:[\\w.@-]+\\/)*[\\w@-]+\\.[A-Za-z]\\w*)(?:#|::)(${IDENT})${CALL}$`);
+const TYPE_KINDS: readonly SymbolKind[] = ["class", "interface", "struct", "enum", "trait", "typeAlias", "function"];
+const CALLABLE_KINDS: readonly SymbolKind[] = ["function", "method", "constructor"];
+const MEMBER_KINDS: readonly SymbolKind[] = [...CALLABLE_KINDS, "field", "property", "constant", "enumMember"];
+const ANY_KINDS: readonly SymbolKind[] = [...new Set<SymbolKind>([...TYPE_KINDS, ...MEMBER_KINDS, "variable"])];
+/** Capitalized keywords and literals that read like a type name. */
+const LITERALS = new Set(["None", "True", "False", "Self", "Some", "Ok", "Err", "Null", "Nil", "NaN", "Infinity"]);
+
+/**
+ * The symbol inline code names (`FooView`, `load()`, `has_header`, `Config.load`,
+ * `lib.rs::has_header`, `a.ts#load`); null for words, keywords, literals and anything
+ * with spaces or shell syntax (`cargo test`, `true`, `None`, `x = 1`).
+ */
+export function symbolRef(text: string): SymbolRef | null {
+  const trimmed = text.trim();
+  const inFile = FILE_SYMBOL.exec(trimmed);
+  if (inFile) return { name: inFile[2]!, file: inFile[1]!, kinds: ANY_KINDS };
+  const match = SYMBOL.exec(trimmed);
+  if (!match) return null;
+  const [, container, name, call] = match;
+  if (LITERALS.has(container ?? name!)) return null;
+  if (container) return { name: name!, container, kinds: MEMBER_KINDS };
+  if (call) return { name: name!, kinds: CALLABLE_KINDS };
+  if (/^[A-Z]\w*[a-z]/.test(name!)) return { name: name!, kinds: TYPE_KINDS };
+  if (/^[a-z]\w*[a-z\d][A-Z]/.test(name!) || /^[a-z][a-z\d]*(?:_[a-z\d]+)+$/.test(name!)) {
+    return { name: name!, kinds: CALLABLE_KINDS };
+  }
+  return null;
 }
 
 /** `850ms`, `12s`, `1m 05s`, `2h 03m`. */

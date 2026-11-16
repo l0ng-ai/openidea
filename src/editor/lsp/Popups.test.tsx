@@ -135,6 +135,21 @@ describe("list popup", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it("focuses the rows, not the header's pin button, when it opens", () => {
+    openPopup({
+      kind: "list",
+      anchor: { x: 0, y: 0 },
+      title: "Choose Declaration of foo (2 found)",
+      items: [
+        { id: "a", label: "foo", run: vi.fn() },
+        { id: "b", label: "foo", run: vi.fn() },
+      ],
+      pin: { label: "Open in Find Tool Window", run: vi.fn() },
+    });
+    render(<LspPopups />);
+    expect(document.activeElement).toBe(screen.getByRole("listbox"));
+  });
+
   it("pins the results elsewhere from the header button", () => {
     const pin = vi.fn();
     openPopup({

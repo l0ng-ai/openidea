@@ -194,6 +194,9 @@ pub mod codes {
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
+    /// LSP `RequestFailed`: the request was understood and could not be carried out; the
+    /// message says why.
+    pub const REQUEST_FAILED: i64 = -32803;
     /// LSP `ServerCancelled`.
     pub const SERVER_CANCELLED: i64 = -32802;
     /// LSP `ContentModified`.

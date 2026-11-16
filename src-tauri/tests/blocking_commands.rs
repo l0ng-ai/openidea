@@ -1,10 +1,12 @@
 //! Tauri runs a command declared without `async` on the main thread, so disk I/O or a
 //! large diff there freezes the window (input, painting, every other IPC call).
 
-/// Commands that read or write project files, Local History or `.env` files, or diff two
-/// arbitrary texts: they must be `async` and do that work on the blocking pool.
+/// Commands that read or write project files, Local History or `.env` files, diff two
+/// arbitrary texts, or scan the project index in parallel: they must be `async` and do
+/// that work on the blocking pool.
 const OFF_MAIN_THREAD: &[(&str, &[&str])] = &[
     ("doc.rs", &["history_list", "history_content"]),
+    ("nav.rs", &["find_files", "find_dirs", "find_symbols"]),
     (
         "vcs.rs",
         &[

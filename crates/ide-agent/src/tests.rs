@@ -2474,6 +2474,40 @@ async fn reload_providers_updates_registry_install_clears_stale_probes_and_notif
     assert!(probe.error.is_none());
 }
 
+/// A probe that fails is not remembered, so the next new-task page tries the agent again
+/// instead of showing the same startup failure until the IDE restarts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_probe_is_retried_instead_of_remembered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(Mutex::new(0usize));
+    let connector: Connector = {
+        let calls = calls.clone();
+        Arc::new(move |_spec, _cwd, _client, _stderr| {
+            *calls.lock() += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+    };
+    let mgr = AgentManager::with_connector(
+        AgentPaths {
+            project_root: tmp.path().to_path_buf(),
+            store_dir: tmp.path().join("store"),
+            worktrees_dir: tmp.path().join("worktrees"),
+            models_file: tmp.path().join("models.json"),
+            custom_agents_dir: None,
+            home_dir: None,
+            env_secrets: None,
+            catalogs: Arc::default(),
+        },
+        tokio::runtime::Handle::current(),
+        connector,
+    );
+
+    assert!(mgr.probe("claude", false).await.unwrap().error.is_some());
+    assert!(mgr.probe("claude", false).await.unwrap().error.is_some());
+    assert_eq!(*calls.lock(), 2, "the second call must start the agent again");
+    assert!(!mgr.shared.probes.lock().contains_key("claude"));
+}
+
 /// A session report that changes the cached provider config notifies subscribers,
 /// so the composer re-lists models without waiting for the next task (#1490).
 /// Reports that change nothing stay silent.

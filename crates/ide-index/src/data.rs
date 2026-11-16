@@ -646,8 +646,16 @@ impl IndexData {
         }
     }
 
-    pub(crate) fn record_of(&self, path: &Path) -> Option<FileRecord> {
-        self.get(path).map(|e| self.record(e))
+    /// Refreshes on-disk metadata of an unchanged-content file in place and
+    /// returns its persisted record.
+    pub(crate) fn refresh_metadata(&mut self, path: &Path, mtime: u64, size: u64, ignored: bool) -> Option<FileRecord> {
+        let slot = *self.by_path.get(path)?;
+        let e = self.files[slot as usize].as_mut()?;
+        e.mtime = mtime;
+        e.size = size;
+        e.ignored = ignored;
+        let e = self.files[slot as usize].as_ref()?;
+        Some(self.record(e))
     }
 
     /// The symbols of one file, in declaration order.
