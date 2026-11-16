@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { reorderedTabs, useWindowGroup } from "@/platform/windowGroups";
-import { Icon, IconButton, showContextMenu } from "@/ui";
+import { IconButton, showContextMenu } from "@/ui";
 import { notifications } from "./contributions";
 import styles from "./WindowGroupTabs.module.css";
 
@@ -149,16 +149,13 @@ export function WindowGroupTabs() {
             >
               <span>{tab.name}</span>
             </button>
-            <button
-              type="button"
+            <IconButton
+              icon="close"
+              size="small"
               className={styles.close}
-              aria-label={tx`Close ${tab.name}`}
-              data-tooltip={tx`Close ${tab.name}`}
+              title={tx`Close ${tab.name}`}
               onClick={() => run(executeAction("window.closeTab", tab.label))}
-            >
-              <Icon name="project-tab-close" className={styles.closeIdle} />
-              <Icon name="project-tab-close-hovered" className={styles.closeHovered} />
-            </button>
+            />
           </div>
         ))}
       </div>

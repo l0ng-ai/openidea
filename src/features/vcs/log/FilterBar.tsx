@@ -65,14 +65,14 @@ function FilterButton({ label, value, onOpen, onClear, hidden }: LogFilter & { h
         {!value && <Icon name="chevron-down" size={12} className={styles.filterChevron} />}
       </button>
       {value && (
-        <button
+        <IconButton
           type="button"
           className={styles.filterClear}
           aria-label={tx`Clear ${tx(label)} filter`}
           onClick={onClear}
-        >
-          <Icon name="close" size={12} />
-        </button>
+          icon="close"
+          size="small"
+        />
       )}
     </span>
   );

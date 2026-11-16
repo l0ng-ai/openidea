@@ -1745,14 +1745,14 @@ function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (in
             <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
           </button>
           {onRemove && (
-            <button
+            <IconButton
               type="button"
               className={styles.removeImage}
               aria-label={tx("Remove Image")}
               onClick={() => onRemove(i)}
-            >
-              <Icon name="close" size={10} />
-            </button>
+              icon="close"
+              size="small"
+            />
           )}
         </span>
       ))}

@@ -27,14 +27,8 @@
 .close {
   position: absolute;
   left: 6px;
-  display: grid;
-  place-items: center;
   width: 22px;
   height: 22px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: default;
   opacity: 0;
 }
 .item:hover .close,
@@ -96,22 +90,4 @@
   position: absolute;
   right: var(--stripe-outer-padding);
   top: 0;
-}
-
-.closeIdle,
-.closeHovered {
-  grid-area: 1 / 1;
-}
-.closeHovered {
-  visibility: hidden;
-}
-.close:hover .closeIdle {
-  visibility: hidden;
-}
-.close:hover .closeHovered {
-  visibility: visible;
-}
-.close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  border-radius: var(--radius-small);
 }
