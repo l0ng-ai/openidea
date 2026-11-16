@@ -198,6 +198,19 @@ it("shows only the repository Push was invoked from without a checkbox, its file
   expect(mocks.ops[0]?.repo).toBe("/p/b");
 });
 
+it("pushes an up-to-date repository from its own Push… to another target branch", async () => {
+  mocks.upToDate.add("/p/b");
+  render(<VcsDialogHost />);
+  await act(() => showPushDialog({ repo: "/p/b" }));
+
+  const target = await screen.findByRole("textbox", { name: "Target branch of b" });
+  expect(screen.getByRole("button", { name: "Push" })).toBeEnabled();
+  fireEvent.change(target, { target: { value: "release" } });
+  fireEvent.click(screen.getByRole("button", { name: "Push" }));
+  await waitFor(() => expect(mocks.ops).toHaveLength(1));
+  expect(mocks.ops[0]?.repo).toBe("/p/b");
+});
+
 it("asks to confirm each forced target and pushes nothing when one is declined", async () => {
   mocks.ask.mockResolvedValueOnce({ button: "force", checked: false }).mockResolvedValueOnce({ button: null });
   await openPushDialog();

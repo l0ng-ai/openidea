@@ -65,7 +65,6 @@ import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
 import { selectionIn } from "./selection";
-import { SelectionToolbar } from "./SelectionToolbar";
 import { SubmitButton } from "./SubmitButton";
 import {
   canSend,
@@ -137,7 +136,6 @@ import {
   refreshChanges,
   rollbackChanges,
   scheduleChanges,
-  discardEphemeral,
   editQueued,
   forkTask,
   rerunFrom,
@@ -165,7 +163,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const entries = useAgents((s) => s.entries.get(id));
   // Grouping needs commits of the task's own: local checkouts keep the flat list.
   const isolation = useAgents((s) => s.tasks.get(id)?.isolation);
-  const ephemeral = useAgents((s) => s.ephemeral.has(id));
   const grouped = useChangesOptions((s) => s.groupByCommit) && isolation === "worktree";
   const sinceStart = useAgents((s) => s.changes.get(id));
   const review = useAgents((s) => s.groupedChanges.get(id));
@@ -267,22 +264,6 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
         }
       }}
     >
-      {ephemeral && (
-        <div className={styles.sideBanner}>
-          <Icon name="branch" size={13} />
-          <span className={styles.sideName}>
-            <T>Side conversation</T>
-          </span>
-          <span className={styles.sideHint}>
-            <T>Temporary and read-only: closing it discards the conversation and its context.</T>
-          </span>
-          <IconButton
-            icon="close"
-            title="Discard Side Conversation"
-            onClick={() => void discardEphemeral(id).catch(() => undefined)}
-          />
-        </div>
-      )}
       <div className={styles.conversation} hidden={docked && changesOpen}>
         {view && <SubagentBar task={task} path={path} cards={cards} onNavigate={setPath} />}
         <FoldedContent.Provider value={finding && shown}>
@@ -1109,7 +1090,6 @@ function Stream({
             <WorkingRow task={task} entries={entries} subagent={subagent} />
           </div>
           {away && !!entries?.length && <JumpToLatest onJump={jumpToLatest} />}
-          <SelectionToolbar streamRef={ref} task={task} subagent={!!subagent} />
         </div>
       </RevealFold.Provider>
     </OpenFolds.Provider>
@@ -1765,14 +1745,14 @@ function ImageStrip({ images, onRemove }: { images: AgentImage[]; onRemove?: (in
             <img className={styles.image} src={imageSrc(img)} alt={img.name ?? tx("Image")} />
           </button>
           {onRemove && (
-            <button
+            <IconButton
               type="button"
               className={styles.removeImage}
               aria-label={tx("Remove Image")}
               onClick={() => onRemove(i)}
-            >
-              <Icon name="close" size={10} />
-            </button>
+              icon="close"
+              size="small"
+            />
           )}
         </span>
       ))}

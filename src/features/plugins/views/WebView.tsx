@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { tx } from "@/platform/i18n";
+import { dispatchForwardedKey } from "@/platform/keymap";
 import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
@@ -223,6 +224,11 @@ export function WebView({
   useOwnToolWindowHeader(headless);
   const hasCode = plugin?.hasCode ?? false;
   const clipboard = plugin?.capabilities.some((c) => c.id === "clipboard" && c.granted) ?? false;
+  const anyAction = plugin?.capabilities.some((c) => c.id === "ide.commands" && c.granted) ?? false;
+  const anyActionRef = useRef(anyAction);
+  useEffect(() => {
+    anyActionRef.current = anyAction;
+  }, [anyAction]);
   const frame = useRef<HTMLIFrameElement>(null);
 
   const post = useCallback((message: object, transfer: Transferable[] = []) => {
@@ -413,12 +419,17 @@ export function WebView({
       } | null;
       if (m?.tag !== FRAME_TAG) return;
       if (m.key && typeof m.key === "object") {
-        // A shortcut the page didn't handle: as if pressed on the frame, for the IDE's keymap.
+        // A shortcut the page didn't handle: as if pressed on the frame, for the IDE's keymap. The
+        // page can post one at any time and can take the focus, but it cannot fake the user's own
+        // input, so it counts only right after the user pressed a key or clicked in the frame.
+        const host = frame.current.ownerDocument;
+        const activation = host.defaultView?.navigator.userActivation;
+        if (host.activeElement !== frame.current || !host.hasFocus() || (activation && !activation.isActive)) return;
         const k = m.key as KeyboardEventInit;
-        const init: KeyboardEventInit = { bubbles: true, cancelable: true };
+        const init: KeyboardEventInit = {};
         for (const f of ["key", "code"] as const) if (typeof k[f] === "string") init[f] = k[f];
         for (const f of ["metaKey", "ctrlKey", "altKey", "shiftKey", "repeat"] as const) init[f] = k[f] === true;
-        frame.current.dispatchEvent(new KeyboardEvent("keydown", init));
+        dispatchForwardedKey(frame.current, init, anyActionRef.current);
       } else if (typeof m.call === "number" && typeof m.op === "string") {
         const id = m.call;
         run(m.op, (m.args ?? {}) as Record<string, unknown>).then(

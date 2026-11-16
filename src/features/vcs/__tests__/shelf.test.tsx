@@ -3,7 +3,14 @@ import { act, fireEvent, render, screen, waitFor, cleanup } from "@testing-libra
 import { afterEach } from "vitest";
 import type { ShelvedChangeList } from "@/bindings";
 
-const mocks = vi.hoisted(() => ({ openDiff: vi.fn(), execute: vi.fn(), ipc: vi.fn(), patch: vi.fn(), probe: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  openDiff: vi.fn(),
+  execute: vi.fn(),
+  ipc: vi.fn(),
+  patch: vi.fn(),
+  probe: vi.fn(),
+  unshelve: vi.fn(),
+}));
 vi.mock("../diffInput", async (original) => ({
   ...(await original<typeof import("../diffInput")>()),
   openDiff: mocks.openDiff,
@@ -22,7 +29,7 @@ vi.mock("@/platform/ipc", async (original) => ({
     vcsShelfDiff: () => Promise.resolve(null),
     fsProbe: mocks.probe,
     vcsShelfPatch: mocks.patch,
-    vcsUnshelve: () => Promise.resolve(null),
+    vcsUnshelve: mocks.unshelve,
   },
 }));
 import { ShelfPanel, copyShelfPatch, shelfDiffs, shelfTarget, showShelfDiff, unshelve, useShelf } from "../shelf";
@@ -165,6 +172,22 @@ describe("shelf scope and diffs", () => {
     act(() => unshelve({ ...entry, repo }));
     fireEvent.click(screen.getByRole("button", { name: "Unshelve" }));
     await waitFor(() => expect(useChangelists.getState().state.files).toEqual({ [expected]: "target" }));
+  });
+  it("unshelves only the files left checked, one by one", async () => {
+    useChangelists.setState({
+      loaded: false,
+      state: { lists: [{ id: "target", name: "Target", comment: "" }], active: "target", files: {} },
+    });
+    mocks.ipc.mockReset().mockResolvedValue({ applied: [], conflicts: [] });
+    render(<VcsDialogHost />);
+    act(() => unshelve(entry));
+    expect(screen.getByRole("tree", { name: "Files to unshelve" })).toBeTruthy();
+    expect(screen.getAllByText("Added")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include b.txt" }));
+    expect(screen.getByRole("checkbox", { name: "Include repo" })).toHaveAttribute("aria-checked", "mixed");
+    fireEvent.click(screen.getByRole("button", { name: "Unshelve" }));
+    await waitFor(() => expect(mocks.unshelve).toHaveBeenCalledTimes(2));
+    expect(mocks.unshelve.mock.calls.map((c) => c[2])).toEqual(["a.txt", "binary.dat"]);
   });
   it("copies only the selected file patch through the scoped patch command", async () => {
     const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard");

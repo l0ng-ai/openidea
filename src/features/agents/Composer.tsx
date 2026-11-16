@@ -1124,14 +1124,14 @@ export function Composer(props: ComposerProps) {
               <span className={styles.attachmentName}>{basename(suggested.rel)}</span>
               <span className={styles.suggestionHint}>{tx("Current File")}</span>
               {/* The chip is the IDE context switch: off here, back on from the dashed chip. */}
-              <button
+              <IconButton
                 type="button"
                 className={styles.removeChip}
                 aria-label={tx("Don't Add the Current File")}
                 onClick={() => setIdeContext(false)}
-              >
-                <Icon name="close" size={10} />
-              </button>
+                icon="close"
+                size="small"
+              />
             </span>
           )}
           {suggested && !ideContext && (
@@ -1151,7 +1151,7 @@ export function Composer(props: ComposerProps) {
             <span key={file.path} className={styles.attachment} title={file.path}>
               <Icon name={fileIconName(file.rel, file.path)} size={14} />
               <span className={styles.attachmentName}>{file.rel}</span>
-              <button
+              <IconButton
                 type="button"
                 className={styles.removeChip}
                 aria-label={tx("Remove File")}
@@ -1160,9 +1160,9 @@ export function Composer(props: ComposerProps) {
                     files: composerDraft(id).files.filter((f) => f.path !== file.path),
                   })
                 }
-              >
-                <Icon name="close" size={10} />
-              </button>
+                icon="close"
+                size="small"
+              />
             </span>
           ))}
           {images.map((img, i) => (
@@ -1170,7 +1170,7 @@ export function Composer(props: ComposerProps) {
               <button type="button" className={styles.previewImage} onClick={() => setPreview(img)}>
                 <img src={imageSrc(img)} alt={img.name ?? tx("Image")} />
               </button>
-              <button
+              <IconButton
                 type="button"
                 className={styles.removeImage}
                 aria-label={tx("Remove Image")}
@@ -1179,9 +1179,9 @@ export function Composer(props: ComposerProps) {
                     images: images.filter((_, j) => j !== i),
                   })
                 }
-              >
-                <Icon name="close" size={10} />
-              </button>
+                icon="close"
+                size="small"
+              />
             </span>
           ))}
           <ImagePreview image={preview} onClose={() => setPreview(null)} />

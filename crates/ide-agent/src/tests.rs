@@ -1689,7 +1689,7 @@ async fn startup_warnings_survive_replay_and_restart_without_failing_the_task() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn persistent_project_trust_needs_confirmation_even_with_bypass_and_is_denied_in_side_chats() {
+async fn persistent_project_trust_needs_confirmation_even_with_bypass() {
     let tmp = tempfile::tempdir().unwrap();
     let mgr = manager(tmp.path(), Arc::new(FakeAgent::default()));
     let task = mgr
@@ -1718,8 +1718,6 @@ async fn persistent_project_trust_needs_confirmation_even_with_bypass_and_is_den
     let id = *handle.permissions.lock().keys().next().unwrap();
     mgr.respond(&task.id, id, Some("codex-keep-untrusted".into())).unwrap();
     assert_eq!(asking.await.unwrap()["outcome"]["optionId"], "codex-keep-untrusted");
-    handle.state.lock().ephemeral = true;
-    assert_eq!(handle.ask_permission(&params)["outcome"]["optionId"], "codex-keep-untrusted");
     mgr.shutdown();
 }
 
@@ -3591,199 +3589,6 @@ async fn security_policy_never_auto_approves_a_request_that_only_reads_like_a_co
         entries.iter().any(|e| matches!(e, AgentEntry::Agent { text } if text == "escalation chose no")),
         "{entries:?}"
     );
-}
-
-/// A temporary side conversation is created ready, without starting its session and
-/// without writing anything to the store; a fresh subscriber (a reloaded page) sweeps
-/// it, and deleting it just drops it from memory.
-#[tokio::test(flavor = "multi_thread")]
-async fn ephemeral_tasks_stay_in_memory_only() {
-    let tmp = tempfile::tempdir().unwrap();
-    let agent = Arc::new(FakeAgent::default());
-    let mgr = manager(tmp.path(), agent.clone());
-    let source = mgr
-        .create(NewAgentTask {
-            project_root: None,
-            prompt: text("hello"),
-            provider: "claude".into(),
-            config: vec![],
-            isolation: Isolation::Local,
-            base: None,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    wait_for(&mgr, &source.id, AgentStatus::NeedsInput).await;
-    let calls_before = agent.calls.lock().len();
-    let task = mgr
-        .create_ephemeral(
-            NewAgentTask {
-                project_root: None,
-                prompt: text("What changed in this file?"),
-                provider: "claude".into(),
-                config: vec![],
-                isolation: Isolation::Local,
-                base: None,
-                ..Default::default()
-            },
-            &source.id,
-        )
-        .await
-        .unwrap();
-    // Registering it starts nothing: the session waits for its first real message.
-    assert_eq!(agent.calls.lock().len(), calls_before);
-    assert_eq!(mgr.task(&task.id).unwrap().state.lock().task.status, AgentStatus::Ready);
-    assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
-
-    // Its first message starts the session like any task's, and still saves nothing: the
-    // conversation records the question, not the context that rode along to the agent.
-    // The fake agent's turn asks to change something, which a side conversation denies by
-    // itself, so the turn ends without waiting for the user.
-    mgr.prompt(&task.id, text("Why?"), false).await.unwrap();
-    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
-    let entries = mgr.entries(&task.id, None).unwrap();
-    let question = entries.iter().find_map(|e| match e {
-        AgentEntry::User { text, .. } => Some(text.clone()),
-        _ => None,
-    });
-    assert_eq!(question.as_deref(), Some("Why?"));
-    assert!(
-        entries.iter().any(|e| matches!(e, AgentEntry::Permission { chosen: Some(c), .. } if c.contains("read-only"))),
-        "its `cargo test` request was denied: {entries:?}"
-    );
-    assert!(!tmp.path().join("store").join(format!("{}.json", task.id)).exists());
-
-    // A fresh subscriber (a reloaded page) sweeps it: it never reaches the task list.
-    let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink_events = events.clone();
-    let tasks = mgr.subscribe(Arc::new(move |e| sink_events.lock().push(e)));
-    assert!(!tasks.iter().any(|t| t.id == task.id));
-    assert!(mgr.task(&task.id).is_err());
-    assert!(events.lock().iter().any(|e| matches!(e, AgentEvent::Removed { id } if *id == task.id)));
-    mgr.shutdown();
-}
-
-/// A side conversation's context stays within its budget: long tool outputs are cut to
-/// their head and tail, and entries that no longer fit are dropped oldest first.
-#[test]
-fn side_conversation_context_is_bounded() {
-    let long_output = (0..400).map(|i| format!("line {i}")).collect::<Vec<_>>().join(
-        "
-",
-    );
-    // Each reply alone is well inside the budget; together they are past it.
-    let reply = |n: usize| AgentEntry::Agent { text: format!("reply {n} {}", "x".repeat(30_000)) };
-    let entries = vec![
-        AgentEntry::User {
-            text: "oldest question".into(),
-            attachments: vec![],
-            images: vec![],
-            sent_ms: None,
-            done_ms: None,
-            steered: false,
-        },
-        reply(1),
-        reply(2),
-        reply(3),
-        reply(4),
-        AgentEntry::Tool {
-            id: "t1".into(),
-            title: "grep".into(),
-            kind: "search".into(),
-            status: AgentToolStatus::Completed,
-            locations: vec![],
-            output: Some(long_output),
-            diffs: vec![],
-        },
-        AgentEntry::User {
-            text: "newest question".into(),
-            attachments: vec![],
-            images: vec![],
-            sent_ms: None,
-            done_ms: None,
-            steered: false,
-        },
-    ];
-    let transcript = context_transcript(&entries);
-    assert!(transcript.contains("newest question"), "the newest entry is always kept");
-    assert!(transcript.contains("lines omitted"), "a long tool output is trimmed");
-    assert!(transcript.contains("line 0") && transcript.contains("line 399"), "its head and tail stay");
-    assert!(!transcript.contains("oldest question"), "entries past the budget are dropped oldest first");
-    assert!(transcript.contains("oldest entries are omitted"));
-}
-
-/// An ephemeral task denies a permission request that would change the project.
-#[tokio::test(flavor = "multi_thread")]
-async fn ephemeral_tasks_deny_write_permissions() {
-    let tmp = tempfile::tempdir().unwrap();
-    let agent = Arc::new(FakeAgent::default());
-    let mgr = manager(tmp.path(), agent.clone());
-    let source = mgr
-        .create(NewAgentTask {
-            project_root: None,
-            prompt: text("Something with a conversation to reuse"),
-            provider: "claude".into(),
-            config: vec![],
-            isolation: Isolation::Local,
-            base: None,
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    wait_for(&mgr, &source.id, AgentStatus::NeedsInput).await;
-    let pending = mgr
-        .entries(&source.id, None)
-        .unwrap()
-        .iter()
-        .find_map(|e| match e {
-            AgentEntry::Permission { id, chosen: None, .. } => Some(*id),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no pending permission request"));
-    mgr.respond(&source.id, pending, Some("no".into())).unwrap();
-    wait_for(&mgr, &source.id, AgentStatus::Ready).await;
-
-    let task = mgr
-        .create_ephemeral(
-            NewAgentTask {
-                project_root: None,
-                prompt: text("What changed in this file?"),
-                provider: "claude".into(),
-                config: vec![],
-                isolation: Isolation::Local,
-                base: None,
-                ..Default::default()
-            },
-            &source.id,
-        )
-        .await
-        .unwrap();
-    assert!(mgr.task(&task.id).unwrap().state.lock().task.capabilities.read_only);
-
-    let answer = mgr
-        .task(&task.id)
-        .unwrap()
-        .ask_permission(&json!({
-            "sessionId": "c1",
-            "toolCall": {"toolCallId": "c1-t2", "title": "Edit main.rs", "kind": "edit"},
-            "options": [
-                {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
-                {"optionId": "no", "name": "Reject", "kind": "reject_once"}
-            ]
-        }))
-        .pointer("/outcome/optionId")
-        .and_then(Value::as_str)
-        .unwrap_or("none")
-        .to_owned();
-    assert_eq!(answer, "no", "the write request is denied");
-    let entries = mgr.entries(&task.id, None).unwrap();
-    assert!(
-        entries
-            .iter()
-            .any(|e| matches!(e, AgentEntry::Permission { chosen: Some(chosen), .. } if chosen.contains("read-only"))),
-        "{entries:?}"
-    );
-    mgr.shutdown();
 }
 
 fn attention_reasons(events: &[AgentEvent]) -> Vec<AgentAttentionReason> {
