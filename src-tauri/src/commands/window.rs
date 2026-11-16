@@ -199,6 +199,8 @@ pub struct OpenProject {
     pub root: PathBuf,
     /// Open in the calling window.
     pub current: bool,
+    /// Where the project lives when the window is connected to a remote host (`root` is then a path there).
+    pub remote: Option<crate::remote_dev::RemoteTarget>,
 }
 
 /// Projects open in project windows, in window order (title bar project widget).
@@ -212,11 +214,19 @@ pub fn window_open_projects(
     Ok(windows::project_window_labels(&app)
         .into_iter()
         .filter_map(|label| {
+            let current = label == window.label();
+            // A remote window's project lives on the server: it has no local project here.
+            if let Some(c) = state.remote_dev.get(&label) {
+                let root = PathBuf::from(&c.root);
+                let name = c.root.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_owned();
+                return Some(OpenProject { name, root, current, remote: Some(c.target.clone()) });
+            }
             let project = state.project(&label).ok().filter(|p| !p.light)?;
             Some(OpenProject {
                 name: project.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 root: project.root.clone(),
-                current: label == window.label(),
+                current,
+                remote: None,
             })
         })
         .collect())

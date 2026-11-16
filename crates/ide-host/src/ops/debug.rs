@@ -31,6 +31,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     } else {
         None
     };
+    let agents = if is_jvm_launch(&config) { ide_run::java_agent::current() } else { Default::default() };
+    let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -119,6 +121,15 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     let server_port = debug_server_port(&config);
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
+    if let Ok(id) = &result {
+        let sink = host.window_sink(label);
+        for note in &agents.notes {
+            sink.emit(ide_core::IdeEvent::Debug {
+                session: *id,
+                event: ide_core::event::DebugEvent::Output { category: "console".into(), output: format!("{note}\n") },
+            });
+        }
+    }
     if result.is_err()
         && let Some(pid) = unity_pid
     {
@@ -163,6 +174,45 @@ fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port
     if let Err(e) = host.debugger.set_stream_tracer(session, tracer) {
         tracing::debug!("stream tracer for session {session:?}: {e}");
     }
+}
+
+/// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
+/// java-debug or the Kotlin debugger (JAR Application debugs through a run with a JDWP agent).
+fn is_jvm_launch(config: &LaunchConfig) -> bool {
+    config.request == "launch" && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER)
+}
+
+/// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
+/// java-debug's `vmArgs` (one line, or a list) or the Kotlin debugger's `vmArguments` (a list).
+fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig {
+    if options.is_empty() || !is_jvm_launch(&config) {
+        return config;
+    }
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return config;
+    };
+    let key = if config.adapter == "java-debug" { "vmArgs" } else { "vmArguments" };
+    let value = match extra.get(key) {
+        None | Some(serde_json::Value::Null) if key == "vmArgs" => {
+            ide_run::java_agent::add_to_vm_args_text("", options).into()
+        }
+        Some(serde_json::Value::String(text)) => ide_run::java_agent::add_to_vm_args_text(text, options).into(),
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => {
+            let mut list: Vec<String> = extra
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            ide_run::java_agent::add_to_vm_args(&mut list, options);
+            list.into()
+        }
+        Some(_) => return config,
+    };
+    extra.insert(key.into(), value);
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    config
 }
 
 /// The JVM memory tab reads the class table over the attach socket, which only exists once the
@@ -816,6 +866,36 @@ mod tests {
             vm_args(&on_unix(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})))),
             "-XX:+StartAttachListener"
         );
+    }
+
+    #[test]
+    fn plugin_java_agents_join_the_vm_options_of_jvm_launches() {
+        let agent = "-javaagent:/my plugins/agent.jar=port=0".to_owned();
+        let options = std::slice::from_ref(&agent);
+        let field = |config: &LaunchConfig, key: &str| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()[key].clone()
+        };
+        let debugged =
+            add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})), options);
+        assert_eq!(vm_args(&debugged), "-Xmx1g \"-javaagent:/my plugins/agent.jar=port=0\"");
+        assert_eq!(add_java_agents(debugged.clone(), options).extra_json, debugged.extra_json, "not added twice");
+        let none = add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})), options);
+        assert_eq!(vm_args(&none), "\"-javaagent:/my plugins/agent.jar=port=0\"");
+        let list = add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": ["-Xmx1g"]})), options);
+        assert_eq!(vm_args(&list), serde_json::json!(["-Xmx1g", agent]));
+        let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({"vmArguments": ["-Xmx1g"]}));
+        assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!(["-Xmx1g", agent]));
+        let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({}));
+        assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!([agent]));
+        // Attaching (remote debug included), other adapters, and no granted agent: unchanged.
+        for config in [
+            launch("java-debug", "attach", serde_json::json!({"vmArgs": "-Xmx1g"})),
+            launch("debugpy", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})),
+        ] {
+            assert_eq!(add_java_agents(config.clone(), options).extra_json, config.extra_json);
+        }
+        let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"}));
+        assert_eq!(add_java_agents(config.clone(), &[]).extra_json, config.extra_json);
     }
 
     #[test]

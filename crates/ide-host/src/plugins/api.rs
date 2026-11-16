@@ -1556,13 +1556,8 @@ impl HostApi for PluginApi {
         }
         Ok(())
     }
-    fn open_diff(
-        &self,
-        client: &str,
-        diff: ide_plugin::ContentDiff,
-        file_name: Option<String>,
-    ) -> Result<(), HostError> {
-        super::execution::validate_diff(&diff)?;
+    fn open_diff(&self, client: &str, diff: ide_plugin::FileDiff, file_name: Option<String>) -> Result<(), HostError> {
+        super::execution::validate_file_diff(&diff)?;
         if let Some(name) = &file_name {
             super::execution::label(name, 256)?;
         }

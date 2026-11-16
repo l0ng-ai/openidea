@@ -99,6 +99,7 @@ const POINT_TITLES: Record<string, string> = {
   iconThemes: "File Icon Themes",
   languages: "Languages",
   providers: "Editor Providers",
+  javaAgents: "Java Agents",
   locales: "Translations",
 };
 
@@ -581,7 +582,11 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
           key={c.id}
           cap={c}
           program={
-            c.id.startsWith("process:") && <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            c.id.startsWith("process:") ? (
+              <ProgramPermission plugin={plugin} cap={c} disabled={busy || !confirmed} />
+            ) : (
+              c.id === "java.agent" && <JavaAgentDetail plugin={plugin} />
+            )
           }
         >
           <Checkbox
@@ -596,6 +601,19 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
         <NetHostRow key={host} plugin={plugin} host={host} disabled={busy || !confirmed} />
       ))}
     </ul>
+  );
+}
+
+/** The agent a `java.agent` grant loads: its jar's file name and arguments, as `-javaagent:` takes them. */
+function JavaAgentDetail({ plugin }: { plugin: PluginInfo }) {
+  const agent = plugin.contributions.find((c) => c.point === "javaAgents");
+  if (!agent) return null;
+  return (
+    <div className={styles.programPermission}>
+      <span className={clsx(styles.mono, styles.programPath)} aria-label={tx("Java agent")}>
+        {agent.label}
+      </span>
+    </div>
   );
 }
 

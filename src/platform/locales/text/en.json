@@ -2318,5 +2318,8 @@
   "Reformatted {formatted} of {length} files": "Reformatted {formatted} of {length} files",
   "Skipped {count} files without a formatter: {names}": "Skipped {count} files without a formatter: {names}",
   "Open Settings in a separate window": "Open Settings in a separate window",
-  "When off, Settings opens as a dialog in the project window, which is faster": "When off, Settings opens as a dialog in the project window, which is faster"
+  "When off, Settings opens as a dialog in the project window, which is faster": "When off, Settings opens as a dialog in the project window, which is faster",
+  "Run code inside the Java applications you start": "Run code inside the Java applications you start",
+  "Java agents of {list} were not added: they load only in local projects.": "Java agents of {list} were not added: they load only in local projects.",
+  "Java agent": "Java agent"
 }

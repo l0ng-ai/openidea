@@ -2186,6 +2186,60 @@ fn run_detectors_offer_granted_commands_in_marked_projects() {
     assert!(detection.launch(config).unwrap_err().contains("no longer enabled"));
 }
 
+/// A plugin's Java agent (`[[contributes.javaAgents]]`, the `java-agent` fixture): an optional
+/// high-risk `java.agent` capability; refusing or revoking it keeps the plugin working and the
+/// launch gets no agent; granting it pins the jar, which may not change afterwards.
+#[test]
+fn java_agent_loads_only_while_granted_and_unchanged() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("java-agent");
+    copy_dir(&sample("java-agent"), &pkg);
+    let preview = f.host.preview_install(&pkg).unwrap();
+    let cap = preview.capabilities.iter().find(|c| c.id == "java.agent").expect("derived from the declaration");
+    assert!(cap.optional && cap.risk == ide_extension::Risk::High && !cap.granted);
+    assert_eq!(cap.description, "Run code inside the Java applications you start");
+
+    // Refused on install: the plugin is on, Java launches get no agent.
+    let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let source = f.host.java_agents();
+    let launch = || {
+        let agents = ide_run::java_agent::approved(&source.agents());
+        let mut args: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+        ide_run::java_agent::add_to_args(&mut args, &agents.options);
+        (args, agents.notes)
+    };
+    let plain: Vec<String> = ["-Xmx1g", "-cp", "/p/classes", "app.Main"].map(String::from).into();
+    assert_eq!(launch(), (plain.clone(), vec![]));
+
+    // Granted: the installed jar with its arguments, one argument after the VM options.
+    let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
+    let option = format!("-javaagent:{}=mode=test", jar.display());
+    let mut with_agent = plain.clone();
+    with_agent.insert(3, option.clone());
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // The jar changed since it was granted: left out, with a reason, until approved again.
+    std::fs::write(&jar, "swapped").unwrap();
+    let (args, notes) = launch();
+    assert_eq!(args, plain);
+    assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert_eq!(launch(), (with_agent.clone(), vec![]));
+
+    // Revoked, then the plugin disabled: no agent either way.
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
+    assert_eq!(f.status("java-agent"), PluginStatus::Static);
+    assert_eq!(launch(), (plain.clone(), vec![]));
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    f.host.set_enabled("java-agent", false).unwrap();
+    assert_eq!(launch(), (plain, vec![]));
+}
+
 /// Compiled components are cached across runs (keyed by module and
 /// engine), so a cold activation only deserializes.
 #[test]
@@ -6553,8 +6607,8 @@ fn a_plugin_command_opens_a_diff_in_its_window() {
             client.as_deref() == Some("main")
                 && matches!(event, PluginEvent::OpenDiff { plugin_id, diff, file_name }
                     if plugin_id == "execution"
-                        && diff.left == "before\n"
-                        && diff.right == "after\n"
+                        && diff.left.as_deref() == Some("before\n")
+                        && diff.right.as_deref() == Some("after\n")
                         && diff.title.as_deref() == Some("Review")
                         && file_name.as_deref() == Some("src/review.rs"))
         })

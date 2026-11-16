@@ -767,6 +767,16 @@ mod imp {
         }
     }
 
+    fn file_diff_to(v: &crate::FileDiff) -> wit::views::FileDiff {
+        wit::views::FileDiff {
+            left: v.left.clone(),
+            right: v.right.clone(),
+            left_label: v.left_label.clone(),
+            right_label: v.right_label.clone(),
+            title: v.title.clone(),
+        }
+    }
+
     fn content_tab_reply_to(v: &crate::ContentTabReply) -> wit::views::ContentTabReply {
         wit::views::ContentTabReply {
             content: v.content.clone(),
@@ -912,6 +922,9 @@ mod imp {
     }
     pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
         wit::views::open_diff(&content_diff_to(diff), file_name).map_err(error)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_file_diff(&file_diff_to(diff), file_name).map_err(error)
     }
 
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
@@ -1951,6 +1964,11 @@ pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Resul
 /// syntax highlighting.
 pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
     imp::open_diff(diff, file_name)
+}
+/// API 1.10: like [`open_diff`] for a file missing on one side (`None`: added or deleted); the
+/// diff viewer shows the other side alone. Both sides `None` is `Error::Invalid`.
+pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_file_diff(diff, file_name)
 }
 
 /// Registers/replaces a read-only project target. Requires the program's process grant.
