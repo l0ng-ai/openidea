@@ -8544,5 +8544,6 @@
   "Reconnecting opens the project again. Unsaved changes in {count} files can't be saved to {host} and will be lost.": "重新连接会重新打开项目。{count} 个文件中未保存的更改无法保存到 {host}，将会丢失。",
   "Reconnecting to {host}…": "正在重新连接到 {host}…",
   "Lost the connection to {host}. Click to reconnect.": "与 {host} 的连接已断开。点击重新连接。",
-  "{label} (disconnected)": "{label}（已断开）"
+  "{label} (disconnected)": "{label}（已断开）",
+  "Open the commit when the inline blame is clicked": "点击内联 Git Blame 时打开提交"
 }

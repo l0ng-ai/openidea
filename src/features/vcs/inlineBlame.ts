@@ -110,6 +110,8 @@ class BlameWidget extends WidgetType {
     readonly line: BlameLine,
     /** The annotated line has no text: no gap before the label, or the caret would look indented. */
     readonly blank: boolean,
+    /** Version Control › Git › Open the commit when the inline blame is clicked. */
+    readonly clickable: boolean,
   ) {
     super();
   }
@@ -117,6 +119,7 @@ class BlameWidget extends WidgetType {
   eq(other: BlameWidget) {
     return (
       this.blank === other.blank &&
+      this.clickable === other.clickable &&
       formatInlineBlame(other.line) === formatInlineBlame(this.line) &&
       other.line.commit === this.line.commit
     );
@@ -182,7 +185,7 @@ class BlameWidget extends WidgetType {
       this.observer = new MutationObserver(() => this.stepPastLineEnd(el));
       this.observer.observe(line, { childList: true, subtree: true, characterData: true });
     }, 0);
-    if (!isUncommitted(this.line)) {
+    if (this.clickable && !isUncommitted(this.line)) {
       // The inner box is the visible, pointer-hit region; the anchor is zero-width.
       inner.setAttribute("role", "button");
       inner.tabIndex = 0;
@@ -197,6 +200,13 @@ class BlameWidget extends WidgetType {
       });
     }
     return el;
+  }
+
+  /** A plain-text label (clicks switched off, or uncommitted changes with no commit to open)
+      leaves its events to the editor: a click places the caret as on the empty space past the
+      line end instead of being swallowed by the widget. */
+  ignoreEvent(): boolean {
+    return this.clickable && !isUncommitted(this.line);
   }
 
   destroy(): void {
@@ -310,6 +320,16 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
             (s) => s.vcs.git.inlineBlame,
             () => this.invalidate(),
           ),
+          // Only the label's behaviour changes: redraw it from the loaded blame.
+          onWorkflowSettingsChange(
+            (s) => s.vcs.git.inlineBlameClickable,
+            () => {
+              this.clear();
+              clearTimeout(this.timer);
+              ++this.generation;
+              void this.refresh();
+            },
+          ),
           useI18n.subscribe(() => this.invalidate()),
         ];
         this.schedule();
@@ -381,7 +401,11 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
           this.line = lines[caret.number - 1];
           if (this.line) {
             const widget = Decoration.widget({
-              widget: new BlameWidget(this.line, caret.text.trim().length === 0),
+              widget: new BlameWidget(
+                this.line,
+                caret.text.trim().length === 0,
+                workflowSettings().vcs.git.inlineBlameClickable,
+              ),
               // After a plugin's line-end message (side 1): git hint | lens | blame.
               side: 2,
             }).range(caret.to);
