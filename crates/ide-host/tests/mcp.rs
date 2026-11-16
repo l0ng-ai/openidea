@@ -258,6 +258,35 @@ async fn trusted_attached_projects_are_writable_and_reach_the_window_they_are_at
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn files_of_a_project_attached_outside_go_by_their_absolute_path_everywhere() {
+    let h = Harness::new();
+    h.trust().await;
+    let attached = dunce::canonicalize(h.tmp.path()).unwrap().join("attached");
+    std::fs::create_dir_all(attached.join("src")).unwrap();
+    std::fs::write(attached.join("src/lib.rs"), "pub fn attached_marker() {}\n").unwrap();
+    let git = std::process::Command::new("git").current_dir(&attached).args(["init", "-q"]).status().unwrap();
+    assert!(git.success());
+    h.host.trust.decide(&attached, true, false).unwrap();
+    ide_host::ops::project::attach_workspace(&h.host, "main", &attached).unwrap();
+    assert!(h.host.project("main").unwrap().index.wait_idle(std::time::Duration::from_secs(10)));
+    let shown = |rel: &str| attached.join(rel).to_string_lossy().replace('\\', "/");
+
+    let files = h.json("search_file", json!({"q":"**/lib.rs"})).await;
+    assert_eq!(files["items"], json!([{ "filePath": shown("src/lib.rs") }]));
+    let symbols = h.json("search_symbol", json!({"q":"attached_marker"})).await;
+    assert_eq!(symbols["items"][0]["filePath"], shown("src/lib.rs"), "{symbols}");
+    assert_eq!(symbols["items"][0]["lineText"], "pub fn attached_marker() {}");
+    let status = h.json("git_status", json!({})).await;
+    let repos: Vec<&str> = status["repositories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["repositoryPathRelativeToProject"].as_str().unwrap())
+        .collect();
+    assert!(repos.contains(&shown("").trim_end_matches('/')), "{repos:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn mutations_preserve_unsaved_text_and_reject_metadata_and_escapes() {
     let h = Harness::new();
     h.trust().await;
