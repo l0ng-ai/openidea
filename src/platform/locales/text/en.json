@@ -12,6 +12,7 @@
   "Installing…": "Installing…",
   "moved from {oldPath}": "moved from {oldPath}",
   "Symbolic link": "Symbolic link",
+  "Symbolic link, target not found in this revision": "Symbolic link, target not found in this revision",
   "Copy as TSV": "Copy as TSV",
   "Copy as CSV": "Copy as CSV",
   "Copy as One-Row": "Copy as One-Row",

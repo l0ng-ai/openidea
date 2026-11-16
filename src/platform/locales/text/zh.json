@@ -10,6 +10,7 @@
   "Attach": "附加",
   "Installing…": "正在安装…",
   "Symbolic link": "符号链接",
+  "Symbolic link, target not found in this revision": "符号链接，目标在此修订中不存在",
   "Copy as TSV": "复制为 TSV",
   "Copy as CSV": "复制为 CSV",
   "Copy as One-Row": "复制为单行",
