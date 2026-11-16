@@ -205,8 +205,8 @@ pub async fn run_tomcat_installations(
 /// Id prefix of a Project Structure WAR artifact (a project without a build tool).
 const PROJECT_ARTIFACT: &str = "project:";
 
-fn project_web_artifacts(settings: &ide_core::settings::Settings) -> Vec<ide_build::web::WebArtifact> {
-    ide_build::compile::structure_web_artifacts(&settings.project_structure)
+fn project_web_artifacts(ps: &ide_core::settings::ProjectStructureSettings) -> Vec<ide_build::web::WebArtifact> {
+    ide_build::compile::structure_web_artifacts(ps)
         .into_iter()
         .map(|a| ide_build::web::WebArtifact {
             id: format!("{PROJECT_ARTIFACT}{}", a.name),
@@ -228,20 +228,19 @@ fn build_project_war(
     cache: &std::path::Path,
 ) -> IdeResult<()> {
     use ide_build::compile;
-    let artifact = settings
-        .project_structure
+    let (ps, roots, jdk) = crate::ops::build::structure_inputs(root, settings, detected);
+    let artifact = ps
         .artifacts
         .iter()
         .find(|a| a.name == name)
         .ok_or_else(|| IdeError::invalid(format!("No artifact named {name} in Project Structure › Artifacts")))?;
-    let (roots, jdk) = crate::ops::build::structure_inputs(root, settings, detected);
     let war = base.join("artifact").join(format!(
         "{}.war",
         name.split(':').next().unwrap_or(name).replace(|c: char| !c.is_alphanumeric() && c != '-', "_")
     ));
     let plan = compile::structure_war_plan(
         root,
-        &settings.project_structure,
+        &ps,
         &roots,
         jdk.as_ref(),
         &settings.languages.java.language_level,
@@ -278,7 +277,9 @@ pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<id
         let mut artifacts = ide_build::web::artifacts(&project.root, &model);
         // Without a build tool, the Project Structure's WAR artifacts are built by the IDE.
         if model.maven.is_none() && model.gradle.is_empty() {
-            artifacts.extend(project_web_artifacts(&settings));
+            let detected = project.detected_roots.read().clone();
+            let (ps, _, _) = crate::ops::build::structure_inputs(&project.root, &settings, &detected);
+            artifacts.extend(project_web_artifacts(&ps));
         }
         artifacts
     })
