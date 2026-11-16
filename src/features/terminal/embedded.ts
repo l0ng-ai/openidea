@@ -8,7 +8,7 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { noteCopySource } from "@/platform/clipboardSource";
 import { installTerminalDrop } from "./drop";
 import { installDomRowCache } from "./domRowCache";
-import { installTerminalPaste } from "./paste";
+import { installTerminalPaste, pasteIntoTerminal } from "./paste";
 import { ownTerminalInput } from "./imeInput";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -110,8 +110,8 @@ export function createEmbeddedTerminal(host: HTMLElement, opts: EmbeddedTerminal
       },
     }),
   ];
-  const removePaste = installTerminalPaste(host, (text) => term.paste(text));
-  const removeDrop = installTerminalDrop(host, (text) => term.paste(text));
+  const removePaste = installTerminalPaste(host, (text) => pasteIntoTerminal(term, text));
+  const removeDrop = installTerminalDrop(host, (text) => pasteIntoTerminal(term, text));
   term.open(host);
   installDomRowCache(term);
   if (opts["aria-label"]) term.textarea?.setAttribute("aria-label", opts["aria-label"]);

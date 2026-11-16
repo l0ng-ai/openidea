@@ -3,6 +3,7 @@ import { call, commands, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
+import type { Terminal } from "@xterm/xterm";
 
 export interface TerminalPasteTarget {
   id: TerminalId;
@@ -15,6 +16,16 @@ export interface TerminalPasteTarget {
 type Target = () => TerminalPasteTarget | null;
 
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+const ESC = "\x1b";
+
+/**
+ * xterm.js 6.0 brackets pasted text as it is, so an ESC[201~ inside it ends the bracket early and
+ * what follows is typed, Enter included. Shows each ESC as U+241B (␛), as xterm.js 6.1 does,
+ * while the shell has bracketed paste on.
+ */
+export function pasteIntoTerminal(term: Pick<Terminal, "paste" | "modes">, text: string): void {
+  term.paste(term.modes.bracketedPasteMode ? text.replaceAll(ESC, "\u241b") : text);
+}
 
 function pathsText(paths: readonly string[], target: TerminalPasteTarget): string {
   const shell = target.shell.toLowerCase().replace(/\.exe$/, "");
@@ -106,6 +117,13 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
         })().catch((error) => pasteError(error, captured));
         return;
       }
+    }
+    const pasted = transfer?.getData("text/plain");
+    if (!event.defaultPrevented && pasted?.includes(ESC)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (alive) paste(pasted);
+      return;
     }
     pasteClipboardFiles(event, (text) => {
       if (alive) paste(text);
