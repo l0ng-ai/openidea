@@ -138,6 +138,8 @@ final class RealRunTrace {
     private volatile long dropped;
     /** The worker is inside the terminal's invoke, which may never return. Cleared under {@link #silenceLock}. */
     private volatile boolean invoking;
+    /** Fires once inside the terminal's invoke; see {@link #wakeInsideInvoke}. Its event is not the trace's. */
+    private volatile EventRequest wake;
     /**
      * Orders {@link #resilence} before the restore that follows the invoke: a silence that lands after
      * it would leave the user's breakpoints off for good. Held across JDI calls, unlike {@code stateLock}.
@@ -332,7 +334,7 @@ final class RealRunTrace {
             return;
         }
         EventRequest request = event.request();
-        if (request == null || !Long.valueOf(id).equals(request.getProperty(Silencer.OWN_PROPERTY))) return;
+        if (request == null || request == wake || !Long.valueOf(id).equals(request.getProperty(Silencer.OWN_PROPERTY))) return;
         EventSet set = hubEvent.eventSet();
         hubEvent.park();
         worker.execute(() -> handle(event, set));
@@ -466,6 +468,7 @@ final class RealRunTrace {
         List<Value> arguments = frame.getArgumentValues();
         String kind;
         Value outcome;
+        wakeInsideInvoke();
         invoking = true;
         try (RequestTimeout.Raised raised = RequestTimeout.raise(RequestTimeout.Knob.of(vm), Integer.MAX_VALUE)) {
             outcome = self.invokeMethod(thread, method, arguments, INVOKE | ObjectReference.INVOKE_NONVIRTUAL);
@@ -477,6 +480,7 @@ final class RealRunTrace {
             synchronized (silenceLock) {
                 invoking = false;
             }
+            deleteWake();
         }
         try {
             // First: the pending return or exception holds the outcome from then on, so the pin below
@@ -523,6 +527,39 @@ final class RealRunTrace {
             terminalMethod = method;
         }
         return hold;
+    }
+
+    /**
+     * Worker, right before the terminal's invoke. JDWP holds an interrupt or stop of a thread that is
+     * handling an event until that event's handler exits, and an invoke runs inside the handler of the
+     * event the thread stopped at, so {@link #abort} would reach the terminal only once it returned.
+     * Any event of the thread inside the invoke ends that hold, since JDWP keeps no nesting: this one
+     * comes on the terminal's own entry and then expires, leaving no method request on. Without it
+     * only a class first prepared inside the invoke ended the hold, which a VM that had run the same
+     * stream classes before never does.
+     */
+    private void wakeInsideInvoke() {
+        MethodEntryRequest r = vm.eventRequestManager().createMethodEntryRequest();
+        // Eclipse JDI sends ThreadOnly before Count whatever the call order, so only this thread's entries count.
+        r.addThreadFilter(thread);
+        r.addCountFilter(1);
+        r.setSuspendPolicy(EventRequest.SUSPEND_NONE);
+        r.putProperty(Silencer.OWN_PROPERTY, id);
+        wake = r;
+        r.enable();
+    }
+
+    /** JDWP already dropped it once it fired; deleting it again is harmless. */
+    private void deleteWake() {
+        EventRequest r = wake;
+        if (r == null) return;
+        try {
+            vm.eventRequestManager().deleteEventRequest(r);
+        } catch (VMDisconnectedException e) {
+            // it went with the VM
+        } catch (RuntimeException e) {
+            errors.add("deleting the invoke's wake-up request: " + e);
+        }
     }
 
     /**

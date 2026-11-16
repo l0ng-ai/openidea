@@ -97,6 +97,7 @@ public class Real {
             case "rel": releaseRunning(Integer.parseInt(a[1])); break;
             case "inl": inLambda(); break;
             case "abort": abort(); break;
+            case "twice": abortAfterTrace(); break;
             case "exit": exit(); break;
             case "mid": mid(); break;
             case "fn": functionAndData(); break;
@@ -213,6 +214,17 @@ public class Real {
             System.out.println("ABORT none " + f);
         } catch (RuntimeException e) {
             System.out.println("ABORT caught " + e.getMessage()); // @abort_catch
+        }
+    }
+
+    static void abortAfterTrace() {
+        long evens = nums.stream().filter(x -> x % 2 == 0).map(x -> x * 10).count(); // @twice_a
+        System.out.println("TWICE A " + evens);
+        try {
+            long never = Stream.iterate(1L, x -> x + 1).filter(x -> x % 7 == 0).map(x -> x * 2).filter(x -> x < 0).count(); // @twice_endless
+            System.out.println("TWICE none " + never);
+        } catch (RuntimeException e) {
+            System.out.println("TWICE caught " + e.getMessage());
         }
     }
 
@@ -903,6 +915,41 @@ def real_run_abort():
         resume(dbg)
         out = output_line(dbg, 'ABORT ')
         check('abort: the program caught oi-cancel', out is not None and out.startswith('ABORT caught oi-cancel:'), out)
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_abort_after_a_trace():
+    # The first trace loads every class the endless terminal needs, so no class is prepared inside its
+    # invoke: no event of the thread's own then comes between the terminal's entry and the abort.
+    dbg = real('twice', 'twice_a', 'twice_endless')
+    try:
+        trace, state, _ = run_until_parked(dbg, 'twice_a', terminal=spec('count'), timeout=20)
+        check('abort-after-trace: the first trace parks', state['state'] == 'parked', state)
+        collected_ok('abort-after-trace', step_out_and_collect(dbg, trace), records=16, terminal='4')
+        resume(dbg)
+        expect_stop(dbg, 20, 'twice_endless')
+        trace = ok(arm(dbg, at='twice_endless', root=spec('iterate', 2), steps=(spec('filter', 1), spec('map', 1), spec('filter', 1)),
+                       terminal=spec('count'), class_filters=('java.util.stream.*',), step_kinds=('sync', 'sync', 'sync')))['traceId']
+        resume(dbg)
+        first = ok(stream('wait', dbg, traceId=trace, ms=500))
+        check('abort-after-trace: the endless terminal is running', first['state'] == 'running', first)
+        t = time.time()
+        r = ok(stream('abort', dbg, traceId=trace, timeout=30))
+        report('NOTE', f'abort-after-trace: {r} in {(time.time() - t) * 1000:.0f} ms')
+        check('abort-after-trace: interrupted or stopped', r.get('state') in ('interrupted', 'stopped'), r)
+        state = wait_until_done(dbg, trace, 20)
+        check('abort-after-trace: parked after the cancel', state['state'] == 'parked', state)
+        if state['state'] != 'parked':
+            return
+        c = step_out_and_collect(dbg, trace)
+        t = c['terminal']
+        check('abort-after-trace: the terminal threw the cancel exception',
+              t['kind'] == 'threw' and t['exception'].get('typeName') == 'java.lang.RuntimeException', t)
+        resume(dbg)
+        out = output_line(dbg, 'TWICE caught')
+        check('abort-after-trace: the program caught oi-cancel', out is not None and out.startswith('TWICE caught oi-cancel:'), out)
     finally:
         dbg.end()
 

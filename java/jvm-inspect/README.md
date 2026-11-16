@@ -131,15 +131,20 @@ ordinary `executeCommand` error.
 - `stop` lowers the log's budget to the records so far by a field write: the program keeps running
   untouched. `abort` interrupts the thread, waits 2 s for the terminal to return, then throws the
   cancel exception into it, waits 2 s more, and else lists the suspended threads that own a monitor.
-  Before the terminal started, either takes the trace down (`cancelled`, `cancelled before the
-  terminal ran`) and the program runs on untouched.
+  JDWP holds an interrupt or stop of a thread handling an event until that event's handler exits, and
+  the invoke runs inside the handler of the terminal's entry; any event of the thread inside the
+  invoke lifts the hold. So the bundle adds a method entry request on the thread, counted once and
+  suspending nothing, right before the invoke: it fires on the terminal's own entry. Without it only a
+  class first prepared inside the invoke lifted the hold, and a VM that had run those stream classes
+  before (an earlier stream or trace) answered `stuck`. Before the terminal started, either takes the trace
+  down (`cancelled`, `cancelled before the terminal ran`) and the program runs on untouched.
 - `collect` reads the log 16 384 elements per JDWP request and previews every value into the handle
   table of the inspect commands, so the UI can expand them; the log keeps them alive until the trace
   is released. `skippedBreakpoints` counts the line, function and data breakpoint requests silenced (exception breakpoints
   left out: JDI cannot tell whether a silenced request would have been hit).
 - Timing, the 1M-element chain of `tests/stream.py` (`real_run_d_million`, Apple M4 Pro, JDT LS
-  1.63): 81–122 ms from DAP `continue` to `parked` on JDK 11, 17, 21, 23 and 25; DAP `stepOut` plus
-  `collect` of its 50 000 records 4.6–4.7 s.
+  1.63): 78–138 ms from DAP `continue` to `parked` on JDK 11, 17, 21, 23 and 25; DAP `stepOut` plus
+  `collect` of its 50 000 records 4.4–4.7 s.
 
 `classes` and `referrers` can take seconds on a large heap. Eclipse JDI fails a request after
 `getRequestTimeout()` (3000 ms by default), and the timeout is per VM: java-debug's own requests
@@ -199,7 +204,7 @@ Java 21. The recorder is compiled by the `javac` on `PATH` with `--release 8`, s
 run Java 8. Build twice and compare: two builds of the checked-in jar gave
 
 ```
-b6960a85a8a0d7f8500018ca4768fe38995ab7ec787a28b666f4c2632ade7e62  openidea-jvm-inspect.jar
+22980a16bd8e303d67ed2e04d76d8974f2d3981120c26e6d9afa47ba361b1503  openidea-jvm-inspect.jar
 ```
 
 Change `Bundle-Version` whenever the jar changes: OSGi caches bundles by version.
