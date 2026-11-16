@@ -315,6 +315,9 @@ lsp_hover                                    trusted            project_host bin
 lsp_implementations                          trusted            project_host bindings async
 lsp_inlay_hints                              trusted            project_host bindings async
 lsp_inline_completion                        trusted            project_host bindings async
+lsp_java_move                                trusted            project_host bindings async
+lsp_java_move_destinations                   trusted            project_host bindings async
+lsp_java_source_types                        trusted            project_host bindings async
 lsp_library_sources                          trusted            project_host bindings async
 lsp_prepare_rename                           trusted            project_host bindings async
 lsp_prepare_type_hierarchy                   trusted            project_host bindings async

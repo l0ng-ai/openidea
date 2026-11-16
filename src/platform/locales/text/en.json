@@ -2127,5 +2127,17 @@
   "Duplicate parameter name": "Duplicate parameter name",
   "Default value is not specified for a new parameter": "Default value is not specified for a new parameter",
   "Visibility": "Visibility",
-  "Change Signature of '{name}'": "Change Signature of '{name}'"
+  "Change Signature of '{name}'": "Change Signature of '{name}'",
+  "Move {name} to Package": "Move {name} to Package",
+  "Current package": "Current package",
+  "No packages to move the file to": "No packages to move the file to",
+  "No fields or parameters to move the method to": "No fields or parameters to move the method to",
+  "Move Instance Method {name}": "Move Instance Method {name}",
+  "Move {name} to Class": "Move {name} to Class",
+  "No classes to move to": "No classes to move to",
+  "Move {name} to a new file": "Move {name} to a new file",
+  "Move {name} to another class": "Move {name} to another class",
+  "(default package)": "(default package)",
+  "Field": "Field",
+  "Move": "Move"
 }

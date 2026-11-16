@@ -643,7 +643,10 @@ export const commands = {
 	/**  Checks Pull Members Up / Push Members Down and computes the edit without applying it. */
 	lspHierarchyRefactor: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring, target: string | null, choices: HierarchyChoice[]) => typedError<HierarchyRefactored, IdeError>(__TAURI_INVOKE("lsp_hierarchy_refactor", { request, doc, pos, kind, target, choices })),
 	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
-	lspChangeSignature: (request: RequestId, doc: DocId, pos: Pos, signature: MethodSignature, delegate: boolean, confirmation: string | null) => typedError<SignatureChanged, IdeError>(__TAURI_INVOKE("lsp_change_signature", { request, doc, pos, signature, delegate, confirmation })),
+	lspChangeSignature: (request: RequestId, doc: DocId, pos: Pos, signature: MethodSignature, delegate: boolean, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_change_signature", { request, doc, pos, signature, delegate, confirmation })),
+	lspJavaMoveDestinations: (request: RequestId, doc: DocId, kind: string, args: string) => typedError<string[], IdeError>(__TAURI_INVOKE("lsp_java_move_destinations", { request, doc, kind, args })),
+	lspJavaSourceTypes: (request: RequestId, doc: DocId, projectName: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("lsp_java_source_types", { request, doc, projectName })),
+	lspJavaMove: (request: RequestId, doc: DocId, kind: string, args: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_java_move", { request, doc, kind, args, confirmation })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
@@ -10051,6 +10054,16 @@ export type ServerInfo = {
 	label?: string | null,
 };
 
+/**
+ *  A refactoring checked by the server (Change Signature, Move): problems to show, the edit when
+ *  none is fatal, and the token that confirms going on despite warnings.
+ */
+export type ServerRefactored = {
+	problems: RefactoringProblem[],
+	edit: WorkspaceEdit | null,
+	confirmation: string | null,
+};
+
 export type ServerStatus = "starting" | "ready" | "busy" | "crashed" | "stopped" | "missing" | 
 /**
  *  Not started: its configuration can't launch it (e.g. no JDK new enough);
@@ -10298,16 +10311,6 @@ export type Signature = {
 	documentation: Markup | null,
 	/**  UTF-16 ranges of each parameter within `label`. */
 	parameters: ([number, number])[],
-};
-
-/**
- *  Change Signature's check: problems to show, the edit when none is fatal, and the token that
- *  confirms going on despite warnings.
- */
-export type SignatureChanged = {
-	problems: RefactoringProblem[],
-	edit: WorkspaceEdit | null,
-	confirmation: string | null,
 };
 
 /**  A declared exception (`throws`), with the server's handle of its type. */

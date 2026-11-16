@@ -341,7 +341,7 @@ pub async fn lsp_change_signature(
     signature: MethodSignature,
     delegate: bool,
     confirmation: Option<String>,
-) -> IdeResult<SignatureChanged> {
+) -> IdeResult<ServerRefactored> {
     ide_host::ops::lsp::lsp_change_signature(
         &state.host,
         window.label(),
@@ -353,6 +353,46 @@ pub async fn lsp_change_signature(
         confirmation,
     )
     .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_java_move_destinations(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::lsp::lsp_java_move_destinations(&state.host, window.label(), request, doc, kind, args).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn lsp_java_source_types(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    project_name: Option<String>,
+) -> IdeResult<Vec<String>> {
+    ide_host::ops::lsp::lsp_java_source_types(&state.host, window.label(), request, doc, project_name).await
+}
+
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn lsp_java_move(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    doc: DocId,
+    kind: String,
+    args: String,
+    confirmation: Option<String>,
+) -> IdeResult<ServerRefactored> {
+    ide_host::ops::lsp::lsp_java_move(&state.host, window.label(), request, doc, kind, args, confirmation).await
 }
 
 #[tauri::command]

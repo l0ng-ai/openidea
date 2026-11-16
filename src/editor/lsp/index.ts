@@ -22,7 +22,7 @@ import { diagnosticsExtension, installDiagnosticsEvents } from "./diagnostics";
 import { hoverExtension } from "./hover";
 import { parameterTabKeys, signatureExtension } from "./signature";
 import { navigationExtension } from "./navigation";
-import { intentionsExtension } from "./intentions";
+import { intentionsExtension, registerClientCommand } from "./intentions";
 import { inlayExtension } from "./inlay";
 import { inlineCompletionExtension, registerInlineCompletionActions } from "./inlineCompletion";
 import { semanticExtension } from "./semantic";
@@ -42,7 +42,12 @@ import { DOCUMENTATION_WINDOW } from "./docs";
 import { prefetchMarkdown } from "./markdown";
 import { outsideProjectBanner } from "./outsideProject";
 import { implementationGutter, registerNavigationActions } from "@/editor/navigation";
-import { ChangeSignatureDialog, HierarchyDialog } from "@/editor/refactor";
+import {
+  ChangeSignatureDialog,
+  HierarchyDialog,
+  JAVA_REFACTORING_COMMAND,
+  runJavaRefactoringCommand,
+} from "@/editor/refactor";
 
 export function lspExtensions(ctx: EditorDocContext): Extension[] {
   return [
@@ -117,6 +122,7 @@ export function activate(): () => void {
     registerOverlay({ id: "editor-lsp.popups", component: LspPopups }),
     registerOverlay({ id: "editor-lsp.hierarchyDialog", component: HierarchyDialog }),
     registerOverlay({ id: "editor-lsp.changeSignatureDialog", component: ChangeSignatureDialog }),
+    registerClientCommand(JAVA_REFACTORING_COMMAND, runJavaRefactoringCommand),
     registerEditorBanner(outsideProjectBanner),
     registerStatusItem({ id: "editor-lsp.usagesStatus", align: "left", priority: 10, component: UsagesStatus }),
     // IDEA's Documentation tool window: right side, listed once F1 moved documentation there.
