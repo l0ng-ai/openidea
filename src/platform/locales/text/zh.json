@@ -3512,6 +3512,8 @@
   "These settings will be imported:": "将导入以下设置：",
   "Not imported:": "不导入：",
   "Current color scheme": "当前配色方案",
+  "Current keymap": "当前按键映射",
+  "Code Style options other than Tabs and Indents": "制表符和缩进以外的代码样式选项",
   "No settings OpenIDEA can import were found": "没有找到 OpenIDEA 可以导入的设置",
   "Rename Project": "重命名项目",
   "Rename Project…": "重命名项目…",

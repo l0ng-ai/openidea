@@ -58,7 +58,7 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   expect(screen.getByText("Monaco")).toBeInTheDocument();
   expect(screen.getByText("17")).toBeInTheDocument();
   expect(screen.getAllByText("Custom")).toHaveLength(2);
-  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Keymap, Plugins");
+  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Plugins");
   expect(set).not.toHaveBeenCalled();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: button }));

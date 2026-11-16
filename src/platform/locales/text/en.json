@@ -465,6 +465,8 @@
   "These settings will be imported:": "These settings will be imported:",
   "Not imported:": "Not imported:",
   "Current color scheme": "Current color scheme",
+  "Current keymap": "Current keymap",
+  "Code Style options other than Tabs and Indents": "Code Style options other than Tabs and Indents",
   "No settings OpenIDEA can import were found": "No settings OpenIDEA can import were found",
   "Overwrite existing branch": "Overwrite existing branch",
   "Unset upstream branch": "Unset upstream branch",
