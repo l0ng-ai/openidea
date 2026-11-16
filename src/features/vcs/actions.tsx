@@ -411,7 +411,7 @@ export function registerVcsActions(): () => void {
       when: VCS,
       // ⌘D duplicates the line inside a text editor; Git › Show Diff still works there.
       // In the Git Log's changed files it shows the commit's diff instead.
-      keyWhen: "!editorTextFocus && !vcsLogChangesFocus",
+      keyWhen: "!editorTextFocus && !vcsLogChangesFocus && !vcsLogRevisionFocus",
       run: async ({ arg, ctx }) => {
         if (ctx.shelfFocus && arg === undefined) return showShelfDiff();
         const line =
@@ -432,6 +432,7 @@ export function registerVcsActions(): () => void {
           useCommit.getState().groupByStaging,
           undefined,
           useCommit.getState().groupByRepo,
+          useCommit.getState().showUnversionedSeparately,
         );
         // The modal interface has one front diff window (#1863): a file with its group
         // as the F7 chain, or several selected files as the chain.

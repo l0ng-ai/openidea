@@ -157,9 +157,21 @@ describe("appearance & behavior settings", () => {
       balloons: true,
       sound: false,
       systemNotifications: true,
+      terminalCompletion: "longRunning",
+      terminalThresholdSeconds: 10,
       groups: { vcs: { display: "balloon", log: false } },
     });
     expect(validateNotifications({ systemNotifications: false }).systemNotifications).toBe(false);
+    expect(validateNotifications({ terminalCompletion: "sometimes", terminalThresholdSeconds: "10" })).toMatchObject({
+      terminalCompletion: "longRunning",
+      terminalThresholdSeconds: 10,
+    });
+    // Out-of-range numbers clamp, as every numeric setting does.
+    expect(validateNotifications({ terminalThresholdSeconds: 0 }).terminalThresholdSeconds).toBe(1);
+    expect(validateNotifications({ terminalCompletion: "all", terminalThresholdSeconds: 5 })).toMatchObject({
+      terminalCompletion: "all",
+      terminalThresholdSeconds: 5,
+    });
   });
 });
 

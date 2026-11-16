@@ -87,6 +87,72 @@ describe("resolveMonoFont", () => {
   });
 });
 
+describe("discovered Nerd Font fallbacks (#3723)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("ranks full faces before their Mono variants, Propo last, without non-Nerd names", async () => {
+    const fonts = await import("./fonts");
+    expect(
+      fonts.nerdFontFamilies([
+        "Inter",
+        "Maple Mono NF CN",
+        "JetBrainsMono Nerd Font Mono",
+        "CaskaydiaCove Nerd Font Propo",
+        "JetBrainsMono Nerd Font",
+        "Cascadia Code NF",
+        "Symbols Nerd Font Mono",
+      ]),
+    ).toEqual([
+      "Maple Mono NF CN",
+      "JetBrainsMono Nerd Font",
+      "Cascadia Code NF",
+      "JetBrainsMono Nerd Font Mono",
+      "Symbols Nerd Font Mono",
+      "CaskaydiaCove Nerd Font Propo",
+    ]);
+    expect(fonts.nerdFontFamilies(["Inter", "Menlo", "NFsans"])).toEqual([]);
+    expect(fonts.nerdFontFamilies(["Inter", "NF Sans Display"])).toEqual(["NF Sans Display"]);
+  });
+
+  it("feeds nerdFontFaces beyond the known list, deduped against it", async () => {
+    const fonts = await import("./fonts");
+    fonts.discoverNerdFonts(["Inter", "CaskaydiaCove Nerd Font", "Maple Mono NF CN", "JetBrainsMono Nerd Font Mono"]);
+    const faces = fonts.nerdFontFaces();
+    expect(faces.filter((face) => face.includes("CaskaydiaCove"))).toHaveLength(1);
+    // Discovered faces join after every known one.
+    expect(faces.indexOf('"Maple Mono NF CN"')).toBeGreaterThan(faces.indexOf('"CaskaydiaCove Nerd Font"'));
+    expect(faces).toHaveLength(11);
+  });
+
+  it("lets terminalFont pick up discovered families once they land", async () => {
+    const { terminalFont } = await import("../features/terminal/theme");
+    const t = {
+      useEditorFont: true,
+      fontFamily: "JetBrains Mono",
+      fontSize: 10,
+      lineHeight: 1,
+      fallbackFontFamily: "",
+      columnWidth: 1,
+    };
+    const BASE = '"JetBrains Mono Variable", monospace';
+    expect(terminalFont(t, { fontFamily: "JetBrains Mono", fontSize: 10 }, BASE).family).not.toContain("Maple");
+    const fonts = await import("./fonts");
+    fonts.discoverNerdFonts(["Maple Mono NF CN"]);
+    const { family } = terminalFont(t, { fontFamily: "JetBrains Mono", fontSize: 10 }, BASE);
+    expect(family.indexOf('"Maple Mono NF CN"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family.endsWith(", monospace")).toBe(true);
+  });
+
+  it("uiIconFaces falls back to a discovered family, proportional faces first", async () => {
+    const fonts = await import("./fonts");
+    expect(fonts.uiIconFaces(["Inter", "Maple Mono NF CN", "Maple Mono NF Propo"])).toEqual(['"Maple Mono NF Propo"']);
+    expect(fonts.uiIconFaces(["Inter", "Maple Mono NF CN"])).toEqual(['"Maple Mono NF CN"']);
+    expect(fonts.uiIconFaces(["Inter", "Menlo"])).toEqual([]);
+  });
+});
+
 describe("macOS user font resolver", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -1277,6 +1277,40 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     }
 }
 
+/// Registers the companion module-resolution plugin for the Vue hybrid mode's tsserver.
+/// The Vue plugin only resolves imports that name the
+/// `.vue` file: a directory `index.js` re-exporting a sibling `.vue`
+/// (`import ChildButton from './ChildButton'`) leaves the component `any`, and with it every
+/// `@event="method"` handler type in the project's templates (#3728; VS Code patches tsserver
+/// itself for this). The companion plugin retries only what tsserver and the Vue plugin left
+/// unresolved, so it is registered after theirs. No-op without it (no Vue language server).
+pub fn configure_vue_module_resolution(cfg: &mut LanguageServerConfig, data_dir: &Path) -> bool {
+    let Some(vue_at) = cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).and_then(|v| {
+        v.pointer("/vtsls/tsserver/globalPlugins")
+            .and_then(Value::as_array)
+            .and_then(|plugins| plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(vue::PLUGIN)))
+    }) else {
+        return false;
+    };
+    let Some(plugin) = vue::module_resolution_plugin(data_dir) else {
+        return false;
+    };
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let Some(plugins) = current.pointer_mut("/vtsls/tsserver/globalPlugins").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    match plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(vue::MODULE_RESOLUTION_PLUGIN)) {
+        Some(at) => plugins[at] = plugin,
+        None => plugins.insert(vue_at + 1, plugin),
+    }
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
+    }
+    true
+}
+
 /// The servers `language` uses after Settings › Language Servers: the
 /// definition's ones that aren't disabled, then the ones defined in settings for it.
 pub fn language_servers(language: &str, defined: &[LanguageServerConfig], s: &Settings) -> Vec<LanguageServerConfig> {

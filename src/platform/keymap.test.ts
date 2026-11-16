@@ -1,6 +1,9 @@
+import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  dispatchForwardedKey,
   effectiveBindings,
+  FORWARDABLE_ACTIONS,
   formatBinding,
   installKeyboardDispatcher,
   isAltGrTyping,
@@ -86,6 +89,117 @@ describe("keymap", () => {
       await Promise.resolve();
       expect(single).toHaveBeenCalledOnce();
       expect(chord).toHaveBeenCalledOnce();
+    });
+
+    it("runs only safe actions from keys a plugin frame without ide.commands passes on", async () => {
+      const run = vi.fn();
+      const save = vi.fn();
+      const findAction = vi.fn();
+      registerAction({ id: "run.runSelected", title: "run", run });
+      registerAction({ id: "file.save", title: "save", run: save });
+      registerAction({ id: "navigate.findAction", title: "find action", run: findAction });
+      useKeymap.setState({
+        overrides: {
+          "run.runSelected": ["Shift+F10"],
+          "file.save": ["Meta+S"],
+          "navigate.findAction": ["Meta+Shift+A"],
+        },
+      });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      dispatchForwardedKey(frame, { key: "F10", code: "F10", shiftKey: true });
+      dispatchForwardedKey(frame, { key: "s", code: "KeyS", metaKey: true });
+      dispatchForwardedKey(frame, { key: "A", code: "KeyA", metaKey: true, shiftKey: true });
+      await Promise.resolve();
+      expect(run).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledOnce();
+      expect(findAction).toHaveBeenCalledOnce();
+      // The same key pressed by the user still runs it.
+      frame.dispatchEvent(new KeyboardEvent("keydown", { key: "F10", code: "F10", shiftKey: true, bubbles: true }));
+      await Promise.resolve();
+      expect(run).toHaveBeenCalledOnce();
+      frame.remove();
+    });
+
+    it("runs any bound action from keys a plugin frame passes on when the plugin may run IDE actions", async () => {
+      const run = vi.fn();
+      registerAction({ id: "run.runSelected", title: "run", run });
+      useKeymap.setState({ overrides: { "run.runSelected": ["Shift+F10"] } });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      dispatchForwardedKey(frame, { key: "F10", code: "F10", shiftKey: true }, true);
+      await Promise.resolve();
+      expect(run).toHaveBeenCalledOnce();
+      frame.remove();
+    });
+
+    it.each([
+      "view.toggleTheme",
+      "view.quickSwitchScheme",
+      "view.toggleStatusBarWidget",
+      "view.zoomIn",
+      "window.new",
+      "window.mergeAllWindows",
+      "window.closeOtherTabs",
+      "window.toggleFullScreen",
+      "navigate.toggleBookmark",
+      "navigate.toggleBookmark3",
+      "navigate.toggleBookmarkWithMnemonic",
+      "toolwindow.terminal",
+      "toolwindow.closeContent",
+    ])("does not run %s from a key a plugin frame without ide.commands passes on", async (id) => {
+      expect(FORWARDABLE_ACTIONS.has(id)).toBe(false);
+      const run = vi.fn();
+      const dispose = registerAction({ id, title: id, run });
+      useKeymap.setState({ overrides: { [id]: ["Meta+Alt+Shift+F12"] } });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      try {
+        dispatchForwardedKey(frame, { key: "F12", code: "F12", metaKey: true, altKey: true, shiftKey: true });
+        await Promise.resolve();
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        frame.remove();
+        dispose();
+      }
+    });
+
+    it("lets passed-on keys run only actions the app registers, by exact id", () => {
+      const root = import.meta.dirname.replace(/[\\/]platform$/, "");
+      const sources: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const path = `${dir}/${entry.name}`;
+          if (entry.isDirectory()) {
+            if (entry.name !== "__tests__" && path !== `${root}/platform/keymaps`) walk(path);
+          } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+            if (!path.endsWith("/platform/keymap.ts") && !path.endsWith("/bindings.ts")) sources.push(path);
+          }
+        }
+      };
+      walk(root);
+      const text = sources.map((p) => readFileSync(p, "utf8")).join("\n");
+      // Ids registered from a template, e.g. `navigate.gotoBookmark${d}`; a bare `prefix.${…}` proves nothing.
+      const templated = [...text.matchAll(/`([a-z]+\.[A-Za-z]+)\$\{/g)].map((m) => m[1]!);
+      const unregistered = [...FORWARDABLE_ACTIONS].filter(
+        (id) =>
+          !text.includes(`"${id}"`) && !templated.some((prefix) => new RegExp(`^${prefix}[A-Za-z0-9]+$`).test(id)),
+      );
+      expect(sources.length).toBeGreaterThan(100);
+      expect(unregistered).toEqual([]);
+    });
+
+    it("does not let a key a plugin frame passes on start a chord the user then finishes", async () => {
+      const chord = vi.fn();
+      registerAction({ id: "t.chord", title: "chord", run: chord });
+      useKeymap.setState({ overrides: { "t.chord": ["Meta+K Meta+C"] } });
+      uninstall = installKeyboardDispatcher(window);
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      dispatchForwardedKey(frame, { key: "k", code: "KeyK", metaKey: true });
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "c", code: "KeyC", metaKey: true, bubbles: true }));
+      await Promise.resolve();
+      expect(chord).not.toHaveBeenCalled();
+      frame.remove();
     });
 
     it("respects when clauses", async () => {
@@ -272,6 +386,22 @@ describe("keymap", () => {
       shift("keyup", 2400); // held too long
       tap(2500);
       expect(run).not.toHaveBeenCalled();
+    });
+
+    it("ignores a double Shift whose key presses a plugin frame without ide.commands passes on", async () => {
+      const { run, at, shift } = setup();
+      const frame = document.body.appendChild(document.createElement("iframe"));
+      const press = (ms: number) => {
+        at(ms);
+        dispatchForwardedKey(frame, { key: "Shift", code: "ShiftLeft", shiftKey: true });
+      };
+      press(1000);
+      shift("keyup", 1050);
+      press(1200);
+      shift("keyup", 1250);
+      await Promise.resolve();
+      expect(run).not.toHaveBeenCalled();
+      frame.remove();
     });
 
     it("ignores Shift tapped right after typing", () => {
