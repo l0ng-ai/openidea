@@ -195,27 +195,25 @@ export async function locationItems(locs: readonly DeclarationTarget[]): Promise
   const root = useProject.getState().project?.root ?? "";
   const names = locs.map((l) => targetLabel(files.get(l.path)?.[l.range.start.line] ?? "", l.range.start.col));
   const indexed = await indexContainers(locs, names);
-  return locs.map((l, i) => {
+  const rows = locs.map((l, i) => {
     const where = chooserWhere(root, l.path, l.range.start.line + 1);
     // Index symbols carry their container; server targets take the index's answer or the enclosing type.
-    if (l.kind && l.name)
-      return {
-        id: `${i}`,
-        label: l.name,
-        detail: [l.container, where].filter(Boolean).join(" · "),
-        symbol: l.kind,
-        location: { path: l.path, line: l.range.start.line },
-        run: () => navigateTo(l),
-      };
-    return {
-      id: `${i}`,
-      label: l.name ?? names[i] ?? basename(l.path),
-      detail: [indexed.get(i) ?? enclosingType(files.get(l.path), l), where].filter(Boolean).join(" · "),
-      icon: fileIconName(basename(l.path), l.path),
-      location: { path: l.path, line: l.range.start.line },
-      run: () => navigateTo(l),
-    };
+    const indexSymbol = !!(l.kind && l.name);
+    const label = indexSymbol ? l.name! : (l.name ?? names[i] ?? basename(l.path));
+    const container = indexSymbol ? l.container : (indexed.get(i) ?? enclosingType(files.get(l.path), l));
+    return { l, where, label, container: container || null, indexSymbol };
   });
+  // Targets that all share one name (the implementations of a method) are told apart, and
+  // speed-searched, by their containers, which become the rows' text.
+  const byContainer = rows.length > 1 && rows.every((r) => r.container && r.label === rows[0]!.label);
+  return rows.map(({ l, where, label, container, indexSymbol }, i) => ({
+    id: `${i}`,
+    label: byContainer ? container! : label,
+    detail: (byContainer ? [where] : [container, where]).filter(Boolean).join(" · "),
+    ...(indexSymbol ? { symbol: l.kind! } : { icon: fileIconName(basename(l.path), l.path) }),
+    location: { path: l.path, line: l.range.start.line },
+    run: () => navigateTo(l),
+  }));
 }
 
 /** "Choose Implementation of foo (3 found)". */
