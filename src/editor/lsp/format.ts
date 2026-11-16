@@ -183,6 +183,8 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
       const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
         await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave, formatter: true });
+        // The formatter is not installed: a batch counts the file as having none.
+        return { ...NOTHING, noFormatter: true };
       } else if (e.kind !== "cancelled") {
         notifications().notify({
           group: "tools",

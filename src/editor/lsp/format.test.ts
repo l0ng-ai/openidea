@@ -241,6 +241,15 @@ describe("formatting given ranges (Only VCS changed text)", () => {
         new IpcError({ kind: "unavailable", message: "No language server available" }),
       );
       expect(await formatDocument(view, { explicit: false })).toMatchObject({ applied: false, noFormatter: true });
+      // The file's formatter (Prettier here) is not installed.
+      vi.spyOn(lsp, "lspRequest").mockRejectedValue(
+        new IpcError({
+          kind: "notFound",
+          message: "prettier is not installed",
+          data: { type: "tool", tool: "prettier", missing: true },
+        } as ConstructorParameters<typeof IpcError>[0]),
+      );
+      expect(await formatDocument(view, { explicit: false })).toMatchObject({ applied: false, noFormatter: true });
       vi.spyOn(lsp, "lspRequest").mockResolvedValue([]);
       expect((await formatDocument(view, { explicit: false })).noFormatter).toBeUndefined();
     } finally {
