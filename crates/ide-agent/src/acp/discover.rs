@@ -57,7 +57,7 @@ async fn run_once(
     let client = Dialect::wrap(updates.clone());
     let on_stderr: Box<dyn Fn(String) + Send + Sync> = Box::new(|_| {});
     let peer = (shared.connector)(&launch, &cwd, client.clone(), on_stderr)
-        .map_err(|_| format!("Couldn't start {} for model discovery", launch.name))?;
+        .map_err(|e| format!("Couldn't start {} for model discovery: {e}", launch.name))?;
     let _stop = crate::catalogs::KillPeer(peer.clone());
     let conn = Conn::new(peer.clone(), client);
     let work = async {
@@ -174,7 +174,7 @@ fn discovery_error(error: ide_jsonrpc::RpcError) -> String {
         ide_jsonrpc::RpcError::Server { code, message, .. } if super::auth_required(code, &message) => {
             "Sign in required: the agent could not authenticate model discovery".into()
         }
-        _ => "The agent could not complete model discovery".into(),
+        other => format!("The agent could not complete model discovery: {other}"),
     }
 }
 
