@@ -262,26 +262,46 @@ jobs:
             }
             // The update's notes: the release body without its Download section. That
             // section only matters on the release page, and What's new follows it.
+            // A translated section, "## 中文" added at the end of the draft before it is
+            // published (it runs to the next heading of its level, or the end), becomes
+            // `notes.zh-CN`: What's new shows it in that UI language and falls back to
+            // `notes`, the English rest of the body. HTML comments are dropped.
             const { data: release } = await github.rest.repos.getRelease({ owner, repo, release_id });
-            const withoutDownloadSection = (body) => {
-              const kept = [];
+            const languages = { "中文": "zh-CN" };
+            const notesByLanguage = (body) => {
+              const parts = { "": [] };
+              let lang = "";
+              let langLevel = 0;
               let skip = 0;
-              for (const line of body.split(/\r?\n/)) {
+              for (const line of body.replace(/<!--[\s\S]*?-->/g, "").split(/\r?\n/)) {
                 const heading = /^(#{1,6})\s+(.*)$/.exec(line);
                 if (heading) {
                   const level = heading[1].length;
-                  if (!skip && level <= 3 && /^download$/i.test(heading[2].trim())) {
+                  const title = heading[2].trim();
+                  if (skip && level <= skip) skip = 0;
+                  if (lang && level <= langLevel) lang = "";
+                  if (!skip && level <= 3 && /^download$/i.test(title)) {
                     skip = level;
                     continue;
                   }
-                  if (skip && level <= skip) skip = 0;
+                  if (!skip && !lang && level <= 2 && languages[title]) {
+                    lang = languages[title];
+                    langLevel = level;
+                    parts[lang] ??= [];
+                    continue;
+                  }
                 }
-                if (!skip) kept.push(line);
+                if (!skip) parts[lang].push(line);
               }
-              return kept.join("\n").trim();
+              return Object.fromEntries(Object.entries(parts).map(([key, lines]) => [key, lines.join("\n").trim()]));
             };
-            const notes = withoutDownloadSection(String(release.body ?? ""));
-            const manifest = { version: tag.replace(/^v/, ""), notes, pub_date: new Date().toISOString(), platforms };
+            const { "": notes, ...translated } = notesByLanguage(String(release.body ?? ""));
+            const translations = Object.fromEntries(
+              Object.entries(translated).filter(([, text]) => text).map(([lang, text]) => [`notes.${lang}`, text]),
+            );
+            const manifest = {
+              version: tag.replace(/^v/, ""), notes, ...translations, pub_date: new Date().toISOString(), platforms,
+            };
             const old = assets.find((a) => a.name === "latest.json");
             if (old) await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
             await github.rest.repos.uploadReleaseAsset({
