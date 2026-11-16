@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
 import type { Commit } from "@/bindings";
+import { describe, expect, it } from "vitest";
 import { operationActions } from "../BranchWidget";
+import { commitMenu } from "../log/commitMenu";
+import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
 import { controlLabel, inProgress, operationControls, operationTitle, validateTagName } from "../operations";
 import { suggestedPatchName } from "../patches";
-import { commitMenu } from "../GitLog";
-import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
 
 const commit = (summary: string, id = "0123456789abcdef0123456789abcdef01234567"): Commit => ({
   id,
