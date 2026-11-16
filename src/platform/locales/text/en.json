@@ -2150,5 +2150,7 @@
   "Untitled files were not saved": "Untitled files were not saved",
   "Missing blank line between subject and body": "Missing blank line between subject and body",
   "Body line {0} is longer than {1} characters": "Body line {0} is longer than {1} characters",
-  "Add blank line": "Add blank line"
+  "Add blank line": "Add blank line",
+  "Cannot paste this path safely: its name contains control characters.": "Cannot paste this path safely: its name contains control characters.",
+  "Cannot paste the dropped files": "Cannot paste the dropped files"
 }

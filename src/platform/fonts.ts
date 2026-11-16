@@ -132,21 +132,53 @@ const UI_NERD_FONTS = [
   ...NERD_FONTS,
 ];
 
+/** Nerd Font naming: the patched families ("… Nerd Font") and their v3 short forms ("… NF"). */
+const NERD_FONT_NAME = /nerd\s*font|\bnf\b/i;
+const NERD_FONT_MONO = /(?:nerd\s*font|\bnf\b)\s+mono$/i;
+const NERD_FONT_PROPO = /(?:nerd\s*font|\bnf\b)\s+propo$/i;
+
+/**
+ * Nerd Font families among `installed`, full faces first (their icons keep the wide
+ * prompt glyph), then the Mono variants that shrink icons to one cell, Propo last.
+ */
+export function nerdFontFamilies(installed: readonly string[]): string[] {
+  const rank = (name: string) => (NERD_FONT_MONO.test(name) ? 1 : NERD_FONT_PROPO.test(name) ? 2 : 0);
+  return installed.filter((name) => NERD_FONT_NAME.test(name)).sort((a, b) => rank(a) - rank(b));
+}
+
+/** Discovered installs beyond the known list (`discoverNerdFonts`), in the same order. */
+let discoveredNerdFonts: readonly string[] = [];
+
+/**
+ * Feeds the terminal fallback from the native font catalog, loaded off startup: a Nerd
+ * Font outside the known list (Maple Mono NF CN, Cascadia Code NF…) otherwise never
+ * reaches the font stack, and unlike Windows Terminal the webview does no per-glyph
+ * system fallback, so prompt icons (#3723) render as boxes.
+ */
+export function discoverNerdFonts(installed: readonly string[]): void {
+  const known = new Set(NERD_FONTS.map((name) => name.toLowerCase()));
+  discoveredNerdFonts = nerdFontFamilies(installed).filter((name) => !known.has(name.toLowerCase()));
+}
+
 /** Installed Nerd Fonts, resolved like any family, for prompt-theme icons (powerlevel10k, starship). */
 export function nerdFontFaces(): string[] {
-  return NERD_FONTS.flatMap(familyFaces);
+  return [...NERD_FONTS, ...discoveredNerdFonts].flatMap(familyFaces);
 }
 
 /**
  * The icon font for UI text (Nerd Font icons in agent task titles): the first installed
  * Nerd Font, proportional faces first. Any one has the whole icon set, so the others aren't
  * probed or loaded. Without the installed families (browser), every candidate by name.
+ * A family outside the known list fills in from the same discovery, Propo first.
  */
 export function uiIconFaces(installed?: readonly string[]): string[] {
   if (!installed) return UI_NERD_FONTS.flatMap(familyFaces);
   const names = new Set(installed.map((name) => name.toLowerCase()));
   const family = UI_NERD_FONTS.find((name) => names.has(name.toLowerCase()));
-  return family ? [...familyFaces(family)] : [];
+  if (family) return [...familyFaces(family)];
+  const found = nerdFontFamilies(installed);
+  const pick = found.find((name) => NERD_FONT_PROPO.test(name)) ?? found[0];
+  return pick ? [...familyFaces(pick)] : [];
 }
 
 /** The `--font-mono` stack, resolved (canvas / xterm can't use `var()`). */

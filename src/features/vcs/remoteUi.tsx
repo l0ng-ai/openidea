@@ -344,7 +344,9 @@ function MultiPushDialog({ only, onClose }: MultiPushDialogProps) {
     tags,
     noVerify: hasHook && !runHooks,
   });
-  const picked = (repos ?? []).filter((r) => checked.has(r.root));
+  // Push… from one repository always pushes it, like the single-repository dialog: an up-to-date
+  // branch may still go to another target or carry tags.
+  const picked = only === undefined ? (repos ?? []).filter((r) => checked.has(r.root)) : (repos ?? []);
   // Like the single-repository dialog: tags go only with plain pushes, so a retargeted repository hides them.
   const retargeted = picked.some((r) => pushOperation(choiceOf(r, null)).op === "pushBranch");
   const push = async () => {

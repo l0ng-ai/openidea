@@ -87,4 +87,41 @@ describe("Compare Structure", () => {
     const some = migrationSql("postgres", "public", diffs, new Set(["c:users.age", "c:users.id", "t:legacy"]));
     expect(some).toBe("drop table public.legacy;\nalter table public.users add column age int default 0;\n");
   });
+
+  it("compares defaults with string literals kept exact", () => {
+    const status = (d: string) => [users([col("status", "varchar(10)", { default: d })])];
+    const changes = (a: string, b: string) => diffSchemas(status(a), status(b))[0]!.columns[0]!.changes;
+    expect(changes("'ACTIVE'", "'active'")).toEqual(["default"]);
+    expect(changes("'a  b'", "'a b'")).toEqual(["default"]);
+    expect(changes("'it''s'", "'it''S'")).toEqual(["default"]);
+    expect(changes("CURRENT_TIMESTAMP", "current_timestamp")).toEqual([]);
+    expect(changes("nextval( 'seq'::regclass)", "NEXTVAL('seq'::REGCLASS)")).toEqual([]);
+  });
+
+  it("keeps a foreign key into another schema pointing there", () => {
+    const orders = (refSchema: string): TableSnapshot[] => [
+      {
+        name: "orders",
+        kind: "table",
+        columns: [col("user_id", "int")],
+        indexes: [],
+        foreignKeys: [
+          { schema: "app", table: "orders", columns: ["user_id"], refSchema, refTable: "users", refColumns: ["id"] },
+        ],
+      },
+    ];
+    const target: TableSnapshot[] = [{ ...orders("app")[0]!, foreignKeys: [] }];
+    const cross = diffSchemas(orders("shared"), target);
+    expect(cross[0]!.foreignKeys.map((k) => k.name)).toEqual(["(user_id) → shared.users(id)"]);
+    expect(migrationSql("postgres", "deployment", cross, differenceKeys(cross))).toContain(
+      "references shared.users (id);",
+    );
+    const local = diffSchemas(orders("app"), target);
+    expect(migrationSql("postgres", "deployment", local, differenceKeys(local))).toContain(
+      "references deployment.users (id);",
+    );
+    // The same link in both schemas: one into each schema's own users, the other into shared.
+    const mixed = diffSchemas(orders("shared"), orders("app"));
+    expect(mixed[0]!.foreignKeys.map((k) => k.state)).toEqual(["added", "removed"]);
+  });
 });
