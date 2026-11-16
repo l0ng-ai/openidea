@@ -390,6 +390,22 @@ export function registerDatabaseTreeActions(): () => void {
       },
     }),
     tree({
+      id: "db.compareSchemas",
+      title: "Compare Structure…",
+      description: "Compare the tables of two schemas and write the migration SQL from one to the other",
+      icon: "diff-side-by-side",
+      keywords: ["schema compare", "diff", "migration", "compare schemas", "structure"],
+      run: ({ arg }) => {
+        const n = nodeFrom(arg);
+        const id = n && nodeTarget(n);
+        const schema = n && "schema" in n && typeof n.schema === "string" ? n.schema : null;
+        openDialog({
+          kind: "compareSchemas",
+          source: id ? { id, schema: schema ?? (driverOf(id) === "sqlite" ? "main" : "") } : null,
+        });
+      },
+    }),
+    tree({
       id: "db.newColumn",
       title: "Column",
       icon: "db-column",

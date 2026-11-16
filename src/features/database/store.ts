@@ -56,6 +56,7 @@ import { formatted } from "./sql/format";
 import { bindParams, findParams } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
+import type { TableSnapshot } from "./schemaCompare";
 import { resolutionScopeOf, resolutionScopesOf, type SqlResolutionScope } from "./resolutionScopes";
 import { databaseRequest, invalidateDatabaseRequests, projectRequest } from "./requests";
 import { tx } from "@/platform/i18n";
@@ -143,7 +144,9 @@ export type DialogState =
   /** Browse Query History of target `id`; Paste goes to console `path`. */
   | { kind: "history"; id: string; path: string | null }
   /** Import Data from File into a table. */
-  | { kind: "import"; id: string; schema: string; table: string };
+  | { kind: "import"; id: string; schema: string; table: string }
+  /** Compare Structure: `source` starts as the schema the action was invoked on. */
+  | { kind: "compareSchemas"; source: { id: string; schema: string } | null };
 
 /** The schemas and tables of a data source's databases, as far as introspection has read them. */
 export interface SourceCatalog {
@@ -707,6 +710,25 @@ export async function loadTables(id: string, schema: string): Promise<void> {
     if (!current()) return;
     useDatabase.setState((s) => ({ tables: { ...s.tables, [key]: { status: "error", message: message(e) } } }));
   }
+}
+
+/** The tables of `schema` on target `id` with their columns, indexes and foreign keys (Compare Structure). */
+export async function schemaSnapshot(id: string, schema: string, signal?: AbortSignal): Promise<TableSnapshot[]> {
+  const tables = (await withConnection(id, () => call(commands.dbTables(id, schema)))).filter(
+    (t) => t.kind === "table",
+  );
+  const out: TableSnapshot[] = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < tables.length) {
+      if (signal?.aborted) return;
+      const t = tables[next++]!;
+      const details = await call(commands.dbTableDetails(id, schema, t.name));
+      out.push({ name: t.name, kind: t.kind, ...details });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, tables.length) }, worker));
+  return out;
 }
 
 export async function loadDetails(id: string, schema: string, table: string): Promise<void> {

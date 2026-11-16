@@ -1,0 +1,91 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 560px;
+  padding: 14px;
+}
+.pickers {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.sideLabel {
+  color: var(--fg-secondary);
+}
+.arrow {
+  color: var(--fg-muted);
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.spacer {
+  flex: 1;
+}
+.count,
+.direction {
+  color: var(--fg-muted);
+}
+.panes {
+  display: flex;
+  gap: var(--space-2);
+  flex: 1;
+  min-height: 0;
+}
+.tree {
+  display: flex;
+  flex-direction: column;
+  flex: 1.2;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+.tree > * {
+  flex: 1;
+  min-height: 0;
+}
+.preview {
+  flex: 1;
+  min-width: 0;
+}
+.row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.name {
+  white-space: nowrap;
+}
+.detail {
+  overflow: hidden;
+  color: var(--fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.state {
+  width: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.added {
+  color: var(--vcs-added);
+}
+.removed {
+  color: var(--vcs-deleted);
+}
+.changed {
+  color: var(--vcs-modified);
+}
+.same {
+  color: var(--fg-muted);
+}
