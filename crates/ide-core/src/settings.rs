@@ -1347,6 +1347,9 @@ pub struct JavaSettings {
     pub jdtls_vm_args: String,
     /// Share one JDT LS across builds in an ordinary project window; other windows remain separate.
     pub jdtls_shared: bool,
+    /// JDK homes added by hand (Platform Settings › SDKs › Add JDK from Disk…), listed with the
+    /// detected ones.
+    pub added_jdks: Vec<String>,
     /// Build Tools › Maven.
     pub maven: MavenSettings,
     /// Build Tools › Gradle.

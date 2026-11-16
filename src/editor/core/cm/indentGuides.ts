@@ -7,7 +7,9 @@
  * the smaller level of their neighbours and code lens rows the level of the
  * line they annotate (`guideVars`), so guides stay continuous. With rainbow
  * guides each depth gets its own image, coloured from `--syn-rainbow-*`. The
- * guide the caret is on takes the selected colour (`caretGuide`).
+ * guide the caret is on takes the selected colour (`caretGuide`). A column is
+ * the editor font's space width (`--openidea-space`, measured), not `ch`: in a
+ * proportional font a space is narrower than "0", and guides would drift into the code.
  */
 import { countColumn, Facet, RangeSetBuilder, type EditorState, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from "@codemirror/view";
@@ -16,6 +18,11 @@ import { LINE_INSET } from "./lineInset";
 
 /** How far (px) a guide sits left of its column, so a caret in that column is right of it (IDEA's indent guide shift). */
 const GUIDE_SHIFT = 2;
+
+/** One column of indentation: a space in the editor font, as measured by the guides plugin. */
+const SPACE = "var(--openidea-space, 1ch)";
+
+const SPACE_SAMPLE = 64;
 
 /** Number of `--openidea-guide-<n>` rainbow colours; deeper guides repeat them. */
 export const GUIDE_COLORS = 5;
@@ -50,7 +57,7 @@ export function guideVars(
             ? `var(--openidea-guide-${((level - 1) % GUIDE_COLORS) + 1})`
             : "var(--openidea-guide)",
     );
-    positions.push(`calc(${LINE_INSET - GUIDE_SHIFT}px + ${level * step}ch) 0`);
+    positions.push(`calc(${LINE_INSET - GUIDE_SHIFT}px + ${level * step} * ${SPACE}) 0`);
   }
   return { images: images.join(", "), positions: positions.join(", ") };
 }
@@ -187,10 +194,33 @@ export const indentGuides: Extension = [
   ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
-      constructor(view: EditorView) {
+      private probe: HTMLElement;
+      constructor(readonly view: EditorView) {
+        // Inherits the editor font from the scroller, outside the content CodeMirror observes;
+        // the measured width goes on the scroller, where lines and code lens rows pick it up.
+        this.probe = document.createElement("span");
+        this.probe.setAttribute("aria-hidden", "true");
+        this.probe.style.cssText = "position: absolute; top: 0; left: 0; visibility: hidden; white-space: pre";
+        this.probe.textContent = " ".repeat(SPACE_SAMPLE);
+        view.scrollDOM.appendChild(this.probe);
         this.decorations = build(view);
+        this.measure();
+      }
+      measure() {
+        this.view.requestMeasure({
+          key: this,
+          read: (view) => this.probe.getBoundingClientRect().width / (view.scaleX || 1) / SPACE_SAMPLE,
+          write: (width, view) => {
+            if (width > 0) view.scrollDOM.style.setProperty("--openidea-space", `${+width.toFixed(3)}px`);
+          },
+        });
+      }
+      destroy() {
+        this.probe.remove();
+        this.view.scrollDOM.style.removeProperty("--openidea-space");
       }
       update(u: ViewUpdate) {
+        if (u.geometryChanged) this.measure();
         if (
           u.docChanged ||
           u.selectionSet ||

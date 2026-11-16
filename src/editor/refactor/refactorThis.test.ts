@@ -153,6 +153,14 @@ describe("catalog", () => {
     expect(c("Move to a new file", "refactor")).toBe("move");
     expect(c("Inline variable", "refactor")).toBe("inline");
     expect(c("Convert to template string", "refactor")).toBeNull();
+    // pylsp-rope (Python).
+    expect(c("Extract method including similar statements", "refactor.extract")).toBe("extractMethod");
+    expect(c("Extract global method", "refactor.extract")).toBeNull();
+    expect(c("Extract variable", "refactor.extract")).toBe("extractVariable");
+    expect(c("Extract global variable including similar statements", "refactor.extract")).toBe("extractConstant");
+    expect(c("Inline method/variable/parameter", "refactor.inline")).toBe("inline");
+    expect(c("Introduce parameter", "refactor")).toBe("extractParameter");
+    expect(c("To method object", "refactor.rewrite")).toBeNull();
   });
 
   it("knows which kinds an advertised list can produce", () => {

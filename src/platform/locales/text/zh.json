@@ -3512,6 +3512,8 @@
   "These settings will be imported:": "将导入以下设置：",
   "Not imported:": "不导入：",
   "Current color scheme": "当前配色方案",
+  "Current keymap": "当前按键映射",
+  "Code Style options other than Tabs and Indents": "制表符和缩进以外的代码样式选项",
   "No settings OpenIDEA can import were found": "没有找到 OpenIDEA 可以导入的设置",
   "Rename Project": "重命名项目",
   "Rename Project…": "重命名项目…",
@@ -8390,5 +8392,13 @@
   "Only in target": "仅在目标中",
   "Different": "不同",
   "Foreign Keys": "外键",
-  "Indexes": "索引"
+  "Indexes": "索引",
+  "Add JDK from Disk…": "从磁盘添加 JDK…",
+  "Select Home Directory for JDK": "选择 JDK 主目录",
+  "The selected directory is not a valid home for JDK: {path}": "所选目录不是有效的 JDK 主目录：{path}",
+  "Add SDK": "添加 SDK",
+  "Remove SDK": "移除 SDK",
+  "{rel} is added to your request": "{rel} 会添加到你的请求中",
+  "IDE Context Enabled: the current file and selection are added to your request": "IDE 上下文已启用：当前文件和所选内容会添加到你的请求中",
+  "IDE Context Disabled: the current file and selection are not added to your request": "IDE 上下文已禁用：当前文件和所选内容不会添加到你的请求中"
 }

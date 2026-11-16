@@ -224,3 +224,20 @@ it.each([false, true])("recovers an attached member whose trust is lost (decided
   await act(async () => {});
   expect(decide).toHaveBeenCalledWith("/other", true, false);
 });
+
+it("asks over the splash of a window launched for an untrusted project, not over its Welcome screen", async () => {
+  const splash = document.createElement("div");
+  splash.id = "splash";
+  document.body.append(splash);
+  try {
+    render(<OverlayHost />);
+    vi.mocked(invokeLocal).mockResolvedValue({ root: "/launched", trusted: false, decided: false });
+    const opening = confirmProjectTrust("/launched", "local").catch(() => "cancelled");
+    await screen.findByRole("dialog");
+    expect(splash.classList.contains("splash-under-dialogs")).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Don't Open" }));
+    expect(await opening).toBe("cancelled");
+  } finally {
+    splash.remove();
+  }
+});

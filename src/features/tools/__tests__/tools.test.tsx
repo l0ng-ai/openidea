@@ -225,6 +225,7 @@ describe("missing language server prompt", () => {
       installMethod: "uv (virtualenv)",
       languages: ["Python"],
       alternatives: [],
+      companion: false,
     });
     await promptInstall("ruff", true, new Set(), true);
     expect(notes.at(-1)).toMatchObject({
@@ -232,6 +233,22 @@ describe("missing language server prompt", () => {
       body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
       key: missingKey("ruff"),
     });
+  });
+
+  it("doesn't offer a companion server (refactorings only) when it is missing", async () => {
+    const template = sampleTools()[0]!;
+    backend.tools.push({
+      ...template,
+      name: "pylsp",
+      displayName: "pylsp-rope (Python refactorings)",
+      command: "pylsp",
+      status: "missing",
+      languages: ["Rope Only"],
+      alternatives: [],
+      companion: true,
+    });
+    expect(await promptInstall("pylsp")).toBe(false);
+    expect(notes).toEqual([]);
   });
 
   it("stays silent when an installed alternative serves the same languages", async () => {

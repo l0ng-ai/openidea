@@ -380,6 +380,7 @@ fn install_joined_after_it_finished_returns_the_result() {
         default_args: vec![],
         default_initialization_options: None,
         alternatives: vec![],
+        companion: false,
     };
     release_install_slot("marksman", &slot);
     slot.finish(Ok(ok));

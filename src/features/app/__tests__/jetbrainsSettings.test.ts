@@ -11,7 +11,10 @@ const component = (name: string, options: Record<string, string>) =>
     .map(([k, v]) => `<option name="${k}" value="${v}" />`)
     .join("")}</component></application>`;
 
-const editor = { fontFamily: "JetBrains Mono", fontSize: 13, customSchemes: {}, colorOverrides: {} };
+const settings = {
+  editor: { fontFamily: "JetBrains Mono", fontSize: 13, customSchemes: {}, colorOverrides: {} },
+  customKeymaps: {},
+};
 
 /** JetBrains Maple Mono's metrics (ascent 1.02em, descent 0.3em), for any family. */
 const fontHeight = (_family: string, size: number) => Math.ceil(size * 1.02) + Math.ceil(size * 0.3);
@@ -55,7 +58,7 @@ const webstorm = {
 
 describe("planJetBrainsImport", () => {
   it("maps a WebStorm export to the settings it has, and lists what is left out", async () => {
-    const plan = await planJetBrainsImport(webstorm, editor, fontHeight);
+    const plan = await planJetBrainsImport(webstorm, settings, fontHeight);
     const writes = Object.fromEntries(plan.writes);
     const schemes = writes["editor.customSchemes"] as Record<string, { name: string; parent: string }>;
     const [id, scheme] = Object.entries(schemes)[0]!;
@@ -73,6 +76,7 @@ describe("planJetBrainsImport", () => {
       "files.ensureFinalNewline": true,
       "editor.stickyScroll": false,
       "editor.softWrap": false,
+      "console.softWrap": true,
       "general.confirmExit": false,
     });
     expect(plan.rows).toContainEqual({
@@ -84,7 +88,7 @@ describe("planJetBrainsImport", () => {
       label: "Remove trailing spaces on:",
       value: "All lines",
     });
-    expect(plan.skipped).toEqual(["Keymap", "Code Style", "Inspections", "Plugins"]);
+    expect(plan.skipped).toEqual(["Code Style options other than Tabs and Indents", "Inspections", "Plugins"]);
     expect(plan.invalid).toEqual([]);
   });
 
@@ -102,7 +106,7 @@ describe("planJetBrainsImport", () => {
           }),
         },
       },
-      editor,
+      settings,
       fontHeight,
     );
     expect(plan.writes).toEqual([
@@ -110,20 +114,24 @@ describe("planJetBrainsImport", () => {
       ["editor.lineHeight", 27],
       ["files.trimTrailingWhitespace", false],
       ["editor.softWrap", true],
+      ["console.softWrap", true],
     ]);
     expect(plan.skipped).toEqual([]);
   });
 
   it("re-importing replaces the earlier copy of a scheme and drops its edits", async () => {
-    const first = Object.fromEntries((await planJetBrainsImport(webstorm, editor, fontHeight)).writes);
-    const customs = first["editor.customSchemes"] as typeof editor.customSchemes;
+    const first = Object.fromEntries((await planJetBrainsImport(webstorm, settings, fontHeight)).writes);
+    const customs = first["editor.customSchemes"] as typeof settings.editor.customSchemes;
     const [id] = Object.keys(customs);
     const again = await planJetBrainsImport(
       webstorm,
       {
-        ...editor,
-        customSchemes: customs,
-        colorOverrides: { [id!]: { keyword: { bold: true } }, other: {} },
+        ...settings,
+        editor: {
+          ...settings.editor,
+          customSchemes: customs,
+          colorOverrides: { [id!]: { keyword: { bold: true } }, other: {} },
+        },
       },
       fontHeight,
     );
@@ -136,7 +144,7 @@ describe("planJetBrainsImport", () => {
   it("falls back to the font size when the font cannot be measured", async () => {
     const plan = await planJetBrainsImport(
       { entries: [], files: { "options/editor-font.xml": component("DefaultFont", { FONT_SIZE: "20" }) } },
-      editor,
+      settings,
       () => undefined,
     );
     expect(plan.writes).toEqual([
@@ -145,8 +153,166 @@ describe("planJetBrainsImport", () => {
     ]);
   });
 
+  it("imports the keymaps and makes the active one current", async () => {
+    const keymap =
+      '<keymap version="1" name="macOS copy" parent="Mac OS X 10.5+">' +
+      '<action id="NextTab"><keyboard-shortcut first-keystroke="ctrl right" /></action>' +
+      '<action id="GotoSuperMethod" /><action id="RunAnything" /></keymap>';
+    const active =
+      '<application><component name="KeymapManager"><active_keymap name="macOS copy" /></component></application>';
+    const bundle = {
+      entries: ["keymaps/macOS copy.xml", "keymaps/broken.xml"],
+      files: {
+        "keymaps/macOS copy.xml": keymap,
+        "keymaps/broken.xml": "<nope",
+        // The active keymap is stored per operating system; the host picks its own.
+        "options/mac/keymap.xml": active,
+        "options/windows/keymap.xml": active,
+        "options/linux/keymap.xml": active,
+      },
+    };
+    const plan = await planJetBrainsImport(bundle, settings);
+    const expected = {
+      name: "macOS copy",
+      parent: "intellij-macos",
+      overrides: { "editor.nextTab": ["Ctrl+Right"], "navigate.superMethod": [] },
+    };
+    expect(plan.writes).toEqual([
+      ["customKeymaps", { "custom.macos-copy": expected }],
+      ["keymap", "custom.macos-copy"],
+    ]);
+    expect(plan.rows).toEqual([
+      { label: "Keymap", value: "macOS copy" },
+      { label: "Current keymap", value: "macOS copy" },
+    ]);
+    expect(plan.unknownActions).toEqual(["RunAnything"]);
+    expect(plan.invalid).toEqual(["broken.xml"]);
+
+    // Importing again replaces the earlier copy and keeps the user's other keymaps.
+    const mine = { name: "Mine", parent: "vscode-macos", overrides: {} };
+    const again = await planJetBrainsImport(bundle, {
+      ...settings,
+      customKeymaps: { "custom.macos-copy": { ...expected, overrides: {} }, "custom.mine": mine },
+    });
+    expect(again.writes[0]).toEqual(["customKeymaps", { "custom.macos-copy": expected, "custom.mine": mine }]);
+  });
+
+  it("imports the terminal font", async () => {
+    const plan = await planJetBrainsImport(
+      {
+        entries: [],
+        files: {
+          "options/terminal-font.xml": component("TerminalFontOptions", {
+            VERSION: "1",
+            FONT_SIZE: "17",
+            FONT_SIZE_2D: "17.0",
+            FONT_FAMILY: "MesloLGS NF",
+            LINE_SPACING: "1.1",
+          }),
+        },
+      },
+      settings,
+    );
+    expect(plan.writes).toEqual([
+      ["terminal.useEditorFont", false],
+      ["terminal.fontFamily", "MesloLGS NF"],
+      ["terminal.fontSize", 17],
+      ["terminal.lineHeight", 1.1],
+    ]);
+  });
+
+  it("imports tabs and indents of the current code style scheme onto the languages' own styles", async () => {
+    const scheme = (name: string, body: string) => `<code_scheme name="${name}" version="173">${body}</code_scheme>`;
+    const plan = await planJetBrainsImport(
+      {
+        entries: ["codestyles/Default.xml", "codestyles/Team.xml"],
+        files: {
+          "options/code.style.schemes.xml": component("CodeStyleSchemeSettings", { CURRENT_SCHEME_NAME: "Team" }),
+          "codestyles/Default.xml": scheme(
+            "Default",
+            '<codeStyleSettings language="Python"><indentOptions><option name="INDENT_SIZE" value="8" /></indentOptions></codeStyleSettings>',
+          ),
+          "codestyles/Team.xml": scheme(
+            "Team",
+            '<option name="RIGHT_MARGIN" value="100" />' +
+              '<option name="OTHER_INDENT_OPTIONS"><value><option name="TAB_SIZE" value="8" />' +
+              '<option name="USE_TAB_CHARACTER" value="true" /></value></option>' +
+              '<JSCodeStyleSettings version="0"><option name="USE_SEMICOLON_AFTER_STATEMENT" value="false" /></JSCodeStyleSettings>' +
+              '<codeStyleSettings language="TypeScript"><option name="SPACE_WITHIN_BRACKETS" value="true" />' +
+              '<indentOptions><option name="INDENT_SIZE" value="2" /><option name="CONTINUATION_INDENT_SIZE" value="2" />' +
+              '<option name="TAB_SIZE" value="2" /></indentOptions></codeStyleSettings>' +
+              '<codeStyleSettings language="HTML"><option name="LINE_COMMENT_AT_FIRST_COLUMN" value="false" />' +
+              '<indentOptions><option name="USE_TAB_CHARACTER" value="true" /></indentOptions></codeStyleSettings>' +
+              '<codeStyleSettings language="Brainfuck"><indentOptions><option name="INDENT_SIZE" value="3" /></indentOptions></codeStyleSettings>',
+          ),
+        },
+      },
+      {
+        ...settings,
+        editor: {
+          ...settings.editor,
+          codeStyle: { languages: { typescript: { hardWrapAt: 90 }, go: { tabSize: 8 } } },
+        },
+      },
+    );
+    expect(plan.writes).toEqual([
+      ["editor.codeStyle.hardWrapAt", 100],
+      ["editor.tabSize", 8],
+      ["editor.insertSpaces", false],
+      [
+        "editor.codeStyle.languages",
+        {
+          typescript: { hardWrapAt: 90, indent: 2, tabSize: 2 },
+          typescriptreact: { indent: 2, tabSize: 2 },
+          html: { useTab: true, lineCommentAtFirstColumn: false },
+          go: { tabSize: 8 },
+        },
+      ],
+    ]);
+    expect(plan.rows).toContainEqual({ label: "Code Style › TypeScript", value: "Indent 2, Tab size 2" });
+    expect(plan.rows).toContainEqual({ label: "Use tab character", value: "On" });
+    expect(plan.skipped).toEqual(["Code Style options other than Tabs and Indents"]);
+  });
+
+  it("imports the editor options that have a setting here", async () => {
+    const xml =
+      "<application>" +
+      component("EditorSettings", {
+        IS_SMOOTH_CARET_BLINKING: "true",
+        IS_BLOCK_CURSOR: "true",
+        ARE_LINE_NUMBERS_SHOWN: "false",
+        LINE_NUMERATION: "HYBRID",
+        SHOW_BREADCRUMBS_ABOVE: "true",
+        CARET_BLINKING_PERIOD: "700",
+        IS_ANIMATED_SCROLLING: "false",
+      }).replace(/<\/?application>/g, "") +
+      component("CodeInsightSettings", {
+        AUTOINSERT_PAIR_QUOTE: "false",
+        REFORMAT_ON_PASTE: "2",
+        SMART_BACKSPACE: "1",
+        PARAMETER_INFO_DELAY: "500",
+        COMPLETION_CASE_SENSITIVE: "2",
+      }).replace(/<\/?application>/g, "") +
+      "</application>";
+    const plan = await planJetBrainsImport({ entries: [], files: { "options/editor.xml": xml } }, settings);
+    expect(Object.fromEntries(plan.writes)).toEqual({
+      "editor.appearance.lineNumberMode": "hybrid",
+      "editor.breadcrumbs.placement": "top",
+      "editor.appearance.smoothCaretBlinking": true,
+      "editor.appearance.blockCaret": true,
+      "editor.appearance.lineNumbers": false,
+      "editor.appearance.caretBlinkPeriod": 700,
+      "editor.smartKeys.pairQuotes": false,
+      "editor.completion.parameterInfoDelay": 500,
+      "editor.smartKeys.reformatOnPaste": "indentBlock",
+      "editor.smartKeys.backspaceUnindent": "nearest",
+    });
+    expect(plan.rows).toContainEqual({ label: "Unindent", value: "To nearest indent position" });
+    expect(plan.rows).toContainEqual({ label: "Show line numbers", value: "Hybrid" });
+  });
+
   it("skips colour schemes that cannot be read", async () => {
-    const plan = await planJetBrainsImport({ entries: [], files: { "colors/broken.icls": "<nope" } }, editor);
+    const plan = await planJetBrainsImport({ entries: [], files: { "colors/broken.icls": "<nope" } }, settings);
     expect(plan.invalid).toEqual(["broken.icls"]);
     expect(plan.writes).toEqual([]);
   });

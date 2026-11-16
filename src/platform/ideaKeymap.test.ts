@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeBinding } from "@/platform/keymap";
-import { fromSwingStroke, parseIdeaKeymap } from "../keymap/ideaKeymapImport";
+import { fromSwingStroke, parseIdeaKeymap } from "./ideaKeymap";
 
 describe("IntelliJ IDEA keymap import", () => {
   it("converts Swing keystrokes", () => {
@@ -8,6 +8,10 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(fromSwingStroke("ctrl pressed OPEN_BRACKET")).toBe("Ctrl+[");
     expect(fromSwingStroke("F12")).toBe("F12");
     expect(fromSwingStroke("alt BACK_SPACE")).toBe("Alt+Backspace");
+    // As IDEA saves a user's keymap.
+    expect(fromSwingStroke("ctrl right")).toBe("Ctrl+Right");
+    expect(fromSwingStroke("shift ctrl alt s")).toBe("Shift+Ctrl+Alt+S");
+    expect(fromSwingStroke("meta back_slash")).toBe("Meta+\\");
     expect(fromSwingStroke("meta NUMPAD5")).toBeNull();
     expect(fromSwingStroke("hyper A")).toBeNull();
   });

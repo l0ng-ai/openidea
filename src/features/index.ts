@@ -48,6 +48,7 @@ import { activate as analysis } from "./analysis";
 import { activate as services } from "./services";
 import { activate as github, activateSettingsPages as githubPages } from "./github";
 import { activate as httpClient } from "./http-client";
+import { activate as cucumber } from "./cucumber";
 import { activate as database, activateSettingsPages as databasePages } from "./database";
 import { activate as graphql } from "./graphql";
 import { activate as deployment, activateDeploymentWindow } from "./deployment";
@@ -99,6 +100,7 @@ const features: Array<[string, Activate]> = [
   ["services", services],
   ["github", github],
   ["http-client", httpClient],
+  ["cucumber", cucumber],
   ["database", database],
   ["graphql", graphql],
   ["deployment", deployment],

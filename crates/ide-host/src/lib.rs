@@ -190,6 +190,7 @@ impl Host {
             open_locks: Default::default(),
         };
         host.apply_proxy();
+        host.apply_added_jdks();
         ops::agent::move_user_mcp_values(&host);
         host
     }
@@ -528,6 +529,14 @@ impl Host {
 
     pub(crate) fn insert_project(&self, window: &str, project: Arc<Project>) {
         self.projects.write().insert(window.to_owned(), project);
+    }
+}
+
+impl Host {
+    /// Lists the JDKs added by hand (global Settings › SDKs) with the detected ones.
+    pub fn apply_added_jdks(&self) {
+        let homes = self.global_settings.effective().languages.java.added_jdks;
+        ide_sdk::java::set_added_jdks(homes.into_iter().map(PathBuf::from));
     }
 }
 

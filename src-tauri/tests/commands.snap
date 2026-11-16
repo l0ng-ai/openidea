@@ -81,6 +81,7 @@ close_project                                always             project_host bin
 coverage_collect                             trusted            project_host bindings async
 coverage_import                              always             project_host bindings async
 coverage_prepare                             trusted            project_host bindings async
+cucumber_sources                             trusted            desktop      bindings async
 db_apply_edits                               trusted            project_host bindings async
 db_completion                                trusted            project_host bindings async
 db_connect                                   trusted            project_host bindings async
@@ -513,6 +514,7 @@ scaffold_requirements                        always             project_host bin
 sdk_container_python                         trusted            project_host bindings sync
 sdk_container_python_refresh                 trusted            project_host bindings async
 sdk_detect                                   trusted            project_host bindings async
+sdk_jdk_at                                   trusted            project_host bindings async
 sdk_locate_tools                             trusted            project_host bindings async
 sdk_php_composer_install                     trusted            project_host bindings async
 sdk_php_effective                            trusted            project_host bindings sync

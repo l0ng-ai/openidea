@@ -330,7 +330,13 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
 /// disabled in place (no rebuild).
 #[tauri::command]
 #[specta::specta]
-pub fn menu_set_disabled(app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+pub fn menu_set_disabled(window: WebviewWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+    // The window whose menu runs: a project window also while its Settings window is focused.
+    if menu::native_menu_bar()
+        && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
+    {
+        return;
+    }
     let disabled: std::collections::HashSet<String> = ids.into_iter().collect();
     if *menu_state.disabled.lock() == disabled {
         return;

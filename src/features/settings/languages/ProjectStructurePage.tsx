@@ -28,7 +28,7 @@ import { call, commands, isTauri, nextRequestId, type FileEntry } from "@/platfo
 import { mergeLibraryGroups } from "@/platform/libraries";
 import type { BuildModel, LibraryGroup, WebArtifact } from "@/bindings";
 import { relativePath, useProject } from "@/platform/project";
-import { PageContext, useSettingsFormFor } from "../components/context";
+import { PageContext, useSetting, useSettingsFormFor } from "../components/context";
 import {
   applySettings,
   closeProjectStructure,
@@ -61,7 +61,7 @@ import {
 } from "@/platform/languageSettings";
 import { initProjectRoots, useDetectedRoots } from "@/platform/projectRoots";
 import { Row, Section } from "../components/Form";
-import { detectSdks, useSdks, type SdkKind } from "./api";
+import { detectSdks, forgetSdk, rememberSdk, useSdks, type SdkKind } from "./api";
 import { choosePath } from "@/platform/choosePath";
 import { DownloadJdkDialog } from "./DownloadJdkDialog";
 import { SdkField, tildify, useDetected, useJdtlsJdk, useProjectSetting } from "./components";
@@ -1790,7 +1790,30 @@ function SdksSection() {
   const [downloading, setDownloading] = useState(false);
   const [selectedKey, setSelectedKey] = useState<string>("");
   const [projectJdk, setProjectJdk] = useProjectSetting<string>("languages.java.jdk");
+  const [addedJdks, setAddedJdks] = useSetting<string[] | undefined>("languages.java.addedJdks", "global");
+  const [addError, setAddError] = useState<string | null>(null);
   useDetected("jdk");
+
+  const addJdkFromDisk = async () => {
+    setAddError(null);
+    const picked = await choosePath({ directory: true, title: tx("Select Home Directory for JDK") });
+    if (!picked) return;
+    const sdk = await call(commands.sdkJdkAt(picked)).catch(() => null);
+    if (!sdk) {
+      setAddError(tx`The selected directory is not a valid home for JDK: ${tildify(picked)}`);
+      return;
+    }
+    const added = addedJdks ?? [];
+    if (!added.includes(sdk.path)) setAddedJdks([...added, sdk.path]);
+    rememberSdk("jdk", { ...sdk, source: "added" });
+    setSelectedKey(`jdk:${sdk.path}`);
+  };
+
+  const removeAddedJdk = (path: string) => {
+    setAddedJdks((addedJdks ?? []).filter((p) => p !== path));
+    forgetSdk("jdk", path);
+    setSelectedKey("");
+  };
 
   useEffect(() => {
     for (const { kind } of SDK_KINDS) {
@@ -1805,8 +1828,15 @@ function SdksSection() {
   };
 
   const rows = useMemo(() => {
-    const out: Array<{ key: string; kind: SdkKind; kindLabel: string; name: string; version: string; path: string }> =
-      [];
+    const out: Array<{
+      key: string;
+      kind: SdkKind;
+      kindLabel: string;
+      name: string;
+      version: string;
+      path: string;
+      added: boolean;
+    }> = [];
     for (const { kind, label } of SDK_KINDS) {
       for (const sdk of byKind[kind] ?? []) {
         out.push({
@@ -1816,11 +1846,12 @@ function SdksSection() {
           name: sdk.name,
           version: sdk.version ?? "",
           path: sdk.path,
+          added: kind === "jdk" && (sdk.source === "added" || (addedJdks ?? []).includes(sdk.path)),
         });
       }
     }
     return out;
-  }, [byKind]);
+  }, [byKind, addedJdks]);
 
   const activeSdk = rows.find((r) => r.key === selectedKey) ?? rows[0];
 
@@ -1829,12 +1860,33 @@ function SdksSection() {
       <div className={styles.splitLayout}>
         <div className={styles.sideList}>
           <div className={styles.tableToolbar}>
-            <Button size="small" variant="ghost" icon="plus" onClick={() => setDownloading(true)}>
-              <T>Download JDK…</T>
-            </Button>
+            <IconButton
+              icon="plus"
+              size="small"
+              title="Add SDK"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                showContextMenu({ x: r.left, y: r.bottom + 2 }, [
+                  { label: tx("Download JDK…"), icon: "download", run: () => setDownloading(true) },
+                  { label: tx("Add JDK from Disk…"), icon: "folder-open", run: () => void addJdkFromDisk() },
+                ]);
+              }}
+            />
+            <IconButton
+              icon="minus"
+              size="small"
+              title="Remove SDK"
+              disabled={!activeSdk?.added}
+              onClick={() => activeSdk && removeAddedJdk(activeSdk.path)}
+            />
             <span className={styles.spacer} />
             <IconButton icon="refresh" size="small" title="Detect again" onClick={refreshAll} />
           </div>
+          {addError && (
+            <div className={styles.error} role="alert">
+              {addError}
+            </div>
+          )}
           <div className={styles.sideItems} role="listbox" aria-label={tx("SDKs")}>
             {rows.length === 0 && (
               <div className={styles.empty}>

@@ -133,3 +133,40 @@ async fn a_reused_physical_connection_restores_the_full_default_path() -> IdeRes
     );
     Ok(())
 }
+
+/// Indexes, foreign keys, routines and completion read the catalog with queries every
+/// PostgreSQL-protocol server answers, back to the 9.2 core of openGauss / GaussDB (#3637).
+#[tokio::test]
+async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    for stmt in [
+        "DROP SCHEMA IF EXISTS oi_meta CASCADE",
+        "CREATE SCHEMA oi_meta",
+        "CREATE TABLE oi_meta.orders (region INT, id INT, note TEXT DEFAULT 'x', PRIMARY KEY (region, id))",
+        "CREATE TABLE oi_meta.lines (n INT PRIMARY KEY, o_region INT, o_id INT, \
+         FOREIGN KEY (o_region, o_id) REFERENCES oi_meta.orders (region, id))",
+        "CREATE INDEX lines_order ON oi_meta.lines (o_id, o_region)",
+        "CREATE FUNCTION oi_meta.twice(v INT) RETURNS INT AS 'SELECT v * 2' LANGUAGE sql",
+    ] {
+        db.execute("p", stmt, 10, &c).await?;
+    }
+    let details = db.table_details("p", "oi_meta", "lines").await?;
+    let index = details.indexes.iter().find(|i| i.name == "lines_order").expect("lines_order");
+    assert_eq!(index.columns, ["o_id", "o_region"]);
+    assert!(!index.unique);
+    assert_eq!(details.foreign_keys.len(), 1, "{:?}", details.foreign_keys);
+    assert_eq!(details.foreign_keys[0].columns, ["o_region", "o_id"]);
+    assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
+    let orders = db.table_details("p", "oi_meta", "orders").await?;
+    let key = orders.indexes.iter().find(|i| i.unique).expect("primary key index");
+    assert_eq!(key.columns, ["region", "id"]);
+
+    let objects = db.schema_objects("p", "oi_meta").await?;
+    assert!(objects.routines.iter().any(|r| r.name == "twice"), "{:?}", objects.routines);
+    let completion = db.completion("p").await?;
+    assert!(completion.tables.iter().any(|t| t.schema == "oi_meta" && t.name == "orders"));
+    db.execute("p", "DROP SCHEMA oi_meta CASCADE", 10, &c).await?;
+    Ok(())
+}

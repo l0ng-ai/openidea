@@ -379,25 +379,24 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
-            // App-level items of an auxiliary window go to its project window. Settings is modal for it:
-            // nothing else gets through. Others handle their own items; Close Tab closes the window.
-            let label = match windows::auxiliary(w.label()) {
-                Some((_, parent))
-                    if matches!(
-                        route.action.as_str(),
-                        "app.quit" | "file.settings" | "file.projectStructure" | "file.newProjectsSettings"
-                    ) =>
-                {
-                    parent
+            // The window to bring back to the front once what the action shows is closed (Settings).
+            let mut return_to = None;
+            let label = match windows::menu_destination(w.label(), &route.action) {
+                windows::MenuDestination::Own => w.label(),
+                windows::MenuDestination::Parent { label, raise } => {
+                    if raise && let Some(parent) = app.get_webview_window(label) {
+                        windows::focus(&parent);
+                        return_to = Some(w.label());
+                    }
+                    label
                 }
-                Some((kind, _)) if kind.modal() => return,
-                Some(_) if route.action == "editor.closeTab" => {
+                windows::MenuDestination::Close => {
                     let _ = w.close();
                     return;
                 }
-                _ => w.label(),
             };
-            if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &route) {
+            let event = menu::MenuEvent { route: &route, return_to };
+            if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &event) {
                 tracing::warn!("failed to deliver menu event {id}: {e}");
             }
         }

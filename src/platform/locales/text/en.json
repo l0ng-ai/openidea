@@ -465,6 +465,8 @@
   "These settings will be imported:": "These settings will be imported:",
   "Not imported:": "Not imported:",
   "Current color scheme": "Current color scheme",
+  "Current keymap": "Current keymap",
+  "Code Style options other than Tabs and Indents": "Code Style options other than Tabs and Indents",
   "No settings OpenIDEA can import were found": "No settings OpenIDEA can import were found",
   "Overwrite existing branch": "Overwrite existing branch",
   "Unset upstream branch": "Unset upstream branch",
@@ -2002,5 +2004,13 @@
   "Target": "Target",
   "Foreign Keys": "Foreign Keys",
   "Indexes": "Indexes",
-  "Columns": "Columns"
+  "Columns": "Columns",
+  "Add JDK from Disk…": "Add JDK from Disk…",
+  "Select Home Directory for JDK": "Select Home Directory for JDK",
+  "The selected directory is not a valid home for JDK: {path}": "The selected directory is not a valid home for JDK: {path}",
+  "Add SDK": "Add SDK",
+  "Remove SDK": "Remove SDK",
+  "{rel} is added to your request": "{rel} is added to your request",
+  "IDE Context Enabled: the current file and selection are added to your request": "IDE Context Enabled: the current file and selection are added to your request",
+  "IDE Context Disabled: the current file and selection are not added to your request": "IDE Context Disabled: the current file and selection are not added to your request"
 }

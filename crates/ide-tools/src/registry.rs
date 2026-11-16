@@ -290,6 +290,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "pylsp",
+        display: "pylsp-rope (Python refactorings)",
+        kind: LanguageServer,
+        commands: &["pylsp"],
+        method: Method::PipVenv { package: "pylsp-rope" },
+        fallback: None,
+        version: ver("pylsp"),
+        homepage: "https://github.com/python-rope/pylsp-rope",
+        needs: &[],
+    },
+    ToolSpec {
         name: "pyrefly",
         display: "Pyrefly (Python)",
         kind: LanguageServer,

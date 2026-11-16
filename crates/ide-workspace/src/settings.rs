@@ -441,13 +441,26 @@ impl SettingsStore {
 #[serde(rename_all = "camelCase")]
 pub struct JetBrainsSettings {
     pub entries: Vec<String>,
-    /// Entry name → text, for `colors/*.icls` and the `options/*.xml` files OpenIDEA reads.
+    /// Entry name → text, for the files OpenIDEA reads: `colors/*.icls`, `keymaps/*.xml`,
+    /// `codestyles/*.xml` and some of `options/`.
     pub files: BTreeMap<String, String>,
 }
 
 const JETBRAINS_MARKER: &str = "IntelliJ IDEA Global Settings";
-const JETBRAINS_OPTIONS: [&str; 4] =
-    ["options/editor-font.xml", "options/colors.scheme.xml", "options/editor.xml", "options/ide.general.xml"];
+const JETBRAINS_OPTIONS: [&str; 9] = [
+    "options/editor-font.xml",
+    "options/terminal-font.xml",
+    "options/colors.scheme.xml",
+    "options/code.style.schemes.xml",
+    "options/editor.xml",
+    "options/ide.general.xml",
+    // The active keymap is stored per operating system.
+    "options/mac/keymap.xml",
+    "options/windows/keymap.xml",
+    "options/linux/keymap.xml",
+];
+/// Folders whose files are all read: (folder, extension).
+const JETBRAINS_READ_DIRS: [(&str, &str); 3] = [("colors/", ".icls"), ("keymaps/", ".xml"), ("codestyles/", ".xml")];
 const JETBRAINS_MAX_TEXT: u64 = 4 << 20;
 
 /// The settings of a JetBrains IDE: an exported `settings.zip`, or the IDE's own settings folder
@@ -458,11 +471,23 @@ pub fn read_jetbrains_settings(path: &Path) -> IdeResult<JetBrainsSettings> {
 
 fn is_mapped_jetbrains_file(name: &str) -> bool {
     JETBRAINS_OPTIONS.contains(&name)
-        || name.strip_prefix("colors/").is_some_and(|n| !n.contains('/') && n.ends_with(".icls"))
+        || JETBRAINS_READ_DIRS
+            .iter()
+            .any(|(dir, ext)| name.strip_prefix(dir).is_some_and(|n| !n.contains('/') && n.ends_with(ext)))
 }
 
 /// Folders of the settings folder whose files are listed (their names say what the user customised).
-const JETBRAINS_LISTED_DIRS: [&str; 6] = ["options", "colors", "keymaps", "codestyles", "templates", "inspection"];
+const JETBRAINS_LISTED_DIRS: [&str; 9] = [
+    "options",
+    "options/mac",
+    "options/windows",
+    "options/linux",
+    "colors",
+    "keymaps",
+    "codestyles",
+    "templates",
+    "inspection",
+];
 
 fn read_jetbrains_folder(dir: &Path) -> IdeResult<JetBrainsSettings> {
     use std::io::Read;
@@ -936,11 +961,25 @@ mod tests {
                 ("options/editor-font.xml", "<application/>"),
                 ("options/vcs.xml", "<application/>"),
                 ("keymaps/macOS.xml", "<keymap/>"),
+                ("keymaps/nested/ignored.xml", "<keymap/>"),
+                ("codestyles/Default.xml", "<code_scheme/>"),
+                ("options/mac/keymap.xml", "<application/>"),
+                ("options/terminal-font.xml", "<application/>"),
             ],
         );
         let read = read_jetbrains_settings(&ok).unwrap();
-        assert_eq!(read.entries.len(), 5);
-        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(read.entries.len(), 9);
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [
+                "codestyles/Default.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "options/editor-font.xml",
+                "options/mac/keymap.xml",
+                "options/terminal-font.xml"
+            ]
+        );
         assert!(read_jetbrains_settings(&write("other.zip", &[("options/editor.xml", "")])).is_err());
         std::fs::write(tmp.path().join("plain.zip"), "not a zip").unwrap();
         assert!(read_jetbrains_settings(&tmp.path().join("plain.zip")).is_err());
@@ -959,18 +998,31 @@ mod tests {
         put("colors/nested/ignored.icls", "<scheme/>");
         put("options/editor-font.xml", "<application/>");
         put("options/vcs.xml", "<application/>");
+        put("options/mac/keymap.xml", "<application/>");
         put("keymaps/macOS.xml", "<keymap/>");
+        put("codestyles/Default.xml", "<code_scheme/>");
         put("plugins/Tools/lib/tools.jar", "jar");
 
         let read = read_jetbrains_settings(&config).unwrap();
-        assert_eq!(read.files.keys().collect::<Vec<_>>(), ["colors/_@user_Darcula.icls", "options/editor-font.xml"]);
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [
+                "codestyles/Default.xml",
+                "colors/_@user_Darcula.icls",
+                "keymaps/macOS.xml",
+                "options/editor-font.xml",
+                "options/mac/keymap.xml"
+            ]
+        );
         assert_eq!(
             read.entries,
             [
                 "options/editor-font.xml",
                 "options/vcs.xml",
+                "options/mac/keymap.xml",
                 "colors/_@user_Darcula.icls",
                 "keymaps/macOS.xml",
+                "codestyles/Default.xml",
                 "installed.txt"
             ]
         );

@@ -1159,7 +1159,8 @@ impl Repo {
         write::stage_patch(self, patch, &|path| encoding(path).map(Into::into))
     }
     /// Discards unstaged changes: tracked paths are restored from the index (staged
-    /// changes are kept), untracked files and directories are deleted.
+    /// changes are kept), untracked files and directories are deleted. A submodule goes back
+    /// to the commit the index records, with its tracked files restored.
     pub fn discard(&self, paths: &[PathBuf]) -> IdeResult<()> {
         let _scope = crate::ExecutionScope::enter(self.execution_allowed.load(std::sync::atomic::Ordering::Acquire));
         write::discard(self, paths)

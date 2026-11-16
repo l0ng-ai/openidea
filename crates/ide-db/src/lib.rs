@@ -279,6 +279,18 @@ type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
 
 const MAX_META_ROWS: usize = 100_000;
 
+/// Rows of catalog query `q`, run again as [`sql::postgres_legacy`] when a PostgreSQL server's
+/// catalog lacks a column it reads (openGauss, PostgreSQL 9).
+async fn catalog_rows(pool: &Pool, q: &str) -> IdeResult<Vec<Vec<Option<String>>>> {
+    match pool.rows(q, MAX_META_ROWS).await {
+        Err(e) if pool.driver() == DbDriver::Postgres => match sql::postgres_legacy(q) {
+            Some(legacy) => pool.rows(&legacy, MAX_META_ROWS).await.map_err(|_| e),
+            None => Err(e),
+        },
+        rows => rows,
+    }
+}
+
 fn flag(v: &Option<String>) -> bool {
     matches!(v.as_deref(), Some("1" | "t" | "true" | "YES"))
 }
@@ -1079,8 +1091,7 @@ impl DbManager {
         let driver = pool.driver();
         let mut out = SchemaObjects::default();
         if let Some(q) = sql::routines(driver, schema) {
-            out.routines = pool
-                .rows(&q, MAX_META_ROWS)
+            out.routines = catalog_rows(&pool, &q)
                 .await?
                 .into_iter()
                 .filter_map(|r| {
@@ -1306,7 +1317,7 @@ impl DbManager {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
             }
-            _ => pool.rows(sql::completion_columns(driver), MAX_META_ROWS).await?,
+            _ => catalog_rows(&pool, sql::completion_columns(driver)).await?,
         };
         for r in rows {
             let mut it = r.into_iter().map(Option::unwrap_or_default);

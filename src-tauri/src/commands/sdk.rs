@@ -17,6 +17,13 @@ pub async fn sdk_detect(window: Window, state: State<'_, AppState>, kind: SdkKin
     ide_host::ops::sdk::sdk_detect(&state.host, window.label(), kind).await
 }
 
+/// The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home.
+#[tauri::command]
+#[specta::specta]
+pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
+    ide_host::ops::sdk::sdk_jdk_at(path).await
+}
+
 /// The Python interpreters of the recently opened projects, each with its project.
 #[tauri::command]
 #[specta::specta]
