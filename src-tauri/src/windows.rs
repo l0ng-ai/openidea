@@ -226,6 +226,9 @@ pub struct WindowsState {
 
 #[cfg(target_os = "macos")]
 const AUX_STATE_FILE: &str = "auxiliary-windows.json";
+/// How long an auxiliary window waits for the main thread to fit it over its parent.
+#[cfg(target_os = "macos")]
+const FIT_ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1878,7 +1881,8 @@ fn fit_over_parent(
         apply();
         let _ = tx.send(());
     })?;
-    rx.recv().map_err(|_| tauri::Error::FailedToReceiveMessage)
+    // A stopped event loop never runs the closure: don't block this thread forever.
+    rx.recv_timeout(FIT_ON_MAIN_TIMEOUT).map_err(|_| tauri::Error::FailedToReceiveMessage)
 }
 
 /// Centres the settings window over its owner, inside the owner's monitor work area. The window
