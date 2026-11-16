@@ -219,8 +219,8 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
 }
 
 /// Rows: `index name, unique (0/1), column` (one row per indexed column, in order).
-// Key columns are paired from a fixed series up to INDEX_MAX_KEYS (32, the most columns an index
-// or key has in a default build): unlike a series per catalog row, it lets the planner find the
+// Key columns are paired from one series up to `max_index_keys` (the server's INDEX_MAX_KEYS, the
+// most columns an index or key has): unlike a series per catalog row, it lets the planner find the
 // table's rows through the catalog's index first.
 pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
@@ -239,7 +239,7 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
             "SELECT i.relname, CASE WHEN ix.indisunique THEN 1 ELSE 0 END, a.attname \
              FROM pg_index ix JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_class i ON i.oid = ix.indexrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
-             JOIN generate_series(0, 31) AS k(ord) ON k.ord < ix.indnatts \
+             JOIN generate_series(0, current_setting('max_index_keys')::int - 1) AS k(ord) ON k.ord < ix.indnatts \
              JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ix.indkey[k.ord] \
              WHERE n.nspname = {s} AND t.relname = {t} ORDER BY i.relname, k.ord"
         ),
@@ -369,7 +369,7 @@ pub fn foreign_keys(driver: DbDriver) -> &'static str {
              FROM pg_constraint con \
              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace \
              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace \
-             JOIN generate_series(1, 32) AS k(ord) ON k.ord <= array_upper(con.conkey, 1) \
+             JOIN generate_series(1, current_setting('max_index_keys')::int) AS k(ord) ON k.ord <= array_upper(con.conkey, 1) \
              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord] \
              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord] \
              WHERE con.contype = 'f' AND sn.nspname NOT IN ('pg_catalog', 'information_schema') \
@@ -414,7 +414,7 @@ pub fn table_foreign_keys(driver: DbDriver, schema: &str, table: &str) -> String
             "SELECT {s}, {t}, f.id, f.\"from\", {s}, f.\"table\", f.\"to\"              FROM pragma_foreign_key_list({t}, {s}) f ORDER BY f.id, f.seq"
         ),
         DbDriver::Postgres => format!(
-            "SELECT sn.nspname, sc.relname, con.conname, sa.attname, tn.nspname, tc.relname, ta.attname              FROM pg_constraint con              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace              JOIN generate_series(1, 32) AS k(ord) ON k.ord <= array_upper(con.conkey, 1)              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord]              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord]              WHERE con.contype = 'f' AND sn.nspname = {s} AND sc.relname = {t} ORDER BY 3, k.ord"
+            "SELECT sn.nspname, sc.relname, con.conname, sa.attname, tn.nspname, tc.relname, ta.attname              FROM pg_constraint con              JOIN pg_class sc ON sc.oid = con.conrelid JOIN pg_namespace sn ON sn.oid = sc.relnamespace              JOIN pg_class tc ON tc.oid = con.confrelid JOIN pg_namespace tn ON tn.oid = tc.relnamespace              JOIN generate_series(1, current_setting('max_index_keys')::int) AS k(ord) ON k.ord <= array_upper(con.conkey, 1)              JOIN pg_attribute sa ON sa.attrelid = sc.oid AND sa.attnum = con.conkey[k.ord]              JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = con.confkey[k.ord]              WHERE con.contype = 'f' AND sn.nspname = {s} AND sc.relname = {t} ORDER BY 3, k.ord"
         ),
         DbDriver::Mysql => format!(
             "SELECT table_schema, table_name, constraint_name, column_name,              referenced_table_schema, referenced_table_name, referenced_column_name              FROM information_schema.key_column_usage WHERE referenced_table_name IS NOT NULL              AND table_schema = {s} AND table_name = {t} ORDER BY constraint_name, ordinal_position"
