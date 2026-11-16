@@ -42,20 +42,26 @@ describe("color schemes", () => {
     expect(schemeTokens("light").get("--syn-php-variable")).toBe("#871094");
     expect(schemeTokens("light").get("--syn-php-function-call")).toBe("#00627a");
     const css = readFileSync("src/styles/tokens.css", "utf8");
-    expect(css).toMatch(/\.cm-editor\[data-language="PHP"\] \{\s*--syn-variable: var\(--syn-php-variable\);/);
+    expect(css).toMatch(
+      /\.cm-editor\[data-language="PHP"\],\s*\.cm-editor \[data-language="PHP"\] \{\s*--syn-variable: var\(--syn-php-variable\);/,
+    );
     // An imported PHP_VAR still wins: language overrides are emitted for the same element, !important.
     const imported = schemeCss(
       "theme-default",
       { dark: { "php.identifier": { foreground: "#48d8ee" } } },
       document.documentElement,
     );
-    expect(imported).toMatch(/\.cm-editor\[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/);
+    expect(imported).toMatch(
+      /\.cm-editor\[data-language="PHP"\], \.cm-editor \[data-language="PHP"\] \{\n {2}--syn-variable: #48d8ee !important;/,
+    );
   });
 
   it("offers a Go scheme page and scopes its overrides to Go editors", () => {
     expect(ATTRIBUTES.find((a) => a.id === "go.constant")?.path).toEqual(["Go"]);
     const css = schemeCss("dark", { dark: { "go.constant": { foreground: "#224466" } } });
     expect(css).toContain('.cm-editor[data-language="Go"]');
+    // A Go code block in a Markdown editor (#3808).
+    expect(css).toContain('.cm-editor [data-language="Go"]');
     expect(css).toContain("--syn-constant: #224466 !important");
   });
 

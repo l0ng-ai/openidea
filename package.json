@@ -49,6 +49,7 @@
     "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-java": "^6.0.2",
     "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/lang-sass": "^6.0.2",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/lang-vue": "^0.1.3",
