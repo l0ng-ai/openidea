@@ -306,6 +306,8 @@ lsp_document_highlights                      trusted            project_host bin
 lsp_document_links                           trusted            project_host bindings async
 lsp_execute_code_action                      trusted            project_host bindings async
 lsp_execute_command                          trusted            project_host bindings async
+lsp_extract_interface                        trusted            project_host bindings async
+lsp_extract_interface_info                   trusted            project_host bindings async
 lsp_format                                   trusted            project_host bindings async
 lsp_goto                                     trusted            project_host bindings async
 lsp_goto_implementation                      trusted            project_host bindings async

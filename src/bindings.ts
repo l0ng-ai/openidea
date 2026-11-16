@@ -644,6 +644,8 @@ export const commands = {
 	lspHierarchyRefactor: (request: RequestId, doc: DocId, pos: Pos, kind: HierarchyRefactoring, target: string | null, choices: HierarchyChoice[]) => typedError<HierarchyRefactored, IdeError>(__TAURI_INVOKE("lsp_hierarchy_refactor", { request, doc, pos, kind, target, choices })),
 	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
 	lspChangeSignature: (request: RequestId, doc: DocId, pos: Pos, signature: MethodSignature, delegate: boolean, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_change_signature", { request, doc, pos, signature, delegate, confirmation })),
+	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspJavaMoveDestinations: (request: RequestId, doc: DocId, kind: string, args: string) => typedError<string[], IdeError>(__TAURI_INVOKE("lsp_java_move_destinations", { request, doc, kind, args })),
 	lspJavaSourceTypes: (request: RequestId, doc: DocId, projectName: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("lsp_java_source_types", { request, doc, projectName })),
 	lspJavaMove: (request: RequestId, doc: DocId, kind: string, args: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_java_move", { request, doc, kind, args, confirmation })),
@@ -5383,6 +5385,16 @@ export type ExternalTool = {
 	openConsole?: boolean,
 };
 
+/**
+ *  What Extract Interface starts from: the file's class, the members the interface can declare and
+ *  the packages it can go to (as JSON, passed back unchanged).
+ */
+export type ExtractInterfaceInfo = {
+	className: string,
+	members: InterfaceMember[],
+	packages: string[],
+};
+
 /**  Framework facet attached to a module (Project Structure › Facets). */
 export type FacetConfig = {
 	/**  `"web"` | `"spring"` | `"jpa"`. */
@@ -6772,6 +6784,17 @@ export type IntellijThemeSource = {
 	version: string | null,
 	vendor: string | null,
 	themes: IntellijThemeFile[],
+};
+
+/**  A member Extract Interface can declare in the new interface. */
+export type InterfaceMember = {
+	name: string,
+	/**  The method's return type or the field's type. */
+	typeName: string,
+	/**  The method's parameter types; `None` for a field. */
+	parameters: string[] | null,
+	/**  The server's handle of the member, passed back unchanged. */
+	handleIdentifier: string,
 };
 
 /**  Optional parts of the invalidation; the symbol index is always rebuilt. */
@@ -10055,7 +10078,7 @@ export type ServerInfo = {
 };
 
 /**
- *  A refactoring checked by the server (Change Signature, Move): problems to show, the edit when
+ *  A refactoring checked by the server (Change Signature, Move, Extract Interface): problems to show, the edit when
  *  none is fatal, and the token that confirms going on despite warnings.
  */
 export type ServerRefactored = {
