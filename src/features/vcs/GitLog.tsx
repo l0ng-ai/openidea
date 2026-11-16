@@ -1,6 +1,5 @@
 import type { Branch, ChangedFile, Commit } from "@/bindings";
 import { executeAction } from "@/platform/actions";
-import { writeClipboardText } from "@/platform/clipboard";
 import { setContext } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
@@ -48,6 +47,15 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
 } from "react";
+import { BranchFilterPopup } from "./BranchFilterPopup";
+import { BranchSync } from "./BranchSync";
+import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
+import styles from "./GitLog.module.css";
+import { LogScope } from "./LogScope";
+import { chooseLogPaths } from "./PathFilterDialog";
+import { openExternalLog } from "./RevisionBrowser";
+import { branchMenu, inRepo, tagMenu } from "./branchMenu";
+import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
 import {
   branchFolderKeys,
   branchGroupKeys,
@@ -57,19 +65,14 @@ import {
   isFavoriteBranch,
   type BranchTreeNode,
 } from "./branches";
-import { BranchFilterPopup } from "./BranchFilterPopup";
-import { branchMenu, inRepo, tagMenu } from "./branchMenu";
-import { canDeleteBranch, loadFavoriteBranches, useFavoriteBranches } from "./branchOps";
-import { BranchSync } from "./BranchSync";
-import { LocalChangesView, StashContent, tabItems, useStashTabCounts } from "./CommitView";
 import { chooseDateRange, chooseMany } from "./dialogs";
 import { DIFF_KIND, diffInput, vcsDiffInFront } from "./diffInput";
 import { buildFileTree, dirKeys, type FileTreeNode } from "./fileTree";
-import styles from "./GitLog.module.css";
 import { WorktreesPanel } from "./gitMenuDialogs";
 import { gitTabs, shownTab } from "./gitTabs";
 import { laneColor, reachableFrom, type GraphRow, type GraphSegment } from "./graph";
 import { IssueText } from "./issueLinks";
+import { CommitMessage, CommitSignature, RefLabels } from "./log/CommitMessage";
 import { commitMenu } from "./log/commitMenu";
 import { useDropdownMenu, useLogRepositories, useReadOnlyLog } from "./log/logHooks";
 import { LANE, ROW, SUBJECT_COLUMN, columnSequence, toggle, type LogColumn, type RowEvents } from "./log/shared";
@@ -84,11 +87,10 @@ import {
   type LogChange,
 } from "./logChanges";
 import { LogIdContext } from "./logContext";
-import { invalidateLogDetails, loadLogDetails, useCommitDetails } from "./logDetails";
-import { logOptions, refLabels, useLogOptions, type LogOptions } from "./logOptions";
+import { invalidateLogDetails, loadLogDetails } from "./logDetails";
+import { logOptions, useLogOptions, type LogOptions } from "./logOptions";
 import { canUpdateBranch, useBranchesPane, type BranchTarget } from "./logPaneActions";
 import { presentLogGraph } from "./logPresentation";
-import { LogScope } from "./LogScope";
 import { nextSpeedMatch } from "./logSearch";
 import {
   ME,
@@ -122,8 +124,6 @@ import {
 import { KIND_COLOR, dirName, fileCount, formatTime, relTo, renameFrom, type EffectiveKind } from "./model";
 import { branchesByRepo, commitKey, commitRepo, graphCommit, type RepoCommit } from "./multiRoot";
 import { clearConsole, useVcsConsole } from "./ops";
-import { chooseLogPaths } from "./PathFilterDialog";
-import { openExternalLog } from "./RevisionBrowser";
 import { currentRepo, currentRepoRoot, loadBranches, repoName, useVcs } from "./store";
 
 const LogMergePreview = lazyComponent(() => import("./GitMergeDiff").then((m) => m.GitMergeDiff));
@@ -2255,40 +2255,6 @@ function arrowHead(px: number, py: number, dir: 1 | -1) {
   return `M${px - 3} ${back}L${px} ${py}L${px + 3} ${back}`;
 }
 
-const REF_KIND_CLASS = {
-  head: styles.refHead,
-  local: styles.refLocal,
-  remote: styles.refRemote,
-  tag: styles.refTag,
-};
-
-const NO_REMOTES: ReadonlySet<string> = new Set();
-
-export function RefLabels({
-  refs,
-  compact = false,
-  tagNames = true,
-  remoteNames = NO_REMOTES,
-  left = false,
-}: {
-  refs: string[];
-  compact?: boolean;
-  tagNames?: boolean;
-  remoteNames?: ReadonlySet<string>;
-  left?: boolean;
-}) {
-  const labels = refLabels(refs, { compact, tagNames }, remoteNames);
-  return (
-    <span className={clsx(styles.refs, left && styles.refsLeft)}>
-      {labels.map((l) => (
-        <span key={`${l.kind}:${l.title}`} className={clsx(styles.ref, REF_KIND_CLASS[l.kind])} title={l.title}>
-          {l.text}
-        </span>
-      ))}
-    </span>
-  );
-}
-
 /**
  * The selected commits' changes: one commit's files against its first parent, or, for several
  * (IDEA), their combined changes with every selected commit listed below.
@@ -2684,134 +2650,6 @@ export function CommitDetails({ commits }: { commits: Commit[] }) {
         details
       )}
     </div>
-  );
-}
-
-/** A commit's message and metadata; `compact` (one of several selected): without the body. */
-function CommitMessage({ commit, compact = false }: { commit: Commit; compact?: boolean }) {
-  const { details, error } = useCommitDetails(commit, !compact);
-  const repo = commitRepo(commit) ?? currentRepo();
-  const message = details?.message || commit.message;
-  const [subject, ...bodyLines] = message.replace(/\s+$/, "").split("\n");
-  const body = compact ? "" : bodyLines.join("\n").replace(/^\n+/, "");
-  return (
-    <div className={clsx(compact && styles.commitEntry)}>
-      <div className={styles.subjectLine}>
-        <CommitMessageText text={subject ?? ""} repo={repo} />
-      </div>
-      {body && (
-        <div className={styles.fullMessage}>
-          <CommitMessageText text={body} repo={repo} />
-        </div>
-      )}
-      <div className={clsx(styles.meta, compact && styles.metaCompact)}>
-        <button
-          type="button"
-          className={clsx(styles.linkButton, styles.hash)}
-          title={tx("Copy revision number")}
-          onClick={() => void writeClipboardText(commit.id)}
-        >
-          {commit.shortId}
-        </button>{" "}
-        {commit.author} &lt;{commit.email}&gt;
-        {commit.timeMs ? " " + tx`on ${new Date(commit.timeMs).toLocaleString()}` : ""}
-      </div>
-      {!compact &&
-        commit.committer &&
-        (commit.committer !== commit.author ||
-          commit.committerEmail !== commit.email ||
-          commit.commitTimeMs !== commit.timeMs) && (
-          <div className={styles.meta}>
-            {tx("Committed by")} {commit.committer} &lt;{commit.committerEmail}&gt;{" "}
-            {commit.commitTimeMs ? new Date(commit.commitTimeMs).toLocaleString() : ""}
-          </div>
-        )}
-      {commit.parents.length > 0 && (
-        <div className={styles.meta}>
-          {tx(commit.parents.length > 1 ? "Merge of" : "Parent")}{" "}
-          {commit.parents.map((id, i) => (
-            <span key={id}>
-              {i > 0 ? ", " : ""}
-              <button type="button" className={styles.linkButton} onClick={() => void goToRef(id, repo)}>
-                {id.slice(0, 8)}
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {details && (
-        <>
-          <div className={styles.meta}>
-            {tx("Containing branches")}:{" "}
-            {details.containingBranches.length
-              ? details.containingBranches.map((branch, i) => (
-                  <span key={branch}>
-                    {i > 0 ? ", " : ""}
-                    <button type="button" className={styles.linkButton} onClick={() => void goToRef(branch, repo)}>
-                      {branch}
-                    </button>
-                  </span>
-                ))
-              : tx("None")}
-          </div>
-          <div
-            className={styles.meta}
-            title={[details.signer, details.key, details.fingerprint].filter(Boolean).join("\n")}
-          >
-            {tx("Signature")}: {signatureLabel(details.signature)}
-            {details.signer ? ` · ${details.signer}` : ""}
-          </div>
-        </>
-      )}
-      {error && (
-        <div role="status" className={styles.meta}>
-          {tx("Could not load containing branches or signature details")}
-        </div>
-      )}
-      {commit.refs.length > 0 && (
-        <div className={styles.meta}>
-          <RefLabels refs={commit.refs} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function signatureLabel(code: string) {
-  return tx(
-    (
-      {
-        G: "Verified",
-        U: "Good signature with unknown trust",
-        B: "Bad signature",
-        E: "Could not verify",
-        N: "Unsigned",
-        X: "Expired signature",
-        Y: "Expired signing key",
-        R: "Revoked signing key",
-      } as Record<string, string>
-    )[code] ?? "Could not verify",
-  );
-}
-
-function CommitSignature({ commit }: { commit: Commit }) {
-  const { details, error } = useCommitDetails(commit);
-  return (
-    <span title={details ? [details.signer, details.key, details.fingerprint].filter(Boolean).join("\n") : undefined}>
-      {details ? signatureLabel(details.signature) : error ? tx("Could not verify") : tx("Loading…")}
-    </span>
-  );
-}
-
-function CommitMessageText({ text, repo }: { text: string; repo: string | null | undefined }) {
-  return text.split(/\b([a-fA-F0-9]{7,64})\b/g).map((part, i) =>
-    i % 2 ? (
-      <button type="button" className={styles.linkButton} key={i} onClick={() => void goToRef(part, repo)}>
-        {part}
-      </button>
-    ) : (
-      <IssueText key={i} text={part} />
-    ),
   );
 }
 
