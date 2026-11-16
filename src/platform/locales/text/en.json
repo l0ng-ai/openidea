@@ -1913,5 +1913,8 @@
   "New playful word": "New playful word",
   "Restore Built-in Words": "Restore Built-in Words",
   "None — type the Engine API URL below": "None — type the Engine API URL below",
-  "Open in Right Split": "Open in Right Split"
+  "Open in Right Split": "Open in Right Split",
+  "Enable staging area": "Enable staging area",
+  "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.": "Commit works on the Git index: stage and unstage changes instead of checking them. Change lists are not used. Only for the non-modal commit interface.",
+  "Commit All": "Commit All"
 }
