@@ -208,6 +208,7 @@ fn first_line_is_statement_start() {
     assert_eq!(chain.first_line, start);
     assert!(chain.range.end.line >= start + 5);
     assert_eq!(real_run_plan(&chain).unwrap().first_line, start);
+    assert_eq!(real_run_plan(&chain).unwrap().last_line, chain.range.end.line);
 
     // A chain written on one line starts where its statement does.
     assert_eq!(only_chain("C_PLAN_COLLECTION").first_line, line_of("C_PLAN_COLLECTION"));
@@ -267,6 +268,7 @@ fn plan_json_shape() {
     assert_eq!(json["classFilters"], serde_json::json!(["java.util.*"]));
     assert_eq!(json["stepKinds"], serde_json::json!(["sync", "sync", "reorder", "sync"]));
     assert_eq!(json["firstLine"], line_of("C_PLAN_COLLECTION"));
+    assert_eq!(json["lastLine"], line_of("C_PLAN_COLLECTION"));
     assert_eq!(json["sequentialize"], false);
     assert_eq!(json["terminal"]["name"], "collect");
     assert_eq!(

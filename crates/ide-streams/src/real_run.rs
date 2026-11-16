@@ -37,6 +37,9 @@ pub struct RealRunPlan {
     pub sequentialize: bool,
     /// 0-based line of the statement's first token.
     pub first_line: u32,
+    /// 0-based line the chain ends on. Before the terminal runs, the thread is on these lines; once
+    /// it is elsewhere, an exception skipped the rest of the chain.
+    pub last_line: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -88,6 +91,7 @@ pub fn real_run_plan(chain: &StreamChain) -> Result<RealRunPlan, RealRunRefusal>
         step_kinds,
         sequentialize: chain.warnings.contains(&ChainWarning::Sequentialized),
         first_line: chain.first_line,
+        last_line: chain.range.end.line,
     })
 }
 
