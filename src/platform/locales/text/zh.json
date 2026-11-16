@@ -65,6 +65,7 @@
   "Refreshing…": "正在刷新…",
   "Refresh in {seconds}s": "{seconds} 秒后可刷新",
   "Loading models…": "正在加载模型…",
+  "Loading model settings…": "正在加载模型设置…",
   "No models reported by this agent.": "此 Agent 未提供模型。",
   "Could not refresh models: {detail}": "无法刷新模型：{detail}",
   "{model} (unavailable)": "{model}（不可用）",

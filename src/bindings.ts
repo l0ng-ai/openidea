@@ -148,7 +148,7 @@ export const commands = {
 	agentSubscribe: (onEvent: Channel<AgentEvent_Deserialize>) => typedError<AgentTask_Serialize[], IdeError>(__TAURI_INVOKE("agent_subscribe", { onEvent })),
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
-	agentRefreshModels: (provider: string, force: boolean) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force })),
+	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
