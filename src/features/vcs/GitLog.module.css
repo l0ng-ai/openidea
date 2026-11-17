@@ -221,21 +221,50 @@
 .columnHeading.dropAfter {
   box-shadow: inset -2px 0 0 var(--accent);
 }
-/* Column divider: a visible 1px rule on the column's LEFT edge with a 4px hit
-   strip around it. Each row carries one, so the rule runs the full table height. */
+/* Column divider: an 8px hit strip centred on the column's LEFT edge, with a
+   visible rule and grip so the resize target is easy to see and grab. Each row
+   carries one, so the rule runs the full table height. */
 .columnResize {
   position: absolute;
   inset-block: 0;
-  inset-inline-start: -2px;
-  width: 4px;
+  inset-inline-start: -4px;
+  width: 8px;
   cursor: ew-resize;
   touch-action: none;
   z-index: 1;
-  border-inline-start: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.columnResize:hover,
-.columnResize:active {
-  border-inline-start-color: var(--control-off);
+/* The rule sits exactly on the column boundary (centre of the strip). */
+.columnResize::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 4px;
+  width: 1px;
+  background: var(--border-strong);
+}
+/* A visible grip on the boundary, always shown, brightens on hover/drag. */
+.columnResize::after {
+  content: "";
+  width: 2px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--control-off);
+}
+.columnResize:hover::before,
+.columnResize:active::before {
+  background: var(--accent);
+  width: 2px;
+}
+.columnResize:hover::after,
+.columnResize:active::after {
+  background: var(--accent);
+}
+/* Data-row strips keep the full-height rule but not the repeating grip. */
+.columnResizeRow::after {
+  display: none;
 }
 .columnResize:focus-visible {
   outline: 2px solid var(--focus-ring);
