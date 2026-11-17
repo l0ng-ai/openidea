@@ -79,7 +79,8 @@ export function useColumnResize(id: string, width: number) {
     },
     onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
       const d = drag.current;
-      if (d && e.currentTarget.hasPointerCapture?.(e.pointerId)) resizeColumn(id, d.width + e.clientX - d.x);
+      // The handle sits on the column's left edge: drag left -> wider, drag right -> narrower.
+      if (d && e.currentTarget.hasPointerCapture?.(e.pointerId)) resizeColumn(id, d.width - (e.clientX - d.x));
     },
     onPointerUp: cancel,
     onPointerCancel: cancel,

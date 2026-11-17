@@ -221,16 +221,21 @@
 .columnHeading.dropAfter {
   box-shadow: inset -2px 0 0 var(--accent);
 }
-/* IDEA's column divider: an invisible hit strip with cursor-only feedback.
-   No drawn line, no grip — the cursor is the entire affordance. */
+/* Column divider: a visible 1px rule on the column's LEFT edge with a 4px hit
+   strip around it. Each row carries one, so the rule runs the full table height. */
 .columnResize {
   position: absolute;
   inset-block: 0;
-  inset-inline-end: 0;
+  inset-inline-start: -2px;
   width: 4px;
   cursor: ew-resize;
   touch-action: none;
   z-index: 1;
+  border-inline-start: 1px solid var(--border-strong);
+}
+.columnResize:hover,
+.columnResize:active {
+  border-inline-start-color: var(--control-off);
 }
 .columnResize:focus-visible {
   outline: 2px solid var(--focus-ring);

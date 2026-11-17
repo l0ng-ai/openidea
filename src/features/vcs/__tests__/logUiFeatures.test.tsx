@@ -157,7 +157,7 @@ describe("log controls", () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);
     const author = await screen.findByRole("separator", { name: "Resize Author column" });
-    fireEvent.keyDown(author, { key: "ArrowRight" });
+    fireEvent.keyDown(author, { key: "ArrowLeft" });
     expect(useLogOptions.getState().columnWidths.author).toBe(140);
     fireEvent.keyDown(author, { key: "ArrowRight", altKey: true });
     expect(useLogOptions.getState().columnOrder).toEqual(["subject", "date", "author", "hash"]);
@@ -179,14 +179,14 @@ describe("log controls", () => {
     },
   );
 
-  it("exposes an invisible full-height resize strip on data rows, not a drawn divider", async () => {
+  it("exposes a full-height column divider on data rows", async () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);
     await screen.findByRole("separator", { name: "Resize Author column" });
-    // IDEA's divider is invisible: no grip glyph, no painted line.
     const header = screen.getByRole("separator", { name: "Resize Author column" });
     expect(header.className).toMatch(/columnResize/);
-    // Data rows carry the same strips so the divider spans the whole table height.
+    // Data rows carry the same strips so the divider — and its visible rule —
+    // spans the whole table height, not just the header.
     const rowStrips = [...document.querySelectorAll<HTMLElement>('[role="option"] [class*="columnResize"]')];
     expect(rowStrips.length).toBeGreaterThan(0);
     for (const strip of rowStrips) {
@@ -195,7 +195,7 @@ describe("log controls", () => {
     }
   });
 
-  it("resizes from a data-row strip and auto-fits on double-click (IDEA divider)", async () => {
+  it("resizes from a data-row strip and auto-fits on double-click", async () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);
     await screen.findByRole("separator", { name: "Resize Author column" });
@@ -205,11 +205,12 @@ describe("log controls", () => {
     rowStrip.setPointerCapture = vi.fn();
     rowStrip.hasPointerCapture = () => true;
     rowStrip.releasePointerCapture = release;
-    fireEvent.pointerDown(rowStrip, { button: 0, pointerId: 5, clientX: 10 });
-    fireEvent.pointerMove(rowStrip, { pointerId: 5, clientX: 45 });
-    fireEvent.pointerUp(rowStrip, { pointerId: 5, clientX: 45 });
+    // The strip is on the column's left edge: drag left -> wider.
+    fireEvent.pointerDown(rowStrip, { button: 0, pointerId: 5, clientX: 40 });
+    fireEvent.pointerMove(rowStrip, { pointerId: 5, clientX: 10 });
+    fireEvent.pointerUp(rowStrip, { pointerId: 5, clientX: 10 });
     const resized = useLogOptions.getState().columnWidths.author;
-    expect(resized).toBe(165);
+    expect(resized).toBe(160);
     expect(release).toHaveBeenCalledWith(5);
 
     // Double-clicking the header divider drops the custom width so the column auto-fits.
@@ -226,8 +227,8 @@ describe("log controls", () => {
     author.setPointerCapture = vi.fn();
     author.hasPointerCapture = () => true;
     author.releasePointerCapture = release;
-    fireEvent.pointerDown(author, { button: 0, pointerId: 1, clientX: 10 });
-    fireEvent.pointerMove(author, { pointerId: 1, clientX: 40 });
+    fireEvent.pointerDown(author, { button: 0, pointerId: 1, clientX: 40 });
+    fireEvent.pointerMove(author, { pointerId: 1, clientX: 10 });
     expect(useLogOptions.getState().columnWidths.author).toBe(160);
     fireEvent.blur(window);
     expect(release).toHaveBeenCalledWith(1);

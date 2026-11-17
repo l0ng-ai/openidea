@@ -36,7 +36,8 @@ export function ColumnResizeHandle({
         e.stopPropagation();
         const delta = e.key === "ArrowLeft" ? -1 : 1;
         if (e.altKey && onReorder) onReorder(delta);
-        else resizeColumn(id, width + delta * 10);
+        // Handle is on the left edge: Left arrow widens the column, Right arrow narrows it.
+        else resizeColumn(id, width - delta * 10);
       }}
     />
   );
