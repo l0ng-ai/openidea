@@ -19,7 +19,7 @@
   const listeners = [];
   const themeListeners = [];
   const documentListeners = [];
-  const editorListeners = { target: [], viewport: [], highlights: [], problems: [] };
+  const editorListeners = { target: [], viewport: [], highlights: [], problems: [], layout: [] };
   const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
@@ -153,6 +153,12 @@
     problems: () => call("editor.problems"),
     /** Called with `problems()` when a problem appears or goes away, or its lines move, at most once a frame. */
     onProblems: listen(editorListeners.problems),
+    /** The folded ranges: `[{ fromLine, toLine }]`, the line that stays visible and the last one hidden. */
+    folded: () => call("editor.folded"),
+    /** Visual rows of lines `fromLine` up to `toLine` (exclusive), at most 2000; 0 for folded-away lines. Null without soft wrap. */
+    wrapped: (fromLine, toLine) => call("editor.wrapped", { fromLine: Number(fromLine), toLine: Number(toLine) }),
+    /** Called with `{ folded, softWrap }` when folds change, soft wrap turns on or off, or wrapped rows may have changed, at most once a frame. */
+    onLayout: listen(editorListeners.layout),
   });
 
   window.openidea = Object.freeze({

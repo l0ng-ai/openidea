@@ -99,11 +99,26 @@ export interface EditorProblem {
   severity: "error" | "warning" | "weakWarning";
 }
 
+/** A fold, as `openidea.editor.folded()` returns it: 0-based lines. */
+export interface EditorFold {
+  /** The line that stays visible, showing the placeholder. */
+  fromLine: number;
+  /** The last line the fold hides. */
+  toLine: number;
+}
+
+/** What `openidea.editor.onLayout` hears: the folds, and whether long lines wrap. */
+export interface EditorLayout {
+  folded: EditorFold[];
+  softWrap: boolean;
+}
+
 export type FrameEditorEvent =
   | { editor: "target"; value: EditorTarget | null }
   | { editor: "viewport"; value: EditorViewport }
   | { editor: "highlights"; value: { fromLine: number; toLine: number } }
-  | { editor: "problems"; value: EditorProblem[] };
+  | { editor: "problems"; value: EditorProblem[] }
+  | { editor: "layout"; value: EditorLayout };
 
 /** The text editor an editor panel's frame follows (`openidea.editor`). */
 export interface FrameEditor {
@@ -114,6 +129,9 @@ export interface FrameEditor {
   /** Lines `fromLine` up to `toLine` (exclusive); throws over {@link MAX_HIGHLIGHT_LINES}. */
   highlights(fromLine: number, toLine: number): HighlightSpan[][];
   problems(): EditorProblem[];
+  folded(): EditorFold[];
+  /** Visual rows of lines `fromLine` up to `toLine` (0 for lines folds hide), or null without soft wrap. */
+  wrapped(fromLine: number, toLine: number): number[] | null;
   subscribe(listener: (event: FrameEditorEvent) => void): () => void;
 }
 
@@ -383,10 +401,13 @@ export function WebView({
         case "editor.scrollTo":
         case "editor.scrollBy":
         case "editor.highlights":
-        case "editor.problems": {
+        case "editor.problems":
+        case "editor.folded":
+        case "editor.wrapped": {
           if (!editor) throw new Error("this view is not an editor panel");
           if (op === "editor.get") return [editor.get()];
           if (op === "editor.problems") return [editor.problems()];
+          if (op === "editor.folded") return [editor.folded()];
           if (op === "editor.viewport") return [editor.viewport()];
           if (op === "editor.scrollTo") return [editor.scrollTo(finite(args.line, "line"))];
           if (op === "editor.scrollBy") return [editor.scrollBy(finite(args.pixels, "pixels"))];
@@ -395,7 +416,7 @@ export function WebView({
           if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from)
             throw new Error("lines are 0 ≤ fromLine ≤ toLine, whole numbers");
           if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
-          return [editor.highlights(from, to)];
+          return [op === "editor.wrapped" ? editor.wrapped(from, to) : editor.highlights(from, to)];
         }
         case "saveFile":
         case "openFile": {
