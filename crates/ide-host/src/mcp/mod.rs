@@ -40,6 +40,7 @@ fn tools() -> Vec<tool::Tool> {
     tools.push(check::check_files());
     tools.push(symbols::get_symbol_info());
     tools.push(symbols::find_references());
+    tools.push(symbols::get_call_hierarchy());
     tools.extend(edit::tools());
     tools.extend(run::tools());
     tools.extend(vcs::tools());
