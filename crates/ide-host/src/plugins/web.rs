@@ -302,6 +302,7 @@ impl PluginHost {
                     || k.contains(['=', '\0'])
                     || v.len() > 4096
                     || v.contains('\0')
+                    || ide_extension::is_code_injection_env(k)
                     || std::env::vars_os().any(|(inherited, _)| {
                         if cfg!(windows) {
                             inherited.to_string_lossy().eq_ignore_ascii_case(k)

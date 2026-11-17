@@ -1646,6 +1646,9 @@ impl StoreData {
             if name.is_empty() || name.len() > MAX_ENV_NAME || name.contains(['=', '\0']) {
                 return Err(wit::Error::Invalid(format!("{name:?} is not an environment variable name")));
             }
+            if ide_extension::is_code_injection_env(name) {
+                return Err(wit::Error::Invalid(format!("{name:?} cannot be set by a plugin")));
+            }
             if value.len() > MAX_ENV_VALUE || value.contains('\0') {
                 return Err(wit::Error::Invalid(format!("the value of {name:?} is too long or holds a NUL")));
             }
