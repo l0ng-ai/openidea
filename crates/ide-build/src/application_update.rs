@@ -47,13 +47,17 @@ pub fn plan(root: &Path, model: &BuildModel, module: &Path, cache: &Path) -> Ide
         fs::write(
             &script,
             format!(
-                r#"gradle.projectsEvaluated {{
+                r#"import org.gradle.util.GradleVersion
+
+gradle.projectsEvaluated {{
     def p = gradle.rootProject.project({})
-    def resources = p.tasks.named('processResources')
-    p.tasks.register('openideaUpdateResources') {{
-        dependsOn resources
-        doLast {{ new File({}).setText(resources.get().destinationDir.absolutePath, 'UTF-8') }}
+    def update = {{ t ->
+        t.dependsOn 'processResources'
+        t.doLast {{ new File({}).setText(p.tasks.getByName('processResources').destinationDir.absolutePath, 'UTF-8') }}
     }}
+    // `register` is Gradle 4.9+.
+    if (GradleVersion.current() >= GradleVersion.version('4.9')) p.tasks.register('openideaUpdateResources', update)
+    else p.tasks.create('openideaUpdateResources', update)
 }}
 "#,
                 literal(&p.path),
@@ -173,6 +177,8 @@ mod tests {
         assert_eq!(gradle.args.last().unwrap(), ":app:openideaUpdateResources");
         let script = fs::read_to_string(cache.join("resources.init.gradle")).unwrap();
         assert!(script.contains("processResources") && script.contains("destinationDir.absolutePath"));
+        // `register` is Gradle 4.9+ (#3864).
+        assert!(script.contains("else p.tasks.create('openideaUpdateResources', update)"), "{script}");
         assert!(!script.contains("build/resources/main")); // The task owns custom output locations.
     }
 

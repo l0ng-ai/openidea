@@ -172,13 +172,22 @@ pub fn build(root: &Path, model: &BuildModel, id: &str, cache: &Path) -> IdeResu
         fs::write(
             &script,
             format!(
-                r#"gradle.projectsEvaluated {{
+                r#"import org.gradle.util.GradleVersion
+
+gradle.projectsEvaluated {{
     def p = gradle.rootProject.project({})
-    def warTask = p.tasks.named('war')
-    p.tasks.register('openideaTomcatArtifact') {{
-        dependsOn warTask
-        doLast {{ new File({}).setText(warTask.get().archiveFile.get().asFile.absolutePath, 'UTF-8') }}
+    def artifact = {{ t ->
+        t.dependsOn 'war'
+        t.doLast {{
+            def war = p.tasks.getByName('war')
+            // `archiveFile` is Gradle 5.1+, `archivePath` is gone in 8.0.
+            def file = war.hasProperty('archiveFile') ? war.archiveFile.get().asFile : war.archivePath
+            new File({}).setText(file.absolutePath, 'UTF-8')
+        }}
     }}
+    // `register` is Gradle 4.9+.
+    if (GradleVersion.current() >= GradleVersion.version('4.9')) p.tasks.register('openideaTomcatArtifact', artifact)
+    else p.tasks.create('openideaTomcatArtifact', artifact)
 }}
 "#,
                 groovy_literal(path),
@@ -297,7 +306,11 @@ mod tests {
             assert!(plan.args.contains(&format!("{}:openideaTomcatArtifact", module.trim_end_matches(':'))));
             let script = fs::read_to_string(cache.join("war.init.gradle")).unwrap();
             assert!(script.contains(&format!("rootProject.project('{}')", module)));
-            assert!(script.contains("archiveFile.get().asFile.absolutePath, 'UTF-8'"));
+            assert!(script.contains("setText(file.absolutePath, 'UTF-8')"));
+            // `archiveFile` is Gradle 5.1+, `register` 4.9+ (#3864).
+            assert!(
+                script.contains(": war.archivePath") && script.contains("else p.tasks.create('openideaTomcatArtifact'")
+            );
         }
     }
 }
