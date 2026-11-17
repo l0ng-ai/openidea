@@ -849,6 +849,11 @@ fn stash_push_list_apply_pop() {
     assert!(stashes[0].message.contains("WIP on main"), "{stashes:?}");
     assert!(stashes[1].message.contains("first stash"), "{stashes:?}");
     assert!(stashes[0].time_ms > 0.0);
+    // Each stash lists the files it changed against the commit it was made on.
+    let head = repo.head().unwrap().1.unwrap();
+    assert!(stashes.iter().all(|s| s.base.as_deref() == Some(head.as_str())), "{stashes:?}");
+    let files = repo.commit_files(&stashes[1].id).unwrap();
+    assert_eq!(files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["s.txt"]);
 
     repo.stash_apply(1, false, false).unwrap();
     assert_eq!(fx.read("s.txt"), "change 1\n");
