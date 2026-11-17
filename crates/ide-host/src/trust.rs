@@ -643,7 +643,8 @@ pub fn restricted_command_allowed(cmd: &str) -> bool {
 pub fn projectless_command_allowed(cmd: &str) -> bool {
     matches!(
         cmd,
-        "plugin_install_dir"
+        "plugin_search"
+            | "plugin_install_dir"
             | "plugin_uninstall"
             | "plugin_set_enabled"
             | "plugin_grant"

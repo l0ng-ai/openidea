@@ -1,5 +1,5 @@
 import { writeClipboardText } from "@/platform/clipboard";
-import { onEndpointsChanged } from "@/workbench/contributions";
+import { onSearchCategoriesChanged, onEndpointsChanged } from "@/workbench/contributions";
 import { useFilePresentation } from "@/ui/filePresentation";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
@@ -42,8 +42,9 @@ import { FilterPopup } from "./FilterPopup";
 import {
   MORE_STEP_ALL,
   MORE_STEP_TAB,
-  SECTION_TITLES,
-  TABS,
+  sectionTitle,
+  searchTabs,
+  isCustomTab,
   buildRows,
   groupJump,
   isSectionRow,
@@ -102,6 +103,9 @@ function SearchEverywhereDialog() {
   const tx = useTx();
   const tab = useSearchEverywhere((s) => s.tab);
   const hint = hintFor(tab, tx);
+  const [categoriesVersion, setCategoriesVersion] = useState(0);
+  const tabs = useMemo(searchTabs, [categoriesVersion]);
+  const custom = isCustomTab(tab);
   const query = useSearchEverywhere((s) => s.query);
   const includeNonProject = useSearchEverywhere((s) => s.includeNonProject);
   const fileSet = useSearchEverywhere((s) => s.fileSet);
@@ -152,6 +156,23 @@ function SearchEverywhereDialog() {
   const bumpToggles = () => setToggleTick((t) => t + 1);
 
   useEffect(() => () => controller.dispose(), [controller]);
+  useEffect(
+    () =>
+      onSearchCategoriesChanged(() => {
+        controller.invalidateCategories();
+        setCategoriesVersion((v) => v + 1);
+      }),
+    [controller],
+  );
+  useEffect(() => {
+    if (custom && !tabs.some((t) => t.id === tab)) selectSearchEverywhereTab("all");
+  }, [custom, tab, tabs]);
+  useEffect(
+    () => () => {
+      if (custom) controller.dispose();
+    },
+    [controller, custom, query, tab],
+  );
   const [endpointVersion, setEndpointVersion] = useState(0);
   const [filesVersion, setFilesVersion] = useState(0);
   useEffect(
@@ -195,10 +216,10 @@ function SearchEverywhereDialog() {
 
   // "/fi" lists scope commands instead of searching.
   const listing = useMemo(() => {
-    const c = parseCommand(query);
+    const c = custom ? null : parseCommand(query);
     return c?.kind === "list" ? c.rows : null;
-  }, [query]);
-  const searchQuery = parseCommand(debounced)?.kind === "list" ? "" : debounced;
+  }, [query, custom]);
+  const searchQuery = !custom && parseCommand(debounced)?.kind === "list" ? "" : debounced;
 
   useEffect(() => {
     // A language filter waits for the language list (nothing would be filtered yet).
@@ -213,7 +234,18 @@ function SearchEverywhereDialog() {
       includeDisabled: tab === "actions" ? includeNonProject : undefined,
       extra,
     });
-  }, [controller, searchQuery, tab, includeNonProject, fileSet, filter, extra, endpointVersion, filesVersion]);
+  }, [
+    controller,
+    searchQuery,
+    tab,
+    includeNonProject,
+    fileSet,
+    filter,
+    extra,
+    endpointVersion,
+    filesVersion,
+    categoriesVersion,
+  ]);
 
   useEffect(() => {
     inputRef.current?.select();
@@ -221,12 +253,19 @@ function SearchEverywhereDialog() {
 
   useEffect(() => onSearchEverywhereQuery(query), [query]);
 
-  const parsed = useMemo(() => parseLocationQuery(searchQuery), [searchQuery]);
+  const parsed = useMemo(
+    () => (custom ? { text: searchQuery, line: null, col: null } : parseLocationQuery(searchQuery)),
+    [searchQuery, custom],
+  );
   // The All tab interleaves its sources by relevance once there is a query.
   const mix = tab === "all" ? parsed.text : undefined;
   const rows = useMemo(
-    () => listing ?? (snap ? buildRows(snap.sections, { headers: !parsed.text.trim(), mix }) : []),
-    [listing, snap, parsed.text, mix],
+    () =>
+      listing ??
+      (snap && (!custom || (snap.tab === tab && snap.query === query))
+        ? buildRows(snap.sections, { headers: !parsed.text.trim() && !custom, mix })
+        : []),
+    [listing, snap, parsed.text, mix, custom, tab, query],
   );
   const active = stableIndex(rows, sel.key, sel.lead, sel.moved);
   const activeRow = active >= 0 ? rows[active] : undefined;
@@ -255,7 +294,7 @@ function SearchEverywhereDialog() {
   /** Typed or picked query; "/files foo" switches to Files with "foo". */
   const setQuery = (value: string) => {
     history.current.pos = -1;
-    const c = parseCommand(value);
+    const c = custom ? null : parseCommand(value);
     if (c?.kind === "run") selectSearchEverywhereTab(c.tab, { query: c.rest });
     else useSearchEverywhere.setState({ query: value });
   };
@@ -284,8 +323,8 @@ function SearchEverywhereDialog() {
     inputRef.current?.focus();
   };
   const cycleTab = (dir: 1 | -1) => {
-    const i = TABS.findIndex((t) => t.id === tab);
-    setTab(TABS[(i + dir + TABS.length) % TABS.length]!.id);
+    const i = tabs.findIndex((t) => t.id === tab);
+    setTab(tabs[(i + dir + tabs.length) % tabs.length]!.id);
   };
 
   const close = () => hideSearchEverywhere();
@@ -325,7 +364,7 @@ function SearchEverywhereDialog() {
           void executeActionFrom("search", row.id).then(() => bumpToggles());
           return;
         }
-        return closeThen(() => void executeActionFrom("search", row.id));
+        return closeThen(() => void executeActionFrom("search", row.id, row.arg));
       case "setting":
         return closeThen(() => void executeAction("file.settings", row.pageId));
     }
@@ -440,6 +479,7 @@ function SearchEverywhereDialog() {
   const showEmpty = !rows.length && snap && !snap.loading && (!emptyQuery || tab !== "all");
   // Nothing in the project: retry everywhere (IDEA), unless the user picked the scope.
   const nothingInProject =
+    !custom &&
     !!showEmpty &&
     !emptyQuery &&
     !listing &&
@@ -470,7 +510,11 @@ function SearchEverywhereDialog() {
           items={rows}
           getKey={(r) => r.key}
           isSection={isSectionRow}
-          renderSection={(r) => <span className={styles.section}>{r.kind === "section" ? <T>{r.title}</T> : ""}</span>}
+          renderSection={(r) => (
+            <span className={styles.section}>
+              {r.kind === "section" ? isCustomTab(r.section) ? r.title : <T>{r.title}</T> : ""}
+            </span>
+          )}
           activeIndex={active}
           onSelect={select}
           isSelected={(r) => !!sel.keys?.has(r.key)}
@@ -493,7 +537,13 @@ function SearchEverywhereDialog() {
       )}
       {showEmpty && (
         <div className={styles.empty}>
-          {tx(emptyQuery ? "Type to search" : includeNonProject ? "Nothing found" : "Nothing found in project files")}
+          {tx(
+            emptyQuery
+              ? "Type to search"
+              : custom || includeNonProject
+                ? "Nothing found"
+                : "Nothing found in project files",
+          )}
         </div>
       )}
     </div>
@@ -511,7 +561,7 @@ function SearchEverywhereDialog() {
     >
       <div className={styles.header} data-dialog-drag="">
         <div ref={tabsRef} role="tablist" aria-label={tx("Search scope")} className={styles.tabs} onKeyDown={onTabKey}>
-          {TABS.map((t) => (
+          {tabs.map((t) => (
             <button
               key={t.id}
               type="button"
@@ -522,7 +572,7 @@ function SearchEverywhereDialog() {
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => setTab(t.id)}
             >
-              <T>{t.label}</T>
+              {isCustomTab(t.id) ? t.label : <T>{t.label}</T>}
             </button>
           ))}
         </div>
@@ -538,19 +588,21 @@ function SearchEverywhereDialog() {
               label={tab === "actions" ? "Include disabled actions" : "Include non-project items"}
             />
           ) : (
-            // IDEA's scope chooser of the Classes / Files / Symbols / Text tabs.
-            <Select<SeScope>
-              variant="ghost"
-              className={clsx(styles.include, styles.scope)}
-              value={includeNonProject ? "allPlaces" : fileSet}
-              options={SE_SCOPES}
-              onChange={(v) => {
-                if (v === "allPlaces") setIncludeNonProject(true);
-                else setIncludeNonProject(false, { fileSet: v });
-                inputRef.current?.focus();
-              }}
-              aria-label="Search scope"
-            />
+            !custom && (
+              // IDEA's scope chooser of the Classes / Files / Symbols / Text tabs.
+              <Select<SeScope>
+                variant="ghost"
+                className={clsx(styles.include, styles.scope)}
+                value={includeNonProject ? "allPlaces" : fileSet}
+                options={SE_SCOPES}
+                onChange={(v) => {
+                  if (v === "allPlaces") setIncludeNonProject(true);
+                  else setIncludeNonProject(false, { fileSet: v });
+                  inputRef.current?.focus();
+                }}
+                aria-label="Search scope"
+              />
+            )
           )}
           <IconButton
             icon="list"
@@ -694,6 +746,7 @@ function describe(row: SeRow | undefined): string {
     case "command":
       return "";
     case "action": {
+      if (isCustomTab(row.section)) return row.description ?? row.title;
       const a = getAction(row.id);
       const text = a?.description ?? (row.category ? `${row.category} | ${row.title}` : row.title);
       return `${text}  ·  ${translate`${formatBinding("Alt+Enter")} to assign a shortcut`}`;
@@ -779,7 +832,8 @@ function ResultRow({
     case "more":
       return (
         <span className={clsx(styles.name, styles.more)}>
-          … {tx("more")} {tx(SECTION_TITLES[row.section]).toLowerCase()}
+          … {tx("more")}{" "}
+          {isCustomTab(row.section) ? sectionTitle(row.section) : tx(sectionTitle(row.section)).toLowerCase()}
         </span>
       );
     case "file":

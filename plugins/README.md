@@ -427,7 +427,7 @@ are always available. Calling a gated function without its capability returns
 
 ### API 1.10
 
-API 1.10.0 is in development on `main`. Use `engines.openidea = "^1.10"` and the
+APIs 1.10.0 and 1.11.0 are in development on `main`. Use `engines.openidea = "^1.10"` and the
 matching SDK. Released 1.9 plugins keep working. New in 1.10:
 
 - `host::open_file_diff(&FileDiff { .. }, file_name)` (`views.open-file-diff`) is
@@ -2804,7 +2804,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46; API 1.10.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46; APIs 1.10.0 and 1.11.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -2920,6 +2920,55 @@ Disabling, uninstalling, reloading or crashing a plugin withdraws its routes;
 idle instance reclamation keeps them cached. Closing a project withdraws its
 cache. Windows only receive routes for their current project. This API does not
 add an Endpoints tool window.
+
+### Custom Search Everywhere categories (API 1.11)
+
+Plugins can add their own tab to the double-Shift search dialog. Declare a stable
+local ID and a title (translated through the plugin catalog):
+
+```toml
+engines.openidea = "^1.11"
+
+[[contributes.searchCategories]]
+id = "routes"
+title = "Routes"
+```
+
+Implement `search::SearchProvider` and register with
+`register_plugin!(MyPlugin, search)` (combinable with `endpoints` and other
+optional exports). See the runnable [search fixture](../crates/ide-plugin/tests/fixtures/search).
+`search(category, query, limit, ctx)` gets the local category ID, the **unmodified**
+query (including slashes, spaces and `:line` suffixes), and the current project's
+invocation. Empty queries may return initial suggestions. Return `SearchPage`
+with at most `limit` items in relevance order and `has_more` for more results.
+The initial limit is 50; Show more raises it to at most 200. Queries are at most
+1024 UTF-8 bytes. Calls have a two-second background budget, including queueing,
+and cannot open prompts. New queries, switching tabs and closing the dialog
+cancel the old request; late answers are ignored.
+
+Each `SearchItem` has a stable local `id`, a `title`, an optional `description`,
+and exactly one `SearchTarget`:
+
+- `Location`: a file inside the current trusted project, zero-based lines and
+  UTF-16 columns. Requires `project.read`; paths and ranges are checked against
+  the open buffer or disk, including symlink containment.
+- `Command { id, arg }`: the plugin's own local command declared in
+  `contributes.commands`. The command runs **only after selection**, with its
+  normal enablement, editor and project context. It may carry up to 16 KiB of
+  arguments. A command result can also be returned without a project open.
+
+The host rejects duplicate result IDs, invalid targets and whole batches over
+1 MiB of metadata or 16 MiB of declaration documents. Titles are 1–1024 bytes,
+descriptions at most 4096 bytes; neither may contain control characters.
+Categories use `(plugin ID, local category ID)` identity, so identical labels or
+local IDs from different plugins coexist. Titles are localized by the plugin's
+catalog. Disabling, uninstalling, reloading or failure withdraws the category and
+its in-flight results; the dialog returns to All if the selected tab disappears.
+
+Custom categories **do not contribute to All**. Existing `endpoints` providers
+continue to populate All, HTTP completion and gutter actions unchanged. A route
+plugin may implement both exports when it wants both entry points. Project file
+scope controls and built-in slash commands do not modify custom category queries.
 
 ### Notifications with commands
 

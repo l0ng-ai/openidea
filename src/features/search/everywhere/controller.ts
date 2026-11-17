@@ -16,11 +16,12 @@ import type {
   SymbolMatch,
   WorkspaceSymbol,
 } from "@/platform/ipc";
-import type { EndpointEntry, SettingsSearchEntry } from "@/workbench/contributions";
+import type { SearchCategory, EndpointEntry, SettingsSearchEntry } from "@/workbench/contributions";
 import { parseLocationQuery } from "../common/query";
 import { matchRoutes } from "./routes";
 import { passesFilter, type ResolvedFilter } from "./filters";
 import {
+  isCustomTab,
   ALL_TAB_LIMIT,
   RECENT_LIMIT,
   TAB_LIMIT,
@@ -66,6 +67,7 @@ export interface SeDeps {
   inFileSet?(set: ProjectFileSet, path: string): boolean;
   /** Endpoints of the project, for request-path matches. */
   routes?(): Promise<EndpointEntry[]>;
+  categories?(): readonly SearchCategory[];
 }
 
 export interface SeRequest {
@@ -98,7 +100,8 @@ export const TEXT_MIN_QUERY = 2;
 
 export function sectionLimit(tab: SeTab, section: SectionId, extra: number): number {
   if (section === "recent" || section === "recentActions") return RECENT_LIMIT + extra;
-  return (tab === "all" ? ALL_TAB_LIMIT : TAB_LIMIT) + extra;
+  const limit = (tab === "all" ? ALL_TAB_LIMIT : TAB_LIMIT) + extra;
+  return isCustomTab(section) ? Math.min(200, limit) : limit;
 }
 
 export class SeController {
@@ -122,6 +125,16 @@ export class SeController {
     this.signatures.delete("endpoints");
   }
 
+  invalidateCategories() {
+    for (const id of this.sections.keys())
+      if (isCustomTab(id)) {
+        this.cancelSection(id);
+        this.sections.delete(id);
+        this.signatures.delete(id);
+      }
+    this.notify();
+  }
+
   invalidateFiles() {
     for (const id of ["files", "classes", "symbols", "text"] as const) this.signatures.delete(id);
   }
@@ -132,7 +145,10 @@ export class SeController {
     this.req = { query: req.query, tab: req.tab };
     const parsed = parseLocationQuery(req.query, this.deps.root());
     const text = parsed.text.trim();
-    const wanted = sectionsFor(req.tab, !text);
+    const wanted =
+      isCustomTab(req.tab) && !this.deps.categories?.().some((c) => c.id === req.tab)
+        ? []
+        : sectionsFor(req.tab, !text);
     this.started = this.deps.now();
     this.elapsed = null;
 
@@ -158,7 +174,11 @@ export class SeController {
       this.signatures.set(id, sig);
       this.cancelSection(id);
       const prev = this.sections.get(id);
-      this.sections.set(id, { items: prev?.items ?? [], hasMore: prev?.hasMore ?? false, loading: true });
+      this.sections.set(id, {
+        items: isCustomTab(id) ? [] : (prev?.items ?? []),
+        hasMore: isCustomTab(id) ? false : (prev?.hasMore ?? false),
+        loading: true,
+      });
       this.live.set(id, gen);
       void this.start(id, gen, { text, line: parsed.line, col: parsed.col, req, limit });
     }
@@ -227,6 +247,50 @@ export class SeController {
   ) {
     const { text, limit, req } = q;
     try {
+      if (isCustomTab(id)) {
+        const category = this.deps.categories?.().find((c) => c.id === id);
+        if (!category) {
+          this.set(id, gen, [], false, false);
+          return;
+        }
+        const page = await category.search(this.track(id), req.query, limit);
+        const root = this.deps.root();
+        const items: SeItem[] = page.items.slice(0, limit).map((item): SeItem => {
+          const key = `${id}:${item.id}`;
+          if (item.target.kind === "location") {
+            const loc = item.target.value;
+            return {
+              kind: "symbol",
+              key,
+              name: item.title,
+              display: item.title,
+              symbolKind: "function",
+              container: item.description,
+              path: loc.path,
+              rel: root && loc.path.startsWith(`${root}/`) ? loc.path.slice(root.length + 1) : loc.path,
+              line: loc.range.start.line,
+              col: loc.range.start.col,
+              indices: [],
+            };
+          }
+          const actionId = category.actionId(item.target.value.id);
+          const action = this.deps.actions().find((a) => a.id === actionId);
+          return {
+            kind: "action",
+            key,
+            id: actionId,
+            title: item.title,
+            arg: item.target.value.arg ?? undefined,
+            description: item.description ?? undefined,
+            category: item.description ?? undefined,
+            enabled: !!action && this.deps.isEnabled(action),
+            indices: [],
+            score: 0,
+          };
+        });
+        this.set(id, gen, items, page.hasMore && limit < 200, false);
+        return;
+      }
       switch (id) {
         case "recent": {
           const paths = await this.deps.recentFiles();

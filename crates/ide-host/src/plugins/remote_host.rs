@@ -85,6 +85,7 @@ pub const COMMANDS: &[&str] = &[
     "plugin_navigation_index",
     "plugin_navigation_goto",
     "plugin_navigation_markers",
+    "plugin_search",
     "plugin_endpoints",
     "plugin_run_targets",
     "plugin_answer_run_target",
@@ -818,6 +819,23 @@ impl RemotePlugins {
             let h = h.clone();
             async move {
                 super::index_ops::plugin_navigation_markers(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
+            }
+        });
+        let h = host.clone();
+        d.add("plugin_search", move |c| {
+            let h = h.clone();
+            async move {
+                super::search::search(
+                    &c.host,
+                    alive(&h)?,
+                    &c.window,
+                    c.arg("pluginId")?,
+                    c.arg("category")?,
+                    c.arg("query")?,
+                    c.arg("limit")?,
+                    c.arg("request")?,
+                )
+                .await
             }
         });
         let h = host.clone();

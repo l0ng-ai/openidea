@@ -870,6 +870,30 @@ pub async fn plugin_navigation_goto(
 
 #[tauri::command]
 #[specta::specta]
+pub async fn plugin_search(
+    window: Window,
+    state: State<'_, AppState>,
+    plugin_id: String,
+    category: String,
+    query: String,
+    limit: u32,
+    request: ide_core::RequestId,
+) -> IdeResult<ide_host::plugins::search::PluginSearchPage> {
+    ide_host::plugins::search::search(
+        &state.host,
+        state.plugins.clone(),
+        window.label(),
+        plugin_id,
+        category,
+        query,
+        limit,
+        request,
+    )
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn plugin_endpoints(
     window: Window,
     state: State<'_, AppState>,

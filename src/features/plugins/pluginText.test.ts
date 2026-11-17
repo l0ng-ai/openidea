@@ -26,6 +26,11 @@ describe("localizeContributions", () => {
     decl,
   });
 
+  it("localizes search category titles without changing their identity", () => {
+    const out = localizeContributions([item("a", "searchCategories", { id: "routes", title: "Refresh" })], { a: fr });
+    expect(out[0]).toMatchObject({ key: "routes", decl: { id: "routes", title: "Actualiser" } });
+  });
+
   it("translates titles and setting labels of the plugin's own declarations only", () => {
     const items = [
       item("a", "commands", { id: "x", title: "Refresh", category: "Word Tools" }),

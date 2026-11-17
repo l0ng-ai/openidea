@@ -3,7 +3,7 @@
  * declaration is projected onto the workbench, and how its items appear on
  * the plugin details page. One `defineUiPoint` per contribution type.
  */
-import { registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
+import { registerSearchCategory, registerEndpointProvider, type EndpointEntry } from "@/workbench/contributions";
 import type { PluginInfo, ThemeDef } from "@/bindings";
 import { pluginIconName } from "./pluginIcon";
 import { registerAction } from "@/platform/actions";
@@ -192,6 +192,15 @@ export function defineBuiltinUiPoints(): () => void {
   const disposers = [
     defineUiPoint("mcpTools", {}),
     defineUiPoint("serverCommands", {}),
+    defineUiPoint<{ id: string; title: string }>("searchCategories", {
+      project: ({ pluginId, decl }) =>
+        registerSearchCategory({
+          id: `plugin:${pluginId}:${decl.id}`,
+          title: decl.title,
+          search: (request, query, limit) => pluginsBackend().search(pluginId, decl.id, query, limit, request),
+          actionId: (command) => pluginActionId(pluginId, command),
+        }),
+    }),
     defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {
       title: "Commands",

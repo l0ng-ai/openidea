@@ -50,6 +50,7 @@ pub mod remote;
 pub mod remote_host;
 mod run_detectors;
 pub mod run_targets;
+pub mod search;
 mod semantic_tokens;
 mod snippets;
 mod theme;

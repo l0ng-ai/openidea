@@ -23,6 +23,8 @@ import type {
   PluginContextKey,
   PluginEditor,
   PluginEndpoint,
+  PluginSearchPage,
+  RequestId,
   PluginEvent,
   PluginInfo,
   PluginOutputLine,
@@ -134,6 +136,13 @@ export interface PluginsBackend {
   runTargets(): Promise<import("@/bindings").RegisteredRunTarget[]>;
   answerRunTarget(id: string, useTarget: boolean): Promise<import("@/bindings").Settings>;
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;
+  search(
+    pluginId: string,
+    category: string,
+    query: string,
+    limit: number,
+    request: RequestId,
+  ): Promise<PluginSearchPage>;
   /**
    * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
    * lines until it exits (`onExit`) or the returned stop function is called.
@@ -336,6 +345,8 @@ export const tauriPluginsBackend: PluginsBackend = {
   runTargets: () => call(commands.pluginRunTargets()),
   answerRunTarget: (id, useTarget) => call(commands.pluginAnswerRunTarget(id, useTarget)),
   endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
+  search: (pluginId, category, query, limit, request) =>
+    call(commands.pluginSearch(pluginId, category, query, limit, request)),
   serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
     const channel = new Channel<PluginOutputLine>();
@@ -709,6 +720,7 @@ export function createMemoryPluginsBackend(
     runTargets: async () => [],
     answerRunTarget: async () => useProject.getState().settings as import("@/bindings").Settings,
     endpoints: async () => [],
+    search: async () => ({ items: [], hasMore: false }),
     answerCommand: async () => {},
     finishOperation: async () => {},
     closeTerminalSession: async () => {},

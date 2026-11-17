@@ -12,6 +12,7 @@ import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { InputDialogsHost } from "@/workbench/inputDialogs";
 import { MessagesHost } from "@/workbench/messages";
 import {
+  searchCategories,
   onEndpointsChanged,
   provideNotificationService,
   searchEndpoints,
@@ -148,6 +149,25 @@ describe("plugin actions", () => {
     expect(useProducerNames.getState().names.get("plugin:a")).toBe("Alpha");
     expect(useProducerNames.getState().names.get("plugin-provider:a")).toBe("Alpha");
     stop();
+  });
+
+  it("projects namespaced search categories, forwards query inputs and withdraws them", async () => {
+    backend.search = vi.fn(async () => ({ items: [], hasMore: false }));
+    const contribution = (pluginId: string, title: string) => ({
+      pluginId,
+      point: "searchCategories",
+      key: "routes",
+      decl: { id: "routes", title },
+    });
+    const plugins = [plugin({ id: "a" }), plugin({ id: "b" })];
+    syncUiContributions([contribution("a", "Routes"), contribution("b", "Routes")], plugins);
+    expect(searchCategories().map((c) => c.id)).toEqual(["plugin:a:routes", "plugin:b:routes"]);
+    await searchCategories()[0]!.search(17, "/files /users:42", 50);
+    expect(backend.search).toHaveBeenCalledWith("a", "routes", "/files /users:42", 50, 17);
+    syncUiContributions([contribution("b", "Requests")], plugins);
+    expect(searchCategories().map((c) => c.title)).toEqual(["Requests"]);
+    syncUiContributions([], []);
+    expect(searchCategories()).toEqual([]);
   });
 
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
