@@ -480,10 +480,9 @@ fn config_endpoints<R: tauri::Runtime>(app: &AppHandle<R>) -> Vec<String> {
 
 /// The endpoints tried in order: `source` first, the other source when it fails or has
 /// no manifest. Bundles are signed, so either source's manifest and downloads verify.
-/// No official endpoint (a build without updates) means no mirror either. Nightly builds
-/// aren't mirrored: the mirror's manifest would move them to the stable version.
-fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) -> Vec<String> {
-    if official.is_empty() || nightly {
+/// No official endpoint (a build without updates) means no mirror either.
+fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> {
+    if official.is_empty() {
         return official;
     }
     let mirror = vec![CNB_ENDPOINT.to_string()];
@@ -493,10 +492,6 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource, nightly: bool) 
     }
 }
 
-fn is_nightly(version: &str) -> bool {
-    version.contains("-nightly.")
-}
-
 fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -504,7 +499,7 @@ fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plug
     }
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(app), source, is_nightly(&app.package_info().version.to_string())),
+        None => source_endpoints(config_endpoints(app), source),
     };
     let endpoints = endpoints
         .iter()
@@ -703,7 +698,7 @@ pub async fn app_release_notes(
 ) -> IdeResult<Option<BTreeMap<String, String>>> {
     let endpoints = match update_endpoint_env() {
         Some(url) => vec![url],
-        None => source_endpoints(config_endpoints(&app), source, is_nightly(&app.package_info().version.to_string())),
+        None => source_endpoints(config_endpoints(&app), source),
     };
     let client = ide_http::client::shared()?;
     for endpoint in endpoints {
@@ -830,22 +825,10 @@ mod tests {
     #[test]
     fn chosen_source_is_tried_first_and_the_other_after_it() {
         let github = "https://github.com/l0ng-ai/openidea/releases/latest/download/latest.json".to_string();
-        assert_eq!(
-            source_endpoints(vec![github.clone()], UpdateSource::Github, false),
-            [github.clone(), CNB_ENDPOINT.into()]
-        );
-        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb, false), [CNB_ENDPOINT.into(), github]);
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Github), [github.clone(), CNB_ENDPOINT.into()]);
+        assert_eq!(source_endpoints(vec![github.clone()], UpdateSource::Cnb), [CNB_ENDPOINT.into(), github]);
         // A build without an update endpoint stays without one.
-        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb, false).is_empty());
-    }
-
-    #[test]
-    fn nightly_builds_update_from_their_own_manifest_whatever_the_source() {
-        let nightly = "https://github.com/l0ng-ai/openidea/releases/download/nightly/latest.json".to_string();
-        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Cnb, true), vec![nightly.clone()]);
-        assert_eq!(source_endpoints(vec![nightly.clone()], UpdateSource::Github, true), [nightly]);
-        assert!(is_nightly("0.1.40-nightly.202611081417"));
-        assert!(!is_nightly("0.1.40"));
+        assert!(source_endpoints(Vec::new(), UpdateSource::Cnb).is_empty());
     }
 
     #[test]
