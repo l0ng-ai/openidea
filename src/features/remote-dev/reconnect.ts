@@ -60,6 +60,8 @@ async function retry(host: string, run: number, wait: (ms: number) => Promise<vo
   for (const ms of RETRY_DELAYS_MS) {
     await wait(ms);
     if (run !== generation || useRemote.getState().lost !== host) return;
+    // Edited while waiting: the same applies.
+    if (unsaved() > 0) return notifyLost(host, last);
     try {
       await reconnectRemote();
       return;
