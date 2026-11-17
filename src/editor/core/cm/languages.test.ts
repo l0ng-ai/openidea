@@ -1,8 +1,9 @@
 import { EditorState } from "@codemirror/state";
+import { LanguageDescription, type Language } from "@codemirror/language";
 import { describe, expect, it } from "vitest";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { logWarning } from "./highlight";
-import { findLanguageDescription, loadSupport } from "./languages";
+import { fencedCodeMode, findLanguageDescription, loadSupport } from "./languages";
 
 describe("language modes", () => {
   it("distinguishes PHP classes, method declarations and fields for imported schemes", async () => {
@@ -308,5 +309,25 @@ describe("language modes", () => {
       const support = await loadSupport(desc!);
       expect(support?.language).toBeTruthy();
     }
+  });
+
+  const keywordHighlighter = tagHighlighter([{ tag: t.keyword, class: "keyword" }]);
+
+  function keywords(language: Language, source: string) {
+    const found: string[] = [];
+    highlightTree(language.parser.parse(source), keywordHighlighter, (from, to) => found.push(source.slice(from, to)));
+    return found;
+  }
+
+  it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
+    for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {
+      const support = await loadSupport(findLanguageDescription("TOML", path)!);
+      expect(keywords(support!.language, '[package]\nname = "x"'), path).toEqual(["package", "name"]);
+    }
+    const fenced = fencedCodeMode("toml")!;
+    expect(fenced.name).toBe("TOML");
+    const language =
+      fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+    expect(keywords(language, 'name = "x"')).toEqual(["name"]);
   });
 });

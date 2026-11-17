@@ -196,6 +196,10 @@ const OWN_MODES = [
     },
   }),
   LanguageDescription.of({
+    name: "TOML",
+    load: async () => new LanguageSupport(StreamLanguage.define((await import("./toml")).tomlParser)),
+  }),
+  LanguageDescription.of({
     name: "Markdown",
     extensions: ["md", "markdown", "mkd"],
     load: () => import("./markdown").then((m) => m.markdownSupport(fencedCodeMode)),
