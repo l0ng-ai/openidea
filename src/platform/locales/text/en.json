@@ -1680,7 +1680,6 @@
   "Also used for {others}; settings apply to all of them.": "Also used for {others}; settings apply to all of them.",
   "{name} tools": "{name} tools",
   "Install Missing ({count})": "Install Missing ({count})",
-  "Not installed: {missingNames}.": "Not installed: {missingNames}.",
   "Language servers, formatters and debug adapters for each language. Missing tools can be installed into the IDE's own tools folder; nothing is downloaded until you click Install.": "Language servers, formatters and debug adapters for each language. Missing tools can be installed into the IDE's own tools folder; nothing is downloaded until you click Install.",
   "Show Only Languages Missing Tools": "Show Only Languages Missing Tools",
   "Language or tool": "Language or tool",
@@ -2358,5 +2357,14 @@
   "No such file or folder": "No such file or folder",
   "Choose a folder": "Choose a folder",
   "Nothing to annotate": "Nothing to annotate",
-  "The file has no committed history in Git.": "The file has no committed history in Git."
+  "The file has no committed history in Git.": "The file has no committed history in Git.",
+  "Only one runs at a time": "Only one runs at a time",
+  "Use only {displayName}": "Use only {displayName}",
+  "First available: {order}": "First available: {order}",
+  "No language server for these files": "No language server for these files",
+  "Installs a copy into the IDE's own tools folder, used instead of {path}": "Installs a copy into the IDE's own tools folder, used instead of {path}",
+  "Install IDE Copy": "Install IDE Copy",
+  "Not installed:": "Not installed:",
+  "Additional servers": "Additional servers",
+  "Run alongside the one above": "Run alongside the one above"
 }
