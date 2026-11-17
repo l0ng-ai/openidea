@@ -453,6 +453,7 @@ function samplePlugins(): PluginInfo[] {
     homepage: null,
     changeNotes: null,
     icon: null,
+    javaAgent: null,
     source: "installed" as const,
     enabled: true,
     error: null,

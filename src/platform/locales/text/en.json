@@ -2370,5 +2370,7 @@
   "Install IDE Copy": "Install IDE Copy",
   "Not installed:": "Not installed:",
   "Additional servers": "Additional servers",
-  "Run alongside the one above": "Run alongside the one above"
+  "Run alongside the one above": "Run alongside the one above",
+  "The agent jar changed since you approved it. Approve the new jar before the next launch.": "The agent jar changed since you approved it. Approve the new jar before the next launch.",
+  "Approve new jar": "Approve new jar"
 }

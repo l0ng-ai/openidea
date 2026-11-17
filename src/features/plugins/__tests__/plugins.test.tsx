@@ -69,6 +69,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     homepage: null,
     changeNotes: null,
     icon: null,
+    javaAgent: null,
     source: "installed",
     path: `/plugins/${partial.id}`,
     enabled: true,
@@ -1604,6 +1605,7 @@ describe("marketplace", () => {
             },
           ],
           contributions: [{ point: "javaAgents", label: "spring-agent.jar=port=0" }],
+          javaAgent: { fileName: "spring-agent.jar", args: "port=0", approved: true },
         }),
       ]),
     );
@@ -1611,6 +1613,47 @@ describe("marketplace", () => {
     const permissions = await screen.findByRole("list", { name: "Permissions" });
     expect(within(permissions).getByText("Run code inside the Java applications you start")).toBeInTheDocument();
     expect(within(permissions).getByLabelText("Java agent")).toHaveTextContent("spring-agent.jar=port=0");
+  });
+
+  it("warns when a granted Java agent jar changed and can approve it again", async () => {
+    const user = userEvent.setup();
+    const base = createMemoryPluginsBackend([
+      plugin({
+        id: "spring",
+        name: "Spring",
+        hasCode: false,
+        status: "static",
+        javaAgent: { fileName: "spring-agent.jar", args: null, approved: false },
+        capabilities: [
+          {
+            id: "java.agent",
+            risk: "high",
+            description: "Run code inside the Java applications you start",
+            optional: true,
+            granted: true,
+          },
+        ],
+        contributions: [{ point: "javaAgents", label: "spring-agent.jar" }],
+      }),
+    ]);
+    const calls: [string, string, boolean][] = [];
+    setPluginsBackend({
+      ...base,
+      setCapability: async (id, capability, granted) => {
+        calls.push([id, capability, granted]);
+        return base.setCapability(id, capability, granted);
+      },
+    });
+    render(<PluginsPage initialTab="installed" />);
+    const permissions = await screen.findByRole("list", { name: "Permissions" });
+    expect(within(permissions).getByRole("alert")).toHaveTextContent("The agent jar changed since you approved it");
+    await user.click(within(permissions).getByRole("button", { name: "Approve new jar" }));
+    await waitFor(() =>
+      expect(calls).toEqual([
+        ["spring", "java.agent", false],
+        ["spring", "java.agent", true],
+      ]),
+    );
   });
 
   it("offers to roll back an update", async () => {

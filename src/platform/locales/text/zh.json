@@ -8748,5 +8748,7 @@
   "Install IDE Copy": "安装到 IDE",
   "Not installed:": "未安装：",
   "Additional servers": "附加服务器",
-  "Run alongside the one above": "与上面选中的服务器同时运行"
+  "Run alongside the one above": "与上面选中的服务器同时运行",
+  "The agent jar changed since you approved it. Approve the new jar before the next launch.": "Agent jar 在授权后发生了变化。请先批准新的 jar，再启动应用。",
+  "Approve new jar": "批准新的 jar"
 }

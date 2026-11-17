@@ -2204,6 +2204,10 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
     assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
     assert!(info.contributions.iter().any(|c| c.point == "javaAgents" && c.label == "fixture agent.jar=mode=test"));
+    let agent = info.java_agent.clone().expect("agent metadata");
+    assert_eq!(agent.file_name, "fixture agent.jar");
+    assert_eq!(agent.args.as_deref(), Some("mode=test"));
+    assert!(!agent.approved);
     let source = f.host.java_agents();
     let launch = || {
         let agents = ide_run::java_agent::approved(&source.agents());
@@ -2217,6 +2221,7 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     // Granted: the installed jar with its arguments, one argument after the VM options.
     let info = f.host.set_capability("java-agent", "java.agent", true).unwrap();
     assert!(info.capabilities.iter().any(|c| c.id == "java.agent" && c.granted));
+    assert!(info.java_agent.as_ref().is_some_and(|agent| agent.approved));
     let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
     let option = format!("-javaagent:{}=mode=test", jar.display());
     let mut with_agent = plain.clone();
@@ -2228,7 +2233,11 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     let (args, notes) = launch();
     assert_eq!(args, plain);
     assert!(notes.len() == 1 && notes[0].contains("changed since it was approved"), "{notes:?}");
+    let changed = f.host.info_of("java-agent").unwrap();
+    assert!(!changed.java_agent.as_ref().unwrap().approved, "Settings must show the changed jar");
+    f.host.set_capability("java-agent", "java.agent", false).unwrap();
     f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    assert!(f.host.info_of("java-agent").unwrap().java_agent.as_ref().is_some_and(|a| a.approved));
     assert_eq!(launch(), (with_agent.clone(), vec![]));
 
     // Revoked, then the plugin disabled: no agent either way.
