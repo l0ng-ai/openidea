@@ -20,6 +20,17 @@ import {
 const pg = { id: "s1", name: "Shop / dev", driver: "postgres", host: "localhost", user: "app" } as DataSource;
 
 describe("forms", () => {
+  it("keep quoted names whole", () => {
+    const options = dumpOptions({
+      ...DEFAULT_DUMP,
+      schemas: '"My Schema", audit',
+      tables: 'public."Order Items" "a,""b"".c"',
+      excludeTables: "",
+    });
+    expect(options.schemas).toEqual(['"My Schema"', "audit"]);
+    expect(options.tables).toEqual(['public."Order Items"', '"a,""b"".c"']);
+  });
+
   it("send the typed name lists as lists", () => {
     const options = dumpOptions({
       ...DEFAULT_DUMP,

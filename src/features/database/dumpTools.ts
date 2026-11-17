@@ -54,9 +54,9 @@ export const DEFAULT_RESTORE: RestoreForm = {
 
 export const DEFAULT_PSQL: DbPsqlOptions = { singleTransaction: true, stopOnError: true };
 
-/** `a, b c` → `["a", "b", "c"]`. */
+/** `a, b c` → `["a", "b", "c"]`; a double-quoted part keeps its spaces and commas: `public."Order Items"`. */
 export function nameList(text: string): string[] {
-  return text.split(/[\s,]+/).filter(Boolean);
+  return text.match(/(?:"(?:[^"]|"")*"|[^\s,"]|")+/g) ?? [];
 }
 
 export function dumpOptions(f: DumpForm): DbPgDumpOptions {
