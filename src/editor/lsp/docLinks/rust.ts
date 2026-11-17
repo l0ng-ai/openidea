@@ -79,7 +79,7 @@ export async function findRustItem(link: RustDocLink): Promise<DocTarget | null>
   const name = link.member ?? link.name;
   // rust-analyzer's query markers: `*` searches the dependencies (instead of the workspace),
   // `#` every kind of symbol (not only types).
-  // ponytail: a common name (`Vec::new`) can be past rust-analyzer's 128 results; such links open in the browser.
+  // A common name (`Vec::new`) can be past rust-analyzer's 128 results; such links open in the browser.
   const all = link.member || !TYPE_KINDS.has(link.kind) ? "#" : "";
   const found = await Promise.all([symbols(`${name}${all}`), symbols(`${name}*${all}`)]);
   const hits = found
