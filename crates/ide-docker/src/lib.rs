@@ -142,7 +142,7 @@ pub fn snapshot(ep: &DockerEndpoint) -> DockerSnapshot {
     }
     const FMT: &str = "{{json .}}";
     let (containers, images, volumes, networks) = std::thread::scope(|s| {
-        let c = s.spawn(|| run(ep, &["ps", "--all", "--no-trunc", "--format", FMT], QUICK));
+        let c = s.spawn(|| run(ep, &["ps", "--all", "--no-trunc", "--format", PS_FORMAT], QUICK));
         let i = s.spawn(|| run(ep, &["image", "ls", "--no-trunc", "--format", FMT], QUICK));
         let v = s.spawn(|| run(ep, &["volume", "ls", "--format", FMT], QUICK));
         let n = s.spawn(|| run(ep, &["network", "ls", "--no-trunc", "--format", FMT], QUICK));
