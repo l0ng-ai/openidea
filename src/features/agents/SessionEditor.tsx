@@ -60,7 +60,7 @@ import { useTx, tx } from "@/platform/i18n";
 import { isImeKey } from "@/platform/ime";
 import { commitFileDiffData, openDiff, withChain, type DiffData } from "@/features/vcs/diffInput";
 import { repositoryPath } from "@/features/vcs/repositoryPaths";
-import { setChangesOptions, useChangesOptions } from "./changesOptions";
+import { setChangesOptions, useChangesOptions, type ChangesScope } from "./changesOptions";
 import { ChangesResizer, useChangesWidthStyle } from "./ChangesResizer";
 import { Composer } from "./Composer";
 import { ReferencedText } from "./ReferenceChip";
@@ -78,7 +78,7 @@ import {
   usageLabel,
   workTime,
 } from "./composerModel";
-import { ConfigPickers } from "./ConfigPickers";
+import { ConfigPickers, SegmentedControl } from "./ConfigPickers";
 import { McpPicker } from "./McpPicker";
 import { useEffortFocus } from "./effortFocus";
 import { useAgentFontZoomSurface } from "./fontZoom";
@@ -170,6 +170,8 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
   const review = useAgents((s) => s.groupedChanges.get(id));
   const changes = grouped ? (review?.uncommitted ?? null) : (sinceStart ?? null);
   const commits = grouped ? (review?.commits ?? []) : [];
+  const scope = useChangesOptions((s) => s.scope);
+  const lastTurn = useAgents((s) => s.turnChanges.get(id));
   const project = useProject((s) => s.project);
   const head = useLocalHead(
     task?.isolation === "local" ? task.status : null,
@@ -313,9 +315,10 @@ function TaskSession({ id, docked }: { id: string; docked: boolean }) {
       {changesOpen && (
         <ChangesPane
           task={task}
-          changes={changes ?? null}
-          commits={commits}
-          grouped={grouped}
+          changes={scope === "turn" ? (lastTurn ?? null) : changes}
+          commits={scope === "turn" ? [] : commits}
+          grouped={grouped && scope === "task"}
+          scope={scope}
           head={head}
           docked={docked}
           onHide={() => setChangesOpen(false)}
@@ -3252,6 +3255,7 @@ function ChangesPane({
   changes,
   commits,
   grouped,
+  scope,
   head,
   docked,
   onHide,
@@ -3260,20 +3264,22 @@ function ChangesPane({
   changes: AgentChange[] | null;
   commits: readonly AgentCommit[];
   grouped: boolean;
+  scope: ChangesScope;
   head: string | null;
   docked: boolean;
   onHide: () => void;
 }) {
-  // The two views key their rows differently: a selection doesn't carry over.
+  // The views key their rows differently, and list different changes: a selection doesn't carry over.
+  const view = scope === "turn" ? "turn" : grouped ? "grouped" : "flat";
   const [selection, setSelection] = useState<{
-    grouped: boolean;
+    view: string;
     keys: ReadonlySet<string>;
   }>(() => ({
-    grouped,
+    view,
     keys: NO_SELECTION,
   }));
-  const selected = selection.grouped === grouped ? selection.keys : NO_SELECTION;
-  const setSelected = (keys: ReadonlySet<string>) => setSelection({ grouped, keys });
+  const selected = selection.view === view ? selection.keys : NO_SELECTION;
+  const setSelected = (keys: ReadonlySet<string>) => setSelection({ view, keys });
   const rows = useMemo(() => changeRows(changes ?? [], commits, grouped), [changes, commits, grouped]);
   // Only the working files roll back; a commit's files are history.
   const rollbackable = useMemo(() => {
@@ -3306,13 +3312,17 @@ function ChangesPane({
               : tx`Roll back the changes to ${count} files?`}
           </p>
           <p>
-            {grouped
-              ? tx("They go back to the last commit; changes made after it are lost.")
-              : task.isolation === "worktree"
-                ? tx("They go back to how they were when the task started, in the task's worktree.")
-                : tx(
-                    "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
-                  )}
+            {scope === "turn"
+              ? tx(
+                  "They go back to how they were when the last turn started. Edits of yours made to them since then are lost too.",
+                )
+              : grouped
+                ? tx("They go back to the last commit; changes made after it are lost.")
+                : task.isolation === "worktree"
+                  ? tx("They go back to how they were when the task started, in the task's worktree.")
+                  : tx(
+                      "They go back to how they were when the task started. Edits of yours made to them since then are lost too; edits from before the task are kept.",
+                    )}
           </p>
         </>
       ),
@@ -3324,7 +3334,7 @@ function ChangesPane({
       await rollbackChanges(
         task.id,
         picked.length ? picked.map((c) => c.relPath) : null,
-        grouped ? "group" : "sinceStart",
+        scope === "turn" ? "lastTurn" : grouped ? "group" : "sinceStart",
       );
       setSelected(new Set());
     } catch (e) {
@@ -3336,10 +3346,11 @@ function ChangesPane({
     }
   };
   const accept = async () => {
-    // Accepting brings over the task's whole work, committed or not: grouping only changes the listing.
+    // Accepting brings over the task's whole work, committed or not: grouping and the last turn
+    // only change the listing.
     const all =
-      grouped && !picked.length
-        ? await call(commands.agentChanges(task.id)).catch(() => changes ?? [])
+      (grouped || scope === "turn") && !picked.length
+        ? await call(commands.agentChanges(task.id, null)).catch(() => changes ?? [])
         : (changes ?? []);
     const targets = picked.length ? picked : all;
     const count = targets.length;
@@ -3414,7 +3425,7 @@ function ChangesPane({
           onClick={() => void rollback()}
         />
         <IconButton icon="refresh" title="Refresh" onClick={() => void refreshChanges(task.id)} />
-        {task.isolation === "worktree" && (
+        {task.isolation === "worktree" && scope === "task" && (
           <IconButton
             icon="eye"
             title="View Options"
@@ -3437,9 +3448,29 @@ function ChangesPane({
         )}
         {!docked && <IconButton icon="chevron-right" title={tx("Hide changes")} size="small" onClick={onHide} />}
       </div>
-      {(grouped || head || task.base) && (
+      <div className={styles.changesScope}>
+        <SegmentedControl
+          ariaLabel={tx("Changes to show")}
+          options={[
+            { value: "task", label: tx("Whole Task") },
+            { value: "turn", label: tx("Last Turn") },
+          ]}
+          value={scope}
+          onChange={(value) => {
+            setChangesOptions({ scope: value === "turn" ? "turn" : "task" });
+            void refreshChanges(task.id);
+          }}
+        />
+      </div>
+      {(scope === "turn" || grouped || head || task.base) && (
         <div className={styles.changesSummary}>
-          <T>vs</T> {grouped ? "HEAD" : (head ?? task.base)}
+          {scope === "turn" ? (
+            <T>Since the last turn started</T>
+          ) : (
+            <>
+              <T>vs</T> {grouped ? "HEAD" : (head ?? task.base)}
+            </>
+          )}
           {changes && changes.length > 0 && (
             <>
               {"  "}
@@ -3453,7 +3484,7 @@ function ChangesPane({
           <Spinner />
         ) : (
           <Tree<ChangeRow>
-            key={grouped ? "grouped" : "flat"}
+            key={view}
             aria-label="Changed files"
             roots={rows}
             getKey={(n) => n.key}
@@ -3472,7 +3503,7 @@ function ChangesPane({
               if (n.type === "file") {
                 if (n.commit) void openCommitDiff(task, n.commit, n.change.path);
                 else if (grouped) void openUncommittedDiff(task, n.change.path);
-                else void openChangeDiff(task, n.change.path);
+                else void openChangeDiff(task, n.change.path, scope);
               } else if (n.type === "commit") {
                 void openCommitDiff(task, n.commit, n.commit.files[0]?.path ?? "");
               }
@@ -3529,7 +3560,7 @@ function ChangesPane({
             }}
             empty={
               <div className={styles.changesEmpty}>
-                <T>No changes yet</T>
+                {scope === "turn" ? <T>The last turn changed no files</T> : <T>No changes yet</T>}
               </div>
             }
           />
@@ -3539,15 +3570,18 @@ function ChangesPane({
   );
 }
 
-/** Opens the diff of `path` between the task's start and now. */
-export async function openChangeDiff(task: AgentTask, path: string) {
-  const changed = (useAgents.getState().changes.get(task.id) ?? []).map((change) => change.path);
+/** Opens the diff of `path` between the task's start (or its last turn's) and now. */
+export async function openChangeDiff(task: AgentTask, path: string, scope: ChangesScope = "task") {
+  const { changes, turnChanges } = useAgents.getState();
+  const changed = ((scope === "turn" ? turnChanges : changes).get(task.id) ?? []).map((change) => change.path);
   const paths = changed.includes(path) ? changed : [path];
-  const baseLabel = task.base ?? "Base";
+  const baseLabel = scope === "turn" ? tx("Before Last Turn") : (task.base ?? "Base");
   const right = task.isolation === "worktree" ? branchLabel(task.branch) : "Working tree";
   const diffs = await Promise.all(
     paths.map(async (file): Promise<DiffData> => {
-      const base = await call(commands.agentBaseText(task.id, file)).catch(() => null);
+      const base = await call(commands.agentBaseText(task.id, file, scope === "turn" ? "lastTurn" : null)).catch(
+        () => null,
+      );
       return {
         path: file,
         left: { type: "text", text: base ?? "", label: baseLabel },

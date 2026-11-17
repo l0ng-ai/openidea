@@ -359,6 +359,9 @@ struct TaskFile {
     /// `None` for a worktree task, and a task saved before these were recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     touched: Option<BTreeSet<String>>,
+    /// The checkout as the last turn started, its copies in the store's `<id>.turn` folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    turn: Option<worktree::TurnStart>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagents: Vec<SavedSubagent>,
     /// Turns to drop from the session once it is loaded (a fork of an earlier point).
@@ -382,6 +385,8 @@ struct TaskState {
     saved: Option<String>,
     /// See `TaskFile::touched`.
     touched: Option<Arc<BTreeSet<String>>>,
+    /// See `TaskFile::turn`.
+    turn: Option<Arc<worktree::TurnStart>>,
     pending_rollback: u32,
     /// The user named the task; see `TaskFile::title_renamed`.
     title_renamed: bool,
@@ -751,6 +756,7 @@ impl AgentManager {
             before: BTreeMap::new(),
             saved: None,
             touched: Some(BTreeSet::new()),
+            turn: None,
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
@@ -864,6 +870,7 @@ impl AgentManager {
             before,
             saved,
             touched: (req.isolation == Isolation::Local).then(BTreeSet::new),
+            turn: None,
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
@@ -1187,6 +1194,8 @@ impl AgentManager {
                 before: (*s.before).clone(),
                 saved: s.saved.clone(),
                 touched: s.touched.as_deref().cloned(),
+                // The source's next turn replaces its copies: the fork's last turn is one of its own.
+                turn: None,
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
@@ -1526,6 +1535,7 @@ impl AgentManager {
         self.tasks.write().remove(id);
         *task.deleted.lock() = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
+        let _ = std::fs::remove_dir_all(task.turn_dir());
         let saved = task.state.lock().saved.clone();
         if let Some(saved) = saved
             && !self.tasks.read().values().any(|t| t.state.lock().saved.as_ref() == Some(&saved))
@@ -1568,18 +1578,47 @@ impl AgentManager {
         .await
     }
 
-    /// Content of `path` (in the task's directory) when the task started.
-    pub async fn base_text(&self, id: &str, path: PathBuf) -> IdeResult<Option<String>> {
-        let at = self.task(id)?.base();
-        blocking(move || match at.rev()? {
-            Some(rev) => worktree::file_at(at.cwd(), &path, &rev),
-            None => Ok(None),
+    /// The files the task's last turn changed, against the checkout as it started (while a
+    /// turn runs: that turn's so far). None before the task's first turn.
+    pub async fn turn_changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
+        let (cwd, turn, dir) = self.task(id)?.last_turn();
+        let Some(turn) = turn else { return Ok(Vec::new()) };
+        blocking(move || {
+            let changed = match &turn.changed {
+                Some(changed) => changed.clone(),
+                None => worktree::changed_in_turn(&cwd, &turn)?.1,
+            };
+            worktree::turn_changes(&cwd, &turn, &dir, &changed)
+        })
+        .await
+    }
+
+    /// Content of `path` (in the task's directory) as `view` compares it: when the task
+    /// started, in `HEAD`, or when the last turn started.
+    pub async fn base_text(&self, id: &str, path: PathBuf, view: AgentChangesView) -> IdeResult<Option<String>> {
+        let task = self.task(id)?;
+        if view == AgentChangesView::LastTurn {
+            let (cwd, turn, dir) = task.last_turn();
+            let Some(turn) = turn else { return Ok(None) };
+            return blocking(move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
+        }
+        let at = task.base();
+        blocking(move || {
+            let rev = match view {
+                AgentChangesView::Group => worktree::head_commit(at.cwd())?,
+                _ => at.rev()?,
+            };
+            match rev {
+                Some(rev) => worktree::file_at(at.cwd(), &path, &rev),
+                None => Ok(None),
+            }
         })
         .await
     }
 
     /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as
-    /// `view` compares them: as they were when it started, or as they are in `HEAD`.
+    /// `view` compares them: as they were when it started, as they are in `HEAD`, or as they
+    /// were when its last turn started.
     pub async fn rollback_changes(
         &self,
         id: &str,
@@ -1590,15 +1629,18 @@ impl AgentManager {
         if task.state.lock().busy {
             return Err(IdeError::invalid("the agent is working: stop it before rolling back its changes"));
         }
+        if view == AgentChangesView::LastTurn {
+            return self.rollback_turn(&task, rel_paths).await;
+        }
         let at = task.base();
         let (before, saved, touched) = {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)), s.touched.clone())
         };
-        let restamped = blocking(move || {
+        let (restamped, restored) = blocking(move || {
             let (changes, rev) = match view {
                 AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
-                AgentChangesView::SinceStart => (at.changes(&before)?, at.rev()?),
+                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before)?, at.rev()?),
             };
             let changes = worktree::made_by_task(changes, touched.as_deref());
             let sources = match rev.as_deref() {
@@ -1606,6 +1648,7 @@ impl AgentManager {
                 None => Default::default(),
             };
             let mut restamped = Vec::new();
+            let mut restored = Vec::new();
             for change in changes.iter().filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path))) {
                 // A rename goes back to its old path too; the new one is taken away first, so a
                 // case-only rename on a case-insensitive disk ends as the old file.
@@ -1615,6 +1658,58 @@ impl AgentManager {
                     if before.contains_key(&change.rel_path) {
                         restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
                     }
+                    restored.push(change.rel_path.clone());
+                }
+            }
+            Ok((restamped, restored))
+        })
+        .await?;
+        {
+            let mut s = task.state.lock();
+            if !restamped.is_empty() {
+                let mut before = (*s.before).clone();
+                before.extend(restamped);
+                s.before = Arc::new(before);
+            }
+            // Rolled back further than the last turn: what it changed there is gone, not the turn's to list.
+            if let Some(turn) = &s.turn
+                && let Some(changed) = &turn.changed
+                && restored.iter().any(|rel| changed.contains(rel))
+            {
+                let changed = changed.iter().filter(|rel| !restored.contains(rel)).cloned().collect();
+                s.turn = Some(Arc::new(worktree::TurnStart { changed: Some(changed), ..(**turn).clone() }));
+            }
+        }
+        task.persist();
+        Ok(())
+    }
+
+    /// Puts the last turn's changed files among `rel_paths` (all with `None`) back as they
+    /// were when it started.
+    async fn rollback_turn(&self, task: &Task, rel_paths: Option<Vec<String>>) -> IdeResult<()> {
+        let (cwd, turn, dir) = task.last_turn();
+        let Some(turn) = turn else { return Ok(()) };
+        let (before, saved) = {
+            let s = task.state.lock();
+            (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
+        };
+        let restamped = blocking(move || {
+            let changed = match &turn.changed {
+                Some(changed) => changed.clone(),
+                None => worktree::changed_in_turn(&cwd, &turn)?.1,
+            };
+            let mut restamped = Vec::new();
+            for change in worktree::turn_changes(&cwd, &turn, &dir, &changed)?
+                .iter()
+                .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
+            {
+                worktree::restore_turn(&cwd, &turn, &dir, change)?;
+                // Back to the user's own edits from before the task: not a change of the task.
+                if let Some(Some(_)) = before.get(&change.rel_path)
+                    && let Some(copy) = saved.as_deref().and_then(|d| worktree::saved_copy(d, &change.rel_path))
+                    && std::fs::read(&change.path.0).is_ok_and(|now| now == copy)
+                {
+                    restamped.push((change.rel_path.clone(), worktree::stamp(&change.path.0)));
                 }
             }
             Ok(restamped)
@@ -1750,6 +1845,7 @@ impl Task {
                 before: Arc::new(file.before),
                 saved: file.saved,
                 touched: file.touched.map(Arc::new),
+                turn: file.turn.map(Arc::new),
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
                 busy: false,
@@ -1782,31 +1878,48 @@ impl Task {
         (s.before.clone(), s.touched.clone())
     }
 
-    /// The changed files of the checkout as a turn starts, when the task records what its turns change.
-    async fn checkout_before_turn(&self) -> Option<Snapshot> {
-        let cwd = {
-            let s = self.state.lock();
-            s.touched.as_ref()?;
-            s.task.cwd.0.clone()
-        };
-        blocking(move || worktree::snapshot(&cwd)).await.ok()
+    /// Where the copies of the files already changed as the last turn started are kept.
+    fn turn_dir(&self) -> PathBuf {
+        self.shared.paths.store_dir.join(format!("{}.turn", self.id))
     }
 
-    /// Records the files that changed in the checkout since `start`, as the turn ends, as the task's.
-    async fn record_turn_changes(&self, start: Option<Snapshot>) {
-        let Some(start) = start else { return };
-        let cwd = self.state.lock().task.cwd.0.clone();
-        let Ok(end) = blocking(move || worktree::snapshot(&cwd)).await else { return };
-        let changed = worktree::changed_between(&start, &end);
-        if changed.is_empty() {
-            return;
-        }
+    /// The checkout as the last turn started, with the folder of its copies.
+    fn last_turn(&self) -> (PathBuf, Option<Arc<worktree::TurnStart>>, PathBuf) {
+        let s = self.state.lock();
+        (s.task.cwd.0.clone(), s.turn.clone(), self.turn_dir())
+    }
+
+    /// Records the checkout as a turn starts: what the turn's changes are compared with.
+    async fn checkout_before_turn(&self) {
+        let (cwd, previous, dir) = self.last_turn();
+        let turn = match blocking(move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
+            Ok(turn) => Some(Arc::new(turn)),
+            Err(e) => {
+                tracing::warn!("recording the checkout as a turn of agent task {} starts: {e}", self.id);
+                None
+            }
+        };
+        self.state.lock().turn = turn;
+        self.persist();
+    }
+
+    /// Records the files that changed in the checkout while the turn ran: the turn's, and in
+    /// the project's own checkout also the task's.
+    async fn record_turn_changes(&self) {
+        let (cwd, turn, _) = self.last_turn();
+        let Some(turn) = turn else { return };
+        let start = turn.clone();
+        let Ok((in_worktree, all)) = blocking(move || worktree::changed_in_turn(&cwd, &start)).await else { return };
         {
             let mut s = self.state.lock();
-            let Some(touched) = &s.touched else { return };
-            let mut touched = (**touched).clone();
-            touched.extend(changed);
-            s.touched = Some(Arc::new(touched));
+            if !in_worktree.is_empty()
+                && let Some(touched) = &s.touched
+            {
+                let mut touched = (**touched).clone();
+                touched.extend(in_worktree);
+                s.touched = Some(Arc::new(touched));
+            }
+            s.turn = Some(Arc::new(worktree::TurnStart { changed: Some(all), ..(*turn).clone() }));
         }
         self.persist();
     }
@@ -1923,6 +2036,7 @@ impl Task {
                 before: (*s.before).clone(),
                 saved: s.saved.clone(),
                 touched: s.touched.as_deref().cloned(),
+                turn: s.turn.as_deref().cloned(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
@@ -1974,11 +2088,11 @@ impl Task {
     /// the user stops one. The caller set `busy`.
     async fn run(self: Arc<Self>, mut prompt: AgentPrompt) {
         loop {
-            let start = self.checkout_before_turn().await;
+            self.checkout_before_turn().await;
             let result = self.turn(&prompt).await;
             self.cancel_pending.store(false, Ordering::Release);
             tokio::time::sleep(TURN_GRACE).await;
-            self.record_turn_changes(start).await;
+            self.record_turn_changes().await;
             let changed = self.state.lock().conversation.end_turn(Some(now_ms()));
             self.mark_dirty(changed);
             let send_now = self.send_now.swap(false, Ordering::AcqRel);
