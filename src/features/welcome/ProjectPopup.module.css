@@ -89,6 +89,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A recent project whose folder is gone. */
+.name.unavailable {
+  color: var(--fg-subtle);
+}
 .branch {
   display: inline-flex;
   align-items: center;

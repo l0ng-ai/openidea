@@ -332,9 +332,10 @@ impl<'t> Finder<'_, 't> {
 
     /// Subtrees where calls that exit before the root can be: the statement holding
     /// the chain, or, for a chain in a compound statement's header, that statement.
-    /// For an `else if` also the conditions of the `if`s before it, which all ran;
-    /// their branch bodies did not, since the later condition is only reached when
-    /// they were skipped.
+    /// For an `else if` also the conditions of the `if`s before it that start on the
+    /// line the trace starts from (`} else if` on a line of its own stops after they
+    /// ran); their branch bodies never count, since the later condition is only
+    /// reached when they were skipped.
     fn skip_regions(&self, anchor: Node<'t>, scope: Node<'t>) -> Vec<Node<'t>> {
         let is_statement = |n: Node| n.kind().ends_with("_statement") || n.kind() == "switch_expression";
         if anchor.kind() != "method_invocation" {
@@ -344,12 +345,13 @@ impl<'t> Finder<'_, 't> {
             .take_while(|n| *n != scope)
             .find(|n| is_statement(*n))
             .unwrap_or(anchor);
+        let stop_row = anchor.start_position().row;
         let mut regions = vec![region];
         while let Some(outer) = region
             .parent()
             .filter(|p| p.kind() == "if_statement" && p.child_by_field_name("alternative") == Some(region))
         {
-            regions.extend(outer.child_by_field_name("condition"));
+            regions.extend(outer.child_by_field_name("condition").filter(|c| c.start_position().row >= stop_row));
             region = outer;
         }
         regions

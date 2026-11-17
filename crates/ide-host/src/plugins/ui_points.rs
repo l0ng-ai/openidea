@@ -13,6 +13,7 @@
 //! [[contributes.keymaps]]
 //! command = "check"
 //! key = "Ctrl+Alt+C"               # `mac` for a different binding on macOS (`Meta+Alt+C`)
+//! # key = "Escape" + when = "…"     # API 1.10: Escape in an editor that the IDE had no use for
 //!
 //! [[contributes.statusBar]]
 //! id = "branch"
@@ -203,7 +204,15 @@ struct KeymapDecl {
     key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mac: Option<String>,
+    /// Only with an `Escape` binding (API 1.10): when the command clears something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    when: Option<String>,
 }
+
+/// The one plain key a plugin may bind (API 1.10): in a focused editor, after the IDE's own uses of
+/// Escape (popups, completion, rename, selection, extra carets, Vim) found nothing to do, like a
+/// handler at the end of IDEA's EditorEscape chain.
+const ESCAPE: &str = "Escape";
 
 const MODIFIERS: [&str; 4] = ["Meta", "Ctrl", "Alt", "Shift"];
 const NAMED_KEYS: [&str; 22] = [
@@ -262,9 +271,21 @@ pub fn validate_binding(binding: &str) -> Result<(), String> {
 pub(super) fn keymap(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     let d: KeymapDecl = decode(KEYMAPS, decl)?;
     declared_command(pkg, KEYMAPS, &d.command)?;
-    validate_binding(&d.key).map_err(|e| format!("contributes.keymaps: {e}"))?;
-    if let Some(m) = &d.mac {
-        validate_binding(m).map_err(|e| format!("contributes.keymaps: {e}"))?;
+    let escape = d.key == ESCAPE || d.mac.as_deref() == Some(ESCAPE);
+    if escape {
+        if d.key != ESCAPE || d.mac.as_deref().is_some_and(|m| m != ESCAPE) {
+            return Err("contributes.keymaps: an Escape binding is Escape on every platform".into());
+        }
+        pkg.manifest.needs_api("contributes.keymaps key = \"Escape\"", 10)?;
+        let when = d.when.as_deref().ok_or("contributes.keymaps: an Escape binding needs a `when` clause")?;
+        validate_when(when).map_err(|e| format!("contributes.keymaps: {e}"))?;
+    } else if d.when.is_some() {
+        return Err("contributes.keymaps: `when` is only for an Escape binding".into());
+    }
+    for binding in std::iter::once(&d.key).chain(&d.mac) {
+        if binding != ESCAPE {
+            validate_binding(binding).map_err(|e| format!("contributes.keymaps: {e}"))?;
+        }
     }
     Ok(UiDecl::new(d.command.clone(), d.key.clone(), json(&d)?))
 }
@@ -1115,6 +1136,37 @@ mod tests {
     }
 
     #[test]
+    fn escape_bindings_need_api_1_10_and_a_when_clause() {
+        let pkg = |api: &str| {
+            let manifest = ide_extension::Manifest::parse(&format!(
+                "id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='{api}'\n[[contributes.commands]]\nid='clear'\ntitle='Clear'"
+            ))
+            .unwrap();
+            Package::new(manifest, std::path::PathBuf::from("/unused"))
+        };
+        let check = |api: &str, decl: &str| keymap(&pkg(api), toml::from_str(decl).unwrap());
+        let escape = "command='clear'\nkey='Escape'\nwhen='plugin.test.active'";
+        let ok = check("^1.10", escape).unwrap();
+        assert_eq!(ok.json["when"], "plugin.test.active");
+        assert!(check("^1.10", &format!("{escape}\nmac='Escape'")).is_ok());
+        for (api, decl, error) in [
+            ("^1.9", escape, "1.10"),
+            ("^1.10", "command='clear'\nkey='Escape'", "when"),
+            ("^1.10", "command='clear'\nkey='Escape'\nwhen='a &&'", "when"),
+            ("^1.10", &format!("{escape}\nmac='Meta+K'") as &str, "every platform"),
+            ("^1.10", "command='clear'\nkey='Ctrl+K'\nmac='Escape'\nwhen='x'", "every platform"),
+            ("^1.10", "command='clear'\nkey='Ctrl+K'\nwhen='x'", "only for an Escape"),
+            ("^1.10", "command='clear'\nkey='Enter'", "needs Ctrl"),
+            ("^1.10", "command='clear'\nkey='Shift+Escape'", "needs Ctrl"),
+        ] {
+            let err = check(api, decl).unwrap_err();
+            assert!(err.contains(error), "{api} {decl}\n→ {err}");
+        }
+        // Other bindings are unchanged.
+        assert!(check("^1.9", "command='clear'\nkey='Ctrl+Alt+C'").is_ok());
+    }
+
+    #[test]
     fn bindings_need_a_modifier() {
         for ok in ["Ctrl+Alt+C", "Meta+Shift+K", "F5", "Shift+F6", "Meta+K Meta+C", "Alt+Enter"] {
             assert!(validate_binding(ok).is_ok(), "{ok}");
@@ -1243,7 +1295,8 @@ mod tests {
     #[test]
     fn editor_panels_validate_api_width_when_capability_and_page() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/editor-panel");
-        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap();
+        // A Windows checkout may have CRLF line ends; the edits below match on `\n`.
+        let source = std::fs::read_to_string(root.join("plugin.toml")).unwrap().replace("\r\n", "\n");
         let check = |source: &str| {
             let manifest = ide_extension::Manifest::parse(source)?;
             let decl = manifest.declarations(EDITOR_PANELS).into_iter().next().unwrap();

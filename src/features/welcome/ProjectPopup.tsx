@@ -4,7 +4,7 @@ import { executeAction, useActions } from "@/platform/actions";
 import { call, commands, isTauri, type OpenProject, type RecentProject } from "@/platform/ipc";
 import { HighlightedText, Icon, Popup, showContextMenu, type IconName, T } from "@/ui";
 import type { ProjectPopupProps } from "@/workbench/contributions";
-import { askRemoveRecent, ProjectBadge, recentMenu } from "./RecentList";
+import { askRemoveRecent, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { filterRecent, loadRecent, openRecent, useRecent, type RecentMatch } from "./recent";
 import styles from "./ProjectPopup.module.css";
 import { tx } from "@/platform/i18n";
@@ -197,11 +197,11 @@ function Header({ first, children }: { first: boolean; children: ReactNode }) {
 function ProjectRow({ m, active }: { m: RecentMatch; active: boolean }) {
   return (
     <>
-      <ProjectBadge name={m.project.name} className={styles.badge} />
-      <span className={styles.text}>
+      <ProjectBadge name={m.project.name} className={styles.badge} missing={!!m.project.missing} />
+      <span className={styles.text} title={unavailableTitle(m.project)}>
         <span className={styles.top}>
           <HighlightedText
-            className={styles.name}
+            className={clsx(styles.name, m.project.missing && styles.unavailable)}
             text={m.project.name}
             indices={m.nameMatch}
             tone={active ? "accent" : "strong"}

@@ -34,6 +34,7 @@ vi.mock("@/workbench/contributions", () => ({
 }));
 import { isStatusWidgetAvailable } from "@/workbench/statusBarWidgets";
 import { activatePythonStatus, interpreterChoices, isPythonPath, nearMember } from "../languages/PythonStatus";
+import { rememberSdk, useSdks } from "../languages/api";
 
 let dispose: () => void;
 beforeEach(() => {
@@ -50,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   dispose();
+  useSdks.setState({ byKind: {} });
 });
 
 const mount = () => {
@@ -209,6 +211,24 @@ describe("Python interpreter status", () => {
     act(() => useProject.setState({ project: { root: "/other" } as ProjectInfo }));
     await act(async () => finish([{ path: "/old/python", name: "Python 3.12" } as Sdk]));
     expect(screen.queryByRole("button")).toBeNull();
+  });
+  it("picks up an environment created outside the project", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const python = "C:\\Users\\me\\miniconda3\\envs\\demo\\python.exe";
+      useProject.setState({ settings: { languages: { python: { interpreter: python } } } as never });
+      mocks.files.mockResolvedValue([{ path: "/project/main.py" }]);
+      mount();
+      await screen.findByRole("button", { name: "Python Interpreter: Invalid interpreter" });
+      // conda creates the environment in its envs directory, the configured path stays the same.
+      mocks.effective.mockResolvedValue(python);
+      act(() => rememberSdk("python", { path: python, name: "Python 3.12 (demo)", source: "conda" } as Sdk));
+      await act(() => vi.advanceTimersByTimeAsync(400));
+      await screen.findByRole("button", { name: "Python Interpreter: Python 3.12 (demo)" });
+      expect(mocks.detect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("opens the Python page for both settings entries", async () => {
     const run = vi.fn();

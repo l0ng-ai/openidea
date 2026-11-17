@@ -1320,6 +1320,59 @@ fn an_existing_conda_environment_is_not_recreated() {
 }
 
 #[test]
+fn conda_creates_named_environments_in_its_envs_directory() {
+    use crate::python::conda_create_args;
+    use std::path::Path;
+    assert_eq!(conda_create_args(Path::new("demo"), Some("3.12.4")), ["create", "-n", "demo", "-y", "python=3.12"]);
+    assert_eq!(conda_create_args(Path::new("/work/app/.conda"), None), ["create", "-p", "/work/app/.conda", "-y"]);
+    for path in [r"C:\envs\demo", "envs/demo", "D:demo", ".."] {
+        assert_eq!(conda_create_args(Path::new(path), None)[1], "-p", "{path}");
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_named_conda_environment_is_found_where_conda_put_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("miniconda3");
+    let conda = tmp.path().join("conda");
+    // `create -n <name>` makes <root>/envs/<name> with a copy of the base python; `env list` names every env.
+    let python = tmp.path().join("python");
+    std::fs::write(&python, "#!/bin/sh\necho 'Python 3.12.1'\n").unwrap();
+    std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        &conda,
+        format!(
+            "#!/bin/sh\nroot='{root}'\nif [ \"$1\" = env ]; then echo '# conda environments:'; echo \"base  $root\"; \
+             for e in \"$root\"/envs/*/; do [ -d \"$e\" ] && echo \"$(basename \"$e\")  ${{e%/}}\"; done; exit 0; fi\n\
+             [ \"$1 $2\" = 'create -n' ] || exit 2\nmkdir -p \"$root/envs/$3/bin\"\ncp '{python}' \"$root/envs/$3/bin/python\"\necho created\n",
+            root = root.display(),
+            python = python.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&conda, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let base = python.clone();
+    let which = |tool: &str| (tool == "conda").then(|| conda.clone());
+    let create = || {
+        crate::python::create_venv_with(
+            crate::python::VenvTool::Conda,
+            &base,
+            Path::new("ds"),
+            which,
+            &Default::default(),
+            &|_| {},
+        )
+    };
+    let sdk = create().unwrap();
+    assert_eq!(&*sdk.path, root.join("envs/ds/bin/python").as_path());
+    let again = create().unwrap_err();
+    assert!(again.message.contains("named ds already exists"), "{}", again.message);
+}
+
+#[test]
 fn neutral_dir_is_fresh_and_empty() {
     let a = crate::python::neutral_dir().unwrap();
     let b = crate::python::neutral_dir().unwrap();

@@ -22,6 +22,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "editor.fontSize",
   "editor.lineHeight",
   "editor.ligatures",
+  "editor.onlyMonospacedFonts",
   "editor.fallbackFont",
   "editor.fontWeight",
   "editor.boldFontWeight",

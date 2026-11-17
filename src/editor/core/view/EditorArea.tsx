@@ -13,6 +13,7 @@ import { executeAction } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { useEditorPrefs } from "@/platform/editorSettings";
 import { basename, dirname } from "@/platform/project";
+import { gitRevisionOf } from "@/platform/virtualDocs";
 import {
   EDITOR_TAB_MIME,
   acceptsEditorDrop,
@@ -204,7 +205,7 @@ function PaneView({ paneId }: { paneId: string }) {
         : t.input.kind === "file" && t.input.path
           ? (hints.get(t.input.path) ?? null)
           : names.filter((n) => n === name).length > 1 && t.input.path
-            ? basename(dirname(t.input.path))
+            ? (gitRevisionOf(t.input.path)?.revision.slice(0, 8) ?? basename(dirname(t.input.path)))
             : null;
       const kindMark = tabTrailing(t.input, kinds);
       const pin = t.pinned ? <Icon name="pin" size={11} className={styles.pin} label="Pinned" /> : null;

@@ -161,14 +161,30 @@
 .preview :global([data-mermaid-state="ok"] > pre) {
   display: none;
 }
+.preview :global([align="left" i]) {
+  --mermaid-align: left;
+  --mermaid-margin-left: 0;
+  --mermaid-margin-right: auto;
+}
+.preview :global([align="right" i]) {
+  --mermaid-align: right;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: 0;
+}
+.preview :global([align="center" i]),
+.preview :global(center) {
+  --mermaid-align: center;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: auto;
+}
 .preview :global(.mermaid-output) {
   overflow-x: auto;
   overflow-y: hidden;
-  text-align: center;
+  text-align: var(--mermaid-align, center);
 }
 .preview :global(.mermaid-output svg[data-natural-width]) {
   display: block;
-  margin: 0 auto;
+  margin: 0 var(--mermaid-margin-right, auto) 0 var(--mermaid-margin-left, auto);
   width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
   height: auto;
 }

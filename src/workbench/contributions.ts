@@ -880,6 +880,8 @@ export interface CommitService {
    * `null` without a repository.
    */
   changes(): Promise<CommitChanges | null>;
+  /** The draft's current revision: bumped whenever the message, Amend or the inclusion changes. */
+  revision(): number;
   /** Replaces the message if the draft is still at `revision`; false when it changed. */
   setMessage(revision: number, message: string): boolean;
 }

@@ -19,7 +19,7 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
-import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu } from "./RecentList";
+import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
 import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
 import type { RecentProjectGroup } from "@/platform/ipc";
 import styles from "./Welcome.module.css";
@@ -245,7 +245,7 @@ function ProjectRow({
       id={id}
       role="option"
       aria-selected={selected}
-      title={m.project.path}
+      title={unavailableTitle(m.project) ?? m.project.path}
       className={clsx(styles.project, nested && styles.projectNested, selected && styles.projectSelected)}
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => {
@@ -258,9 +258,14 @@ function ProjectRow({
         showContextMenu(e, recentMenu(m.project));
       }}
     >
-      <ProjectBadge name={m.project.name} className={styles.projectBadge} />
+      <ProjectBadge name={m.project.name} className={styles.projectBadge} missing={!!m.project.missing} />
       <span className={styles.projectText}>
-        <HighlightedText className={styles.projectName} text={m.project.name} indices={m.nameMatch} tone="strong" />
+        <HighlightedText
+          className={clsx(styles.projectName, m.project.missing && styles.unavailable)}
+          text={m.project.name}
+          indices={m.nameMatch}
+          tone="strong"
+        />
         {stage ? (
           <span className={styles.projectPath} role="status">
             {stage}

@@ -1017,6 +1017,8 @@ async function startRunIn(
     }
     if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     const agentNote = await remoteJavaAgentNote(started);
+    if (runtimes.get(sessionId)?.generation !== generation || getSession(sessionId)?.stopped)
+      return getSession(sessionId) ?? null;
     if (agentNote) enqueue(sessionId, { kind: "system", text: agentNote });
     const processStarted = performance.now();
     const request = { id: nextRequestId(), controller: new AbortController() };
@@ -1027,12 +1029,17 @@ async function startRunIn(
     }).finally(() => {
       if (rt.resolveRequest === request) delete rt.resolveRequest;
     });
-    if (request.controller.signal.aborted || getSession(sessionId)?.stopped) {
+    // Stopped, closed or started again meanwhile: nothing would own this process.
+    if (
+      request.controller.signal.aborted ||
+      !getSession(sessionId) ||
+      getSession(sessionId)?.stopped ||
+      runtimes.get(sessionId)?.generation !== generation
+    ) {
       await call(commands.runStop(info.id)).catch(() => undefined);
       return getSession(sessionId) ?? null;
     }
     console.info("Run process started", { name: config.name, ms: performance.now() - processStarted });
-    if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
     if (info.pty && rt.terminalSize) void commands.runResize(info.id, rt.terminalSize.cols, rt.terminalSize.rows);
     // The process may already have exited (fast commands) before we got its id.
     const exited = pendingExits.get(info.id);

@@ -60,3 +60,26 @@
 .area::placeholder {
   color: var(--fg-faint);
 }
+.pathRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.pathInput {
+  flex: 1;
+  min-width: 0;
+}
+.pathList {
+  height: 280px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 4px);
+}
+.entryName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}

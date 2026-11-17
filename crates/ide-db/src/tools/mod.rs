@@ -237,7 +237,7 @@ pub fn connection(tool: DbTool, source: &DataSource) -> (Vec<String>, Vec<(Strin
         args.push(format!("--username={}", source.user.trim()));
     }
     if !source.database.is_empty() {
-        args.push(format!("--dbname={}", source.database));
+        args.push(format!("--dbname={}", dbname_arg(&source.database)));
     }
     // Without a terminal a password prompt would wait forever: fail instead.
     args.push("--no-password".into());
@@ -269,6 +269,16 @@ pub fn connection(tool: DbTool, source: &DataSource) -> (Vec<String>, Vec<(Strin
         env.push(("PGOPTIONS".to_owned(), "-c default_transaction_read_only=on".to_owned()));
     }
     (args, env)
+}
+
+/// `--dbname` reads a connection string or URI as connection parameters: such a database name
+/// goes in quoted as the string's `dbname`, so it cannot pick another host or credentials.
+fn dbname_arg(name: &str) -> String {
+    if name.contains('=') || name.starts_with("postgresql://") || name.starts_with("postgres://") {
+        format!("dbname='{}'", name.replace('\\', "\\\\").replace('\'', "\\'"))
+    } else {
+        name.to_owned()
+    }
 }
 
 /// How a tool is started: connection arguments, then the job's, and the environment.
@@ -402,6 +412,18 @@ mod tests {
         assert_eq!(args, ["--host=db.example.test", "--port=6543", "--username=app", "--dbname=shop", "--no-password"]);
         assert!(env.contains(&("PGSSLMODE".into(), "prefer".into())));
         assert!(!env.iter().any(|(k, _)| k == "PGPASSWORD" || k == "PGOPTIONS"));
+    }
+
+    #[test]
+    fn a_database_named_like_connection_parameters_stays_a_name() {
+        for (name, arg) in [
+            ("host=evil.example dbname=p", r"--dbname=dbname='host=evil.example dbname=p'"),
+            (r"it's=\x", r"--dbname=dbname='it\'s=\\x'"),
+            ("postgresql://evil.example/p", "--dbname=dbname='postgresql://evil.example/p'"),
+        ] {
+            let (args, _) = connection(DbTool::PgDump, &DataSource { database: name.into(), ..pg() });
+            assert!(args.contains(&arg.to_owned()), "{args:?}");
+        }
     }
 
     #[test]

@@ -36,7 +36,7 @@ agent_rename                                 trusted            project_host bin
 agent_respond                                trusted            project_host bindings sync
 agent_rollback                               trusted            project_host bindings async
 agent_rollback_changes                       trusted            project_host bindings async
-agent_send_queued_now                        trusted            project_host bindings sync
+agent_send_queued_now                        trusted            project_host bindings async
 agent_set_command                            trusted            project_host bindings sync
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync
@@ -649,6 +649,7 @@ vcs_move_worktree                            trusted            project_host bin
 vcs_open_external_log                        always             project_host bindings async
 vcs_operation                                trusted            project_host bindings async
 vcs_patch_preview                            trusted            project_host bindings async
+vcs_pending_patch                            trusted            project_host bindings async
 vcs_rebase                                   trusted            project_host bindings async
 vcs_rebase_with                              trusted            project_host bindings async
 vcs_remote                                   trusted            project_host bindings async

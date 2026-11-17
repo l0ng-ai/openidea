@@ -841,6 +841,7 @@ export const commands = {
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
 	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
+	vcsPendingPatch: (repo: string | null, options: CommitOptions) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_pending_patch", { repo, options })),
 	vcsPatchPreview: (repo: string | null, patch: string) => typedError<PatchFile[], IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch })),
 	vcsApplyPatch: (repo: string | null, patch: string) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch })),
 	/**  Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them. */
@@ -5268,6 +5269,8 @@ export type EditorSettings_Deserialize = {
 	/**  Colours the rainbow bracket depth cycles through (2–5). */
 	rainbowBracketColors?: number,
 	ligatures?: boolean,
+	/**  Editor › Font and Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+	onlyMonospacedFonts?: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont?: string,
 	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
@@ -5326,6 +5329,8 @@ export type EditorSettings_Serialize = {
 	/**  Colours the rainbow bracket depth cycles through (2–5). */
 	rainbowBracketColors: number,
 	ligatures: boolean,
+	/**  Editor › Font and Tools › Terminal › Font: the font pickers list only monospaced fonts. */
+	onlyMonospacedFonts: boolean,
 	/**  Fallback font for glyphs the main font lacks; empty = none. */
 	fallbackFont: string,
 	/**  Typography Settings › Main font weight (CSS 100–900), as IDEA. */
@@ -9583,6 +9588,11 @@ export type RecentProject = {
 	 *  refreshes it from `.git/HEAD` when the list is shown.
 	 */
 	branch: string | null,
+	/**
+	 *  The local folder no longer exists (set by [`with_live_branches`] when the list is shown): the
+	 *  welcome screen shows the entry as unavailable.
+	 */
+	missing?: boolean,
 };
 
 /**  A named group of recent projects on the welcome screen (New Project Group…, Move to Group). */
@@ -11527,7 +11537,7 @@ export type VenvTool =
 "uv" | 
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
-/**  `conda create -p <location> -y` (conda must be on PATH). */
+/**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
 "conda";
 
 /**  What a view or custom editor shows. */

@@ -14,6 +14,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { editorService, notifications, registerFontZoomSurface } from "@/workbench/contributions";
+import { OutputActivity } from "./activity";
 import { fitScheduler, settledResize } from "./fit";
 import { watchWindowsPty, windowsPty } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
@@ -72,6 +73,13 @@ export interface SessionSnapshot {
    * view, so only its own report separates working from waiting for input.
    */
   progress: "active" | "cleared" | null;
+  /**
+   * The running command is at work (#3831): as its progress report says; without
+   * one, always for a plain command, and for an interactive program (an agent
+   * CLI, a REPL, an editor) only while it keeps producing output, not while it
+   * waits for input.
+   */
+  working: boolean;
   /** Current directory (initial cwd, updated by OSC 7). */
   cwd: string;
   /**
@@ -114,6 +122,8 @@ export interface SessionOptions {
 
 /** Mouse-tracking DEC private modes (X10, normal, button, any-event, encodings). */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
+/** Bracketed paste and the alternate screen: DEC private modes of a program that reads the keyboard itself. */
+const INPUT_MODES = new Set([47, 1047, 1049, 2004]);
 const CLEAR_SCROLLBACK_MARKER = "\x1b]133;OpenIDEA;ClearScrollback\x07";
 
 let audio: AudioContext | null = null;
@@ -257,6 +267,10 @@ export class TerminalSession {
   private commandStartedAt: number | null = null;
   /** Ctrl-C was typed while the current command ran: it was stopped, not finished. */
   private commandInterrupted = false;
+  private readonly activity = new OutputActivity();
+  private activityTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Input modes the running command asked for; see `interactive`. */
+  private readonly inputModes = new Set<number>();
   /** Bumped on restart so late output from a previous PTY is ignored. */
   private generation = 0;
   /** WebKitGTK delivers one IME commit' worth of text more than once; see `ImeCommitGate`. */
@@ -283,6 +297,7 @@ export class TerminalSession {
       appTitle: null,
       commandRunning: false,
       progress: null,
+      working: false,
       cwd: opts.cwd,
       unseenDone: false,
     };
@@ -357,6 +372,10 @@ export class TerminalSession {
       }),
       this.term.onData((data) => this.fromTerminal(data)),
       this.term.onBinary((data) => this.input(data)),
+      this.term.onWriteParsed(() => {
+        this.activity.output(Date.now());
+        this.syncWorking();
+      }),
       this.term.onTitleChange((title) => this.update({ appTitle: title.trim() || null })),
       // OSC 7: `file://host/path` — shells report their cwd so relative links resolve correctly.
       this.term.parser.registerOscHandler(7, (data) => {
@@ -376,6 +395,7 @@ export class TerminalSession {
           this.commandInterrupted = false;
           // A new command in the tab: the previous completion has been seen, and
           // the new program has not reported progress yet.
+          this.resetActivity();
           this.update({ commandRunning: true, unseenDone: false, progress: null });
         } else if (data === "D" || data.startsWith("D;")) {
           const status = data.length > 2 ? Number.parseInt(data.slice(2), 10) : Number.NaN;
@@ -383,6 +403,7 @@ export class TerminalSession {
           this.commandStartedAt = null;
           const interrupted = this.commandInterrupted;
           this.commandInterrupted = false;
+          this.resetActivity();
           this.update({ commandRunning: false, progress: null });
           // A D without a C (shell startup, a restored tab's first prompt) is
           // not a command finishing.
@@ -419,6 +440,8 @@ export class TerminalSession {
         if (!this.searchSelection && workflowSettings().terminal.copyOnSelection && this.term.hasSelection())
           this.copySelection();
       }),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => this.noteInputModes(params, true)),
+      this.term.parser.registerCsiHandler({ prefix: "?", final: "l" }, (params) => this.noteInputModes(params, false)),
       // Mouse reporting off: ignore the application's requests to enable mouse tracking.
       this.term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
         if (workflowSettings().terminal.mouseReporting) return false;
@@ -543,7 +566,52 @@ export class TerminalSession {
 
   private update(patch: Partial<SessionSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch };
+    this.snapshot.working = this.isWorking();
     this.opts.onChange(this.key, this.snapshot);
+  }
+
+  /**
+   * The running program takes input itself: it asked for bracketed paste or the
+   * alternate screen. Only its own requests count, not a mode an earlier program
+   * left on (one killed inside the alternate screen).
+   */
+  private get interactive(): boolean {
+    return this.inputModes.size > 0;
+  }
+
+  private noteInputModes(params: (number | number[])[], on: boolean): boolean {
+    for (const p of params) {
+      const mode = Array.isArray(p) ? p[0] : p;
+      if (mode === undefined || !INPUT_MODES.has(mode)) continue;
+      if (on) this.inputModes.add(mode);
+      else this.inputModes.delete(mode);
+    }
+    return false;
+  }
+
+  /** A command starts or ends: what the previous one asked for and drew no longer counts. */
+  private resetActivity() {
+    this.inputModes.clear();
+    this.activity.reset();
+  }
+
+  private isWorking(): boolean {
+    const { status, commandRunning, progress } = this.snapshot;
+    if (!commandRunning || status === "exited" || status === "error") return false;
+    if (progress) return progress === "active";
+    return !this.interactive || this.activity.active(Date.now());
+  }
+
+  /** Re-judges `working` after output, and again once the output has been quiet long enough. */
+  private syncWorking() {
+    if (this.disposed) return;
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
+    this.activityTimer = null;
+    const working = this.isWorking();
+    if (working !== this.snapshot.working) this.update({});
+    if (!this.snapshot.commandRunning || !this.interactive) return;
+    const wait = this.activity.quietAt - Date.now();
+    if (wait >= 0) this.activityTimer = setTimeout(() => this.syncWorking(), wait + 1);
   }
 
   private linksAt(y: number): ILink[] | undefined {
@@ -714,6 +782,7 @@ export class TerminalSession {
     if (this.disposed || this.snapshot.status === "starting" || this.snapshot.status === "running") return;
     const generation = ++this.generation;
     this.outputTail = "";
+    this.resetActivity();
     const custom = this.opts.command;
     this.update({
       status: "starting",
@@ -841,6 +910,7 @@ export class TerminalSession {
     }
     // Ctrl-C stops the running command: its D mark must not count as a completion (#3712).
     if (this.snapshot.commandRunning && data.includes("\x03")) this.commandInterrupted = true;
+    this.activity.input(Date.now());
     void call(commands.termWrite(this.ptyId, data)).catch((error) => {
       notifications().notify({
         level: "error",
@@ -971,6 +1041,7 @@ export class TerminalSession {
       this.opts.command?.onExit?.(null, true);
     this.fitter.cancel();
     this.ptyResize.cancel();
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
     this.pendingInput = "";
     this.resizeObserver?.disconnect();
     this.host.removeEventListener("mousedown", this.onMiddleClick);

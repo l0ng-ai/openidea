@@ -7,7 +7,7 @@
  */
 import { executeAction, type Action } from "@/platform/actions";
 import { editorPrefs } from "@/platform/editorSettings";
-import { discoverNerdFonts, uiFontFamily, uiIconFaces } from "@/platform/fonts";
+import { uiFontFamily, uiIconFaces } from "@/platform/fonts";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { loadSystemFonts, useSystemFontStore } from "@/platform/systemFonts";
@@ -278,8 +278,6 @@ export function installIconFont(root: HTMLElement = document.documentElement): (
       if (cancelled) return;
       const { fonts, source } = useSystemFontStore.getState();
       const installed = source === "native" ? fonts.map((font) => font.name) : undefined;
-      // The terminal's prompt-icon fallback picks up the same discovery (#3723).
-      if (installed) discoverNerdFonts(installed);
       const faces = uiIconFaces(installed);
       if (faces.length) root.style.setProperty("--font-icons", faces.join(", "));
     });

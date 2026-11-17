@@ -17,6 +17,8 @@ const tooltipSurface = {
  * the hover and signature tooltips.
  */
 const completionRowMetrics = {
+  // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
+  "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
   "--cm-completion-edge": "4px",
   "--cm-completion-inset": "6px",
   "--cm-completion-icon": "16px",
@@ -100,7 +102,7 @@ export const lspTheme = EditorView.theme({
     ...completionRowMetrics,
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-code)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     // CodeMirror anchors the popup at the completed word's start. Pull it left by one row's
     // leading inset so the labels, not the icon column, sit on the text. CodeMirror's horizontal
     // clamp measures the border box (margins excluded), so this offset sits outside its math:
@@ -117,15 +119,15 @@ export const lspTheme = EditorView.theme({
     fontWeight: "var(--fw-code, 400)",
     minWidth: "420px",
     maxWidth: "min(720px, 80vw)",
-    maxHeight: "calc(var(--h-list-row) * 11 + 8px)",
+    maxHeight: "calc(var(--cm-completion-row) * 11 + 8px)",
     padding: "4px 0",
   },
   ".cm-tooltip.cm-tooltip-autocomplete.cm-lsp-completion > ul > li": {
     display: "flex",
     alignItems: "center",
     gap: "var(--cm-completion-gap)",
-    height: "var(--h-list-row)",
-    lineHeight: "var(--h-list-row)",
+    height: "var(--cm-completion-row)",
+    lineHeight: "var(--cm-completion-row)",
     margin: "0 var(--cm-completion-edge)",
     padding: "0 8px 0 var(--cm-completion-inset)",
     borderRadius: "var(--radius-small)",
@@ -265,11 +267,11 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-signature": {
     fontFamily: "var(--openidea-editor-font, var(--font-mono))",
     fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-code)",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
     padding: "6px 10px",
     maxWidth: "640px",
   },
-  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "20px" },
+  ".cm-lsp-signature-row": { color: "var(--fg-subtle)", whiteSpace: "pre-wrap", lineHeight: "max(20px, 1.5em)" },
   ".cm-lsp-signature-active": {
     color: "var(--fg-strong)",
     backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",

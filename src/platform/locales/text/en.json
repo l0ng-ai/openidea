@@ -2042,6 +2042,7 @@
   "Enable openidea for this session": "Enable openidea for this session",
   "Agent Config": "Agent Config",
   "Active via {source}": "Active via {source}",
+  "Disabled for this session ({source})": "Disabled for this session ({source})",
   "Import into Global settings to toggle per session and share across agents": "Import into Global settings to toggle per session and share across agents",
   "No matching MCP servers.": "No matching MCP servers.",
   "Changes apply on the next message.": "Changes apply on the next message.",
@@ -2346,4 +2347,11 @@
   "Copy Link": "Copy Link",
   "Copy Path": "Copy Path",
   "Add to Message": "Add to Message"
+  "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.": "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.",
+  "Java Agents": "Java Agents",
+  "File at a Git revision (read-only).": "File at a Git revision (read-only).",
+  "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.": "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.",
+  "Appearance settings": "Appearance settings",
+  "No such file or folder": "No such file or folder",
+  "Choose a folder": "Choose a folder"
 }

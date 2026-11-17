@@ -172,9 +172,17 @@ fn root_skip_counts_sibling_chain_in_if_header() {
 }
 
 #[test]
-fn root_skip_counts_earlier_condition_of_else_if() {
+fn root_skip_leaves_out_an_earlier_condition_that_ran_before_the_stop() {
+    // Stopped on the `} else if` line, the first condition has already returned.
     let root = plan_of("C_PLAN_ELSE_IF").root.unwrap();
-    assert_eq!(root, spec("stream", 0, 1));
+    assert_eq!(root, spec("stream", 0, 0));
+}
+
+#[test]
+fn root_skip_counts_an_earlier_condition_on_the_same_line() {
+    let chains = chains_at("C_PLAN_ELSE_IF_ONE_LINE");
+    let later = chains.iter().find(|c| c.terminal.name == "noneMatch").expect("else-if chain");
+    assert_eq!(real_run_plan(later).unwrap().root, Some(spec("stream", 0, 1)));
 }
 
 #[test]

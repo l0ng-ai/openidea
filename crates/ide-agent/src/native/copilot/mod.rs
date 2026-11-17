@@ -19,6 +19,7 @@ mod translate;
 mod tests;
 
 use super::Shim;
+use crate::BACKGROUND_TASKS_UPDATE;
 use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
@@ -296,6 +297,25 @@ struct SessionEntry {
     prompt: Option<oneshot::Sender<TurnTerminal>>,
     early_cancel: Option<Instant>,
     temp_files: Vec<PathBuf>,
+    /// Copilot's main agent loop is processing. It goes idle (`assistant.idle`) before the
+    /// turn ends (`session.idle`) while background shells or agents it started still run.
+    main_busy: bool,
+    /// Counts `session.tasks.list` requests, so only the latest answer is reported.
+    tasks_seq: u64,
+}
+
+impl SessionEntry {
+    fn new(settings: Settings) -> Self {
+        Self {
+            settings,
+            translator: EventTranslator::default(),
+            prompt: None,
+            early_cancel: None,
+            temp_files: Vec::new(),
+            main_busy: false,
+            tasks_seq: 0,
+        }
+    }
 }
 
 struct CopilotEvents(Weak<CopilotShim>);
@@ -411,6 +431,7 @@ impl CopilotShim {
             "session/set_config_option" => self.set_config(&params).await,
             "session/prompt" => self.prompt(&params, false).await,
             "_openidea/steer" => self.prompt(&params, true).await,
+            "_openidea/stop_task" => self.stop_task(&params).await,
             "session/close" => self.close_session(&params).await,
             _ => Err(error(codes::METHOD_NOT_FOUND, format!("unsupported method {method}"))),
         }
@@ -425,7 +446,7 @@ impl CopilotShim {
                 "promptCapabilities": { "image": true, "audio": false, "embeddedContext": true },
                 "mcpCapabilities": { "http": true, "sse": true, "stdio": true },
                 "sessionCapabilities": { "close": {}, "list": {} },
-                "_meta": { "openidea": { "steer": true } },
+                "_meta": { "openidea": { "steer": true, "backgroundTasks": true } },
             },
             "agentInfo": {
                 "name": "copilot",
@@ -471,6 +492,9 @@ impl CopilotShim {
         if let Some(mcp) = translate::wire_mcp_servers(params.get("mcpServers")) {
             req["mcpServers"] = mcp;
         }
+        if let Some(disabled) = translate::wire_disabled_mcp_servers(params) {
+            req["disabledMcpServers"] = disabled;
+        }
 
         let created = self.call("session.create", req).await?;
         let session_id = created
@@ -489,16 +513,7 @@ impl CopilotShim {
         }
 
         let options = models::config_options(&catalog, &settings);
-        self.state.lock().sessions.insert(
-            session_id.clone(),
-            SessionEntry {
-                settings,
-                translator: EventTranslator::default(),
-                prompt: None,
-                early_cancel: None,
-                temp_files: Vec::new(),
-            },
-        );
+        self.state.lock().sessions.insert(session_id.clone(), SessionEntry::new(settings));
         self.publish_commands(&session_id, cwd);
         Ok(json!({
             "sessionId": session_id,
@@ -527,6 +542,9 @@ impl CopilotShim {
         if let Some(mcp) = translate::wire_mcp_servers(params.get("mcpServers")) {
             req["mcpServers"] = mcp;
         }
+        if let Some(disabled) = translate::wire_disabled_mcp_servers(params) {
+            req["disabledMcpServers"] = disabled;
+        }
 
         let resumed = self.call("session.resume", req).await?;
         if let Ok(current) = self.call("session.model.getCurrent", json!({ "sessionId": session_id })).await {
@@ -542,16 +560,7 @@ impl CopilotShim {
         }
         let actual_id = resumed.get("sessionId").and_then(Value::as_str).unwrap_or(&session_id).to_owned();
         let options = models::config_options(&catalog, &settings);
-        self.state.lock().sessions.insert(
-            actual_id.clone(),
-            SessionEntry {
-                settings,
-                translator: EventTranslator::default(),
-                prompt: None,
-                early_cancel: None,
-                temp_files: Vec::new(),
-            },
-        );
+        self.state.lock().sessions.insert(actual_id.clone(), SessionEntry::new(settings));
         self.publish_commands(&actual_id, cwd);
         Ok(json!({
             "sessionId": actual_id,
@@ -653,7 +662,11 @@ impl CopilotShim {
         let (text, attachments, temp_files) = build_prompt_payload(&session_id, blocks);
 
         if steer {
-            let is_running = self.state.lock().sessions.get(&session_id).is_some_and(|e| e.prompt.is_some());
+            let (is_running, main_busy) = {
+                let st = self.state.lock();
+                let entry = st.sessions.get(&session_id);
+                (entry.is_some_and(|e| e.prompt.is_some()), entry.is_some_and(|e| e.main_busy))
+            };
             if !is_running {
                 cleanup_files(&temp_files);
                 return Err(error(codes::INVALID_PARAMS, "no turn running to steer"));
@@ -661,14 +674,25 @@ impl CopilotShim {
             let mut send_req = json!({
                 "sessionId": session_id,
                 "prompt": text,
-                "mode": "immediate",
             });
+            // Joins the running loop; once it went idle (only background work is left), a plain
+            // send starts the loop again with this message.
+            if main_busy {
+                send_req["mode"] = json!("immediate");
+            }
             if !attachments.is_empty() {
                 send_req["attachments"] = Value::Array(attachments);
+            }
+            if !main_busy && let Some(entry) = self.state.lock().sessions.get_mut(&session_id) {
+                // Stop must abort the run this send starts, even before `assistant.turn_start`.
+                entry.main_busy = true;
             }
             let res = self.call("session.send", send_req).await;
             if let Some(entry) = self.state.lock().sessions.get_mut(&session_id) {
                 entry.temp_files.extend(temp_files);
+                if res.is_err() && !main_busy {
+                    entry.main_busy = false;
+                }
             }
             res?;
             return Ok(json!({}));
@@ -685,6 +709,7 @@ impl CopilotShim {
             let mode = entry.settings.mode.wire();
             if !early {
                 entry.prompt = Some(done_tx);
+                entry.main_busy = true;
             }
             (mode, early)
         };
@@ -734,19 +759,24 @@ impl CopilotShim {
     }
 
     fn cancel(&self, session_id: &str) {
-        let has_turn = {
+        let (has_turn, ended) = {
             let mut st = self.state.lock();
-            if let Some(entry) = st.sessions.get_mut(session_id) {
-                if entry.prompt.is_none() {
+            match st.sessions.get_mut(session_id) {
+                Some(entry) if entry.prompt.is_none() => {
                     entry.early_cancel = Some(Instant::now());
-                    false
-                } else {
-                    true
+                    (false, None)
                 }
-            } else {
-                false
+                // The agent is done with the turn and only its background work runs, which
+                // `session.idle` waits for: the turn ends now and that work keeps running
+                // (it shows as background tasks, stoppable one by one).
+                Some(entry) if !entry.main_busy => (false, entry.prompt.take()),
+                Some(_) => (true, None),
+                None => (false, None),
             }
         };
+        if let Some(tx) = ended {
+            let _ = tx.send(TurnTerminal::Idle { aborted: true });
+        }
         if has_turn {
             let peer = self.copilot().clone();
             let sid = session_id.to_owned();
@@ -790,10 +820,23 @@ impl CopilotShim {
             return;
         }
 
+        let main_agent = event.get("agentId").and_then(Value::as_str).is_none_or(str::is_empty);
+        let event_type = event.get("type").and_then(Value::as_str).unwrap_or_default();
+        if main_agent && event_type == "session.background_tasks_changed" {
+            self.refresh_background_tasks(session_id);
+        }
+
         let catalog_snapshot = self.catalog.try_lock().ok().and_then(|g| g.clone());
         let (updates, done) = {
             let mut st = self.state.lock();
             let Some(entry) = st.sessions.get_mut(session_id) else { return };
+            if main_agent {
+                match event_type {
+                    "assistant.turn_start" => entry.main_busy = true,
+                    "assistant.idle" | "session.idle" | "session.error" => entry.main_busy = false,
+                    _ => {}
+                }
+            }
             let fallback_limit =
                 catalog_snapshot.as_deref().and_then(|models| entry.settings.active_context_tokens(models));
             let translated = entry.translator.translate(session_id, event, fallback_limit);
@@ -803,9 +846,42 @@ impl CopilotShim {
         for (target_session, update) in updates {
             self.send_update(&target_session, update);
         }
+        if main_agent && event_type == "session.idle" {
+            // Nothing runs in the background any more.
+            self.send_update(session_id, json!({ "sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": [] }));
+        }
         if let Some((tx, outcome)) = done {
             let _ = tx.send(outcome);
         }
+    }
+
+    /// Reports the session's running background shells and agents (`session.tasks.list`).
+    fn refresh_background_tasks(self: &Arc<Self>, session_id: &str) {
+        let seq = {
+            let mut st = self.state.lock();
+            let Some(entry) = st.sessions.get_mut(session_id) else { return };
+            entry.tasks_seq += 1;
+            entry.tasks_seq
+        };
+        let shim = self.clone();
+        let sid = session_id.to_owned();
+        self.runtime.spawn(async move {
+            let Ok(list) = shim.call("session.tasks.list", json!({ "sessionId": sid })).await else { return };
+            let latest = shim.state.lock().sessions.get(&sid).is_some_and(|e| e.tasks_seq == seq);
+            if latest {
+                let tasks = translate::background_tasks(&list);
+                shim.send_update(&sid, json!({ "sessionUpdate": BACKGROUND_TASKS_UPDATE, "tasks": tasks }));
+            }
+        });
+    }
+
+    /// Stops one background shell or agent (`session.tasks.cancel`).
+    async fn stop_task(self: &Arc<Self>, params: &Value) -> Result<Value, ResponseError> {
+        let session_id = str_param(params, "sessionId")?;
+        let task_id = str_param(params, "taskId")?;
+        self.call("session.tasks.cancel", json!({ "sessionId": session_id, "id": task_id })).await?;
+        self.refresh_background_tasks(session_id);
+        Ok(json!({}))
     }
 
     fn handle_permission_event(self: &Arc<Self>, session_id: &str, event: &Value) {

@@ -70,7 +70,7 @@ async function stubRepositoryAndAgent(page: Page, reply: string) {
         operation: null,
       });
       h.vcs_status = () => changes;
-      h.vcs_create_patch = () => patch;
+      h.vcs_pending_patch = () => patch;
       h.vcs_log = () => [{ id: "1111111", summary: "Bump the wrapper" }];
       h.agent_create = (args) => {
         const created = { ...task, id: "new", title: "Write a commit message", status: "starting", updatedMs: 9 };
@@ -131,9 +131,11 @@ test("the agent of the latest task writes the commit message of the included cha
   // Only the included file's diff, and the style of the latest commits, go to the agent.
   expect(created.prompt.text).toContain("+++ b/build.gradle.kts");
   expect(created.prompt.text).toContain("- Bump the wrapper");
-  expect(await ipcCalls(page, "vcs_create_patch")).toEqual([
-    expect.objectContaining({ source: { from: "changes", paths: [`${ROOT}/build.gradle.kts`], reverse: false } }),
-  ]);
+  // What Commit would commit: the included file only (read again before the message is filled in).
+  const pending = await ipcCalls(page, "vcs_pending_patch");
+  expect(pending.length).toBeGreaterThan(0);
+  for (const call of pending)
+    expect(call).toMatchObject({ options: expect.objectContaining({ stage: [`${ROOT}/build.gradle.kts`] }) });
   // The task ran for the message only: it is gone again, and nothing was left to read.
   expect(await ipcCalls(page, "agent_delete")).toEqual([expect.objectContaining({ task: "new" })]);
   await expect(page.getByRole("alert")).toHaveCount(0);

@@ -5322,7 +5322,7 @@
   "{count} modified action": "已修改 {count} 个操作",
   "{count} modified actions": "已修改 {count} 个操作",
   "Runs “<base> -m venv <location>”; the new interpreter becomes the project interpreter.": "运行“<base> -m venv <location>”；新的解释器将成为项目解释器。",
-  "Runs “conda create -p <location> python=<version>”: a new environment with only Python in it; the new interpreter becomes the project interpreter.": "运行“conda create -p <location> python=<version>”：新建一个只包含 Python 的环境；新的解释器将成为项目解释器。",
+  "Runs “conda create -n <name> python=<version>”: a new environment with only Python in it, in conda's envs directory; the new interpreter becomes the project interpreter.": "运行“conda create -n <name> python=<version>”：在 conda 的 envs 目录中新建一个只包含 Python 的环境；新的解释器将成为项目解释器。",
   "Python version": "Python 版本",
   "Python {short}": "Python {short}",
   "Runs “poetry env use <base>” in the project; poetry keeps the environment under its own cache directory.": "在项目中运行“poetry env use <base>”；Poetry 会将环境保存在其自己的缓存目录下。",
@@ -8426,6 +8426,7 @@
   "Enable openidea for this session": "在当前会话启用 openidea",
   "Agent Config": "智能体配置",
   "Active via {source}": "通过 {source} 生效",
+  "Disabled for this session ({source})": "当前会话已禁用（{source}）",
   "Import into Global settings to toggle per session and share across agents": "导入到全局设置以支持按会话开关并在所有智能体间共享",
   "No matching MCP servers.": "没有匹配的 MCP 服务器。",
   "Changes apply on the next message.": "更改将在下一条消息生效。",
@@ -8727,4 +8728,10 @@
   "Session references and artifacts": "会话引用与制品",
   "Copy Link": "复制链接",
   "Add to Message": "添加到消息"
+  "Java Agents": "Java 代理",
+  "File at a Git revision (read-only).": "Git 修订版中的文件（只读）。",
+  "Adjust colors for red-green vision deficiency is on, so this scheme shows its red-green colors.": "已开启「针对红绿色觉缺陷调整颜色」，此方案显示的是红绿色觉变体的颜色。",
+  "Appearance settings": "外观设置",
+  "No such file or folder": "文件或文件夹不存在",
+  "Choose a folder": "请选择文件夹"
 }

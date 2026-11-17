@@ -443,6 +443,7 @@ describe("terminal tab titles", () => {
       appTitle,
       commandRunning,
       progress: null,
+      working: commandRunning,
       cwd: "/p",
       unseenDone: false,
     },

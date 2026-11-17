@@ -72,10 +72,21 @@ async fn windows_stop_releases_the_debuggees_port_before_returning() {
             .unwrap();
         let pid = child.0.id();
         child.1 = Some(ide_core::process::ProcessTree::capture(pid));
-        let h = harness(Script { debuggee_pid: Some(pid), supports_terminate, ..Default::default() });
+        // A running program: one suspended at a breakpoint is killed at once (#3658), without the
+        // wait for its tree this test is about.
+        let h = harness(Script {
+            debuggee_pid: Some(pid),
+            supports_terminate,
+            continued_after_stop: true,
+            ..Default::default()
+        });
         let id = h.start(config()).await.unwrap();
         let session = h.manager.session(id).unwrap();
-        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid) {
+        // The pid, then the stop at launch and the `continued` that ends it.
+        while session.debuggee_pid.load(Ordering::Acquire) != i64::from(pid)
+            || session.suspended.ticket() == 0
+            || session.suspended.get()
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let stop = tokio::spawn({

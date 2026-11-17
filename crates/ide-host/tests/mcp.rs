@@ -482,6 +482,27 @@ async fn scope_limits_the_query_tools_to_a_directory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_scoped_symbol_search_finds_matches_past_the_unscoped_ones() {
+    let h = Harness::new();
+    std::fs::create_dir_all(h.root.join("many")).unwrap();
+    for i in 0..60 {
+        std::fs::write(h.root.join(format!("many/m{i:02}.rs")), "pub fn pool_marker() {}\n").unwrap();
+    }
+    std::fs::create_dir_all(h.root.join("zz")).unwrap();
+    std::fs::write(h.root.join("zz/last.rs"), "pub fn pool_marker() {}\n").unwrap();
+    // Files written after the project opened reach the index through the watcher.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while h.json("search_symbol", json!({"q":"pool_marker","limit":100})).await["items"].as_array().map_or(0, Vec::len)
+        < 61
+    {
+        assert!(std::time::Instant::now() < deadline, "the files were never indexed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let found = h.json("search_symbol", json!({"q":"pool_marker","scope":"zz","limit":1})).await;
+    assert_eq!(found["items"][0]["filePath"], "zz/last.rs", "{found}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn scope_reaches_an_attached_worktree_the_repository_ignores() {
     let h = Harness::new();
     h.trust().await;
