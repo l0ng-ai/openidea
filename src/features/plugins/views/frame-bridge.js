@@ -19,7 +19,7 @@
   const listeners = [];
   const themeListeners = [];
   const documentListeners = [];
-  const editorListeners = { target: [], viewport: [], highlights: [], problems: [], layout: [] };
+  const editorListeners = { target: [], viewport: [], highlights: [], problems: [], layout: [], selections: [] };
   const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
@@ -159,6 +159,10 @@
     wrapped: (fromLine, toLine) => call("editor.wrapped", { fromLine: Number(fromLine), toLine: Number(toLine) }),
     /** Called with `{ folded, softWrap }` when folds change, soft wrap turns on or off, or wrapped rows may have changed, at most once a frame. */
     onLayout: listen(editorListeners.layout),
+    /** The caret and selections: `[{ anchor: { line, column }, head: { line, column } }]`, the main one first; a caret has `anchor` equal to `head`. */
+    selections: () => call("editor.selections"),
+    /** Called with `selections()` when the caret moves, a selection changes, or the group shows another file, at most once a frame. */
+    onSelections: listen(editorListeners.selections),
   });
 
   window.openidea = Object.freeze({

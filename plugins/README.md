@@ -458,6 +458,10 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
   lines are folded with `openidea.editor.folded()`, how many rows each line takes
   with soft wrap on with `wrapped(fromLine, toLine)`, and hears both change
   through `onLayout`. See _Editor panels_.
+- **The caret and selections in editor panels.** An editor panel's page reads
+  the caret and every selection of its group's editor with
+  `openidea.editor.selections()` and hears them move through `onSelections`. See
+  _Editor panels_.
 
 ### API 1.9
 
@@ -1938,17 +1942,19 @@ The page gets `openidea.editor` (only an editor panel's page has it). Lines are
 | `folded()`                             | API 1.10: the folded ranges, in file order: `[{ fromLine, toLine }]`, `fromLine` the line that stays visible (with the placeholder), `toLine` the last line hidden. Folds inside a fold are part of it                         |
 | `wrapped(fromLine, toLine)`            | API 1.10: the visual rows of each line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): 1 for a line that fits, 0 for a line a fold hides; `null` while soft wrap is off                                        |
 | `onLayout(fn)`                         | API 1.10: called with `{ folded, softWrap }` (`folded()`, and whether soft wrap is on) when folds change, soft wrap turns on or off, wrapped rows may have changed, and the group shows another file; at most once a frame     |
+| `selections()`                         | API 1.10: the caret and selections: `[{ anchor: { line, column }, head: { line, column } }]`, the main selection first, the others in file order; a caret is a selection whose `anchor` equals `head`                          |
+| `onSelections(fn)`                     | API 1.10: called with `selections()` when the caret moves, a selection changes, and the group shows another file; at most once a frame                                                                                         |
 
 Colours are the editor's: syntax highlighting and, from API 1.10, the semantic
 highlighting over it (a semantic colour wins where both apply). The
 panel's other colours are the frame's theme variables (`openidea.theme`,
-`onThemeChange`). Before API 1.10 there is no `problems`, `folded`, `wrapped` or
-`onLayout`: check for them (`if (editor.problems)`) when the page also runs in
+`onThemeChange`). Before API 1.10 there is no `problems`, `folded`, `wrapped`,
+`onLayout` or `selections`: check for them (`if (editor.problems)`) when the page also runs in
 older IDEs. Outside the visible area the editor estimates wrapped rows from the
 line's length until it lays the line out; `onLayout` follows when it does. Not
-there yet: the caret and selections, and the marker bar's changes.
+there yet: the marker bar's changes.
 `crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
-2 px, its frame draggable, problems marked at its right edge, folded lines left out) to install and try.
+2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted) to install and try.
 
 ### Web frame PTYs (API 1.3)
 
