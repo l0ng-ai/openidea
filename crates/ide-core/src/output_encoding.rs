@@ -167,10 +167,11 @@ const GRADLE: &[&str] = &["gradle", "gradlew"];
 /// Gradle's own JVM and the compiler's source encoding are untouched.
 pub const GRADLE_FILE_ENCODING_SCRIPT: &str = "\
 // Written by OpenIDEA: a UTF-8 default charset for applications run by Gradle, as the Run console decodes UTF-8.
+import org.gradle.util.GradleVersion
+// `configureEach` (lazy) is Gradle 4.9+; older ones configure each task as it is added.
+def each = { tasks, Closure action -> GradleVersion.current() >= GradleVersion.version('4.9') ? tasks.configureEach(action) : tasks.all(action) }
 allprojects {
-    tasks.withType(JavaExec).configureEach {
-        defaultCharacterEncoding = 'UTF-8'
-    }
+    each(tasks.withType(JavaExec)) { t -> t.defaultCharacterEncoding = 'UTF-8' }
 }
 ";
 
@@ -621,10 +622,12 @@ mod tests {
     #[test]
     fn gradle_script_respects_the_builds_own_file_encoding() {
         let s = GRADLE_FILE_ENCODING_SCRIPT;
-        assert!(s.contains("tasks.withType(JavaExec).configureEach"), "{s}");
-        assert!(s.contains("defaultCharacterEncoding = 'UTF-8'"), "{s}");
+        assert!(s.contains("each(tasks.withType(JavaExec))"), "{s}");
+        assert!(s.contains("t.defaultCharacterEncoding = 'UTF-8'"), "{s}");
         assert!(!s.contains("doFirst"), "the build must be able to override the default: {s}");
         assert!(!s.contains("withType(Test)") && !s.contains("JavaCompile"), "{s}");
+        // Gradle before 4.9 has no `configureEach` (#3864).
+        assert!(s.contains("? tasks.configureEach(action) : tasks.all(action)"), "{s}");
     }
 
     #[test]
