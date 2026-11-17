@@ -56,7 +56,12 @@ function purify(): ReturnType<typeof DOMPurify> {
   // `poster`, `background` and the `src` of other tags would fetch as soon as the reply renders.
   p.addHook("uponSanitizeAttribute", (node, data) => {
     if (data.attrName === "alt" || data.attrName === "title") return;
-    if (data.attrName === "href" && node.tagName === "A") return;
+    if (data.attrName === "href" && node.tagName === "A") {
+      // A drive letter looks like a URL scheme to DOMPurify. Keep only validated local paths.
+      const link = fileHref(data.attrValue, "");
+      if (link && /^[a-z]:\//i.test(link.path)) data.forceKeepAttr = true;
+      return;
+    }
     if (namesHost(data.attrValue)) data.keepAttr = false;
   });
   const sources = new WeakMap<Node, string>();

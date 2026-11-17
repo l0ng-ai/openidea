@@ -27,16 +27,22 @@ const PATH = /^(?:\.\/)?([\w.@-]+(?:\/[\w.@-]+)*\.[A-Za-z][A-Za-z0-9]*)(?::(\d+)
 
 /** Explicit Markdown links can also name files with spaces or non-ASCII names. */
 export function fileHref(href: string, cwd: string): PathLink | null {
-  if (!href || href.startsWith("#") || /^[a-z][a-z\d+.-]*:/i.test(href)) return null;
+  if (!href || href.startsWith("#")) return null;
   let decoded: string;
   try {
     decoded = decodeURIComponent(href);
   } catch {
     return null;
   }
+  const windows = /^[a-z]:[\\/]/i.test(decoded);
+  if (!windows && /^[a-z][a-z\d+.-]*:/i.test(decoded)) return null;
   const match = /^(.*?)(?::(\d+)(?::(\d+))?|#L(\d+))?$/.exec(decoded);
   if (!match?.[1] || [...decoded].some((char) => char.charCodeAt(0) < 32)) return null;
-  const path = match[1].startsWith("/") ? match[1] : `${cwd.replace(/\/$/, "")}/${match[1]}`;
+  const path = windows
+    ? match[1].replace(/\\/g, "/")
+    : match[1].startsWith("/")
+      ? match[1]
+      : `${cwd.replace(/\/$/, "")}/${match[1]}`;
   if (opensOtherShare(path, match[1], cwd)) return null;
   const link: PathLink = { path };
   const line = match[2] ?? match[4];

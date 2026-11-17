@@ -107,6 +107,11 @@ it.each([
   ["/tmp/截图%20one.jpg", "/tmp/截图 one.jpg", undefined],
   ["/repo/main.rs:12:5", "/repo/main.rs", { line: 11, col: 4 }],
   ["/repo/main.rs#L7", "/repo/main.rs", { line: 6, col: 0 }],
+  ["E:/work/notes.md:773", "E:/work/notes.md", { line: 772, col: 0 }],
+  ["E:/work/my%20notes.md#L7", "E:/work/my notes.md", { line: 6, col: 0 }],
+  ["E:%5Cwork%5Cnotes.md:3:5", "E:/work/notes.md", { line: 2, col: 4 }],
+  ["E%3A%2Fwork%2Fnotes.md", "E:/work/notes.md", undefined],
+  ["E:/工作/笔记%20清单.md:3", "E:/工作/笔记 清单.md", { line: 2, col: 0 }],
 ])("opens a Markdown file link: %s", (href, path, selection) => {
   render(<Markdown text={`[查看文件](${href})`} cwd="/repo" />);
   fireEvent.click(screen.getByRole("link", { name: "查看文件" }));
@@ -121,15 +126,31 @@ it("keeps web links external", () => {
   expect(openFile).not.toHaveBeenCalled();
 });
 
-it.each(["#section", "//example.com/image.jpg", "javascript:alert(1)", "/tmp/%ZZ.jpg"])(
-  "does not open unsupported links as files: %s",
-  (href) => {
-    const { container } = render(<Markdown text={`[Link](${href})`} cwd="/repo" />);
-    fireEvent.click(container.querySelector("a")!);
-    expect(openFile).not.toHaveBeenCalled();
-    expect(openExternalUrl).not.toHaveBeenCalled();
-  },
-);
+it.each([
+  "#section",
+  "//example.com/image.jpg",
+  "javascript:alert(1)",
+  "/tmp/%ZZ.jpg",
+  "E:relative.md",
+  "file:///E:/work/notes.md",
+  "%5C%5Cevil%5Cshare%5Cx.md",
+])("does not open unsupported links as files: %s", (href) => {
+  const { container } = render(<Markdown text={`[Link](${href})`} cwd="/repo" />);
+  fireEvent.click(container.querySelector("a")!);
+  expect(openFile).not.toHaveBeenCalled();
+  expect(openExternalUrl).not.toHaveBeenCalled();
+});
+
+it("does not preserve drive-letter URLs on elements other than file links", () => {
+  const { container } = render(
+    <Markdown
+      text={'<video src="E:/work/movie.mp4"></video><a href="javascript:alert(1)">Bad link</a>'}
+      cwd="C:/repo"
+    />,
+  );
+  expect(container.querySelector("video")).not.toHaveAttribute("src");
+  expect(container.querySelector("a")).not.toHaveAttribute("href");
+});
 
 it.each([
   ["/Users/thomas/vmos-shots/tiktok-home.jpg", "/repo", "/Users/thomas/vmos-shots/tiktok-home.jpg"],
