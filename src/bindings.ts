@@ -276,8 +276,8 @@ export const commands = {
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
 	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
-	/**  What made the dump at `path` (from its first bytes), so a restore picks the right tool. */
-	dbDumpKind: (path: string) => typedError<DbDumpKind, IdeError>(__TAURI_INVOKE("db_dump_kind", { path })),
+	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
+	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
 	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
@@ -318,6 +318,8 @@ export const commands = {
 	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	/**  Installed copies of `tool`, newest first. */
 	dbToolInstalls: (tool: DbTool) => typedError<DbToolInstall[], IdeError>(__TAURI_INVOKE("db_tool_installs", { tool })),
+	/**  The long options the executable at `path` lists in its `--help` (`masking-policies`…). */
+	dbToolOptions: (path: string) => typedError<string[], IdeError>(__TAURI_INVOKE("db_tool_options", { path })),
 	/**  The command line `db_run_tool` would run, without the password. */
 	dbToolPreview: (id: string, executable: string, job: DbToolJob) => typedError<string, IdeError>(__TAURI_INVOKE("db_tool_preview", { id, executable, job })),
 	/**  The version line of the executable at `path`. */
@@ -4187,13 +4189,23 @@ export type DbDumpFormat =
 /**  A directory of files; the only format `pg_dump` writes in parallel. */
 "directory" | "tar";
 
+/**  What a restore needs to know about a dump before it runs. */
+export type DbDumpInfo = {
+	kind: DbDumpKind,
+	/**
+	 *  An SQL dump that runs `CREATE DATABASE` itself: `mysqldump --databases` / `--all-databases`,
+	 *  or `pg_dump --create`. Archives say `false`; `pg_restore --create` decides for them.
+	 */
+	createsDatabase: boolean,
+};
+
 /**  What made a dump, read from its first bytes (a directory: its `toc.dat`). */
 export type DbDumpKind = 
 /**  `pg_dump` custom or tar archive, or a directory archive: `pg_restore`. */
 "postgresArchive" | 
 /**  Plain SQL from `pg_dump`: `psql`. */
 "postgresSql" | 
-/**  `mysqldump` / `mariadb-dump`: not for the PostgreSQL tools. */
+/**  `mysqldump` / `mariadb-dump`: `mysql`. */
 "mysqlSql" | "unknown";
 
 export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
@@ -4235,6 +4247,36 @@ export type DbIntrospection = {
 	 *  one of these patterns (`*`, `?`; separated by commas or spaces). Empty: all.
 	 */
 	objectFilter?: string,
+};
+
+export type DbMysqlOptions = {
+	/**  Empty: the databases the dump names. */
+	database: string,
+	/**  Runs the remaining statements after an error. */
+	force: boolean,
+};
+
+/**  Switches that `mysqldump` turns on by default (`--opt`) only take a flag when turned off. */
+export type DbMysqldumpOptions = {
+	/**  Empty: every database. */
+	databases: string[],
+	/**  Only with exactly one database. */
+	tables: string[],
+	addDropTable: boolean,
+	disableKeys: boolean,
+	addLocks: boolean,
+	addDropTrigger: boolean,
+	noData: boolean,
+	completeInsert: boolean,
+	createOptions: boolean,
+	routines: boolean,
+	events: boolean,
+	/**  A consistent InnoDB snapshot without locks; needs no RELOAD privilege. */
+	singleTransaction: boolean,
+	/**  Wins over `single_transaction`. */
+	lockAllTables: boolean,
+	/**  `None`: the client has no `--masking-policies`. */
+	maskingPolicies: boolean | null,
 };
 
 /**  Schema objects other than tables and columns (Go to DDL, Drop). */
@@ -4283,6 +4325,8 @@ export type DbPgDumpOptions = {
 export type DbPgRestoreOptions = {
 	content: DbDumpContent,
 	schemas: string[],
+	/**  Creates the database the archive names; the target is only connected to. */
+	create: boolean,
 	clean: boolean,
 	ifExists: boolean,
 	noOwner: boolean,
@@ -4479,7 +4523,7 @@ export type DbTablePage = {
 	offset: number | null,
 };
 
-export type DbTool = "pgDump" | "pgRestore" | "psql";
+export type DbTool = "pgDump" | "pgRestore" | "psql" | "mysqldump" | "mysql";
 
 /**  An installed copy of a tool. */
 export type DbToolInstall = {
@@ -4491,7 +4535,9 @@ export type DbToolInstall = {
 /**  A run of a client tool: which one, the file it writes or reads, and its options. */
 export type DbToolJob = { tool: "pgDump"; file: string; options: DbPgDumpOptions } | 
 /**  `file`: an archive, or a directory archive. */
-{ tool: "pgRestore"; file: string; options: DbPgRestoreOptions } | { tool: "psql"; file: string; options: DbPsqlOptions };
+{ tool: "pgRestore"; file: string; options: DbPgRestoreOptions } | { tool: "psql"; file: string; options: DbPsqlOptions } | { tool: "mysqldump"; file: string; options: DbMysqldumpOptions } | 
+/**  `file` goes to the standard input. */
+{ tool: "mysql"; file: string; options: DbMysqlOptions };
 
 /**  A line the tool wrote. */
 export type DbToolLine = {

@@ -97,7 +97,7 @@ db_database_catalog                          trusted            project_host bin
 db_databases                                 trusted            project_host bindings async
 db_ddl                                       trusted            project_host bindings async
 db_disconnect                                trusted            project_host bindings async
-db_dump_kind                                 trusted            desktop      bindings async
+db_dump_info                                 trusted            desktop      bindings async
 db_execute                                   trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
 db_export_file                               always             desktop      bindings async
@@ -124,6 +124,7 @@ db_tables                                    trusted            project_host bin
 db_test                                      trusted            project_host bindings async
 db_test_tunnel                               trusted            project_host bindings async
 db_tool_installs                             trusted            desktop      bindings async
+db_tool_options                              trusted            desktop      bindings async
 db_tool_preview                              trusted            desktop      bindings sync
 db_tool_version                              trusted            desktop      bindings async
 db_trust_ssh_host                            trusted            project_host bindings async
