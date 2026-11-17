@@ -32,6 +32,7 @@ import {
   openPluginDiff,
   type PluginContentEditorData,
 } from "./contentTab";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 export function pluginContentEditorTitle(input: EditorInput): string {
   const s = sessions.get(input.key);
@@ -171,9 +172,10 @@ function isActionStroke(stroke: string | null, actionId: string): boolean {
 
 const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
-    if (!e.metaKey && !e.ctrlKey) return false;
+    const step = wheelZoomStep(e);
+    if (step === null) return false;
     e.preventDefault();
-    stepFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    if (step) stepFontZoom(view, step);
     return true;
   },
 });

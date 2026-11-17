@@ -110,7 +110,7 @@ async fn smoke(f: Fixture) {
     })
     .await;
 
-    let roots = ops::project::roots(&p.host, WINDOW).unwrap().roots;
+    let roots = ops::project::project_roots(&p.host, WINDOW).unwrap().roots;
     for (path, kind) in f.roots {
         assert!(
             roots.iter().any(|r| r.path == *path && r.kind == *kind),

@@ -57,7 +57,7 @@ The maximum accepted limit is 5000 lines.",
                     probe.size
                 )));
             }
-            let text = crate::ops::fs::read_text(&call.host(), call.window(), path).await?;
+            let text = crate::ops::fs::fs_read_text(&call.host(), call.window(), path).await?;
             Ok(Output::text(render_slice(&text, offset as usize, limit as usize, window)?))
         },
     )

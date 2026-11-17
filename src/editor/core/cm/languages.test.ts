@@ -330,4 +330,89 @@ describe("language modes", () => {
       fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
     expect(keywords(language, 'name = "x"')).toEqual(["name"]);
   });
+
+  const propertiesHighlighter = tagHighlighter([
+    { tag: t.keyword, class: "keyword" },
+    { tag: t.operator, class: "operator" },
+    { tag: t.string, class: "string" },
+    { tag: t.comment, class: "comment" },
+    { tag: t.heading, class: "heading" },
+  ]);
+
+  function highlightProperties(language: Language, source: string) {
+    const found: Array<[string, string]> = [];
+    highlightTree(language.parser.parse(source), propertiesHighlighter, (from, to, style) =>
+      found.push([source.slice(from, to), style]),
+    );
+    return found;
+  }
+
+  it("colours properties and .env keys as keywords, the first separator as an operator and the whole value as a string", async () => {
+    const support = await loadSupport(findLanguageDescription("Properties files", "/p/.env")!);
+    const source = [
+      "APP_NAME=core-user",
+      "DATABASE_URL=postgres://u:p@h:5432/db",
+      "APP_KEY=base64:abc==",
+      "key = value",
+      "key: value",
+      "export A=b",
+      "# c",
+      "[section]",
+      "a=b\\",
+      "  c",
+      "=x",
+      // A blank line ends a continued value.
+      "d=e\\",
+      "",
+      "f=g",
+    ].join("\n");
+    expect(highlightProperties(support!.language, source)).toEqual([
+      ["APP_NAME", "keyword"],
+      ["=", "operator"],
+      ["core-user", "string"],
+      ["DATABASE_URL", "keyword"],
+      ["=", "operator"],
+      ["postgres://u:p@h:5432/db", "string"],
+      ["APP_KEY", "keyword"],
+      ["=", "operator"],
+      ["base64:abc==", "string"],
+      ["key ", "keyword"],
+      ["=", "operator"],
+      [" value", "string"],
+      ["key", "keyword"],
+      [":", "operator"],
+      [" value", "string"],
+      ["export A", "keyword"],
+      ["=", "operator"],
+      ["b", "string"],
+      ["# c", "comment"],
+      ["[section]", "heading"],
+      ["a", "keyword"],
+      ["=", "operator"],
+      ["b\\", "string"],
+      ["  c", "string"],
+      ["=", "operator"],
+      ["x", "string"],
+      ["d", "keyword"],
+      ["=", "operator"],
+      ["e\\", "string"],
+      ["f", "keyword"],
+      ["=", "operator"],
+      ["g", "string"],
+    ]);
+  });
+
+  it("colours properties keys in ```ini and ```properties code blocks", async () => {
+    for (const info of ["ini", "properties"]) {
+      const fenced = fencedCodeMode(info)!;
+      expect(fenced.name, info).toBe("Properties files");
+      const language =
+        fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+      expect(highlightProperties(language, "a=b"), info).toEqual([
+        ["a", "keyword"],
+        ["=", "operator"],
+        ["b", "string"],
+      ]);
+    }
+  });
 });

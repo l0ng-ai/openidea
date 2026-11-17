@@ -1,10 +1,12 @@
 use crate::state::AppState;
+use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_host::ops::project::ProjectInfo;
 use ide_workspace::workspace::Workspace;
 use std::path::PathBuf;
 use tauri::{Manager, State, WebviewWindow};
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn workspace_discover_projects(
@@ -21,6 +23,7 @@ pub async fn workspace_discover_projects(
     result?
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn workspace_create(path: PathBuf, name: String, projects: Vec<PathBuf>) -> IdeResult<ide_core::IpcPath> {
@@ -32,6 +35,7 @@ pub async fn workspace_create(path: PathBuf, name: String, projects: Vec<PathBuf
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn workspace_update(window: WebviewWindow, name: String, projects: Vec<PathBuf>) -> IdeResult<ProjectInfo> {
@@ -50,6 +54,7 @@ pub async fn workspace_update(window: WebviewWindow, name: String, projects: Vec
     Ok(info)
 }
 
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn workspace_attach(window: WebviewWindow, path: PathBuf) -> IdeResult<ide_core::IpcPath> {
@@ -66,3 +71,5 @@ pub async fn workspace_attach(window: WebviewWindow, path: PathBuf) -> IdeResult
     state.sink.emit(ide_core::IdeEvent::WindowGroupsChanged);
     Ok(root)
 }
+
+ide_command::desktop_domain!(workspace_attach, workspace_create, workspace_discover_projects, workspace_update,);

@@ -63,6 +63,7 @@ import { compoundChildren } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
 import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
+import { isZigBuildStep, zigDebugTarget } from "./zigDebug";
 import { junitType } from "./junitType";
 import { listenForApplicationDeactivation, showApplicationUpdate, updatableSessions } from "./applicationUpdate";
 import { npmGutter } from "./npmGutter";
@@ -220,6 +221,21 @@ async function debugLaunch(config: RunConfig, chain: readonly string[], show?: b
   if (jdwpLaunch(config) && getAction("debug.attach")) {
     await debugWithAgent(config, show);
     return;
+  }
+  // `zig build run` (and other steps that run an executable) have no adapter of their own: debug
+  // through the executable config, which builds the binary first and launches it under CodeLLDB.
+  if (isZigBuildStep(config)) {
+    const target = zigDebugTarget(config, useRun.getState().configs);
+    if (target && getAction("debug.startConfig")) {
+      // Run the executable's before-launch build, then keep the clicked step as the session's
+      // origin so the Run widget, tab identity, rerun and stop follow what the user asked to debug.
+      if (!(await prepareLaunch(target, [config.id], show))) return;
+      await executeAction(
+        "debug.startConfig",
+        show === false ? { config: target, origin: config, show: false } : { config: target, origin: config },
+      );
+      return;
+    }
   }
   if (getAction("debug.startConfig")) {
     await executeAction("debug.startConfig", show === false ? { config, show: false } : config);

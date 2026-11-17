@@ -982,6 +982,12 @@ fn g() {}
 }
 
 #[test]
+fn folding_typescript_import_run_ending_with_multiline_import() {
+    let src = "import { ZodError } from 'zod'\nimport { Library } from './library.js'\nimport {\n  CreationIntent,\n} from './creation-assistant.js'\n";
+    assert!(folds("typescript", src).contains(&(0, 4, FoldKind::Imports)));
+}
+
+#[test]
 fn folding_xml_custom_regions() {
     for (start, end) in [
         ("<!--region要折叠的内容-->", "<!-- endregion -->"),

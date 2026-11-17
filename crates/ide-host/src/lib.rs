@@ -4,6 +4,7 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod agent_secrets;
+pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
 pub mod environment;
@@ -23,7 +24,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
+pub use project::{Project, apply_git_executable, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -91,6 +92,8 @@ pub struct Host {
     pub ssh: Arc<ide_ssh::SshManager>,
     /// SFTP deployment, remote file editing and runs on run targets.
     pub remote: Arc<ide_remote::RemoteService>,
+    /// Tunnels of Docker connections made through an SSH configuration.
+    pub docker_tunnels: ops::docker::DockerTunnels,
     /// What child processes get beyond this process's environment (Reload Environment, `remoteEnv`).
     pub environment: environment::Environment,
     /// The built-in web server (Open In › Browser, the editor's browser bar). On a remote host the
@@ -161,6 +164,7 @@ impl Host {
             agent_secrets: Arc::new(agent_secrets::AgentSecrets::new(&data_dir)),
             remote: Arc::new(ide_remote::RemoteService::new(ssh.clone(), data_dir.join("remote"))),
             ssh,
+            docker_tunnels: Default::default(),
             environment: environment::Environment::new(project_environment, local_data_dir.clone()),
             web: ide_web::WebServer::new(),
             global_settings,

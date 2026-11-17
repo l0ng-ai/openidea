@@ -68,6 +68,7 @@ describe("sourceLink", () => {
   it("reads the file and position a documentation link names", () => {
     project("C:/repo");
     expect(sourceLink("file:///C:/repo/src/a.py#L12,5")).toEqual({ path: "/C:/repo/src/a.py", line: 11, col: 4 });
+    expect(sourceLink("file:///p/src/cart.ts#L20%2C3")).toEqual({ path: "/p/src/cart.ts", line: 19, col: 2 });
     expect(sourceLink("https://example.com/a.py")).toBeNull();
   });
 

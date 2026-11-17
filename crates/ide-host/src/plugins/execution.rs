@@ -638,7 +638,7 @@ impl PluginHost {
         let contains = owned.extras.params.get(DEBUG_ATTACH_CONTAINS).cloned();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            let info = crate::ops::run::list(host).into_iter().find(|r| r.id == run && r.config_id == owned.id);
+            let info = crate::ops::run::run_list(host).into_iter().find(|r| r.id == run && r.config_id == owned.id);
             let Some(pid) = info.as_ref().filter(|r| r.running).and_then(|r| r.pid) else {
                 return Err(IdeError::not_found("the run ended before a process to debug started"));
             };

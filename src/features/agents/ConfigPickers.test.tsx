@@ -23,7 +23,29 @@ describe("configPickerOptions", () => {
   it("groups nested paths by their first provider and preserves the full value and description", () => {
     expect(configPickerOptions(config([value("9router/cmc/Beam", "Beam display", "Fast")]))).toEqual([
       { value: "9router", label: "9router", section: true },
-      { value: "9router/cmc/Beam", label: "Beam", detail: "cmc/Beam · Fast", keywords: "9router" },
+      { value: "9router/cmc/Beam", label: "Beam display", detail: "cmc/Beam · Fast", keywords: "9router" },
+    ]);
+  });
+  it("shows the agent-reported model name without the repeated provider prefix and keeps the id as the detail", () => {
+    expect(
+      configPickerOptions(
+        config([
+          { value: "opencode/beam-free", name: "opencode/Beam Free", description: null },
+          { value: "opencode/big-pickle", name: "opencode/Big Pickle", description: null },
+          { value: "opencode/hy4-flash-free", name: "opencode/hy4 flash Free", description: null },
+        ]),
+      ),
+    ).toEqual([
+      { value: "opencode", label: "opencode", section: true },
+      { value: "opencode/beam-free", label: "Beam Free", detail: "beam-free", keywords: "opencode" },
+      { value: "opencode/big-pickle", label: "Big Pickle", detail: "big-pickle", keywords: "opencode" },
+      { value: "opencode/hy4-flash-free", label: "hy4 flash Free", detail: "hy4-flash-free", keywords: "opencode" },
+    ]);
+  });
+  it("falls back to the compact id tail when the agent echoes the id as its name", () => {
+    expect(configPickerOptions(config([value("acme/ctx/big")]))).toEqual([
+      { value: "acme", label: "acme", section: true },
+      { value: "acme/ctx/big", label: "big", detail: "ctx/big", keywords: "acme" },
     ]);
   });
   it("keeps plain ids ungrouped even when the display name contains a slash", () => {
@@ -199,6 +221,25 @@ it("sends the complete nested model id through ConfigPickers", () => {
   fireEvent.click(screen.getByRole("button", { name: "Model" }));
   fireEvent.click(screen.getByRole("option", { name: "Beamcmc/Beam" }));
   expect(onChange).toHaveBeenCalledExactlyOnceWith("model", "9router/cmc/Beam");
+});
+
+it("lists ACP models by their reported names and sends the complete id", () => {
+  const onChange = vi.fn();
+  render(
+    <ConfigPickers
+      config={[
+        config([
+          { value: "opencode/beam-free", name: "opencode/Beam Free", description: null },
+          { value: "opencode/big-pickle", name: "opencode/Big Pickle", description: null },
+        ]),
+      ]}
+      onChange={onChange}
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Model" }));
+  expect(screen.getByRole("option", { name: /Beam Free/ })).toHaveTextContent("beam-free");
+  fireEvent.click(screen.getByRole("option", { name: /Beam Free/ }));
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("model", "opencode/beam-free");
 });
 
 it("edits secondary settings from the compact popup and restores focus when dismissed", () => {

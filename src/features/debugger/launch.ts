@@ -76,7 +76,7 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
   };
 }
 
-const PYTHON_NAME = /^python[\d.]*(\.exe)?$/;
+const PYTHON_NAME = /^python[\d.]*(\.exe)?$/i;
 
 /** `python` on Windows (`python3` is at most a Store alias there, and venvs have no `python3.exe`), `python3` elsewhere. */
 function systemPython(): string {
@@ -85,10 +85,10 @@ function systemPython(): string {
 
 function pythonFor(rc: RunConfig, cwd: string): string {
   const cmd = rc.command;
-  const name = cmd.split("/").pop() ?? cmd;
-  if (PYTHON_NAME.test(name)) return resolveCommand(cmd, cwd);
-  // A venv tool such as `.venv/bin/pytest`: use the interpreter next to it.
-  if (cmd.includes("/")) return resolveCommand(cmd.slice(0, cmd.lastIndexOf("/") + 1) + "python", cwd);
+  if (PYTHON_NAME.test(commandName(cmd))) return resolveCommand(cmd, cwd);
+  // A venv tool such as `.venv/bin/pytest` or `.venv\Scripts\pytest.exe`: use the interpreter next to it.
+  const dir = cmd.slice(0, Math.max(cmd.lastIndexOf("/"), cmd.lastIndexOf("\\")) + 1);
+  if (dir) return resolveCommand(dir + (hostOs() === "windows" ? "python.exe" : "python"), cwd);
   return systemPython();
 }
 
@@ -107,7 +107,7 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     subProcess: dbg.python.attachSubprocess,
   };
   if (dbg.python.gevent) extra.gevent = true;
-  const name = (rc.command.split("/").pop() ?? rc.command).replace(/\.exe$/, "");
+  const name = commandName(rc.command);
   let args = rc.args;
   let tool: string | null = PYTHON_NAME.test(name) ? null : name;
   if (PYTHON_RUNNERS.has(name) && args[0] === "run" && args[1]) {
