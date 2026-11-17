@@ -91,6 +91,8 @@ public class Real {
             case "H": h(); break;
             case "local": local(); break;
             case "parallel": parallel(); break;
+            case "plocal": parallelLocal(); break;
+            case "elif": elseIf(); break;
             case "nested": nested(); break;
             case "hostile": hostile(); break;
             case "sr": stopRecording(Integer.parseInt(a[1])); break;
@@ -165,6 +167,20 @@ public class Real {
         List<Integer> p = nums.parallelStream().map(x -> x + 1).collect(Collectors.toList()); // @parallel
         List<Integer> q = nums.stream().parallel().map(x -> x * 2).collect(Collectors.toList()); // @parallel2
         System.out.println("P " + p + " " + q);
+    }
+
+    static void parallelLocal() {
+        Stream<Integer> s = nums.parallelStream();
+        List<Integer> r = s.map(x -> x + 1).collect(Collectors.toList()); // @plocal
+        System.out.println("PL " + r);
+    }
+
+    static void elseIf() {
+        if (nums.stream().anyMatch(x -> x > 100)) {
+            System.out.println("ELIF no");
+        } else if (nums.stream().anyMatch(x -> x == 8)) { // @elif
+            System.out.println("ELIF yes");
+        }
     }
 
     static void nested() {
@@ -829,6 +845,61 @@ def real_run_parallel():
         collected_ok('parallel()', c, records='0=5 1=10 0=3 1=6 0=8 1=16 0=1 1=2 0=4 1=8 0=2 1=4 0=9 1=18 0=6 1=12'.split())
         resume(dbg)
         check('parallel: program output', output_line(dbg, 'P ') == 'P [6, 4, 9, 2, 5, 3, 10, 7] [10, 6, 16, 2, 8, 4, 18, 12]')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_parallel_local():
+    dbg = real('plocal')
+    try:
+        # No `parallel` in the chain: the stream was made parallel before the statement.
+        trace, state, _ = run_until_parked(dbg, 'plocal', root=None, local='s', steps=(spec('map', 1),), step_kinds=('sync',),
+                                           class_filters=('java.util.stream.*',))
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('parallel local', c, records='0=5 1=6 0=3 1=4 0=8 1=9 0=1 1=2 0=4 1=5 0=2 1=3 0=9 1=10 0=6 1=7'.split())
+        check('parallel local: sequentialized', c['sequentialized'] is True, c['sequentialized'])
+        resume(dbg)
+        check('parallel local: program output', output_line(dbg, 'PL ') == 'PL [6, 4, 9, 2, 5, 3, 10, 7]')
+    finally:
+        dbg.end()
+
+
+@case
+def real_run_else_if():
+    dbg = real('elif')
+    try:
+        # Stopped on the `else if` line, the first condition's `stream()` has already returned.
+        trace, state, _ = run_until_parked(dbg, 'elif', steps=(), terminal=spec('anyMatch', 1), step_kinds=(), timeout=20)
+        check('else if: the trace parks with nothing skipped', state['state'] == 'parked', state)
+        c = step_out_and_collect(dbg, trace)
+        collected_ok('else if', c, terminal='true')
+        resume(dbg)
+        check('else if: program output', output_line(dbg, 'ELIF ') == 'ELIF yes')
+    finally:
+        dbg.end()
+
+
+@case
+def release_by_arm_token():
+    dbg = launch()
+    try:
+        def arm_with(token):
+            return stream('arm', dbg, threadId=dbg.thread, plan=plan('loop'), budget=50_000, token=token)
+
+        ok(arm_with('first'))
+        check('release by another token leaves the trace', ok(stream('release', dbg, token='other')) == {})
+        check('so the next arm is busy', error(arm_with('second')) == 'busy')
+        check('release by the arm\'s token answers {}', ok(stream('release', dbg, token='first')) == {})
+        trace = ok(arm_with('third'))['traceId']
+        check('arm works again after it', trace is not None, trace)
+        ok(stream('release', dbg, traceId=trace))
+        resume(dbg)
+        try:
+            body = expect_stop(dbg, 10, 'stop after release')
+            check('breakpoints are back after a release by token', body.get('reason') == 'breakpoint', body)
+        except TimeoutError:
+            check('breakpoints are back after a release by token', False, 'no stop within 10 s')
     finally:
         dbg.end()
 

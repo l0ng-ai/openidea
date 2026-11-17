@@ -273,7 +273,15 @@ async function generate(): Promise<void> {
     await turnEnd(created.id);
     const message = commitMessageOf(replyOf(await call(commands.agentEntries(created.id, null))));
     if (!message) throw new Error(tx("The agent did not reply with a commit message"));
-    if (!service.setMessage(changes.revision, message)) {
+    // The files may have been edited since without touching the draft: the message must
+    // still describe what would be committed.
+    const unchanged = async () => {
+      if (service.revision() !== changes.revision) return null;
+      const now = await service.changes().catch(() => null);
+      return now && now.patch === changes.patch ? now.revision : null;
+    };
+    const at = await unchanged();
+    if (at === null || !service.setMessage(at, message)) {
       notify({
         level: "info",
         title: "Commit message not replaced",
