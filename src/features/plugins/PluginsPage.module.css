@@ -139,6 +139,9 @@
 .rowCheck {
   flex: none;
 }
+.rowBadge {
+  flex: none;
+}
 .installedTag {
   flex: none;
   color: var(--fg-muted);
@@ -191,6 +194,9 @@
   color: var(--fg-muted);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
+}
+.rowMeta > :not(.rowVendor) {
+  flex-shrink: 0;
 }
 .devTag {
   padding: 0 4px;
