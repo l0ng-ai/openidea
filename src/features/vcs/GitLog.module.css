@@ -202,6 +202,11 @@
   flex: none;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Keep the first glyph clear of the divider on this column's left edge.
+     box-sizing: border-box keeps the width and boundary position unchanged. */
+  padding-inline-start: var(--space-2);
+  /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
+  position: relative;
 }
 .columnHeading {
   position: relative;
@@ -219,17 +224,75 @@
 .columnHeading.dropAfter {
   box-shadow: inset -2px 0 0 var(--accent);
 }
+/* Column divider: an 8px hit strip centred on the column's LEFT edge, with a
+   visible rule and grip so the resize target is easy to see and grab. Each row
+   carries one, so the rule runs the full table height. */
 .columnResize {
   position: absolute;
   inset-block: 0;
-  inset-inline-end: 0;
-  width: 6px;
+  /* Keep the strip centre (and rule) at the cell's left edge: the cell has
+     overflow:hidden, so any rule drawn into the 8px gap would be clipped away. */
+  inset-inline-start: -4px;
+  width: 8px;
   cursor: ew-resize;
   touch-action: none;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* Divider line is opt-in (View Options › Columns › Column Dividers, off by
+   default like IDEA). The transparent hit strip and resize cursor always work;
+   only the paint is gated. */
+.columnResize::before,
+.columnResize::after {
+  content: "";
+  display: none;
+}
+.showDividers .columnResize::before {
+  display: block;
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 4px;
+  width: 1px;
+  background: var(--border-strong);
+}
+.showDividers .columnResize::after {
+  display: block;
+  width: 2px;
+  height: 16px;
+  border-radius: 1px;
+  background: var(--control-off);
+}
+.showDividers .columnResize:hover::before,
+.showDividers .columnResize:active::before {
+  background: var(--accent);
+  width: 2px;
+}
+.showDividers .columnResize:hover::after,
+.showDividers .columnResize:active::after {
+  background: var(--accent);
+}
+/* First column's border: visible only when dividers are on, never draggable. */
+.columnResizeDisabled {
+  cursor: default;
+}
+.showDividers .columnResizeDisabled::after {
+  display: none;
+}
+.showDividers .columnResizeDisabled:hover::before,
+.showDividers .columnResizeDisabled:active::before {
+  background: var(--border-strong);
+  width: 1px;
+}
+/* Data-row strips keep the full-height rule but not the repeating grip. */
+.columnResizeRow::after {
+  display: none;
 }
 .columnResize:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
+  outline-offset: -1px;
+  border-radius: 1px;
 }
 /* View Options › Highlight › Current Branch: commits reachable from HEAD are tinted. */
 .currentBranch {
@@ -256,6 +319,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
+  /* Anchor for the left divider. The graph SVG uses lane-relative coordinates,
+     so a positioned parent does not move it. */
+  position: relative;
   /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
   overflow-x: clip;
   overflow-y: visible;
