@@ -11,6 +11,8 @@ import {
   LanguageDescription,
   LanguageSupport,
   StreamLanguage,
+  delimitedIndent,
+  indentNodeProp,
   indentService,
   language as languageFacet,
   type StreamParser,
@@ -421,12 +423,28 @@ const EXTRA_TAGS: Record<string, Parameters<typeof styleTags>[0]> = {
   YAML: { "Key/Literal Key/QuotedLiteral": t.keyword },
 };
 
+const bracedIndent = delimitedIndent({ closing: "}" });
+
+/** Grammar props the stock languages lack: indentation that follows the language's usual style. */
+const EXTRA_PROPS: Record<string, NonNullable<Parameters<LRLanguage["configure"]>[0]["props"]>> = {
+  // clang-format's built-in styles (NamespaceIndentation: None, no extern block indent) keep the
+  // contents of `namespace x { … }` and `extern "C" { … }` at the level of the braces' line.
+  "C++": [
+    indentNodeProp.add({
+      // The stock rule for every `{ … }` body, except the bodies of these two.
+      CompoundStatement: (cx) =>
+        cx.node.parent?.name === "NamespaceDefinition" || cx.node.parent?.name === "LinkageSpecification"
+          ? cx.baseIndent
+          : bracedIndent(cx),
+    }),
+  ],
+};
+
 function patchSupport(desc: LanguageDescription, support: LanguageSupport): LanguageSupport {
   const extra = EXTRA_TAGS[desc.name];
+  const props = [...(extra ? [styleTags(extra)] : []), ...(EXTRA_PROPS[desc.name] ?? [])];
   const language =
-    extra && support.language instanceof LRLanguage
-      ? support.language.configure({ props: [styleTags(extra)] })
-      : support.language;
+    props.length && support.language instanceof LRLanguage ? support.language.configure({ props }) : support.language;
   const result = new LanguageSupport(language, [
     support.support,
     docCommentTags(desc.name),
