@@ -8759,5 +8759,6 @@
   "Commit Message Generation": "提交信息生成",
   "Instructions for Generate Commit Message with Agent": "用 Agent 生成提交信息时的要求",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "会加到 Agent 的提示词里，例如提交格式、问题编号前缀或使用的语言。",
-  "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "使用 Conventional Commits（feat:、fix: 等），分支带问题编号时以它开头。"
+  "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "使用 Conventional Commits（feat:、fix: 等），分支带问题编号时以它开头。",
+  "Choose Include Path": "选择包含路径"
 }

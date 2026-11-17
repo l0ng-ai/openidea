@@ -2381,5 +2381,6 @@
   "Commit Message Generation": "Commit Message Generation",
   "Instructions for Generate Commit Message with Agent": "Instructions for Generate Commit Message with Agent",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.",
-  "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one."
+  "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
+  "Choose Include Path": "Choose Include Path"
 }
