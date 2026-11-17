@@ -277,6 +277,31 @@ function MessageLimits() {
   );
 }
 
+function AgentInstructionsRow() {
+  const [value, set] = useSetting<string>("vcs.commit.agentInstructions");
+  const id = useId();
+  return (
+    <Row
+      label="Instructions for Generate Commit Message with Agent"
+      htmlFor={id}
+      hint="Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in."
+      stacked
+    >
+      <textarea
+        id={id}
+        className={styles.instructions}
+        rows={4}
+        spellCheck={false}
+        placeholder={tx(
+          "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
+        )}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+      />
+    </Row>
+  );
+}
+
 function CommitChecks() {
   return (
     <Grid
@@ -399,6 +424,17 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Limit subject line",
             keywords: ["Limit body line", "Show right margin", "Wrap when typing reaches right margin"],
             component: MessageLimits,
+          },
+        ],
+      },
+      {
+        title: "Commit Message Generation",
+        options: [
+          {
+            kind: "custom",
+            label: "Instructions for Generate Commit Message with Agent",
+            keywords: ["agent", "ai", "prompt", "conventional commits"],
+            component: AgentInstructionsRow,
           },
         ],
       },
