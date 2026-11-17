@@ -400,6 +400,57 @@ fn spring_boot_applications_need_the_plugin_and_a_main() {
 }
 
 #[test]
+fn spring_boot_modules_inherit_the_plugin_from_their_parent_build() {
+    let main = |pkg: &str, ann: &str, cls: &str| {
+        format!("package {pkg};\n{ann}\npublic class {cls} {{\n  public static void main(String[] a) {{}}\n}}\n")
+    };
+    let parent = "<project><packaging>pom</packaging><modules><module>order</module><module>user</module>\
+                  <module>gateway</module></modules><build><plugins><plugin>\
+                  <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+    let order = main("shop.order", "@SpringBootApplication", "OrderApp");
+    let user = main("shop.user", "@SpringCloudApplication", "UserApp");
+    // A project annotation carrying @SpringBootApplication, declared in another module.
+    let gateway = main("shop.gateway", "@ShopApplication", "GatewayApp")
+        .replace("package shop.gateway;\n", "package shop.gateway;\nimport shop.common.ShopApplication;\n");
+    let annotation = "package shop.common;\n\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\n\
+                      @Target(ElementType.TYPE)\n@SpringBootApplication\npublic @interface ShopApplication {}\n";
+    let files = [
+        ("pom.xml", parent.to_owned()),
+        ("order/pom.xml", "<project><artifactId>order</artifactId></project>".to_owned()),
+        ("order/src/main/java/shop/order/OrderApp.java", order),
+        ("user/pom.xml", "<project><artifactId>user</artifactId></project>".to_owned()),
+        ("user/src/main/java/shop/user/UserApp.java", user),
+        ("gateway/pom.xml", "<project><artifactId>gateway</artifactId></project>".to_owned()),
+        ("gateway/src/main/java/shop/gateway/GatewayApp.java", gateway),
+        ("common/src/main/java/shop/common/ShopApplication.java", annotation.to_owned()),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let c = detect(project(&files).path());
+    for id in [
+        "application:order:shop.order.OrderApp",
+        "application:user:shop.user.UserApp",
+        "application:gateway:shop.gateway.GatewayApp",
+    ] {
+        assert_eq!(find(&c, id).kind, "spring-boot", "{id}");
+    }
+
+    // A parent that only manages the plugin doesn't apply it; Gradle applies it from `subprojects`.
+    let dir = project(&[
+        ("pom.xml", PARENT_POM),
+        ("app/pom.xml", "<project/>"),
+        ("app/src/main/java/demo/App.java", &main("demo", "@SpringBootApplication", "App")),
+    ]);
+    assert!(!detect(dir.path()).iter().any(|c| c.kind == "spring-boot"));
+    let dir = project(&[
+        ("settings.gradle", "include 'app'\n"),
+        ("build.gradle", "subprojects {\n  apply plugin: 'org.springframework.boot'\n}\n"),
+        ("app/build.gradle", "dependencies {}\n"),
+        ("app/src/main/java/demo/App.java", &main("demo", "@SpringBootApplication", "App")),
+    ]);
+    assert_eq!(find(&detect(dir.path()), "application:app:demo.App").kind, "spring-boot");
+}
+
+#[test]
 fn go_projects() {
     let dir = project(&[
         ("go.mod", "module example.com/x\n"),

@@ -2074,9 +2074,34 @@ fn checkout_reports_untracked_files_it_would_overwrite() {
     for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
         let opts = CheckoutOptions { mode, ..Default::default() };
         let outcome = repo.checkout_with("other", false, &opts).unwrap();
-        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()] });
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["dir/new.txt".into()], removed: false });
         assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
         assert_eq!(fx.read("dir/new.txt"), "mine\n");
+    }
+}
+
+/// Untracked on disk but tracked on the current branch and gone from the target
+/// (as after `git rm --cached`): git refuses to *remove* the file, and the outcome
+/// says so (#3980).
+#[test]
+fn checkout_reports_untracked_files_it_would_remove() {
+    let fx = Fixture::new();
+    fx.write("TEST.md", "hi\n");
+    fx.commit_all("base");
+    fx.git(&["checkout", "-q", "-b", "feature/x"]);
+    fx.git(&["rm", "-q", "TEST.md"]);
+    fx.commit_all("remove TEST.md on feature/x");
+    fx.git(&["checkout", "-q", "main"]);
+    fx.git(&["rm", "--cached", "TEST.md"]);
+    fx.write("TEST.md", "local dirty version\n");
+    let repo = fx.repo();
+    for mode in [CheckoutMode::Normal, CheckoutMode::Smart] {
+        // The refusal leaves the repository untouched, so both modes see the same state.
+        let opts = CheckoutOptions { mode, ..Default::default() };
+        let outcome = repo.checkout_with("feature/x", false, &opts).unwrap();
+        assert_eq!(outcome, CheckoutOutcome::UntrackedFiles { files: vec!["TEST.md".into()], removed: true });
+        assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+        assert_eq!(fx.read("TEST.md"), "local dirty version\n");
     }
 }
 

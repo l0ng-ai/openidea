@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { editorPrefs } from "@/platform/editorSettings";
 import { useProject } from "@/platform/project";
 import { registerFontZoomSurface, useEditorShown, useEditorTabId, useToolWindowShown } from "@/workbench/contributions";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 const MIN_FONT_ZOOM = -6;
 const MAX_FONT_ZOOM = 36;
@@ -74,10 +75,12 @@ export function useAgentFontZoomSurface(
     if (!active || !el) return;
     const step = (delta: number) => stepAgentSurfaceFontZoom(surfaceKey, delta);
     const onWheel = (e: WheelEvent) => {
-      if ((!e.ctrlKey && !e.metaKey) || e.deltaY === 0 || !editorPrefs().general.wheelZoom) return;
+      if (!editorPrefs().general.wheelZoom) return;
+      const zoom = wheelZoomStep(e);
+      if (zoom === null) return;
       e.preventDefault();
       e.stopPropagation();
-      step(e.deltaY < 0 ? 1 : -1);
+      if (zoom) step(zoom);
     };
     el.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const release = registerFontZoomSurface(el, step, { isolated: true });

@@ -3293,8 +3293,12 @@ export type CheckoutOptions = {
 export type CheckoutOutcome = { kind: "done" } | 
 /**  These local changes (repository-relative paths) would be overwritten. */
 { kind: "localChanges"; files: string[] } | 
-/**  These untracked files (repository-relative paths) would be overwritten. */
-{ kind: "untrackedFiles"; files: string[] } | 
+/**
+ *  These untracked files (repository-relative paths) would be overwritten by the
+ *  checkout; with `removed`, they would be removed by it (tracked here, absent
+ *  from the target).
+ */
+{ kind: "untrackedFiles"; files: string[]; removed: boolean } | 
 /**  Local branch `local` has commits that remote branch `remote` does not. */
 { kind: "localBranchAhead"; local: string; remote: string } | 
 /**
@@ -8876,6 +8880,8 @@ export type PluginInfo = {
 	homepage: string | null,
 	changeNotes: string | null,
 	icon: PluginIcon | null,
+	/**  The Java agent this plugin declares, and whether it is still approved. */
+	javaAgent: PluginJavaAgent | null,
 	source: PluginSource,
 	/**  Package directory. */
 	path: IpcPath,
@@ -8908,6 +8914,16 @@ export type PluginInfo = {
 	dependents: DependentInfo[],
 	/**  `[[extension-points]]` this plugin declares while it is live. */
 	extensionPoints: ExtensionPointInfo[],
+};
+
+/**  The Java agent a plugin contributes, for Settings › Plugins. */
+export type PluginJavaAgent = {
+	/**  The jar's file name. */
+	fileName: string,
+	/**  The optional argument passed after `=`. */
+	args: string | null,
+	/**  The jar still has the hash recorded when `java.agent` was granted. */
+	approved: boolean,
 };
 
 /**

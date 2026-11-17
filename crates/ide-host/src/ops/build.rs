@@ -886,12 +886,19 @@ pub async fn build_run(
         for (path, items) in compile::diagnostics(&result.messages) {
             sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
         }
-        Ok(result)
+        Ok::<_, IdeError>(result)
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    let outcome = result??;
+    // Maven generated sources (protobuf, gRPC) stay invisible to jdtls until the
+    // folders the build wrote are attached. An up-to-date build skips Maven and
+    // still needs this: the classes can already be on disk.
+    if outcome.system == ide_build::compile::BuildSystem::Maven {
+        project.lsp.sync_maven_generated_sources(&project.root).await;
+    }
+    Ok(outcome)
 }
 
 /// Build › Compile File: compiles one Java source of a linked Maven module with
@@ -928,12 +935,16 @@ pub async fn build_compile_file(
         for (path, items) in compile::diagnostics(&result.messages) {
             sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
         }
-        Ok(result)
+        Ok::<_, IdeError>(result)
     })
     .await
     .map_err(join_err);
     host.end_request(request);
-    result?
+    let outcome = result??;
+    if outcome.system == ide_build::compile::BuildSystem::Maven {
+        project.lsp.sync_maven_generated_sources(&project.root).await;
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]

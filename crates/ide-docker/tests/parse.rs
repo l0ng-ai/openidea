@@ -1,14 +1,35 @@
 //! Parsing of recorded `docker … --format '{{json .}}'` output.
 
 use ide_docker::{
-    parse_container_stats, parse_container_top, parse_containers, parse_image_history, parse_images, parse_networks,
-    parse_volumes,
+    PS_FORMAT, parse_container_stats, parse_container_top, parse_containers, parse_image_history, parse_images,
+    parse_networks, parse_volumes,
 };
 
 const PS: &str = include_str!("fixtures/ps.jsonl");
 const IMAGES: &str = include_str!("fixtures/images.jsonl");
 const VOLUMES: &str = include_str!("fixtures/volumes.jsonl");
 const NETWORKS: &str = include_str!("fixtures/networks.jsonl");
+
+/// Fills `{{json .Field}}` placeholders of a `--format` template from a `{{json .}}` line.
+fn render(template: &str, line: &str) -> String {
+    let fields: serde_json::Map<String, serde_json::Value> = serde_json::from_str(line).unwrap();
+    let mut out = template.to_owned();
+    while let Some(start) = out.find("{{json .") {
+        let end = start + out[start..].find("}}").unwrap() + 2;
+        let key = &out[start + "{{json .".len()..end - 2];
+        let value = fields.get(key).unwrap_or_else(|| panic!("fixture lacks {key}"));
+        out.replace_range(start..end, &value.to_string());
+    }
+    out
+}
+
+#[test]
+fn ps_format_carries_everything_the_parser_reads_but_size() {
+    assert!(!PS_FORMAT.contains("Size"), "Size makes the daemon compute container sizes");
+    let rendered: Vec<String> = PS.lines().filter(|l| l.starts_with('{')).map(|l| render(PS_FORMAT, l)).collect();
+    assert_eq!(rendered.len(), 2);
+    assert_eq!(parse_containers(&rendered.join("\n")), parse_containers(PS));
+}
 
 #[test]
 fn containers_with_compose_labels() {

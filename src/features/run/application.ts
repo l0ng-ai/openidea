@@ -28,10 +28,13 @@ export function applicationConfig(
   configs: readonly RunConfig[] = [],
 ): RunConfig {
   const module = jvmModuleDir(relPath, configs);
+  const id = `application:${module ? `${module}:` : ""}${target.className}`;
+  // Project detection also recognises annotations carrying @SpringBootApplication.
+  const spring = target.spring || configs.some((c) => c.id === id && c.kind === "spring-boot");
   return {
-    id: `application:${module ? `${module}:` : ""}${target.className}`,
+    id,
     name: simpleClassName(target.className),
-    kind: target.spring ? "spring-boot" : "application",
+    kind: spring ? "spring-boot" : "application",
     command: "java",
     args: ["-cp", isTestSource(relPath) ? TEST_CLASSPATH : CLASSPATH, target.className],
     cwd: null,
