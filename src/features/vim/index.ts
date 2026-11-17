@@ -8,26 +8,12 @@ import { executeAction, registerActions } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { registerKeyClaim } from "@/platform/keymap";
 import { registerEditorContribution } from "@/editor/api";
-import { registerSettingsPage, registerStatusItem, showStatusInfo } from "@/workbench/contributions";
-import { lazyComponent } from "@/ui";
+import { registerStatusItem, showStatusInfo } from "@/workbench/contributions";
 import { vimKeyClaim } from "./conflicts";
 import { loadRcFile } from "./rcFile";
 import { setVimEnabled, syncVimSettingsFromStorage, useVimSettings } from "./settings";
+import { activateSettingsPages, VIM_SETTINGS_PAGE } from "./settingsPages";
 import { VimStatus } from "./VimStatus";
-
-export const VIM_SETTINGS_PAGE = "editor.vim";
-
-/** Settings › Editor › Vim (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  return registerSettingsPage({
-    id: VIM_SETTINGS_PAGE,
-    title: "Vim",
-    group: "Editor",
-    order: 45,
-    keywords: ["vim", "ideavim", "ideavimrc", "emulation", "shortcut conflicts", "handler"],
-    component: lazyComponent(() => import("./VimSettingsPage").then((m) => m.VimSettingsPage)),
-  });
-}
 
 type Engine = typeof import("./engine");
 
