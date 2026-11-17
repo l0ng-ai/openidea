@@ -438,4 +438,58 @@ describe("language modes", () => {
       ]);
     }
   });
+  it("colours Typst markup, embedded code and math", async () => {
+    const support = await loadSupport(findLanguageDescription("Typst", "/p/notes.typ")!);
+    const highlighter = tagHighlighter([
+      { tag: t.keyword, class: "keyword" },
+      { tag: t.comment, class: "comment" },
+      { tag: t.heading, class: "heading" },
+      { tag: t.strong, class: "strong" },
+      { tag: t.emphasis, class: "emphasis" },
+      { tag: t.string, class: "string" },
+      { tag: t.number, class: "number" },
+      { tag: t.function(t.variableName), class: "function" },
+      { tag: t.labelName, class: "label" },
+      { tag: t.monospace, class: "raw" },
+      { tag: t.atom, class: "atom" },
+    ]);
+    const source = [
+      "#set page(width: 10cm)",
+      "// note",
+      "= Intro <intro>",
+      "Some *bold* and _it_ in snake_case, `raw` and $x^2$ see @intro.",
+      "#let total = 1 + 2",
+      "#if true [yes]",
+      "```rust",
+      "let x = 1;",
+      "```",
+    ].join("\n");
+    const found: string[] = [];
+    highlightTree(support!.language.parser.parse(source), highlighter, (from, to, cls) =>
+      found.push(`${source.slice(from, to)}:${cls}`),
+    );
+    expect(found).toEqual(
+      expect.arrayContaining([
+        "#set:keyword",
+        "page:function",
+        "10cm:number",
+        "// note:comment",
+        "= Intro :heading",
+        "<intro>:label",
+        "*bold*:strong",
+        "_it_:emphasis",
+        "`raw`:raw",
+        "$:keyword",
+        "@intro:label",
+        "#let:keyword",
+        "1:number",
+        "#if:keyword",
+        "true:atom",
+        "```rust:raw",
+        "let x = 1;:raw",
+      ]),
+    );
+    expect(found.filter((f) => f.endsWith(":emphasis"))).toEqual(["_it_:emphasis"]);
+    expect(found).not.toContain("yes:keyword");
+  });
 });

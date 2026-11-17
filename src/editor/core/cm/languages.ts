@@ -115,6 +115,11 @@ const OWN_MODES = [
     load: () => import("./restructuredtext").then((m) => new LanguageSupport(m.restructuredtextLanguage)),
   }),
   LanguageDescription.of({
+    name: "Typst",
+    extensions: ["typ"],
+    load: async () => new LanguageSupport(StreamLanguage.define((await import("./typst")).typstParser)),
+  }),
+  LanguageDescription.of({
     name: "Gherkin",
     extensions: ["feature"],
     load: () => import("./gherkin").then((m) => m.gherkinSupport()),
