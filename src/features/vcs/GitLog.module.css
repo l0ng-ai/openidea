@@ -301,9 +301,25 @@
   display: flex;
   align-items: center;
   gap: var(--space-1-5);
+  /* Anchor for the left divider. The graph SVG uses lane-relative coordinates,
+     so a positioned parent does not move it. */
+  position: relative;
   /* Let graph endpoints overlap adjacent rows, but never paint over the next column. */
   overflow-x: clip;
   overflow-y: visible;
+}
+/* Commit is the flexible, non-resizable column: a static rule on its left edge
+   (no grip, no hover highlight) keeps it visually consistent without implying it
+   can be resized. Both header and data rows use .colSubject, so this spans the
+   full table height. */
+.colSubject::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  width: 1px;
+  background: var(--border-strong);
+  pointer-events: none;
 }
 .colAuthor {
   flex: none;
