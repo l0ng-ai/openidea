@@ -832,6 +832,7 @@
   "Call tree": "调用树",
   "Calls on the current line": "当前行中的调用",
   "Cancel": "取消",
+  "Skipped": "已跳过",
   "Cancel Exclusion": "取消排除",
   "Cancel Running Statement": "取消正在运行的语句",
   "Cannot add a field watchpoint": "无法添加字段监视点",

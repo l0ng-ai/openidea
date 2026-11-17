@@ -473,6 +473,56 @@ fn history_replays_turns() {
     assert_eq!(updates[4]["status"], "completed");
 }
 
+#[test]
+fn history_preserves_async_questions_with_stable_answer_ids() {
+    let updates = history(
+        &json!({"turns": [{"items": [{
+            "type": "agentMessage", "id": "call-1", "text": "Which?",
+            "questions": [{"title": "Which?", "options": ["One", "Two"]}, {"title": "Why?"}]
+        }]}]}),
+        None,
+    );
+    let asked = updates.iter().find(|u| u["sessionUpdate"] == "user_question").expect("question update");
+    assert_eq!(asked["id"], "call-1");
+    assert_eq!(asked["questions"][0]["answerKey"], r#"["request_user_input_async","call-1",0]"#);
+    assert_eq!(asked["questions"][0]["options"][1]["label"], "Two");
+    assert_eq!(asked["questions"][1]["options"], json!([]));
+}
+
+#[tokio::test]
+async fn completing_a_streamed_message_still_delivers_its_async_questions() {
+    let shim = Arc::new(CodexShim {
+        runtime: tokio::runtime::Handle::current(),
+        codex: OnceLock::new(),
+        client: OnceLock::new(),
+        state: Mutex::default(),
+        models: tokio::sync::Mutex::new(None),
+        skills: tokio::sync::Mutex::new(()),
+    });
+    shim.state.lock().threads.insert("thread".into(), Thread::default());
+    let client = Arc::new(Client::default());
+    let peer = crate::native::serve(shim.clone(), client.clone());
+    shim.text("thread", &json!({"itemId":"call-1","delta":"Which?"}), "agent_message_chunk", false);
+    shim.item(
+        "thread",
+        &json!({"type":"agentMessage","id":"call-1","text":"Which?",
+        "questions":[{"title":"Which?","options":["One","Two"]}]}),
+        true,
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while client.of("thread").len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(client.text("thread", "agent_message_chunk"), "Which?");
+    assert!(client.of("thread").iter().any(|u| u["sessionUpdate"] == "user_question"));
+    assert!(client.asked.lock().is_empty(), "an asynchronous question must not block on a permission response");
+    peer.kill();
+    shim.client.get().unwrap().kill();
+}
+
 // ---- Transcripts ---------------------------------------------------------------------
 
 /// The ACP client: records updates and answers permission requests in order.
