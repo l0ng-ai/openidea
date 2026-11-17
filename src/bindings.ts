@@ -4941,7 +4941,14 @@ export type DockerEndpoint =
  */
 { kind: "tcp"; host: string; tlsCertDir: string | null } | 
 /**  A named `docker context`. */
-{ kind: "context"; name: string };
+{ kind: "context"; name: string } | 
+/**
+ *  A daemon on the host of an SSH configuration (Settings › Tools › SSH Configurations),
+ *  reached with the IDE's own SSH client and its saved credentials. The host resolves it to
+ *  a local [`DockerEndpoint::Tcp`] tunnel before running docker; unresolved, the CLI is
+ *  pointed at an address it rejects rather than at another daemon.
+ */
+{ kind: "ssh"; config: string };
 
 /**  One relevant `docker events` entry. */
 export type DockerEvent = {

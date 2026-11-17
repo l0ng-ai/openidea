@@ -13,6 +13,11 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + '
     tauri::async_runtime::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+/// `endpoint` with an SSH configuration's tunnel opened (see [`ide_host::ops::docker::resolve`]).
+async fn resolve(state: &AppState, endpoint: DockerEndpoint) -> IdeResult<DockerEndpoint> {
+    ide_host::ops::docker::resolve(&state.host, endpoint).await
+}
+
 /// Runs a cancellable docker command (`request` → `cancel_request`) off the command threads.
 async fn cancellable<T: Send + 'static>(
     state: &AppState,
@@ -28,52 +33,82 @@ async fn cancellable<T: Send + 'static>(
 /// Availability plus containers, images, volumes and networks.
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_snapshot(endpoint: DockerEndpoint) -> IdeResult<DockerSnapshot> {
+pub async fn docker_snapshot(state: State<'_, AppState>, endpoint: DockerEndpoint) -> IdeResult<DockerSnapshot> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || Ok(ide_docker::snapshot(&endpoint))).await
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_container_op(endpoint: DockerEndpoint, ids: Vec<String>, op: ContainerOp) -> IdeResult<()> {
+pub async fn docker_container_op(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+    ids: Vec<String>,
+    op: ContainerOp,
+) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || ide_docker::container_op(&endpoint, &ids, op)).await
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn docker_remove(
+    state: State<'_, AppState>,
     endpoint: DockerEndpoint,
     object: DockerObject,
     ids: Vec<String>,
     force: bool,
 ) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || ide_docker::remove(&endpoint, object, &ids, force)).await
 }
 
 /// Pretty-printed `docker inspect` JSON.
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_inspect(endpoint: DockerEndpoint, object: DockerObject, id: String) -> IdeResult<String> {
+pub async fn docker_inspect(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+    object: DockerObject,
+    id: String,
+) -> IdeResult<String> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || ide_docker::inspect(&endpoint, object, &id)).await
 }
 
 /// Layers of an image (`docker image history`).
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_image_history(endpoint: DockerEndpoint, id: String) -> IdeResult<Vec<DockerImageLayer>> {
+pub async fn docker_image_history(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+    id: String,
+) -> IdeResult<Vec<DockerImageLayer>> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || ide_docker::image_history(&endpoint, &id)).await
 }
 
 /// Processes running inside a container (`docker top`).
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_container_top(endpoint: DockerEndpoint, id: String) -> IdeResult<DockerProcessList> {
+pub async fn docker_container_top(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+    id: String,
+) -> IdeResult<DockerProcessList> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || ide_docker::container_top(&endpoint, &id)).await
 }
 
 /// One-shot resource usage snapshot of a running container (`docker stats --no-stream`).
 #[tauri::command]
 #[specta::specta]
-pub async fn docker_container_stats(endpoint: DockerEndpoint, id: String) -> IdeResult<DockerContainerStats> {
+pub async fn docker_container_stats(
+    state: State<'_, AppState>,
+    endpoint: DockerEndpoint,
+    id: String,
+) -> IdeResult<DockerContainerStats> {
+    let endpoint = resolve(&state, endpoint).await?;
     blocking(move || ide_docker::container_stats(&endpoint, &id)).await
 }
 
@@ -91,6 +126,7 @@ pub async fn docker_logs(
     timestamps: bool,
     on_line: Channel<DockerLogLine>,
 ) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     cancellable(&state, request, move |cancel| {
         ide_docker::logs(&endpoint, &id, tail, follow, timestamps, cancel, &|line| {
             let _ = on_line.send(line);
@@ -108,6 +144,7 @@ pub async fn docker_events(
     endpoint: DockerEndpoint,
     on_event: Channel<DockerEvent>,
 ) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     cancellable(&state, request, move |cancel| {
         ide_docker::watch_events(&endpoint, cancel, &|e| {
             let _ = on_event.send(e);
@@ -126,6 +163,7 @@ pub async fn docker_pull(
     reference: String,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     let data_dir = state.data_dir.clone();
     cancellable(&state, request, move |cancel| {
         let auth = ide_docker::auth_for(&data_dir, &reference);
@@ -145,6 +183,7 @@ pub async fn docker_prune(
     target: PruneTarget,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     cancellable(&state, request, move |cancel| {
         ide_docker::prune(&endpoint, target, cancel, &|line| {
             let _ = on_output.send(line);
@@ -167,6 +206,7 @@ pub async fn docker_compose_op(
     op: ComposeOp,
     on_output: Channel<String>,
 ) -> IdeResult<()> {
+    let endpoint = resolve(&state, endpoint).await?;
     cancellable(&state, request, move |cancel| {
         ide_docker::compose_op(&endpoint, &project, &files, working_dir.as_deref(), op, cancel, &|line| {
             let _ = on_output.send(line);
@@ -211,6 +251,7 @@ pub async fn docker_registry_login(
     registry: DockerRegistry,
     password: Option<String>,
 ) -> IdeResult<String> {
+    let endpoint = resolve(&state, endpoint).await?;
     let data_dir = state.data_dir.clone();
     blocking(move || {
         let password = password
