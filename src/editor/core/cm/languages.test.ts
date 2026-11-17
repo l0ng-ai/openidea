@@ -1,6 +1,7 @@
 import { EditorState } from "@codemirror/state";
 import { LanguageDescription, type Language } from "@codemirror/language";
 import { describe, expect, it } from "vitest";
+import { getIndentation } from "@codemirror/language";
 import { highlightTree, tagHighlighter, tags as t } from "@lezer/highlight";
 import { logWarning } from "./highlight";
 import { fencedCodeMode, findLanguageDescription, loadSupport } from "./languages";
@@ -269,6 +270,28 @@ describe("language modes", () => {
       highlightTree(support!.language.parser.parse(doc), highlighter, (from, to) => derefs.push(doc.slice(from, to)));
       expect(derefs, mode).toEqual(["?.", ".", "?."]);
     }
+  });
+
+  it('keeps C++ namespace and extern "C" contents at the level of their braces', async () => {
+    const support = await loadSupport(findLanguageDescription("C++", "/p/a.cpp")!);
+    const doc = [
+      "namespace foo {",
+      "class Bar {",
+      "  int x;",
+      "};",
+      "namespace inner {",
+      "void f() {",
+      "  g();",
+      "}",
+      "}  // namespace inner",
+      "}  // namespace foo",
+      'extern "C" {',
+      "int h();",
+      "}",
+    ].join("\n");
+    const state = EditorState.create({ doc, extensions: [support!, EditorState.tabSize.of(2)] });
+    const indent = (line: number) => getIndentation(state, state.doc.line(line).from);
+    expect([2, 3, 4, 5, 6, 7, 9, 10, 12, 13].map(indent)).toEqual([0, 2, 0, 0, 0, 2, 0, 0, 0, 0]);
   });
 
   it("colours `this`, `super` and Rust's `self` as keywords", async () => {
