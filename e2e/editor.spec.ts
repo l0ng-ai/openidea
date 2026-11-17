@@ -273,6 +273,60 @@ test("Markdown preview highlights ⌘F matches, selected words and scales diagra
   expect(reset.excalidraw).toBeCloseTo(base.excalidraw, 1);
 });
 
+test("Markdown preview aligns Mermaid diagrams to their container align attribute", async ({ workbench: page }) => {
+  const editor = await openFromTree(page, "README.md");
+  const content = editor.locator(".cm-content");
+  await content.click();
+  await page.keyboard.press("Meta+a");
+  const diagram = ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n");
+  await page.keyboard.insertText(
+    [
+      diagram,
+      "",
+      '<div align="left" style="width: 960px; max-width: 100%; margin-left: 0; text-align: left;">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="right">',
+      "",
+      diagram,
+      "",
+      "</div>",
+      "",
+      '<div align="left"><div align="center">',
+      "",
+      diagram,
+      "",
+      "</div></div>",
+    ].join("\n"),
+  );
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const outputs = preview.locator("[data-mermaid-state='ok'] .mermaid-output");
+  await expect(outputs).toHaveCount(4);
+
+  const offsets = await outputs.evaluateAll((els) =>
+    els.map((out) => {
+      const outRect = out.getBoundingClientRect();
+      const svgRect = out.querySelector("svg")!.getBoundingClientRect();
+      return {
+        leftGap: svgRect.left - outRect.left,
+        rightGap: outRect.right - svgRect.right,
+      };
+    }),
+  );
+
+  expect(offsets[0]!.leftGap).toBeGreaterThan(20);
+  expect(Math.abs(offsets[0]!.leftGap - offsets[0]!.rightGap)).toBeLessThanOrEqual(1.5);
+  expect(Math.abs(offsets[1]!.leftGap)).toBeLessThanOrEqual(1);
+  expect(offsets[1]!.rightGap).toBeGreaterThan(40);
+  expect(offsets[2]!.leftGap).toBeGreaterThan(40);
+  expect(Math.abs(offsets[2]!.rightGap)).toBeLessThanOrEqual(1);
+  expect(Math.abs(offsets[3]!.leftGap - offsets[3]!.rightGap)).toBeLessThanOrEqual(1.5);
+});
+
 test("the bookmark gutter takes no width until the file has a bookmark", async ({ workbench: page }) => {
   const editor = await openFromTree(page, "README.md");
   const column = editor.locator(".cm-gutter.cm-openidea-bookmarks");
