@@ -12,7 +12,9 @@ import { hasPrimaryModifier } from "@/platform/keymap";
 import { editorService, maybeEditorService, toolWindowService } from "@/workbench/contributions";
 import { closePopup, updatePopup, useLspPopup, type DocEntry } from "./popupStore";
 import { isEmptyMarkup, languageForPath, openDocLink, sourceLink, type DocLinkHandler } from "./markdown";
-import { findInPackage, pkgGoDevLink, resolveGoRef, signatureRef } from "./docLinks/go";
+import { resolveGoRef, signatureRef } from "./docLinks/go";
+import { docUrlResolver } from "./docLinks";
+import type { DocTarget } from "./docLinks/symbols";
 import { lspRequest } from "./lsp";
 import { readFileLines, withDocument } from "./files";
 
@@ -190,8 +192,6 @@ async function docAt(target: { path: string; line: number; col: number }): Promi
   });
 }
 
-type DocTarget = { path: string; line: number; col: number };
-
 /** Shows `target`'s documentation as the next history step; without any, opens its source. */
 async function followTo(host: DocHost, target: DocTarget) {
   const entry = await docAt(target).catch(() => null);
@@ -210,18 +210,18 @@ async function followTo(host: DocHost, target: DocTarget) {
 /**
  * Link clicks in a documentation view: a source link shows that symbol's
  * documentation in the same view (⌘-click opens the source instead); so does
- * a pkg.go.dev link whose symbol is found, others open in the browser.
+ * a web link a language's rule (`docLinks/`) finds the symbol of, others open in the browser.
  */
 export function docLinkHandler(host: DocHost): DocLinkHandler {
   return (href, e) => {
     const target = sourceLink(href);
-    const web = target ? null : pkgGoDevLink(href);
+    const web = target ? null : docUrlResolver(href);
     if ((!target && !web) || hasPrimaryModifier(e)) {
       if (target) closeHost(host);
       return false;
     }
     void (async () => {
-      const found = target ?? (web && (await findInPackage(web.importPath, web.name).catch(() => null)));
+      const found = target ?? (web && (await web().catch(() => null)));
       if (found) await followTo(host, found);
       else openDocLink(href);
     })();

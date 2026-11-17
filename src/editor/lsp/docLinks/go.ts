@@ -8,14 +8,9 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { call, commands, nextRequestId, type LibraryGroup, type WorkspaceSymbol } from "@/platform/ipc";
+import { symbols, unique, type DocTarget } from "./symbols";
 import { dirname } from "@/platform/project";
 import { readFileLines } from "../files";
-
-export interface GoTarget {
-  path: string;
-  line: number;
-  col: number;
-}
 
 /** A name in a Go signature: `pkg.Name` (`qualifier` = `pkg`) or `Name`. */
 export interface GoRef {
@@ -33,17 +28,17 @@ const IDENT = "[A-Za-z_][A-Za-z0-9_]*";
 
 /** `https://pkg.go.dev/<import path>[@version]#<Name>` or `#<Type>.<Method>`; null for other links. */
 export function pkgGoDevLink(href: string): { importPath: string; name: string } | null {
-  let url: URL;
+  // Malformed URLs and escapes are no links.
   try {
-    url = new URL(href);
+    const url = new URL(href);
+    if (url.hostname !== "pkg.go.dev") return null;
+    const name = decodeURIComponent(url.hash.slice(1));
+    const importPath = decodeURIComponent(url.pathname.slice(1)).replace(/@[^/]*/, "");
+    if (!importPath || !new RegExp(`^${IDENT}(\\.${IDENT})?$`).test(name)) return null;
+    return { importPath, name };
   } catch {
     return null;
   }
-  if (url.hostname !== "pkg.go.dev") return null;
-  const name = decodeURIComponent(url.hash.slice(1));
-  const importPath = decodeURIComponent(url.pathname.slice(1)).replace(/@[^/]*/, "");
-  if (!importPath || !new RegExp(`^${IDENT}(\\.${IDENT})?$`).test(name)) return null;
-  return { importPath, name };
 }
 
 /**
@@ -93,23 +88,8 @@ function named(s: WorkspaceSymbol, qualifier: string, name: string): boolean {
   return s.name === name || s.name === `${qualifier}.${name}`;
 }
 
-async function symbols(query: string): Promise<WorkspaceSymbol[]> {
-  return call(commands.lspWorkspaceSymbols(nextRequestId(), query)).catch(() => []);
-}
-
-/** The one symbol `hits` hold (the same place listed twice counts once); null when none or several. */
-function unique(hits: WorkspaceSymbol[]): GoTarget | null {
-  const places = new Map(
-    hits.map((s) => {
-      const { path, range } = s.location;
-      return [`${path}:${range.start.line}:${range.start.col}`, { path, ...range.start }] as const;
-    }),
-  );
-  return places.size === 1 ? [...places.values()][0]! : null;
-}
-
 /** `name` (`Name` or `Type.Method`) declared in the package at `importPath`. */
-export async function findInPackage(importPath: string, name: string): Promise<GoTarget | null> {
+export async function findInPackage(importPath: string, name: string): Promise<DocTarget | null> {
   const pkg = goPackageName(importPath);
   const inPackage = (list: WorkspaceSymbol[]) => list.filter((s) => s.container === importPath && named(s, pkg, name));
   const hits = inPackage(await symbols(`${pkg}.${name}`));
@@ -129,7 +109,7 @@ async function goSourceRoot(): Promise<string | null> {
 }
 
 /** A predeclared name's declaration in `$GOROOT/src/builtin/builtin.go`. */
-async function builtin(name: string): Promise<GoTarget | null> {
+async function builtin(name: string): Promise<DocTarget | null> {
   const src = await goSourceRoot();
   if (!src) return null;
   const path = `${src}/builtin/builtin.go`;
@@ -143,7 +123,7 @@ async function builtin(name: string): Promise<GoTarget | null> {
 }
 
 /** Where a name in a Go signature is declared; null when it isn't found exactly once. */
-export async function resolveGoRef(ref: GoRef, ctx: GoRefContext): Promise<GoTarget | null> {
+export async function resolveGoRef(ref: GoRef, ctx: GoRefContext): Promise<DocTarget | null> {
   const { qualifier, name } = ref;
   if (!qualifier) {
     if (PREDECLARED.has(name)) return builtin(name);
