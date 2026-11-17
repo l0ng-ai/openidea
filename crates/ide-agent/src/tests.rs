@@ -1336,6 +1336,25 @@ async fn subagents_get_their_own_conversation() {
 }
 
 #[test]
+fn image_blocks_declare_the_type_of_their_bytes() {
+    let image = |mime: &str, data: &str| AgentImage { mime_type: mime.into(), data: data.into(), name: None };
+    let cases = [
+        // A browser's JPEG pasted as PNG.
+        (image("image/png", "/9j/4AAQSkZJRgABAQ"), "image/jpeg"),
+        (image("image/jpeg", "iVBORw0KGgoAAAANSUhEUg"), "image/png"),
+        (image("image/png", "R0lGODlhAQABAIAAAP"), "image/gif"),
+        (image("image/png", "UklGRiQAAABXRUJQVlA4"), "image/webp"),
+        // Not recognised: as declared.
+        (image("image/bmp", "Qk02AAAAAAAAADYAAA"), "image/bmp"),
+        (image("image/png", "AAA"), "image/png"),
+    ];
+    for (image, expected) in cases {
+        let p = AgentPrompt { text: String::new(), files: vec![], images: vec![image] };
+        assert_eq!(blocks(&p, &[])[0]["mimeType"], expected, "{:?}", p.images[0].data);
+    }
+}
+
+#[test]
 fn prompts_become_acp_content_blocks() {
     let p = AgentPrompt {
         text: "look".into(),

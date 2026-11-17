@@ -3042,7 +3042,7 @@ fn blocks(prompt: &AgentPrompt, contents: &[Option<String>]) -> Vec<Value> {
         });
     }
     for i in &prompt.images {
-        out.push(json!({ "type": "image", "mimeType": i.mime_type, "data": i.data }));
+        out.push(json!({ "type": "image", "mimeType": i.media_type(), "data": i.data }));
     }
     out
 }
