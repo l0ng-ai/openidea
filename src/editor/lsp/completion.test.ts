@@ -359,13 +359,52 @@ describe("applying completions", () => {
       const kotlin = item({ label: "refreshName", labelDetail: "()", insertText: "", command });
       applyLspCompletion(view, makeCompletion(kotlin, req), 5, 5, "insert");
       expect(view.state.selection.ranges).toHaveLength(2);
+      const local: string[] = [];
+      view.dispatch({
+        effects: StateEffect.appendConfig.of(
+          EditorView.updateListener.of((u) => {
+            for (const tr of u.transactions)
+              if (tr.docChanged && !tr.annotation(remoteChange)) local.push(tr.newDoc.toString());
+          }),
+        ),
+      });
       view.dispatch({ changes: { from: 5, insert: "reshName()" }, annotations: remoteChange.of(true) });
-      expect(view.state.doc.toString()).toBe("p.refreshName()\nq.refreshName()\n");
+      await vi.waitFor(() => expect(view.state.doc.toString()).toBe("p.refreshName()\nq.refreshName()\n"));
+      // The repeated edit is the editor's own: the document model receives it.
+      expect(local).toEqual(["p.refreshName()\nq.refreshName()\n"]);
       expect(view.state.selection.ranges.map((r) => r.head)).toEqual([15, 31]);
       expect(view.state.selection.main.head).toBe(15);
     } finally {
       setInvokeRoute(null);
     }
+  });
+
+  it("repeats a server's insertion only at carets after the same typed text", async () => {
+    setInvokeRoute(() => Promise.resolve(null));
+    try {
+      const { view, req } = setup("p.ref|\nq.oth\n", "", [
+        completionExtension(),
+        EditorState.allowMultipleSelections.of(true),
+      ]);
+      view.dispatch({ effects: StateEffect.appendConfig.of(lspDoc.of({ doc: 1 } as EditorDocContext)) });
+      view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(5), EditorSelection.cursor(11)], 0) });
+      const command = { title: "Apply Completion", command: "jetbrains.kotlin.completion.apply", arguments: ["1"] };
+      const kotlin = item({ label: "refreshName", labelDetail: "()", insertText: "", command });
+      applyLspCompletion(view, makeCompletion(kotlin, req), 2, 5, "insert");
+      view.dispatch({ changes: { from: 5, insert: "reshName()" }, annotations: remoteChange.of(true) });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(view.state.doc.toString()).toBe("p.refreshName()\nq.oth\n");
+    } finally {
+      setInvokeRoute(null);
+    }
+  });
+
+  it("adds parentheses at each caret only where no call follows", () => {
+    const { view, req } = setup("a.cr|\nb.cr()", "", [EditorState.allowMultipleSelections.of(true)]);
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(4), EditorSelection.cursor(9)], 0) });
+    applyLspCompletion(view, makeCompletion(item({ insertText: "create" }), req), 2, 4, "insert");
+    expect(view.state.doc.toString()).toBe("a.create()\nb.create()");
+    expect(view.state.selection.ranges.map((r) => r.head)).toEqual([9, 19]);
   });
 
   it("does not register a scope when jumping outside closing brackets is off", () => {
