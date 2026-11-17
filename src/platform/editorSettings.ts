@@ -38,6 +38,10 @@ export interface LanguageCodeStyle {
   /** Code Generation › Comment Code (unset: the language's default, see `lineCommentDefaults`). */
   lineCommentAtFirstColumn?: boolean;
   lineCommentAddSpace?: boolean;
+  /** PHP: align `=>` in multi-line arrays after formatting (PhpStorm's option; off by default). */
+  alignKeyValuePairs?: boolean;
+  /** PHP: align `=` of consecutive assignment statements after formatting. */
+  alignConsecutiveAssignments?: boolean;
 }
 
 /**

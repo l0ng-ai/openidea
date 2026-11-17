@@ -2435,5 +2435,9 @@
   "Instructions for Generate Commit Message with Agent": "Instructions for Generate Commit Message with Agent",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.",
   "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
-  "Choose Include Path": "Choose Include Path"
+  "Choose Include Path": "Choose Include Path",
+  "Alignment": "Alignment",
+  "Align key-value pairs": "Align key-value pairs",
+  "Align consecutive assignments": "Align consecutive assignments",
+  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines."
 }

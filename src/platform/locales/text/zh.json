@@ -8812,5 +8812,9 @@
   "Instructions for Generate Commit Message with Agent": "用 Agent 生成提交信息时的要求",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "会加到 Agent 的提示词里，例如提交格式、问题编号前缀或使用的语言。",
   "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "使用 Conventional Commits（feat:、fix: 等），分支带问题编号时以它开头。",
-  "Choose Include Path": "选择包含路径"
+  "Choose Include Path": "选择包含路径",
+  "Alignment": "对齐",
+  "Align key-value pairs": "对齐键值对",
+  "Align consecutive assignments": "对齐连续赋值",
+  "Lines up => in multi-line arrays and = in consecutive assignments after the language server or PHP-CS-Fixer formats the file; for a selection, only its lines.": "在语言服务器或 PHP-CS-Fixer 格式化文件后，对齐多行数组中的 => 和连续赋值语句中的 =；格式化选区时只对齐选中的行。"
 }
