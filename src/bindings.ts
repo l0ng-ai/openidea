@@ -1963,6 +1963,11 @@ export const commands = {
 	/**  Deployment windows: the server and local selection to compare. */
 	deployment: DeploymentLaunch | null,
 } | null>("window_take_launch"),
+	/**
+	 *  Local bootstrap snapshot for a `settings-<parent>` window, avoiding a sequential
+	 *  startup IPC waterfall and any blocking SSH `project_current` round-trip before first paint.
+	 */
+	windowTakeSettingsInit: () => __TAURI_INVOKE<SettingsWindowInit_Serialize>("window_take_settings_init"),
 	windowToggleFullscreen: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_fullscreen")),
 	/**  Fills the work area without the platform zoom animation. Returns whether it is filled now. */
 	windowToggleZoom: () => typedError<boolean, IdeError>(__TAURI_INVOKE("window_toggle_zoom")),
@@ -10701,6 +10706,24 @@ export type SettingsImport_Serialize = {
 };
 
 export type SettingsScope = "global" | "project";
+
+export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowInit_Deserialize;
+
+export type SettingsWindowInit_Deserialize = {
+	launch: Launch_Deserialize | null,
+	remote: RemoteSession | null,
+	project: ProjectInfo_Deserialize | null,
+	globalSettings: Settings_Deserialize,
+	updates: boolean,
+};
+
+export type SettingsWindowInit_Serialize = {
+	launch: Launch_Serialize | null,
+	remote: RemoteSession | null,
+	project: ProjectInfo_Serialize | null,
+	globalSettings: Settings_Serialize,
+	updates: boolean,
+};
 
 export type Settings_Deserialize = {
 	general?: GeneralSettings,
