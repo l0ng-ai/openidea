@@ -21,10 +21,11 @@
   <body>
     <canvas id="map"></canvas>
     <script>
-      // A minimal minimap over `openidea.editor`: each line 2px high, each character 1px wide,
-      // in its highlight colour; the visible area as a frame that can be dragged; the wheel
-      // scrolls the editor; the marker bar's problems as bars at the right edge; folded lines left out;
-      // the selected lines tinted and the caret's line marked; VCS changes at the left edge.
+      // A minimal minimap over `openidea.editor`: each line 2px high, each character 1px wide (tabs
+      // as wide as the editor draws them), in its highlight colour; the visible area as a frame that
+      // can be dragged; the wheel scrolls the editor; the marker bar's problems as bars at the right
+      // edge; folded lines left out; the selected lines tinted and the caret's line marked; VCS
+      // changes at the left edge.
       const editor = window.openidea.editor;
       const canvas = document.getElementById("map");
       const ctx = canvas.getContext("2d");
@@ -38,6 +39,7 @@
       let folds = [];
       let selections = [];
       let changes = [];
+      let tabSize = 4;
       const PROBLEM_COLOR = { error: "--openidea-danger", warning: "--openidea-warning" };
       const PROBLEM_RANK = { error: 2, warning: 1 };
       let drag = null;
@@ -46,6 +48,13 @@
       const grey = (color) => {
         const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(color);
         return !!m && Math.max(m[1], m[2], m[3]) - Math.min(m[1], m[2], m[3]) < 24;
+      };
+      // Column → x, with tabs expanded to the editor's tab stops.
+      const xOf = (line) => {
+        if (!line.includes("\t")) return (c) => c;
+        const xs = [0];
+        for (let i = 0, x = 0; i < line.length; i++) xs.push((x += line[i] === "\t" ? tabSize - (x % tabSize) : 1));
+        return (c) => xs[Math.min(c, line.length)];
       };
       const cssVar = (name) => (window.openidea.theme && window.openidea.theme.vars[name]) || "";
 
@@ -120,10 +129,11 @@
           const i = lineOfRow(row);
           const y = row * LINE - offset;
           const line = text[i] || "";
+          const x = xOf(line);
           // Text without a syntax colour: faint, so the coloured spans stand out.
           ctx.globalAlpha = 0.2;
           ctx.fillStyle = muted;
-          for (const m of line.matchAll(/\S+/g)) ctx.fillRect(m.index, y, m[0].length, LINE - 0.5);
+          for (const m of line.matchAll(/\S+/g)) ctx.fillRect(x(m.index), y, m[0].length, LINE - 0.5);
           ctx.globalAlpha = 1;
           const spans = colors.get(i);
           if (!spans) missing.push(i);
@@ -132,7 +142,7 @@
               // Greys (the plain text colour, comments) stay as faint as uncoloured text.
               if (grey(s.color)) continue;
               ctx.fillStyle = s.color;
-              ctx.fillRect(s.from, y, s.to - s.from, LINE - 0.5);
+              ctx.fillRect(x(s.from), y, x(s.to) - x(s.from), LINE - 0.5);
             }
         }
         // Changes in the gutter's colours: a bar over changed lines, a notch where lines were deleted.
@@ -186,6 +196,8 @@
           view = null;
           return redraw();
         }
+        // `tabSize` is API 1.10.
+        tabSize = target.tabSize || 4;
         const doc = await editor.document.get();
         text = doc.text.split("\n");
         // `problems` is API 1.10.

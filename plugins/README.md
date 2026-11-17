@@ -467,6 +467,9 @@ matching SDK. Released 1.9 plugins keep working. New in 1.10:
   `openidea.editor.changes()` and hears them change through `onChanges`. Frames
   get the lane's colours as `--openidea-change-added`, `--openidea-change-modified`
   and `--openidea-change-deleted`. See _Editor panels_.
+- **The tab size in editor panels.** `openidea.editor.get()` includes the
+  `tabSize` the editor expands tabs with for the group's file, and `onTarget`
+  reports it again when it changes. See _Editor panels_.
 
 ### API 1.9
 
@@ -1935,8 +1938,8 @@ The page gets `openidea.editor` (only an editor panel's page has it). Lines are
 
 | `openidea.editor`                      | What it does                                                                                                                                                                                                                   |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `get()`                                | `{ path, language, version, lineCount }` of the group's file, or `null`                                                                                                                                                        |
-| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none                                                                                                                                                                 |
+| `get()`                                | `{ path, language, version, lineCount, tabSize }` of the group's file, or `null`; `tabSize` (API 1.10) is the columns a tab takes in the editor (Code Style, `.editorconfig`, indent detection)                                |
+| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none, and (API 1.10) when the file's tab size changes                                                                                                                |
 | `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                                                      |
 | `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame                                       |
 | `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                                                                    |

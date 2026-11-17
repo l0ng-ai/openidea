@@ -139,9 +139,9 @@
   };
   /** The text editor of the editor group the panel is in. */
   const editorApi = Object.freeze({
-    /** `{ path, language, version, lineCount }` of the group's file, or null. */
+    /** `{ path, language, version, lineCount, tabSize }` of the group's file, or null. */
     get: () => call("editor.get"),
-    /** Called with the new `get()` value when the group shows another file, or none. */
+    /** Called with the new `get()` value when the group shows another file, or none, or the file's tab size changes. */
     onTarget: listen(editorListeners.target),
     /** The group's document, read-only (`edit` / `replace` reject). */
     document: documentApi,

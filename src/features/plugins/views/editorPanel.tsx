@@ -77,6 +77,7 @@ function lineAtHeight(view: EditorView, height: number): number {
 
 /** What the next frame sends: nothing yet. */
 const nothingPending = () => ({
+  target: false,
   viewport: false,
   document: false,
   problems: false,
@@ -122,6 +123,8 @@ export class PanelEditor implements FrameEditor {
     this.unbind = () => {};
     this.handle = handle;
     this.version++;
+    // Sent below.
+    this.pending.target = false;
     if (handle) {
       const { view } = handle;
       const onScroll = () => this.schedule({ viewport: true });
@@ -148,6 +151,8 @@ export class PanelEditor implements FrameEditor {
         // An edit can move a caret to another line without changing its offset.
         if (u.docChanged || !u.state.selection.eq(u.startState.selection)) this.schedule({ selections: true });
         if (u.startState.facet(lineChanges) !== u.state.facet(lineChanges)) this.schedule({ changes: true });
+        // Settings or `.editorconfig` changed the file's indentation: `get()` changed.
+        if (u.startState.tabSize !== u.state.tabSize) this.schedule({ target: true });
         // Wrapped rows follow the line blocks' heights.
         const wrap = u.view.lineWrapping;
         if (foldedRanges(u.startState) !== foldedRanges(u.state) || wrap !== softWrap || (wrap && u.heightChanged)) {
@@ -200,7 +205,14 @@ export class PanelEditor implements FrameEditor {
   get(): EditorTarget | null {
     const h = this.handle;
     if (!h) return null;
-    return { path: h.ctx.path, language: h.ctx.language, version: this.version, lineCount: h.view.state.doc.lines };
+    const { state } = h.view;
+    return {
+      path: h.ctx.path,
+      language: h.ctx.language,
+      version: this.version,
+      lineCount: state.doc.lines,
+      tabSize: state.tabSize,
+    };
   }
 
   viewport(): EditorViewport | null {
@@ -382,6 +394,7 @@ export class PanelEditor implements FrameEditor {
   }
 
   private schedule(p: {
+    target?: boolean;
     viewport?: boolean;
     document?: boolean;
     problems?: boolean;
@@ -391,6 +404,7 @@ export class PanelEditor implements FrameEditor {
     lines?: [number, number];
   }) {
     const q = this.pending;
+    q.target ||= !!p.target;
     q.viewport ||= !!p.viewport;
     q.document ||= !!p.document;
     q.problems ||= !!p.problems;
@@ -407,6 +421,7 @@ export class PanelEditor implements FrameEditor {
     this.pending = nothingPending();
     const view = this.handle?.view;
     if (!view) return;
+    if (q.target) this.emit({ editor: "target", value: this.get() });
     if (q.document && this.documentListeners.size) {
       const state = { version: this.version, text: view.state.doc.toString() };
       for (const l of this.documentListeners) l(state);
