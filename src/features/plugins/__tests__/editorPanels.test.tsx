@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, waitFor } from "@testing-library/react";
 import { javascript } from "@codemirror/lang-javascript";
 import { codeFolding, foldEffect, syntaxHighlighting, unfoldEffect } from "@codemirror/language";
-import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { Diagnostic, LineHunk, PluginInfo } from "@/bindings";
 import type { TextEditorHandle } from "@/editor/api";
@@ -163,7 +163,7 @@ describe("WebView as an editor panel", () => {
     const listeners = new Set<(e: FrameEditorEvent) => void>();
     const calls: unknown[] = [];
     const editor: FrameEditor & { fire(e: FrameEditorEvent): void } = {
-      get: () => ({ path: "/p/a.ts", language: "typescript", version: 2, lineCount: 3 }),
+      get: () => ({ path: "/p/a.ts", language: "typescript", version: 2, lineCount: 3, tabSize: 4 }),
       viewport: () => ({ firstLine: 0, lastLine: 2.5, lineCount: 3, scrollTop: 0, scrollHeight: 60, clientHeight: 50 }),
       scrollTo: (line) => void calls.push(["scrollTo", line]),
       scrollBy: (px) => void calls.push(["scrollBy", px]),
@@ -212,7 +212,13 @@ describe("WebView as an editor panel", () => {
       });
 
     send({ call: 1, op: "editor.get" });
-    expect((await reply(1)).value).toEqual({ path: "/p/a.ts", language: "typescript", version: 2, lineCount: 3 });
+    expect((await reply(1)).value).toEqual({
+      path: "/p/a.ts",
+      language: "typescript",
+      version: 2,
+      lineCount: 3,
+      tabSize: 4,
+    });
     send({ call: 2, op: "editor.highlights", args: { fromLine: 0, toLine: 1 } });
     expect((await reply(2)).value).toEqual([[{ from: 0, to: 5, color: "rgb(1, 2, 3)" }]]);
     send({ call: 3, op: "editor.highlights", args: { fromLine: 0, toLine: 2001 } });
@@ -296,7 +302,7 @@ describe("PanelEditor", () => {
     panel.bind(handle);
     expect(events[0]).toEqual({
       editor: "target",
-      value: { path: "/p/src/a.js", language: "javascript", version: 1, lineCount: 3 },
+      value: { path: "/p/src/a.js", language: "javascript", version: 1, lineCount: 3, tabSize: 4 },
     });
     expect(panel.document.read()).toMatchObject({ readOnly: true, name: "a.js", text: view.state.doc.toString() });
     expect(() => panel.document.edit(0, [])).toThrow("read-only");
@@ -727,6 +733,48 @@ describe("PanelEditor changes", () => {
     view.dispatch({ effects: setHunksEffect.of([]) });
     await nextFrame();
     expect(events).toEqual([{ editor: "changes", value: [] }]);
+
+    panel.dispose();
+    view.destroy();
+  });
+});
+
+describe("PanelEditor tab size", () => {
+  it("reports the editor's tab size and the new one when it changes", async () => {
+    const parent = document.createElement("div");
+    document.body.appendChild(parent);
+    const indent = new Compartment();
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({ doc: "\tx", extensions: [indent.of(EditorState.tabSize.of(2)), editorPanelUpdates] }),
+    });
+    const handle: TextEditorHandle = {
+      view,
+      tabId: "t1",
+      ctx: { doc: 1, path: "/p/src/a.go", language: "go", uiMode: "Go", readOnly: false },
+    };
+    const panel = new PanelEditor();
+    const events: FrameEditorEvent[] = [];
+    panel.subscribe((e) => events.push(e));
+    panel.bind(handle);
+    expect(panel.get()).toMatchObject({ path: "/p/src/a.go", tabSize: 2 });
+    await nextFrame();
+
+    // A settings or `.editorconfig` change: `onTarget` again, once a frame.
+    events.length = 0;
+    view.dispatch({ effects: indent.reconfigure(EditorState.tabSize.of(8)) });
+    view.dispatch({ effects: indent.reconfigure(EditorState.tabSize.of(3)) });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "target")).toEqual([
+      { editor: "target", value: { path: "/p/src/a.go", language: "go", version: 1, lineCount: 1, tabSize: 3 } },
+    ]);
+
+    // The same size again, or an edit: no new target.
+    events.length = 0;
+    view.dispatch({ effects: indent.reconfigure(EditorState.tabSize.of(3)) });
+    view.dispatch({ changes: { from: 0, insert: "y" } });
+    await nextFrame();
+    expect(events.filter((e) => e.editor === "target")).toEqual([]);
 
     panel.dispose();
     view.destroy();

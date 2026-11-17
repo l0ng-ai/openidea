@@ -73,6 +73,8 @@ export interface EditorTarget {
   language: string;
   version: number;
   lineCount: number;
+  /** The columns a tab takes, as the editor expands it. */
+  tabSize: number;
 }
 
 /** What `openidea.editor.viewport()` returns: 0-based lines, fractional within a line. */
