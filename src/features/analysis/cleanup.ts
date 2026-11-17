@@ -4,6 +4,7 @@
  * after another (opened, cleaned, saved; tabs opened only for the run are closed
  * again). Cancellable from the Background Tasks popup.
  */
+import { attachDocument } from "@/editor/api";
 import { cleanupFile, type CleanupOptions as FileCleanupOptions } from "@/editor/lsp/actions";
 import { call, commands, isTauri, type FileEntry } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
@@ -90,6 +91,20 @@ export async function cleanupFiles(choice: ScopeChoice): Promise<string[] | stri
 
 let running: { cancelled: boolean } | null = null;
 
+/**
+ * Saves the file just cleaned up, as it is: save actions (format on save) would redo the
+ * whole file after a reformat of only its changed text. Other unsaved files are left alone.
+ */
+async function saveCleaned(path: string): Promise<void> {
+  const document = await attachDocument(path).catch(() => null);
+  if (!document) return;
+  try {
+    await document.save({ exact: true });
+  } finally {
+    document.release();
+  }
+}
+
 interface RunSummary {
   /** Files processed before the end or a cancel. */
   done: number;
@@ -131,7 +146,7 @@ async function runOverFiles(
       const result = await cleanupFile(path, options);
       if (result?.applied) summary.formatted++;
       if (result?.noFormatter) summary.noFormatter.push(path);
-      await editors?.saveAll();
+      await saveCleaned(path);
       if (!wasOpen.has(path) && (await editors?.closePath?.(path)) === false) {
         run.cancelled = true;
         break;
