@@ -45,9 +45,9 @@ import { modeOf, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
+  createMarkdownRenderer,
   previewLineAtOffset,
   previewOffsetForLine,
-  renderMarkdown,
   resolveLink,
   slugify,
 } from "./render";
@@ -121,7 +121,8 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   const editorSelection = useLiveMarkdown((s) => s[path]?.editorSelection ?? "");
   const highlightSelection = useEditorPrefs().codeEditing.highlightSelection;
   const deferred = useDeferredValue(text ?? "");
-  const html = useMemo(() => renderMarkdown(deferred), [deferred]);
+  const [render] = useState(createMarkdownRenderer);
+  const html = useMemo(() => render(deferred), [render, deferred]);
   const ref = useRef<HTMLDivElement>(null);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
