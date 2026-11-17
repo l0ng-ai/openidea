@@ -16,6 +16,7 @@ pub mod go;
 pub mod godot;
 pub mod java;
 pub mod jdtls;
+pub mod jdtls_workspaces;
 pub mod libraries;
 pub mod locate;
 pub mod lombok;

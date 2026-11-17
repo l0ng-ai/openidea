@@ -898,6 +898,7 @@ export class EditorController implements SlotHost {
       },
       { kind: "action", action: "editor.toggleColumnSelection", label: "Column Selection Mode" },
       { kind: "separator" },
+      { kind: "action", action: "find.usages", label: "Find Usages" },
       // IDEA's editor popup: secondary commands live in submenus.
       {
         label: "Go To",
@@ -909,7 +910,6 @@ export class EditorController implements SlotHost {
           { kind: "action", action: "navigate.relatedSymbol", label: "Related Symbol…" },
           { kind: "action", action: "navigate.gotoTest", label: "Test" },
           { kind: "separator" },
-          { kind: "action", action: "find.usages", label: "Find Usages" },
           { kind: "action", action: "navigate.callHierarchy", label: "Call Hierarchy" },
           { kind: "action", action: "navigate.typeHierarchy", label: "Type Hierarchy" },
         ],

@@ -4,6 +4,7 @@
 //! runs one on a remote machine and serves it over JSON-RPC ([`rpc`]).
 
 pub mod agent_secrets;
+pub mod catalogue;
 pub mod data_dirs;
 pub mod diagnostics_store;
 pub mod environment;
@@ -23,7 +24,7 @@ pub mod rpc;
 pub mod shell_env;
 pub mod trust;
 
-pub use project::{Project, apply_git_executable, apply_workspace_edit, history_retention};
+pub use project::{Project, apply_git_executable, history_retention};
 
 use ide_core::{CancellationToken, IdeError, IdeResult, RequestId, SharedSink};
 use ide_language::{LanguageRegistry, Syntax};
@@ -194,6 +195,12 @@ impl Host {
         };
         host.apply_proxy();
         host.apply_added_jdks();
+        // Before any project starts jdtls; the deleting itself can take a while.
+        let unused =
+            ide_sdk::jdtls_workspaces::take_unused(&host.local_data_dir, ide_sdk::jdtls_workspaces::UNUSED_FOR);
+        if !unused.is_empty() {
+            std::thread::spawn(move || ide_sdk::jdtls_workspaces::remove(unused));
+        }
         ops::agent::move_user_mcp_values(&host);
         host
     }

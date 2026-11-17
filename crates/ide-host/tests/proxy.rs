@@ -63,7 +63,7 @@ async fn manual_proxy_applies_and_the_password_is_saved_apart() {
     assert!(!settings_files(tmp.path()).contains("s3cret"), "no password in settings.toml");
     let saved = std::fs::read_to_string(tmp.path().join("data/proxy-password.json")).unwrap();
     assert!(!saved.contains("s3cret"), "the password is in the credential store, not on disk: {saved}");
-    assert_eq!(ops::project::settings(&host, "main").proxy.password, "s3cret");
+    assert_eq!(ops::project::settings_get(&host, "main").proxy.password, "s3cret");
 
     // A whole-table write keeps the password out of the file too; an empty one forgets it.
     let settings = set(&host, "proxy", r#"{"mode":"none","host":"proxy.corp","password":""}"#);

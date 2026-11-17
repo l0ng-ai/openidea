@@ -67,6 +67,7 @@ ide-spell.workspace = true
 ide-ssh.workspace = true
 ide-remote.workspace = true
 ide-host.workspace = true
+ide-command.workspace = true
 ide-mcp.workspace = true
 ide-notebook.workspace = true
 ide-jsonrpc.workspace = true

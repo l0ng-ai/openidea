@@ -29,7 +29,7 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
         project_environment: false,
     });
     host.open_light("main", &first).unwrap();
-    let info = ops::doc::open(&host, "main", first.clone()).await.unwrap();
+    let info = ops::doc::doc_open(&host, "main", first.clone()).await.unwrap();
     let edit: WorkspaceEdit = serde_json::from_value(json!({ "files": [
         { "kind": "edit", "path": first, "version": info.version, "edits": [{ "range": { "start": { "line": 0, "col": 0 }, "end": { "line": 0, "col": 3 } }, "new_text": "new" }] },
         { "kind": "edit", "path": second, "edits": [{ "range": { "start": { "line": 0, "col": 0 }, "end": { "line": 0, "col": 3 } }, "new_text": "new" }] }
@@ -56,7 +56,7 @@ async fn preview_apply_and_grouped_undo_use_the_shared_host_commands() {
     ops::lsp::undo_workspace_edit(&host, "main", id).await.unwrap();
     assert_eq!(std::fs::read_to_string(&first).unwrap(), "old\n");
     assert_eq!(std::fs::read_to_string(&second).unwrap(), "own\n");
-    assert_eq!(ops::doc::snapshot(&host, "main", info.id).await.unwrap().text, "old\n");
+    assert_eq!(ops::doc::doc_snapshot(&host, "main", info.id).await.unwrap().text, "old\n");
     ops::lsp::redo_workspace_edit(&host, "main", id).await.unwrap();
     assert_eq!(std::fs::read_to_string(&first).unwrap(), "new\n");
     assert_eq!(std::fs::read_to_string(&second).unwrap(), "new\n");
@@ -194,7 +194,7 @@ async fn code_actions_skip_a_command_no_server_provides_after_their_edit() {
         project_environment: false,
     });
     host.open_light("main", &file).unwrap();
-    let info = ops::doc::open(&host, "main", file.clone()).await.unwrap();
+    let info = ops::doc::doc_open(&host, "main", file.clone()).await.unwrap();
     // Optimize Imports as vtsls offers it: the edit, then a command its client runs itself.
     let action = |edit: bool| CodeAction {
         diagnostics: Vec::new(),
@@ -232,9 +232,9 @@ async fn code_actions_skip_a_command_no_server_provides_after_their_edit() {
     ops::lsp::lsp_execute_code_action(&host, "main", ide_core::RequestId(2), info.id, action(true), vec![])
         .await
         .unwrap();
-    assert_eq!(ops::doc::snapshot(&host, "main", info.id).await.unwrap().text, "used\n");
+    assert_eq!(ops::doc::doc_snapshot(&host, "main", info.id).await.unwrap().text, "used\n");
     ops::lsp::lsp_apply_code_action(&host, "main", info.id, action(true)).await.unwrap();
-    assert_eq!(ops::doc::snapshot(&host, "main", info.id).await.unwrap().text, "");
+    assert_eq!(ops::doc::doc_snapshot(&host, "main", info.id).await.unwrap().text, "");
     // Without an edit the command is the action: it still can't run.
     let ran =
         ops::lsp::lsp_execute_code_action(&host, "main", ide_core::RequestId(3), info.id, action(false), vec![]).await;

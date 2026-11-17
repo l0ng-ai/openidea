@@ -21,7 +21,7 @@ async fn storage_requires_a_registered_terminal() {
         runtime: tokio::runtime::Handle::current(),
         project_environment: false,
     });
-    assert!(ops::term::store_image(&host, TerminalId::next(), vec![1], "image/png".into()).await.is_err());
+    assert!(ops::term::term_store_image(&host, TerminalId::next(), vec![1], "image/png".into()).await.is_err());
     assert!(!data_dir.join("terminal-images").exists());
     let terminal = host
         .terminals
@@ -41,11 +41,11 @@ async fn storage_requires_a_registered_terminal() {
         )
         .unwrap();
     for mime in ["image/png", "audio/mpeg", "video/mp4"] {
-        let path = ops::term::store_image(&host, terminal.id, vec![1, 2, 3], mime.into()).await.unwrap();
+        let path = ops::term::term_store_image(&host, terminal.id, vec![1, 2, 3], mime.into()).await.unwrap();
         assert_eq!(std::fs::read(path).unwrap(), [1, 2, 3]);
     }
-    assert!(ops::term::store_image(&host, terminal.id, vec![1], "application/octet-stream".into()).await.is_err());
+    assert!(ops::term::term_store_image(&host, terminal.id, vec![1], "application/octet-stream".into()).await.is_err());
     host.terminals.kill(terminal.id).unwrap();
-    assert!(ops::term::store_image(&host, terminal.id, vec![4], "image/png".into()).await.is_err());
+    assert!(ops::term::term_store_image(&host, terminal.id, vec![4], "image/png".into()).await.is_err());
     assert_eq!(std::fs::read_dir(data_dir.join("terminal-images")).unwrap().count(), 3);
 }

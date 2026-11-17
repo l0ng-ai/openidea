@@ -1,8 +1,6 @@
-#[allow(unused_imports)]
-use super::*;
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{IdeResult, Pos, RequestId, TextEdit};
 use ide_search::{ReplaceEvent, ReplaceHost, ReplacePreview, ReplaceTarget, SearchQuery};
 use ide_workspace::Documents;
@@ -51,6 +49,7 @@ impl ReplaceHost for DocumentsHost<'_> {
 /// editor buffers are replaced in place and left unsaved; files that were not
 /// open are opened transiently, saved and closed.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn replace_in_files(
     host: &Host,
     window: &str,
@@ -79,6 +78,7 @@ pub async fn replace_in_files(
 }
 
 /// Before / after text of `path` for Replace › Preview (unsaved buffer included).
+#[command(trust = trusted)]
 pub async fn replace_preview(
     host: &Host,
     window: &str,
@@ -98,36 +98,9 @@ pub async fn replace_preview(
 }
 
 /// Validates a query (e.g. regex syntax) while the user types.
-pub fn search_validate(_host: &Host, _window: &str, query: SearchQuery) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn search_validate(query: SearchQuery) -> IdeResult<()> {
     ide_search::validate_query(&query)
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("replace_in_files", |c| async move {
-        replace_in_files(
-            &c.host,
-            &c.window,
-            c.arg("request")?,
-            c.arg("query")?,
-            c.arg("replacement")?,
-            c.arg("preserveCase")?,
-            c.arg("targets")?,
-            c.sender("onEvent")?,
-        )
-        .await
-    });
-    d.add("replace_preview", |c| async move {
-        replace_preview(
-            &c.host,
-            &c.window,
-            c.arg("query")?,
-            c.arg("replacement")?,
-            c.arg("preserveCase")?,
-            c.arg("path")?,
-            c.arg("only")?,
-        )
-        .await
-    });
-    d.add("search_validate", |c| async move { search_validate(&c.host, &c.window, c.arg("query")?) });
-}
+ide_command::domain!(search_commands: replace_in_files, replace_preview, search_validate);

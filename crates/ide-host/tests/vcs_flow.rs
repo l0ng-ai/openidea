@@ -78,11 +78,11 @@ impl Flow {
     }
 
     async fn open(&self, file: &str) -> DocId {
-        ops::doc::open(&self.host, WINDOW, self.root.join(file)).await.unwrap().id
+        ops::doc::doc_open(&self.host, WINDOW, self.root.join(file)).await.unwrap().id
     }
 
     async fn text(&self, doc: DocId) -> String {
-        ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().text
+        ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().text
     }
 
     /// Types `with` over `LINE` in the editor (unsaved).
@@ -94,11 +94,11 @@ impl Flow {
     }
 
     async fn save(&self, doc: DocId) {
-        ops::doc::save(&self.host, WINDOW, doc).await.unwrap();
+        ops::doc::doc_save(&self.host, WINDOW, doc).await.unwrap();
     }
 
     async fn status(&self) -> Vec<FileStatus> {
-        ops::vcs::status(&self.host, WINDOW).await.unwrap()
+        ops::vcs::vcs_status(&self.host, WINDOW).await.unwrap()
     }
 
     async fn commit(&self, files: &[&str], message: &str) -> String {

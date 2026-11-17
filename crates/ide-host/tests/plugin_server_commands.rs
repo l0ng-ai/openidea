@@ -132,7 +132,7 @@ async fn a_command_the_server_leaves_to_the_client_runs_the_plugin_that_claims_i
     project.lsp.set_servers_hook(Box::new(move |_, _| vec![cfg.clone()]));
     let path = root.join("a.txt");
     std::fs::write(&path, "class Post {}\n").unwrap();
-    let doc = ops::doc::open(&host, "main", path.clone()).await.unwrap().id;
+    let doc = ops::doc::doc_open(&host, "main", path.clone()).await.unwrap().id;
     project.lsp.did_open(
         doc,
         &path,
