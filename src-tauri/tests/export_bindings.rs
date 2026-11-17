@@ -29,6 +29,27 @@ fn export_command_snapshot() {
     }
 }
 
+/// `bindings.ts` lists commands in the order of `collect_commands!`, which is by name: a new
+/// command lands between its neighbours instead of at the end of a list every PR appends to.
+#[test]
+fn commands_are_collected_by_name() {
+    openidea_lib::specta_builder().export(CollectedOrder, Path::new("")).expect("command order");
+}
+
+struct CollectedOrder;
+
+impl LanguageExt for CollectedOrder {
+    type Error = std::io::Error;
+
+    fn export(self, cfg: &BuilderConfiguration, _: &Path) -> std::io::Result<()> {
+        let names: Vec<&str> = cfg.commands.iter().map(|f| f.name()).collect();
+        if let Some(pair) = names.windows(2).find(|pair| pair[0] >= pair[1]) {
+            panic!("collect_commands! lists {} before {}: keep it sorted by command name", pair[0], pair[1]);
+        }
+        Ok(())
+    }
+}
+
 struct CommandSnapshot;
 
 impl LanguageExt for CommandSnapshot {
