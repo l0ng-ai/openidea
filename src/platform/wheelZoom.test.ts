@@ -40,9 +40,9 @@ describe("wheelZoomStep", () => {
     expect(wheel(-5)).toBe(0);
   });
 
-  it("neither zooms nor scrolls when ⌘ is released during a zoom gesture", () => {
+  it("never swallows a plain wheel event, even during a zoom gesture", () => {
     expect(wheel(-10)).toBe(1);
-    expect(wheel(-10, false)).toBe(0);
+    expect(wheel(-10, false)).toBeNull();
   });
 
   it("gives the same answer for repeated calls with one event", () => {

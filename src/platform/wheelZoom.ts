@@ -4,8 +4,9 @@
  * WebViews don't expose macOS momentum phases, so a gesture is a run of wheel events
  * less than `GESTURE_GAP_MS` apart (momentum continues the run of the swipe that started it).
  * A run that started without ⌘/Ctrl (a scroll still coasting when ⌘ is pressed) never zooms
- * and keeps scrolling; a run that started with it never scrolls, and stops zooming once the
- * deltas keep shrinking, which is the inertia after the fingers left the trackpad.
+ * and keeps scrolling; a run that started with it stops zooming (and scrolling) once the deltas
+ * keep shrinking, which is the inertia after the fingers left the trackpad. A wheel event
+ * without ⌘/Ctrl always scrolls.
  */
 
 const GESTURE_GAP_MS = 150;
@@ -20,9 +21,9 @@ let lastEvent: WheelLike | null = null;
 let lastResult: number | null = null;
 
 /**
- * The font zoom step for a wheel event: `1` / `-1` to zoom in / out, `0` for an event of a
- * zoom gesture that must neither zoom nor scroll (its inertia, or ⌘/Ctrl released), `null`
- * for one that isn't a zoom (scroll as usual). Repeated calls for one event agree.
+ * The font zoom step for a wheel event: `1` / `-1` to zoom in / out, `0` for a ⌘/Ctrl
+ * event of a zoom gesture that must neither zoom nor scroll (its inertia), `null` for one
+ * that isn't a zoom (scroll as usual), which includes every event without ⌘/Ctrl. Repeated calls for one event agree.
  */
 export function wheelZoomStep(e: WheelLike): number | null {
   if (e === lastEvent) return lastResult;
@@ -37,7 +38,7 @@ export function wheelZoomStep(e: WheelLike): number | null {
   }
   lastTime = e.timeStamp;
   lastEvent = e;
-  lastResult = !run.zoom ? null : !mod || e.deltaY === 0 || run.inertia ? 0 : e.deltaY < 0 ? 1 : -1;
+  lastResult = !mod || !run.zoom ? null : e.deltaY === 0 || run.inertia ? 0 : e.deltaY < 0 ? 1 : -1;
   return lastResult;
 }
 
