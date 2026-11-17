@@ -148,13 +148,14 @@ async fn post(
         )
     };
     let info = Discovery::read(discovery).map_err(|_| not_running())?;
-    let stream = tokio::net::TcpStream::connect(("127.0.0.1", info.port)).await.map_err(|_| not_running())?;
+    let at = std::net::SocketAddr::new(info.address, info.port);
+    let stream = tokio::net::TcpStream::connect(at).await.map_err(|_| not_running())?;
     let (mut sender, conn) = hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
         .await
         .map_err(|e| format!("cannot reach OpenIDEA: {e}"))?;
     tokio::spawn(conn);
     let request = Request::post(format!("/mcp?project={}", crate::encode_query(&project.to_string_lossy())))
-        .header(header::HOST, format!("127.0.0.1:{}", info.port))
+        .header(header::HOST, at.to_string())
         .header(header::AUTHORIZATION, format!("Bearer {}", info.token))
         .header("mcp-session-id", scope)
         .header(header::CONTENT_TYPE, "application/json")

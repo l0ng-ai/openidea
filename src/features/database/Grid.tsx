@@ -409,6 +409,23 @@ export function Grid(props: GridProps) {
         const anchor = scrollRef.current?.querySelectorAll<HTMLElement>("[data-column-filter]")[sel!.c1];
         if (anchor) props.onFilter!(sel!.c1, anchor);
       },
+      canEditCell: () => {
+        if (!canEdit()) return false;
+        const n = norm(sel!);
+        return n.top === n.bottom && n.left === n.right && props.rowState?.(n.top) !== "deleted";
+      },
+      editCell: () => {
+        if (actions.canEditCell()) startEdit(sel!.r1, sel!.c1);
+      },
+      hasSelection: () => !!sel && !editing,
+      copy: (kind) => {
+        if (!actions.hasSelection()) return;
+        if (kind === "header") copy("tsv", true);
+        else if (kind === "rowsTsv") copy("tsv", true, true);
+        else if (kind === "rowsCsv") copy("csv", true, true);
+        else copy(kind, false);
+      },
+      selectedRows,
     };
     Object.assign((cellActions.current ??= {} as CellActions), actions);
   });
@@ -529,20 +546,19 @@ export function Grid(props: GridProps) {
       {
         label: "Copy as",
         submenu: [
-          { label: "TSV", verbatim: true, run: () => copy("tsv", false) },
-          { label: "CSV", verbatim: true, run: () => copy("csv", false) },
-          { label: "One-Row", run: () => copy("onerow", false) },
+          { kind: "action", action: "db.copyAsTsv", label: "TSV", arg: cellActions.current },
+          { kind: "action", action: "db.copyAsCsv", label: "CSV", arg: cellActions.current },
+          { kind: "action", action: "db.copyAsOneRow", label: "One-Row", arg: cellActions.current },
         ],
       },
-      { label: "Copy with Header", run: () => copy("tsv", true) },
-      { label: "Copy Rows as TSV", run: () => copy("tsv", true, true) },
-      { label: "Copy Rows as CSV", run: () => copy("csv", true, true) },
+      { kind: "action", action: "db.copyWithHeader", arg: cellActions.current },
+      { kind: "action", action: "db.copyRowsAsTsv", arg: cellActions.current },
+      { kind: "action", action: "db.copyRowsAsCsv", arg: cellActions.current },
     ];
     if (editable && onEdit) {
-      const n = norm(sel);
       items.push(
         { kind: "separator" },
-        { label: "Edit Cell", disabled: n.top !== n.bottom || n.left !== n.right, run: () => startEdit(n.top, n.left) },
+        { kind: "action", action: "db.editCell", arg: cellActions.current },
         { kind: "action", action: "db.setCellNull", arg: cellActions.current },
         { kind: "action", action: "db.setCellDefault", arg: cellActions.current },
       );

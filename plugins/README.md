@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.8.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.10.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -144,19 +144,22 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                          | no            |
 | `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
 | `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
+| `javaAgents`        | `path` (a jar in the package), `args?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; _Java agents_)                                                                                                       | no            |
 | `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
 | `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
 | `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
 | `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                                                                                                        | to use them   |
 | `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`; API 1.4: `editor.title`, `mainToolbar`, `problems.context`, `searchResults.context`), `view?`, `command`, `when?` | no            |
-| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`)                                                                                                                                                                      | no            |
+| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
 | `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
+| `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                    |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -352,10 +355,13 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 | `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                               |
 | `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                        |
 | `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                |
+| `build.read`        | low    | API 1.10: `Project::build_dependencies`, the Maven / Gradle dependency graph the IDE resolved; trusted projects only                                                    |
 | `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                            |
 | `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
 | `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
 | `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
+| `lsp:<server>`      | high   | API 1.9: `Project::language_server_request` / `language_server_notify` to that running language server (its name in the language definition); trusted projects only     |
+| `java.agent`        | high   | API 1.10: the `[[contributes.javaAgents]]` jar runs inside the Java applications you start; derived from that declaration, never listed                                 |
 | `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
 | `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
 | `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
@@ -365,7 +371,8 @@ machine. Users can revoke optional capabilities in Settings › Plugins.
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
-`command`. Those are optional — refusing one keeps the rest of the plugin
+`command`. A `[[contributes.javaAgents]]` declaration derives `java.agent` the
+same way (see _Java agents_). Those are optional — refusing one keeps the rest of the plugin
 working. On grant the program is resolved to an absolute path and its content
 hash is recorded; it is checked again right before every start, and a replaced
 file is refused until the user approves it again. In a remote project the
@@ -418,9 +425,77 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.10
+
+API 1.10.0 is in development on `main`. Use `engines.openidea = "^1.10"` and the
+matching SDK. Released 1.9 plugins keep working. New in 1.10:
+
+- `host::open_file_diff(&FileDiff { .. }, file_name)` (`views.open-file-diff`) is
+  `open_diff` for a file that doesn't exist on one side: a `None` side (`left` of
+  an added file, `right` of a deleted one) makes the diff viewer show the other
+  side alone, as for the IDE's own added and deleted files, instead of next to an
+  empty text. Both `None` is `Invalid`. Web views send `null` for that side in
+  `{ op: "open-diff", ... }`.
+- **`[[contributes.javaAgents]]`** loads a Java agent from the package into the
+  JVM of Application, Spring Boot and JAR Application configurations, behind the
+  high-risk `java.agent` capability. See _Java agents_.
+- **The build dependency graph.** `Project::build_dependencies(module)` (WIT
+  `build.dependencies`) returns the Maven / Gradle graph the Dependency Analyzer
+  has, as a flat list with conflict and omission status, behind the low-risk
+  `build.read` capability. No build tool runs. See _Build dependency graph_.
+- **Escape in the editor.** `[[contributes.keymaps]]` takes `key = "Escape"` with a
+  required `when`: the command runs on a plain Escape in a focused editor once the
+  IDE's own Escape handling (popups, completion, rename, selection, extra carets,
+  Vim) found nothing to do.
+- **The marker bar's problems in editor panels.** An editor panel's page reads
+  the problems its group's marker bar shows with `openidea.editor.problems()`
+  and hears them change through `onProblems`. See _Editor panels_.
+- **Semantic highlighting in editor panels.** `openidea.editor.highlights()`
+  returns the colours the editor shows, semantic highlighting from the language
+  server layered over the syntax colours, and `onHighlights` reports the lines
+  whose colours change when semantic tokens arrive. See _Editor panels_.
+- **Folds and soft wrap in editor panels.** An editor panel's page reads which
+  lines are folded with `openidea.editor.folded()`, how many rows each line takes
+  with soft wrap on with `wrapped(fromLine, toLine)`, and hears both change
+  through `onLayout`. See _Editor panels_.
+- **The caret and selections in editor panels.** An editor panel's page reads
+  the caret and every selection of its group's editor with
+  `openidea.editor.selections()` and hears them move through `onSelections`. See
+  _Editor panels_.
+- **VCS changes in editor panels.** An editor panel's page reads the added,
+  modified and deleted lines its group's change-marker lane shows with
+  `openidea.editor.changes()` and hears them change through `onChanges`. Frames
+  get the lane's colours as `--openidea-change-added`, `--openidea-change-modified`
+  and `--openidea-change-deleted`. See _Editor panels_.
+- **The tab size in editor panels.** `openidea.editor.get()` includes the
+  `tabSize` the editor expands tabs with for the group's file, and `onTarget`
+  reports it again when it changes. See _Editor panels_.
+
+### API 1.9
+
+API 1.9.0 shipped with OpenIDEA 0.1.46. Use `engines.openidea = "^1.9"` and the
+matching SDK. Released 1.8 plugins keep working. New in 1.9:
+
+- The `launch-configurations` export (`LaunchConfigurations`, registration
+  `launch_configurations`, world `plugin-launch-configurations`): run
+  configurations with an `env` added to the run's environment and a `debugger`,
+  either `Debugger::Launch { language }` (the program starts under that
+  language's debugger) or `Debugger::AttachChild { kind, command_contains }`
+  (Debug runs the configuration and attaches to a process the run starts). See
+  _Environment and debugger_ under _Runs, terminal sessions and test results_.
+
+- **`[[contributes.serverCommands]]`** routes a command a language server leaves
+  to the client (a code lens's, a code action's) to the plugin's own command.
+- **Requests to a language server.** `Project::language_server_request` and
+  `language_server_notify` send a running server its own methods, behind the
+  high-risk `lsp:<server>` capability. See _Requests to a language server_.
+- **`[[contributes.editorPanels]]`** puts a web page at the right edge of every
+  editor group, following its text editor through `openidea.editor` (a minimap,
+  say). See _Editor panels_.
+
 ### API 1.8
 
-API 1.8.0 is in development on `main`. Use `engines.openidea = "^1.8"` and the
+API 1.8.0 shipped with OpenIDEA 0.1.45. Use `engines.openidea = "^1.8"` and the
 matching SDK. Released 1.7 plugins keep working. New in 1.8:
 
 - `problems-changed` (activation `on-event:problems-changed`, event
@@ -430,6 +505,11 @@ matching SDK. Released 1.7 plugins keep working. New in 1.8:
   annotations follow the file instead of the window that published them.
   `set_decorations` accepts files outside the open project for the same reason,
   and the `typo` / `weak` styles are no longer dropped.
+- `decorations.set-file-icon` / `set-file-icons` (`host::set_file_icon`,
+  `set_file_icons`): give a file or plain folder one of the plugin's
+  `[[contributes.fileIcons]]` icons by path, for icons that depend on where a
+  file is or what it holds (a Helm chart folder, a Kustomize overlay). Such
+  icons may omit `patterns`. Requires `project.read`.
 
 ### API 1.7
 
@@ -440,7 +520,7 @@ matching SDK. Released 1.6 plugins keep working. New in 1.7:
   two texts in the invoking window's diff viewer, for example a merge request's
   file before and after; `file_name` picks the syntax highlighting. Web views
   send `{ op: "open-diff", left, right, leftLabel?, rightLabel?, title?, fileName? }`.
-  Commands and events only; each side at most 1 MiB.
+  Commands and events only; each side at most 1 MiB (8 MiB on current hosts).
 
 ### API 1.5
 
@@ -595,80 +675,84 @@ then run `openidea-plugin check`.
 
 ### The API
 
-| Rust SDK                                                                                                       | WIT                                        | Notes                                                                                                                                                                                                                                                                                                                                                     |
-| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Plugin::run_command(id, ctx, arg)`                                                                            | export `commands.run`                      | `ctx` is the window: `ctx.project()`, `ctx.editor()`. An error shows _"<title> failed: …"_; the plugin keeps running. `"msg".into()` is `Error::Failed`; `Cancelled` and `Denied` don't count as the plugin failing.                                                                                                                                      |
-| `Plugin::handle_events(events, ctx)`                                                                           | export `event-handler.handle`              | Batches of subscribed events, oldest first, per window.                                                                                                                                                                                                                                                                                                   |
-| `Plugin::activate` / `deactivate`                                                                              | export `lifecycle`                         | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                                                                                                                                       |
-| `TextEditor::document()` → `{version, text}`                                                                   | `editor.text-editor.document`              | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                                                                                                                            |
-| `Project::document`, `apply_document_edits`                                                                    | `editor.{document,apply-edits}-at`         | API 1.6: versioned access to an explicitly named open project document from background events. Requires `project.read` and `editor.read`/`editor.write`; stale edits change nothing.                                                                                                                                                                      |
-| `WebSocket::{connect,send,drain,close}`                                                                        | `net.websocket-*`                          | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, close state and event-driven wakeups.                                                                                                                                                                                                                                |
-| `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                 | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
-| `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                        | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
-| `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                 | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
-| `host::open_editors()`                                                                                         | `editor.open-editors`                      | API 1.4: invoking window's path/language/dirty/active snapshots; requires `editor.read`. Commands/events of a window only.                                                                                                                                                                                                                                |
-| `host::open_editor(path, selection)`                                                                           | `editor.open`                              | API 1.4: open/select a project file (`project.read`) or plugin-dir file; same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                                                      |
-| `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                       | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
-| `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                  | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
-| `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`        | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
-| `host::set_file_note`                                                                                          | `decorations.set-file-note`                | API 1.7: a note after the name in the project tree (one line, at most 200 characters). Requires `project.read`.                                                                                                                                                                                                                                           |
-| `Project::search_text(query, limit)`                                                                           | `workspace.project.search-text`            | API 1.4: cancellable Find in Files with unsaved documents and project excludes, at most 10,000 matches. Requires `project.read`.                                                                                                                                                                                                                          |
-| `host::problems(path)`                                                                                         | `diagnostics.problems`                     | API 1.4: project Problems reports grouped by file/source, optional file filter. Requires `project.read` and an invoking window. Empty for remote projects.                                                                                                                                                                                                |
-| `Project::vcs_log(path, limit)`                                                                                | `vcs.log`                                  | API 1.4: newest first, at most 1000 commits, optional file history. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                        |
-| `Project::vcs_blame(path)`                                                                                     | `vcs.blame`                                | API 1.4: attribution including unsaved editor text. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                                        |
-| `Project::vcs_diff(path, against)`                                                                             | `vcs.diff`                                 | API 1.4: disk working tree against HEAD/revision, optionally one file. None outside Git; fails above 4 MiB. Requires `vcs.read` and trust.                                                                                                                                                                                                                |
-| `TextEditor::apply_edits(version, edits)`                                                                      | `editor.text-editor.apply-edits`           | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                                                                                                                                                           |
-| `Project::root()`, `read_file(path)`                                                                           | `workspace.project`                        | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                                                                                                                                                       |
-| `Project::read_bytes(path)`                                                                                    | `workspace.project.read-bytes`             | API 1.5: the exact bytes of a file inside the project (binary content is the point), at most 16 MiB, the file on disk. Same paths and `Error::NotFound` as `read_file`.                                                                                                                                                                                   |
-| `Project::exists(path)`, `stat(path)`                                                                          | `workspace.project`                        | `exists` covers files and directories, hidden and ignored included, without reading content; `stat` gives kind, size and modified time (`Error::NotFound` for a missing path).                                                                                                                                                                            |
-| `host::projects()`                                                                                             | `workspace.projects`                       | Every open project (for scheduled work without a window).                                                                                                                                                                                                                                                                                                 |
-| `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                                                        | `vcs`                                      | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                                                                                                                                                           |
-| `host::pending_commit()`, `host::set_commit_message(revision, text)`                                           | `commit`                                   | The commit being prepared in the calling window and its message; see _Commits_.                                                                                                                                                                                                                                                                           |
-| `host::subscribe(kind)`                                                                                        | `events.subscribe`                         | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                                                                                                                                                       |
-| `host::begin_task(title, cancellable)` → `Task`                                                                | `tasks.begin`                              | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                                                                                                                                                                    |
-| `host::storage::{get, set, delete, keys}`                                                                      | `storage`                                  | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                                                                                                                                                                  |
-| `host::set_status_item(id, item)`, `remove_status_item`                                                        | `ui`                                       | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                                                                                                                                                      |
-| `host::set_window_status_item(id, item)`, `remove_window_status_item(id)`                                      | `ui.{set,remove}-window-status-item`       | API 1.4: window-only override; removed on window close or plugin stop; removing falls back to the global item. Click runs its command in that window.                                                                                                                                                                                                     |
-| `host::execute_command(id, arg)` → `Option<String>`                                                            | `command-runner.execute`                   | API 1.4: requires high-risk `ide.commands` for IDE actions and other plugins; this plugin's own commands are exempt. Stable IDE action or `plugin.<plugin-id>.<command-id>` in the invoking window. IDE actions return none; plugin commands return their result. Unknown ids are not-found; at most 8 nested calls, no re-entry into a waiting instance. |
-| `host::ipc_connect(name)` → `Connection`                                                                       | `ipc.connect`                              | API 1.4: `write(bytes)`, `read(max_bytes, timeout_ms)`, `close()`; requires `ipc:<path>`, at most 8 connections, closed on drop or plugin stop. Runs on the project server in remote projects.                                                                                                                                                            |
-| `host::secret_set(name, value)`, `secret_delete(name)`                                                         | `secrets.{set,delete}`                     | API 1.4: requires `secrets` and a declared name. Never returns the value.                                                                                                                                                                                                                                                                                 |
-| `host::begin_loopback(path)` → `Loopback`                                                                      | `auth.begin-loopback`                      | API 1.4: `redirect_uri()`, `wait(timeout_ms)` → raw query or none on timeout. Desktop-only, even for remote projects; no capability. At most 2 listeners; one-shot, closed on timeout, drop or stop. Waiting excludes the call budget.                                                                                                                    |
-| `host::output_append(channel, text)`, `output_clear`, `output_reveal`                                          | `output.{append,clear,reveal}`             | API 1.4: read-only Output tabs; 32 named channels per plugin, each a 1 MiB UTF-8 ring buffer. Reveal requires the invoking window.                                                                                                                                                                                                                        |
-| `host::set_context(key, value)`, `remove_context`                                                              | `ui.{set,remove}-context`                  | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                                                                                                                                                            |
-| `host::notify(level, title, body)`                                                                             | `ui.show-notification`                     | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                                                                                                                                           |
-| `Project::notify(level, title, body, actions)`                                                                 | `ui.notify-project`                        | API 1.5: balloon only in a window of that project (the most recently focused one), with or without an invoking window; see _Notifications with commands_.                                                                                                                                                                                                 |
-| `host::copy_to_clipboard(text)`                                                                                | `ui.copy-to-clipboard`                     | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                                                                                                                                 |
-| `host::open_url(url)`                                                                                          | `ui.open-url`                              | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                                                                                                                                                       |
-| `host::pick(title, items)`, `pick_many`                                                                        | `ui.pick`, `ui.pick-many`                  | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                                                                                                                                                       |
-| `host::input(prompt, value)`                                                                                   | `ui.input`                                 | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                                                                                                                                                                 |
-| `host::input_multiline(prompt, value)`                                                                         | `ui.input-multiline`                       | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Only from a command or event of a window.                                                                                                                                                                                                                  |
-| `host::confirm(title, body)`                                                                                   | `ui.confirm`                               | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                                                                                                                                                          |
-| `host::locale()`                                                                                               | `ui.locale`                                | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                                                                                                                                                           |
-| `host::log(level, msg)`                                                                                        | `log`                                      | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                                                                                                                                                                   |
-| `Project::find_files(glob, limit)`                                                                             | `workspace.project.find-files`             | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                                                                                                                                                                    |
-| `Project::symbols(query, limit)`                                                                               | `workspace.symbols`                        | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                                                                                                                                                                 |
-| `host::publish_diagnostics(path, items)`                                                                       | `diagnostics.publish`                      | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                                                                                                                                                         |
-| `host::fetch(request)` → `{status, headers, body}`                                                             | `net.fetch`                                | See _Network_.                                                                                                                                                                                                                                                                                                                                            |
-| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`                                        | `process.run`                              | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; up to 16 MiB of stdout (fails if exceeded); killed when the call is cancelled or times out.                                                                                                                                                                 |
-| `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`                                            | `process.run-command`                      | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                                                                                                                                                                |
-| `host::start(cmd, project)` → `Child`                                                                          | `process.start`                            | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                                                                                                                                                              |
-| `host::refresh_view(view)`                                                                                     | `views.refresh`                            | The view (or custom editors) render again; call it when the content changed.                                                                                                                                                                                                                                                                              |
-| `host::reveal_view(view)`                                                                                      | `views.reveal`                             | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                                                                                                                                                                   |
-| `host::post_view_message(view, text)`                                                                          | `views.post-message`                       | To the script of the view's `html` body.                                                                                                                                                                                                                                                                                                                  |
-| `host::open_terminal(title, program, args)`                                                                    | `views.open-terminal`                      | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                                                                                                                                                       |
-| `host::register_run_target(project, target)`                                                                   | `run-targets.register`                     | API 1.4: project-scoped, read-only argv wrapper; requires its process grant, executable pin and project trust; remote projects run on the server.                                                                                                                                                                                                         |
-| `host::unregister_run_target(project, id)`                                                                     | `run-targets.unregister`                   | Withdraw this plugin's target; remembered prompt answers remain.                                                                                                                                                                                                                                                                                          |
-| `host::start_run(config, args, debug)`                                                                         | `run.start`                                | API 1.4: start an owned configuration in this window's Run tool window; returns an id, followed by `run-exited`. Approved `process:` program; commands/events only.                                                                                                                                                                                       |
-| `host::open_terminal_session(key, title, cmd)`                                                                 | `views.open-terminal-session`              | API 1.4: keyed, pinned terminal in this window, append-only env; returns its operation id and later `terminal-exited`.                                                                                                                                                                                                                                    |
-| `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                     | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
-| `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                   | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
-| `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                  | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
-| `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                          | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 1 MiB.                                                                                                                                                                                      |
-| `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations` | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
-| `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
-| `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`         | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
-| `host::open_location(path, line, column)`                                                                      | `views.open-location`                      | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
-| `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number`                                       | `settings.get`                             | The user's value (project over global) or the schema's default.                                                                                                                                                                                                                                                                                           |
+| Rust SDK                                                                                                       | WIT                                          | Notes                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Plugin::run_command(id, ctx, arg)`                                                                            | export `commands.run`                        | `ctx` is the window: `ctx.project()`, `ctx.editor()`. An error shows _"<title> failed: …"_; the plugin keeps running. `"msg".into()` is `Error::Failed`; `Cancelled` and `Denied` don't count as the plugin failing.                                                                                                                                      |
+| `Plugin::handle_events(events, ctx)`                                                                           | export `event-handler.handle`                | Batches of subscribed events, oldest first, per window.                                                                                                                                                                                                                                                                                                   |
+| `Plugin::activate` / `deactivate`                                                                              | export `lifecycle`                           | Per instance: after a crash or idle reclaim a new one is activated.                                                                                                                                                                                                                                                                                       |
+| `TextEditor::document()` → `{version, text}`                                                                   | `editor.text-editor.document`                | `selections()` are those when the command ran (0-based lines, UTF-16 columns).                                                                                                                                                                                                                                                                            |
+| `Project::document`, `apply_document_edits`                                                                    | `editor.{document,apply-edits}-at`           | API 1.6: versioned access to an explicitly named open project document from background events. Requires `project.read` and `editor.read`/`editor.write`; stale edits change nothing.                                                                                                                                                                      |
+| `WebSocket::{connect,send,drain,close}`                                                                        | `net.websocket-*`                            | API 1.6: project-bound, bounded host-owned WSS transport with secret-filled headers, close state and event-driven wakeups.                                                                                                                                                                                                                                |
+| `Project::{upsert_data_source,remove_data_source,data_sources,set_data_source_credential,connect_data_source}` | `database`                                   | API 1.4: owned project sources; requires `database.sources` and trust. See _Database sources_.                                                                                                                                                                                                                                                            |
+| `host::mcp_stdio_command()`                                                                                    | `mcp.stdio-command`                          | API 1.4: invoking project bridge argv, `None` while off. No URL/token.                                                                                                                                                                                                                                                                                    |
+| `McpProvider::call(tool, arguments, ctx)`                                                                      | export `mcp-provider.call`                   | API 1.4: declared tools under plugin grants and command budget. See _Plugin MCP tools_.                                                                                                                                                                                                                                                                   |
+| `host::open_editors()`                                                                                         | `editor.open-editors`                        | API 1.4: invoking window's path/language/dirty/active snapshots; requires `editor.read`. Commands/events of a window only.                                                                                                                                                                                                                                |
+| `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`) or plugin-dir file; same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                                                      |
+| `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                         | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
+| `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                    | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
+| `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`          | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
+| `host::set_file_note`                                                                                          | `decorations.set-file-note`                  | API 1.7: a note after the name in the project tree (one line, at most 200 characters). Requires `project.read`.                                                                                                                                                                                                                                           |
+| `host::set_file_icon`, `set_file_icons`                                                                        | `decorations.{set-file-icon,set-file-icons}` | API 1.8: assign one of the plugin's declared `[[contributes.fileIcons]]` icons to a file or plain folder by path (individually or up to 10,000 entries per set). Requires `project.read`.                                                                                                                                                                 |
+| `Project::search_text(query, limit)`                                                                           | `workspace.project.search-text`              | API 1.4: cancellable Find in Files with unsaved documents and project excludes, at most 10,000 matches. Requires `project.read`.                                                                                                                                                                                                                          |
+| `host::problems(path)`                                                                                         | `diagnostics.problems`                       | API 1.4: project Problems reports grouped by file/source, optional file filter. Requires `project.read` and an invoking window. Empty for remote projects.                                                                                                                                                                                                |
+| `Project::vcs_log(path, limit)`                                                                                | `vcs.log`                                    | API 1.4: newest first, at most 1000 commits, optional file history. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                        |
+| `Project::vcs_blame(path)`                                                                                     | `vcs.blame`                                  | API 1.4: attribution including unsaved editor text. Requires `vcs.read` and trust.                                                                                                                                                                                                                                                                        |
+| `Project::build_dependencies(module)`                                                                          | `build.dependencies`                         | API 1.10: the Maven / Gradle dependency graph the IDE resolved, flat, each module a root; nothing is resolved for the call. Requires `build.read` and trust.                                                                                                                                                                                              |
+| `Project::vcs_diff(path, against)`                                                                             | `vcs.diff`                                   | API 1.4: disk working tree against HEAD/revision, optionally one file. None outside Git; fails above 4 MiB. Requires `vcs.read` and trust.                                                                                                                                                                                                                |
+| `TextEditor::apply_edits(version, edits)`                                                                      | `editor.text-editor.apply-edits`             | One undoable change, only if the document is still at `version` — else `Error::Stale` and nothing changes. `transform_selections` retries once.                                                                                                                                                                                                           |
+| `Project::root()`, `read_file(path)`                                                                           | `workspace.project`                          | Absolute or project-relative; `..`/symlinks escaping the root are rejected; UTF-8 only, ≤ 16 MiB; unsaved editor contents win; a missing path is `Error::NotFound`.                                                                                                                                                                                       |
+| `Project::read_bytes(path)`                                                                                    | `workspace.project.read-bytes`               | API 1.5: the exact bytes of a file inside the project (binary content is the point), at most 16 MiB, the file on disk. Same paths and `Error::NotFound` as `read_file`.                                                                                                                                                                                   |
+| `Project::exists(path)`, `stat(path)`                                                                          | `workspace.project`                          | `exists` covers files and directories, hidden and ignored included, without reading content; `stat` gives kind, size and modified time (`Error::NotFound` for a missing path).                                                                                                                                                                            |
+| `host::projects()`                                                                                             | `workspace.projects`                         | Every open project (for scheduled work without a window).                                                                                                                                                                                                                                                                                                 |
+| `Project::vcs_status()`, `vcs_remotes()`, `vcs_fetch()`                                                        | `vcs`                                        | `vcs_remotes` returns `(name, url)` pairs; fetch runs git, so only in trusted projects (call it inside a task).                                                                                                                                                                                                                                           |
+| `host::pending_commit()`, `host::set_commit_message(revision, text)`                                           | `commit`                                     | The commit being prepared in the calling window and its message; see _Commits_.                                                                                                                                                                                                                                                                           |
+| `host::subscribe(kind)`                                                                                        | `events.subscribe`                           | For the session, across idle reclaim (an event activates the plugin). Or declare `on-event:<kind>`.                                                                                                                                                                                                                                                       |
+| `host::begin_task(title, cancellable)` → `Task`                                                                | `tasks.begin`                                | Shown with the background tasks; `report`, `is_cancelled`; the call may run 60 s instead of 5 s while it is open; dropping it ends it.                                                                                                                                                                                                                    |
+| `host::storage::{get, set, delete, keys}`                                                                      | `storage`                                    | Survives restarts; the instance's memory does not. Deleted on uninstall.                                                                                                                                                                                                                                                                                  |
+| `host::set_status_item(id, item)`, `remove_status_item`                                                        | `ui`                                         | `text`, `tooltip`, `command` (one of yours, run on click); at most 8; kept while the plugin is idle.                                                                                                                                                                                                                                                      |
+| `host::set_window_status_item(id, item)`, `remove_window_status_item(id)`                                      | `ui.{set,remove}-window-status-item`         | API 1.4: window-only override; removed on window close or plugin stop; removing falls back to the global item. Click runs its command in that window.                                                                                                                                                                                                     |
+| `host::execute_command(id, arg)` → `Option<String>`                                                            | `command-runner.execute`                     | API 1.4: requires high-risk `ide.commands` for IDE actions and other plugins; this plugin's own commands are exempt. Stable IDE action or `plugin.<plugin-id>.<command-id>` in the invoking window. IDE actions return none; plugin commands return their result. Unknown ids are not-found; at most 8 nested calls, no re-entry into a waiting instance. |
+| `host::ipc_connect(name)` → `Connection`                                                                       | `ipc.connect`                                | API 1.4: `write(bytes)`, `read(max_bytes, timeout_ms)`, `close()`; requires `ipc:<path>`, at most 8 connections, closed on drop or plugin stop. Runs on the project server in remote projects.                                                                                                                                                            |
+| `host::secret_set(name, value)`, `secret_delete(name)`                                                         | `secrets.{set,delete}`                       | API 1.4: requires `secrets` and a declared name. Never returns the value.                                                                                                                                                                                                                                                                                 |
+| `host::begin_loopback(path)` → `Loopback`                                                                      | `auth.begin-loopback`                        | API 1.4: `redirect_uri()`, `wait(timeout_ms)` → raw query or none on timeout. Desktop-only, even for remote projects; no capability. At most 2 listeners; one-shot, closed on timeout, drop or stop. Waiting excludes the call budget.                                                                                                                    |
+| `host::output_append(channel, text)`, `output_clear`, `output_reveal`                                          | `output.{append,clear,reveal}`               | API 1.4: read-only Output tabs; 32 named channels per plugin, each a 1 MiB UTF-8 ring buffer. Reveal requires the invoking window.                                                                                                                                                                                                                        |
+| `host::set_context(key, value)`, `remove_context`                                                              | `ui.{set,remove}-context`                    | Sets `plugin.<id>.<key>` for `when` clauses in the window the call came from (`true`, `3.5`, `"text"`; `ContextValue`). Key 1–64 of `A-Za-z0-9_-`, 100 per plugin; gone when the plugin stops.                                                                                                                                                            |
+| `host::notify(level, title, body)`                                                                             | `ui.show-notification`                       | Balloon in the window the command or events came from (every window otherwise).                                                                                                                                                                                                                                                                           |
+| `Project::notify(level, title, body, actions)`                                                                 | `ui.notify-project`                          | API 1.5: balloon only in a window of that project (the most recently focused one), with or without an invoking window; see _Notifications with commands_.                                                                                                                                                                                                 |
+| `host::copy_to_clipboard(text)`                                                                                | `ui.copy-to-clipboard`                       | Copies `text` to the system clipboard. Needs `clipboard`.                                                                                                                                                                                                                                                                                                 |
+| `host::open_url(url)`                                                                                          | `ui.open-url`                                | Opens an `http://` or `https://` URL in the user's default browser.                                                                                                                                                                                                                                                                                       |
+| `host::pick(title, items)`, `pick_many`                                                                        | `ui.pick`, `ui.pick-many`                    | Picks key(s) from `PickItem`s, or `None` when dismissed. From a command/event or code-action resolution in its editor window (else `invalid`); waiting is excluded from the budget.                                                                                                                                                                       |
+| `host::input(prompt, value)`                                                                                   | `ui.input`                                   | A one-line text box pre-filled with `value`; `None` when dismissed. Same rules as `pick`.                                                                                                                                                                                                                                                                 |
+| `host::input_multiline(prompt, value)`                                                                         | `ui.input-multiline`                         | A multi-line text box pre-filled with `value`; `None` when dismissed; Cmd/Ctrl+Enter confirms. Only from a command or event of a window.                                                                                                                                                                                                                  |
+| `host::confirm(title, body)`                                                                                   | `ui.confirm`                                 | OK / Cancel; `true` on OK. Same rules as `pick`.                                                                                                                                                                                                                                                                                                          |
+| `host::locale()`                                                                                               | `ui.locale`                                  | The IDE's UI language as a BCP 47 tag (`en`, `fr`, `zh-CN`); no capability. See _Translations_.                                                                                                                                                                                                                                                           |
+| `host::log(level, msg)`                                                                                        | `log`                                        | IDE log, tagged with the plugin id. `eprintln!` output is logged too and shown when the plugin crashes.                                                                                                                                                                                                                                                   |
+| `Project::find_files(glob, limit)`                                                                             | `workspace.project.find-files`               | Project-relative glob (`**/*Mapper.xml`); honours `.gitignore`; at most `limit` paths.                                                                                                                                                                                                                                                                    |
+| `Project::symbols(query, limit)`                                                                               | `workspace.symbols`                          | New in 1.3; `project.read`. Fuzzy in-memory search (no LSP): name, camelCase kind, container and UTF-16 location. Queries ≤ 256 UTF-8 bytes; limits capped at 1000. Snapshot notes below.                                                                                                                                                                 |
+| `host::publish_diagnostics(path, items)`                                                                       | `diagnostics.publish`                        | Replaces this plugin's problems for the file (editor squiggles and the Problems view); an empty list clears them.                                                                                                                                                                                                                                         |
+| `host::fetch(request)` → `{status, headers, body}`                                                             | `net.fetch`                                  | See _Network_.                                                                                                                                                                                                                                                                                                                                            |
+| `Project::run_process(program, args, stdin)` → `{code, stdout, stderr}`                                        | `process.run`                                | Only the pinned program of a `process:` grant; runs in the project root of a trusted project; up to 16 MiB of stdout (fails if exceeded); killed when the call is cancelled or times out.                                                                                                                                                                 |
+| `host::run_command(cmd, project, stdin)` → `{code, stdout, stderr}`                                            | `process.run-command`                        | API 1.3: same limits as `run_process`, with append-only environment variables; needs the pinned `process:<program>` grant.                                                                                                                                                                                                                                |
+| `host::start(cmd, project)` → `Child`                                                                          | `process.start`                              | API 1.3: `poll(max_bytes)`, `write(text)`, `close_stdin()`, `wait(timeout_ms)`, `kill()`; at most 8 handles; dropping one kills its process.                                                                                                                                                                                                              |
+| `host::refresh_view(view)`                                                                                     | `views.refresh`                              | The view (or custom editors) render again; call it when the content changed.                                                                                                                                                                                                                                                                              |
+| `host::reveal_view(view)`                                                                                      | `views.reveal`                               | Brings one of your declared `[[contributes.views]]` to the front in the calling window.                                                                                                                                                                                                                                                                   |
+| `host::post_view_message(view, text)`                                                                          | `views.post-message`                         | To the script of the view's `html` body.                                                                                                                                                                                                                                                                                                                  |
+| `host::open_terminal(title, program, args)`                                                                    | `views.open-terminal`                        | A terminal tab in the invoking window running the approved `process:<program>` in the project root: output that keeps coming, interactive sessions.                                                                                                                                                                                                       |
+| `host::register_run_target(project, target)`                                                                   | `run-targets.register`                       | API 1.4: project-scoped, read-only argv wrapper; requires its process grant, executable pin and project trust; remote projects run on the server.                                                                                                                                                                                                         |
+| `host::unregister_run_target(project, id)`                                                                     | `run-targets.unregister`                     | Withdraw this plugin's target; remembered prompt answers remain.                                                                                                                                                                                                                                                                                          |
+| `host::start_run(config, args, debug)`                                                                         | `run.start`                                  | API 1.4: start an owned configuration in this window's Run tool window; returns an id, followed by `run-exited`. Approved `process:` program; commands/events only.                                                                                                                                                                                       |
+| `host::open_terminal_session(key, title, cmd)`                                                                 | `views.open-terminal-session`                | API 1.4: keyed, pinned terminal in this window, append-only env; returns its operation id and later `terminal-exited`.                                                                                                                                                                                                                                    |
+| `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                       | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
+| `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                     | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
+| `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                    | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
+| `host::open_diff(diff, file_name)`                                                                             | `views.open-diff`                            | API 1.7: two texts in the invoking window's diff viewer; `file_name` (at most 256 characters) picks the highlighting. Commands/events only; each side at most 8 MiB (earlier hosts: 1 MiB), a larger side fails with `Invalid("diff too large: …")`.                                                                                                      |
+| `host::open_file_diff(diff, file_name)`                                                                        | `views.open-file-diff`                       | API 1.10: `open_diff` where a side may be `None` (the file doesn't exist there: added or deleted); the viewer shows the other side alone. Both `None` fails with `Invalid`.                                                                                                                                                                               |
+| `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
+| `LaunchConfigurations::launch_configurations(root)`                                                            | export `launch-configurations`               | API 1.9: optional `plugin-launch-configurations` world; SDK registration `launch_configurations`. The same list with `env` and `debugger`; preferred over `run-configurations`.                                                                                                                                                                           |
+| `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
+| `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`           | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
+| `host::open_location(path, line, column)`                                                                      | `views.open-location`                        | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
+| `host::setting(key)`, `setting_bool`, `setting_string`, `setting_number`                                       | `settings.get`                               | The user's value (project over global) or the schema's default.                                                                                                                                                                                                                                                                                           |
 
 `Project::symbols` reads the current in-memory index: results may be partial
 while indexing, and locations can lag unsaved edits. Normal saves and filesystem
@@ -716,6 +800,134 @@ adds the two ways to the bytes:
 ```rust
 let bytes = project.read_bytes(&doc.path)?;  // the PDF's exact bytes
 ```
+
+### Requests to a language server (API 1.9)
+
+A plugin can ask a language server the IDE already runs for the server's own
+data: `rust-analyzer/expandMacro`, a framework server's route list. Declare
+`lsp:<server>` (high risk: the server reads and changes the project's files on
+the plugin's behalf), where `<server>` is the `name` of the
+`[[language-servers]]` entry in the language definition:
+
+```toml
+engines.openidea = "^1.9"
+
+[capabilities]
+required = ["lsp:phoxite"]
+```
+
+```rust
+let project = inv.project().ok_or("no project")?;
+let routes = project.language_server_request("phoxite", "phoxite/laravel/routes", Some("{}"))?; // JSON
+project.language_server_notify("phoxite", "phoxite/refresh", None)?;
+```
+
+| SDK                                                        | WIT                                    | Notes                                        |
+| ---------------------------------------------------------- | -------------------------------------- | -------------------------------------------- |
+| `Project::language_server_request(server, method, params)` | `language-servers.request(project, …)` | The result as JSON; `params` is JSON or none |
+| `Project::language_server_notify(server, method, params)`  | `language-servers.notify(project, …)`  | No answer is awaited                         |
+
+- Only the server's own methods pass. `initialize`, `initialized`, `shutdown`,
+  `exit`, anything starting with `$/` and any method whose first segment is an
+  LSP namespace (`textDocument`, `workspace`, `window`, `notebookDocument`,
+  `callHierarchy`, `typeHierarchy`, `completionItem`, `codeAction`, `codeLens`,
+  `documentLink`, `inlayHint`, `workspaceSymbol`, `client`, `telemetry`) are
+  `invalid`: a plugin can't touch document sync, the features the IDE asks for
+  itself or the server's lifecycle.
+- The call never starts a server: one that is not running for the project is
+  `not-found`. The server's own error is `failed` with its message.
+- The request ends with the invocation's cancellation and time budget. A method
+  is at most 256 bytes, params at most 1 MiB.
+- The project must be trusted; otherwise the call is `denied`.
+
+#### Commands a server hands to the client
+
+A server's code lens, code action or inlay hint can carry a command the server
+does not execute itself (it is not in its `executeCommandProvider`): the client
+is meant to. A plugin claims such a command in its manifest, and the IDE runs
+the plugin's own command instead of failing with "no language server provides
+command":
+
+```toml
+[[contributes.commands]]
+id = "model-view"
+title = "Show the Eloquent Model"
+
+[[contributes.serverCommands]]
+server = "phoxite"            # the server whose results carry the command
+command = "laravel.modelView" # the command name in the server's result
+run = "model-view"            # this plugin's command
+```
+
+- `run` gets the command's `arguments` array as JSON in `arg`, in the window and
+  editor where the lens or action was activated.
+- The manifest must declare `lsp:<server>`, and the claim counts only while the
+  plugin holds that grant.
+- A command listed in the server's `executeCommandProvider` still goes to the
+  server.
+- When two installed plugins claim the same `server` and `command`, the first
+  one loaded keeps it and the conflict is logged.
+
+In tests, `MockHost::set_language_server_response(server, method, json)` makes
+a server run and answer, and `language_server_requests()` /
+`language_server_notifications()` list what the plugin sent.
+
+### Build dependency graph (API 1.10)
+
+A plugin can read the Maven / Gradle dependency graph the IDE already resolved
+for its Dependency Analyzer: resolved versions, conflicts, omitted duplicates
+and managed versions, and so "why is this artifact here". Declare `build.read`
+(low risk):
+
+```toml
+engines.openidea = "^1.10"
+
+[capabilities]
+required = ["build.read"]
+```
+
+```rust
+let project = inv.project().ok_or("no project")?;
+let graph = project.build_dependencies(Some("com.example:app"))?; // or None: every module
+for (i, node) in graph.iter().enumerate() {
+    if node.status == DependencyStatus::OmittedForConflict {
+        // Walk `parent` up to the module to see who asked for the losing version.
+        let path: Vec<_> = std::iter::successors(Some(i), |&i| graph[i].parent.map(|p| p as usize))
+            .map(|i| format!("{}:{}", graph[i].group, graph[i].artifact))
+            .collect();
+        host::log(LogLevel::Info, &path.join(" <- "));
+    }
+}
+```
+
+| SDK                                   | WIT                                   | Notes                                         |
+| ------------------------------------- | ------------------------------------- | --------------------------------------------- |
+| `Project::build_dependencies(module)` | `build.dependencies(project, module)` | A flat `list<dependency-node>`, modules first |
+
+- WIT records can't nest, so the graph is a flat list. Each module is a root
+  (`parent` none, empty `scope`) — a Maven module by its `groupId:artifactId`, a
+  Gradle project by its path (`:app`, `group` empty) — followed by its tree;
+  `parent` is the index of the occurrence that brings a node in.
+- `module` is a Maven module's `groupId:artifactId` or a Gradle project's path
+  (`:` for the root project); `None` returns every module of the project's
+  builds. An unknown module is `not-found`.
+- `status`: `resolved`; `omitted-for-conflict` (`version` is the version that
+  won, `requested-version` the one this occurrence asked for);
+  `omitted-for-duplicate` (listed with its dependencies elsewhere: Maven's
+  duplicates and cycles, Gradle's `(*)`); `version-managed` (Maven
+  `<dependencyManagement>`, a Gradle platform or constraint supplies the
+  version; `requested-version` is the declared one, if any). `scope` is the
+  Maven scope or the Gradle configuration.
+- Nothing is resolved for the call. Maven trees are those of the last Reload in
+  the Maven tool window (with the occurrences Maven omitted); before one, or
+  after a POM changed, only the declared dependencies. Gradle trees are the
+  configurations the Dependency Analyzer has read for that project, kept until a
+  build file changes; before that the module has only its own node.
+- At most 100,000 nodes per call (else `failed`: ask for one module). The
+  project must be trusted; otherwise the call is `denied`.
+
+In tests, `MockHost::set_build_dependencies(nodes)` sets the graph that
+`build_dependencies(None)` returns; a module narrows it as the IDE does.
 
 ### Database sources (API 1.4)
 
@@ -867,7 +1079,10 @@ Decorations are plain text, with fixed styles mapped to theme tokens:
 have `{ range, style, hover, after }`; tree items have `{ badge, style, tooltip }`,
 where a badge has at most two Unicode characters. A tree item can instead be a note
 (`set-file-note`, API 1.7): muted text after the file or folder name, one line of at
-most 200 characters, with an optional tooltip; it replaces that set's item for the file.
+most 200 characters, with an optional tooltip; or a dynamic icon (`set-file-icon` /
+`set-file-icons`, API 1.8): one of the plugin's own `[[contributes.fileIcons]]` ids
+(`patterns` may be omitted under `engines.openidea = "^1.8"`), applied to a file or
+plain folder by exact path; each replaces that set's item for the path.
 Paths must resolve inside an open project; absolute paths select that project, relative paths use the invoking
 project. Sets are isolated by plugin and project and shared by all windows of
 that project. Setting replaces a set's items for one file; clearing removes that
@@ -1559,6 +1774,7 @@ values (the body already uses the text colour, UI font and size):
 | `--openidea-border`, `--openidea-focus-ring`, `--openidea-link`                                                   | Lines, focus, links                                              |
 | `--openidea-accent`, `--openidea-fg-on-accent`                                                                    | Accent and text on it                                            |
 | `--openidea-danger`, `--openidea-warning`, `--openidea-success`, `--openidea-info`                                | Status colours                                                   |
+| `--openidea-change-added`, `--openidea-change-modified`, `--openidea-change-deleted`                              | API 1.10: the editor's VCS change markers                        |
 | `--openidea-font-ui`, `--openidea-font-mono`, `--openidea-font-size`                                              | Fonts (web fonts the IDE bundles are not available in the frame) |
 
 Scripts get the same as `openidea.theme` (`{ dark, vars }`) and
@@ -1692,6 +1908,63 @@ For example, a page can reserve the corner in its own toolbar:
 sends what Graphviz reports to the plugin, which publishes it as problems. The built page is not
 checked in (it is tens of MB): run `plugins/build.sh official/graphviz`
 before installing the plugin from the repository.
+
+#### Editor panels
+
+With API 1.9 (`engines.openidea = "^1.9"`), a web page can sit at the right edge
+of every editor group, beside the text editor and its marker bar — a minimap,
+say. It needs no code:
+
+```toml
+[capabilities]
+required = ["editor.read"]   # the page sees every file the editors show; shown at install
+
+[[contributes.editorPanels]]
+id = "minimap"
+web = "web/index.html"       # the same rules as a web view's page
+width = 110                  # pixels, 40–400
+when = "plugin.<id>.enabled" # optional: the plugin's own setting through `host::set_context`
+```
+
+Each editor group (each side of a split) has one frame, shown and hidden with
+the group. When the group switches to another file the page stays loaded and
+hears `onTarget`; while the group shows something other than a text editor (a
+diff, an image, a custom editor) the panel is hidden. Without the `editor.read`
+grant, or while `when` is false, there is no panel. Panels of several plugins
+sit side by side.
+
+The page gets `openidea.editor` (only an editor panel's page has it). Lines are
+0-based, columns UTF-16:
+
+| `openidea.editor`                      | What it does                                                                                                                                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `get()`                                | `{ path, language, version, lineCount, tabSize }` of the group's file, or `null`; `tabSize` (API 1.10) is the columns a tab takes in the editor (Code Style, `.editorconfig`, indent detection)                                |
+| `onTarget(fn)`                         | Called with `get()` when the group shows another file, or none, and (API 1.10) when the file's tab size changes                                                                                                                |
+| `document.get()` / `document.onChange` | The `openidea.document` of web views, on the group's file and read-only: `edit` and `replace` reject. Changes arrive at most once a frame                                                                                      |
+| `viewport()` / `onViewport(fn)`        | `{ firstLine, lastLine, lineCount, scrollTop, scrollHeight, clientHeight }`; lines are fractional (the position within a line). Sent on scroll, resize and folding, at most once a frame                                       |
+| `scrollTo(line)`                       | Scrolls so that `line` (fractional) is at the top of the visible area; call it on every move while dragging                                                                                                                    |
+| `scrollBy(pixels)`                     | Scrolls the editor by `pixels`: hand it the page's wheel                                                                                                                                                                       |
+| `highlights(fromLine, toLine)`         | One array per line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): `[{ from, to, color }]`, `color` the colour the editor shows in the current scheme (a CSS colour; API 1.10: semantic highlighting included) |
+| `onHighlights(fn)`                     | `{ fromLine, toLine }` whose colours may have changed: parsing progressed, the file was edited, the colour scheme changed, semantic tokens arrived (API 1.10)                                                                  |
+| `problems()`                           | API 1.10: the problems the marker bar shows, in file order: `[{ line, lastLine, severity }]`, `lastLine` the last line a problem covers, `severity` `error`, `warning` or `weakWarning`                                        |
+| `onProblems(fn)`                       | API 1.10: called with `problems()` when a problem appears or goes away, when edits move them, and when the group shows another file; at most once a frame                                                                      |
+| `folded()`                             | API 1.10: the folded ranges, in file order: `[{ fromLine, toLine }]`, `fromLine` the line that stays visible (with the placeholder), `toLine` the last line hidden. Folds inside a fold are part of it                         |
+| `wrapped(fromLine, toLine)`            | API 1.10: the visual rows of each line from `fromLine` up to `toLine` (exclusive, at most 2000 lines): 1 for a line that fits, 0 for a line a fold hides; `null` while soft wrap is off                                        |
+| `onLayout(fn)`                         | API 1.10: called with `{ folded, softWrap }` (`folded()`, and whether soft wrap is on) when folds change, soft wrap turns on or off, wrapped rows may have changed, and the group shows another file; at most once a frame     |
+| `selections()`                         | API 1.10: the caret and selections: `[{ anchor: { line, column }, head: { line, column } }]`, the main selection first, the others in file order; a caret is a selection whose `anchor` equals `head`                          |
+| `onSelections(fn)`                     | API 1.10: called with `selections()` when the caret moves, a selection changes, and the group shows another file; at most once a frame                                                                                         |
+| `changes()`                            | API 1.10: the VCS changes beside the line numbers, in file order: `[{ line, lastLine, kind }]`, `kind` `added`, `modified` or `deleted`; a deletion's `line` is the line below the deleted text. `[]` outside version control  |
+| `onChanges(fn)`                        | API 1.10: called with `changes()` when the changes are recomputed or edits move them, and when the group shows another file; at most once a frame                                                                              |
+
+Colours are the editor's: syntax highlighting and, from API 1.10, the semantic
+highlighting over it (a semantic colour wins where both apply). The
+panel's other colours are the frame's theme variables (`openidea.theme`,
+`onThemeChange`). Before API 1.10 there is no `problems`, `folded`, `wrapped`,
+`onLayout`, `selections` or `changes`: check for them (`if (editor.problems)`) when the page also runs in
+older IDEs. Outside the visible area the editor estimates wrapped rows from the
+line's length until it lays the line out; `onLayout` follows when it does.
+`crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
+2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted, VCS changes at its left edge) to install and try.
 
 ### Web frame PTYs (API 1.3)
 
@@ -1827,6 +2100,49 @@ Implement `RunConfigurations` and register `run_configurations`. Each returned
 valid list after an export failure. Entries without an approved program are not
 offered. Configuration exports run without a window or prompt context.
 
+#### Environment and debugger (API 1.9)
+
+Implement `LaunchConfigurations` and register `launch_configurations` instead
+to give configurations an environment and a debugger. Each
+`PluginLaunchConfiguration` wraps a `PluginRunConfiguration` (`config`) with:
+
+- `env`: variables added to the run's environment, at most 64. As with
+  `process` commands, a configuration only adds variables: a name the IDE's
+  own environment already has (`PATH`, …) makes the whole list invalid.
+- `debugger`: `None` keeps the default (Debug infers the debugger from a source
+  file in `args`). `Debugger::Launch { language }` starts `program` under the
+  debugger of that language id (its `[debugger]`), for programs whose arguments
+  name no source file. `Debugger::AttachChild { kind, command_contains }` makes
+  Debug run the configuration as Run does, then attach to the first process of
+  that Attach to Process kind (`dotnet`, `node`, `python`, `go` or `native`) the
+  run starts, optionally only one whose command line contains
+  `command_contains`. Only the run's own descendants are candidates; the IDE
+  waits for one while the run lasts, up to a minute, and otherwise leaves the
+  run going without the debugger. A host that predates a later variant treats
+  the configuration as having no debugger.
+
+```rust
+impl LaunchConfigurations for Functions {
+    fn launch_configurations(&mut self, _root: &str) -> Vec<PluginLaunchConfiguration> {
+        vec![PluginLaunchConfiguration {
+            config: PluginRunConfiguration {
+                id: "func".into(),
+                name: "Functions host".into(),
+                program: "func".into(),
+                args: vec!["start".into(), "--dotnet-isolated-debug".into()],
+                ..Default::default()
+            },
+            env: vec![("FUNCTIONS_WORKER_RUNTIME".into(), "dotnet-isolated".into())],
+            debugger: Some(Debugger::AttachChild { kind: "dotnet".into(), command_contains: None }),
+        }]
+    }
+}
+register_plugin!(Functions, launch_configurations);
+```
+
+A component exporting both uses `launch-configurations`. Plugins that call
+`run.start(config, args, true)` on such a configuration get the same Debug.
+
 For a static detector, `framework = "plugin"` is an API 1.4 manifest field. For
 either kind of configuration, it enables the optional `TestResults` export
 (registration `test_results`). `parse(config, chunk)` receives the short config
@@ -1874,8 +2190,48 @@ are forwarded to the originating desktop window.
 with the same content, action, reply and diff behavior. Its key is scoped to the
 plugin and window, independently of web views. Save and toolbar actions arrive
 as `content-tab-action`; answer with `host::reply_content_tab(request_id, reply)`.
-The host accepts replies only from that plugin and window. Content and diff text
-are limited to 1 Mi UTF-16 units, with at most 16 actions and one Save action.
+The host accepts replies only from that plugin and window. Content is limited to
+1 Mi UTF-16 units and each side of a diff to 8 Mi, with at most 16 actions and one
+Save action.
+
+### Java agents (API 1.10)
+
+A plugin that observes or instruments the user's application (request
+mappings, traces, SQL) can have the IDE load a Java agent into the JVMs it
+starts. Declare the agent; no code is needed:
+
+```toml
+engines.openidea = "^1.10"
+
+[[contributes.javaAgents]]
+path = "agent/openidea-spring-agent.jar"   # inside the package, like every manifest path
+args = "optional-arguments"                # optional
+```
+
+- One agent per plugin. A second declaration, a `path` that leaves the package
+  (`..`, an absolute path, a symlink pointing outside) or a missing file is
+  refused when the manifest is read, so a bad path fails at install, not at
+  launch. `args` is one line.
+- The declaration derives the optional high-risk capability `java.agent`, "Run
+  code inside the Java applications you start". It is not listed under
+  `[capabilities]` (a manifest that lists it is refused). On grant the IDE
+  records the jar's content hash and checks it again before every launch; a
+  changed jar is left out, with a line in the console, until the user approves
+  `java.agent` again in Settings › Plugins, which shows the agent's file name
+  and arguments next to the permission. Refusing or revoking it keeps the rest
+  of the plugin working, and the next launch has no agent.
+- The IDE adds one `-javaagent:<absolute path>[=<args>]` argument to the Java
+  command line of **Application**, **Spring Boot** and **JAR Application**
+  configurations, for Run and Debug alike, after the configuration's VM
+  options. Arguments are separate argv items (no shell), so a path with spaces
+  needs no quoting; a shortened command line moves only the classpath into its
+  argument file. The same `-javaagent:` already among the VM options is not
+  added again.
+- Not in this version: tests (JUnit), Maven and Gradle goals (an Application
+  set to _Build and run using: Gradle_ runs as a Gradle task), application
+  servers (Tomcat), remote JVM debug, configurations on a run target, and
+  remote projects. In a remote project the JVM runs on the server, so the
+  agent is skipped and the run console says so in one line.
 
 ### Plugin-backed content editor tabs (API 1.3)
 
@@ -1904,7 +2260,10 @@ openidea.postMessage(JSON.stringify({
 are required. `key` (1–128 characters) defaults to `title` and is scoped to the
 calling plugin and view; `fileName` (1–256 characters, no path separators) and
 `language` (1–64 characters) select syntax highlighting and the tab's file icon.
-`readOnly` defaults to `false`. `actions` lists up to 16 toolbar buttons with
+A Markdown tab (`language` `markdown`, or a `fileName` ending in `.md`) has the
+Markdown file editor's layouts (Editor Only, Editor and Preview, Preview Only) and
+opens on the rendered preview when it is read-only; web links in the preview open
+in the browser. `readOnly` defaults to `false`. `actions` lists up to 16 toolbar buttons with
 unique `id`s (1–64 characters), `label`s (1–128 characters), an optional built-in
 `icon` name, `primary`, and `save` (at most one action may set `save: true`).
 Invalid requests send `content-tab-error { error }` through `openidea.onMessage`.
@@ -2445,7 +2804,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41 and 1.6.0 with 0.1.43; API 1.7.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44 and 1.8.0 with 0.1.45 and 1.9.0 with 0.1.46; API 1.10.0 is in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

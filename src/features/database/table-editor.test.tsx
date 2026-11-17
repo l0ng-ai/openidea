@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DbDriver, DbTablePage } from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
-import { installCellActions } from "./cellActions";
+import { activeCellGrid, installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { TableEditor } from "./TableEditor";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
@@ -125,6 +125,38 @@ describe("table editor capabilities", () => {
       expect(backend.applyEdits).toHaveBeenCalledTimes(1);
     } finally {
       uninstall();
+    }
+  });
+
+  it("runs the row and toolbar commands of the db.* actions on the focused grid's selection (#3506)", async () => {
+    backend.driver = "postgres";
+    const uninstallFocus = installTableEditorFocus();
+    const uninstallCells = installCellActions();
+    try {
+      await act(async () => {
+        render(<TableEditor input={tableInput("source", "public", "users")} />);
+      });
+      const cell = await screen.findByRole("gridcell", { name: "Ann" });
+      fireEvent.mouseDown(cell, { button: 0 });
+      act(() => screen.getByRole("grid").focus());
+      const rows = activeCellGrid()!.selectedRows();
+      expect(rows).toEqual([0]);
+      const commands = activeTableEditor()!.commands!;
+      expect(commands.nextPage!.enabled(rows)).toBe(false);
+      expect(commands.previousPage!.enabled(rows)).toBe(false);
+      expect(commands.exportData!.enabled(rows)).toBe(true);
+      expect(commands.restoreRows!.enabled(rows)).toBe(false);
+      act(() => commands.deleteRows!.run(rows));
+      expect(getContext().dbTableEditorChanges).toBe(true);
+      expect(activeTableEditor()!.commands!.restoreRows!.enabled(rows)).toBe(true);
+      act(() => activeTableEditor()!.commands!.restoreRows!.run(rows));
+      expect(getContext().dbTableEditorChanges).toBe(false);
+      act(() => activeTableEditor()!.commands!.addRow!.run([]));
+      expect(screen.getAllByRole("row").length).toBeGreaterThan(2);
+      expect(getContext().dbTableEditorChanges).toBe(true);
+    } finally {
+      uninstallCells();
+      uninstallFocus();
     }
   });
 

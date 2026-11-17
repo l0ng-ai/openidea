@@ -41,6 +41,14 @@ pub trait Backend: Send + Sync {
     /// as `unstaged`.
     fn status(&self) -> IdeResult<Vec<FileStatus>>;
 
+    /// Working-area changes for `paths` only (absolute; those outside the root
+    /// are ignored), which is what a watcher batch needs. The default is the
+    /// full status: always correct, just not proportional to the batch.
+    fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        let _ = paths;
+        self.status()
+    }
+
     /// Text of `path` at `rev`; `None` when absent there.
     fn file_at(&self, path: &Path, rev: Option<&str>, encoding: TextEncoding) -> IdeResult<Option<String>>;
 
@@ -187,6 +195,10 @@ impl Backend for Repo {
 
     fn status(&self) -> IdeResult<Vec<FileStatus>> {
         Repo::status(self)
+    }
+
+    fn status_paths(&self, paths: &[PathBuf]) -> IdeResult<Vec<FileStatus>> {
+        Repo::status_paths(self, paths)
     }
 
     fn file_at(&self, path: &Path, rev: Option<&str>, encoding: TextEncoding) -> IdeResult<Option<String>> {

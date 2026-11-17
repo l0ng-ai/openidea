@@ -20,7 +20,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   height: var(--h-navigationbar);
   padding: 0 10px;
   overflow: hidden;

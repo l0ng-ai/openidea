@@ -12,6 +12,27 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
     host.require_trust(window)?;
+    let unity_pid = if config.adapter == "unity" {
+        if config.request != "attach" {
+            return Err(ide_core::IdeError::invalid("Unity debugging only supports attachment to a running Editor"));
+        }
+        let arguments = launch_arguments(&config)?;
+        let pid = arguments["name"]
+            .as_str()
+            .and_then(|name| name.strip_prefix("Unity Editor ("))
+            .and_then(|name| name.strip_suffix(')'))
+            .and_then(|pid| pid.parse::<u32>().ok());
+        if let Some(pid) = pid {
+            require_unity_editor(pid)?;
+        }
+        let cwd = config.cwd.as_ref().map(|path| path.as_ref()).unwrap_or_else(|| std::path::Path::new("."));
+        unity::require_runtime(cwd)?;
+        pid
+    } else {
+        None
+    };
+    let agents = if is_jvm_launch(&config) { ide_run::java_agent::current() } else { Default::default() };
+    let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
         && config.request == "launch"
@@ -100,10 +121,33 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     let server_port = debug_server_port(&config);
     let result = host.debugger.start_with(config, owner, custom).await;
     flush_output();
+    if let Ok(id) = &result {
+        let sink = host.window_sink(label);
+        for note in &agents.notes {
+            sink.emit(ide_core::IdeEvent::Debug {
+                session: *id,
+                event: ide_core::event::DebugEvent::Output { category: "console".into(), output: format!("{note}\n") },
+            });
+        }
+    }
+    if result.is_err()
+        && let Some(pid) = unity_pid
+    {
+        require_unity_editor(pid)?;
+    }
     if let (Ok(id), Some(port)) = (&result, server_port) {
         attach_jvm_inspector(host, window, *id, port);
     }
     result
+}
+
+fn require_unity_editor(pid: u32) -> IdeResult<()> {
+    if !ide_core::process::process_alive(pid) {
+        return Err(ide_core::IdeError::unavailable(format!(
+            "Unity Editor (PID {pid}) is no longer running. Refresh the Unity process list and select a running Editor."
+        )));
+    }
+    Ok(())
 }
 
 /// The port of the java-debug server this machine's jdtls started; `debugServer` as `host:port`
@@ -121,10 +165,54 @@ fn debug_server_port(config: &LaunchConfig) -> Option<u16> {
 fn attach_jvm_inspector(host: &Host, window: &str, session: DebugSessionId, port: u16) {
     let Ok(project) = host.project(window) else { return };
     let Some(module) = project.lsp.java_debug_server_module(port) else { return };
-    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module));
+    let inspector = std::sync::Arc::new(ide_lsp::JdtJvmInspector::new(project.lsp.clone(), module.clone()));
     if let Err(e) = host.debugger.set_jvm_inspector(session, inspector) {
         tracing::debug!("jvm inspector for session {session:?}: {e}");
+        return;
     }
+    let tracer = std::sync::Arc::new(ide_lsp::JdtStreamTracer::new(project.lsp.clone(), module));
+    if let Err(e) = host.debugger.set_stream_tracer(session, tracer) {
+        tracing::debug!("stream tracer for session {session:?}: {e}");
+    }
+}
+
+/// A JVM the debugger starts itself: an Application or Spring Boot configuration, launched by
+/// java-debug or the Kotlin debugger (JAR Application debugs through a run with a JDWP agent).
+fn is_jvm_launch(config: &LaunchConfig) -> bool {
+    config.request == "launch" && matches!(config.adapter.as_str(), "java-debug" | ide_dap::kotlin::ADAPTER)
+}
+
+/// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
+/// java-debug's `vmArgs` (one line, or a list) or the Kotlin debugger's `vmArguments` (a list).
+fn add_java_agents(mut config: LaunchConfig, options: &[String]) -> LaunchConfig {
+    if options.is_empty() || !is_jvm_launch(&config) {
+        return config;
+    }
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return config;
+    };
+    let key = if config.adapter == "java-debug" { "vmArgs" } else { "vmArguments" };
+    let value = match extra.get(key) {
+        None | Some(serde_json::Value::Null) if key == "vmArgs" => {
+            ide_run::java_agent::add_to_vm_args_text("", options).into()
+        }
+        Some(serde_json::Value::String(text)) => ide_run::java_agent::add_to_vm_args_text(text, options).into(),
+        None | Some(serde_json::Value::Null) | Some(serde_json::Value::Array(_)) => {
+            let mut list: Vec<String> = extra
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            ide_run::java_agent::add_to_vm_args(&mut list, options);
+            list.into()
+        }
+        Some(_) => return config,
+    };
+    extra.insert(key.into(), value);
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    config
 }
 
 /// The JVM memory tab reads the class table over the attach socket, which only exists once the
@@ -372,6 +460,46 @@ pub async fn debug_restart_frame(host: &Host, _window: &str, session: DebugSessi
     host.debugger.restart_frame(session, frame_id).await
 }
 
+pub async fn debug_js_custom_breakpoints(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    ids: Vec<String>,
+    xhr: Vec<String>,
+) -> IdeResult<()> {
+    host.debugger.js_set_custom_breakpoints(session, ids, xhr).await
+}
+
+pub async fn debug_js_response_overrides(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    rules: Vec<ide_dap::JsResponseRule>,
+) -> IdeResult<()> {
+    host.debugger.js_set_response_overrides(session, rules).await
+}
+
+pub async fn debug_js_response_body(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+    request_id: String,
+) -> IdeResult<ide_dap::JsResponseBody> {
+    host.debugger.js_response_body(session, request_id).await
+}
+
+pub async fn debug_js_start_profile(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<()> {
+    host.debugger.js_start_profile(session).await
+}
+
+pub async fn debug_js_stop_profile(
+    host: &Host,
+    _window: &str,
+    session: DebugSessionId,
+) -> IdeResult<ide_core::IpcPath> {
+    host.debugger.js_stop_profile(session).await.map(Into::into)
+}
+
 pub fn debug_capabilities(host: &Host, _window: &str, session: DebugSessionId) -> IdeResult<DebugCapabilities> {
     host.debugger.capabilities(session)
 }
@@ -418,6 +546,17 @@ pub async fn debug_attachable_processes(_host: &Host, _window: &str) -> IdeResul
 pub async fn debug_free_port(host: &Host, window: &str) -> IdeResult<u16> {
     host.require_trust(window)?;
     ide_dap::adapter::free_port().map_err(ide_core::IdeError::from)
+}
+
+pub async fn debug_unity_processes(host: &Host, window: &str) -> IdeResult<Vec<attach::AttachableProcess>> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    if ide_workspace::unity::detect(&project.root).is_none() {
+        return Err(ide_core::IdeError::invalid("Open a Unity project before attaching to the Editor"));
+    }
+    let command = ide_sdk::apply::tool_command(&project.root, &project.settings.effective(), "unity-debug")
+        .map(|p| p.to_string_lossy().into_owned());
+    unity::editors(command, project.root.clone()).await
 }
 
 /// Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
@@ -588,6 +727,23 @@ pub(crate) fn register(d: &mut Dispatcher) {
         debug_restart_frame(&c.host, &c.window, c.arg("session")?, c.arg("frameId")?).await
     });
     d.add("debug_capabilities", |c| async move { debug_capabilities(&c.host, &c.window, c.arg("session")?) });
+    d.add("debug_js_response_overrides", |c| async move {
+        debug_js_response_overrides(&c.host, &c.window, c.arg("session")?, c.arg("rules")?).await
+    });
+    d.add("debug_js_response_body", |c| async move {
+        debug_js_response_body(&c.host, &c.window, c.arg("session")?, c.arg("requestId")?).await
+    });
+    d.add("debug_js_custom_breakpoints", |c| async move {
+        debug_js_custom_breakpoints(&c.host, &c.window, c.arg("session")?, c.arg("ids")?, c.arg("xhr")?).await
+    });
+    d.add(
+        "debug_js_start_profile",
+        |c| async move { debug_js_start_profile(&c.host, &c.window, c.arg("session")?).await },
+    );
+    d.add(
+        "debug_js_stop_profile",
+        |c| async move { debug_js_stop_profile(&c.host, &c.window, c.arg("session")?).await },
+    );
     d.add("debug_set_function_breakpoints", |c| async move {
         debug_set_function_breakpoints(&c.host, &c.window, c.arg("breakpoints")?).await
     });
@@ -607,6 +763,7 @@ pub(crate) fn register(d: &mut Dispatcher) {
     });
     d.add("debug_attachable_processes", |c| async move { debug_attachable_processes(&c.host, &c.window).await });
     d.add("debug_free_port", |c| async move { debug_free_port(&c.host, &c.window).await });
+    d.add("debug_unity_processes", |c| async move { debug_unity_processes(&c.host, &c.window).await });
     d.add("debug_listen_for_jvm", |c| async move {
         debug_listen_for_jvm(&c.host, &c.window, c.arg("request")?, c.arg("host")?, c.arg("port")?).await
     });
@@ -709,6 +866,36 @@ mod tests {
             vm_args(&on_unix(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})))),
             "-XX:+StartAttachListener"
         );
+    }
+
+    #[test]
+    fn plugin_java_agents_join_the_vm_options_of_jvm_launches() {
+        let agent = "-javaagent:/my plugins/agent.jar=port=0".to_owned();
+        let options = std::slice::from_ref(&agent);
+        let field = |config: &LaunchConfig, key: &str| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()[key].clone()
+        };
+        let debugged =
+            add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})), options);
+        assert_eq!(vm_args(&debugged), "-Xmx1g \"-javaagent:/my plugins/agent.jar=port=0\"");
+        assert_eq!(add_java_agents(debugged.clone(), options).extra_json, debugged.extra_json, "not added twice");
+        let none = add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": null})), options);
+        assert_eq!(vm_args(&none), "\"-javaagent:/my plugins/agent.jar=port=0\"");
+        let list = add_java_agents(launch("java-debug", "launch", serde_json::json!({"vmArgs": ["-Xmx1g"]})), options);
+        assert_eq!(vm_args(&list), serde_json::json!(["-Xmx1g", agent]));
+        let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({"vmArguments": ["-Xmx1g"]}));
+        assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!(["-Xmx1g", agent]));
+        let kotlin = launch(ide_dap::kotlin::ADAPTER, "launch", serde_json::json!({}));
+        assert_eq!(field(&add_java_agents(kotlin, options), "vmArguments"), serde_json::json!([agent]));
+        // Attaching (remote debug included), other adapters, and no granted agent: unchanged.
+        for config in [
+            launch("java-debug", "attach", serde_json::json!({"vmArgs": "-Xmx1g"})),
+            launch("debugpy", "launch", serde_json::json!({"vmArgs": "-Xmx1g"})),
+        ] {
+            assert_eq!(add_java_agents(config.clone(), options).extra_json, config.extra_json);
+        }
+        let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"}));
+        assert_eq!(add_java_agents(config.clone(), &[]).extra_json, config.extra_json);
     }
 
     #[test]

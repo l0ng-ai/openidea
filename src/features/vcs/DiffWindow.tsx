@@ -18,20 +18,23 @@ import { projectFolder, useProject } from "@/platform/project";
 import { installDiffWindowSave } from "./diffWindowSave";
 import { restoreRemote } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
-import { Spinner, T, isPopupOpen } from "@/ui";
+import { Spinner, T, isPopupOpen, lazyComponent } from "@/ui";
 import { ask, showError } from "@/workbench/messages";
 import { editorService, notifications, provideEditorService, type OpenOptions } from "@/workbench/contributions";
 import { OverlayHost } from "@/workbench/OverlayHost";
 import { TitleBar } from "@/workbench/TitleBar";
 import { WindowResizeHandles } from "@/workbench/WindowResizeHandles";
 import { useApplyTheme, windowBackgroundHex } from "@/workbench/theme";
-import { DiffEditor } from "./DiffEditor";
-import { DIFF_KIND, diffInput, diffTitle, type DiffData, type DiffSide } from "./diffInput";
+import { DIFF_KIND, diffInput, diffTitle, openDiff, type DiffData, type DiffSide } from "./diffInput";
 import { refreshNow, useVcs } from "./store";
 import styles from "./common.module.css";
 
+const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
+
 /** Opens `path` in the project window's editor (DiffEditor's "Jump to Source"). */
 const OPEN_SOURCE = "openidea://diff/open-source";
+/** Opens a diff in an editor tab of the project window (IDEA's "Show Diff in Editor Tab"). */
+const OPEN_DIFF = "openidea://diff/open-diff";
 
 const useDiff = create<{
   data: DiffData | null;
@@ -102,6 +105,24 @@ export function activateDiffWindow(parent: string): () => void {
         await documents.save();
       } catch (error) {
         showError(tx("Could not save diff"), error instanceof Error ? error.message : String(error));
+      }
+    },
+  });
+  // IDEA's Show Diff in Editor Tab: the diff moves to the project window, edits saved first.
+  const unregisterToEditor = registerAction({
+    id: "vcs.showDiffInEditorTab",
+    title: "Show Diff in Editor Tab",
+    category: "Git",
+    icon: "editor-only",
+    run: async () => {
+      const data = useDiff.getState().data;
+      if (!data) return;
+      try {
+        await documents.save();
+        await emitTo(parent, OPEN_DIFF, data);
+        await native.close();
+      } catch (error) {
+        showError(tx("Cannot show diff in an editor tab"), error instanceof Error ? error.message : String(error));
       }
     },
   });
@@ -198,6 +219,7 @@ export function activateDiffWindow(parent: string): () => void {
     stopClose?.();
     stopSave?.();
     unregisterSave();
+    unregisterToEditor();
     window.removeEventListener("keydown", onKey);
     window.removeEventListener("keydown", onCloseShortcut, true);
   };
@@ -207,23 +229,31 @@ export function activateDiffWindow(parent: string): () => void {
 export function installDiffEditorHost(): () => void {
   if (!isTauri()) return () => {};
   let disposed = false;
-  let stop: (() => void) | undefined;
-  void getCurrentWindow()
+  const stops: Array<() => void> = [];
+  const keep = (off: () => void) => {
+    if (disposed) off();
+    else stops.push(off);
+  };
+  const native = getCurrentWindow();
+  void native
     .listen<{ path: string; options?: OpenOptions }>(OPEN_SOURCE, ({ payload }) => {
       const folder = projectFolder(useProject.getState().project, payload.path);
       if (folder && payload.path.startsWith(`${folder.root}/`)) {
         void editorService()
           .openFile(payload.path, payload.options)
-          .then(() => getCurrentWindow().setFocus());
+          .then(() => native.setFocus());
       }
     })
-    .then((off) => {
-      if (disposed) off();
-      else stop = off;
-    });
+    .then(keep);
+  void native
+    .listen<DiffData>(OPEN_DIFF, ({ payload }) => {
+      if (!projectFolder(useProject.getState().project, payload.path)) return;
+      void openDiff(payload).then(() => native.setFocus());
+    })
+    .then(keep);
   return () => {
     disposed = true;
-    stop?.();
+    for (const stop of stops) stop();
   };
 }
 

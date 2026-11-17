@@ -1,10 +1,4 @@
 /* Editor gutter inheritance icons (implemented / overridden / implementing / overriding). */
-.gutter :global(.cm-gutterElement) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-}
 .marker {
   width: 14px;
   height: 14px;

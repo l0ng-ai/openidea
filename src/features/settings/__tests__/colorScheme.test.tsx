@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { executeAction } from "@/platform/actions";
-import { CLEAR_COLOR } from "@/platform/colorScheme";
+import { CLEAR_COLOR, _setSchemeSource } from "@/platform/colorScheme";
 import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS } from "../model/schema";
@@ -260,6 +260,23 @@ describe("Go scheme attributes", () => {
 
 describe("scheme attribute state", () => {
   beforeEach(() => schemePage("editor.colorScheme.language-defaults"));
+  it("shows the red-green colours the editor uses and the setting behind them (#3851)", () => {
+    _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8"));
+    try {
+      act(() => {
+        stage("editor.colorScheme", "global", "editor.colorScheme", "dark");
+        stage("appearance", "global", "appearance.redGreenVision", true);
+      });
+      expect(screen.getByRole("textbox", { name: "Foreground hex" })).toHaveValue("#597cc2");
+      const preview = screen.getByLabelText("Color scheme preview");
+      expect(preview.style.getPropertyValue("--syn-keyword")).toBe("#597cc2");
+      act(() => fireEvent.click(screen.getByRole("button", { name: "Appearance settings" })));
+      expect(useSettingsDialog.getState().pageId).toBe("appearance");
+    } finally {
+      _setSchemeSource("");
+    }
+  });
+
   it("shows checked attributes and inherited colours from the selected scheme", () => {
     act(() => {
       stage("editor.colorScheme", "global", "editor.customSchemes", {
@@ -403,5 +420,16 @@ describe("Git colors", () => {
     const preview = screen.getByLabelText("Color scheme preview");
     act(() => fireEvent.click(within(preview).getByText("feature/login")));
     expect(screen.getByRole("treeitem", { name: "Local branch decoration", selected: true })).toBeInTheDocument();
+  });
+
+  it("lets a project view branch decoration be set bold and italic (#3385)", () => {
+    act(() => stage("editor.colorScheme", "global", "editor.colorScheme", "dark"));
+    schemePage("editor.colorScheme.git");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("feature/login")));
+    const bold = screen.getByRole("checkbox", { name: "Bold" });
+    expect(bold).toBeEnabled();
+    act(() => fireEvent.click(bold));
+    expect(value("colorOverrides")).toEqual({ dark: { gitLocalBranch: { bold: true } } });
   });
 });

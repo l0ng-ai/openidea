@@ -72,6 +72,14 @@ mod runtime {
         WAYLAND.get().copied().unwrap_or(false)
     }
 
+    static DECORATION_LAYOUT: OnceLock<Option<String>> = OnceLock::new();
+
+    /// GTK's `gtk-decoration-layout` as the desktop sets it (settings.ini, XSETTINGS, or GNOME's
+    /// `button-layout` on Wayland), read when the plugin is set up.
+    pub fn decoration_layout() -> Option<String> {
+        DECORATION_LAYOUT.get().cloned().flatten()
+    }
+
     /// The client size that `set_size` (`gtk_window_resize`) takes. On Wayland, decorated windows
     /// get a GTK CSD shadow margin that tao's inner and outer sizes (the configure size) include.
     pub fn content_size(window: &Window) -> tauri::Result<tauri::PhysicalSize<u32>> {
@@ -439,6 +447,9 @@ mod runtime {
                 // Plugins are set up on the main thread once GTK is initialised, before any window exists.
                 use gtk::gdk::prelude::DisplayExtManual;
                 let _ = WAYLAND.set(gtk::gdk::Display::default().is_some_and(|d| d.backend().is_wayland()));
+                use gtk::prelude::GtkSettingsExt;
+                let _ = DECORATION_LAYOUT
+                    .set(gtk::Settings::default().and_then(|s| s.gtk_decoration_layout()).map(|l| l.to_string()));
                 let saved = ide_host::data_dirs::config_dir(&app.config().identifier)
                     .ok()
                     .and_then(|dir| std::fs::read(dir.join(FILE)).ok())
@@ -522,7 +533,9 @@ mod runtime {
 }
 
 #[cfg(target_os = "linux")]
-pub use runtime::{content_size, is_wayland, normal_size_requested, plugin, prepare, save_before_close};
+pub use runtime::{
+    content_size, decoration_layout, is_wayland, normal_size_requested, plugin, prepare, save_before_close,
+};
 
 #[cfg(test)]
 mod tests {

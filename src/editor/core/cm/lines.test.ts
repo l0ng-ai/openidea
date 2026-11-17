@@ -28,6 +28,14 @@ describe("Sort Lines / Reverse Lines", () => {
     expect(apply(doc, sel, sortLinesSpec)).toBe("a\nb\n--\nc\nd");
   });
 
+  it("sorts by code unit, uppercase before lowercase, as IDEA does", () => {
+    const doc = '"github:opentofu/tofu-ls" = "0.5"\n"github:PowerShell/PowerShellEditorServices" = "4.7"';
+    expect(apply(doc, undefined, sortLinesSpec)).toBe(
+      '"github:PowerShell/PowerShellEditorServices" = "4.7"\n"github:opentofu/tofu-ls" = "0.5"',
+    );
+    expect(apply("b\nB\na\nA\n_\n1", undefined, sortLinesSpec)).toBe("1\nA\nB\n_\na\nb");
+  });
+
   it("does nothing for a single line or an already sorted block", () => {
     expect(apply("only", undefined, sortLinesSpec)).toBeNull();
     expect(apply("a\nb", undefined, sortLinesSpec)).toBeNull();

@@ -15,7 +15,7 @@ export const missingKey = (name: string) => `lsp-missing-${name}`;
 /**
  * `offered`: servers already offered for install. A fallback of one of them (pyright
  * after basedpyright) stays quiet: installing the first is enough, and the Language
- * Servers… page offers the others.
+ * Servers… page offers the others. So does a companion server (pylsp-rope's refactorings).
  */
 export async function promptInstall(
   name: string,
@@ -25,7 +25,7 @@ export async function promptInstall(
 ): Promise<boolean> {
   if (!useTools.getState().loaded) await refreshTools();
   const tool = toolByName(name);
-  if (!tool || !tool.canInstall || tool.status !== "missing") return false;
+  if (!tool || !tool.canInstall || tool.status !== "missing" || tool.companion) return false;
   const position = tool.alternatives.indexOf(name);
   if (position > 0 && tool.alternatives.slice(0, position).some((n) => offered.has(n))) return false;
   formatter ||= tool.kind === "formatter";

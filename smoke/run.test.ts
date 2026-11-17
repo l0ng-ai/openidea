@@ -135,6 +135,19 @@ const CASES: Record<string, Case> = {
       file: "ThresholdCustomsTest.php",
     },
   },
+  // The failing run uses the fixture's dedicated `test-failing` step (`zig build` forwards
+  // no args to the test binary, so a failing test can't be switched on through the config).
+  zig: {
+    fixture: "zig-app",
+    run: { config: "zig:run", prints: "Total: $134.97" },
+    tests: {
+      config: "zig:test-failing",
+      failing: (c) => c,
+      passed: 0,
+      failed: "intentionally fails",
+      file: "src/failing.zig",
+    },
+  },
 };
 
 let server: Server | null = null;

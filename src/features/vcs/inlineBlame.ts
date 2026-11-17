@@ -69,18 +69,29 @@ export function inlineBlameSegments(line: BlameLine, now = Date.now()): BlameSeg
 class BlameCache {
   private doc: Text | undefined;
   private pending: Promise<BlameLine[]> | undefined;
+  private lines: BlameLine[] | undefined;
 
   clear() {
     this.doc = undefined;
     this.pending = undefined;
+    this.lines = undefined;
   }
 
   get(doc: Text, load: () => Promise<BlameLine[]>): Promise<BlameLine[]> {
     if (doc !== this.doc || !this.pending) {
       this.doc = doc;
-      this.pending = load();
+      this.lines = undefined;
+      this.pending = load().then((lines) => {
+        if (this.doc === doc) this.lines = lines;
+        return lines;
+      });
     }
     return this.pending;
+  }
+
+  /** The resolved blame for `doc`, when it is already loaded. */
+  peek(doc: Text): BlameLine[] | undefined {
+    return doc === this.doc ? this.lines : undefined;
   }
 }
 
@@ -99,6 +110,8 @@ class BlameWidget extends WidgetType {
     readonly line: BlameLine,
     /** The annotated line has no text: no gap before the label, or the caret would look indented. */
     readonly blank: boolean,
+    /** Version Control › Git › Open the commit when the inline blame is clicked. */
+    readonly clickable: boolean,
   ) {
     super();
   }
@@ -106,6 +119,7 @@ class BlameWidget extends WidgetType {
   eq(other: BlameWidget) {
     return (
       this.blank === other.blank &&
+      this.clickable === other.clickable &&
       formatInlineBlame(other.line) === formatInlineBlame(this.line) &&
       other.line.commit === this.line.commit
     );
@@ -113,14 +127,17 @@ class BlameWidget extends WidgetType {
 
   /**
    * Line-end annotations stack left to right: the code-vision hint, every plugin's line-end
-   * message, then this label. The hint is out of flow (see codeLens.ts) and each message steps
-   * past its predecessors itself, so this one steps past the whole chain, as IDEA lays its
-   * line-end inlays out. They can also appear (or go away) after this widget mounted, hence the
-   * observer below.
+   * message, then this label. All of them are zero-width anchors with an absolutely positioned
+   * inner box (see codeLens.ts, decorations.module.css), so none takes part in the line's flow
+   * and a soft wrap can never fold one onto a new visual row. Each message steps past its
+   * predecessors itself, so this one steps past the whole chain, as IDEA lays its line-end
+   * inlays out. They can also appear (or go away) after this widget mounted, hence the observer
+   * below.
    */
   private stepPastLineEnd(el: HTMLElement) {
     const line = el.closest(".cm-line");
-    if (!line) return;
+    const inner = el.firstElementChild as HTMLElement | null;
+    if (!line || !inner) return;
     let width = 0;
     const hint = line.querySelector<HTMLElement>(".cm-openidea-lensInlineInner");
     // The hint's inner box sits its anchor's `--openidea-hint-offset` past that anchor.
@@ -133,25 +150,31 @@ class BlameWidget extends WidgetType {
     }
     if (width === this.appliedWidth) return;
     this.appliedWidth = width;
-    // Padding, not margin: the gap is virtual (it only moves the label), so the caret at the
-    // line end stays next to the code. A blank line has no code to separate from: no gap.
-    el.style.paddingLeft = this.blank ? "0" : width ? `calc(3ch + ${width}px)` : "";
-    // The label's box spans the virtual gap, but only its text is the blame: clip the hover and
-    // click region to the text so a pointer over the gap (where the lens message sits) does not
-    // open the commit tooltip.
-    el.style.clipPath = width ? `inset(0 0 0 ${width}px)` : "";
+    // `left` parks the out-of-flow label past the whole chain. A blank line has no code to
+    // separate from: it sits at the line start. The gap stays virtual — the anchor is zero-width,
+    // so the caret at the line end does not move and a pointer over the gap never hits the
+    // label (the inner box alone is the hover/click region, so no clip-path is needed).
+    inner.style.left = this.blank ? "0" : width ? `calc(3ch + ${width}px)` : "";
   }
 
   toDOM() {
+    // A zero-width anchor with the label in an absolutely positioned inner box, the way the
+    // code-vision hint (codeLens.ts) and plugin line-end messages (decorations.module.css) are
+    // drawn: the label takes no part in the line's flow, so a soft wrap can neither fold it onto
+    // a new visual row nor stretch the line's height. It runs past the editor edge and is
+    // clipped by the scroller instead, as IDEA paints line-end inlays.
     const el = document.createElement("span");
     el.className = this.blank ? "cm-vcs-inline-blame cm-vcs-inline-blame-blank" : "cm-vcs-inline-blame";
+    el.contentEditable = "false";
+    const inner = document.createElement("span");
+    inner.className = "cm-vcs-inline-blame-inner";
     for (const segment of inlineBlameSegments(this.line)) {
       const part = document.createElement("span");
       part.className = `cm-vcs-inline-blame-${segment.key}`;
       part.textContent = segment.text;
-      el.append(part);
+      inner.append(part);
     }
-    el.contentEditable = "false";
+    el.append(inner);
     // The element is only measurable once CodeMirror has inserted it: defer to the next task, not a
     // nested frame, so a widget that goes away first simply skips.
     setTimeout(() => {
@@ -162,13 +185,14 @@ class BlameWidget extends WidgetType {
       this.observer = new MutationObserver(() => this.stepPastLineEnd(el));
       this.observer.observe(line, { childList: true, subtree: true, characterData: true });
     }, 0);
-    if (!isUncommitted(this.line)) {
-      el.setAttribute("role", "button");
-      el.tabIndex = 0;
+    if (this.clickable && !isUncommitted(this.line)) {
+      // The inner box is the visible, pointer-hit region; the anchor is zero-width.
+      inner.setAttribute("role", "button");
+      inner.tabIndex = 0;
       const open = () => void executeAction("vcs.showCommit", this.line.commit);
-      el.addEventListener("mousedown", (e) => e.preventDefault());
-      el.addEventListener("click", open);
-      el.addEventListener("keydown", (e) => {
+      inner.addEventListener("mousedown", (e) => e.preventDefault());
+      inner.addEventListener("click", open);
+      inner.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           open();
@@ -178,11 +202,78 @@ class BlameWidget extends WidgetType {
     return el;
   }
 
+  /** A plain-text label (clicks switched off, or uncommitted changes with no commit to open)
+      leaves its events to the editor: a click places the caret as on the empty space past the
+      line end instead of being swallowed by the widget. */
+  ignoreEvent(): boolean {
+    return this.clickable && !isUncommitted(this.line);
+  }
+
   destroy(): void {
     this.observer?.disconnect();
     this.observer = undefined;
   }
 }
+
+/**
+ * Styles for the line-end blame. Exported so tests lock the out-of-flow layout: the anchor is
+ * zero-width and the visible label is absolutely positioned, so a soft wrap can never fold the
+ * label onto a new visual row or stretch the line's height.
+ */
+export const inlineBlameTheme = {
+  ".cm-vcs-inline-blame": {
+    display: "inline-block",
+    width: "0",
+    position: "relative",
+    lineHeight: "1",
+    userSelect: "none",
+  },
+  ".cm-vcs-inline-blame-inner": {
+    position: "absolute",
+    left: "3ch",
+    bottom: "-2px",
+    whiteSpace: "nowrap",
+    pointerEvents: "auto",
+  },
+  ".cm-vcs-inline-blame-author": {
+    color: "var(--git-blame-author, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-author-bg, transparent)",
+    fontWeight: "var(--git-blame-author-bold, inherit)",
+    fontStyle: "var(--git-blame-author-italic, inherit)",
+    textDecoration: "var(--git-blame-author-effect, none)",
+  },
+  ".cm-vcs-inline-blame-date": {
+    color: "var(--git-blame-date, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-date-bg, transparent)",
+    fontWeight: "var(--git-blame-date-bold, inherit)",
+    fontStyle: "var(--git-blame-date-italic, inherit)",
+    textDecoration: "var(--git-blame-date-effect, none)",
+  },
+  ".cm-vcs-inline-blame-subject": {
+    color: "var(--git-blame-subject, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-subject-bg, transparent)",
+    fontWeight: "var(--git-blame-subject-bold, inherit)",
+    fontStyle: "var(--git-blame-subject-italic, inherit)",
+    textDecoration: "var(--git-blame-subject-effect, none)",
+  },
+  ".cm-vcs-inline-blame-issue": {
+    color: "var(--git-blame-issue, var(--fg-inlay))",
+    backgroundColor: "var(--git-blame-issue-bg, transparent)",
+    fontWeight: "var(--git-blame-issue-bold, inherit)",
+    fontStyle: "var(--git-blame-issue-italic, inherit)",
+    textDecoration: "var(--git-blame-issue-effect, none)",
+  },
+  // An empty line has no code to separate from: the label sits at the line start, so the
+  // caret stays at column 0 instead of jumping past the gap (`stepPastLineEnd` sets left:0).
+  ".cm-vcs-inline-blame-blank .cm-vcs-inline-blame-inner": { left: "0" },
+  '.cm-vcs-inline-blame-inner[role="button"]': { cursor: "pointer" },
+  ".cm-vcs-inline-blame-tooltip": {
+    padding: "8px 12px",
+    maxWidth: "min(70ch, 80vw)",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+  },
+};
 
 const setInlineBlame = StateEffect.define<DecorationSet>();
 const inlineBlameField = StateField.define<DecorationSet>({
@@ -229,6 +320,16 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
             (s) => s.vcs.git.inlineBlame,
             () => this.invalidate(),
           ),
+          // Only the label's behaviour changes: redraw it from the loaded blame.
+          onWorkflowSettingsChange(
+            (s) => s.vcs.git.inlineBlameClickable,
+            () => {
+              this.clear();
+              clearTimeout(this.timer);
+              ++this.generation;
+              void this.refresh();
+            },
+          ),
           useI18n.subscribe(() => this.invalidate()),
         ];
         this.schedule();
@@ -265,7 +366,15 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         if (update.docChanged) this.cache.clear();
         if (update.docChanged || update.selectionSet) {
           this.line = undefined;
-          this.schedule();
+          // A caret move in a document whose blame is already loaded needs no git
+          // call, so show it without the debounce that protects that call (#3396).
+          if (!update.docChanged && this.cache.peek(update.state.doc) !== undefined) {
+            clearTimeout(this.timer);
+            ++this.generation;
+            void this.refresh();
+          } else {
+            this.schedule();
+          }
         }
       }
 
@@ -292,7 +401,11 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
           this.line = lines[caret.number - 1];
           if (this.line) {
             const widget = Decoration.widget({
-              widget: new BlameWidget(this.line, caret.text.trim().length === 0),
+              widget: new BlameWidget(
+                this.line,
+                caret.text.trim().length === 0,
+                workflowSettings().vcs.git.inlineBlameClickable,
+              ),
               // After a plugin's line-end message (side 1): git hint | lens | blame.
               side: 2,
             }).range(caret.to);
@@ -367,52 +480,6 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         hideOn: (tr) => tr.effects.some((effect) => effect.is(setInlineBlame)),
       },
     ),
-    EditorView.baseTheme({
-      ".cm-vcs-inline-blame": {
-        paddingLeft: "3ch",
-        display: "inline-block",
-        whiteSpace: "nowrap",
-        verticalAlign: "bottom",
-        userSelect: "none",
-      },
-      ".cm-vcs-inline-blame-author": {
-        color: "var(--git-blame-author, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-author-bg, transparent)",
-        fontWeight: "var(--git-blame-author-bold, inherit)",
-        fontStyle: "var(--git-blame-author-italic, inherit)",
-        textDecoration: "var(--git-blame-author-effect, none)",
-      },
-      ".cm-vcs-inline-blame-date": {
-        color: "var(--git-blame-date, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-date-bg, transparent)",
-        fontWeight: "var(--git-blame-date-bold, inherit)",
-        fontStyle: "var(--git-blame-date-italic, inherit)",
-        textDecoration: "var(--git-blame-date-effect, none)",
-      },
-      ".cm-vcs-inline-blame-subject": {
-        color: "var(--git-blame-subject, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-subject-bg, transparent)",
-        fontWeight: "var(--git-blame-subject-bold, inherit)",
-        fontStyle: "var(--git-blame-subject-italic, inherit)",
-        textDecoration: "var(--git-blame-subject-effect, none)",
-      },
-      ".cm-vcs-inline-blame-issue": {
-        color: "var(--git-blame-issue, var(--fg-inlay))",
-        backgroundColor: "var(--git-blame-issue-bg, transparent)",
-        fontWeight: "var(--git-blame-issue-bold, inherit)",
-        fontStyle: "var(--git-blame-issue-italic, inherit)",
-        textDecoration: "var(--git-blame-issue-effect, none)",
-      },
-      // An empty line has no code to separate from: the label sits at the line start, so the
-      // caret stays at column 0 instead of jumping past the gap.
-      ".cm-vcs-inline-blame-blank": { paddingLeft: "0" },
-      '.cm-vcs-inline-blame[role="button"]': { cursor: "pointer" },
-      ".cm-vcs-inline-blame-tooltip": {
-        padding: "8px 12px",
-        maxWidth: "min(70ch, 80vw)",
-        whiteSpace: "pre-wrap",
-        overflowWrap: "anywhere",
-      },
-    }),
+    EditorView.baseTheme(inlineBlameTheme),
   ];
 }

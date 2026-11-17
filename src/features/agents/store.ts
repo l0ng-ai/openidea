@@ -13,27 +13,34 @@ import type {
   AgentEvent,
   AgentImage,
   AgentLimit,
+  AgentModelCatalog,
+  AgentPrompt,
   AgentProvider,
   AgentTask,
   ExternalSession,
   Isolation,
 } from "@/bindings";
 import { useChangesOptions } from "./changesOptions";
+import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
+import { clearDismissedAssets } from "./sessionAssetsModel";
 import { basename, useProject } from "@/platform/project";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
-import { confirm } from "@/workbench/messages";
+import { confirm, showError } from "@/workbench/messages";
 import {
   bypassDefaults,
   canSend,
   cursorModelDefaults,
   emptyDraft,
   isMentioned,
+  isPerModelOption,
   toPrompt,
+  withIdeContext,
   type ComposerDraft,
   type FileRef,
+  type IdeContext,
 } from "./composerModel";
 import { withQuote } from "./conversation";
 import {
@@ -50,7 +57,6 @@ import {
   SESSION_KIND,
   TOOL_WINDOW,
   appendEntry,
-  attentionChange,
   entriesKey,
   isBusy,
   sessionKey,
@@ -70,6 +76,8 @@ export interface Draft {
   isolationChosen?: boolean;
   /** `null`: the current branch. */
   base: string | null;
+  /** Per-session MCP server enable/disable overrides (`server_name` -> `enabled`) for the next task. */
+  mcpOverrides?: Record<string, boolean>;
 }
 
 /** Composer key of the New Task page; sessions use their task id. */
@@ -93,6 +101,10 @@ interface AgentsState {
   /** Scroll position and follow-output preference by conversation, shared by both hosts. */
   scrollPositions: Map<string, { top: number; stick: boolean }>;
   providers: AgentProvider[];
+  modelCatalogs: Map<string, AgentModelCatalog>;
+  modelRequests: Set<string>;
+  /** Last New Task discovery target, so another model never inherits its error/cooldown. */
+  modelRequestTargets: Map<string, string | null>;
   /** The usage limits each agent last reported for its account, by provider. */
   limits: Map<string, AgentLimit[]>;
   draft: Draft;
@@ -109,6 +121,10 @@ interface AgentsState {
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
   externalError: string | null;
+  /** The Import Sessions from Other Apps dialog is open. */
+  importOpen: boolean;
+  /** External sessions being imported (`provider:sessionId`), so none is imported twice. */
+  importing: ReadonlySet<string>;
   /** The composer asked to take focus (`seq` tells repeated requests apart). */
   focus: { key: string; seq: number } | null;
   /** Task shown inside the Agents tool window instead of an editor tab. */
@@ -116,12 +132,17 @@ interface AgentsState {
   sessionLocation: SessionLocation;
   lastTask: string | null;
   homeOpen: boolean;
+  pinnedModels: string[];
+  /** Whether messages carry the editor's current file and selection. */
+  ideContext: boolean;
 }
 
 const DRAFT_KEY = "openidea.agents.draft.v2";
 const HISTORY_KEY = "openidea.agents.history.v1";
 const HISTORY_SIZE = 50;
 const SESSION_LOCATION_KEY = "openidea.agents.sessionLocation.v1";
+const PINNED_MODELS_KEY = "openidea.agents.pinnedModels.v1";
+const IDE_CONTEXT_KEY = "openidea.agents.ideContext.v1";
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -167,6 +188,9 @@ export const useAgents = create<AgentsState>(() => ({
   groupedChanges: new Map(),
   providers: [],
   limits: new Map(),
+  modelCatalogs: new Map(),
+  modelRequests: new Set(),
+  modelRequestTargets: new Map(),
   draft: savedDraft(load<Partial<Draft>>(DRAFT_KEY, {})),
   composers: new Map(),
   lastComposer: HOME,
@@ -175,16 +199,28 @@ export const useAgents = create<AgentsState>(() => ({
   organizeRoot: null,
   external: [],
   externalError: null,
+  importOpen: false,
+  importing: new Set(),
   focus: null,
   docked: null,
   sessionLocation: load<unknown>(SESSION_LOCATION_KEY, null) === "toolWindow" ? "toolWindow" : "editor",
   lastTask: null,
   homeOpen: false,
+  pinnedModels: load<string[]>(PINNED_MODELS_KEY, []),
+  ideContext: load<boolean>(IDE_CONTEXT_KEY, true),
   scrollPositions: new Map(),
 }));
 
+export function togglePinnedModel(modelValue: string) {
+  const current = useAgents.getState().pinnedModels;
+  const next = current.includes(modelValue) ? current.filter((m) => m !== modelValue) : [...current, modelValue];
+  useAgents.setState({ pinnedModels: next });
+  save(PINNED_MODELS_KEY, next);
+}
+
 export function updateDraft(patch: Partial<Draft>) {
   const current = useAgents.getState().draft;
+  if (patch.provider && patch.provider !== current.provider) draftGeneration++;
   const draft = {
     ...current,
     ...(patch.provider && patch.provider !== current.provider ? { thoughtLevels: {} } : {}),
@@ -199,30 +235,45 @@ export const providerDefaults = (provider: string | undefined): Record<string, s
   (provider && useProject.getState().settings?.agents?.defaults?.[provider]) || {};
 
 /**
- * Config for the selected model, with only supported choices applied: the draft's, else
- * the agent's defaults from Settings › Agents.
+ * New Task settings use the authoritative catalog, retaining an explicitly selected
+ * model even if it disappears so the user must choose its replacement.
  */
 export function draftConfig(
   provider: AgentProvider | undefined,
   draft: Draft,
   defaults: Record<string, string> = providerDefaults(provider?.id),
 ): AgentConfigOption[] {
-  const config = (provider?.config ?? [])
-    .filter((o) => o.category !== "thought_level")
+  const catalog = provider && useAgents.getState().modelCatalogs.get(provider.id);
+  const offered = catalog?.config ?? provider?.config ?? [];
+  const priorModel = provider?.config.find((o) => o.category === "model");
+  const source =
+    priorModel && draft.config[priorModel.id] !== undefined && !offered.some((o) => o.category === "model")
+      ? [...offered, { ...priorModel, values: [] }]
+      : offered;
+  const config = source
+    .filter((o) => !isPerModelOption(o))
     .map((o) => {
-      const choice = draft.config[o.id] ?? defaults[o.id];
+      const explicit = draft.config[o.id];
+      const choice = explicit ?? defaults[o.id];
       return {
         ...o,
-        current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
+        defaultValue: o.defaultValue ?? o.current,
+        current:
+          o.category === "model" && explicit !== undefined
+            ? explicit
+            : choice !== undefined && o.values.some((v) => v.value === choice)
+              ? choice
+              : o.current,
       };
     });
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...(provider?.thoughtLevels?.[model] ?? []).map((o) => {
+      ...((catalog ?? provider)?.thoughtLevels?.[model] ?? []).map((o) => {
         const choice = draft.thoughtLevels?.[model]?.[o.id] ?? defaults[o.id];
         return {
           ...o,
+          defaultValue: o.defaultValue ?? o.current,
           current: choice !== undefined && o.values.some((v) => v.value === choice) ? choice : o.current,
         };
       }),
@@ -238,7 +289,8 @@ export function setDraftOption(id: string, value: string) {
     draft,
   );
   const model = config.find((o) => o.category === "model")?.current;
-  if (model && config.find((o) => o.id === id)?.category === "thought_level") {
+  const target = config.find((o) => o.id === id);
+  if (model && target && isPerModelOption(target)) {
     updateDraft({
       thoughtLevels: {
         ...draft.thoughtLevels,
@@ -262,6 +314,15 @@ export function updateComposer(key: string, patch: Partial<ComposerDraft>) {
   }));
 }
 
+/** An acknowledgement consumes only the submitted revision, in the same project connection. */
+function clearSubmittedComposer(key: string, submitted: ComposerDraft, started: number) {
+  useAgents.setState((s) =>
+    generation === started && s.composers.get(key) === submitted
+      ? { composers: new Map(s.composers).set(key, emptyDraft()) }
+      : s,
+  );
+}
+
 /** Session tabs on screen; a task can be shown in more than one split. */
 const visible = new Map<string, number>();
 const windowFocused = () => document.visibilityState !== "hidden" && document.hasFocus();
@@ -278,7 +339,16 @@ function setUnread(task: string, value: boolean) {
 
 function markUnread(task: string) {
   const current = useAgents.getState().tasks.get(task);
-  if (current && current.status !== "archived" && !viewing(task)) setUnread(task, true);
+  if (current && current.status !== "archived" && !viewing(task) && !quietTasks.has(task)) setUnread(task, true);
+}
+
+/** Tasks the IDE runs on its own account (a generated commit message): no notifications, no unread mark. */
+const quietTasks = new Set<string>();
+
+export function runQuietly(task: string): () => void {
+  quietTasks.add(task);
+  setUnread(task, false);
+  return () => void quietTasks.delete(task);
 }
 
 export function markVisible(task: string): () => void {
@@ -299,6 +369,98 @@ export function markVisible(task: string): () => void {
 }
 
 let generation = 0;
+let draftGeneration = 0;
+const modelFlights = new Map<string, { launch: string; generation: number; draftGeneration: number }>();
+
+const selectedProvider = () => {
+  const { providers, draft } = useAgents.getState();
+  return providers.find((p) => p.id === draft.provider) ?? providers[0];
+};
+
+const launchKey = (provider: AgentProvider) =>
+  JSON.stringify([provider.program, provider.args, provider.env, provider.installed]);
+
+function applyModelCatalog(catalog: AgentModelCatalog) {
+  useAgents.setState((s) => {
+    const previous = s.modelCatalogs.get(catalog.provider);
+    const model = (previous?.config ?? s.providers.find((p) => p.id === catalog.provider)?.config)?.find(
+      (o) => o.category === "model",
+    );
+    const config =
+      model && !catalog.config.some((o) => o.category === "model")
+        ? [...catalog.config, { ...model, current: null, values: [] }]
+        : catalog.config;
+    return { modelCatalogs: new Map(s.modelCatalogs).set(catalog.provider, { ...catalog, config }) };
+  });
+}
+
+/** Refreshes only the New Task agent; discovery failures stay beside the cached choices. */
+export async function refreshModels(
+  provider = selectedProvider()?.id,
+  force = true,
+  model?: string | null,
+): Promise<void> {
+  const selected = selectedProvider();
+  if (!provider || !selected?.installed || selected.id !== provider || useProject.getState().project?.trusted === false)
+    return;
+  const state = useAgents.getState();
+  const catalog = state.modelCatalogs.get(provider);
+  model ??= draftConfig(selected, state.draft).find((o) => o.category === "model")?.current ?? null;
+  const missingModelSettings =
+    model !== null && !Object.hasOwn(catalog?.thoughtLevels ?? selected.thoughtLevels ?? {}, model);
+  const requestTarget = state.modelRequestTargets.get(provider);
+  const launch = launchKey(selected);
+  const pending = modelFlights.get(provider);
+  if (
+    (pending?.launch === launch && pending.generation === generation && pending.draftGeneration === draftGeneration) ||
+    catalog?.refreshing ||
+    (force &&
+      (requestTarget === undefined || requestTarget === model || (!missingModelSettings && !catalog?.error)) &&
+      catalog?.retryAtMs != null &&
+      catalog.retryAtMs > Date.now())
+  )
+    return;
+  const gen = generation;
+  const draftGen = draftGeneration;
+  const root = useProject.getState().project?.root;
+  const flight = { launch, generation: gen, draftGeneration: draftGen };
+  modelFlights.set(provider, flight);
+  useAgents.setState((s) => ({
+    modelRequests: new Set(s.modelRequests).add(provider),
+    modelRequestTargets: new Map(s.modelRequestTargets).set(provider, model),
+  }));
+  const current = () =>
+    gen === generation &&
+    root === useProject.getState().project?.root &&
+    draftGen === draftGeneration &&
+    selectedProvider()?.id === provider &&
+    launchKey(selectedProvider()!) === launch;
+  try {
+    const result = await call(commands.agentRefreshModels(provider, force, model));
+    // A streamed status/completion is newer than the snapshot returned by the command.
+    if (current() && useAgents.getState().modelCatalogs.get(provider) === catalog) applyModelCatalog(result);
+  } catch (e) {
+    if (current() && useAgents.getState().modelCatalogs.get(provider) === catalog)
+      applyModelCatalog({
+        provider,
+        config: catalog?.config ?? selected.config,
+        thoughtLevels: catalog?.thoughtLevels ?? selected.thoughtLevels ?? {},
+        refreshedAtMs: catalog?.refreshedAtMs ?? null,
+        retryAtMs: catalog?.retryAtMs ?? null,
+        refreshing: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+  } finally {
+    if (modelFlights.get(provider) === flight) {
+      modelFlights.delete(provider);
+      useAgents.setState((s) => {
+        const modelRequests = new Set(s.modelRequests);
+        modelRequests.delete(provider);
+        return { modelRequests };
+      });
+    }
+  }
+}
 
 /** Subscribes this window to the project's agents (again after the project changed). */
 export async function connect(): Promise<void> {
@@ -388,6 +550,8 @@ export function disconnect() {
   generation++;
   arrivedWhileLoading.clear();
   streamingReply.clear();
+  modelFlights.clear();
+  resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
     error: null,
@@ -397,11 +561,18 @@ export function disconnect() {
     entryLoads: new Map(),
     changes: new Map(),
     groupedChanges: new Map(),
+    modelCatalogs: new Map(),
+    modelRequests: new Set(),
+    modelRequestTargets: new Map(),
     organize: EMPTY_ORGANIZE,
     organizeRoot: null,
     docked: null,
     lastTask: null,
     homeOpen: false,
+    external: [],
+    externalError: null,
+    importOpen: false,
+    importing: new Set(),
     scrollPositions: new Map(),
   });
 }
@@ -414,12 +585,15 @@ function onEvent(e: AgentEvent) {
       useAgents.setState({ tasks: new Map(s.tasks).set(e.task.id, e.task) });
       if (prev && (prev.title !== e.task.title || prev.status !== e.task.status)) notifyTabTitlesChanged();
       if (e.task.status === "archived") setUnread(e.task.id, false);
-      else if (attentionChange(prev?.status, e.task.status)) markUnread(e.task.id);
-      notifyChange(prev, e.task);
       if (prev?.status !== e.task.status && !isBusy(e.task.status)) {
         void refreshChanges(e.task.id);
         void refreshProviders();
       }
+      break;
+    }
+    case "attention": {
+      markUnread(e.task);
+      notifyAttention(e.task, e.reason);
       break;
     }
     case "removed": {
@@ -439,6 +613,8 @@ function onEvent(e: AgentEvent) {
         organize,
         ...(s.docked === e.id ? { docked: null } : {}),
       });
+      clearAgentTaskFontZoom(sessionKey(e.id));
+      clearDismissedAssets(e.id);
       void editorService().closeInput?.(sessionKey(e.id));
       break;
     }
@@ -449,6 +625,10 @@ function onEvent(e: AgentEvent) {
           entries: new Map(s.entries).set(e.task, current.slice(0, e.length)),
         });
       scheduleChanges(e.task);
+      break;
+    }
+    case "modelCatalog": {
+      if (s.providers.some((p) => p.id === e.catalog.provider)) applyModelCatalog(e.catalog);
       break;
     }
     case "providers": {
@@ -489,27 +669,28 @@ function onEvent(e: AgentEvent) {
   }
 }
 
-function notifyChange(prev: AgentTask | undefined, task: AgentTask) {
-  const change = attentionChange(prev?.status, task.status);
-  if (!change) return;
-  if (viewing(task.id)) return;
+/** In-app balloon for an Attention event; OS delivery goes through the general balloon path. */
+function notifyAttention(taskId: string, reason: "finished" | "input" | "failed") {
+  if (viewing(taskId) || quietTasks.has(taskId)) return;
+  const task = useAgents.getState().tasks.get(taskId);
+  const title = task?.title ?? "Agent";
   const body =
-    change === "input"
+    reason === "input"
       ? "Waiting for your answer"
-      : change === "failed"
-        ? (task.error ?? "The agent stopped")
+      : reason === "failed"
+        ? (task?.error ?? "The agent stopped")
         : "Finished";
   notifications().notify({
-    level: change === "failed" ? "error" : "info",
-    title: task.title,
+    level: reason === "failed" ? "error" : "info",
+    title,
     body,
-    key: `agent:${task.id}`,
+    key: `agent:${taskId}`,
     group: "tools",
-    sticky: change !== "finished",
+    sticky: reason !== "finished",
     actions: [
       {
-        label: change === "finished" ? "Review" : "Open",
-        run: () => openTask(task.id),
+        label: reason === "finished" ? "Review" : "Open",
+        run: () => openTask(taskId),
       },
     ],
   });
@@ -618,8 +799,23 @@ export function scheduleChanges(task: string) {
 
 /** Reloads the agent list (custom and registry agents are re-read). */
 export async function refreshProviders() {
+  const gen = generation;
+  const root = useProject.getState().project?.root;
   const providers = await call(commands.agentProviders()).catch(() => null);
-  if (providers) useAgents.setState({ providers });
+  if (!providers || gen !== generation || root !== useProject.getState().project?.root) return;
+  useAgents.setState((s) => {
+    const modelCatalogs = new Map(s.modelCatalogs);
+    const modelRequestTargets = new Map(s.modelRequestTargets);
+    for (const [id] of modelCatalogs) {
+      const previous = s.providers.find((p) => p.id === id);
+      const provider = providers.find((p) => p.id === id);
+      if (!provider || (previous && launchKey(previous) !== launchKey(provider))) {
+        modelCatalogs.delete(id);
+        modelRequestTargets.delete(id);
+      }
+    }
+    return { providers, modelCatalogs, modelRequestTargets };
+  });
 }
 
 export const NO_COMMANDS: readonly AgentCommand[] = [];
@@ -777,10 +973,20 @@ export async function startTask(
   const { draft, providers } = useAgents.getState();
   const composer = composerDraft(HOME);
   if (!canSend(composer)) return;
+  const started = generation;
   const options = draftConfig(
     providers.find((p) => p.id === draft.provider),
     draft,
   );
+  if (
+    options.some(
+      (o) =>
+        o.category === "model" &&
+        draft.config[o.id] !== undefined &&
+        !o.values.some((v) => v.value === draft.config[o.id]),
+    )
+  )
+    return;
   const askForApprovals = useProject.getState().settings?.agents?.newTaskApprovals === "ask";
   const defaults = {
     ...cursorModelDefaults(draft.provider, options),
@@ -789,50 +995,148 @@ export async function startTask(
   };
   const config = options.flatMap((o) => {
     const value =
-      o.category === "model" || o.category === "thought_level"
-        ? o.current
-        : (draft.config[o.id] ?? defaults[o.id] ?? null);
+      o.category === "model" || isPerModelOption(o) ? o.current : (draft.config[o.id] ?? defaults[o.id] ?? null);
     return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
   });
-  const task = await call(
-    commands.agentCreate({
-      projectRoot,
-      prompt: toPrompt(composer),
-      provider: draft.provider,
-      config,
-      isolation,
-      base: isolation === "worktree" ? draft.base : null,
-    }),
-  );
-  // Its events can arrive before this reply: keep the newer state they carried.
-  useAgents.setState((s) => ({
-    tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
-    entries: new Map(s.entries).set(task.id, s.entries.get(task.id) ?? []),
-  }));
-  updateDraft({ projectRoot });
-  remember(composer.text.trim());
-  updateComposer(HOME, emptyDraft());
-  if ((await editorService().closeInput?.(HOME_KEY)) !== false) openTask(task.id);
+  try {
+    const task = await call(
+      commands.agentCreate({
+        projectRoot,
+        prompt: promptOf(HOME, composer),
+        provider: draft.provider,
+        config,
+        isolation,
+        base: isolation === "worktree" ? draft.base : null,
+        mcpOverrides: draft.mcpOverrides ?? {},
+      }),
+    );
+    if (generation !== started) return;
+    // Its events can arrive before this reply: keep the newer state they carried.
+    useAgents.setState((s) => ({
+      tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
+      entries: new Map(s.entries).set(task.id, s.entries.get(task.id) ?? []),
+    }));
+    updateDraft({ projectRoot });
+    remember(composer.text.trim());
+    clearSubmittedComposer(HOME, composer, started);
+    const closed = await editorService().closeInput?.(HOME_KEY);
+    if (generation === started && closed !== false) openTask(task.id);
+  } catch (e) {
+    if (generation === started) throw e;
+  }
 }
 
 /** Sessions on this machine that no task holds yet (a terminal, another editor: #312). */
 export async function refreshExternalSessions() {
+  const started = generation;
   try {
     const external = await call(commands.agentExternalSessions());
-    useAgents.setState({ external, externalError: null });
+    if (generation === started) useAgents.setState({ external, externalError: null });
   } catch (e) {
-    useAgents.setState({ externalError: e instanceof Error ? e.message : String(e) });
+    if (generation === started) useAgents.setState({ externalError: e instanceof Error ? e.message : String(e) });
   }
 }
 
-/** Imports an external session as a task and opens it: its first turn loads it (#312). */
-export async function importExternalSession(provider: string, sessionId: string) {
+export const showImportSessions = () => useAgents.setState({ importOpen: true });
+export const hideImportSessions = () => useAgents.setState({ importOpen: false });
+
+export const externalKey = (provider: string, sessionId: string) => `${provider}:${sessionId}`;
+
+function markImporting(keys: readonly string[], on: boolean) {
+  useAgents.setState((s) => {
+    const importing = new Set(s.importing);
+    for (const key of keys) {
+      if (on) importing.add(key);
+      else importing.delete(key);
+    }
+    return { importing };
+  });
+}
+
+async function importOne(provider: string, sessionId: string, open: boolean) {
+  const started = generation;
   const task = await call(commands.agentImportSession(provider, sessionId));
+  if (generation !== started) return task;
   useAgents.setState((s) => ({
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     external: s.external.filter((e) => !(e.provider === provider && e.sessionId === sessionId)),
   }));
-  openTask(task.id);
+  if (open) openTask(task.id);
+  return task;
+}
+
+/** Imports an external session as a task and opens it: its first turn loads it (#312). */
+export async function importExternalSession(provider: string, sessionId: string) {
+  const key = externalKey(provider, sessionId);
+  if (useAgents.getState().importing.has(key)) throw new Error(tx("Already importing"));
+  markImporting([key], true);
+  try {
+    return await importOne(provider, sessionId, true);
+  } finally {
+    markImporting([key], false);
+  }
+}
+
+/**
+ * Imports sessions one after another, all marked pending from the start; only a single one opens.
+ * Sessions already being imported are skipped. Failures don't stop the rest and are reported
+ * together at the end. A project switch ends the batch; an abort ends it after the import in
+ * flight and frees the sessions it didn't reach.
+ */
+export async function importExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  const pending = useAgents.getState().importing;
+  const batch = sessions.filter((s) => !pending.has(externalKey(s.provider, s.sessionId)));
+  const keys = batch.map((s) => externalKey(s.provider, s.sessionId));
+  markImporting(keys, true);
+  const started = generation;
+  const failures: string[] = [];
+  let done = 0;
+  for (const s of batch) {
+    if (generation !== started) return;
+    if (signal?.aborted) {
+      markImporting(keys.slice(done), false);
+      break;
+    }
+    try {
+      await importOne(s.provider, s.sessionId, batch.length === 1);
+    } catch (e) {
+      failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      if (generation === started) markImporting([externalKey(s.provider, s.sessionId)], false);
+    }
+    onProgress?.(++done);
+  }
+  if (generation !== started || !failures.length) return;
+  // Not awaited, so the caller's dialog closes instead of waiting behind the message.
+  const title =
+    failures.length === 1 ? tx("A session could not be imported") : tx("Some sessions could not be imported");
+  void showError(title, failures.join("\n"));
+}
+
+export function setIdeContext(on: boolean) {
+  useAgents.setState({ ideContext: on });
+  save(IDE_CONTEXT_KEY, on);
+}
+
+/** The IDE context of each mounted composer, by draft key. */
+const ideContexts = new Map<string, () => IdeContext | null>();
+
+/** Registers what composer `key` sends as IDE context; returns the unregister. */
+export function provideIdeContext(key: string, context: () => IdeContext | null): () => void {
+  ideContexts.set(key, context);
+  return () => {
+    if (ideContexts.get(key) === context) ideContexts.delete(key);
+  };
+}
+
+/** The prompt of composer `key`, with the IDE context when it is on. */
+function promptOf(key: string, composer: ComposerDraft): AgentPrompt {
+  const context = useAgents.getState().ideContext ? (ideContexts.get(key)?.() ?? null) : null;
+  return toPrompt(withIdeContext(composer, context));
 }
 
 function remember(text: string) {
@@ -846,8 +1150,9 @@ function remember(text: string) {
 export async function sendMessage(task: string, now: boolean): Promise<void> {
   const composer = composerDraft(task);
   if (!canSend(composer)) return;
-  await call(commands.agentPrompt(task, toPrompt(composer), now));
-  updateComposer(task, emptyDraft());
+  const started = generation;
+  await call(commands.agentPrompt(task, promptOf(task, composer), now));
+  clearSubmittedComposer(task, composer, started);
 }
 
 /** Moves the caret to the end of composer `key`. */
@@ -863,11 +1168,17 @@ export function quoteInComposer(task: string, text: string) {
 
 /** Copies the task's conversation into a new task (up to its first `turns` turns) and opens it. */
 export async function forkTask(task: string, turns: number | null): Promise<void> {
-  const copy = await call(commands.agentFork(task, turns));
-  useAgents.setState((s) => ({
-    tasks: s.tasks.has(copy.id) ? s.tasks : new Map(s.tasks).set(copy.id, copy),
-  }));
-  openTask(copy.id);
+  const started = generation;
+  try {
+    const copy = await call(commands.agentFork(task, turns));
+    if (generation !== started) return;
+    useAgents.setState((s) => ({
+      tasks: s.tasks.has(copy.id) ? s.tasks : new Map(s.tasks).set(copy.id, copy),
+    }));
+    openTask(copy.id);
+  } catch (e) {
+    if (generation === started) throw e;
+  }
 }
 
 /** Puts a message back in the task's composer, above anything typed meanwhile. */
@@ -969,6 +1280,23 @@ export const removeQueued = (task: string, queued: string) => call(commands.agen
 export const sendQueuedNow = (task: string, queued: string) => call(commands.agentSendQueuedNow(task, queued));
 export const setTaskConfig = (task: string, option: string, value: string) =>
   call(commands.agentSetConfig(task, option, value));
+
+export function setDraftMcpOverrides(mcpOverrides: Record<string, boolean>) {
+  updateDraft({ mcpOverrides });
+}
+
+export async function setTaskMcpOverrides(task: string, overrides: Record<string, boolean>): Promise<void> {
+  const prev = useAgents.getState().tasks.get(task);
+  if (prev) {
+    useAgents.setState((s) => ({
+      tasks: new Map(s.tasks).set(task, { ...prev, mcpOverrides: overrides }),
+    }));
+  }
+  const updated = await call(commands.agentSetMcpOverrides(task, overrides));
+  useAgents.setState((s) => ({
+    tasks: new Map(s.tasks).set(task, updated),
+  }));
+}
 
 /** The composer the user is looking at: the Agents surface on show, else the one typed in last. */
 function activeComposerKey(): string {

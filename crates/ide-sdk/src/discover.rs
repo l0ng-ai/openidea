@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
+/// `conda env list` starts conda's own Python and reports the frozen state of every
+/// registered prefix — seconds even on a warm machine (26.x measured 2–3 s), which a
+/// `--version` budget cannot spare (#3729).
+const CONDA_ENV_LIST_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Installed SDKs of `kind`, project-local ones (`root`) first. Blocking: runs
 /// `--version` queries in parallel.
@@ -25,6 +29,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::Jdk => jdk(),
         SdkKind::Maven => maven(),
         SdkKind::Ruby => crate::ruby::detect(root),
+        SdkKind::Zig => zig(),
     };
     if let Some(root) = root {
         pinned_first(&mut out, kind, root);
@@ -40,6 +45,7 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Jdk => Some(Tool::Java),
         SdkKind::Maven => Some(Tool::Maven),
         SdkKind::Ruby => Some(Tool::Ruby),
+        SdkKind::Zig => Some(Tool::Zig),
         SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript => None,
     }
 }
@@ -110,7 +116,7 @@ fn is_python_name(name: &str) -> bool {
 
 /// Prefixes named by `conda env list`: `base * /opt/conda`, `myenv  /opt/conda/envs/myenv`,
 /// a `--prefix` env shown as a bare path, comment lines skipped (#2240).
-fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
+pub(crate) fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
     output
         .lines()
         .map(|l| l.trim_start_matches(['#', '*', ' ']).trim_end())
@@ -132,6 +138,12 @@ fn conda_env_list_prefixes(output: &str) -> Vec<PathBuf> {
             start.map(|i| PathBuf::from(l[i..].trim()))
         })
         .collect()
+}
+
+/// Prefixes from conda's `~/.conda/environments.txt` registry: one absolute path per
+/// line, blanks and `#` comments skipped (#3729).
+fn conda_environments_txt_prefixes(output: &str) -> Vec<PathBuf> {
+    output.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.starts_with('#')).map(PathBuf::from).collect()
 }
 
 /// The host's directory conventions; a parameter so tests cover every platform.
@@ -245,6 +257,14 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
         if let Some(prefix) = std::env::var_os("CONDA_PREFIX") {
             conda_roots.push(PathBuf::from(prefix));
         }
+        // Conda's own registry of known prefixes (`~/.conda/environments.txt`, one path
+        // per line, kept current on create/remove/activation): names `--prefix` envs kept
+        // outside `envs/` just like `conda env list`, and reads even when the query below
+        // comes up empty — conda 26.x starts slowly enough to miss a short timeout, and a
+        // missed query hid every such env (#3729).
+        if let Ok(text) = std::fs::read_to_string(home.join(".conda").join("environments.txt")) {
+            conda_roots.extend(conda_environments_txt_prefixes(&text));
+        }
         // A conda on PATH reveals a non-default install root (Anaconda on D:\, Miniconda
         // in ProgramData): the binary lives at <root>/Scripts/conda.exe (Windows) or
         // <root>/bin/conda. Without this, an install outside the home-dir guesses keeps
@@ -255,7 +275,7 @@ fn python(root: Option<&Path>) -> Vec<Sdk> {
             }
             // `conda env list` also names `--prefix` envs kept outside `envs/` and envs_dirs
             // configured in .condarc — every env the user sees on the CLI shows up here.
-            if let Some(list) = query(&conda, &["env", "list"], VERSION_TIMEOUT) {
+            if let Some(list) = query(&conda, &["env", "list"], CONDA_ENV_LIST_TIMEOUT) {
                 conda_roots.extend(conda_env_list_prefixes(&list));
             }
         }
@@ -739,6 +759,86 @@ fn go() -> Vec<Sdk> {
     })
 }
 
+// ------------------------------------------------------------------ zig
+
+/// The directory holding the `zig` executable of the install rooted at `base`,
+/// the way the common distributions lay it out: `zig` at the root (official
+/// tarballs, mise / asdf installs), `<base>/bin/zig` (Homebrew) or one
+/// directory down (zvm's nested version folders).
+fn zig_dir(base: &Path) -> Option<PathBuf> {
+    if base.join(exe("zig")).is_file() {
+        return Some(base.to_path_buf());
+    }
+    let bin = base.join(bin_dir());
+    if bin.join(exe("zig")).is_file() {
+        return Some(bin);
+    }
+    subdirs(base).into_iter().find(|d| d.join(exe("zig")).is_file())
+}
+
+/// Zig toolchains: PATH, Homebrew, zvm and mise / asdf installs. `path` is the
+/// directory holding `zig`, which is what `languages.zig.zig` stores.
+fn zig() -> Vec<Sdk> {
+    let mut roots: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Some(bin) = which("zig").filter(|p| !version_managers::is_shim(p))
+        && let Some(dir) = bin.parent()
+    {
+        roots.push((dir.to_path_buf(), "path"));
+    }
+    for p in ["/opt/homebrew/opt/zig", "/usr/local/opt/zig"] {
+        roots.push((PathBuf::from(p), "system"));
+    }
+    if let Some(home) = home_dir() {
+        for d in subdirs(&home.join(".zvm")) {
+            roots.push((d, "zvm"));
+        }
+    }
+    for (d, manager) in version_managers::installs(Tool::Zig) {
+        roots.push((d, manager));
+    }
+    let mut dirs: Vec<(PathBuf, &'static str)> =
+        roots.into_iter().filter_map(|(base, source)| zig_dir(&base).map(|dir| (dir, source))).collect();
+    let mut seen = HashSet::new();
+    dirs.retain(|(dir, _)| seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())));
+    par_map(&dirs, |(dir, source)| {
+        let version = query(&dir.join(exe("zig")), &["version"], VERSION_TIMEOUT).map(|v| v.trim().to_owned());
+        Some(Sdk {
+            path: dir.clone().into(),
+            name: format!("Zig {}", version.as_deref().unwrap_or_default()).trim().to_owned(),
+            version,
+            source: (*source).to_owned(),
+            home: Some(dir.clone().into()),
+            extra: None,
+        })
+    })
+}
+
+#[cfg(test)]
+mod zig_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_zig_directory_of_each_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let install = |rel: &str| {
+            let dir = tmp.path().join(rel);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(exe("zig")), "").unwrap();
+            dir
+        };
+        // Official tarballs and mise / asdf installs: `zig` at the root.
+        let root = install("0.14.1");
+        assert_eq!(zig_dir(&root), Some(root));
+        // Homebrew: <opt>/bin/zig.
+        let brew = install("brew/bin");
+        assert_eq!(zig_dir(brew.parent().unwrap()), Some(brew));
+        // zvm: one directory down.
+        let zvm = install("zvm/x");
+        assert_eq!(zig_dir(&tmp.path().join("zvm")), Some(zvm));
+        assert_eq!(zig_dir(&tmp.path().join("missing")), None);
+    }
+}
+
 // ------------------------------------------------------------------ typescript
 
 /// `node_modules/typescript/lib` of the project (root or a direct workspace member).
@@ -749,14 +849,26 @@ pub(crate) fn workspace_tsdk(root: &Path) -> Option<PathBuf> {
 
 fn typescript(root: Option<&Path>) -> Vec<Sdk> {
     let mut out = Vec::new();
-    if let Some(lib) = root.and_then(workspace_tsdk) {
+    // TypeScript 7 has no `tsserver.js`; its package directory stands for it (`native_tsdk`).
+    let native = || {
+        let package = root?.join("node_modules/typescript");
+        crate::npm::native_typescript(&package).map(|_| package.join("lib"))
+    };
+    if let Some(lib) = root.and_then(workspace_tsdk).or_else(native) {
         let version = std::fs::read_to_string(lib.parent().unwrap_or(&lib).join("package.json"))
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
             .and_then(|v| v.get("version").and_then(|v| v.as_str()).map(str::to_owned));
         out.push(Sdk {
             path: lib.clone().into(),
-            name: format!("TypeScript {}", version.clone().unwrap_or_default()).trim().to_owned(),
+            name: format!(
+                "TypeScript {}{}",
+                version.clone().unwrap_or_default(),
+                if crate::npm::has_ts_api(&lib) { "" } else { " (native)" }
+            )
+            .replace("  ", " ")
+            .trim()
+            .to_owned(),
             version,
             source: "workspace".into(),
             home: lib.parent().map(Into::into),
@@ -791,6 +903,8 @@ pub fn jdk_sdk(j: &crate::java::Jdk) -> Sdk {
         "JAVA_HOME"
     } else if crate::java::is_downloaded(&j.home) {
         "downloaded"
+    } else if crate::java::is_added(&j.home) {
+        "added"
     } else {
         version_managers::manager_of(&j.home).unwrap_or("system")
     };
@@ -1060,6 +1174,54 @@ legacy                   C:\\Users\\dev\\.conda\\envs\\legacy
             conda_env_list_prefixes(output),
             vec![PathBuf::from("/opt/miniconda3"), PathBuf::from("/opt/miniconda3/envs/prod")]
         );
+    }
+
+    #[test]
+    fn conda_env_list_parses_the_26_x_legend_and_prefix_envs() {
+        // conda 26.9.4 on Windows (`conda create -p D:\condaenvs\camera`) (#3729): the
+        // header grew the active/frozen legend, `--prefix` envs list bare paths, the
+        // install root repeats (registered twice), and nothing is active in that shell.
+        let output = "\
+# conda environments:
+#
+# * -> active
+# + -> frozen
+base                     d:\\ProgramData\\miniconda3
+camera                   D:\\condaenvs\\camera
+llmstudy                 D:\\condaenvs\\llmstudy
+base                     d:\\ProgramData\\miniconda3
+";
+        let prefixes = conda_env_list_prefixes(output);
+        assert_eq!(
+            prefixes,
+            vec![
+                PathBuf::from("d:\\ProgramData\\miniconda3"),
+                PathBuf::from("D:\\condaenvs\\camera"),
+                PathBuf::from("D:\\condaenvs\\llmstudy"),
+                PathBuf::from("d:\\ProgramData\\miniconda3"),
+            ]
+        );
+    }
+
+    #[test]
+    fn conda_environments_txt_names_every_registered_prefix() {
+        // `~/.conda/environments.txt` written by the same conda 26.9.4 (#3729).
+        let output = "\
+C:\\Users\\dev\\miniconda3
+D:\\condaenvs\\camera
+
+# a comment line conda never writes, tolerated anyway
+D:\\condaenvs\\llmstudy
+";
+        assert_eq!(
+            conda_environments_txt_prefixes(output),
+            vec![
+                PathBuf::from("C:\\Users\\dev\\miniconda3"),
+                PathBuf::from("D:\\condaenvs\\camera"),
+                PathBuf::from("D:\\condaenvs\\llmstudy"),
+            ]
+        );
+        assert!(conda_environments_txt_prefixes("").is_empty());
     }
 }
 

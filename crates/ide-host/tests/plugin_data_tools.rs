@@ -80,7 +80,8 @@ impl Harness {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn database_calls_enforce_grants_trust_ownership_and_uninstall_lifetime() {
-    let f = Harness::new();
+    // Nothing here tests the command budget, and a slow runner's first calls can exceed 250 ms.
+    let f = Harness::with_timeout(Duration::from_secs(10));
     assert!(f.run("sources", None).is_err());
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
     let source = f.source();

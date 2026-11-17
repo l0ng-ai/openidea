@@ -9,14 +9,23 @@ import type { AgentChange, AgentCommit, AgentEntry, AgentTask } from "@/bindings
 import { AgentsView } from "./AgentsView";
 import { SessionEditor, conversationRows } from "./SessionEditor";
 import { entriesKey, SESSION_KIND, sessionKey, type SubagentEntry } from "./model";
-import { disconnect, useAgents } from "./store";
+import {
+  disconnect,
+  hideImportSessions,
+  importExternalSessions,
+  refreshExternalSessions,
+  showImportSessions,
+  useAgents,
+} from "./store";
+import { ImportSessionsOverlay } from "./ImportSessionsDialog";
 import { useChangesOptions } from "./changesOptions";
 import { taskActions } from "./taskActions";
 import { replyActions } from "./replyActions";
 import { focusedSession } from "./sessionFocus";
+import { PLAYFUL_MIN_MS, PLAYFUL_WORD_MS, PLAYFUL_WORDS } from "./workingStatus";
 import styles from "./Session.module.css";
 import chipStyles from "./ReferenceChip.module.css";
-import { textOf, typeIn } from "./composerTesting";
+import { caretOf, textOf, typeIn } from "./composerTesting";
 
 const backend = vi.hoisted(() => ({
   entries: new Map<string, AgentEntry[]>(),
@@ -37,6 +46,13 @@ const backend = vi.hoisted(() => ({
     updatedMs: number;
   }>,
   imported: [] as Array<[string, string]>,
+  importError: null as string | null,
+  importErrors: new Map<string, string>(),
+  importWait: null as Promise<void> | null,
+  errors: [] as Array<[string, string]>,
+  errorWait: null as Promise<void> | null,
+  externalCalls: 0,
+  externalWait: null as Promise<void> | null,
   externalError: null as string | null,
   accepted: [] as Array<[string, string[] | null]>,
   acceptedOutcome: { accepted: ["very-long-file-name.ts"], skipped: [] } as {
@@ -86,18 +102,24 @@ vi.mock("@/platform/ipc", async (original) => ({
       return { status: "ok", data: null };
     },
     agentExternalSessions: async () => {
+      backend.externalCalls += 1;
+      await backend.externalWait;
       if (backend.externalError !== null) throw new Error(backend.externalError);
       return { status: "ok", data: backend.external };
     },
     agentImportSession: async (provider: string, sessionId: string) => {
       backend.imported.push([provider, sessionId]);
+      await backend.importWait;
+      if (backend.importError !== null) throw new Error(backend.importError);
+      const failure = backend.importErrors.get(sessionId);
+      if (failure) throw new Error(failure);
       const found = backend.external.find((e) => e.provider === provider && e.sessionId === sessionId);
       if (!found) throw new Error("unknown session");
       return {
         status: "ok",
         data: {
-          ...task("imported"),
-          id: "imported",
+          ...task(`imported-${sessionId}`),
+          id: `imported-${sessionId}`,
           title: found.title,
           provider,
         },
@@ -115,6 +137,10 @@ vi.mock("@/workbench/messages", async (original) => ({
   confirm: async (options: { title: string }) => {
     backend.confirmed.push(options.title);
     return backend.confirmAnswer;
+  },
+  showError: async (title: string, message: unknown) => {
+    backend.errors.push([title, String(message)]);
+    await backend.errorWait;
   },
 }));
 vi.mock("@/workbench/contributions", async (original) => ({
@@ -202,6 +228,13 @@ beforeEach(() => {
   // The flat list unless a test asks for the grouped view, so counts and selections stay as before.
   useChangesOptions.setState({ groupByCommit: false });
   backend.imported = [];
+  backend.importError = null;
+  backend.importErrors = new Map();
+  backend.importWait = null;
+  backend.errors = [];
+  backend.errorWait = null;
+  backend.externalCalls = 0;
+  backend.externalWait = null;
   backend.externalError = null;
   backend.accepted = [];
   backend.acceptedOutcome = {
@@ -452,8 +485,127 @@ describe("turn folding", () => {
     // The turn isn't over: its latest message is no final reply yet.
     expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
     // What the agent is doing ends the conversation, below its latest output.
-    const working = within(stream()).getByText("Working…").closest(`.${styles.working}`);
+    const working = stream().querySelector(`.${styles.working}`);
+    expect(working).toHaveRole("status");
     expect(stream().lastElementChild).toBe(working);
+  });
+});
+
+describe("working status", () => {
+  const running = (entries: AgentEntry[]) => {
+    backend.entries.set("A", [
+      { type: "user", text: "Question", attachments: [], steered: false, sentMs: 1000, doneMs: null },
+      ...entries,
+    ]);
+    useAgents.setState({
+      entries: new Map(backend.entries),
+      tasks: new Map(useAgents.getState().tasks).set("A", {
+        ...useAgents.getState().tasks.get("A")!,
+        status: "running",
+      }),
+    });
+  };
+  const playful = (status: HTMLElement) => status.querySelector("[aria-hidden]")?.textContent ?? null;
+  const playfulOn = (agents: object = {}) =>
+    useProject.setState({ settings: { agents: { playfulStatus: true, ...agents } } as never });
+
+  it("says plainly what the agent does by default", async () => {
+    vi.useFakeTimers();
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS * 2));
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Reading…");
+  });
+
+  it("is playful from the start, holds each word while the work goes on, and turns to the new work's words", async () => {
+    vi.useFakeTimers();
+    playfulOn();
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+    // Screen readers still hear the fact.
+    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Reading…");
+
+    // More of the same work keeps the word its full time.
+    running([tool("one", { status: "running" }), tool("two", { status: "running" })]);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const second = playful(status);
+    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(second);
+
+    // New work leaves the word a moment, then says the new work playfully too.
+    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe(second);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
+    expect(PLAYFUL_WORDS.writing).toContain(playful(status));
+    expect(status.querySelector(`.${styles.srOnly}`)).toHaveTextContent("Writing…");
+  });
+
+  it("with a quiet time, is factual until the agent reports nothing new for it, and again on progress", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulAfterSeconds: 10 });
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    expect(status).toHaveTextContent("Reading…");
+    expect(playful(status)).toBeNull();
+
+    await act(() => vi.advanceTimersByTimeAsync(9000));
+    expect(playful(status)).toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+
+    // Progress right after a word appeared leaves it a moment before the fact returns.
+    running([tool("one", { status: "running" }), { type: "agent", text: "Found it" }]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_MIN_MS - 1000));
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Writing…");
+  });
+
+  it("keeps each word its full time however soon the status turns playful", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulAfterSeconds: 1 });
+    running([tool("one", { status: "running" })]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    const word = playful(status);
+    expect(PLAYFUL_WORDS.reading).toContain(word);
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS - 1000));
+    expect(playful(status)).toBe(word);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(PLAYFUL_WORDS.reading.filter((w) => w !== word)).toContain(playful(status));
+  });
+
+  it("shows the user's own words of the activity, and none where they left the list empty", async () => {
+    vi.useFakeTimers();
+    playfulOn({ playfulWords: { reading: ["Squinting really hard…"], working: [] } });
+    running([]);
+    render(<SessionEditor input={input("A")} />);
+    await act(async () => {});
+    const status = stream().querySelector<HTMLElement>(`.${styles.working}`)!;
+    // Nothing reported yet is `working`, whose list the user emptied.
+    expect(playful(status)).toBeNull();
+    expect(status).toHaveTextContent("Working…");
+
+    running([tool("one", { status: "running" })]);
+    await act(() => vi.advanceTimersByTimeAsync(1000));
+    expect(playful(status)).toBe("Squinting really hard…");
+    await act(() => vi.advanceTimersByTimeAsync(PLAYFUL_WORD_MS));
+    expect(playful(status)).toBe("Squinting really hard…");
   });
 });
 
@@ -508,20 +660,60 @@ describe("opened runs", () => {
 });
 
 describe("folded content", () => {
-  it("is rendered for Find in Conversation, so its text is found", async () => {
-    backend.entries.set("A", [
-      tool("one", { output: "needle in a tool output" }),
-      tool("two"),
-      { type: "agent", text: "Answer A" },
-    ]);
-    useAgents.setState({ entries: new Map(backend.entries) });
-    render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Read 2 files");
-    expect(screen.queryByText("needle in a tool output")).toBeNull();
-    fireEvent.focus(summary);
-    act(() => focusedSession()!.openFind());
-    expect(await screen.findByText("needle in a tool output")).toBeInTheDocument();
-    expect(summary.closest("details")!.open).toBe(false);
+  it("is rendered for Find in Conversation without painting closed <details> highlights until stepped into", async () => {
+    const rectSpy = vi
+      .spyOn(Range.prototype, "getClientRects")
+      .mockImplementation(() => [new DOMRect(0, 0, 20, 12)] as unknown as DOMRectList);
+    const prevCss = (globalThis as { CSS?: unknown }).CSS;
+    const prevHighlight = (globalThis as { Highlight?: unknown }).Highlight;
+    const highlights = new Map<string, Set<Range>>();
+    if (typeof prevHighlight === "undefined") {
+      (globalThis as { Highlight?: unknown }).Highlight = Set;
+    }
+    if (!(prevCss as { highlights?: unknown } | undefined)?.highlights) {
+      (globalThis as { CSS?: unknown }).CSS = {
+        ...(typeof prevCss === "object" && prevCss ? prevCss : {}),
+        highlights,
+      };
+    }
+    try {
+      backend.entries.set("A", [
+        { type: "thought", text: "Reviewing Changes\n\nConfirm the branch state before rebasing." },
+        tool("one", { title: "stop_bash", output: "stopped" }),
+        { type: "agent", text: "Confirmed—PR is merged." },
+      ]);
+      useAgents.setState({ entries: new Map(backend.entries) });
+      render(<SessionEditor input={input("A")} />);
+      const runSummary = await screen.findByText("Read 1 file");
+      const runDetails = runSummary.closest("details")!;
+      runDetails.open = true;
+      fireEvent(runDetails, new Event("toggle"));
+
+      const thoughtDetails = (await screen.findByText("Reviewing Changes")).closest("details")!;
+      expect(thoughtDetails.open).toBe(false);
+
+      fireEvent.focus(runSummary);
+      act(() => focusedSession()!.openFind());
+      const findBox = await screen.findByLabelText("Find in Conversation");
+      fireEvent.change(findBox, { target: { value: "confirm" } });
+
+      const registry = (globalThis as unknown as { CSS: { highlights: Map<string, Set<Range>> } }).CSS.highlights;
+      await waitFor(() => expect(screen.getByText("1/2")).toBeInTheDocument());
+      await waitFor(() => expect([...(registry.get("agent-find") ?? [])]).toHaveLength(1));
+      expect([...(registry.get("agent-find") ?? [])][0]!.startContainer.textContent).toContain("Confirmed");
+      expect([...(registry.get("agent-find-current") ?? [])]).toHaveLength(0);
+
+      fireEvent.keyDown(findBox, { key: "Enter" });
+      fireEvent.keyDown(findBox, { key: "Enter" });
+      fireEvent(thoughtDetails, new Event("toggle"));
+      expect(thoughtDetails.open).toBe(true);
+      await waitFor(() => expect([...(registry.get("agent-find") ?? [])]).toHaveLength(2));
+      expect([...(registry.get("agent-find-current") ?? [])]).toHaveLength(1);
+    } finally {
+      rectSpy.mockRestore();
+      (globalThis as { CSS?: unknown }).CSS = prevCss;
+      (globalThis as { Highlight?: unknown }).Highlight = prevHighlight;
+    }
   });
 });
 
@@ -1268,6 +1460,68 @@ describe("a pending AskUserQuestion", () => {
   });
 });
 
+describe("a pending agent form", () => {
+  const form = {
+    type: "permission" as const,
+    id: 12,
+    title: "How should I refactor?",
+    chosen: null,
+    options: [{ id: "decline", name: "Decline", kind: "reject_once" }],
+    form: {
+      fields: [
+        {
+          name: "strategy",
+          title: "Strategy",
+          required: true,
+          kind: "choice" as const,
+          options: [
+            { value: "safe", label: "Conservative", description: "Small steps" },
+            { value: "bold", label: "Aggressive" },
+          ],
+        },
+        { name: "count", title: "Files", kind: "integer" as const, min: 1, max: 5 },
+        { name: "tests", title: "Run tests", kind: "boolean" as const },
+      ],
+    },
+  };
+
+  const open = async () => {
+    backend.entries.set("A", [form]);
+    backend.answers = [];
+    useAgents.setState({ entries: new Map(backend.entries) });
+    render(<SessionEditor input={input("A")} />);
+    return screen.findByRole("form", { name: "How should I refactor?" });
+  };
+
+  it("sends the values once every required field is valid", async () => {
+    const card = await open();
+    const submit = within(card).getByRole("button", { name: "Submit" });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.click(within(card).getByRole("radio", { name: /^Aggressive/ }));
+    expect(submit).toHaveProperty("disabled", false);
+    const files = within(card).getByRole("spinbutton", { name: /^Files/ });
+    fireEvent.change(files, { target: { value: "9" } });
+    expect(submit).toHaveProperty("disabled", true);
+    fireEvent.change(files, { target: { value: "3" } });
+    fireEvent.click(within(card).getByRole("checkbox", { name: /^Run tests/ }));
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(backend.answers).toEqual([
+        ["A", 12, JSON.stringify({ strategy: ["bold"], count: ["3"], tests: ["true"] })],
+      ]),
+    );
+  });
+
+  it("declines with Decline and cancels with Escape", async () => {
+    const card = await open();
+    fireEvent.click(within(card).getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, "decline"]]));
+    backend.answers = [];
+    fireEvent.keyDown(within(card).getByRole("radio", { name: /^Conservative/ }), { key: "Escape" });
+    await waitFor(() => expect(backend.answers).toEqual([["A", 12, null]]));
+  });
+});
+
 describe("a pending permission request above the composer", () => {
   const command = 'python3 -c \'from pathlib import Path\np = Path("note.txt")\np.write_text("one\\ntwo")\'';
   const options = [
@@ -1532,6 +1786,31 @@ describe("conversation loading", () => {
 });
 
 describe("session state across tasks and hosts", () => {
+  it("updates input focus availability while the task changes status without losing its draft caret", async () => {
+    render(<SessionEditor input={input("A")} />);
+    await screen.findByText("Answer A");
+    const message = screen.getByRole("textbox", { name: "Message" });
+    typeIn(message, "Draft to keep", 3);
+    const conversation = stream();
+    act(() => conversation.focus());
+    act(() =>
+      useAgents.setState((s) => ({
+        tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "archived" }),
+      })),
+    );
+    act(() => focusedSession()?.focusInput?.());
+    expect(conversation).toHaveFocus();
+    act(() =>
+      useAgents.setState((s) => ({
+        tasks: new Map(s.tasks).set("A", { ...s.tasks.get("A")!, status: "running" }),
+      })),
+    );
+    act(() => focusedSession()?.focusInput?.());
+    await waitFor(() => expect(message).toHaveFocus());
+    expect(textOf(message)).toBe("Draft to keep");
+    expect(caretOf(message)).toBe(3);
+  });
+
   it("leaves a task unread while its kept-alive tab is hidden, and reads it once shown", () => {
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     useAgents.setState({ unread: new Set(["A"]) });
@@ -1737,7 +2016,9 @@ describe("meters in the task header", () => {
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Answer A");
     const usage = screen.getByLabelText(/^Context /);
-    expect(usage).toHaveTextContent("24k/200k (12%)");
+    // The bar and percent show; the counts are in its label and tooltip.
+    expect(usage).toHaveTextContent("12%");
+    expect(usage).toHaveAccessibleName(/24k\/200k \(12%\)/);
     expect(usage.querySelector(`.${styles.usageBar} span`)).toHaveStyle({
       width: "12%",
     });
@@ -1758,6 +2039,82 @@ describe("meters in the task header", () => {
     expect(screen.queryByText("24k/200k (12%)")).toBeNull();
     expect(screen.queryByText("5h 19%")).toBeNull();
     expect(screen.getByText("$0.42")).toBeInTheDocument();
+  });
+
+  it("toggles fitWidth on the session root and remeasures off-screen rows from settings.agents.fitWindowWidth", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      frames.push(cb);
+      return frames.length;
+    });
+    const flushFrames = () => {
+      for (let pass = 0; pass < 2; pass++) {
+        for (const cb of frames.splice(0)) cb(performance.now());
+      }
+    };
+    try {
+      const { container } = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      const root = container.querySelector(`.${styles.session}`)!;
+      const row = container.querySelector(`.${styles.conversationRow}`)!;
+      act(flushFrames);
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: true,
+            },
+          } as never,
+        }),
+      );
+      expect(root).toHaveClass(styles.fitWidth!);
+      // Cleared synchronously before paint so content-visibility doesn't keep the 900px intrinsic height.
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+
+      act(() =>
+        useProject.setState({
+          settings: {
+            agents: {
+              fitWindowWidth: false,
+            },
+          } as never,
+        }),
+      );
+      expect(root).not.toHaveClass(styles.fitWidth!);
+      expect(row).not.toHaveAttribute("data-measured");
+      act(flushFrames);
+      expect(row).toHaveAttribute("data-measured");
+    } finally {
+      raf.mockRestore();
+    }
+  });
+
+  it("hides the status-bar Terminal button in the local checkout and opens the worktree's terminal otherwise", async () => {
+    const opened: unknown[] = [];
+    const disposeTerminal = registerActions([
+      { id: "terminal.openAt", title: "Open in Terminal", run: ({ arg }) => void opened.push(arg) },
+    ]);
+    try {
+      const view = render(<SessionEditor input={input("A")} />);
+      await screen.findByText("Answer A");
+      expect(screen.queryByRole("button", { name: "Terminal" })).toBeNull();
+
+      act(() =>
+        useAgents.setState({
+          tasks: new Map([["A", { ...task("A"), isolation: "worktree", cwd: "/worktrees/a", branch: "agent/a" }]]),
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Terminal" }));
+      expect(opened).toEqual(["/worktrees/a"]);
+      view.unmount();
+    } finally {
+      disposeTerminal();
+    }
   });
 });
 
@@ -1794,7 +2151,7 @@ describe("sessions from other apps", () => {
     });
     expect(backend.imported).toEqual([["claude", "abc"]]);
     const state = useAgents.getState();
-    expect(state.tasks.get("imported")?.title).toBe("Login fix");
+    expect(state.tasks.get("imported-abc")?.title).toBe("Login fix");
     expect(state.external.map((e) => e.sessionId)).toEqual(["thread-1"]);
   });
 
@@ -1803,6 +2160,518 @@ describe("sessions from other apps", () => {
     await openHistory();
     expect(screen.getByText("no home")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Import" })).toBeNull();
+  });
+
+  const loginFix = { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: 0 };
+
+  it("keeps a session whose import fails and lets it be retried", async () => {
+    backend.external = [loginFix];
+    backend.importError = "boom";
+    await openHistory();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    expect(screen.getByText("Login fix")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import" })).toBeEnabled());
+  });
+
+  it("ignores a second click while an import is pending", async () => {
+    backend.external = [loginFix];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    await openHistory();
+    const button = screen.getByRole("button", { name: "Import" });
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(button).toBeDisabled();
+    await act(async () => {
+      fireEvent.click(button);
+    });
+    expect(backend.imported).toHaveLength(1);
+    await act(async () => release());
+  });
+
+  const addTests = { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 };
+
+  it("leaves the import link out of the docked popup's empty list", async () => {
+    backend.external = [loginFix];
+    act(() => useAgents.setState({ tasks: new Map(), docked: "A" }));
+    render(<AgentsView />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent sessions" }));
+    await waitFor(() => expect(screen.getByText("Login fix")).toBeInTheDocument());
+    expect(screen.getByText("No agent tasks yet")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import Sessions from Other Apps…" })).toBeNull();
+  });
+
+  it("keeps two pending imports disabled", async () => {
+    backend.external = [loginFix, addTests];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    await openHistory();
+    const [first, second] = screen.getAllByRole("button", { name: "Import" });
+    await act(async () => {
+      fireEvent.click(first!);
+    });
+    await act(async () => {
+      fireEvent.click(second!);
+    });
+    expect(first).toBeDisabled();
+    expect(second).toBeDisabled();
+    expect(backend.imported).toHaveLength(2);
+    await act(async () => release());
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Import" })).toBeNull());
+  });
+
+  it("keeps a pending import disabled after closing and reopening the popup", async () => {
+    backend.external = [loginFix];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    await openHistory();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    const history = screen.getByRole("button", { name: "Agent sessions" });
+    fireEvent.click(history);
+    fireEvent.click(history);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Import" })).toBeDisabled());
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toHaveLength(1);
+    await act(async () => release());
+  });
+});
+
+describe("batch import", () => {
+  const session = (sessionId: string, title: string) => ({
+    provider: "claude",
+    sessionId,
+    title,
+    cwd: null,
+    updatedMs: 0,
+  });
+  const a = session("a", "First");
+  const b = session("b", "Second");
+  beforeEach(() => {
+    backend.external = [a, b];
+    useAgents.setState({ sessionLocation: "toolWindow", docked: null });
+  });
+
+  it("opens the task when importing one session", async () => {
+    await act(() => importExternalSessions([a]));
+    expect(backend.imported).toEqual([["claude", "a"]]);
+    expect(useAgents.getState().docked).toBe("imported-a");
+  });
+
+  it("imports several in order without opening any", async () => {
+    const progress: number[] = [];
+    await act(() => importExternalSessions([b, a], (done) => progress.push(done)));
+    expect(backend.imported).toEqual([
+      ["claude", "b"],
+      ["claude", "a"],
+    ]);
+    expect(progress).toEqual([1, 2]);
+    expect(useAgents.getState().docked).toBeNull();
+    expect(useAgents.getState().tasks.has("imported-a")).toBe(true);
+    expect(useAgents.getState().tasks.has("imported-b")).toBe(true);
+    expect(useAgents.getState().importing.size).toBe(0);
+  });
+
+  it("keeps going after a failure and reports every failure once", async () => {
+    backend.importErrors.set("a", "that session is already a task");
+    await act(() => importExternalSessions([a, b]));
+    expect(useAgents.getState().tasks.has("imported-b")).toBe(true);
+    expect(backend.errors).toHaveLength(1);
+    expect(backend.errors[0]![0]).toBe("A session could not be imported");
+    expect(backend.errors[0]![1]).toContain("First: that session is already a task");
+  });
+
+  it("drops a scan that finishes after the project disconnects", async () => {
+    let release!: () => void;
+    backend.externalWait = new Promise<void>((resolve) => (release = resolve));
+    const scan = refreshExternalSessions();
+    act(() => disconnect());
+    await act(async () => release());
+    await act(() => scan);
+    expect(useAgents.getState().external).toEqual([]);
+  });
+
+  it("forgets the listed sessions on disconnect", () => {
+    act(() => useAgents.setState({ external: [a], externalError: "no home" }));
+    act(() => disconnect());
+    expect(useAgents.getState().external).toEqual([]);
+    expect(useAgents.getState().externalError).toBeNull();
+  });
+
+  it("reports all failures when every import fails", async () => {
+    backend.importError = "unknown agent";
+    await act(() => importExternalSessions([a, b]));
+    expect(useAgents.getState().docked).toBeNull();
+    expect(backend.errors).toHaveLength(1);
+    expect(backend.errors[0]![1]).toContain("First: unknown agent");
+    expect(backend.errors[0]![1]).toContain("Second: unknown agent");
+  });
+
+  it("marks the whole batch pending from the start", async () => {
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    const batch = importExternalSessions([a, b]);
+    expect([...useAgents.getState().importing]).toEqual(["claude:a", "claude:b"]);
+    await act(async () => release());
+    await act(() => batch);
+    expect(useAgents.getState().importing.size).toBe(0);
+  });
+
+  it("stops at an abort and frees the sessions it did not reach", async () => {
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    const controller = new AbortController();
+    const batch = importExternalSessions([a, b], undefined, controller.signal);
+    controller.abort();
+    await act(async () => release());
+    await act(() => batch);
+    expect(backend.imported).toEqual([["claude", "a"]]);
+    expect(useAgents.getState().importing.size).toBe(0);
+    expect(useAgents.getState().tasks.has("imported-a")).toBe(true);
+    expect(backend.errors).toEqual([]);
+  });
+
+  it("stops a batch when the project disconnects", async () => {
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    let finished = false;
+    const batch = importExternalSessions([a, b]).then(() => (finished = true));
+    act(() => disconnect());
+    await act(async () => release());
+    await act(() => batch);
+    expect(finished).toBe(true);
+    expect(backend.imported).toEqual([["claude", "a"]]);
+    expect(backend.errors).toEqual([]);
+  });
+});
+
+describe("import sessions dialog", () => {
+  const sessions = [
+    { provider: "claude", sessionId: "abc", title: "Login fix", cwd: "/work/app", updatedMs: 0 },
+    { provider: "codex", sessionId: "thread-1", title: "Add tests", cwd: null, updatedMs: 0 },
+  ];
+  const third = { provider: "claude", sessionId: "c3", title: "Fix flaky test", cwd: "/work/api", updatedMs: 0 };
+  const open = () => {
+    render(<ImportSessionsOverlay />);
+    act(() => showImportSessions());
+  };
+  const row = (title: RegExp) => screen.getByRole("option", { name: title });
+  const primary = { metaKey: true, ctrlKey: true };
+  const listed = async (title: string) => waitFor(() => expect(screen.getByText(title)).toBeInTheDocument());
+
+  it("names the dialog", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    expect(screen.getByRole("dialog", { name: "Import Sessions from Other Apps" })).toBeInTheDocument();
+  });
+
+  it("imports the selected session and opens it", async () => {
+    backend.external = sessions;
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    expect(useAgents.getState().docked).toBe("imported-abc");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("imports several with ⌘-click and opens none", async () => {
+    backend.external = sessions;
+    useAgents.setState({ sessionLocation: "toolWindow" });
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 2" }));
+    });
+    expect(backend.imported).toEqual([
+      ["claude", "abc"],
+      ["codex", "thread-1"],
+    ]);
+    expect(useAgents.getState().docked).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("imports the selection on Enter and on a double-click", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Fix flaky test/), primary);
+    await act(async () => {
+      fireEvent.keyDown(screen.getByRole("listbox"), { key: "Enter" });
+    });
+    expect(backend.imported).toEqual([
+      ["claude", "abc"],
+      ["claude", "c3"],
+    ]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    backend.imported = [];
+    backend.external = [sessions[1]!];
+    act(() => showImportSessions());
+    await listed("Add tests");
+    await act(async () => {
+      fireEvent.doubleClick(row(/Add tests/));
+    });
+    expect(backend.imported).toEqual([["codex", "thread-1"]]);
+  });
+
+  it("selects a range with ⇧-click", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Fix flaky test/), { shiftKey: true });
+    expect(screen.getByRole("button", { name: "Import 3" })).toBeEnabled();
+  });
+
+  it("selects only the visible rows with ⌘A and Select All", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "fix" } });
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "a", ...primary });
+    expect(screen.getByRole("button", { name: "Import 2" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Import 2" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "fix" } });
+    fireEvent.click(row(/Login fix/));
+    expect(screen.getByRole("button", { name: "Import" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+    expect(screen.getByRole("button", { name: "Import 2" })).toBeEnabled();
+  });
+
+  it("closes before showing the batch's errors", async () => {
+    backend.external = sessions;
+    backend.importError = "boom";
+    backend.errorWait = new Promise<void>(() => {});
+    open();
+    await listed("Login fix");
+    fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 2" }));
+    });
+    await waitFor(() => expect(backend.errors).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(backend.errors[0]![0]).toBe("Some sessions could not be imported");
+  });
+
+  it("says when no session matches the filter", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "zzz" } });
+    expect(screen.getByText("No matching sessions")).toBeInTheDocument();
+    expect(screen.queryByText("No sessions from other apps")).toBeNull();
+  });
+
+  it("leaves Home and End to the filter text", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    const filter = screen.getByLabelText("Filter sessions");
+    expect(fireEvent.keyDown(filter, { key: "Home" })).toBe(true);
+    expect(fireEvent.keyDown(filter, { key: "End" })).toBe(true);
+    expect(fireEvent.keyDown(filter, { key: "ArrowDown" })).toBe(false);
+  });
+
+  it("drives the list from the filter as a combobox", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    const box = screen.getByRole("combobox", { name: "Filter sessions" });
+    expect(box.getAttribute("aria-controls")).toBe(screen.getByRole("listbox").id);
+    fireEvent.click(row(/Add tests/));
+    expect(box.getAttribute("aria-activedescendant")).toBe(row(/Add tests/).id);
+  });
+
+  it("filters by title and folder", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "work/api" } });
+    expect(screen.queryByText("Login fix")).toBeNull();
+    expect(screen.getByText("Fix flaky test")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "ADD" } });
+    expect(screen.getByText("Add tests")).toBeInTheDocument();
+    expect(screen.queryByText("Fix flaky test")).toBeNull();
+  });
+
+  it("does not import a session that the filter hides", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "login" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+  });
+
+  it("disables Import when every selected session is filtered out", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "flaky" } });
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+    expect(highlighted()).toEqual([]);
+  });
+
+  const highlighted = () =>
+    screen
+      .queryAllByRole("option")
+      .filter((o) => o.getAttribute("aria-selected") === "true")
+      .map((o) => o.textContent);
+
+  it("highlights exactly the sessions it will import after the filter narrows", async () => {
+    backend.external = [...sessions, third];
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Fix flaky test/));
+    fireEvent.click(row(/Login fix/), primary);
+    fireEvent.change(screen.getByLabelText("Filter sessions"), { target: { value: "test" } });
+    expect(highlighted()).toEqual([expect.stringContaining("Fix flaky test")]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    });
+    expect(backend.imported).toEqual([["claude", "c3"]]);
+  });
+
+  it("keeps listing the batch while it imports", async () => {
+    backend.external = [...sessions, third];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    open();
+    await listed("Login fix");
+    fireEvent.click(screen.getByRole("button", { name: "Select All" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 3" }));
+    });
+    expect(highlighted()).toHaveLength(3);
+    expect(screen.queryByText("No sessions from other apps")).toBeNull();
+    await act(async () => release());
+  });
+
+  it("shows progress, and Cancel stops the rest of the batch", async () => {
+    backend.external = [...sessions, third];
+    let release!: () => void;
+    backend.importWait = new Promise<void>((resolve) => (release = resolve));
+    open();
+    await listed("Login fix");
+    fireEvent.click(row(/Login fix/));
+    fireEvent.click(row(/Add tests/), primary);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Import 2" }));
+    });
+    expect(screen.getByText("Importing 1 of 2…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => release());
+    await waitFor(() => expect(useAgents.getState().importing.size).toBe(0));
+    expect(backend.imported).toEqual([["claude", "abc"]]);
+    act(() => showImportSessions());
+    await listed("Add tests");
+  });
+
+  it("shows the full title and folder as a row tooltip", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    expect(
+      row(/Login fix/)
+        .querySelector("[title]")
+        ?.getAttribute("title"),
+    ).toBe("Login fix\n/work/app");
+  });
+
+  it("tells when only the 50 most recent are shown", async () => {
+    const many = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        provider: "claude",
+        sessionId: `s${i}`,
+        title: `Session ${i}`,
+        cwd: null,
+        updatedMs: 0,
+      }));
+    backend.external = many(50);
+    open();
+    await waitFor(() => expect(screen.getByText("Only the 50 most recent sessions are shown.")).toBeInTheDocument());
+    act(() => hideImportSessions());
+    backend.external = many(49);
+    act(() => showImportSessions());
+    await listed("Session 0");
+    expect(screen.queryByText("Only the 50 most recent sessions are shown.")).toBeNull();
+  });
+
+  it("never shows rows from before the scan", async () => {
+    act(() => useAgents.setState({ external: [{ ...third, title: "Old session" }] }));
+    let release!: () => void;
+    backend.externalWait = new Promise<void>((resolve) => (release = resolve));
+    backend.external = sessions;
+    open();
+    expect(screen.queryByText("Old session")).toBeNull();
+    await act(async () => release());
+    await listed("Login fix");
+    expect(screen.queryByText("Old session")).toBeNull();
+  });
+
+  it("scans again each time it opens", async () => {
+    open();
+    await waitFor(() => expect(backend.externalCalls).toBe(1));
+    act(() => hideImportSessions());
+    act(() => showImportSessions());
+    await waitFor(() => expect(backend.externalCalls).toBe(2));
+  });
+
+  it("says so when nothing can be imported, after the scan", async () => {
+    let release!: () => void;
+    backend.externalWait = new Promise<void>((resolve) => (release = resolve));
+    open();
+    expect(screen.queryByText("No sessions from other apps")).toBeNull();
+    await act(async () => release());
+    await waitFor(() => expect(screen.getByText("No sessions from other apps")).toBeInTheDocument());
+  });
+
+  it("shows listing errors instead of rows", async () => {
+    backend.external = sessions;
+    backend.externalError = "no home";
+    open();
+    await waitFor(() => expect(screen.getByText("no home")).toBeInTheDocument());
+    expect(screen.queryByRole("option")).toBeNull();
+    expect(screen.getByRole("button", { name: "Import" })).toBeDisabled();
+  });
+
+  it("opens from the empty task list", () => {
+    act(() => useAgents.setState({ tasks: new Map() }));
+    render(<AgentsView />);
+    fireEvent.click(screen.getByRole("button", { name: "Import Sessions from Other Apps…" }));
+    expect(useAgents.getState().importOpen).toBe(true);
+  });
+
+  it("closes when the project disconnects", async () => {
+    backend.external = sessions;
+    open();
+    await listed("Login fix");
+    act(() => disconnect());
+    expect(useAgents.getState().importOpen).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });
 

@@ -85,7 +85,7 @@ export function UsagesTabs() {
         id: String(t.id),
         label: label(t),
         closable: true,
-        icon: t.pinned ? "pin" : undefined,
+        pinned: t.pinned,
       }))}
       activeId={String(search.id)}
       onSelect={(id) => useUsages.setState({ active: Number(id) })}
@@ -97,16 +97,18 @@ export function UsagesTabs() {
       onContextMenu={(id, e) => {
         const t = tabs.find((x) => x.id === Number(id));
         if (!t) return;
+        // IDEA's content tab menu.
         showContextMenu(e, [
-          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinUsageTab(t.id, !t.pinned) },
-          { kind: "separator" },
           { id: "close", label: "Close Tab", run: () => closeUsageTab(t.id) },
+          { id: "closeAll", label: "Close All Tabs", run: () => tabs.forEach((o) => closeUsageTab(o.id)) },
           {
             id: "closeOthers",
             label: "Close Other Tabs",
             disabled: tabs.length < 2,
             run: () => tabs.forEach((o) => o.id !== t.id && closeUsageTab(o.id)),
           },
+          { kind: "separator" },
+          { id: "pin", label: t.pinned ? "Unpin Tab" : "Pin Tab", run: () => pinUsageTab(t.id, !t.pinned) },
         ]);
       }}
     />
@@ -401,7 +403,7 @@ function UsagesSplit({ preview, children }: { preview: ReactNode; children: Reac
   const show = useUsagesOptions((s) => s.preview);
   if (!show) return children;
   return (
-    <SplitGroup orientation="horizontal" id="usages-preview-split">
+    <SplitGroup orientation="horizontal" id="usages-preview-split" storageKey="openidea.usages.previewSplit">
       <SplitPanel id="usages" minSize={160} className={styles.panel}>
         {children}
       </SplitPanel>

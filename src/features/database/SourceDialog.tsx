@@ -383,7 +383,7 @@ export function SourceDialog({
   // Same convention for the SSH password / passphrase.
   const [sshSecret, setSshSecret] = useState<string | undefined>(undefined);
   const [tab, setTab] = useState<Tab>("general");
-  const [test, setTest] = useState<{ ok: boolean; text: string; trust?: boolean } | null>(null);
+  const [test, setTest] = useState<{ ok: boolean; text: string; trust?: boolean; tunnel?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [showComment, setShowComment] = useState(!!s.comment);
   // The URL being typed in default mode (null: show the fields' URL).
@@ -490,16 +490,23 @@ export function SourceDialog({
 
   const setUrlOnly = (on: boolean) => set(on && !s.url?.trim() ? { urlOnly: on, url: sourceUrl(s) } : { urlOnly: on });
 
-  const runTest = async () => {
+  /** Test Connection, or with `tunnel` the SSH/SSL tab's Test SSH Tunnel (no database login). */
+  const runTest = async (tunnel = false) => {
     setBusy(true);
     setTest(null);
     try {
-      const v = await call(commands.dbTest(effective(), password ?? null, sshOn ? (sshSecret ?? null) : null));
-      setTest({ ok: true, text: tx`Succeeded: ${v}` });
+      const secret = sshOn ? (sshSecret ?? null) : null;
+      if (tunnel) {
+        const route = await call(commands.dbTestTunnel(effective(), secret));
+        setTest({ ok: true, text: tx`SSH tunnel works: ${route}`, tunnel });
+      } else {
+        const v = await call(commands.dbTest(effective(), password ?? null, secret));
+        setTest({ ok: true, text: tx`Succeeded: ${v}` });
+      }
     } catch (e) {
       const text = e instanceof Error ? e.message : String(e);
       const trust = e instanceof IpcError && connectRemedy(e.kind, e.message, { ssh: sshUsed }) === "trustHostKey";
-      setTest({ ok: false, text, trust });
+      setTest({ ok: false, text, trust, tunnel });
     } finally {
       setBusy(false);
     }
@@ -508,7 +515,7 @@ export function SourceDialog({
   const trustAndRetry = async () => {
     // A shared SSH configuration records the failed host key under its own id.
     await call(sshConfigId ? commands.sshTrustHost(sshConfigId) : commands.dbTrustSshHost(s.id ?? ""));
-    await runTest();
+    await runTest(!!test?.tunnel);
   };
 
   const save = async () => {
@@ -984,6 +991,19 @@ export function SourceDialog({
           </div>
         </>
       )}
+      <span />
+      <div className={styles.formRow}>
+        <Button
+          size="small"
+          onClick={() => void runTest(true)}
+          disabled={busy || !sshOn || !(sshConfigId || ssh.host?.trim())}
+        >
+          <T>Test SSH Tunnel</T>
+        </Button>
+        <span className={styles.formHint}>
+          <T>Logs in to the SSH host and checks that it reaches the database host and port.</T>
+        </span>
+      </div>
       <Section title="SSL" />
       <span className={styles.formLabel}>
         <T>Mode:</T>

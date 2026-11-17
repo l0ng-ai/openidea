@@ -78,8 +78,8 @@ impl Needle {
         let mut b = 0;
         if n.eq_ignore_ascii_case(q) {
             b += EXACT;
-        } else if let Some(dot) = name.find('.')
-            && name.as_bytes()[..dot].eq_ignore_ascii_case(q)
+        } else if let Some(dot) = n.iter().position(|&b| b == b'.')
+            && n[..dot].eq_ignore_ascii_case(q)
         {
             b += EXACT_STEM;
         } else if n.len() >= q.len() && n[..q.len()].eq_ignore_ascii_case(q) {
@@ -97,17 +97,31 @@ fn hump_bonus(s: &str, indices: &[u32]) -> u32 {
     if indices.is_empty() {
         return 0;
     }
-    let chars: Vec<char> = s.chars().collect();
-    let is_start = |i: usize| {
-        if i == 0 {
-            return true;
+    // One pass over `s`: `indices` is sorted, and whether position `i` is a
+    // word start only needs the char before it, so no `Vec<char>` is collected.
+    let is_start = |prev: Option<char>, c: char| match prev {
+        None => true,
+        Some(p) => {
+            !p.is_alphanumeric()
+                || (p.is_lowercase() && c.is_uppercase())
+                || (!p.is_ascii_digit() && c.is_ascii_digit())
         }
-        let (p, c) = (chars[i - 1], chars[i]);
-        !p.is_alphanumeric() || (p.is_lowercase() && c.is_uppercase()) || (!p.is_ascii_digit() && c.is_ascii_digit())
     };
-    let humps = indices.iter().filter(|&&i| (i as usize) < chars.len() && is_start(i as usize)).count() as u32;
-    let first = if is_start(indices[0] as usize) { FIRST_AT_START } else { 0 };
-    humps * HUMP + first
+    let (mut humps, mut next, mut first_start) = (0u32, 0usize, false);
+    let (mut prev, mut at) = (None, 0u32);
+    for c in s.chars() {
+        if next < indices.len() && indices[next] == at {
+            let started = is_start(prev, c);
+            humps += u32::from(started);
+            if next == 0 {
+                first_start = started;
+            }
+            next += 1;
+        }
+        prev = Some(c);
+        at += 1;
+    }
+    humps * HUMP + u32::from(first_start) * FIRST_AT_START
 }
 
 #[derive(Clone, Copy)]
@@ -615,6 +629,41 @@ pub(crate) fn symbols_named_within(
         .collect();
     out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path).then_with(|| a.range.cmp(&b.range)));
     out.truncate(limit);
+    out
+}
+
+/// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per
+/// name, by path then position: one walk over the index for every name an agent reply shows.
+pub(crate) fn symbols_named_any(data: &IndexData, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
+    let wanted: Vec<(u64, &str)> = names.iter().map(|name| (char_mask(name), name.as_str())).collect();
+    let syms = &data.syms;
+    let mut out: Vec<SymbolMatch> = data
+        .files
+        .iter()
+        .flatten()
+        .filter(|entry| entry.path.starts_with(root))
+        .flat_map(|entry| {
+            (entry.sym_start..entry.sym_start + entry.sym_len)
+                .filter(|&at| wanted.iter().any(|&(mask, name)| syms.mask(at) == mask && syms.name(at) == name))
+                .map(move |at| SymbolMatch {
+                    name: syms.name(at).to_string(),
+                    kind: syms.kind(at),
+                    container: syms.container(at).map(str::to_owned),
+                    path: entry.path.clone().into(),
+                    rel_path: entry.rel.to_string(),
+                    range: syms.range(at),
+                    score: 0,
+                    indices: Vec::new(),
+                })
+        })
+        .collect();
+    out.sort_by(|left, right| left.rel_path.cmp(&right.rel_path).then_with(|| left.range.cmp(&right.range)));
+    let mut kept: HashMap<String, usize> = HashMap::new();
+    out.retain(|symbol| {
+        let count = kept.entry(symbol.name.clone()).or_default();
+        *count += 1;
+        *count <= limit
+    });
     out
 }
 

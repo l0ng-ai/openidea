@@ -60,6 +60,70 @@ const entries: AgentEntry[] = [
   },
 ];
 
+for (const choice of ["codex-trust-project", "codex-keep-untrusted"]) {
+  test(`project trust has explicit choices and submits ${choice}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 1050, height: 800 });
+    await page.goto("/");
+    await page.getByRole("tree", { name: "Project" }).waitFor();
+    await page.evaluate(
+      async ({ task }) => {
+        const path = "/src/features/agents/store.ts";
+        const store = await import(path);
+        store.useAgents.setState({
+          loaded: true,
+          tasks: new Map([[task.id, task]]),
+          entries: new Map([
+            [
+              task.id,
+              [
+                { type: "user", text: "Load the project's MCP configuration.", attachments: [], steered: false },
+                { type: "error", message: "Project-local config is disabled until the project is trusted in Codex." },
+                {
+                  type: "permission",
+                  id: 2,
+                  title:
+                    "Trust project in Codex: /dev/acme-api? This saves trust in your Codex user configuration and allows this project's MCP servers, hooks and exec policies to load.",
+                  command: null,
+                  options: [
+                    { id: "codex-trust-project", name: "Trust Project in Codex", kind: "allow_always" },
+                    { id: "codex-keep-untrusted", name: "Keep Untrusted", kind: "reject_once" },
+                  ],
+                  chosen: null,
+                },
+              ],
+            ],
+          ]),
+        });
+        store.openTaskInEditorLocation(task.id);
+        const ipcPath = "/src/platform/ipc.ts";
+        (await import(ipcPath)).commands.agentRespond = async (task: string, permission: number, option: string) => {
+          (window as unknown as { trustAnswer: unknown }).trustAnswer = { task, permission, option };
+          return { status: "ok", data: null };
+        };
+      },
+      { task },
+    );
+    const card = page.getByRole("region", { name: "Trust Project in Codex" });
+    await expect(card).toBeVisible();
+    await expect(
+      page.getByText("Project-local config is disabled until the project is trusted in Codex."),
+    ).toBeVisible();
+    await expect(card.getByRole("button")).toHaveText(["Trust Project in Codex", "Keep Untrusted"]);
+    await expect(card).toContainText("MCP servers, hooks and exec policies");
+    expect(await page.evaluate(() => (window as unknown as { trustAnswer?: unknown }).trustAnswer)).toBeUndefined();
+    await page.screenshot({ path: testInfo.outputPath("project-trust-confirmation.png"), animations: "disabled" });
+    await card
+      .getByRole("button", {
+        name: choice === "codex-trust-project" ? "Trust Project in Codex" : "Keep Untrusted",
+        exact: true,
+      })
+      .click();
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as { trustAnswer?: unknown }).trustAnswer))
+      .toEqual({ task: task.id, permission: 2, option: choice });
+  });
+}
+
 for (const theme of ["dark", "light"] as const) {
   for (const width of [760, 1400]) {
     test(`approval is asked above the composer at ${width}px in ${theme}`, async ({ page }) => {

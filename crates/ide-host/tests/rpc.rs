@@ -82,7 +82,9 @@ async fn serves_projects_files_documents_search_and_runs() {
     invoke(&peer, "lsp_resend_diagnostics", json!({})).await.unwrap();
     let files = invoke(&peer, "find_files", json!({"query": "main", "limit": 10})).await.unwrap();
     assert!(files.is_array());
-    for command in ["build_sync", "run_start", "sdk_locate_tools", "notebook_execute", "debug_start"] {
+    for command in
+        ["build_sync", "run_start", "sdk_locate_tools", "notebook_execute", "debug_start", "agent_refresh_models"]
+    {
         let error = invoke(&peer, command, json!({})).await.unwrap_err();
         assert!(error.message.contains("Restricted Mode"), "{command}: {error:?}");
     }
@@ -341,6 +343,7 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_save_sources",
         "db_set_password",
         "db_test",
+        "db_test_tunnel",
         "db_set_ssh_secret",
         "db_trust_ssh_host",
         "db_connected",
@@ -364,6 +367,14 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_table_page",
         "db_apply_edits",
         "db_console_path",
+        "db_consoles",
+        "ssh_test",
+        "ssh_set_secret",
+        "ssh_password_saved",
+        "ssh_needs_secret",
+        "ssh_trust_host",
+        "ssh_connected",
+        "ssh_disconnect",
     ] {
         assert!(dispatcher.commands().contains(&cmd), "missing host command {cmd}");
     }
@@ -372,6 +383,12 @@ async fn local_deployment_runs_on_the_project_host() {
     tokio::spawn(rpc::serve(host, dispatcher, slot, sr, sw));
     let (cr, cw) = tokio::io::split(client_io);
     let peer = Peer::connect(cr, cw, Arc::new(Client::default()));
+    // A remote window's host-key and password remedies reach the server's SSH manager,
+    // the one its deployment / database connections failed in.
+    let trust = invoke(&peer, "ssh_trust_host", json!({"id": "nothing-pending"})).await.unwrap_err();
+    assert!(trust.message.contains("no host key to trust"), "{trust:?}");
+    invoke(&peer, "ssh_set_secret", json!({"id": "deploy", "secret": "pw", "save": false})).await.unwrap();
+    assert_eq!(invoke(&peer, "ssh_connected", json!({})).await.unwrap(), json!([]));
     invoke(&peer, "project_trust_set", json!({"path": project, "trusted": true, "folder": false})).await.unwrap();
     invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
     let deployment = json!({"servers": [{"id":"local", "kind":"local", "rootPath":target}], "defaultServer":"local"});

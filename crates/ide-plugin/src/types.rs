@@ -932,6 +932,9 @@ pub struct FileDecoration {
     /// Text shown after the name (API 1.7 `set-file-note`).
     #[serde(default)]
     pub note: Option<String>,
+    /// `[[contributes.fileIcons]]` id for this file or folder (API 1.8 `set-file-icon`).
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 /// Commit metadata, date in Unix seconds.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -954,6 +957,28 @@ pub struct BlameLine {
     pub author: String,
     pub date: i64,
     pub summary: String,
+}
+
+/// How an occurrence in a build's dependency graph was resolved (API 1.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyStatus {
+    Resolved,
+    OmittedForConflict,
+    OmittedForDuplicate,
+    VersionManaged,
+}
+
+/// One occurrence in the flat dependency graph of `build.dependencies` (API 1.10);
+/// `parent` indexes the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    pub group: String,
+    pub artifact: String,
+    pub version: String,
+    pub scope: String,
+    pub status: DependencyStatus,
+    pub requested_version: Option<String>,
+    pub parent: Option<u32>,
 }
 
 /// Non-secret settings of a plugin-owned project database source (API 1.4).

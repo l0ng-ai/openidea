@@ -24,7 +24,18 @@ fallback = true
 command = "phpactor"
 args = ["language-server"]
 root-markers = ["composer.json", ".phpactor.json"]
-install-hint = "Install phpactor (https://phpactor.readthedocs.io/en/master/usage/standalone.html)"
+install-hint = "Install Phpactor in Settings › Languages & Frameworks › Language Servers (it runs on PHP)"
+
+# Alternative with its own Laravel and Blade support. https://github.com/samehelhawary/phoxite
+[[language-servers]]
+name = "phoxite"
+fallback = true
+command = "phoxite-lsp"
+args = []
+root-markers = ["composer.json", "artisan", "index.php"]
+# It answers the Laravel strings itself.
+replaces = ["laravel-lsp"]
+install-hint = "Install phoxite-lsp from https://github.com/samehelhawary/phoxite/releases and put it on PATH"
 
 # Laravel projects only: hover, definition and completion inside
 # config('…'), route('…') and view('…'). Last: Intelephense keeps PHP hover,

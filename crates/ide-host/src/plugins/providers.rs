@@ -396,15 +396,37 @@ impl PluginHost {
         }
     }
 
+    pub(super) fn has_document_providers(&self, kind: ProviderKind, doc: &ProviderDocument) -> bool {
+        self.provider_plugins(kind, &doc.language)
+            .into_iter()
+            .any(|p| p.dev_root.as_ref().is_none_or(|r| doc.path.starts_with(r)))
+    }
+
     pub fn provide_completion(
         &self,
         doc: &ProviderDocument,
         at: ide_core::Pos,
         trigger: Option<&str>,
     ) -> Vec<(String, CompletionItem)> {
-        self.feature_documents(doc, Some(at))
+        self.provide_completion_for_editor(doc, at, trigger).1
+    }
+
+    pub(crate) fn provide_completion_for_editor(
+        &self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        trigger: Option<&str>,
+    ) -> (bool, Vec<(String, CompletionItem)>) {
+        // An injection-capable outer document (e.g. SQL embedded in text) may complete at other
+        // positions even when `at` is outside an injection, so avoid marking document-wide backoff.
+        let mut covered = self.has_document_providers(ProviderKind::Injections, doc);
+        let items = self
+            .feature_documents(doc, Some(at))
             .into_iter()
             .flat_map(|(doc, bounds)| {
+                if self.has_document_providers(ProviderKind::Completion, &doc) {
+                    covered = true;
+                }
                 let (d, t) = (Arc::new(doc.clone()), trigger.map(str::to_owned));
                 self.document_calls(ProviderKind::Completion, &doc, move |rt, timeout| {
                     rt.provide_completion(&d, at, t.as_deref(), timeout)
@@ -419,7 +441,8 @@ impl PluginHost {
                     Some((p, i))
                 })
             })
-            .collect()
+            .collect();
+        (covered, items)
     }
 
     pub fn provide_code_actions(

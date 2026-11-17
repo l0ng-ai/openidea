@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { provideToolWindowService, type ToolWindowService } from "@/workbench/contributions";
 import type { FileMatches, SearchQuery } from "@/platform/ipc";
 import { buildFindTree } from "../find/FindToolWindow";
 import type { FindDeps } from "../find/session";
 import {
+  closeFindTab,
   disposeFindWindow,
   openEditorResults,
   openInFindWindow,
@@ -38,6 +40,18 @@ const file = (rel: string): FileMatches => ({
 afterEach(disposeFindWindow);
 
 describe("Find tool window tabs", () => {
+  it("take the tool window and its stripe button away with the last one", () => {
+    const hide = vi.fn();
+    provideToolWindowService({ show: vi.fn(), hide } as unknown as ToolWindowService);
+    const a = openInFindWindow(q("a"), "a", { deps });
+    pinFindTab(a, true);
+    const b = openInFindWindow(q("b"), "b", { deps });
+    closeFindTab(a);
+    expect(hide).not.toHaveBeenCalled();
+    closeFindTab(b);
+    expect(hide).toHaveBeenCalledWith("find", { removeFromStripe: true });
+  });
+
   it("reuses the selected tab unless it is pinned", () => {
     const a = openInFindWindow(q("a"), "a", { deps });
     const b = openInFindWindow(q("b"), "b", { deps });

@@ -6,7 +6,7 @@
   right: 4px;
   z-index: 1;
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   opacity: 0.72;
   transition: opacity var(--dur-fast) var(--ease);
 }
@@ -72,7 +72,7 @@
   top: 12px;
   right: 12px;
   display: flex;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .previewTools .tool {
   width: 28px;

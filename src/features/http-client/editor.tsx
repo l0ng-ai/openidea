@@ -7,7 +7,7 @@ import { RangeSet, StateEffect, StateField, type EditorState, type Extension } f
 import { EditorView, GutterMarker, ViewPlugin, gutter, showPanel, type Panel, type ViewUpdate } from "@codemirror/view";
 import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import type { EditorDocContext } from "@/editor/api";
+import { mapLineStart, type EditorDocContext } from "@/editor/api";
 import { shortcutLabel } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import type { HttpRequestBlock } from "@/platform/ipc";
@@ -40,7 +40,7 @@ export const requestsField = StateField.define<Placed[]>({
     for (const e of tr.effects) if (e.is(setRequests)) return e.value;
     if (!tr.docChanged || !value.length) return value;
     return value.map((r) => {
-      const pos = tr.state.doc.lineAt(tr.changes.mapPos(r.pos, -1)).from;
+      const pos = mapLineStart(tr, r.pos);
       return { ...r, pos, line: tr.state.doc.lineAt(pos).number - 1 };
     });
   },

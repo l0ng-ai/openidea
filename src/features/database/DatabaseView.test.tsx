@@ -8,7 +8,6 @@ import { tablesKey, useDatabase } from "./store";
 import { tableInput } from "./tableInput";
 import { useEditorRegistry } from "@/editor/api";
 import { provideEditorService, provideToolWindowService, type EditorInput } from "@/workbench/contributions";
-import styles from "./Database.module.css";
 
 vi.mock("@tanstack/react-virtual", () => ({
   useVirtualizer: ({ count }: { count: number }) => ({
@@ -41,7 +40,6 @@ beforeEach(() => {
         sequences: [],
       },
     },
-    treeFilter: "",
     separateProceduresAndFunctions: false,
     treeExpanded: new Set(["pg", "pg/public", "pg/public/routines"]),
   });
@@ -60,9 +58,6 @@ describe("routine grouping", () => {
     expect(tree.queryByText("functions")).toBeNull();
     fireEvent.mouseDown(tree.getAllByText("calculate")[1]!, { button: 0 });
     expect(useDatabase.getState().selectedNode?.key).toBe("pg/public/routines/calculate(text)");
-    act(() => useDatabase.setState({ treeFilter: "refresh" }));
-    expect(tree.queryAllByText("calculate")).toHaveLength(0);
-    expect(tree.getByText("refresh_data")).toBeInTheDocument();
   });
 
   it("toggles through the action, persists the option, and restores the old expansion", async () => {
@@ -91,7 +86,7 @@ describe("routine grouping", () => {
     });
   });
 
-  it.each([false, true])("applies object and quick filters before grouping (separate: %s)", (separate) => {
+  it.each([false, true])("applies the object filter before grouping (separate: %s)", (separate) => {
     const source = useDatabase.getState().sources[0]!;
     useDatabase.setState({
       separateProceduresAndFunctions: separate,
@@ -105,10 +100,6 @@ describe("routine grouping", () => {
     expect(tree.getAllByText("calculate")).toHaveLength(2);
     const folder = tree.getByText(separate ? "functions" : "routines").closest('[role="treeitem"]')!;
     expect(within(folder as HTMLElement).getByText("2")).toBeInTheDocument();
-    act(() => useDatabase.setState({ treeFilter: "refresh" }));
-    expect(tree.queryByText("public")).toBeNull();
-    expect(tree.queryByText("routines")).toBeNull();
-    expect(tree.queryByText("functions")).toBeNull();
   });
 });
 
@@ -203,9 +194,10 @@ describe("data source colour", () => {
     });
     render(<DatabaseView />);
     const tree = within(screen.getByRole("tree", { name: "Data sources" }));
-    for (const name of ["PostgreSQL", "public", "routines", "refresh_data"]) {
-      expect(tree.getByText(name).closest('[role="treeitem"]')).toHaveClass(styles.tintedRow!, styles.tintRed!);
-    }
-    expect(tree.getByText("SQLite").closest('[role="treeitem"]')).not.toHaveClass(styles.tintedRow!);
+    const tint = (name: string) =>
+      tree.getByText(name).closest<HTMLElement>('[role="treeitem"]')!.style.getPropertyValue("--row-tint");
+    for (const name of ["PostgreSQL", "public", "routines", "refresh_data"])
+      expect(tint(name)).toBe("var(--db-color-red)");
+    expect(tint("SQLite")).toBe("");
   });
 });

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 
 /// The discovery file, relative to the app data directory.
@@ -39,12 +40,19 @@ pub fn kept_token(path: &Path) -> io::Result<String> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Discovery {
+    /// Where a client on this computer connects (the file of an IDE without this field: `127.0.0.1`).
+    #[serde(default = "loopback")]
+    pub address: IpAddr,
     pub port: u16,
     pub token: String,
     /// The IDE's process.
     pub pid: u32,
     /// The IDE's version.
     pub version: String,
+}
+
+fn loopback() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::LOCALHOST)
 }
 
 impl Discovery {
@@ -103,7 +111,13 @@ mod tests {
     fn round_trips_privately_and_only_its_owner_removes_it() {
         let tmp = tempfile::tempdir().unwrap();
         let path = discovery_path(tmp.path());
-        let ours = Discovery { port: 1234, token: "t".into(), pid: std::process::id(), version: "0.1.0".into() };
+        let ours = Discovery {
+            address: "100.92.72.95".parse().unwrap(),
+            port: 1234,
+            token: "t".into(),
+            pid: std::process::id(),
+            version: "0.1.0".into(),
+        };
         ours.write(&path).unwrap();
         assert_eq!(Discovery::read(&path).unwrap(), ours);
         #[cfg(unix)]
@@ -118,6 +132,10 @@ mod tests {
         ours.write(&path).unwrap();
         Discovery::remove_if_ours(&path);
         assert!(!path.exists());
+
+        // The file of an IDE that listened on 127.0.0.1 only has no address.
+        std::fs::write(&path, r#"{"port":1,"token":"t","pid":1,"version":"0.1.0"}"#).unwrap();
+        assert_eq!(Discovery::read(&path).unwrap().address, loopback());
     }
 
     #[test]

@@ -102,7 +102,7 @@ export async function chooseExpressionFirst(view: EditorView, then: () => unknow
 // ---------------------------------------------------------------------------
 // Occurrences chooser
 
-const ALL_OCCURRENCES = /\b(all|every) (the )?occurrences?\b|\breplace all\b/i;
+const ALL_OCCURRENCES = /\b(all|every) (the )?occurrences?\b|\breplace all\b|\bincluding similar statements\b/i;
 
 /** The single-occurrence / all-occurrences pair among a refactoring's actions, if the server offers both. */
 export function occurrenceVariants(actions: readonly CodeAction[]): { one: CodeAction; all: CodeAction } | null {

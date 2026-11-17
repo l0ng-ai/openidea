@@ -7,7 +7,7 @@ import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
 import { OPTION_LABELS, SORT_LABELS } from "./HeaderActions";
-import { newMenuItems, revealLabel } from "./contextMenu";
+import { compareTarget, newMenuItems, revealLabel } from "./contextMenu";
 import { openNewPopup } from "./newPopupModel";
 import type { ProjectNode } from "./model";
 import {
@@ -24,9 +24,12 @@ import {
   openMoveDialog,
   openRenameDialog,
   openSelection,
+  openSelectionInRightSplit,
   paste,
+  reformatNodes,
   reloadFromDisk,
   revealInFinder,
+  selectedFiles,
   selectedNodes,
   type PathKind,
 } from "./operations";
@@ -292,6 +295,16 @@ export function registerProjectActions(): () => void {
       run: openSelection,
     },
     {
+      id: "project.openInRightSplit",
+      title: "Open in Right Split",
+      category: "Project View",
+      icon: "split",
+      when: FOCUS,
+      // Folders keep Enter's expand / collapse.
+      enabled: () => selectedFiles().length > 0,
+      run: () => openSelectionInRightSplit(),
+    },
+    {
       id: "project.rename",
       title: "Rename File…",
       category: "Project View",
@@ -444,14 +457,11 @@ export function registerProjectActions(): () => void {
     },
     {
       id: "project.reformatCode",
-      title: "Reformat File",
+      title: "Reformat Code",
       category: "Project View",
       hidden: true,
       when: FOCUS,
-      run: ({ arg }) => {
-        const node = nodesFrom(arg)[0];
-        if (node && !node.dir) delegate("code.reformatFile", { path: node.path });
-      },
+      run: ({ arg }) => void reformatNodes(nodesFrom(arg)),
     },
     {
       id: "project.optimizeImports",
@@ -470,14 +480,11 @@ export function registerProjectActions(): () => void {
       category: "Project View",
       hidden: true,
       when: FOCUS,
+      // Show Diff claims ⌘D outside text editors by keyWhen; this claim keeps it in the project view.
+      keyWhen: FOCUS,
       run: ({ arg }) => {
-        const files = nodesFrom(arg).filter((n) => !n.dir);
-        if (files.length === 2)
-          delegate(
-            "diff.compareFiles",
-            files.map((f) => f.path),
-          );
-        else if (files[0]) delegate("diff.compareWith", files[0].path);
+        const target = compareTarget(nodesFrom(arg));
+        if (target) delegate(target.action, target.arg);
       },
     },
     {

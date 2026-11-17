@@ -261,6 +261,17 @@ export const EXECUTION_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "JavaScript",
+        options: [
+          {
+            kind: "toggle",
+            key: "debugger.debugServerPage",
+            label: "Debug a dev server's page in the browser",
+            hint: "Debugging a script that starts Vite, Next.js or another dev server also opens its page in Chrome or Edge with the debugger attached.",
+          },
+        ],
+      },
+      {
         title: "Breakpoints",
         options: [
           {
@@ -294,6 +305,12 @@ export const EXECUTION_PAGES: PageSpec[] = [
             hint: "Values of local variables are shown after the lines that use them while suspended.",
           },
           { kind: "toggle", key: "debugger.sortValues", label: "Sort values alphabetically" },
+          {
+            kind: "toggle",
+            key: "debugger.liveWatches",
+            label: "Evaluate watches while the program runs",
+            hint: "Where the debugger can do it without suspending (JavaScript). A watch with side effects runs again on each refresh.",
+          },
           {
             kind: "toggle",
             key: "debugger.valueTooltip",
@@ -366,6 +383,12 @@ export const EXECUTION_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "run.showOnStart",
             label: "Show Run/Debug window when a process is started",
+          },
+          {
+            kind: "toggle",
+            key: "run.pinTabs",
+            label: "Make configurations pinned by default",
+            hint: "A finished pinned tab stays open: a later run opens a new tab instead of taking its place.",
           },
           {
             kind: "number",

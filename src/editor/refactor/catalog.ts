@@ -2,7 +2,8 @@
  * IDEA's refactorings and how language-server code actions map onto them:
  * `refactor.extract.*` → Extract Method / Introduce Variable…, `refactor.inline*`
  * → Inline, `refactor.move*` → Move, signature rewrites → Change Signature.
- * Pull Members Up / Push Members Down come from the Java extension, not code actions.
+ * Pull Members Up / Push Members Down come from the Java extension, Extract Interface from jdtls
+ * requests, not code actions.
  * Pure; used by Refactor This (⌃T) and the Refactor menu actions.
  */
 import type { CodeAction } from "@/bindings";
@@ -17,6 +18,7 @@ export type RefactoringId =
   | "extractConstant"
   | "extractField"
   | "extractParameter"
+  | "extractInterface"
   | "inline"
   | "pullMembersUp"
   | "pushMembersDown";
@@ -96,6 +98,13 @@ export const REFACTORINGS: readonly Refactoring[] = [
     reason: (sel) =>
       sel ? "Selected block should represent an expression" : "Caret should be inside an expression in a function",
   },
+  {
+    id: "extractInterface",
+    action: "refactor.extractInterface",
+    label: "Extract Interface…",
+    kind: null,
+    reason: () => "Caret should be inside a class",
+  },
   { id: "inline", action: "refactor.inline", label: "Inline…", kind: "refactor.inline", reason: () => AT_NAME },
   {
     id: "pullMembersUp",
@@ -146,6 +155,9 @@ export function classifyAction(action: Pick<CodeAction, "kind" | "title">): Refa
       )
     )
       return null;
+    // rope: a module-level method has no IDEA counterpart; a module-level variable is a constant.
+    if (/\bglobal method\b/i.test(title)) return null;
+    if (/\bglobal variable\b/i.test(title)) return "extractConstant";
     if (is(/function|method/i)) return "extractMethod";
     if (is(/field|member|property/i)) return "extractField";
     if (is(/parameter|argument/i)) return "extractParameter";

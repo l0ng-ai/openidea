@@ -33,23 +33,11 @@ pub(super) async fn prepare(host: &Host, root: &Path, target: RunTarget, config:
     let root = root.to_path_buf();
     let data_dir = host.data_dir.clone();
     host.blocking(move || {
-        if !ide_docker::endpoint_is_local(&endpoint)? {
-            return Err(IdeError::invalid(format!(
-                "Run target '{}' uses a Docker daemon on another machine: the project can only be mounted from a local one",
-                target.name
-            )));
-        }
+        require_local(&endpoint, &target)?;
         let docker = ide_docker::docker_executable().ok_or_else(|| {
             IdeError::unavailable("docker executable not found; install Docker and make sure it is on PATH")
         })?;
-        let container_root = match target.container_root.trim() {
-            "" if target.kind == RunTargetKind::Compose => {
-                let json = ide_docker::compose_config(&endpoint, &root, &target.compose_files)?;
-                compose_container_root(&json, target.service.trim(), &root)?
-            }
-            "" => default_container_root(&root),
-            folder => folder.to_owned(),
-        };
+        let container_root = container_root(&endpoint, &root, &target)?;
         let file_env = env_files(&root, &config)?;
         let name = container_name(&config.id, &unique());
         let debugging = if debug { Some(Debugging::prepare(&data_dir)?) } else { None };
@@ -73,6 +61,29 @@ pub(super) async fn prepare(host: &Host, root: &Path, target: RunTarget, config:
         )
     })
     .await
+}
+
+/// The project can only be bind-mounted from a daemon on this machine.
+pub(crate) fn require_local(endpoint: &DockerEndpoint, target: &RunTarget) -> IdeResult<()> {
+    if !ide_docker::endpoint_is_local(endpoint)? {
+        return Err(IdeError::invalid(format!(
+            "Run target '{}' uses a Docker daemon on another machine: the project can only be mounted from a local one",
+            target.name
+        )));
+    }
+    Ok(())
+}
+
+/// Where the project is in the target's containers.
+pub(crate) fn container_root(endpoint: &DockerEndpoint, root: &Path, target: &RunTarget) -> IdeResult<String> {
+    Ok(match target.container_root.trim() {
+        "" if target.kind == RunTargetKind::Compose => {
+            let json = ide_docker::compose_config(endpoint, root, &target.compose_files)?;
+            compose_container_root(&json, target.service.trim(), root)?
+        }
+        "" => default_container_root(root),
+        folder => folder.to_owned(),
+    })
 }
 
 /// What a debug run mounts and publishes.
@@ -104,7 +115,7 @@ fn free_port() -> IdeResult<u16> {
 }
 
 /// The target's Docker connection (Services tool window), by id; none = the CLI's daemon.
-fn endpoint(data_dir: &Path, target: &RunTarget) -> IdeResult<DockerEndpoint> {
+pub(crate) fn endpoint(data_dir: &Path, target: &RunTarget) -> IdeResult<DockerEndpoint> {
     let id = target.docker_connection.trim();
     if id.is_empty() {
         return Ok(DockerEndpoint::Default);

@@ -7,7 +7,7 @@
 import { useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { buildFileTree, dirKeys, type FileTreeNode } from "@/features/vcs/fileTree";
 import { openDiff, withChain } from "@/features/vcs/diffInput";
-import { KIND_COLOR, baseName, fileCount, type EffectiveKind } from "@/features/vcs/model";
+import { KIND_COLOR, fileCount, renameFrom, type EffectiveKind } from "@/features/vcs/model";
 import type { Commit } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Icon, IconButton, Spinner, T, Tree, fileIconName, showContextMenu, type MenuItem } from "@/ui";
@@ -252,7 +252,7 @@ function ChangeRow({ node }: { node: FileTreeNode<CreateChange> }) {
       <span className={styles.fileName} style={{ color: KIND_COLOR[kindOf(f)] }}>
         {node.name}
       </span>
-      {f.oldPath && <span className={styles.fileDetail}>{tx`renamed from ${baseName(f.oldPath)}`}</span>}
+      {f.oldPath && <span className={styles.fileDetail}>{renameFrom(f.path, f.oldPath)}</span>}
     </span>
   );
 }

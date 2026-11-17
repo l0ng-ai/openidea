@@ -7,6 +7,8 @@ import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
 import { connectedTargets, openDialog, openSourceDialog, sourceById, useDatabase } from "./store";
 import { readClipboardPlainText } from "@/platform/clipboard";
+import { useRemote } from "@/platform/remote";
+import { dumpScope } from "./dumpTools";
 
 const act = (
   action: string,
@@ -66,7 +68,7 @@ async function sourceFromClipboard() {
 
 /** The toolbar's "+" menu (IDEA: New). */
 export function newMenu(): MenuItem[] {
-  return [{ kind: "action", action: "db.openConsole", label: "Query Console" }, sep, ...dataSourceItems()];
+  return [{ kind: "action", action: "db.newConsole", label: "Query Console" }, sep, ...dataSourceItems()];
 }
 
 function sqlScripts(n: DbNode, table: boolean): MenuItem {
@@ -81,6 +83,20 @@ function sqlScripts(n: DbNode, table: boolean): MenuItem {
   return { label: "SQL Scripts", submenu: [act("db.ddlToClipboard", n), act("db.ddlToConsole", n), sep, ...scripts] };
 }
 
+/** Export with 'pg_dump' / Restore of a PostgreSQL node; the tools run on this machine, so not in remote windows. */
+function dumpItems(n: DbNode, restore: boolean): MenuItem[] {
+  const source = sourceById(nodeTarget(n));
+  if (useRemote.getState().session || !dumpScope(n, source)) return [];
+  return [
+    act("db.dumpWithPgDump", n),
+    ...(restore ? [act("db.restoreWithPgRestore", n, { disabled: !!source?.readOnly })] : []),
+  ];
+}
+
+function importExport(items: MenuItem[]): MenuItem[] {
+  return items.length ? [{ label: "Import/Export", submenu: items }] : [];
+}
+
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null): MenuItem[] {
   if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
@@ -88,7 +104,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
   const driver = sourceById(id)?.driver ?? "sqlite";
   const o = objectOf(n);
   const t = tableOf(n);
-  const newConsole = act("db.openConsole", n, { label: "Query Console", icon: "db-console" });
+  const newConsole = act("db.newConsole", n, { label: "Query Console", icon: "db-console" });
   const refresh = act("db.refresh", n);
   const quickDoc = act("db.quickDoc", n);
   const rename = act("db.rename", n, { disabled: !(n.kind === "source" || (o && canRename(driver, o))) });
@@ -117,6 +133,8 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation(),
         sep,
         sqlScripts(n, false),
+        act("db.compareSchemas", n),
+        ...importExport(dumpItems(n, true)),
         sep,
         act("db.drop", n, { label: "Remove Data Source…" }),
       ];
@@ -130,6 +148,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sep,
         navigation(),
         sqlScripts(n, false),
+        ...importExport(dumpItems(n, true)),
       ];
     case "schema":
     case "folder":
@@ -142,6 +161,8 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         navigation(),
         sep,
         sqlScripts(n, false),
+        ...(n.kind === "schema" ? [act("db.compareSchemas", n)] : []),
+        ...importExport(dumpItems(n, true)),
         ...(n.kind === "schema" ? [sep, drop] : []),
       ];
     case "table":
@@ -175,7 +196,13 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
         sqlScripts(n, true),
         ...(n.kind === "table" && !view
           ? [
-              { label: "Import/Export", submenu: [act("db.importData", n, { disabled: driver === "clickhouse" })] },
+              {
+                label: "Import/Export",
+                submenu: [
+                  act("db.importData", n, { disabled: driver === "clickhouse" }),
+                  ...(dumpItems(n, false).length ? [sep, ...dumpItems(n, false)] : []),
+                ],
+              },
               { label: "Object Actions", submenu: [act("db.truncate", n)] },
             ]
           : []),

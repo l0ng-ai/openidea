@@ -76,15 +76,26 @@ pub async fn clipboard_set_file_list(app: AppHandle, paths: Vec<PathBuf>) -> Ide
     with_clipboard(app, move || Ok(ide_clipboard::set_files(&paths))).await
 }
 
-/// The clipboard's image as a PNG data URL, for a paste whose event carried no
-/// files: WebKitGTK leaves `clipboardData` empty for a raw image (a screenshot).
-/// None when the clipboard holds no image, and always on other platforms.
+/// Whether the clipboard holds an image (a screenshot): cheap, for the Paste item's
+/// enabled state.
+#[tauri::command]
+#[specta::specta]
+pub fn clipboard_has_image() -> bool {
+    // Synchronous Tauri commands run on the main thread, as macOS and GTK require.
+    ide_clipboard::has_image()
+}
+
+/// The clipboard's image as a PNG data URL: for a paste whose event carried no files
+/// (WebKitGTK leaves `clipboardData` empty for a raw image, a screenshot), and for
+/// the project view's Paste, which has no paste event. None when it holds no image.
 #[tauri::command]
 #[specta::specta]
 pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<String>> {
+    use base64::Engine;
+    let data_url =
+        |bytes: Vec<u8>| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
     #[cfg(target_os = "linux")]
     {
-        use base64::Engine;
         let (tx, rx) = tokio::sync::oneshot::channel();
         app.run_on_main_thread(move || {
             let sender = std::cell::Cell::new(Some(tx));
@@ -98,14 +109,11 @@ pub async fn clipboard_image(app: AppHandle) -> IdeResult<Option<String>> {
         .map_err(|error| {
             ide_core::IdeError::internal(format!("Cannot dispatch clipboard access to the main thread: {error}"))
         })?;
-        let png = rx.await.ok().flatten();
-        Ok(png
-            .map(|bytes| format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
+        Ok(rx.await.ok().flatten().map(data_url))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = app;
-        Ok(None)
+        Ok(with_clipboard(app, || Ok(ide_clipboard::png())).await?.map(data_url))
     }
 }
 

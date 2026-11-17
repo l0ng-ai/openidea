@@ -31,7 +31,7 @@ import { readFileLines, targetLabel, withDocument } from "./files";
 import { docWindowVisible, moveDocPopupToWindow, showInDocWindow } from "./docs";
 import { structure } from "@/editor/structure";
 import { basename } from "@/platform/project";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
 import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
@@ -216,7 +216,10 @@ const hoverYieldsToNavigation = ViewPlugin.fromClass(
 
 export function hoverExtension(): Extension {
   return [
-    hoverTooltip(hoverSource, { hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay) }),
+    hoverTooltip(hoverSource, {
+      hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay),
+      hideOnChange: true,
+    }),
     hoverYieldsToNavigation,
   ];
 }

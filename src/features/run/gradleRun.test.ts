@@ -190,6 +190,27 @@ describe("Build and run using: Gradle", () => {
     expect(guard).toContain("list('openidea.run.jvmArgs')");
     expect(guard).toContain("StartAttachListener|DisableAttachMechanism");
   });
+
+  // Gradle 4.6 is the oldest IDEA supports: `register`, `named` and `configureEach` are 4.9+,
+  // `debugOptions` 5.6+, `JavaExec.mainClass` 6.4+. Each use needs a guard on its line (#3864).
+  it.each([
+    ["gradleRun", RUN_SCRIPT],
+    ["gradleTests", TESTS_SCRIPT],
+    ["gradleBoot", BOOT_SCRIPT],
+  ])("%s guards Gradle API newer than 4.6", (_, script) => {
+    const unguarded = script
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("//"))
+      .filter((l) => /\.register\(|\.named\(|configureEach|debugOptions|mainClass/.test(l))
+      .filter((l) => !/GradleVersion|lazyTasks|hasProperty/.test(l));
+    expect(unguarded).toEqual([]);
+  });
+
+  it("sets the main class with `main` and creates the task eagerly on old Gradle (#3864)", () => {
+    expect(RUN_SCRIPT).toContain("if (t.hasProperty('mainClass')) t.mainClass.set(main) else t.main = main");
+    expect(RUN_SCRIPT).toContain("else p.tasks.create('openideaRun', JavaExec, configure)");
+    expect(RUN_SCRIPT).toContain("import org.gradle.util.GradleVersion");
+  });
 });
 
 describe("Gradle test runs", () => {

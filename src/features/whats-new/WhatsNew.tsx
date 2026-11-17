@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { useMarkupHtml } from "@/editor/lsp/markdown";
-import { useT } from "@/platform/i18n";
+import { DEFAULT_LOCALE, useI18n, useT } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { openExternalUrl } from "@/platform/openUrl";
 import { useProject } from "@/platform/project";
@@ -22,27 +22,32 @@ function releasePage(version: string) {
 
 export function WhatsNewPage({ input }: { input: EditorInput }) {
   const t = useT();
+  const locale = useI18n((s) => s.locale);
   const data = input.data as Partial<WhatsNewData> | undefined;
   const version = data?.version ?? "";
-  const [notes, setNotes] = useState<string | null>(data?.notes ?? null);
+  // The notes the install recorded, in this language when the manifest carried a translation.
+  const recorded = data?.texts?.[locale] ?? data?.notes ?? null;
+  const [manifestNotes, setManifestNotes] = useState<Record<string, string> | null>(null);
   // Nothing recorded and a version to look up: the manifest read starts with the first render.
   const [loading, setLoading] = useState(!data?.notes && !!version);
   const show = useProject((s) => s.settings?.general?.showWhatsNewAfterUpdate !== false);
-  // Installed outside the app: no notes were recorded, read the update manifest.
+  // Installed outside the app, or the recorded notes lack this language: read the update manifest.
   useEffect(() => {
-    if (notes || !version) return;
+    if (!version || manifestNotes || (data?.notes && (locale === DEFAULT_LOCALE || data?.texts?.[locale]))) return;
     let live = true;
     void call(commands.appReleaseNotes(version, updateSource()))
       .catch(() => null)
       .then((fetched) => {
         if (!live) return;
-        setNotes(fetched);
+        setManifestNotes(fetched);
         setLoading(false);
       });
     return () => {
       live = false;
     };
-  }, [notes, version]);
+  }, [version, locale, manifestNotes, data?.notes, data?.texts]);
+  // The manifest carries every language it has; a missing translation shows the English notes.
+  const notes = manifestNotes?.[locale] ?? manifestNotes?.[DEFAULT_LOCALE] ?? recorded;
   const html = useMarkupHtml({ kind: "markdown", value: notes ?? "" });
   return (
     <div className={styles.page}>

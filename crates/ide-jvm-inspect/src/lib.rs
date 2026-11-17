@@ -2,8 +2,10 @@
 //! suspended. Implementations live elsewhere (jdtls bundle for Java, JDWP link for Kotlin).
 
 mod names;
+mod stream;
 
 pub use names::{is_boxed, name_to_signature, signature_to_name, string_length};
+pub use stream::{AbortState, CollectedTerminal, StreamTracer, TraceCollected, TraceId, TraceState};
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -112,6 +114,15 @@ pub enum InspectError {
     VmNotFound,
     #[error("not supported by this debug adapter: {0}")]
     Unsupported(String),
+    #[error("java-debug has no debug session for this JVM")]
+    NoSession,
+    /// The bundle's reason, e.g. which line the chain starts on.
+    #[error("the debuggee is not stopped where the stream chain starts: {0}")]
+    NotAtChainStart(String),
+    #[error("a stream trace is already running in this JVM")]
+    Busy,
+    #[error("there is no such stream trace in this JVM")]
+    NoTrace,
     #[error("the request timed out")]
     TimedOut,
     #[error("the connection was closed")]

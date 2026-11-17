@@ -335,7 +335,7 @@ impl PluginHost {
 
     /// The web roots `plugin` declares (entry directories, package-relative, `/`-terminated).
     fn web_dirs(&self, plugin: &str) -> Vec<String> {
-        [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+        super::ui_points::WEB_POINTS
             .iter()
             .flat_map(|point| self.ui.items(point, Some(plugin)))
             .filter_map(|item| item.decl.get("web").and_then(|w| w.as_str()).map(str::to_owned))
@@ -356,7 +356,7 @@ impl PluginHost {
         if !plugin.status().is_live() {
             return Err(IdeError::unavailable(format!("plugin {plugin_id:?} is not enabled")));
         }
-        let entry = [super::ui_points::VIEWS, super::ui_points::CUSTOM_EDITORS]
+        let entry = super::ui_points::WEB_POINTS
             .iter()
             .flat_map(|point| self.ui.items(point, Some(plugin_id)))
             .find(|item| item.key == view)

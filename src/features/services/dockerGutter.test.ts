@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { EditorView } from "@codemirror/view";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
 import * as ui from "@/ui";
 import { dockerGutter } from "./dockerGutter";
 import { useComposeFiles } from "./compose";
@@ -14,7 +15,10 @@ it("refreshes markers and menus after edits, removes non-service keys and respec
   const view = new EditorView({
     doc: "services:\n  web:\n    image: nginx\n  x-defaults:\n    image: nginx\nvolumes:\n  data:\n",
     parent: document.body,
-    extensions: dockerGutter({ doc: 1, path: "/p/stack.yml", language: "yaml", uiMode: null, readOnly: false }),
+    extensions: [
+      iconAreaExtension,
+      dockerGutter({ doc: 1, path: "/p/stack.yml", language: "yaml", uiMode: null, readOnly: false }),
+    ],
   });
   const markers = () => [...view.dom.querySelectorAll<HTMLButtonElement>(".cm-gutterElement button")];
   try {

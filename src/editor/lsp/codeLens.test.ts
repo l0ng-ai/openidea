@@ -8,6 +8,7 @@ const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
   lspReferences: vi.fn(),
   cancelRequest: vi.fn<(id: number) => Promise<void>>(async () => {}),
+  vcsBlame: vi.fn(),
 }));
 vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
@@ -102,6 +103,42 @@ describe("usages lens targets", () => {
   });
 });
 
+describe("author hint", () => {
+  it("toggles the blame annotations on every click", async () => {
+    ipc.vcsBlame.mockResolvedValue(ok([{ commit: "c1", author: "Ann", timeMs: 1, summary: "init" }]));
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: true } } } as never,
+    });
+    const view = editor();
+    await settle();
+    const author = view.state.facet(codeLenses).find((l) => l.kind === "author")!;
+    expect(author.title).toContain("Ann");
+    author.run!(view, new MouseEvent("click"));
+    author.run!(view, new MouseEvent("click"));
+    expect(executeAction.mock.calls).toEqual([["vcs.annotate"], ["vcs.annotate"]]);
+  });
+});
+
+describe("Code Vision switch", () => {
+  it("hides usages and author while off and brings back the kinds still chosen", async () => {
+    ipc.vcsBlame.mockResolvedValue(ok([{ commit: "c1", author: "Ann", timeMs: 1, summary: "init" }]));
+    const inlay = (codeVision: boolean) =>
+      useProject.setState({
+        settings: { editor: { inlay: { codeVision, codeVisionUsages: true, codeVisionAuthor: true } } } as never,
+      });
+    inlay(true);
+    const view = editor();
+    await settle();
+    expect(view.state.facet(codeLenses).map((l) => l.kind)).toEqual(["author", "usages"]);
+    inlay(false);
+    await settle();
+    expect(titles(view)).toEqual([]);
+    inlay(true);
+    await settle();
+    expect(view.state.facet(codeLenses).map((l) => l.kind)).toEqual(["author", "usages"]);
+  });
+});
+
 describe("background usage counts", () => {
   it("uses the server's existing scope and leaves full searches to the explicit action", async () => {
     const view = editor();
@@ -173,6 +210,49 @@ describe("background usage counts", () => {
     emitLocalIdeEvent({ type: "lspRefresh", kind: "codeLens", server: 1 });
     await settle();
     expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("keeps the shown lens while the server is busy and corrects the count once it settles", async () => {
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Editing while the server is indexing: the re-computed count comes back incomplete.
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "rust-analyzer", status: "busy", message: null });
+    ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await settle();
+    await settle();
+    await settle();
+    await settle();
+    // The lens stays on its (mapped) line instead of blinking away and shifting the layout.
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Once it settles, a complete answer replaces the stale count.
+    ipc.lspReferences.mockResolvedValue(refs(0));
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "rust-analyzer", status: "ready", message: null });
+    await settle();
+    expect(titles(view)).toEqual(["no usages"]);
+  });
+
+  it("opens usages at the lens's current position after edits above it", async () => {
+    // The lens anchors on the identifier (`f0` at column 3), as in a real outline.
+    const decl = item("f0", "function", 0);
+    decl.selection_range = { start: { line: 0, col: 3 }, end: { line: 0, col: 5 } };
+    ipc.docOutline.mockResolvedValue(ok([decl]));
+    const view = editor();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
+    // Insert a line above the declaration. The lens maps down with its line, and a
+    // pass with an identical count is suppressed by `sameLenses` — the click must
+    // still land on the identifier, not where it was when the lens was created.
+    view.dispatch({ changes: { from: 0, insert: "\n" } });
+    const declAfter = item("f0", "function", 1);
+    declAfter.selection_range = { start: { line: 1, col: 3 }, end: { line: 1, col: 5 } };
+    ipc.docOutline.mockResolvedValue(ok([declAfter]));
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.kind === "usages")!;
+    expect(lens.pos).toBe(4);
+    lens.run!(view, new MouseEvent("click"));
+    expect(view.state.selection.main.head).toBe(4);
   });
 
   it("cancels obsolete requests immediately on edits and ignores their late replies", async () => {

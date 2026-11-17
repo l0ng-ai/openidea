@@ -10,7 +10,13 @@ import { BarButton, Icon, Menu, badgeKind, fileIconName } from "@/ui";
 import { notifications, useProjectViewLead } from "@/workbench/contributions";
 import { useDistractionFree } from "@/workbench/distractionFree";
 import { ENCODING_CHOICES, useEditorPrefs } from "@/platform/editorSettings";
-import { isVirtualUri, invalidateVirtualDocument } from "@/platform/virtualDocs";
+import {
+  gitRevisionOf,
+  isUntitledUri,
+  isVirtualUri,
+  invalidateVirtualDocument,
+  untitledTitle,
+} from "@/platform/virtualDocs";
 import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } from "../controller";
 import { useDocMeta, useOutline } from "../model/document";
 import { symbolChain } from "./outline";
@@ -76,6 +82,25 @@ function projectCrumb(project: { root: string; name: string }): Crumb {
 
 /** The project › dirs › file part of the navigation path (IDEA navigation bar). */
 function pathCrumbs(project: { root: string; name: string } | null, path: string, dir = false): Crumb[] {
+  // A new-file buffer has no folder yet: only its name.
+  if (isUntitledUri(path)) {
+    const label = untitledTitle(path);
+    return [{ label, icon: fileIconName(label), title: label }];
+  }
+  // A file at a Git revision: the short revision, then the file's folders in the working tree.
+  const revision = gitRevisionOf(path);
+  if (revision) {
+    const parts = revision.path.split("/");
+    const file = parts.pop()!;
+    return [
+      { label: revision.revision.slice(0, 8), icon: "commit", title: revision.revision },
+      ...parts.map((label, i): Crumb => {
+        const at = `${revision.repo}/${parts.slice(0, i + 1).join("/")}`;
+        return { label, icon: "folder", title: parts.slice(0, i + 1).join("/"), nav: { kind: "dir", path: at, label } };
+      }),
+      { label: file, icon: fileIconName(file), title: revision.path },
+    ];
+  }
   const target = dir ? path : dirname(path);
   const segments: Crumb[] = [];
   if (project && target !== project.root && !target.startsWith(project.root + "/")) project = null;

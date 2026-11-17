@@ -2,14 +2,15 @@
 //! the IDE's built-in tools.
 //!
 //! - **Transport:** MCP Streamable HTTP (2025-06-18; 2025-03-26 and 2024-11-05
-//!   clients too) on `127.0.0.1:<random port>`, endpoint `/mcp`. Responses are
+//!   clients too) on `127.0.0.1:<random port>` (or another address of
+//!   [`ServerOptions`]), endpoint `/mcp`. Responses are
 //!   plain JSON (no SSE streams: `GET` is 405). Every request carries
 //!   `Authorization: Bearer <token>` (random, per run); requests from another
 //!   `Origin` or `Host` are refused (DNS rebinding).
 //! - **Projects:** the `X-OpenIDEA-Project` header or the `?project=` query
 //!   names a folder; the server picks the open project containing it.
-//! - **Discovery:** `<app-data>/mcp/server.json` (`port`, `token`, `pid`,
-//!   `version`; readable only by the user) while the server runs.
+//! - **Discovery:** `<app-data>/mcp/server.json` (`address`, `port`, `token`,
+//!   `pid`, `version`; readable only by the user) while the server runs.
 //! - **Stdio:** `<app exe> --mcp-stdio [--project <path>]` reads the discovery
 //!   file and relays newline-delimited JSON-RPC to the server ([`stdio`]), so
 //!   persisted client configurations hold no token.
@@ -23,7 +24,7 @@ mod server;
 pub mod stdio;
 
 pub use discovery::{DISCOVERY_FILE, Discovery, TOKEN_FILE, discovery_path, kept_token, token_path};
-pub use server::{McpServer, ServerOptions};
+pub use server::{McpServer, ServerOptions, local_address};
 pub use tokio_util::sync::CancellationToken;
 
 use std::path::{Path, PathBuf};
@@ -85,9 +86,15 @@ pub trait ToolRegistry: Send + Sync + 'static {
     ) -> Result<String, ToolCallError>;
 }
 
-/// The URL of the server at `port` for `project`.
+/// The URL of the server at `127.0.0.1:<port>` for `project`.
 pub fn endpoint_url(port: u16, project: &Path) -> String {
-    format!("http://127.0.0.1:{port}/mcp?project={}", encode_query(&project.to_string_lossy()))
+    endpoint_url_at(std::net::Ipv4Addr::LOCALHOST.into(), port, project)
+}
+
+/// The URL of the server at `<address>:<port>` for `project`.
+pub fn endpoint_url_at(address: std::net::IpAddr, port: u16, project: &Path) -> String {
+    let at = std::net::SocketAddr::new(address, port);
+    format!("http://{at}/mcp?project={}", encode_query(&project.to_string_lossy()))
 }
 
 /// The stdio bridge's command line for `project`: `exe --mcp-stdio --project <project>`.
@@ -133,6 +140,9 @@ mod tests {
     fn urls_and_commands_name_the_project() {
         let url = endpoint_url(4321, Path::new("/home/me/my app/项目"));
         assert_eq!(url, "http://127.0.0.1:4321/mcp?project=/home/me/my%20app/%E9%A1%B9%E7%9B%AE");
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert_eq!(endpoint_url_at(ip("100.92.72.95"), 80, Path::new("/p")), "http://100.92.72.95:80/mcp?project=/p");
+        assert_eq!(endpoint_url_at(ip("fd7a::1"), 80, Path::new("/p")), "http://[fd7a::1]:80/mcp?project=/p");
         assert_eq!(
             stdio_command(Path::new("/Applications/OpenIDEA.app/Contents/MacOS/openidea"), Path::new("/p")),
             ["/Applications/OpenIDEA.app/Contents/MacOS/openidea", "--mcp-stdio", "--project", "/p"]

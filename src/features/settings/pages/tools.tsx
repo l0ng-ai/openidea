@@ -259,7 +259,8 @@ function TerminalFont() {
   const [columnWidth, setColumnWidth] = useSetting<number>("terminal.columnWidth");
   const matched = useLabelMatch("Use editor font");
   const monoMatched = useLabelMatch("Show only monospaced fonts");
-  const [monoOnly, setMonoOnly] = useState(true);
+  const [monoSetting, setMonoOnly] = useSetting<boolean>("editor.onlyMonospacedFonts");
+  const monoOnly = monoSetting !== false;
   return (
     <>
       <div className={clsx(styles.inlineRow, matched && styles.matched)}>
@@ -653,6 +654,33 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   {
+    id: "tools.externalDiff",
+    title: "External Diff Tools",
+    group: TOOLS_GROUP,
+    order: 605,
+    keywords: ["diff", "compare", "Beyond Compare", "meld", "kdiff3", "opendiff", "FileMerge"],
+    sections: [
+      {
+        options: [
+          {
+            kind: "toggle",
+            key: "externalDiff.enabled",
+            label: "Use external diff tool",
+            hint: "Diff viewers offer Show Diff in External Tool.",
+          },
+          { kind: "text", key: "externalDiff.path", label: "Path to executable", placeholder: "/usr/local/bin/bcomp" },
+          {
+            kind: "text",
+            key: "externalDiff.parameters",
+            label: "Parameters",
+            placeholder: "%1 %2 %3",
+            hint: "%1 – the left file, %2 – the right file, %3 – the diff's title.",
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: "agents.chat",
     title: "Chat",
     group: "Agents",
@@ -672,6 +700,7 @@ export const TOOLS_PAGES: PageSpec[] = [
       "approval",
       "permission",
       "bypass",
+      "width",
     ],
     sections: [
       {
@@ -726,6 +755,11 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.smoothText",
             label: "Reveal streaming text smoothly",
             hint: "Text appears at a steady pace instead of in bursts",
+          },
+          {
+            kind: "toggle",
+            key: "agents.fitWindowWidth",
+            label: "Fit conversation to the window width",
           },
         ],
       },

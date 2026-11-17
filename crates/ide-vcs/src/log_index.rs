@@ -12,7 +12,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::SystemTime;
 
-pub(crate) const COMMITS: TableDefinition<&str, &[u8]> = TableDefinition::new("summaries-v2");
+// v3: summaries follow git's subject (the first paragraph on one line), not the first line.
+pub(crate) const COMMITS: TableDefinition<&str, &[u8]> = TableDefinition::new("summaries-v3");
+const STALE_COMMITS: TableDefinition<&str, &[u8]> = TableDefinition::new("summaries-v2");
 const MESSAGES: TableDefinition<&str, &str> = TableDefinition::new("messages-v1");
 const MAX_MEMORY_COMMITS: usize = 4096;
 const MAX_MEMORY_MESSAGES: usize = 1024;
@@ -268,6 +270,7 @@ impl LogIndex {
         let mut databases = DATABASES.get_or_init(Mutex::default).lock().unwrap_or_else(|p| p.into_inner());
         self.db = databases.get(&path).and_then(Weak::upgrade).or_else(|| {
             let db = Arc::new(std::fs::create_dir_all(dir).ok().and_then(|_| Database::create(&path).ok())?);
+            drop_stale_tables(&db);
             databases.insert(path, Arc::downgrade(&db));
             Some(db)
         });
@@ -309,8 +312,8 @@ impl LogIndex {
             let author = commit.author().map_err(gx)?;
             let committer = commit.committer().map_err(gx)?;
             let raw = commit.message_raw_sloppy();
-            let summary = raw.split(|b| *b == b'\n').find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
-            let summary_text = to_string(summary.as_bstr());
+            let summary_text = subject(raw.as_bstr());
+            let message_truncated = raw.trim() != summary_text.as_bytes();
             let record = Arc::new(Commit {
                 id: key.clone(),
                 short_id: key[..key.len().min(8)].to_string(),
@@ -327,7 +330,7 @@ impl LogIndex {
                 commit_time_ms: committer.time().map(|t| t.seconds as f64 * 1000.0).unwrap_or(0.0),
                 summary: summary_text.clone(),
                 message: summary_text,
-                message_truncated: raw.trim() != summary,
+                message_truncated,
                 history_path: None,
                 log_position: None,
                 log_total: None,
@@ -425,6 +428,23 @@ pub(crate) fn matches_user(query: &str, name: &str, email: &str) -> bool {
         .any(|alias| target.contains(&normalize_user(alias)))
 }
 
+/// git's subject (`%s`, `git log --oneline`): the message's first paragraph on one line.
+/// A whitespace-only line ends the paragraph, as in git; `\r\n` endings count as newlines.
+fn subject(message: &gix::bstr::BStr) -> String {
+    let lines = message.lines().map(|l| l.trim_end()).skip_while(|l| l.is_empty());
+    let paragraph: Vec<String> = lines.take_while(|l| !l.is_empty()).map(|l| to_string(l.as_bstr())).collect();
+    // git skips leading whitespace (blank lines and the first line's indent) before the subject.
+    paragraph.join(" ").trim_start().to_owned()
+}
+
+/// Drops tables an older version wrote, so outdated summaries don't stay on disk.
+fn drop_stale_tables(db: &Database) {
+    let Ok(txn) = db.begin_write() else { return };
+    if txn.delete_table(STALE_COMMITS).unwrap_or(false) {
+        let _ = txn.commit();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +506,40 @@ mod tests {
         assert_eq!(branches[0], vec!["feature".to_string(), "main".to_string()]);
         assert_eq!(branches[1], vec!["feature".to_string(), "main".to_string()]);
         assert_eq!(branches[2], vec!["main".to_string()]);
+    }
+
+    #[test]
+    fn summary_is_git_subject_first_paragraph_on_one_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git(dir, &["init", "-q"]);
+        let messages = [
+            // The reporter's template: one paragraph of field lines (#3680).
+            "[所属项目]:能力平台-订单\n[发布版本]:v1.2\n[需求单号]:REQ-1\n[需求描述]:导出\n[修改内容]:修复",
+            "Subject only",
+            "Subject\n\nBody that stays in the details",
+            "Wrapped subject\ncontinues here\n\nBody",
+            "CRLF subject\r\nsecond line\r\n\r\nBody",
+            "Ends at a blank line\n   \t\nBody",
+            "\n\n  Leading blank lines  \nand   indent kept\n",
+            "Trailing spaces   \n",
+        ];
+        let mut ids = Vec::new();
+        for (i, message) in messages.iter().enumerate() {
+            std::fs::write(dir.join("a.txt"), i.to_string()).unwrap();
+            std::fs::write(dir.join(".git/msg.txt"), message).unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "-q", "--cleanup=verbatim", "-F", ".git/msg.txt"]);
+            ids.push(ObjectId::from_hex(git(dir, &["rev-parse", "HEAD"]).as_bytes()).unwrap());
+        }
+        let repo = gix::open(dir).unwrap();
+        let mut index = LogIndex::default();
+        for (id, message) in ids.iter().zip(messages) {
+            let expected = git(dir, &["log", "-1", "--format=%s", &id.to_string()]);
+            let commit = index.get(&repo, *id).unwrap();
+            assert_eq!(commit.summary, expected, "{message:?}");
+            assert_eq!(commit.message_truncated, message.trim() != expected, "{message:?}");
+        }
+        assert_eq!(index.get(&repo, ids[0]).unwrap().summary, messages[0].replace('\n', " "));
     }
 }

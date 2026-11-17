@@ -162,6 +162,18 @@ describe("Tree keyboard navigation", () => {
     expect(lead()).toBe("src");
   });
 
+  it("collapsing a node collapses everything expanded below it", () => {
+    const onExpandedChange = vi.fn();
+    const { tree, key } = setup({ defaultExpanded: ["src", "main"], onExpandedChange });
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx", "index.ts", "util.ts", "README.md"]);
+    key("Home");
+    key("ArrowLeft");
+    expect(labels(tree)).toEqual(["src", "README.md"]);
+    expect([...onExpandedChange.mock.calls[0]![0]]).toEqual([]);
+    key("ArrowRight");
+    expect(labels(tree)).toEqual(["src", "main", "util.ts", "README.md"]);
+  });
+
   it("Enter toggles folders and activates leaves", () => {
     const { tree, lead, key, onActivate } = setup();
     key("ArrowDown");
@@ -282,6 +294,19 @@ describe("Tree speed search", () => {
     key("ArrowDown");
     for (const c of "App") key(c);
     expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
+  });
+
+  it("the field's toggle switches to showing only matches without ending the search", () => {
+    const { tree, key } = setup({ defaultExpanded: ["src", "main"], speedSearchField: true });
+    for (const c of "App") key(c);
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx", "index.ts", "util.ts", "README.md"]);
+    const toggle = screen.getByRole("button", { name: "Show Only Matches" });
+    expect(fireEvent.mouseDown(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(labels(tree)).toEqual(["src", "main", "App.tsx"]);
+    fireEvent.click(toggle);
+    expect(labels(tree)).toHaveLength(6);
   });
 });
 

@@ -120,37 +120,151 @@ export function toggleFilterValue(
   return next;
 }
 
+/** An exact decimal value: sign × digits × 10^exponent, digits without trailing zeroes. */
+interface Decimal {
+  negative: boolean;
+  digits: bigint;
+  exponent: number;
+}
+
+/** Beyond this exponent gap two values cannot be added with displayable digits; such selections keep the approximate total. */
+const DECIMAL_DIGITS = 1_000_000;
+
+/** The number of significant digits an inexact quotient keeps (as the previous display showed). */
+const SIGNIFICANT = 12;
+
+function parseDecimal(text: string): Decimal {
+  const parts = NUMBER.exec(text)!;
+  const fraction = parts[3] ?? "";
+  const digits = BigInt(parts[2]! + fraction);
+  const exponent = Number(parts[4] ?? "0") - fraction.length;
+  if (!digits) return { negative: false, digits: 0n, exponent: 0 };
+  return { negative: parts[1] === "-", ...withoutZeroes(digits, exponent) };
+}
+
+/** The value with trailing zeroes folded into the exponent (`250×10^-2` → `25×10^-1`); zero stays zero. */
+function withoutZeroes(digits: bigint, exponent: number): { digits: bigint; exponent: number } {
+  const text = digits.toString();
+  const zeroes = text.length - text.replace(/0+$/, "").length;
+  return zeroes && digits
+    ? { digits: BigInt(text.slice(0, text.length - zeroes)), exponent: exponent + zeroes }
+    : { digits, exponent };
+}
+
+/** The exact value as decimal text; extreme exponents stay compact in scientific notation. */
+function decimalText(d: Decimal): string {
+  if (!d.digits) return "0";
+  const digits = d.digits.toString();
+  const signed = (body: string) => (d.negative ? `-${body}` : body);
+  const scientific = () =>
+    signed(`${digits[0]!}${digits.length > 1 ? `.${digits.slice(1)}` : ""}e${d.exponent + digits.length - 1}`);
+  if (d.exponent >= 0) return d.exponent <= 64 ? signed(digits + "0".repeat(d.exponent)) : scientific();
+  const point = digits.length + d.exponent;
+  if (point > 0) return signed(`${digits.slice(0, point)}.${digits.slice(point)}`);
+  if (point >= -8) return signed(`0.${"0".repeat(-point)}${digits}`);
+  return scientific();
+}
+
+/** a + b exactly; null when their exponents are too far apart for the digits to stay displayable. */
+function addDecimal(a: Decimal, b: Decimal): Decimal | null {
+  if (!a.digits) return b.digits ? b : { negative: false, digits: 0n, exponent: 0 };
+  if (!b.digits) return a;
+  const low = Math.min(a.exponent, b.exponent);
+  if (Math.max(a.exponent, b.exponent) - low > DECIMAL_DIGITS) return null;
+  const aligned = (d: Decimal) => (d.negative ? -1n : 1n) * d.digits * 10n ** BigInt(d.exponent - low);
+  const sum = aligned(a) + aligned(b);
+  if (!sum) return { negative: false, digits: 0n, exponent: 0 };
+  return { negative: sum < 0n, ...withoutZeroes(sum < 0n ? -sum : sum, low) };
+}
+
+/** The exact sum of numeric texts; null when some values' exponents are too far apart. */
+function sumDecimal(texts: readonly string[]): Decimal | null {
+  let total: Decimal = { negative: false, digits: 0n, exponent: 0 };
+  for (const text of texts) {
+    const next = addDecimal(total, parseDecimal(text));
+    if (next === null) return null;
+    total = next;
+  }
+  return total;
+}
+
+/** a / divisor (divisor > 0): exact when the division terminates, else the fraction rounds half-up at `SIGNIFICANT` digits. */
+function divideDecimal(a: Decimal, divisor: bigint): Decimal {
+  if (!a.digits) return { negative: false, digits: 0n, exponent: 0 };
+  // A finite decimal requires the coefficient to cancel every divisor factor except 2 and 5.
+  let denominator = divisor;
+  for (const factor of [2n, 5n]) while (denominator % factor === 0n) denominator /= factor;
+  const terminating = a.digits % denominator === 0n;
+  let rest = a.digits % divisor;
+  let text = (a.digits / divisor).toString();
+  let fraction = "";
+  while (rest && (terminating || fraction.length < SIGNIFICANT)) {
+    rest *= 10n;
+    fraction += (rest / divisor).toString();
+    rest %= divisor;
+  }
+  const exponent = a.exponent - fraction.length;
+  // Round half-up on the first dropped digit when the division does not terminate.
+  if (rest && (rest * 10n) / divisor >= 5n) text = (BigInt(text + fraction) + 1n).toString();
+  else text += fraction;
+  return { negative: a.negative, ...withoutZeroes(BigInt(text), exponent) };
+}
+
 export interface Aggregates {
   count: number;
   distinct: number;
   nulls: number;
-  /** When every non-NULL value is a number; null otherwise. */
-  sum: number | null;
-  avg: number | null;
+  /** When every non-NULL value is a number: the exact decimal text; null otherwise. */
+  sum: Cell;
+  avg: Cell;
   min: Cell;
   max: Cell;
-  median: number | null;
+  median: Cell;
+}
+
+/** The approximate total, average and median, for selections too far apart to combine exactly. */
+function approximateAggregates(numbers: number[]): { sum: Cell; avg: Cell; median: Cell } {
+  const total = numbers.reduce((a, b) => a + b, 0);
+  const ordered = [...numbers].sort((a, b) => a - b);
+  const mid = Math.floor(ordered.length / 2);
+  return {
+    sum: formatNumber(total),
+    avg: formatNumber(total / numbers.length),
+    median: formatNumber(ordered.length % 2 ? ordered[mid]! : (ordered[mid - 1]! + ordered[mid]!) / 2),
+  };
 }
 
 /** IDEA's Aggregates view of the selected cells. */
 export function aggregates(cells: readonly Cell[]): Aggregates {
   const present = cells.filter((c): c is string => c !== null);
-  const numbers = present.filter((c) => NUMBER.test(c)).map(Number);
-  const numeric = numbers.length > 0 && numbers.length === present.length;
+  const numericTexts = present.filter((c) => NUMBER.test(c));
+  const numeric = numericTexts.length > 0 && numericTexts.length === present.length;
   const sorted = [...present].sort(compareCells);
-  let median: number | null = null;
+  let sum: Cell = null;
+  let avg: Cell = null;
+  let median: Cell = null;
   if (numeric) {
-    const n = [...numbers].sort((a, b) => a - b);
-    const mid = Math.floor(n.length / 2);
-    median = n.length % 2 ? n[mid]! : (n[mid - 1]! + n[mid]!) / 2;
+    const total = sumDecimal(numericTexts);
+    if (total === null) ({ sum, avg, median } = approximateAggregates(numericTexts.map(Number)));
+    else {
+      sum = decimalText(total);
+      avg = decimalText(divideDecimal(total, BigInt(numericTexts.length)));
+      const ordered = [...numericTexts].sort(compareCells);
+      const mid = Math.floor(ordered.length / 2);
+      if (ordered.length % 2) median = ordered[mid]!;
+      else {
+        // The mean of the two middle values; halving a decimal sum is always exact.
+        const middle = addDecimal(parseDecimal(ordered[mid - 1]!), parseDecimal(ordered[mid]!));
+        median = middle === null ? null : decimalText(divideDecimal(middle, 2n));
+      }
+    }
   }
-  const sum = numeric ? numbers.reduce((a, b) => a + b, 0) : null;
   return {
     count: cells.length,
     distinct: new Set(cells).size,
     nulls: cells.length - present.length,
     sum,
-    avg: sum === null ? null : sum / numbers.length,
+    avg,
     min: sorted[0] ?? null,
     max: sorted.at(-1) ?? null,
     median,
@@ -167,13 +281,17 @@ export type ChartAggregate = "sum" | "avg" | "count" | "min" | "max" | "none";
 
 export interface ChartPoint {
   label: string;
+  /** The approximate value at which the mark is plotted. */
   value: number;
+  /** The combined value exactly, as decimal text (the cell for `none`). */
+  text: string;
 }
 
 /**
  * The chart's series: `y` per distinct `x` (in first-seen order), combined with
  * `agg`; `none` plots every row as is. Non-numeric `y` values are skipped
- * (except for `count`).
+ * (except for `count`). Values combine exactly (a BIGINT sum must not round);
+ * only the plot coordinates approximate them.
  */
 export function chartSeries(
   rows: ReadonlyArray<readonly Cell[]>,
@@ -184,30 +302,40 @@ export function chartSeries(
   if (agg === "none")
     return rows
       .filter((r) => r[y] !== null && NUMBER.test(r[y]!))
-      .map((r) => ({ label: r[x] ?? "<null>", value: Number(r[y]) }));
-  const groups = new Map<string, number[]>();
+      .map((r) => ({ label: r[x] ?? "<null>", value: Number(r[y]), text: r[y]! }));
+  const groups = new Map<string, string[]>();
   for (const r of rows) {
     const label = r[x] ?? "<null>";
     const v = r[y] ?? null;
     if (!groups.has(label)) groups.set(label, []);
-    if (agg === "count") groups.get(label)!.push(1);
-    else if (v !== null && NUMBER.test(v)) groups.get(label)!.push(Number(v));
+    if (agg === "count") groups.get(label)!.push("1");
+    else if (v !== null && NUMBER.test(v)) groups.get(label)!.push(v);
   }
-  const combine = (v: number[]): number => {
-    if (!v.length) return 0;
+  const combine = (v: string[]): string => {
+    if (!v.length) return "0";
     switch (agg) {
-      case "sum":
       case "count":
-        return v.reduce((a, b) => a + b, 0);
-      case "avg":
-        return v.reduce((a, b) => a + b, 0) / v.length;
+        return String(v.length);
       case "min":
-        return Math.min(...v);
+        return v.reduce((a, b) => (compareCells(a, b) <= 0 ? a : b));
       case "max":
-        return Math.max(...v);
+        return v.reduce((a, b) => (compareCells(a, b) > 0 ? a : b));
+      case "sum":
+      case "avg": {
+        const total = sumDecimal(v);
+        // Exponents too far apart to combine exactly keep the approximate total.
+        if (total === null) {
+          const approximate = v.reduce((a, b) => a + Number(b), 0);
+          return formatNumber(agg === "avg" ? approximate / v.length : approximate);
+        }
+        return agg === "avg" ? decimalText(divideDecimal(total, BigInt(v.length))) : decimalText(total);
+      }
     }
   };
-  return [...groups].map(([label, v]) => ({ label, value: combine(v) }));
+  return [...groups].map(([label, v]) => {
+    const text = combine(v);
+    return { label, value: Number(text), text };
+  });
 }
 
 /** Round axis ticks from 0 (or the minimum, when negative) to `max`. */

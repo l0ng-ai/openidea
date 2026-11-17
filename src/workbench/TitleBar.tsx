@@ -22,6 +22,7 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
+import { captionButtons } from "./windowButtons";
 import { useFullscreen } from "./useFullscreen";
 import { usePlatform } from "@/platform/platformInfo";
 import { projectInitials } from "./projectColor";
@@ -311,6 +312,7 @@ export function TitleBar({
   const overlay = usePlatform((s) => s.overlayTitleBar);
   const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
+  const windowButtons = usePlatform((s) => s.windowButtons);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
   const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
@@ -321,6 +323,8 @@ export function TitleBar({
     overlay && styles.overlay,
     overlay && fullscreen && styles.overlayFullscreen,
     frameless && styles.frameless,
+    frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
+    frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,
   );
   // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
   // would lead back out of Distraction Free Mode or bring the toolbar back.
@@ -332,9 +336,10 @@ export function TitleBar({
         {...windowDragRegion}
         data-titlebar={compact ? "compact" : "bare"}
       >
+        {frameless && <WindowControls side="left" />}
         {frameless && <MainMenu />}
         {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
-        {frameless && <WindowControls />}
+        {frameless && <WindowControls side="right" />}
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
@@ -351,6 +356,7 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
+      {frameless && <WindowControls side="left" dialog={dialog} />}
       {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
@@ -370,7 +376,7 @@ export function TitleBar({
           )}
         </>
       )}
-      {frameless && <WindowControls dialog={dialog} />}
+      {frameless && <WindowControls side="right" dialog={dialog} />}
     </header>
   );
   if (!menuRow) return header;

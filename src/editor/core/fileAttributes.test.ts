@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DocModel } from "./model/document";
-import { readOnlyQuestion, toggleReadOnly } from "./fileAttributes";
+import { offerMakeWritable, readOnlyQuestion, toggleReadOnly } from "./fileAttributes";
 
 function model(readOnly: boolean, extra: Partial<{ virtual: boolean; banner: string | null }> = {}) {
   const meta = { readOnly, banner: extra.banner ?? (readOnly ? "readOnly" : null) };
@@ -41,5 +41,29 @@ describe("Toggle Read-only Attribute", () => {
     toggleReadOnly(model(true, { banner: "binary" }));
     expect(confirm).not.toHaveBeenCalled();
     expect(readOnlyQuestion("a.txt", false).confirm).toBe("Make Read-only");
+  });
+});
+
+describe("editing a read-only file", () => {
+  it("offers to make it writable once, then lets edits through", async () => {
+    const m = model(true);
+    answer = true;
+    expect(offerMakeWritable(m)).toBe(true);
+    expect(offerMakeWritable(m)).toBe(true);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: "Make File Writable" }));
+    await vi.waitFor(() => expect(m.setReadOnly).toHaveBeenCalledWith(false));
+    expect(offerMakeWritable(m)).toBe(false);
+  });
+
+  it("refuses edits without asking for library, binary and too-large documents", () => {
+    for (const m of [
+      model(true, { virtual: true }),
+      model(true, { banner: "binary" }),
+      model(true, { banner: "tooLarge" }),
+    ])
+      expect(offerMakeWritable(m)).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(offerMakeWritable(model(false))).toBe(false);
   });
 });

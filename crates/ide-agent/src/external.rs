@@ -134,7 +134,10 @@ fn codex_meta(line: &serde_json::Value) -> Option<(String, Option<String>)> {
     let payload =
         line.get("payload").filter(|p| p.get("type").and_then(serde_json::Value::as_str) == Some("session_meta"));
     let inner = payload.and_then(|p| p.get("payload")).or_else(|| {
-        line.get("type").and_then(serde_json::Value::as_str).filter(|t| *t == "session_meta").and(Some(line))
+        line.get("type")
+            .and_then(serde_json::Value::as_str)
+            .filter(|t| *t == "session_meta")
+            .map(|_| line.get("payload").unwrap_or(line))
     })?;
     let id = inner.get("id").and_then(serde_json::Value::as_str)?.to_owned();
     let cwd = inner.get("cwd").and_then(serde_json::Value::as_str).map(str::to_owned);
@@ -294,15 +297,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_meta_accepts_current_and_legacy_shapes() {
+        let meta = json!({"id": "thread-1", "cwd": "/work/app"});
+        for line in [
+            json!({"type": "session_meta", "payload": meta}),
+            json!({"payload": {"type": "session_meta", "payload": meta}}),
+            json!({"type": "session_meta", "id": "thread-1", "cwd": "/work/app"}),
+        ] {
+            assert_eq!(codex_meta(&line), Some(("thread-1".to_owned(), Some("/work/app".to_owned()))));
+        }
+    }
+
+    #[test]
     fn lists_codex_rollouts_with_meta() {
         let tmp = tempfile::tempdir().unwrap();
         write(
             &tmp.path().join("sessions/2026/01/02/rollout-01.jsonl"),
             &[
-                json!({"timestamp": "t", "payload": {"type": "session_meta",
-                    "payload": {"id": "thread-1", "cwd": "/work/app"}}}),
-                json!({"timestamp": "t", "payload": {"type": "user_message",
-                    "payload": {"message": "add tests"}}}),
+                json!({"timestamp": "t", "type": "session_meta",
+                    "payload": {"id": "thread-1", "cwd": "/work/app"}}),
+                json!({"timestamp": "t", "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "add tests"}}),
             ],
         );
         write(&tmp.path().join("sessions/notes.jsonl"), &[json!({"nope": true})]);

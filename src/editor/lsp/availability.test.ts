@@ -14,7 +14,7 @@ vi.mock("@/platform/ipc", async (orig) => {
   };
 });
 
-const { onServerSettled, featureBackoff, installAvailabilityEvents } = await import("./availability");
+const { onServerSettled, featureBackoff, clearBackoffs, installAvailabilityEvents } = await import("./availability");
 
 const status = (s: string, server = 1) => {
   for (const fn of [...listeners]) fn({ type: "languageServer", server, status: s } as unknown as IdeEvent);
@@ -144,5 +144,19 @@ describe("featureBackoff", () => {
     expect(a.active(1)).toBe(false);
     expect(b.active(2)).toBe(false);
     off();
+  });
+
+  it("clears a single document or all feature back-offs explicitly", () => {
+    const a = featureBackoff();
+    const b = featureBackoff();
+    a.mark(1);
+    a.mark(2);
+    b.mark(2);
+    a.clear(1);
+    expect(a.active(1)).toBe(false);
+    expect(a.active(2)).toBe(true);
+    clearBackoffs();
+    expect(a.active(2)).toBe(false);
+    expect(b.active(2)).toBe(false);
   });
 });

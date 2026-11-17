@@ -66,6 +66,8 @@ const safeDelete = vi.fn();
 vi.mock("./safeDelete", () => ({ safeDelete }));
 const startHierarchyRefactoring = vi.fn();
 vi.mock("./hierarchy", () => ({ startHierarchyRefactoring }));
+const startExtractInterface = vi.fn();
+vi.mock("./extractInterface", () => ({ EXTRACT_INTERFACE_LANGUAGES: new Set(["java"]), startExtractInterface }));
 
 const { classifyAction, kindAdvertised, cannotPerform } = await import("./catalog");
 const { refactorThis, runRefactoring } = await import("./refactorThis");
@@ -153,6 +155,14 @@ describe("catalog", () => {
     expect(c("Move to a new file", "refactor")).toBe("move");
     expect(c("Inline variable", "refactor")).toBe("inline");
     expect(c("Convert to template string", "refactor")).toBeNull();
+    // pylsp-rope (Python).
+    expect(c("Extract method including similar statements", "refactor.extract")).toBe("extractMethod");
+    expect(c("Extract global method", "refactor.extract")).toBeNull();
+    expect(c("Extract variable", "refactor.extract")).toBe("extractVariable");
+    expect(c("Extract global variable including similar statements", "refactor.extract")).toBe("extractConstant");
+    expect(c("Inline method/variable/parameter", "refactor.inline")).toBe("inline");
+    expect(c("Introduce parameter", "refactor")).toBe("extractParameter");
+    expect(c("To method object", "refactor.rewrite")).toBeNull();
   });
 
   it("knows which kinds an advertised list can produce", () => {
@@ -187,19 +197,27 @@ describe("Refactor This", () => {
     expect(lspCodeActionQuery.mock.calls[0]![3]).toEqual(["refactor"]);
   });
 
-  it("offers Pull Members Up / Push Members Down in Java files, after IDEA's other refactorings", async () => {
+  it("offers Extract Interface, Pull Members Up and Push Members Down in Java files, after IDEA's other refactorings", async () => {
     query = answer([action("Convert to switch expression", "refactor.rewrite")]);
     const v = editor("class Dog extends Animal { int price; }", "java");
     await refactorThis(v, vi.fn());
-    expect(labels()).toEqual(["Pull Members Up…", "Push Members Down…", "Convert to switch expression"]);
+    expect(labels()).toEqual([
+      "Extract Interface…",
+      "Pull Members Up…",
+      "Push Members Down…",
+      "Convert to switch expression",
+    ]);
     const items = (useLspPopup.getState().popup as { items: { label: string; run: () => void }[] }).items;
     items.find((i) => i.label === "Push Members Down…")!.run();
     expect(startHierarchyRefactoring).toHaveBeenCalledWith(v, "pushDown");
+    items.find((i) => i.label === "Extract Interface…")!.run();
+    expect(startExtractInterface).toHaveBeenCalledWith(v);
     closePopup();
     v.destroy();
     // Other languages have no server for them; nor does Java while its server is down.
     await refactorThis(editor(), vi.fn());
     expect(labels()).not.toContain("Pull Members Up…");
+    expect(labels()).not.toContain("Extract Interface…");
     query = async () => unavailable;
     await refactorThis(editor("class Dog {}", "java"), vi.fn());
     expect(labels()).toEqual(["Nothing here"]);

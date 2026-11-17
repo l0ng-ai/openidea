@@ -69,6 +69,10 @@ describe("occurrenceVariants", () => {
     expect(occurrenceVariants([one, all])).toEqual({ one, all });
     expect(occurrenceVariants([one])).toBeNull();
     expect(occurrenceVariants([one, action("Extract to field"), all])).toBeNull();
+    // rope's "similar statements" are the other occurrences.
+    const rope = action("Extract variable");
+    const similar = action("Extract variable including similar statements");
+    expect(occurrenceVariants([similar, rope])).toEqual({ one: rope, all: similar });
   });
 });
 

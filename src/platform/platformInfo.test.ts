@@ -28,3 +28,21 @@ it("takes the user data directory from the backend, which may have moved it", as
   appInfo.mockResolvedValue({ platform: "windows", dataDir: "E:/OpenIDEA/ai.l0ng.openidea/" });
   expect(await appDataDir()).toBe("E:/OpenIDEA/ai.l0ng.openidea");
 });
+
+it.each([
+  [
+    { left: ["close", "maximize", "minimize"], right: [] },
+    { left: ["close", "maximize", "minimize"], right: [] },
+  ],
+  [undefined, { left: [], right: ["minimize", "maximize", "close"] }],
+])("takes the caption button layout %j from the backend", async (windowButtons, expected) => {
+  appInfo.mockResolvedValue({
+    platform: "linux",
+    windowsBuildNumber: null,
+    version: "0.1.46",
+    wayland: true,
+    windowButtons,
+  });
+  await loadPlatformInfo();
+  expect(usePlatform.getState().windowButtons).toEqual(expected);
+});

@@ -11,6 +11,7 @@ import { EXECUTION_PAGES } from "./execution";
 import { LANGUAGE_PAGES } from "./languages";
 import { OptionsPage } from "./OptionsPage";
 import { RUN_TARGET_PAGES } from "./runTargets";
+import { SCOPE_PAGES } from "./scopes";
 import { specLabels, type PageSpec } from "./spec";
 import { SSH_PAGES } from "./ssh";
 import { TOOLS_PAGES } from "./tools";
@@ -18,6 +19,7 @@ import { VCS_PAGES } from "./vcs";
 
 const BUILTIN_PAGES = [
   ...BEHAVIOR_PAGES,
+  ...SCOPE_PAGES,
   UPDATES_PAGE,
   ...CORE_PAGES,
   ...EDITOR_PAGES,

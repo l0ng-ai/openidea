@@ -25,19 +25,23 @@ describe("html bodies in the app", () => {
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
 
     const post = vi.spyOn(frame.contentWindow!, "postMessage");
-    // Not from the frame: ignored.
-    window.dispatchEvent(new MessageEvent("message", { data: { tag: FRAME_TAG, ready: true }, source: window }));
-    expect(post).not.toHaveBeenCalled();
-
-    window.dispatchEvent(
-      new MessageEvent("message", { data: { tag: FRAME_TAG, ready: true }, source: frame.contentWindow }),
-    );
-    expect(post).toHaveBeenCalledWith(
-      { tag: FRAME_TAG, document: expect.stringContaining("<p>chart</p><script>draw()</script>") },
-      "*",
-    );
+    const ready = (source: Window | null) =>
+      window.dispatchEvent(new MessageEvent("message", { data: { tag: FRAME_TAG, ready: true }, source }));
+    // The listener is added in an effect that can run after the frame is in the DOM.
+    await waitFor(() => {
+      ready(frame.contentWindow);
+      expect(post).toHaveBeenCalledWith(
+        { tag: FRAME_TAG, document: expect.stringContaining("<p>chart</p><script>draw()</script>") },
+        "*",
+      );
+    });
     const doc = (post.mock.calls[0]![0] as { document: string }).document;
     expect(doc).toContain('<meta http-equiv="Content-Security-Policy"');
     expect(doc).toContain("window.openidea");
+
+    // Not from the frame: ignored.
+    post.mockClear();
+    ready(window);
+    expect(post).not.toHaveBeenCalled();
   });
 });

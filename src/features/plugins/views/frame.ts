@@ -48,6 +48,9 @@ export const FRAME_THEME_TOKENS = {
   "--openidea-warning": "--warning",
   "--openidea-success": "--success",
   "--openidea-info": "--info",
+  "--openidea-change-added": "--gutter-added",
+  "--openidea-change-modified": "--gutter-modified",
+  "--openidea-change-deleted": "--gutter-deleted",
 } as const;
 
 /** Non-colour variables: public name → IDE token. */

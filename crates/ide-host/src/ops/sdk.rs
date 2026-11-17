@@ -10,6 +10,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub(crate) mod container_python;
+pub use container_python::{ContainerPython, sdk_container_python, sdk_container_python_refresh};
+
 fn join_err(e: impl std::fmt::Display) -> IdeError {
     IdeError::internal(e.to_string())
 }
@@ -34,6 +37,9 @@ pub struct ProjectInterpreter {
 pub async fn sdk_detect(host: &Host, window: &str, kind: SdkKind) -> IdeResult<Vec<Sdk>> {
     host.require_trust(window)?;
     let project = host.project(window).ok();
+    if kind == SdkKind::Jdk {
+        host.apply_added_jdks();
+    }
     let root = project.as_ref().map(|p| p.root.clone());
     // The interpreter the project uses is a choice even where detection doesn't look (a
     // virtualenv in a subfolder, one picked by path), so it shows by name and version.
@@ -232,12 +238,17 @@ pub async fn sdk_project_libraries(
     let project = host.project(window)?;
     let (root, cache, settings) = (project.root.clone(), project.build_cache_dir(), project.settings.effective());
     let cancel = host.begin_project_request(window, request);
+    let container = container_python::library_group(host, &root, &settings);
     let libraries = {
         let (root, settings, cancel, on_groups) = (root.clone(), settings.clone(), cancel.clone(), on_groups.clone());
         tokio::task::spawn_blocking(move || {
-            ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
+            if let Some(group) = &container {
+                let _ = on_groups.send(vec![group.clone()]);
+            }
+            let groups = ide_sdk::libraries::project_libraries_stream(&root, &settings, &[], &cancel, &|groups| {
                 let _ = on_groups.send(groups);
-            })
+            });
+            container.into_iter().chain(groups).collect::<Vec<_>>()
         })
     };
     let dependencies = {
@@ -364,9 +375,20 @@ pub async fn sdk_python_pip(
     result?
 }
 
+/// The JDK whose home is `path` (a macOS bundle too), as the SDK list shows it; `None` when
+/// `path` is no JDK home (Add JDK from Disk…).
+pub async fn sdk_jdk_at(path: String) -> IdeResult<Option<Sdk>> {
+    tokio::task::spawn_blocking(move || {
+        ide_sdk::java::jdk_at(std::path::Path::new(&path)).map(|j| ide_sdk::jdk_sdk(&j))
+    })
+    .await
+    .map_err(join_err)
+}
+
 /// Commands of this module the remote server answers.
 pub(crate) fn register(d: &mut Dispatcher) {
     d.add("sdk_detect", |c| async move { sdk_detect(&c.host, &c.window, c.arg("kind")?).await });
+    d.add("sdk_jdk_at", |c| async move { sdk_jdk_at(c.arg("path")?).await });
     d.add(
         "sdk_python_project_interpreters",
         |c| async move { sdk_python_project_interpreters(&c.host, &c.window).await },
@@ -377,6 +399,8 @@ pub(crate) fn register(d: &mut Dispatcher) {
     );
     d.add("sdk_python_effective", |c| async move { sdk_python_effective(&c.host, &c.window, c.arg("near")?) });
     d.add("sdk_php_effective", |c| async move { sdk_php_effective(&c.host, &c.window) });
+    d.add("sdk_container_python", |c| async move { sdk_container_python(&c.host, &c.window) });
+    d.add("sdk_container_python_refresh", |c| async move { sdk_container_python_refresh(&c.host, &c.window).await });
     d.add("sdk_php_xdebug", |c| async move { sdk_php_xdebug(&c.host, &c.window, c.arg("php")?, c.arg("cwd")?).await });
     d.add(
         "sdk_php_language_level",
