@@ -3,7 +3,7 @@
  * editor group, following the group's text editor (a minimap, say). Each group has one frame,
  * kept while the group switches tabs: the page hears `onTarget` instead of reloading. Through
  * `openidea.editor` it reads the file (read-only), the viewport, the colours (syntax and semantic), the
- * marker bar's problems, the folds and the rows of wrapped lines, the caret and selections, and scrolls the editor — straight
+ * marker bar's problems, the folds and the rows of wrapped lines, the caret and selections, the VCS changes, and scrolls the editor — straight
  * from the editor, not through the plugin's code, since a minimap follows every frame of a scroll.
  */
 import { foldedRanges, highlightingFor, syntaxTree } from "@codemirror/language";
@@ -12,7 +12,7 @@ import { BlockType, Decoration, ViewPlugin, type EditorView, type ViewUpdate } f
 import { highlightTree } from "@lezer/highlight";
 import { useEffect, useMemo } from "react";
 import type { Severity } from "@/bindings";
-import { useEditorRegistry, type TextEditorHandle } from "@/editor/api";
+import { lineChanges, useEditorRegistry, type TextEditorHandle } from "@/editor/api";
 import { markerBarProblems } from "@/editor/lsp/diagnostics";
 import { semanticHighlights } from "@/editor/lsp/semantic";
 import { evaluateWhen, useContextKeys } from "@/platform/context";
@@ -24,6 +24,7 @@ import {
   WebView,
   type DocumentState,
   type EditorFold,
+  type EditorChange,
   type EditorProblem,
   type EditorSelection,
   type EditorTarget,
@@ -81,6 +82,7 @@ const nothingPending = () => ({
   problems: false,
   layout: false,
   selections: false,
+  changes: false,
   lines: null as [number, number] | null,
 });
 
@@ -145,6 +147,7 @@ export class PanelEditor implements FrameEditor {
         if (markerBarProblems(u.startState) !== markerBarProblems(u.state)) this.schedule({ problems: true });
         // An edit can move a caret to another line without changing its offset.
         if (u.docChanged || !u.state.selection.eq(u.startState.selection)) this.schedule({ selections: true });
+        if (u.startState.facet(lineChanges) !== u.state.facet(lineChanges)) this.schedule({ changes: true });
         // Wrapped rows follow the line blocks' heights.
         const wrap = u.view.lineWrapping;
         if (foldedRanges(u.startState) !== foldedRanges(u.state) || wrap !== softWrap || (wrap && u.heightChanged)) {
@@ -171,7 +174,7 @@ export class PanelEditor implements FrameEditor {
         set.delete(onUpdate);
         if (!set.size) updateListeners.delete(view);
       };
-      this.schedule({ viewport: true, problems: true, layout: true, selections: true });
+      this.schedule({ viewport: true, problems: true, layout: true, selections: true, changes: true });
     }
     this.emit({ editor: "target", value: this.get() });
   }
@@ -337,6 +340,24 @@ export class PanelEditor implements FrameEditor {
     }));
   }
 
+  changes(): EditorChange[] {
+    const view = this.handle?.view;
+    if (!view) return [];
+    const doc = view.state.doc;
+    return view.state.facet(lineChanges).map((c) => {
+      // As the lane draws them: a hunk whose lines were all deleted is a deletion.
+      if (c.kind === "deleted" || c.to <= c.from) {
+        const line = doc.lineAt(Math.min(c.from, doc.length)).number - 1;
+        return { line, lastLine: line, kind: "deleted" };
+      }
+      return {
+        line: doc.lineAt(c.from).number - 1,
+        lastLine: doc.lineAt(Math.max(c.from, c.to - 1)).number - 1,
+        kind: c.kind,
+      };
+    });
+  }
+
   /** The text colour of spans nested with these classes (outermost first), as the current scheme resolves it. */
   private color(view: EditorView, nested: string[]): string {
     const key = nested.join("\n");
@@ -366,6 +387,7 @@ export class PanelEditor implements FrameEditor {
     problems?: boolean;
     layout?: boolean;
     selections?: boolean;
+    changes?: boolean;
     lines?: [number, number];
   }) {
     const q = this.pending;
@@ -374,6 +396,7 @@ export class PanelEditor implements FrameEditor {
     q.problems ||= !!p.problems;
     q.layout ||= !!p.layout;
     q.selections ||= !!p.selections;
+    q.changes ||= !!p.changes;
     if (p.lines) q.lines = q.lines ? [Math.min(q.lines[0], p.lines[0]), Math.max(q.lines[1], p.lines[1])] : p.lines;
     if (!this.frame) this.frame = requestAnimationFrame(() => this.flush());
   }
@@ -397,6 +420,7 @@ export class PanelEditor implements FrameEditor {
     if (q.problems) this.emit({ editor: "problems", value: this.problems() });
     if (q.layout) this.emit({ editor: "layout", value: { folded: this.folded(), softWrap: view.lineWrapping } });
     if (q.selections) this.emit({ editor: "selections", value: this.selections() });
+    if (q.changes) this.emit({ editor: "changes", value: this.changes() });
   }
 }
 
