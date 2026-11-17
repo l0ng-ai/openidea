@@ -21,7 +21,10 @@ mod utf8;
 pub mod which;
 pub mod wrap;
 
-pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
+pub use detect::cmake::{
+    TOOLCHAIN_ARCH_PARAM as CMAKE_TOOLCHAIN_ARCH_PARAM, TOOLCHAIN_PARAM as CMAKE_TOOLCHAIN_PARAM,
+    build_configs as cmake_build_configs, prepare as prepare_cmake,
+};
 pub use process::{ProcessManager, StartOptions};
 
 use ide_core::{IdeResult, RunId};

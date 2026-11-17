@@ -381,6 +381,11 @@ pub struct CMakeProfile {
     pub build_dir: String,
     pub build_args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// Empty uses the IDE's own environment. Otherwise a Visual Studio installation directory:
+    /// configure, build and run get the environment its `vcvarsall.bat` sets up (Windows only).
+    pub toolchain: String,
+    /// `vcvarsall.bat`'s architecture argument (`x64`, `x86`, `x64_arm64` …); empty is the host's.
+    pub toolchain_arch: String,
 }
 
 impl Default for CMakeProfile {
@@ -393,6 +398,8 @@ impl Default for CMakeProfile {
             build_dir: String::new(),
             build_args: Vec::new(),
             env: BTreeMap::new(),
+            toolchain: String::new(),
+            toolchain_arch: String::new(),
         }
     }
 }

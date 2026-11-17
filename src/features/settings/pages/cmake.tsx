@@ -1,8 +1,9 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { DEFAULT_CMAKE_PROFILE, type CMakeProfileValid } from "@/platform/cmakeSettings";
 import { formatArgs, parseArgs } from "@/platform/commandLine";
 import { tx } from "@/platform/i18n";
-import { IconButton, Input, T } from "@/ui";
+import { IconButton, Input, Select, T } from "@/ui";
+import { detectSdks, useSdks } from "../languages/api";
 import { Row, Section } from "../components/Form";
 import { useSetting } from "../components/context";
 import { TableEditor } from "./workflowControls";
@@ -22,6 +23,69 @@ function ArgumentsInput({ id, value, onChange }: { id: string; value: string[]; 
       }}
       onBlur={() => setText(undefined)}
     />
+  );
+}
+
+/** vcvarsall.bat architectures: host, or host_target to cross-compile. */
+const ARCHITECTURES = ["x64", "x86", "arm64", "x64_x86", "x64_arm64", "x86_x64", "arm64_x64"];
+
+/** A Visual Studio installation whose vcvarsall.bat sets up the environment (Windows). */
+function ToolchainRows({
+  id,
+  profile,
+  update,
+}: {
+  id: string;
+  profile: CMakeProfileValid;
+  update: (patch: Partial<CMakeProfileValid>) => void;
+}) {
+  const installs = useSdks((s) => s.byKind.visualStudio);
+  useEffect(() => void detectSdks("visualStudio"), []);
+  if (!installs?.length && !profile.toolchain) return null;
+  const options = [
+    { value: "", label: "System" },
+    ...(installs ?? []).map((sdk) => ({
+      value: sdk.path,
+      label: [sdk.name, sdk.version].filter(Boolean).join(" "),
+      verbatim: true,
+      detail: sdk.path,
+    })),
+  ];
+  if (profile.toolchain && !options.some((o) => o.value === profile.toolchain)) {
+    options.push({ value: profile.toolchain, label: profile.toolchain, verbatim: true, detail: "Not found" });
+  }
+  return (
+    <>
+      <Row
+        label="Toolchain"
+        className={styles.alignedRow}
+        hint="Visual Studio: configure, build and run use the environment its vcvarsall.bat sets up."
+      >
+        <Select
+          value={profile.toolchain}
+          options={options}
+          onChange={(toolchain) => update({ toolchain })}
+          aria-label="Toolchain"
+        />
+      </Row>
+      {profile.toolchain && (
+        <Row label="Architecture" htmlFor={`${id}-toolchainArch`} className={styles.alignedRow}>
+          <Input
+            id={`${id}-toolchainArch`}
+            className={styles.wide}
+            value={profile.toolchainArch}
+            list={`${id}-toolchainArch-options`}
+            placeholder={tx("Host architecture")}
+            onChange={(e) => update({ toolchainArch: e.target.value })}
+          />
+          <datalist id={`${id}-toolchainArch-options`}>
+            {ARCHITECTURES.map((v) => (
+              <option key={v} value={v} />
+            ))}
+          </datalist>
+        </Row>
+      )}
+    </>
   );
 }
 
@@ -89,6 +153,7 @@ export function CMakeProfiles() {
       </Section>
       {current && (
         <Section title="Profile settings">
+          <ToolchainRows id={id} profile={current} update={update} />
           {fields.map(([key, label]) => (
             <Row key={key} label={label} htmlFor={`${id}-${key}`} className={styles.alignedRow}>
               {key === "cmakeArgs" || key === "buildArgs" ? (

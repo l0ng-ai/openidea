@@ -7,6 +7,11 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The profile's Visual Studio installation and `vcvarsall.bat` architecture, on each of its
+/// configurations; the environment is set up when one is launched.
+pub const TOOLCHAIN_PARAM: &str = "cmakeToolchain";
+pub const TOOLCHAIN_ARCH_PARAM: &str = "cmakeToolchainArch";
+
 fn json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
@@ -165,6 +170,10 @@ fn detect_profile(root: &Path, profile: &CMakeProfile, index: usize, out: &mut V
     targets(root, &build, &dir, &prefix, Some(profile), out, names);
     for config in &mut out[start..] {
         config.env = profile.env.clone();
+        if !profile.toolchain.trim().is_empty() {
+            config.extras.params.insert(TOOLCHAIN_PARAM.into(), profile.toolchain.trim().into());
+            config.extras.params.insert(TOOLCHAIN_ARCH_PARAM.into(), profile.toolchain_arch.trim().into());
+        }
     }
 }
 
@@ -375,6 +384,19 @@ mod tests {
         );
         assert_eq!(build.env, profile.env);
         assert_eq!(build.extras.before_launch[0].target, "cmake:profile:0:configure");
+        assert!(configs.iter().all(|c| !c.extras.params.contains_key(TOOLCHAIN_PARAM)));
+        let msvc = CMakeProfile {
+            toolchain: r"C:\Program Files\Microsoft Visual Studio\2022\Community".into(),
+            toolchain_arch: "x64_arm64".into(),
+            ..profile.clone()
+        };
+        let mut configs = Vec::new();
+        detect(root.path(), Some(std::slice::from_ref(&msvc)), &mut configs);
+        assert_eq!(configs.len(), 5);
+        for config in &configs {
+            assert_eq!(config.extras.params[TOOLCHAIN_PARAM], msvc.toolchain, "{}", config.id);
+            assert_eq!(config.extras.params[TOOLCHAIN_ARCH_PARAM], "x64_arm64", "{}", config.id);
+        }
         fs::write(root.path().join("output/CMakeCache.txt"), "CMAKE_GENERATOR:INTERNAL=Ninja\n").unwrap();
         let mut configured = Vec::new();
         detect(root.path(), Some(std::slice::from_ref(&profile)), &mut configured);

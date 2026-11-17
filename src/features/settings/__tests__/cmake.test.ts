@@ -7,6 +7,16 @@ describe("CMake settings", () => {
     expect(validateSettings({}).cmake).toEqual({});
     expect(validateSettings({ cmake: { profiles: [] } }).cmake.profiles).toEqual([]);
   });
+  it("keeps the Visual Studio toolchain and architecture, System when absent", () => {
+    const toolchain = String.raw`C:\Program Files\Microsoft Visual Studio\2022\Community`;
+    const [msvc, system, malformed] =
+      validateSettings({
+        cmake: { profiles: [{ toolchain, toolchainArch: "x64_arm64" }, {}, { toolchain: 3, toolchainArch: null }] },
+      }).cmake.profiles ?? [];
+    expect(msvc).toMatchObject({ toolchain, toolchainArch: "x64_arm64" });
+    expect(system).toMatchObject({ toolchain: "", toolchainArch: "" });
+    expect(malformed).toMatchObject({ toolchain: "", toolchainArch: "" });
+  });
   it("preserves argument arrays and drops malformed argument values", () => {
     const cmakeArgs = ["-DMESSAGE=two words", '-DQUOTE="hello"', ""];
     const buildArgs = ["-j", "8", "--", "LABEL=it's a build"];

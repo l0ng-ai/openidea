@@ -948,6 +948,7 @@ fn cmake_profiles_control_commands_names_and_environment() {
             build_dir: "output dir".into(),
             build_args: ["-j", "8", "--", "VERBOSE=1"].map(String::from).into(),
             env: [("MY_ENV".into(), "yes".into())].into(),
+            ..Default::default()
         };
         let configs = ide_run::detect_with_profiles(dir.path(), &[], Some(std::slice::from_ref(&profile)));
         let configure = find(&configs, "cmake:profile:0:configure");
