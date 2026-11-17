@@ -21,6 +21,7 @@ pub mod libraries;
 pub mod locate;
 pub mod lombok;
 pub mod maven_profiles;
+pub mod msvc;
 mod npm;
 pub mod php;
 pub mod pinned;
@@ -55,6 +56,8 @@ pub enum SdkKind {
     Ruby,
     /// Zig toolchain directories.
     Zig,
+    /// Visual Studio installation directories with the C++ tools (Windows).
+    VisualStudio,
 }
 
 /// One installed interpreter / toolchain.

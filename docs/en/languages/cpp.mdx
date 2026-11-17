@@ -82,6 +82,8 @@ To control the build directories yourself, add profiles in **Settings › Build,
 
 Once profiles exist, only they are used. Changing the generator of an existing build directory clears its CMake cache on the next configure.
 
+On Windows, a profile can also pick a **Toolchain**: **System** (the default) uses the IDE's own environment, and a Visual Studio installation (Visual Studio or Build Tools with the C++ tools, found with `vswhere`) runs its `vcvarsall.bat` for the profile's **Architecture** (`x64`, `x86`, `arm64`, or `host_target` such as `x64_arm64` to cross-compile; empty is the machine's own) and uses the resulting environment for configure, build, CTest and run. This is what generators such as Ninja need to find `cl.exe` and the system headers and libraries; the Visual Studio generators find the compiler themselves. The environment is captured once per installation and architecture, and the profile's own environment variables take precedence. After switching the toolchain or architecture of a configured build directory, delete its `CMakeCache.txt` so CMake picks the new compiler. Debug sessions do not use the toolchain's environment yet.
+
 ### Makefiles
 
 A `Makefile`, `makefile` or `GNUmakefile` gives one `make <target>` configuration per target. `test` and `check` targets are marked as tests.

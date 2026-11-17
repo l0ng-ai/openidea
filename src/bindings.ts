@@ -3184,6 +3184,13 @@ export type CMakeProfile = {
 	buildDir?: string,
 	buildArgs?: string[],
 	env?: { [key in string]: string },
+	/**
+	 *  Empty uses the IDE's own environment. Otherwise a Visual Studio installation directory:
+	 *  configure, build and run get the environment its `vcvarsall.bat` sets up (Windows only).
+	 */
+	toolchain?: string,
+	/**  `vcvarsall.bat`'s architecture argument (`x64`, `x86`, `x64_arm64` …); empty is the host's. */
+	toolchainArch?: string,
 };
 
 /**  Absent profiles retain automatic discovery for existing projects. */
@@ -10347,7 +10354,9 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  Visual Studio installation directories with the C++ tools (Windows). */
+"visualStudio";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and

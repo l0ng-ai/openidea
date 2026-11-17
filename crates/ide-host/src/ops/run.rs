@@ -464,6 +464,15 @@ async fn start_inner(
             })
             .await?;
     }
+    // A CMake profile's Visual Studio toolchain: its vcvarsall.bat takes seconds the first time.
+    if config.extras.params.contains_key(ide_run::CMAKE_TOOLCHAIN_PARAM) {
+        config = host
+            .blocking(move || {
+                ide_sdk::msvc::apply_to_config(&mut config)?;
+                Ok(config)
+            })
+            .await?;
+    }
     let encoding = settings.console.encoding;
     let options = StartOptions {
         encoding: Some(encoding).filter(|e| !e.trim().is_empty()),

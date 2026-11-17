@@ -10,6 +10,8 @@ export const DEFAULT_CMAKE_PROFILE: CMakeProfileValid = {
   buildDir: "",
   buildArgs: [],
   env: {},
+  toolchain: "",
+  toolchainArch: "",
 };
 
 export function validateCMake(raw: unknown): { profiles?: CMakeProfileValid[] } {
@@ -33,6 +35,8 @@ export function validateCMake(raw: unknown): { profiles?: CMakeProfileValid[] } 
             (entry): entry is [string, string] => typeof entry[1] === "string",
           ),
         ),
+        toolchain: string(p.toolchain),
+        toolchainArch: string(p.toolchainArch),
       })),
   };
 }

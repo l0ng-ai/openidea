@@ -77,13 +77,32 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     model
 }
 
+/// Puts the environment of a Visual Studio toolchain (`&str`) for an architecture (`&str`) under a step's.
+type ToolchainEnv<'a> = dyn Fn(&mut std::collections::BTreeMap<String, String>, &str, &str) -> IdeResult<()> + 'a;
+
+/// Build Project of a CMake project builds with its first profile, so with that profile's toolchain.
+fn with_cmake_toolchain(plan: &mut compile::BuildPlan, settings: &Settings, apply: &ToolchainEnv<'_>) -> IdeResult<()> {
+    let Some(profile) = settings.cmake.profiles.as_deref().and_then(<[_]>::first) else { return Ok(()) };
+    if plan.system != compile::BuildSystem::CMake || profile.toolchain.trim().is_empty() {
+        return Ok(());
+    }
+    for step in &mut plan.steps {
+        apply(&mut step.env, &profile.toolchain, &profile.toolchain_arch)?;
+    }
+    Ok(())
+}
+
 /// Build and Run use the same selected toolchain and module-local runtime discovery.
-fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) -> compile::BuildPlan {
+fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) -> IdeResult<compile::BuildPlan> {
     let kind = match plan.system {
         compile::BuildSystem::Cargo => "cargo",
         compile::BuildSystem::Go => "go",
         compile::BuildSystem::TypeScript => "npm",
-        _ => return plan,
+        compile::BuildSystem::CMake => {
+            with_cmake_toolchain(&mut plan, settings, &ide_sdk::msvc::apply)?;
+            return Ok(plan);
+        }
+        _ => return Ok(plan),
     };
     for step in &mut plan.steps {
         let mut config = ide_run::RunConfig {
@@ -110,7 +129,7 @@ fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) 
         step.args = config.args;
         step.env = config.env;
     }
-    plan
+    Ok(plan)
 }
 
 /// `model` building with the Maven profiles of the last sync (`-P`), as Maven runs from
@@ -767,12 +786,19 @@ pub(crate) fn structure_inputs(
     (ps, roots, jdk)
 }
 
-fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
+fn cmake_plan(
+    root: &Path,
+    kind: BuildKind,
+    configs: &[ide_run::RunConfig],
+    id: &str,
+    toolchain: &dyn Fn(&mut ide_run::RunConfig) -> IdeResult<()>,
+) -> IdeResult<compile::BuildPlan> {
     let commands = ide_run::cmake_build_configs(configs, id)?;
     let title = commands.last().map(|c| c.name.clone()).unwrap_or_default();
     let mut steps = Vec::new();
     for mut config in commands {
         let cwd = ide_core::project_roots::resolve(root, config.cwd.as_deref().unwrap_or(Path::new("")));
+        toolchain(&mut config)?;
         ide_run::prepare_cmake(&config, &cwd)?;
         if kind == BuildKind::Rebuild && config.args.first().is_some_and(|a| a == "--build") {
             config.args.insert(2, "--clean-first".into());
@@ -818,7 +844,7 @@ pub async fn build_run(
                     compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
                     &root,
                     &settings,
-                );
+                )?;
                 let _ = on_event.send(BuildEvent::Started { system: plan.system, title: plan.title.clone() });
                 let _ = on_event.send(BuildEvent::Output {
                     text: "Up to date: no changes, build skipped.\n".into(),
@@ -844,7 +870,7 @@ pub async fn build_run(
         }
         let plan = if let Some(id) = cmake {
             let configs = super::run::project_configs(&root, &settings, &config_dir)?;
-            cmake_plan(&root, kind, &configs, &id)?
+            cmake_plan(&root, kind, &configs, &id, &ide_sdk::msvc::apply_to_config)?
         } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
@@ -856,7 +882,7 @@ pub async fn build_run(
                     compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
                     member,
                     &settings,
-                );
+                )?;
                 match &mut combined {
                     Some(combined) => combined.steps.extend(plan.steps),
                     None => combined = Some(plan),
@@ -868,7 +894,7 @@ pub async fn build_run(
         } else {
             let model = with_profiles(load(&root, &cache, &settings), &cache);
             match compile::plan(&root, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref()) {
-                Ok(plan) => prepare_plan(plan, &root, &settings),
+                Ok(plan) => prepare_plan(plan, &root, &settings)?,
                 // No build tool: a Java project builds from its Project Structure.
                 Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => {
                     structure_plan(&root, &settings, &detected, kind, &cache)?.ok_or(e)?
@@ -970,7 +996,7 @@ mod build_tool_settings_tests {
         build.extras.before_launch.push(ide_run::BeforeLaunchTask { kind: "build".into(), target: "configure".into() });
         let configs = [configure, build];
         for kind in [BuildKind::Build, BuildKind::Rebuild] {
-            let plan = cmake_plan(root.path(), kind, &configs, "target").unwrap();
+            let plan = cmake_plan(root.path(), kind, &configs, "target", &|_| Ok(())).unwrap();
             assert_eq!(plan.system, compile::BuildSystem::CMake);
             assert_eq!(plan.steps.len(), 2);
             assert_eq!(plan.steps[0].args, configs[0].args);
@@ -985,6 +1011,72 @@ mod build_tool_settings_tests {
                 assert_eq!(step.env["PROFILE"], "release");
             }
         }
+    }
+
+    #[test]
+    fn cmake_builds_set_up_the_profile_toolchain_before_each_step() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("CMakeLists.txt"), "project(app)").unwrap();
+        let profile = ide_core::settings::CMakeProfile {
+            env: [("PROFILE".into(), "mine".into())].into(),
+            toolchain: r"C:\VS\2022".into(),
+            toolchain_arch: "x86".into(),
+            ..Default::default()
+        };
+        let configs = ide_run::detect_with_profiles(root.path(), &[], Some(std::slice::from_ref(&profile)));
+        let seen = std::sync::Mutex::new(Vec::new());
+        let toolchain = |config: &mut ide_run::RunConfig| {
+            let params = &config.extras.params;
+            seen.lock().unwrap().push((
+                params[ide_run::CMAKE_TOOLCHAIN_PARAM].clone(),
+                params[ide_run::CMAKE_TOOLCHAIN_ARCH_PARAM].clone(),
+            ));
+            config.env.entry("INCLUDE".into()).or_insert_with(|| "msvc".into());
+            Ok(())
+        };
+        let plan = cmake_plan(root.path(), BuildKind::Build, &configs, "cmake:profile:0:build", &toolchain).unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        for step in &plan.steps {
+            assert_eq!(step.env["INCLUDE"], "msvc");
+            assert_eq!(step.env["PROFILE"], "mine");
+        }
+        assert_eq!(*seen.lock().unwrap(), vec![(profile.toolchain.clone(), "x86".to_owned()); 2]);
+        let failing = |_: &mut ide_run::RunConfig| Err(IdeError::unavailable("vcvarsall.bat x86 failed"));
+        let error = cmake_plan(root.path(), BuildKind::Build, &configs, "cmake:profile:0:build", &failing).unwrap_err();
+        assert_eq!(error.message, "vcvarsall.bat x86 failed");
+
+        // Build Project builds with the first profile.
+        let mut settings = Settings::default();
+        settings.cmake.profiles = Some(vec![profile.clone()]);
+        let plan = |settings: &Settings| {
+            compile::plan(root.path(), &Default::default(), BuildKind::Build, None, settings.cmake.profiles.as_deref())
+                .unwrap()
+        };
+        let calls = std::sync::Mutex::new(Vec::new());
+        let apply = |env: &mut std::collections::BTreeMap<String, String>, toolchain: &str, arch: &str| {
+            calls.lock().unwrap().push((toolchain.to_owned(), arch.to_owned()));
+            env.entry("INCLUDE".into()).or_insert_with(|| "msvc".into());
+            Ok(())
+        };
+        let mut built = plan(&settings);
+        with_cmake_toolchain(&mut built, &settings, &apply).unwrap();
+        assert_eq!(built.system, compile::BuildSystem::CMake);
+        assert!(!built.steps.is_empty());
+        for step in &built.steps {
+            assert_eq!(step.env["INCLUDE"], "msvc");
+            assert_eq!(step.env["PROFILE"], "mine");
+        }
+        assert_eq!(calls.lock().unwrap().len(), built.steps.len());
+        assert!(calls.lock().unwrap().iter().all(|(t, a)| *t == profile.toolchain && a == "x86"));
+        let failing = |_: &mut std::collections::BTreeMap<String, String>, _: &str, _: &str| {
+            Err(IdeError::unavailable("vcvarsall.bat x86 failed"))
+        };
+        assert!(with_cmake_toolchain(&mut plan(&settings), &settings, &failing).is_err());
+        // System: the steps keep the IDE's environment.
+        settings.cmake.profiles = Some(vec![ide_core::settings::CMakeProfile { toolchain: String::new(), ..profile }]);
+        let mut system = plan(&settings);
+        with_cmake_toolchain(&mut system, &settings, &failing).unwrap();
+        assert!(system.steps.iter().all(|s| !s.env.contains_key("INCLUDE")));
     }
 
     #[test]
@@ -1018,7 +1110,8 @@ mod build_tool_settings_tests {
                 compile::plan(&dir, &Default::default(), BuildKind::Artifacts, None, None).unwrap(),
                 root,
                 &settings,
-            );
+            )
+            .unwrap();
             assert_eq!(plan.steps[0].program, program);
             assert_eq!(plan.steps[0].cwd, dir);
             if marker == "go.mod" {

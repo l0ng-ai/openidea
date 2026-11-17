@@ -2435,5 +2435,8 @@
   "Instructions for Generate Commit Message with Agent": "Instructions for Generate Commit Message with Agent",
   "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.": "Added to the agent's prompt, e.g. a commit format, issue key prefixes or the language to write in.",
   "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.": "Use Conventional Commits (feat:, fix:, …) and start with the issue key if the branch has one.",
-  "Choose Include Path": "Choose Include Path"
+  "Choose Include Path": "Choose Include Path",
+  "System": "System",
+  "Visual Studio: configure, build and run use the environment its vcvarsall.bat sets up.": "Visual Studio: configure, build and run use the environment its vcvarsall.bat sets up.",
+  "Host architecture": "Host architecture"
 }

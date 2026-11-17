@@ -82,6 +82,8 @@ Xcode 和 Command Line Tools 自带的 `clangd` 不运行 clang-tidy。如果项
 
 一旦添加了配置，就只使用这些配置。修改已有构建目录的生成器后，下次配置时会清掉它的 CMake 缓存。
 
+在 Windows 上，配置还可以选择 **工具链**：**系统**（默认）使用 IDE 自身的环境；选择一个 Visual Studio 安装（带 C++ 工具的 Visual Studio 或 Build Tools，通过 `vswhere` 查找）后，会按配置的 **架构**（`x64`、`x86`、`arm64`，或交叉编译用的 `宿主_目标`，例如 `x64_arm64`；留空表示本机架构）执行它的 `vcvarsall.bat`，并把得到的环境用于配置、构建、CTest 和运行。Ninja 等生成器需要这个环境才能找到 `cl.exe` 以及系统头文件和库；Visual Studio 生成器自己会找到编译器。每个安装和架构的环境只获取一次，配置自己的环境变量优先。已配置的构建目录切换工具链或架构后，请删除其中的 `CMakeCache.txt`，让 CMake 重新选择编译器。调试会话暂不使用工具链的环境。
+
 ### Makefile
 
 `Makefile`、`makefile` 或 `GNUmakefile` 中的每个目标都会生成一个 `make <目标>` 配置，其中 `test` 和 `check` 目标标记为测试。
