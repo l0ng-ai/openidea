@@ -301,13 +301,15 @@ impl Shim {
     }
 
     fn pending_path(&self, id: &str) -> PathBuf {
-        self.config.pending_dir.join(format!("{id}.json"))
+        let name: String =
+            id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        self.config.pending_dir.join(format!("{name}.json"))
     }
 
     fn save_pending(&self, id: &str, start: Option<&Start>) {
         let path = self.pending_path(id);
         let result = match start {
-            Some(s) => std::fs::create_dir_all(&self.config.pending_dir)
+            Some(s) => create_private_dir(&self.config.pending_dir)
                 .and_then(|()| std::fs::write(&path, serde_json::to_vec(&start_json(s)).unwrap_or_default())),
             None => std::fs::remove_file(&path).or_else(|e| match e.kind() {
                 std::io::ErrorKind::NotFound => Ok(()),
@@ -1543,4 +1545,12 @@ fn mcp_config(params: &Value) -> Option<String> {
         out.insert(name.to_owned(), entry);
     }
     (!out.is_empty()).then(|| json!({ "mcpServers": out }).to_string())
+}
+
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(dir)
 }

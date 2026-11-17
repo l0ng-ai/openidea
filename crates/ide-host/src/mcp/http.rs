@@ -151,6 +151,17 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
                 root: Some(call.root()),
                 env: env.as_deref(),
             };
+            // An include is read and sent as the request body: keep it inside the project.
+            let includes = ide_http::body_files(&text, index);
+            let base = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+            let root = std::fs::canonicalize(call.root()).unwrap_or_else(|_| call.root().to_path_buf());
+            for inc in &includes {
+                let inside = !inc.contains("{{")
+                    && std::fs::canonicalize(base.join(inc)).is_ok_and(|resolved| resolved.starts_with(&root));
+                if !inside {
+                    return Err(IdeError::invalid(format!("body file `{inc}` is outside the project")));
+                }
+            }
             // Prepare before confirm so the dialog shows the real destination (after env substitution).
             let prepared = ide_http::prepare(&input)?;
             let subject = prepared.name.clone().unwrap_or_else(|| format!("{} {}", prepared.method, prepared.url));
@@ -164,6 +175,9 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
             }
             if prepared.body.is_some() {
                 detail.push_str("\nBody: present");
+            }
+            if !includes.is_empty() {
+                detail.push_str(&format!("\nBody files: {}", includes.join(", ")));
             }
             call.confirm(&subject, Some(detail)).await?;
 

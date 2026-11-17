@@ -25,7 +25,8 @@ const HTML_CSP: &str = "sandbox allow-scripts; default-src 'none'; \
     img-src openidea-plugin: http://openidea-plugin.localhost data: blob:; \
     font-src openidea-plugin: http://openidea-plugin.localhost data:; \
     media-src openidea-plugin: http://openidea-plugin.localhost data: blob:; \
-    connect-src openidea-plugin: http://openidea-plugin.localhost data: blob:";
+    connect-src openidea-plugin: http://openidea-plugin.localhost data: blob:; \
+    form-action 'none'";
 
 /// The host page of `html` bodies: it tells the workbench it is ready and writes
 /// the document it gets back (`frameDocument` in src/features/plugins/views/frame.ts).

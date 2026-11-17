@@ -241,7 +241,7 @@ fn unpacked_root(pkg: &Path, home: &Path) -> PathBuf {
 
 impl Tools {
     fn http(&self) -> IdeResult<Http> {
-        Http::new(&self.system_path)
+        Http::new_secure(&self.system_path)
     }
 
     /// Java versions `vendor` publishes.
