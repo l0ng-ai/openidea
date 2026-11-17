@@ -123,8 +123,8 @@ export interface ActionItem {
   title: string;
   category?: string;
   icon?: string;
-  /** Provider-supplied command argument and secondary text; never interpreted as a path. */
-  arg?: string;
+  /** Provider-owned activation; does not look up a potentially colliding global action ID. */
+  run?: (ctx: import("@/platform/context").ContextKeys) => void | Promise<void>;
   description?: string;
   enabled: boolean;
   indices: number[];

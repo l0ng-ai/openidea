@@ -12,7 +12,7 @@ it("namespaces identical category names and does not let an old disposer remove 
     id,
     title: "Routes",
     search: async () => ({ items: [], hasMore: false }),
-    actionId: (s) => s,
+    command: () => undefined,
   });
   const first = registerSearchCategory(category("plugin:first:routes"));
   const second = registerSearchCategory(category("plugin:second:routes"));

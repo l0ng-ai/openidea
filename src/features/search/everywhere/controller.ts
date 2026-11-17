@@ -273,14 +273,14 @@ export class SeController {
               indices: [],
             };
           }
-          const actionId = category.actionId(item.target.value.id);
-          const action = this.deps.actions().find((a) => a.id === actionId);
+          const target = item.target.value;
+          const action = category.command(target.id);
           return {
             kind: "action",
             key,
-            id: actionId,
+            id: action?.id ?? key,
             title: item.title,
-            arg: item.target.value.arg ?? undefined,
+            run: action ? (ctx) => action.run({ ctx, arg: target.arg ?? undefined }) : undefined,
             description: item.description ?? undefined,
             category: item.description ?? undefined,
             enabled: !!action && this.deps.isEnabled(action),

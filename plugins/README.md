@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.10.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.11.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -2943,8 +2943,9 @@ invocation. Empty queries may return initial suggestions. Return `SearchPage`
 with at most `limit` items in relevance order and `has_more` for more results.
 The initial limit is 50; Show more raises it to at most 200. Queries are at most
 1024 UTF-8 bytes. Calls have a two-second background budget, including queueing,
-and cannot open prompts. New queries, switching tabs and closing the dialog
-cancel the old request; late answers are ignored.
+and cannot open prompts. Shared lazy startup may finish in the background after
+a request is cancelled; its results are not published. New queries, switching
+tabs and closing the dialog cancel the old request; late answers are ignored.
 
 Each `SearchItem` has a stable local `id`, a `title`, an optional `description`,
 and exactly one `SearchTarget`:

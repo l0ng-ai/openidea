@@ -75,8 +75,19 @@ pub async fn search(
     let root = host.project(window).ok().map(|p| p.root.clone());
     let invocation = Invocation { workspace_root: root, client: Some(window.to_owned()), ..Default::default() };
     let cancel = host.begin_project_request(window, request);
-    let result =
-        host.blocking(move || plugins.search_category(&plugin_id, &category, query, limit, invocation, &cancel)).await;
+    let worker_cancel = cancel.clone();
+    // Startup and file reads can outlive a provider call. The request still returns
+    // promptly; the worker checks this token before doing or publishing more work.
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(IdeError::cancelled()),
+        result = tokio::time::timeout(Duration::from_secs(2), host.blocking(move || {
+            plugins.search_category(&plugin_id, &category, query, limit, invocation, &worker_cancel)
+        })) => match result {
+            Ok(result) => result,
+            Err(_) => Err(IdeError::new(ide_core::error::ErrorKind::TimedOut, "plugin search timed out")),
+        },
+    };
+    cancel.cancel();
     host.end_request(request);
     result
 }
@@ -91,6 +102,9 @@ impl PluginHost {
         invocation: Invocation,
         cancel: &ide_core::CancellationToken,
     ) -> IdeResult<PluginSearchPage> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let loaded = self.get(plugin)?;
         let workspace = self.shared.workspace();
         let eligible = || {
@@ -123,9 +137,20 @@ impl PluginHost {
         }
         let commands = self.ui.items(super::points::COMMANDS, Some(plugin)).into_iter().map(|d| d.key).collect();
         let can_read = loaded.meta.lock().granted.contains(&Capability::ProjectRead);
-        validate(page, limit, &commands, |location| {
+        let check = || {
+            if cancel.is_cancelled()
+                || !eligible()
+                || !self.plugins.read().get(plugin).is_some_and(|p| Arc::ptr_eq(p, &loaded))
+            {
+                Err(IdeError::cancelled())
+            } else {
+                Ok(())
+            }
+        };
+        let page = validate(page, limit, &commands, |location| {
+            check()?;
             if !can_read {
-                return Err(IdeError::invalid("search locations require project:read"));
+                return Err(IdeError::invalid("search locations require project.read"));
             }
             let root = invocation
                 .workspace_root
@@ -135,11 +160,14 @@ impl PluginHost {
                 ide_plugin::resolve_in_root(root, &location.path.to_string_lossy()).map_err(IdeError::invalid)?;
             let w = workspace.as_ref().ok_or_else(|| IdeError::unavailable("project closed"))?;
             let text = w
-                .buffer_text(&path)
+                .buffer_text_in(invocation.client.as_deref(), &path)
                 .map(Ok)
                 .unwrap_or_else(|| ide_plugin::read_text(&path).map_err(IdeError::invalid))?;
+            check()?;
             Ok((path, text))
-        })
+        })?;
+        check()?;
+        Ok(page)
     }
 }
 

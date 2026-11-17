@@ -314,7 +314,12 @@ describe("plugin search categories", () => {
   const request = (query: string) => ({ query, tab: id, includeNonProject: false, extra: {} });
   it("passes the raw query, preserves provider order, bounds show more and does not query custom categories in All", async () => {
     const search = vi.fn(async () => page("Request"));
-    const category = { id, title: "Routes", search, actionId: (c: string) => `plugin.sample.${c}` };
+    const category = {
+      id,
+      title: "Routes",
+      search,
+      command: (c: string) => ({ id: `plugin.sample.${c}`, title: "Open", run: vi.fn() }),
+    };
     const { c, last } = setup({
       categories: () => [category],
       actions: () => [{ id: "plugin.sample.open", title: "Open", run: () => {} }],
@@ -323,7 +328,7 @@ describe("plugin search categories", () => {
     await flush();
     expect(search).toHaveBeenLastCalledWith(1, "/files /users:42", 50);
     const item = last().sections.get(id)!.items[0]!;
-    expect(item).toMatchObject({ key: `${id}:same`, arg: "/files /users:42", enabled: true });
+    expect(item).toMatchObject({ key: `${id}:same`, enabled: true });
     expect(buildRows(last().sections, { headers: false })).toHaveLength(2);
     c.run({ ...request(""), extra: { [id]: 10000 } });
     await flush();
@@ -336,7 +341,7 @@ describe("plugin search categories", () => {
   it("cancels superseded work, ignores late answers and withdraws removed providers", async () => {
     const old = deferred<ReturnType<typeof page>>();
     const search = vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(page("New"));
-    let categories = [{ id, title: "Routes", search, actionId: (c: string) => c }];
+    let categories = [{ id, title: "Routes", search, command: (c: string) => ({ id: c, title: c, run: vi.fn() }) }];
     const { c, deps, last } = setup({ categories: () => categories });
     c.run(request("old"));
     c.run(request("new"));
@@ -357,7 +362,9 @@ describe("plugin search categories", () => {
       .fn()
       .mockRejectedValueOnce(new Error("bad provider"))
       .mockReturnValue(new Promise(() => {}));
-    const { c, deps, last } = setup({ categories: () => [{ id, title: "Routes", search, actionId: (c) => c }] });
+    const { c, deps, last } = setup({
+      categories: () => [{ id, title: "Routes", search, command: (c) => ({ id: c, title: c, run: vi.fn() }) }],
+    });
     c.run(request("bad"));
     await flush();
     expect(last().loading).toBe(false);

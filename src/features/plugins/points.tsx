@@ -17,7 +17,7 @@ import { defineUiPoint, type UiItem } from "./projection";
 import { SecretsDetails, type SecretDecl } from "./secrets";
 import { defineViewUiPoints, pluginSettingsPageId } from "./uiPoints";
 import { pluginsBackend } from "./backend";
-import { isLive, runPluginCommand } from "./store";
+import { isLive, runPluginCommand, usePlugins } from "./store";
 import styles from "./PluginsPage.module.css";
 
 /** Unpacks an action argument: a bare path, or a menu's `{ path, paths }`. */
@@ -193,13 +193,34 @@ export function defineBuiltinUiPoints(): () => void {
     defineUiPoint("mcpTools", {}),
     defineUiPoint("serverCommands", {}),
     defineUiPoint<{ id: string; title: string }>("searchCategories", {
-      project: ({ pluginId, decl }) =>
-        registerSearchCategory({
+      project: ({ pluginId, decl }) => {
+        let active = true;
+        const command = (id: string) =>
+          usePlugins.getState().ui.find((c) => c.pluginId === pluginId && c.point === "commands" && c.key === id)
+            ?.decl as CommandDecl | undefined;
+        const dispose = registerSearchCategory({
           id: `plugin:${pluginId}:${decl.id}`,
           title: decl.title,
           search: (request, query, limit) => pluginsBackend().search(pluginId, decl.id, query, limit, request),
-          actionId: (command) => pluginActionId(pluginId, command),
-        }),
+          command: (id) => {
+            const c = command(id);
+            if (!active || !c) return undefined;
+            return {
+              id: pluginActionId(pluginId, id),
+              title: c.title,
+              when: c.when ?? undefined,
+              run: async ({ arg }) => {
+                if (active && command(id))
+                  await runPluginCommand(pluginId, id, typeof arg === "string" ? arg : null, []);
+              },
+            };
+          },
+        });
+        return () => {
+          active = false;
+          dispose();
+        };
+      },
     }),
     defineUiPoint("endpoints", { project: ({ pluginId }) => providePluginEndpoints(pluginId) }),
     defineUiPoint<CommandDecl>("commands", {

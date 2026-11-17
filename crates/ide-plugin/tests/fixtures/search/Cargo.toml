@@ -9,6 +9,9 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+search-first = []
+
 [dependencies]
 openidea-plugin = { path = "../../../../../sdk/rust/openidea-plugin" }
 

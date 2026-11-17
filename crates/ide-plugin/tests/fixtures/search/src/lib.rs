@@ -43,4 +43,12 @@ impl SearchProvider for Fixture {
         })
     }
 }
-register_plugin!(Fixture, search);
+impl openidea_plugin::endpoints::EndpointsProvider for Fixture {
+    fn endpoints(&mut self, _: &Invocation) -> Result<Vec<openidea_plugin::endpoints::Endpoint>, Error> {
+        Ok(vec![])
+    }
+}
+#[cfg(not(feature = "search-first"))]
+register_plugin!(Fixture, endpoints, search);
+#[cfg(feature = "search-first")]
+register_plugin!(Fixture, search, endpoints);

@@ -5,24 +5,21 @@ test("custom search tabs preserve raw queries, activate commands and sources, an
 }) => {
   await page.evaluate(async () => {
     const c = "/src/workbench/contributions.ts";
-    const a = "/src/platform/actions.ts";
     const b = "/src/editor/core/backend.ts";
     const { registerSearchCategory } = await import(c);
-    const { registerAction } = await import(a);
     (await import(b)).docBackend().files.set("/dev/acme-api/routes.txt", "Users route declaration\n");
     const state = window as unknown as { removeCategory: () => void; searchArgs: unknown[]; selectedArg: unknown };
     state.searchArgs = [];
-    registerAction({
-      id: "fixture.open",
-      title: "Open request",
-      run: ({ arg }: { arg?: unknown }) => {
-        state.selectedArg = arg;
-      },
-    });
     state.removeCategory = registerSearchCategory({
       id: "plugin:fixture:requests",
       title: "Requests",
-      actionId: () => "fixture.open",
+      command: () => ({
+        id: "fixture.open",
+        title: "Open request",
+        run: ({ arg }: { arg?: unknown }) => {
+          state.selectedArg = arg;
+        },
+      }),
       search: async (_request: number, query: string, limit: number) => {
         state.searchArgs.push({ query, limit });
         return {
@@ -56,6 +53,8 @@ test("custom search tabs preserve raw queries, activate commands and sources, an
   const search = page.getByRole("dialog", { name: "Search Everywhere" });
   const requests = search.getByRole("tab", { name: "Requests", exact: true });
   await requests.click();
+  if (process.env.OPENIDEA_SEARCH_SCREENSHOTS)
+    await page.screenshot({ path: `${process.env.OPENIDEA_SEARCH_SCREENSHOTS}/after-0.png`, animations: "disabled" });
   await search.getByRole("combobox").fill("/files /users:42");
   await expect(search.getByRole("option", { name: /GET \/users/ })).toBeVisible();
   await expect(requests).toHaveAttribute("aria-selected", "true");

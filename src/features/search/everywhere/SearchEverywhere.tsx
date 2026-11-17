@@ -103,8 +103,7 @@ function SearchEverywhereDialog() {
   const tx = useTx();
   const tab = useSearchEverywhere((s) => s.tab);
   const hint = hintFor(tab, tx);
-  const [categoriesVersion, setCategoriesVersion] = useState(0);
-  const tabs = useMemo(searchTabs, [categoriesVersion]);
+  const [tabs, setTabs] = useState(searchTabs);
   const custom = isCustomTab(tab);
   const query = useSearchEverywhere((s) => s.query);
   const includeNonProject = useSearchEverywhere((s) => s.includeNonProject);
@@ -160,19 +159,13 @@ function SearchEverywhereDialog() {
     () =>
       onSearchCategoriesChanged(() => {
         controller.invalidateCategories();
-        setCategoriesVersion((v) => v + 1);
+        setTabs(searchTabs());
       }),
     [controller],
   );
   useEffect(() => {
     if (custom && !tabs.some((t) => t.id === tab)) selectSearchEverywhereTab("all");
   }, [custom, tab, tabs]);
-  useEffect(
-    () => () => {
-      if (custom) controller.dispose();
-    },
-    [controller, custom, query, tab],
-  );
   const [endpointVersion, setEndpointVersion] = useState(0);
   const [filesVersion, setFilesVersion] = useState(0);
   useEffect(
@@ -222,6 +215,10 @@ function SearchEverywhereDialog() {
   const searchQuery = !custom && parseCommand(debounced)?.kind === "list" ? "" : debounced;
 
   useEffect(() => {
+    if (custom && query !== debounced) {
+      controller.dispose();
+      return;
+    }
     // A language filter waits for the language list (nothing would be filtered yet).
     if (filter?.excludedLanguages?.length && !filter.languageOf) return;
     controller.run({
@@ -236,6 +233,9 @@ function SearchEverywhereDialog() {
     });
   }, [
     controller,
+    query,
+    debounced,
+    custom,
     searchQuery,
     tab,
     includeNonProject,
@@ -244,7 +244,7 @@ function SearchEverywhereDialog() {
     extra,
     endpointVersion,
     filesVersion,
-    categoriesVersion,
+    tabs,
   ]);
 
   useEffect(() => {
@@ -359,12 +359,13 @@ function SearchEverywhereDialog() {
         return closeThen(() => void openResult(row, { side }));
       case "action":
         if (!row.enabled) return;
+        if (row.run) return closeThen(() => void row.run!(ctx));
         pushRecentAction(row.id);
         if (getAction(row.id)?.toggled) {
           void executeActionFrom("search", row.id).then(() => bumpToggles());
           return;
         }
-        return closeThen(() => void executeActionFrom("search", row.id, row.arg));
+        return closeThen(() => void executeActionFrom("search", row.id));
       case "setting":
         return closeThen(() => void executeAction("file.settings", row.pageId));
     }
@@ -403,7 +404,7 @@ function SearchEverywhereDialog() {
   const openIntentions = () => {
     const row = activeRow;
     if (!row || row.kind === "section" || row.kind === "more" || row.kind === "command") return;
-    if (row.kind === "action") return assignShortcut(row.id);
+    if (row.kind === "action") return row.run ? undefined : assignShortcut(row.id);
     const anchor = listRef.current?.querySelector('[data-lead="true"]') ?? inputRef.current;
     if (!anchor) return;
     const copy = (text: string) => void writeClipboardText(text).catch(() => {});
@@ -861,8 +862,8 @@ function ResultRow({
         </>
       );
     case "action": {
-      const shortcut = shortcutLabel(row.id);
-      const toggled = actionToggled(getAction(row.id));
+      const shortcut = row.run ? "" : shortcutLabel(row.id);
+      const toggled = row.run ? undefined : actionToggled(getAction(row.id));
       return (
         <span
           className={clsx(styles.actionRow, !row.enabled && styles.disabled)}

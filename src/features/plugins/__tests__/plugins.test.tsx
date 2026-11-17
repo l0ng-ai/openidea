@@ -170,6 +170,31 @@ describe("plugin actions", () => {
     expect(searchCategories()).toEqual([]);
   });
 
+  it("runs search targets in their owning plugin even when global action IDs collide", async () => {
+    const items = [
+      { pluginId: "a", point: "searchCategories", key: "routes", decl: { id: "routes", title: "Routes" } },
+      {
+        pluginId: "a",
+        point: "commands",
+        key: "b.open",
+        decl: { id: "b.open", title: "Own command", when: "editorFocus" },
+      },
+      { pluginId: "a.b", point: "commands", key: "open", decl: { id: "open", title: "Other command" } },
+    ];
+    const plugins = [plugin({ id: "a" }), plugin({ id: "a.b" })];
+    usePlugins.setState({ plugins, ui: items });
+    syncUiContributions(items, plugins);
+    backend.runCommand = vi.fn(async () => null);
+    const action = searchCategories()[0]!.command("b.open")!;
+    expect(action.when).toBe("editorFocus");
+    await action.run({ ctx: {}, arg: "/users:42" });
+    expect(backend.runCommand).toHaveBeenLastCalledWith("a", "b.open", "/users:42", null, []);
+    expect(searchCategories()[0]!.command("open")).toBeUndefined();
+    syncUiContributions([], []);
+    await action.run({ ctx: {}, arg: "stale" });
+    expect(backend.runCommand).toHaveBeenCalledTimes(1);
+  });
+
   it("projects command contributions to plugin.<plugin>.<command> actions", () => {
     const cmd = (pluginId: string, id: string, extra: Record<string, unknown> = {}) => ({
       pluginId,

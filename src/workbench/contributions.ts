@@ -2123,7 +2123,8 @@ export interface SearchCategory {
     query: string,
     limit: number,
   ): Promise<import("@/bindings").PluginSearchPage>;
-  actionId(command: string): string;
+  /** Resolve within this provider, rather than looking up an ambiguous global action id. */
+  command(id: string): import("@/platform/actions").Action | undefined;
 }
 const searchCategoryProviders = new Map<SearchCategoryId, SearchCategory>();
 const searchCategoryListeners = new Set<() => void>();
