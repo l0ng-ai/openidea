@@ -6,10 +6,12 @@
 //! free (released right away), `ERROR_HOTKEY_ALREADY_REGISTERED` means another
 //! app grabbed it. Nothing is left registered.
 
+use ide_command::desktop_command;
 use ide_core::IdeResult;
 
 /// Reports which of `combos` (single-stroke `Alt+Shift+R`-style bindings) are
 /// already registered to another app. Empty everywhere but Windows.
+#[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
 pub fn system_probe_hotkeys(combos: Vec<String>) -> IdeResult<Vec<String>> {
@@ -187,3 +189,5 @@ mod tests {
         }
     }
 }
+
+ide_command::desktop_domain!(system_probe_hotkeys);

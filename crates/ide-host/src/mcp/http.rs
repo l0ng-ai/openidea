@@ -37,7 +37,7 @@ Returns each request's 0-based `index`, optional `name`, `method`, URL as writte
 Use `http_run_request` with the same `path` and an `index` to send one.",
         |call| async move {
             let path = resolve_http_file(&call, &call.str("path")?).await?;
-            let text = crate::ops::fs::read_text(&call.host(), call.window(), path).await?;
+            let text = crate::ops::fs::fs_read_text(&call.host(), call.window(), path).await?;
             let requests: Vec<_> = ide_http::parse::requests(&text)
                 .into_iter()
                 .map(|b| {
@@ -139,7 +139,7 @@ The `url` field in the result is as written in the file (unsubstituted); transpo
             }
             let index = index as u32;
             let env = call.opt_str("env")?;
-            let text = crate::ops::fs::read_text(&call.host(), call.window(), path.clone()).await?;
+            let text = crate::ops::fs::fs_read_text(&call.host(), call.window(), path.clone()).await?;
             let blocks = ide_http::parse::requests(&text);
             let block =
                 blocks.get(index as usize).ok_or_else(|| IdeError::not_found(format!("no request #{}", index + 1)))?;

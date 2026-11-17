@@ -46,11 +46,11 @@ impl Fixture {
     }
 
     async fn open(&self, path: &Path) -> DocumentInfo {
-        open(&self.host, "main", path.to_path_buf()).await.unwrap()
+        doc_open(&self.host, "main", path.to_path_buf()).await.unwrap()
     }
 
     async fn sync(&self) {
-        sync_from_disk(&self.host, "main").await.unwrap();
+        doc_sync_from_disk(&self.host, "main").await.unwrap();
     }
 
     fn document_events(&self) -> Vec<IdeEvent> {
@@ -95,13 +95,14 @@ async fn unchanged_document_has_no_patch_or_event() {
 async fn dirty_document_keeps_edits_and_warns_once() {
     let f = Fixture::new();
     let original = f.open(&f.path).await;
-    edit(
+    doc_edit(
         &f.host,
         "main",
         original.id,
         original.version,
         ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "local ".into() }] },
     )
+    .await
     .unwrap();
     f.events.lock().clear();
     std::fs::write(&f.path, "external replacement\n").unwrap();
@@ -196,7 +197,7 @@ async fn synchronization_only_changes_the_calling_windows_documents() {
     let other_root = f.outside.parent().unwrap().join("other-project");
     std::fs::create_dir(&other_root).unwrap();
     let other = f.host.open_project("other", &other_root).unwrap();
-    let other_doc = open(&f.host, "other", f.outside.clone()).await.unwrap();
+    let other_doc = doc_open(&f.host, "other", f.outside.clone()).await.unwrap();
     std::fs::write(&f.outside, "external change in shared file\n").unwrap();
     f.sync().await;
     assert_eq!(f.project.documents.snapshot(original.id).unwrap().text, "external change in shared file\n");

@@ -6865,7 +6865,7 @@ fn document_indexer_covers_workspace_members() {
     // Discovery: the member file is in the window's project scope.
     let files = f
         ._runtime
-        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, &f.plugins, "main"))
         .unwrap();
     assert!(files.paths.iter().any(|p| p.0 == mapping), "{:?}", files.paths);
     // Indexing the member file through the window's project publishes it: the
@@ -6875,7 +6875,7 @@ fn document_indexer_covers_workspace_members() {
     f._runtime
         .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
             &f.host,
-            f.plugins.clone(),
+            &f.plugins,
             "main",
             vec![mapping.clone()],
             ide_core::RequestId::next(),
@@ -6891,13 +6891,13 @@ fn document_indexer_covers_workspace_members() {
     std::fs::write(&outside, "def outside:item\n").unwrap();
     let files = f
         ._runtime
-        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, f.plugins.clone(), "main"))
+        .block_on(ide_host::plugins::index_ops::plugin_navigation_files(&f.host, &f.plugins, "main"))
         .unwrap();
     assert!(!files.paths.iter().any(|p| p.0 == outside), "{:?}", files.paths);
     f._runtime
         .block_on(ide_host::plugins::index_ops::plugin_navigation_index(
             &f.host,
-            f.plugins.clone(),
+            &f.plugins,
             "main",
             vec![outside.clone()],
             ide_core::RequestId::next(),

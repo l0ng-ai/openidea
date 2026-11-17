@@ -414,6 +414,39 @@ describe("EditorController", () => {
     expect(openFilePaths(useTabs.getState())).toEqual(["/p/a.ts"]);
   });
 
+  it("offers Find Usages immediately before Go To in the editor context menu", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const slot = ctrl.activeSlot!;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = slot.mount(host);
+    vi.spyOn(view, "posAtCoords").mockReturnValue(null);
+    try {
+      ctrl.onContextMenu(slot, new MouseEvent("contextmenu"));
+      const items = useContextMenuStore.getState().menu!.items;
+      const goTo = items.findIndex((item) => "label" in item && item.label === "Go To");
+      expect(items[goTo - 1]).toEqual({ kind: "action", action: "find.usages", label: "Find Usages" });
+      const submenu = resolveMenuItems(items).find((item) => item.label === "Go To")!.submenu!;
+      expect(submenu.map((item) => (item.kind === "action" ? item.action : "-"))).toEqual([
+        "navigate.declaration",
+        "navigate.implementation",
+        "navigate.typeDeclaration",
+        "navigate.superMethod",
+        "navigate.relatedSymbol",
+        "navigate.gotoTest",
+        "-",
+        "navigate.callHierarchy",
+        "navigate.typeHierarchy",
+      ]);
+    } finally {
+      hideContextMenu();
+      slot.unmount();
+      host.remove();
+    }
+  });
+
   it("builds IDEA's editor tab menu", async () => {
     useProject.setState({
       project: { name: "p", root: "/p", trusted: true, isGit: true, settings: {} } as never,

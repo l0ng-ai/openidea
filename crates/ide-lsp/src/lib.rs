@@ -1813,9 +1813,16 @@ impl LspManager {
                 out.push(loc);
                 continue;
             };
-            let Ok(uri) = self.java_class_file(Path::new(""), Some((entry.jar, entry.entry))).await else {
-                out.push(loc);
-                continue;
+            // The Kotlin server may name the jar by another path than jdtls (its own copy of a
+            // `system`-scope jar): its stub would be all the user gets, so take jdtls' only class
+            // of that name.
+            let uri = match self.archive_class(entry.jar, entry.entry, true).await {
+                Ok(uri) => uri,
+                Err(e) => {
+                    tracing::info!("library class stays a stub: {}", e.message);
+                    out.push(loc);
+                    continue;
+                }
             };
             let range = match (&name, self.virtual_document(&uri).await) {
                 (Some(name), Ok(doc)) => library_source::declaration_range(&doc.text, name),

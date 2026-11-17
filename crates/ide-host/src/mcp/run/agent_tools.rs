@@ -418,10 +418,10 @@ input). Terminal keys (arrows, Escape, Backspace, Ctrl+Z…) are refused. To ans
                             host.processes.write_stdin(id, &std::mem::take(&mut data))?;
                         }
                         if key == Key::EndOfInput {
-                            crate::ops::run::close_stdin(&host, id)?;
+                            crate::ops::run::run_close_stdin(&host, id)?;
                         } else {
                             run.agent_stopping();
-                            crate::ops::run::stop(&host, &run.window(), id)?;
+                            crate::ops::run::run_stop(&host, &run.window(), id)?;
                             break;
                         }
                     }
@@ -455,10 +455,10 @@ keeps `stopping`: call again with `force`. The tab stays open with its output."
             let deadline = deadline(&call, STOP_TIMEOUT_MS)?;
             let host = call.host();
             run.agent_stopping();
-            crate::ops::run::stop(&host, &run.window(), id)?;
+            crate::ops::run::run_stop(&host, &run.window(), id)?;
             if force {
                 // A second Stop kills the tree.
-                crate::ops::run::stop(&host, &run.window(), id)?;
+                crate::ops::run::run_stop(&host, &run.window(), id)?;
             }
             let end = run.wait(deadline, None, run.log_len(), &call.cancel).await?;
             let mut extra = Map::new();

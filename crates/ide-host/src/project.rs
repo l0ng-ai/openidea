@@ -306,7 +306,7 @@ impl Host {
         }
         {
             let documents = documents.clone();
-            lsp.set_apply_edit_hook(Box::new(move |edit| apply_workspace_edit(&documents, &edit).is_ok()));
+            lsp.set_apply_edit_hook(Box::new(move |edit| documents.apply_workspace_edit(&edit).is_ok()));
         }
         let syntax = Arc::new(SyntaxCache::new(self.syntax()));
         documents.add_observer(Arc::new(SyntaxObserver(syntax.clone())));
@@ -1320,11 +1320,6 @@ impl Project {
     }
 }
 
-/// Applies a multi-file edit through the document layer so open editors update live.
-pub fn apply_workspace_edit(documents: &Documents, edit: &ide_core::WorkspaceEdit) -> IdeResult<()> {
-    documents.apply_workspace_edit(edit)
-}
-
 /// Files the watcher reports per batch that Local History snapshots.
 const HISTORY_BATCH_LIMIT: usize = 500;
 
@@ -2149,11 +2144,12 @@ mod workspace_edit_tests {
             version: None,
             edits: vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 3)), new_text: "sum_values".into() }],
         };
-        apply_workspace_edit(
-            &documents,
-            &WorkspaceEdit { files: vec![changes(real.clone()), changes(alias)], ..Default::default() },
-        )
-        .unwrap();
+        documents
+            .apply_workspace_edit(&WorkspaceEdit {
+                files: vec![changes(real.clone()), changes(alias)],
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(std::fs::read_to_string(real).unwrap(), "sum_values();\n");
         assert_eq!(documents.snapshot(doc.id).unwrap().text, "sum_values();\n");
     }

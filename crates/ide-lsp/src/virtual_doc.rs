@@ -197,12 +197,17 @@ pub(crate) fn archive_modified(uri: &str) -> Option<std::time::SystemTime> {
     std::fs::metadata(archive(uri)?).and_then(|m| m.modified()).ok()
 }
 
-/// Check both the package and actual archive, so duplicate type names never pick another jar.
-pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
+/// Whether `uri` is jdtls' class `package.name`, in any archive.
+pub(crate) fn matches_class_name(uri: &str, package: &str, name: &str) -> bool {
     let segs = segments(uri);
     scheme(uri) == "jdt"
         && (package.is_empty() && segs.len() == 3 || segs.get(2).is_some_and(|s| s == package))
         && segs.last().is_some_and(|s| s == &format!("{name}.class") || s == &format!("{name}.java"))
+}
+
+/// Check both the package and actual archive, so duplicate type names never pick another jar.
+pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, name: &str) -> bool {
+    matches_class_name(uri, package, name)
         && description(uri).is_some_and(|p| {
             let path = std::path::Path::new(&p);
             path == jar
@@ -210,11 +215,67 @@ pub(crate) fn matches_class(uri: &str, jar: &std::path::Path, package: &str, nam
         })
 }
 
+/// jdtls' document for class `package.name` of archive `jar` among `uris`. With `any_archive`,
+/// when the caller names the archive by another path than the Java model does (a copy another
+/// server made of a `system`-scope jar, say), the one class of that name in the model; with
+/// several, none rather than another jar's.
+pub(crate) fn pick_class(
+    uris: impl IntoIterator<Item = String>,
+    jar: &std::path::Path,
+    package: &str,
+    name: &str,
+    any_archive: bool,
+) -> Option<String> {
+    let named: Vec<String> = uris.into_iter().filter(|uri| matches_class_name(uri, package, name)).collect();
+    if let Some(uri) = named.iter().find(|uri| matches_class(uri, jar, package, name)) {
+        return Some(uri.clone());
+    }
+    match named.as_slice() {
+        [only] if any_archive => Some(only.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const JDT: &str = "jdt://contents/spring-boot-4.1.1.jar/org.springframework.boot/SpringApplication.class?=spring-demo/%5C/Users%5C/me%5C/.m2%5C/repository%5C/spring-boot-4.1.1.jar%3Corg.springframework.boot%28SpringApplication.class";
+
+    #[test]
+    fn picks_the_class_of_the_archive_or_the_only_one_of_that_name() {
+        let jdt = |jar: &str, file: &str| {
+            format!(
+                "jdt://contents/{file}/org.springframework.boot/SpringApplication.class?=demo/%5C/repo%5C/{jar}%3Corg.springframework.boot%28SpringApplication.class"
+            )
+        };
+        let (a, b) = (jdt("a.jar", "a.jar"), jdt("b.jar", "b.jar"));
+        let pick = |uris: &[&String], jar: &str| {
+            pick_class(
+                uris.iter().map(|u| (*u).clone()),
+                std::path::Path::new(jar),
+                "org.springframework.boot",
+                "SpringApplication",
+                true,
+            )
+        };
+        assert_eq!(pick(&[&a, &b], "/repo/b.jar"), Some(b.clone()));
+        // Another path for the archive: the only class of that name.
+        assert_eq!(pick(&[&a], "/elsewhere/copy.jar"), Some(a.clone()));
+        // Two candidates and neither archive matches: none rather than a guess.
+        assert_eq!(pick(&[&a, &b], "/elsewhere/copy.jar"), None);
+        let other = JDT.replace("SpringApplication.class", "Banner.class");
+        assert_eq!(pick(&[&other], "/elsewhere/copy.jar"), None);
+        // Strict: only the named archive.
+        let strict = pick_class(
+            [a.clone()],
+            std::path::Path::new("/elsewhere/copy.jar"),
+            "org.springframework.boot",
+            "SpringApplication",
+            false,
+        );
+        assert_eq!(strict, None);
+    }
 
     #[test]
     fn class_stubs_in_java_or_kotlin() {

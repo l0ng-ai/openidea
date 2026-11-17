@@ -11,25 +11,21 @@
 //! grants (a `process:` grant is pinned to the program on this machine's
 //! `PATH`).
 //!
-//! The commands a window needs at run time (`plugin_run_command`,
-//! `plugin_post_events`, `plugin_event_kinds`, `plugin_status_items`,
-//! `plugin_context_keys`, `plugin_cancel_task`, `plugin_answer_prompt`, `plugin_set_active_file`,
-//! `plugin_line_markers`, `plugin_set_ui_locale`, `plugin_view_render`, `plugin_view_event`,
-//! `plugin_service_detail`, `plugin_service_log`, `plugin_answer_commit`, `plugin_commit_checks`)
-//! carry the desktop commands' names and arguments, so a remote window's UI
-//! routes them here unchanged. Plugin results come back as `plugin`
+//! The commands a window needs at run time (`plugin_run_command`, `plugin_post_events`, …) are
+//! `#[command]`s served by every project host, so a remote window's UI routes them here
+//! unchanged. Plugin results come back as `plugin`
 //! notifications ([`PluginEventMessage`]); secrets stay in the desktop's
 //! keychain and are asked for with a `plugin_secret` request
 //! ([`SecretRequest`]) when a request header needs one (rule 4).
 
-use super::{Consent, HostWorkspace, PluginEditor, PluginEvent, PluginHost, PluginSource, SecretStore};
+use super::{Consent, HostWorkspace, PluginEvent, PluginHost, PluginSource, SecretStore};
+use crate::catalogue::TrustClass;
 use crate::rpc::Dispatcher;
 use base64::Engine as _;
 use ide_core::{IdeError, IdeResult};
 use ide_extension::{MANIFEST_FILE, ledger};
 use ide_jsonrpc::Peer;
-use ide_plugin::{Invocation, Limits};
-use ide_workspace::settings::SettingsScope;
+use ide_plugin::Limits;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -47,49 +43,6 @@ pub const SECRET_REQUEST: &str = "plugin_secret";
 pub const SECRET_WRITE: &str = "plugin_secret_write";
 /// OAuth listeners bound on the desktop, never the project server.
 pub const AUTH_REQUEST: &str = "plugin_auth";
-/// What [`RemotePlugins::register`] adds to a server's commands.
-pub const COMMANDS: &[&str] = &[
-    SYNC_PACKAGES,
-    "plugin_run_command",
-    "plugin_set_ui_locale",
-    "plugin_select_tests",
-    "plugin_parse_test_results",
-    "plugin_terminal_session_close",
-    "plugin_terminal_session_spawn",
-    "plugin_prepare_debug_run",
-    "plugin_debug_attach_target",
-    "plugin_finish_operation",
-    "plugin_content_tab_action",
-    "plugin_post_events",
-    "plugin_event_kinds",
-    "plugin_status_items",
-    "plugin_context_keys",
-    "plugin_cancel_task",
-    "plugin_answer_prompt",
-    "plugin_choose_program",
-    "plugin_program",
-    "plugin_answer_command",
-    "plugin_answer_commit",
-    "plugin_commit_checks",
-    "mcp_set_open_editors",
-    "mcp_set_focused_editor",
-    "mcp_report_problems",
-    "plugin_decoration_sets",
-    "plugin_set_active_file",
-    "plugin_view_render",
-    "plugin_view_event",
-    "plugin_service_detail",
-    "plugin_service_log",
-    "plugin_navigation_files",
-    "plugin_navigation_invalidate",
-    "plugin_navigation_index",
-    "plugin_navigation_goto",
-    "plugin_navigation_markers",
-    "plugin_endpoints",
-    "plugin_run_targets",
-    "plugin_answer_run_target",
-    "plugin_line_markers",
-];
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SecretWrite {
@@ -482,10 +435,10 @@ impl RemotePlugins {
         result
     }
 
-    /// The run-time commands of remote windows plus [`SYNC_PACKAGES`].
+    /// [`SYNC_PACKAGES`]; the plugin commands of remote windows are `#[command]`s.
     pub fn register(self: &Arc<Self>, d: &mut Dispatcher) {
         let this = self.clone();
-        d.add(SYNC_PACKAGES, move |c| {
+        d.add(SYNC_PACKAGES, TrustClass::Trusted, move |c| {
             let this = this.clone();
             async move {
                 let packages: Vec<RemotePackage> = c.arg("packages")?;
@@ -493,361 +446,7 @@ impl RemotePlugins {
                 blocking(move || Ok(this.sync(packages, files.unwrap_or_default()))).await
             }
         });
-        let host = Arc::downgrade(&self.host);
-        let h = host.clone();
-        d.add("plugin_run_command", move |c| {
-            let h = h.clone();
-            async move {
-                let host = alive(&h)?;
-                let plugin_id: String = c.arg("pluginId")?;
-                let command_id: String = c.arg("commandId")?;
-                let arg: Option<String> = c.arg("arg")?;
-                let editor: Option<PluginEditor> = c.arg("editor")?;
-                let paths: Option<Vec<PathBuf>> = c.arg("paths")?;
-                let settings_scope: Option<SettingsScope> = c.arg("settingsScope")?;
-                let invocation = Invocation {
-                    command_chain: c.arg::<Option<Vec<String>>>("commandChain")?.unwrap_or_default(),
-                    client: Some(c.window.clone()),
-                    workspace_root: c.host.project(&c.window).ok().map(|p| p.root.clone()),
-                    editor: editor.map(PluginEditor::context),
-                    selected_paths: paths.unwrap_or_default(),
-                    global_settings: matches!(settings_scope, Some(SettingsScope::Global)),
-                };
-                super::commands::run_command(&c.host, host, plugin_id, command_id, arg, invocation, c.arg("request")?)
-                    .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_set_ui_locale", move |c| {
-            let h = h.clone();
-            async move {
-                alive(&h)?.set_ui_locale(&c.arg::<String>("tag")?);
-                Ok(())
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_select_tests", move |c| {
-            let h = h.clone();
-            async move {
-                let host = alive(&h)?;
-                let config = c.arg::<String>("config")?;
-                let tests = c.arg("tests")?;
-                blocking(move || host.select_tests(&c.window, &config, tests)).await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_parse_test_results", move |c| {
-            let h = h.clone();
-            async move {
-                let host = alive(&h)?;
-                let config = c.arg::<String>("config")?;
-                let chunk = c.arg("chunk")?;
-                blocking(move || host.parse_test_results(&c.window, &config, chunk)).await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_terminal_session_close", move |c| {
-            let h = h.clone();
-            async move { alive(&h)?.close_terminal_session(&c.window, &c.arg::<String>("operation")?) }
-        });
-        let h = host.clone();
-        d.add("plugin_terminal_session_spawn", move |c| {
-            let h = h.clone();
-            async move {
-                let plugins = alive(&h)?;
-                let operation: String = c.arg("operation")?;
-                let cols = c.arg("cols")?;
-                let rows = c.arg("rows")?;
-                let output = c.channel("onOutput")?;
-                blocking(move || plugins.spawn_terminal_session(&c.host, &c.window, &operation, cols, rows, output))
-                    .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_prepare_debug_run", move |c| {
-            let h = h.clone();
-            async move {
-                let plugins = alive(&h)?;
-                let config = c.arg("config")?;
-                blocking(move || plugins.prepare_debug_run(&c.window, config)).await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_debug_attach_target", move |c| {
-            let h = h.clone();
-            async move {
-                let plugins = alive(&h)?;
-                let (config, run) = (c.arg::<String>("config")?, c.arg("run")?);
-                blocking(move || plugins.debug_attach_target(&c.host, &c.window, &config, run)).await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_finish_operation", move |c| {
-            let h = h.clone();
-            async move {
-                Ok(alive(&h)?.finish_operation(&c.window, &c.arg::<String>("id")?, c.arg("status")?, c.arg("stopped")?))
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_content_tab_action", move |c| {
-            let h = h.clone();
-            async move { alive(&h)?.content_tab_action(&c.window, &c.arg::<String>("pluginId")?, c.arg("action")?) }
-        });
-        let h = host.clone();
-        d.add("plugin_post_events", move |c| {
-            let h = h.clone();
-            async move {
-                alive(&h)?.post_window_events(&c.window, c.arg("events")?, c.arg("editor")?);
-                Ok(())
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_event_kinds", move |_| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.event_kinds().into_iter().collect::<Vec<_>>()) }
-        });
-        let h = host.clone();
-        d.add("plugin_status_items", move |c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.status_snapshot(&c.window)) }
-        });
-        let h = host.clone();
-        d.add("plugin_context_keys", move |c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.context_keys(Some(&c.window))) }
-        });
-        let h = host.clone();
-        d.add("plugin_cancel_task", move |c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.cancel_task(&c.arg::<String>("taskId")?)) }
-        });
-        let h = host.clone();
-        d.add("plugin_answer_prompt", move |c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.answer_prompt(&c.arg::<String>("promptId")?, c.arg("answer")?)) }
-        });
-        let h = host.clone();
-        d.add("plugin_choose_program", move |c| {
-            let h = h.clone();
-            async move {
-                let host = alive(&h)?;
-                let id: String = c.arg("pluginId")?;
-                let cap: String = c.arg("capability")?;
-                let scope: SettingsScope = c.arg("scope")?;
-                let path: Option<PathBuf> = c.arg("path")?;
-                let root = match scope {
-                    SettingsScope::Global => None,
-                    SettingsScope::Project => Some(c.host.project(&c.window)?.root.clone()),
-                };
-                blocking(move || host.choose_program(&id, &cap, root.as_deref(), path.as_deref())).await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_program", move |c| {
-            let h = h.clone();
-            async move {
-                let host = alive(&h)?;
-                let id: String = c.arg("pluginId")?;
-                let program: String = c.arg("program")?;
-                let scope: SettingsScope = c.arg("scope")?;
-                let root = match scope {
-                    SettingsScope::Global => None,
-                    SettingsScope::Project => Some(c.host.project(&c.window)?.root.clone()),
-                };
-                blocking(move || host.program_for_project(&id, &program, root.as_deref()).map(ide_core::IpcPath::from))
-                    .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_answer_command", move |c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.answer_command(&c.window, &c.arg::<String>("requestId")?, c.arg("answer")?)) }
-        });
-        let h = host.clone();
-        d.add("plugin_answer_commit", move |c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.answer_commit(&c.arg::<String>("requestId")?, c.arg("answer")?)) }
-        });
-        let h = host.clone();
-        d.add("plugin_commit_checks", move |c| {
-            let h = h.clone();
-            async move {
-                super::commit::commit_checks(
-                    &c.host,
-                    alive(&h)?,
-                    &c.window,
-                    c.arg("selection")?,
-                    c.arg("checks")?,
-                    c.arg("request")?,
-                )
-                .await
-            }
-        });
-        d.add("mcp_set_open_editors", |c| async move {
-            let paths: Vec<ide_core::IpcPath> = c.arg("paths")?;
-            c.host.project(&c.window)?;
-            c.host.mcp_reports.set_open_editors(&c.window, paths.into_iter().map(PathBuf::from).collect());
-            Ok(())
-        });
-        d.add("mcp_set_focused_editor", |c| async move {
-            c.host.project(&c.window)?;
-            c.host.mcp_reports.set_focused_editor(&c.window, c.arg("editor")?, c.arg("focused")?);
-            Ok(())
-        });
-        d.add("mcp_report_problems", |c| async move {
-            c.host.project(&c.window)?;
-            c.host.mcp_reports.report_problems(&c.window, c.arg("reset")?, c.arg("files")?);
-            Ok(())
-        });
-        let h = host.clone();
-        d.add("plugin_decoration_sets", move |_c| {
-            let h = h.clone();
-            async move { Ok(alive(&h)?.decoration_sets()) }
-        });
-        let h = host.clone();
-        d.add("plugin_set_active_file", move |c| {
-            let h = h.clone();
-            async move {
-                alive(&h)?.set_active_file(&c.window, c.arg("path")?);
-                Ok(())
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_view_render", move |c| {
-            let h = h.clone();
-            async move {
-                let plugins = alive(&h)?;
-                super::views::render(
-                    &c.host,
-                    plugins,
-                    &c.window,
-                    c.arg("pluginId")?,
-                    c.arg("view")?,
-                    c.arg("viewport")?,
-                    c.arg("doc")?,
-                    c.arg("editor")?,
-                )
-                .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_view_event", move |c| {
-            let h = h.clone();
-            async move {
-                let plugins = alive(&h)?;
-                super::views::event(
-                    &c.host,
-                    plugins,
-                    &c.window,
-                    c.arg("pluginId")?,
-                    c.arg("view")?,
-                    c.arg("event")?,
-                    c.arg("doc")?,
-                    c.arg("editor")?,
-                )
-                .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_service_detail", move |c| {
-            let h = h.clone();
-            async move {
-                super::views::service_detail(
-                    &c.host,
-                    alive(&h)?,
-                    &c.window,
-                    c.arg("pluginId")?,
-                    c.arg("view")?,
-                    c.arg("key")?,
-                )
-                .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_service_log", move |c| {
-            let h = h.clone();
-            async move {
-                super::views::service_log(
-                    &c.host,
-                    alive(&h)?,
-                    &c.window,
-                    c.arg("pluginId")?,
-                    c.arg("view")?,
-                    c.arg("key")?,
-                    c.arg("tab")?,
-                    c.arg("on")?,
-                    c.arg("request")?,
-                    c.sender("onLine")?,
-                )
-                .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_navigation_files", move |c| {
-            let h = h.clone();
-            async move { super::index_ops::plugin_navigation_files(&c.host, alive(&h)?, &c.window).await }
-        });
-        let h = host.clone();
-        d.add("plugin_navigation_invalidate", move |c| { let h = h.clone(); async move {
-            super::index_ops::plugin_navigation_invalidate(&c.host, alive(&h)?, &c.window, c.arg("paths")?)
-        } });
-        let h = host.clone();
-        d.add("plugin_navigation_index", move |c| {
-            let h = h.clone();
-            async move {
-                super::index_ops::plugin_navigation_index(
-                    &c.host,
-                    alive(&h)?,
-                    &c.window,
-                    c.arg("paths")?,
-                    c.arg("request")?,
-                )
-                .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_navigation_goto", move |c| {
-            let h = h.clone();
-            async move {
-                super::index_ops::plugin_navigation_goto(&c.host, alive(&h)?, &c.window, c.arg("doc")?, c.arg("pos")?)
-                    .await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_navigation_markers", move |c| {
-            let h = h.clone();
-            async move {
-                super::index_ops::plugin_navigation_markers(&c.host, alive(&h)?, &c.window, c.arg("paths")?).await
-            }
-        });
-        let h = host.clone();
-        d.add("plugin_endpoints", move |c| {
-            let h = h.clone();
-            async move { super::index_ops::plugin_endpoints(&c.host, alive(&h)?, &c.window, c.arg("pluginId")?).await }
-        });
-        let h = host.clone();
-        d.add("plugin_run_targets", move |c| {
-            let h = h.clone();
-            async move { super::run_targets::list(&c.host, alive(&h)?.as_ref(), &c.window) }
-        });
-        let h = host.clone();
-        d.add("plugin_answer_run_target", move |c| {
-            let h = h.clone();
-            async move {
-                let plugins = alive(&h)?;
-                let id: String = c.arg("id")?;
-                let use_target = c.arg("useTarget")?;
-                blocking(move || super::run_targets::answer(&c.host, &plugins, &c.window, &id, use_target)).await
-            }
-        });
-        d.add("plugin_line_markers", |c| async move {
-            crate::ops::lsp::plugin_line_markers(&c.host, &c.window, c.arg("doc")?).await
-        });
     }
-}
-
-fn alive(host: &Weak<PluginHost>) -> IdeResult<Arc<PluginHost>> {
-    host.upgrade().ok_or_else(|| IdeError::unavailable("the plugin host has shut down"))
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {

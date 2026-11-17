@@ -24,6 +24,16 @@ pub enum DockerEndpoint {
     Tcp { host: String, tls_cert_dir: Option<String> },
     /// A named `docker context`.
     Context { name: String },
+    /// A daemon on the host of an SSH configuration (Settings › Tools › SSH Configurations),
+    /// reached with the IDE's own SSH client and its saved credentials. The host resolves it to
+    /// a local [`DockerEndpoint::Tcp`] tunnel before running docker; unresolved, the CLI is
+    /// pointed at an address it rejects rather than at another daemon.
+    Ssh { config: String },
+}
+
+/// What an unresolved [`DockerEndpoint::Ssh`] gives the CLI: an error, never a fallback daemon.
+fn unresolved_ssh(config: &str) -> String {
+    format!("ssh-configuration://{}", config.trim())
 }
 
 impl DockerEndpoint {
@@ -55,6 +65,7 @@ impl DockerEndpoint {
                 args
             }
             Self::Context { name } => vec!["--context".into(), name.trim().to_owned()],
+            Self::Ssh { config } => vec!["--host".into(), unresolved_ssh(config)],
         }
     }
 
@@ -101,6 +112,11 @@ impl DockerEndpoint {
                 set("DOCKER_HOST", String::new());
                 set("DOCKER_TLS_VERIFY", String::new());
             }
+            Self::Ssh { config } => {
+                set("DOCKER_HOST", unresolved_ssh(config));
+                set("DOCKER_CONTEXT", String::new());
+                set("DOCKER_TLS_VERIFY", String::new());
+            }
         }
         env
     }
@@ -111,8 +127,13 @@ impl DockerEndpoint {
             Self::Socket { path } => path.trim().is_empty(),
             Self::Tcp { host, .. } => host.trim().is_empty(),
             Self::Context { name } => name.trim().is_empty() || name.trim().starts_with('-'),
+            Self::Ssh { config } => config.trim().is_empty(),
         };
-        if empty { Err(IdeError::invalid("the Docker connection needs a socket, host or context")) } else { Ok(()) }
+        if empty {
+            Err(IdeError::invalid("the Docker connection needs a socket, host, context or SSH configuration"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -324,6 +345,17 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unresolved_ssh_endpoint_never_falls_back_to_another_daemon() {
+        let ssh = DockerEndpoint::Ssh { config: "box".into() };
+        assert_eq!(ssh.global_args(), ["--host", "ssh-configuration://box"]);
+        let env = ssh.env_vars();
+        assert_eq!((env["DOCKER_HOST"].as_str(), env["DOCKER_CONTEXT"].as_str()), ("ssh-configuration://box", ""));
+        assert!(ssh.validate().is_ok());
+        assert!(DockerEndpoint::Ssh { config: " ".into() }.validate().is_err());
+        assert!(!crate::endpoint_is_local(&ssh).unwrap());
+    }
 
     #[test]
     fn endpoint_args() {

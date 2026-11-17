@@ -1,5 +1,6 @@
 //! Bounded, read-only JVM presentation for visible files, also served remotely.
 use crate::Host;
+use ide_command::command;
 use ide_core::{CancellationToken, IdeError, IdeResult, LanguageId};
 use ide_syntax::{JvmPresentation, Snapshot, StructureService, jvm_type_header};
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,7 @@ fn read_presentation(
     Ok(presentation)
 }
 
+#[command(trust = always)]
 pub async fn jvm_file_presentations(
     host: &Host,
     window: &str,
@@ -132,3 +134,5 @@ mod tests {
         assert_eq!(presentation.kind, Some(ide_syntax::JvmTypeKind::Class));
     }
 }
+
+ide_command::domain!(jvm_icons: jvm_file_presentations);

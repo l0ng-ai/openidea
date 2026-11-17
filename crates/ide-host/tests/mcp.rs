@@ -763,7 +763,8 @@ fn run_tool_window(h: &Harness) -> Arc<std::sync::Mutex<Vec<ide_run::RunConfig>>
             config.extras.params.insert(ide_host::mcp::AGENT_PARAM.into(), name);
             config.extras.target = Some(String::new());
             out.lock().unwrap().push(config.clone());
-            let result = ide_host::ops::run::start(&host, "main", config, Arc::new(|_| {})).await;
+            let result =
+                ide_host::ops::run::run_start(&host, "main", config, ide_host::ops::Channel::new(|_| {}), None).await;
             let error = result.err().map(|e| e.message);
             let _ = host.mcp_requests.answer("main", id, error.is_none(), error);
         }
@@ -835,7 +836,7 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
 
     // What the user types (a line from the Run console's input) ends a wait at once, with advice for the agent.
     let process = agent_process(&h, "_agent_check");
-    ide_host::ops::run::stdin(&h.host, process, "yes\n").unwrap();
+    ide_host::ops::run::run_stdin(&h.host, process, "yes\n".into()).unwrap();
     let typed = h.json("wait_for_run", json!({"name": "check", "timeout": 10000})).await;
     assert_eq!(typed["waitEnded"], "userIntervened", "{typed}");
     assert_eq!(typed["interventions"][0]["message"], "User input: yes");
@@ -849,14 +850,14 @@ async fn agent_commands_run_in_named_tabs_and_report_what_the_user_did() {
 
     // The user's Stop, rerun and closing the tab are reported with their time.
     h.json("run_command", json!({"name": "server", "command": "sleep 30", "timeout": 0})).await;
-    ide_host::ops::run::stop(&h.host, "main", agent_process(&h, "_agent_server")).unwrap();
+    ide_host::ops::run::run_stop(&h.host, "main", agent_process(&h, "_agent_server")).unwrap();
     let stop = h.json("wait_for_run", json!({"name": "server", "timeout": 10000})).await;
     assert!(stop["interventions"][0]["message"].as_str().unwrap().starts_with("The user stopped this command at"));
     let ended = h.json("wait_for_run", json!({"name": "server", "timeout": 10000})).await;
     assert_eq!(ended["state"], "stoppedByUser", "{ended}");
 
     let config = started.lock().unwrap().last().cloned().unwrap();
-    ide_host::ops::run::start(&h.host, "main", config, Arc::new(|_| {})).await.unwrap();
+    ide_host::ops::run::run_start(&h.host, "main", config, ide_host::ops::Channel::new(|_| {}), None).await.unwrap();
     let status = h.json("get_run_status", json!({"name": "server"})).await;
     assert_eq!(status["startedBy"], "user", "{status}");
     assert!(status["interventions"][0]["message"].as_str().unwrap().starts_with("The user reran this command at"));

@@ -1,10 +1,32 @@
-use super::Emit;
+use super::{Channel, Emit};
 use crate::Host;
+use ide_command::command;
 use ide_core::remote_settings::RunTargetKind;
 use ide_core::{IdeError, IdeResult, RunId};
 use ide_run::{OutputChunk, RunConfig, RunInfo, StartOptions};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Detected configs followed by user-defined ones (user ids win on conflict).
+#[command(trust = trusted)]
+pub async fn run_configs(host: &Arc<Host>, window: &str) -> IdeResult<Vec<RunConfig>> {
+    // Detection reads build files (and Spring Boot sources): off the command thread.
+    let (host, window) = (host.clone(), window.to_owned());
+    super::doc::blocking(move || configs(&host, &window)).await
+}
+
+#[command(trust = trusted)]
+pub async fn run_save_configs(
+    host: &Arc<Host>,
+    window: &str,
+    configs: Vec<RunConfig>,
+    removed_detected_ids: Option<Vec<String>>,
+) -> IdeResult<()> {
+    let (host, window) = (host.clone(), window.to_owned());
+    let removed = removed_detected_ids.unwrap_or_default();
+    super::doc::blocking(move || save_configs(&host, &window, &configs, &removed)).await
+}
 
 /// Detected configs followed by user-defined ones (user ids win on conflict).
 pub fn configs(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
@@ -183,9 +205,16 @@ fn settings_only(
     })
 }
 
-/// Temporary configurations as they are kept between sessions: without what settings derived
-/// (toolchain commands, Maven options, `JAVA_HOME`…), so they follow later settings changes.
-pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+/// Temporary configurations as they are kept between sessions: without what settings derived.
+#[command(trust = trusted)]
+pub async fn run_without_derived(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+    let (host, window) = (host.clone(), window.to_owned());
+    super::doc::blocking(move || without_derived(&host, &window, configs)).await
+}
+
+/// Without what settings derived (toolchain commands, Maven options, `JAVA_HOME`…), so they
+/// follow later settings changes.
+fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     configs
@@ -200,8 +229,15 @@ pub fn without_derived(host: &Host, window: &str, configs: Vec<RunConfig>) -> Id
         .collect()
 }
 
-/// Kept temporary configurations with today's settings applied, as [`configs`] lists the others.
-pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+/// Kept temporary configurations with the current settings applied.
+#[command(trust = trusted)]
+pub async fn run_apply_settings(host: &Arc<Host>, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
+    let (host, window) = (host.clone(), window.to_owned());
+    super::doc::blocking(move || apply_settings(&host, &window, configs)).await
+}
+
+/// Today's settings applied, as [`configs`] lists the others.
+fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> IdeResult<Vec<RunConfig>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     configs
@@ -221,17 +257,17 @@ pub fn apply_settings(host: &Host, window: &str, configs: Vec<RunConfig>) -> Ide
         .collect()
 }
 
-pub async fn start(host: &Host, window: &str, config: RunConfig, on_output: Emit<OutputChunk>) -> IdeResult<RunInfo> {
-    start_request(host, window, config, on_output, None).await
-}
-
-pub async fn start_request(
+#[command(trust = trusted)]
+pub async fn run_start(
     host: &Host,
     window: &str,
     config: RunConfig,
-    on_output: Emit<OutputChunk>,
+    on_output: Channel<OutputChunk>,
     request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
+    let on_output: Emit<OutputChunk> = Arc::new(move |chunk| {
+        let _ = on_output.send(chunk);
+    });
     let cancel = request.map(|id| host.begin_request(id)).unwrap_or_default();
     let operation = config.extras.params.get("plugin.operation").cloned();
     let mut config = config;
@@ -486,8 +522,9 @@ fn ruby_reporter_dir(host: &Host, config: &RunConfig) -> Option<std::path::PathB
     }
 }
 
-/// Stops a run (interrupt, then kill after Settings › Run's termination timeout).
-pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn run_stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
+    // Interrupt, then kill after Settings › Run's termination timeout.
     if let Some(plugins) = host.plugin_host() {
         plugins.run_operation_stopped(id);
     }
@@ -503,8 +540,10 @@ pub fn stop(host: &Host, window: &str, id: RunId) -> IdeResult<()> {
     host.processes.stop_with_grace(id, grace)
 }
 
-/// Input the user typed into a run (the agent's goes to the process directly).
-pub fn stdin(host: &Host, id: RunId, data: &str) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub fn run_stdin(host: &Host, id: RunId, data: String) -> IdeResult<()> {
+    // Input the user typed into a run (the agent's goes to the process directly).
+    let data = data.as_str();
     host.mcp_agent_runs.user_input(id, data);
     if host.remote.runs.contains(id) {
         return host.remote.runs.write_stdin(id, data);
@@ -512,27 +551,31 @@ pub fn stdin(host: &Host, id: RunId, data: &str) -> IdeResult<()> {
     host.processes.write_stdin(id, data)
 }
 
-pub fn resize(host: &Host, id: RunId, cols: u16, rows: u16) -> IdeResult<()> {
+/// Terminal size of a run started with "Emulate terminal in output console".
+#[command(trust = trusted)]
+pub fn run_resize(host: &Host, id: RunId, cols: u16, rows: u16) -> IdeResult<()> {
     if host.remote.runs.contains(id) {
         return host.remote.runs.resize(id, cols, rows);
     }
     host.processes.resize(id, cols, rows)
 }
 
-pub fn close_stdin(host: &Host, id: RunId) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub fn run_close_stdin(host: &Host, id: RunId) -> IdeResult<()> {
     if host.remote.runs.contains(id) {
         return host.remote.runs.close_stdin(id);
     }
     host.processes.close_stdin(id)
 }
 
-pub fn list(host: &Host) -> Vec<RunInfo> {
+#[command(trust = always)]
+pub fn run_list(host: &Host) -> Vec<RunInfo> {
     let mut runs = host.processes.list();
     runs.extend(host.remote.runs.list());
     runs
 }
 
-mod commands;
+pub mod commands;
 pub(crate) mod container;
 pub use commands::*;
 
@@ -563,3 +606,17 @@ mod ownership_tests {
         assert!(configs.is_empty(), "{configs:?}");
     }
 }
+
+ide_command::domain!(
+    run:
+    run_apply_settings,
+    run_close_stdin,
+    run_configs,
+    run_list,
+    run_resize,
+    run_save_configs,
+    run_start,
+    run_stdin,
+    run_stop,
+    run_without_derived,
+);
