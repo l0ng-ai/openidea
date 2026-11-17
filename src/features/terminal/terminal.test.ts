@@ -99,6 +99,19 @@ describe("terminal links", () => {
     expect(findTerminalLinks("12:30 http://localhost:3000").map((l) => l.kind)).toEqual(["url"]);
   });
 
+  it("opens file:// URLs as file locations", () => {
+    const line = "[ERROR] file:///develop/mc/src/main/kotlin/top/A%20B.kt:15:56 Unresolved reference 'x'.";
+    expect(findTerminalLinks(line)).toEqual([
+      expect.objectContaining({ kind: "file", path: "/develop/mc/src/main/kotlin/top/A B.kt", line: 15, col: 56 }),
+    ]);
+    expect(findTerminalLinks("see file:///C:/work/a.kt:3")).toEqual([
+      expect.objectContaining({ kind: "file", path: "C:/work/a.kt", line: 3, col: undefined }),
+    ]);
+    expect(findTerminalLinks("file://host/srv/x.txt")).toEqual([
+      expect.objectContaining({ kind: "file", path: "/srv/x.txt", line: undefined }),
+    ]);
+  });
+
   it("trims trailing punctuation from URLs", () => {
     expect(trimUrl("https://a.dev/x.")).toBe("https://a.dev/x");
     expect(trimUrl("https://a.dev/(x)")).toBe("https://a.dev/(x)");
