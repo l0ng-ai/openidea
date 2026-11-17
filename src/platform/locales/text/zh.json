@@ -8426,6 +8426,7 @@
   "Enable openidea for this session": "在当前会话启用 openidea",
   "Agent Config": "智能体配置",
   "Active via {source}": "通过 {source} 生效",
+  "Disabled for this session ({source})": "当前会话已禁用（{source}）",
   "Import into Global settings to toggle per session and share across agents": "导入到全局设置以支持按会话开关并在所有智能体间共享",
   "No matching MCP servers.": "没有匹配的 MCP 服务器。",
   "Changes apply on the next message.": "更改将在下一条消息生效。",

@@ -471,6 +471,9 @@ impl CopilotShim {
         if let Some(mcp) = translate::wire_mcp_servers(params.get("mcpServers")) {
             req["mcpServers"] = mcp;
         }
+        if let Some(disabled) = translate::wire_disabled_mcp_servers(params) {
+            req["disabledMcpServers"] = disabled;
+        }
 
         let created = self.call("session.create", req).await?;
         let session_id = created
@@ -526,6 +529,9 @@ impl CopilotShim {
         });
         if let Some(mcp) = translate::wire_mcp_servers(params.get("mcpServers")) {
             req["mcpServers"] = mcp;
+        }
+        if let Some(disabled) = translate::wire_disabled_mcp_servers(params) {
+            req["disabledMcpServers"] = disabled;
         }
 
         let resumed = self.call("session.resume", req).await?;
