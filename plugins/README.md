@@ -2217,8 +2217,10 @@ args = "optional-arguments"                # optional
   `[capabilities]` (a manifest that lists it is refused). On grant the IDE
   records the jar's content hash and checks it again before every launch; a
   changed jar is left out, with a line in the console, until the user approves
-  `java.agent` again in Settings › Plugins, which shows the agent's file name
-  and arguments next to the permission. Refusing or revoking it keeps the rest
+  `java.agent` again in Settings › Plugins. Settings shows the agent's file name
+  and arguments next to the permission, and when the jar no longer matches the
+  approved hash it shows the reason and an **Approve new jar** action. Refusing
+  or revoking it keeps the rest
   of the plugin working, and the next launch has no agent.
 - The IDE adds one `-javaagent:<absolute path>[=<args>]` argument to the Java
   command line of **Application**, **Spring Boot** and **JAR Application**

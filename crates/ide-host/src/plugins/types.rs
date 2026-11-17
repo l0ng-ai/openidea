@@ -55,6 +55,18 @@ impl PluginStatus {
     }
 }
 
+/// The Java agent a plugin contributes, for Settings › Plugins.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginJavaAgent {
+    /// The jar's file name.
+    pub file_name: String,
+    /// The optional argument passed after `=`.
+    pub args: Option<String>,
+    /// The jar still has the hash recorded when `java.agent` was granted.
+    pub approved: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginInfo {
@@ -66,6 +78,8 @@ pub struct PluginInfo {
     pub homepage: Option<String>,
     pub change_notes: Option<String>,
     pub icon: Option<PluginIcon>,
+    /// The Java agent this plugin declares, and whether it is still approved.
+    pub java_agent: Option<PluginJavaAgent>,
     pub source: PluginSource,
     /// Package directory.
     pub path: ide_core::IpcPath,
