@@ -156,7 +156,10 @@ pub fn gradle_dependencies(
         |_, _| {},
     )?;
     if !out.success {
-        return Err(IdeError::unavailable(error_summary(&out.text)));
+        return Err(IdeError::unavailable(error_summary(&out)));
+    }
+    if let Some(note) = sync::truncation_note(&out) {
+        return Err(IdeError::unavailable(note));
     }
     Ok(parse_report(&out.text))
 }
