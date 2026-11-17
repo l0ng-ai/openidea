@@ -311,6 +311,26 @@ describe("language modes", () => {
     }
   });
 
+  const keywordHighlighter = tagHighlighter([{ tag: t.keyword, class: "keyword" }]);
+
+  function keywords(language: Language, source: string) {
+    const found: string[] = [];
+    highlightTree(language.parser.parse(source), keywordHighlighter, (from, to) => found.push(source.slice(from, to)));
+    return found;
+  }
+
+  it("colours TOML keys as keywords in files, lock files and ```toml code blocks", async () => {
+    for (const path of ["/p/Cargo.toml", "/p/uv.lock"]) {
+      const support = await loadSupport(findLanguageDescription("TOML", path)!);
+      expect(keywords(support!.language, '[package]\nname = "x"'), path).toEqual(["package", "name"]);
+    }
+    const fenced = fencedCodeMode("toml")!;
+    expect(fenced.name).toBe("TOML");
+    const language =
+      fenced.language instanceof LanguageDescription ? (await fenced.language.load()).language : fenced.language;
+    expect(keywords(language, 'name = "x"')).toEqual(["name"]);
+  });
+
   const propertiesHighlighter = tagHighlighter([
     { tag: t.keyword, class: "keyword" },
     { tag: t.operator, class: "operator" },
