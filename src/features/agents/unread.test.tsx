@@ -11,7 +11,7 @@ import {
 import { AgentsView } from "./AgentsView";
 import { AgentsStatus } from "./AgentsStatus";
 import { activate } from "./index";
-import { openChangeDiff } from "./SessionEditor";
+import { openChangeDiff } from "./session/ChangesPane";
 import * as actions from "@/platform/actions";
 import { TASK_DRAG } from "./model";
 import {
