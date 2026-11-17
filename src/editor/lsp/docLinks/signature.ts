@@ -21,14 +21,15 @@ export async function signatureNameTarget(decl: Location, name: string, lines: n
   if (!text) return null;
   const first = decl.range.start.line;
   const last = Math.min(text.length, first + lines + SLACK);
-  const word = new RegExp(`(?<![\\p{L}\\p{N}_$])${name.replace(/\$/g, "\\$")}(?![\\p{L}\\p{N}_$])`, "gu");
+  // A preceding non-name character, not a lookbehind: WebKit before 16.4 can't parse one.
+  const word = new RegExp(`(^|[^\\p{L}\\p{N}_$])${name.replace(/\$/g, "\\$")}(?![\\p{L}\\p{N}_$])`, "gu");
   const inside = (l: Location) => l.path === decl.path && l.range.start.line >= first && l.range.start.line < last;
   return withDocument(decl.path, async (doc) => {
     for (let line = first; line < last; line++) {
       for (const m of text[line]!.matchAll(word)) {
-        const locs = await lspRequest(() => commands.lspGoto(doc, { line, col: m.index }, "definition")).catch(
-          () => [],
-        );
+        const locs = await lspRequest(() =>
+          commands.lspGoto(doc, { line, col: m.index + m[1]!.length }, "definition"),
+        ).catch(() => []);
         // Nothing here: a comment or a string; the next occurrence may be the name itself.
         if (!locs.length) continue;
         return locs.some(inside) ? null : unique(locs.map((location) => ({ location })));
