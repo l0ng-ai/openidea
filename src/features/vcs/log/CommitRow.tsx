@@ -14,6 +14,7 @@ import { GraphCell } from "./GraphCell";
 import { RowResizeHandle } from "./RowResizeHandle";
 import { commitMenu } from "./commitMenu";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
+import { columnPrev } from "./useColumnResize";
 
 function CommitRowView({
   id,
@@ -169,7 +170,7 @@ function CommitRowView({
           {repoName(commitRepo(c)!)}
         </span>
       )}
-      {columnSequence(opts.columnOrder, columns).map((cid) => {
+      {columnSequence(opts.columnOrder, columns).map((cid, _index, ids) => {
         if (cid === SUBJECT_COLUMN.id) return subjectCell;
         const column = columns.find((col) => col.id === cid);
         if (!column) return null;
@@ -187,7 +188,7 @@ function CommitRowView({
             title={column.id === "author" ? `${c.author} <${c.email}>` : undefined}
           >
             {column.render(c)}
-            <RowResizeHandle id={column.id} width={width} />
+            <RowResizeHandle target={{ id: column.id, width, ...columnPrev(ids, column.id, opts, columns) }} />
           </span>
         );
       })}

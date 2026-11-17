@@ -1,8 +1,8 @@
 import styles from "../GitLog.module.css";
-import { useColumnResize } from "./useColumnResize";
+import { useColumnResize, type ResizeTarget } from "./useColumnResize";
 
-/** Full-height, invisible resize strip on a data-row cell (IDEA's column divider). */
-export function RowResizeHandle({ id, width }: { id: string; width: number }) {
-  const resize = useColumnResize(id, width);
+/** Full-height resize strip on a data-row cell (IDEA's column divider). */
+export function RowResizeHandle({ target }: { target: ResizeTarget }) {
+  const resize = useColumnResize(target);
   return <span className={styles.columnResize} aria-hidden="true" {...resize} />;
 }

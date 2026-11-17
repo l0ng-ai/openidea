@@ -6,16 +6,55 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { logOptions } from "../logOptions";
+import { logOptions, type LogOptions } from "../logOptions";
 import { updateLogOptions } from "../logStore";
+import { SUBJECT_COLUMN, type LogColumn } from "./shared";
 
 const MIN_WIDTH = 40;
 const MAX_WIDTH = 800;
+const clamp = (value: number) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, value));
 
-export function resizeColumn(id: string, value: number) {
-  updateLogOptions({
-    columnWidths: { ...logOptions().columnWidths, [id]: Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, value)) },
-  });
+export type ResizeTarget = {
+  id: string;
+  width: number;
+  /** Column to the left of this divider, or null when it is the flexible Commit column. */
+  prevId: string | null;
+  prevWidth: number;
+};
+
+/** Resolve the column immediately left of `id` in the visible order. */
+export function columnPrev(
+  ids: string[],
+  id: string,
+  options: LogOptions,
+  columns: LogColumn[],
+): { prevId: string | null; prevWidth: number } {
+  const index = ids.indexOf(id);
+  const prevId = index > 0 ? ids[index - 1] : null;
+  // The Commit column is flex:1 and absorbs space on its own — never store a width for it.
+  if (!prevId || prevId === SUBJECT_COLUMN.id) return { prevId: null, prevWidth: 0 };
+  const prev = columns.find((c) => c.id === prevId);
+  return { prevId, prevWidth: options.columnWidths[prevId] ?? prev?.width ?? 120 };
+}
+
+/**
+ * Resize the divider between `id` (right) and `prevId` (left): only these two
+ * columns give/take space, so every other column stays put. When the left neighbour
+ * is the flexible Commit column, only the right column's width is stored (Commit
+ * absorbs the rest through flex:1).
+ */
+export function resizeColumnPair(target: ResizeTarget, delta: number) {
+  const { id, width, prevId, prevWidth } = target;
+  const widths = { ...logOptions().columnWidths };
+  if (prevId == null) {
+    widths[id] = clamp(width + delta);
+  } else {
+    const left = clamp(prevWidth - delta);
+    const given = prevWidth - left; // what the left column actually gave up
+    widths[id] = clamp(width + given);
+    widths[prevId] = left;
+  }
+  updateLogOptions({ columnWidths: widths });
 }
 
 /** IDEA's double-click-on-divider behaviour: drop the custom width so the column fits its content again. */
@@ -25,20 +64,19 @@ export function resetColumnWidth(id: string) {
   updateLogOptions({ columnWidths: widths });
 }
 
-type Drag = {
+type Drag = ResizeTarget & {
   x: number;
-  width: number;
   element: HTMLElement;
   pointerId: number;
   releaseCursor: () => void;
 };
 
 /**
- * Pointer-driven column resize with an invisible, full-height hit strip (IDEA's
- * divider): hovering only changes the cursor, and dragging anywhere along the
- * boundary — header or data rows — resizes the column.
+ * Pointer-driven column resize with a full-height hit strip on the column's left
+ * edge. Dragging left widens the column (and narrows only its left neighbour);
+ * the divider follows the pointer 1:1.
  */
-export function useColumnResize(id: string, width: number) {
+export function useColumnResize(target: ResizeTarget) {
   const drag = useRef<Drag | null>(null);
   // Listeners are attached imperatively so `cancel` is defined before it is referenced.
   const listeners = useRef<{ blur: () => void; escape: (e: KeyboardEvent) => void } | null>(null);
@@ -66,8 +104,8 @@ export function useColumnResize(id: string, width: number) {
         if (ev.key === "Escape") cancel();
       };
       drag.current = {
+        ...target,
         x: e.clientX,
-        width,
         element: e.currentTarget,
         pointerId: e.pointerId,
         releaseCursor: lockDragCursor("ew-resize"),
@@ -79,8 +117,8 @@ export function useColumnResize(id: string, width: number) {
     },
     onPointerMove: (e: ReactPointerEvent<HTMLElement>) => {
       const d = drag.current;
-      // The handle sits on the column's left edge: drag left -> wider, drag right -> narrower.
-      if (d && e.currentTarget.hasPointerCapture?.(e.pointerId)) resizeColumn(id, d.width - (e.clientX - d.x));
+      // Handle is on the left edge: drag left -> wider.
+      if (d && e.currentTarget.hasPointerCapture?.(e.pointerId)) resizeColumnPair(d, -(e.clientX - d.x));
     },
     onPointerUp: cancel,
     onPointerCancel: cancel,
@@ -88,7 +126,7 @@ export function useColumnResize(id: string, width: number) {
     onMouseDown: (e: ReactMouseEvent<HTMLElement>) => e.stopPropagation(),
     onDoubleClick: (e: ReactMouseEvent<HTMLElement>) => {
       e.stopPropagation();
-      resetColumnWidth(id);
+      resetColumnWidth(target.id);
     },
   };
 }

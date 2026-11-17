@@ -219,6 +219,30 @@ describe("log controls", () => {
     expect(useLogOptions.getState().columnWidths.author).toBeUndefined();
   });
 
+  it("a divider resizes only the two adjacent columns, not the whole table", async () => {
+    // Signature sits between Author and Date. Dragging the Date divider must
+    // widen Date and narrow Signature only — Author and Commit stay put.
+    useLogOptions.setState({
+      showColumnHeaders: true,
+      showSignature: true,
+      showDate: true,
+      columnOrder: ["author", "signature", "date"],
+    });
+    render(<LogView />);
+    const date = await screen.findByRole("separator", { name: "Resize Date column" });
+    date.setPointerCapture = vi.fn();
+    date.hasPointerCapture = () => true;
+    date.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(date, { button: 0, pointerId: 6, clientX: 100 });
+    fireEvent.pointerMove(date, { pointerId: 6, clientX: 60 });
+    fireEvent.pointerUp(date, { pointerId: 6, clientX: 60 });
+    const widths = useLogOptions.getState().columnWidths;
+    expect(widths.date).toBe(180); // 140 + 40
+    expect(widths.signature).toBe(60); // 100 - 40
+    expect(widths.author).toBeUndefined(); // untouched
+    expect(widths.subject).toBeUndefined(); // flexible column untouched
+  });
+
   it("keeps pointer resizing separate from reordering and releases its capture on blur", async () => {
     useLogOptions.setState({ showColumnHeaders: true });
     render(<LogView />);

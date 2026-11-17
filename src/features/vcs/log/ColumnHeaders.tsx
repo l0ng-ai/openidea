@@ -8,7 +8,7 @@ import { updateLogOptions } from "../logStore";
 import { useVcs } from "../store";
 import { ColumnResizeHandle } from "./ColumnResizeHandle";
 import { SUBJECT_COLUMN, columnSequence, type LogColumn } from "./shared";
-import { resetColumnWidth } from "./useColumnResize";
+import { columnPrev, resetColumnWidth, type ResizeTarget } from "./useColumnResize";
 
 interface ColumnDrag {
   id: string;
@@ -51,6 +51,7 @@ export function ColumnHeaders({
             subject={cid === SUBJECT_COLUMN.id}
             ids={visibleIds}
             options={options}
+            columns={columns}
             drag={drag}
             onMove={move}
             onDragOver={(id, target, after) =>
@@ -71,6 +72,7 @@ function LogColumnHeader({
   subject,
   ids,
   options,
+  columns,
   drag,
   onMove,
   onDragOver,
@@ -80,6 +82,7 @@ function LogColumnHeader({
   subject?: boolean;
   ids: string[];
   options: LogOptions;
+  columns: LogColumn[];
   drag: ColumnDrag | null;
   onMove(source: string, target: string | null, after: boolean): void;
   onDragOver(id: string, target: string | null, after: boolean): void;
@@ -115,6 +118,11 @@ function LogColumnHeader({
     };
   }, [cancel]);
   const width = options.columnWidths[column.id] ?? column.width ?? 120;
+  const resizeTarget: ResizeTarget = {
+    id: column.id,
+    width,
+    ...columnPrev(ids, column.id, options, columns),
+  };
   const index = ids.indexOf(column.id);
   const hitColumn = (x: number, y: number) => {
     const el = document.elementFromPoint(x, y)?.closest?.("[data-log-column]");
@@ -178,9 +186,8 @@ function LogColumnHeader({
       {tx(column.title)}
       {!subject && (
         <ColumnResizeHandle
-          id={column.id}
+          target={resizeTarget}
           title={column.title}
-          width={width}
           onReorder={(delta) => onMove(column.id, ids[index + delta] ?? null, delta === 1)}
         />
       )}
