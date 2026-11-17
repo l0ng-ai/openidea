@@ -247,14 +247,6 @@ it("still says overwritten when untracked files would be overwritten", async () 
   );
 });
 
-it("reports an unknown checkout outcome once instead of retrying forever", async () => {
-  mocks.checkout.mockResolvedValue(ok({ kind: "somethingNew" }));
-  await checkoutBranch("feature/x");
-  expect(mocks.checkout).toHaveBeenCalledTimes(1);
-  expect(mocks.notify).toHaveBeenCalledTimes(1);
-  expect(mocks.notify.mock.calls[0]?.[0].level).toBe("error");
-});
-
 it("keeps the branch when the worktree question is turned down", async () => {
   mocks.worktrees.mockResolvedValue(ok([worktree("/p/front-feature-wt", "feature/wt")]));
   mocks.confirm.mockResolvedValue(false);

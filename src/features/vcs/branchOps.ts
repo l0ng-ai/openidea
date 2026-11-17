@@ -156,16 +156,6 @@ async function performCheckout(
         if (r.button === "open") await executeAction("file.openProjectPath", path);
         return false;
       }
-      default: {
-        // An outcome this frontend doesn't know yet: report it instead of retrying forever.
-        notifications().notify({
-          group: "vcs",
-          level: "error",
-          title: tx`Checkout ${rev} failed`,
-          body: JSON.stringify(outcome),
-        });
-        return false;
-      }
     }
   }
 }
